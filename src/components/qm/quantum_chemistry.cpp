@@ -6637,7 +6637,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 PUSH_GPU_SECTION("ORB GRID RAYCAST")
                     for (int i = 0; i < num_mos; ++i) {
-                        volume::RenderDesc vol_desc = {
+                        volume::IsoRenderDesc vol_desc = {
                             .render_target = {
                                 .depth  = orb.gbuf.tex.depth,
                                 .color  = orb.iso_tex[i],
@@ -6655,7 +6655,6 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .inv_proj = inv_proj_mat,
                             },
                             .iso = {
-                                .enabled = true,
                                 .count  = (size_t)orb.iso.count,
                                 .values = orb.iso.values,
                                 .colors = orb.iso.colors,
@@ -6668,7 +6667,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             },
                             .voxel_spacing = orb.vol[i].voxel_size,
                         };
-                        volume::render_volume(vol_desc);
+                        volume::render_isosurfaces(vol_desc);
                     }
                 POP_GPU_SECTION();
             }
@@ -8069,7 +8068,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
 
                     if (enabled) {
-                        volume::RenderDesc vol_desc = {
+                        volume::IsoRenderDesc vol_desc = {
                             .render_target = {
                                 .depth  = nto.gbuf.tex.depth,
                                 .color  = nto.iso_tex[i],
@@ -8087,7 +8086,6 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .inv_proj = inv_proj_mat,
                             },
                             .iso = {
-                                .enabled = enabled,
                                 .count   = count,
                                 .values  = values,
                                 .colors  = colors,
@@ -8100,7 +8098,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             },
                             .voxel_spacing = nto.vol[i].voxel_size,
                         };
-                        volume::render_volume(vol_desc);
+                        volume::render_isosurfaces(vol_desc);
                     }
                 }
                 POP_GPU_SECTION();

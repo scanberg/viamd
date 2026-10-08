@@ -3285,26 +3285,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             }
         }
     }
-#if 0
-    // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
-    ImGui::Checkbox("Enable DVR", &rep.electronic_structure.dvr.enabled);
-    if (rep.electronic_structure.dvr.enabled) {
-        const ImVec2 button_size = {160, 0};
-        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.electronic_structure.dvr.colormap), button_size, rep.electronic_structure.dvr.colormap)) {
-            ImGui::OpenPopup("Colormap Selector");
-        }
-        if (ImGui::BeginPopup("Colormap Selector")) {
-            for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
-                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                    rep.electronic_structure.dvr.colormap = map;
-                    update_rep = true;
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::EndPopup();
-        }
-    }
-#endif
     if (electronic_structure_uses_magnitude_toggle(es)) {
         const char* magnitude_label = es.source == ElectronicStructureSource::ElectronDensity ? (const char*)u8"magnitude |ρ|" : (const char*)u8"magnitude |Ψ|";
         if (ImGui::Checkbox(magnitude_label, &es.use_magnitude)) {
@@ -6906,7 +6886,7 @@ static void draw_representations_transparent(ApplicationState* state) {
             flag_representation_as_dirty(&state->representation.reps[i]);
 #endif
 
-            volume::RenderDesc desc = {
+            volume::IsoRenderDesc desc = {
                 .render_target = {
                     .depth = state->gbuffer.tex.depth,
                     .color = state->gbuffer.tex.transparency,
@@ -6916,7 +6896,6 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .texture = {
                     .density_volume = rep.electronic_structure.density_vol.tex_id,
                     .color_volume = rep.electronic_structure.color_vol.tex_id,
-                    .transfer_function = rep.electronic_structure.dvr.tf_tex,
                     .field_volume = use_field ? rep.electronic_structure.field_vol.tex_id : 0,
                     .field_colormap = use_field ? surface_field_colormap_texture(&rep.electronic_structure.field_vol, rep.electronic_structure.field_map.colormap) : 0,
                 },
@@ -6934,18 +6913,12 @@ static void draw_representations_transparent(ApplicationState* state) {
                     .enabled = state->visuals.temporal_aa.enabled,
                 },
                 .iso = {
-                    .enabled = true,
                     .count = iso.count,
                     .values = iso.values,
                     .colors = iso.colors,
                     .optical_densities = iso.optical_densities,
                     .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
                     .use_field = use_field,
-                },
-                .dvr = {
-                    .enabled = rep.electronic_structure.dvr.enabled,
-                    .min_tf_value = -1.0f,
-                    .max_tf_value = 1.0f,
                 },
                 .field = {
                     .range_beg = rep.electronic_structure.field_map.range_beg,
@@ -6962,7 +6935,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .voxel_spacing = rep.electronic_structure.density_vol.voxel_size,
             };
 
-            volume::render_volume(desc);
+            volume::render_isosurfaces(desc);
 
 #if DEBUG
             {

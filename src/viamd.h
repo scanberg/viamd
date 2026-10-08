@@ -528,12 +528,6 @@ struct ElectronicStructureRepresentation {
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
     md_grid_t grid = {};
 
-    struct {
-        bool enabled = false;
-        uint32_t tf_tex = 0;
-        int colormap = DEFAULT_COLORMAP;
-    } dvr;
-
     ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
     bool use_magnitude = false;
     ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
@@ -551,7 +545,6 @@ struct ElectronicStructureRepresentation {
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
-    uint64_t tf_hash = 0;
 };
 
 static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {

@@ -65,10 +65,7 @@ static struct {
         GLuint dvr_only = 0;
         GLuint iso_only = 0;
         GLuint iso_col_vol = 0;
-        GLuint dvr_and_iso = 0;
-        GLuint dvr_and_iso_col_vol = 0;
         GLuint iso_field = 0;
-        GLuint dvr_and_iso_field = 0;
         GLuint splat_color = 0;
     } program;
 
@@ -198,24 +195,20 @@ void initialize() {
     GLuint f_shader_dvr_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
     GLuint f_shader_iso_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
     GLuint f_shader_iso_only_col_vol    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
-    GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
-    GLuint f_shader_dvr_and_iso_col_vol = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
     GLuint f_shader_iso_only_field      = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_FIELD"));
-    GLuint f_shader_dvr_and_iso_field   = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_FIELD"));
-    
+
     defer {
         glDeleteShader(v_shader_vol);
+        glDeleteShader(v_shader_entry_exit);
         glDeleteShader(f_shader_entry_exit);
+        glDeleteShader(f_shader_entry_exit_depth);
         glDeleteShader(f_shader_dvr_only);
         glDeleteShader(f_shader_iso_only);
         glDeleteShader(f_shader_iso_only_col_vol);
-        glDeleteShader(f_shader_dvr_and_iso);
-        glDeleteShader(f_shader_dvr_and_iso_col_vol);
         glDeleteShader(f_shader_iso_only_field);
-        glDeleteShader(f_shader_dvr_and_iso_field);
     };
-    
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_dvr_and_iso == 0 || f_shader_dvr_and_iso_col_vol == 0 || f_shader_iso_only_field == 0 || f_shader_dvr_and_iso_field == 0) {
+
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0 || f_shader_entry_exit_depth == 0 || f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_iso_only_field == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
@@ -236,10 +229,7 @@ void initialize() {
     if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
     if (!gl.program.iso_only) gl.program.iso_only = glCreateProgram();
     if (!gl.program.iso_col_vol) gl.program.iso_col_vol = glCreateProgram();
-    if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
-    if (!gl.program.dvr_and_iso_col_vol) gl.program.dvr_and_iso_col_vol = glCreateProgram();
     if (!gl.program.iso_field) gl.program.iso_field = glCreateProgram();
-    if (!gl.program.dvr_and_iso_field) gl.program.dvr_and_iso_field = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -262,20 +252,8 @@ void initialize() {
         gl::attach_link_detach(gl.program.iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
-        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso};
-        gl::attach_link_detach(gl.program.dvr_and_iso, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso_col_vol};
-        gl::attach_link_detach(gl.program.dvr_and_iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
         const GLuint shaders[] = {v_shader_vol, f_shader_iso_only_field};
         gl::attach_link_detach(gl.program.iso_field, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso_field};
-        gl::attach_link_detach(gl.program.dvr_and_iso_field, shaders, (int)ARRAY_SIZE(shaders));
     }
 
 
@@ -547,7 +525,75 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
     }
 }
 
-void render_volume(const RenderDesc& desc) {
+// What the shared entry/exit + raycasting path takes: the union of the two public descriptions,
+// with exactly one of dvr / iso enabled.
+struct RaycastDesc {
+    struct {
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool clear_color = false;
+    } render_target;
+
+    struct {
+        uint32_t density_volume = 0;
+        uint32_t color_volume   = 0;
+        uint32_t transfer_function = 0;
+        uint32_t field_volume   = 0;
+        uint32_t field_colormap = 0;
+    } texture;
+
+    struct {
+        mat4_t model = {};
+        mat4_t view = {};
+        mat4_t proj = {};
+        mat4_t inv_proj = {};
+    } matrix;
+
+    struct {
+        vec3_t min = {0, 0, 0};
+        vec3_t max = {1, 1, 1};
+    } clip_volume;
+
+    struct {
+        bool enabled = false;
+    } temporal;
+
+    struct {
+        bool enabled = false;
+        size_t count = 0;
+        const float* values = NULL;
+        const vec4_t* colors = NULL;
+        const float* optical_densities = NULL;
+        bool use_color_volume = false;
+        bool use_field = false;
+    } iso;
+
+    struct {
+        bool enabled = false;
+        float min_tf_value = 0.0f;
+        float max_tf_value = 1.0f;
+    } dvr;
+
+    struct {
+        float range_beg = 0.0f;
+        float range_end = 1.0f;
+    } field;
+
+    struct {
+        vec3_t env_radiance = {0,0,0};
+        float roughness = 0.4f;
+        vec3_t dir_radiance = {1,1,1};
+        float ior = 1.5f;
+        float exposure = 1.0f;
+        float gamma = 2.2f;
+    } shading;
+
+    vec3_t voxel_spacing = {};
+};
+
+static void render_raycast(const RaycastDesc& desc) {
     if (!desc.dvr.enabled && !desc.iso.enabled) return;
 
     int    iso_count = CLAMP((int)desc.iso.count, 0, 8);
@@ -714,8 +760,8 @@ void render_volume(const RenderDesc& desc) {
     glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
 
     // A field takes the place of the colour volume: the two are alternatives, never both
-    const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
-    const bool use_color_volume = !use_field && desc.iso.use_color_volume;
+    const bool use_field        = desc.iso.enabled && desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
+    const bool use_color_volume = desc.iso.enabled && !use_field && desc.iso.use_color_volume;
 
     if (use_color_volume) {
         glActiveTexture(GL_TEXTURE4);
@@ -759,11 +805,7 @@ void render_volume(const RenderDesc& desc) {
     {
         GLuint vol_prog = 0;
         if (desc.dvr.enabled) {
-            if (desc.iso.enabled) {
-                vol_prog = use_field ? gl.program.dvr_and_iso_field : use_color_volume ? gl.program.dvr_and_iso_col_vol : gl.program.dvr_and_iso;
-            } else {
-                vol_prog = gl.program.dvr_only;
-            }
+            vol_prog = gl.program.dvr_only;
         } else {
             if (use_field) {
                 vol_prog = gl.program.iso_field;
@@ -776,6 +818,14 @@ void render_volume(const RenderDesc& desc) {
 
         if (vol_prog == 0) {
             MD_LOG_DEBUG("No raycasting shader program available for the current render description, skipping raycasting");
+            glBindVertexArray(0);
+            glDisable(GL_BLEND);
+            glEnable(GL_DEPTH_TEST);
+            glCullFace(GL_BACK);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
+            glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
+            restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
+            POP_GPU_SECTION()
             return;
         }
 
@@ -828,6 +878,70 @@ void render_volume(const RenderDesc& desc) {
         restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
     }
 
+}
+
+void render_isosurfaces(const IsoRenderDesc& desc) {
+    if (desc.iso.count == 0 || !desc.texture.density_volume) return;
+
+    RaycastDesc rc = {};
+    rc.render_target.depth       = desc.render_target.depth;
+    rc.render_target.color       = desc.render_target.color;
+    rc.render_target.width       = desc.render_target.width;
+    rc.render_target.height      = desc.render_target.height;
+    rc.render_target.clear_color = desc.render_target.clear_color;
+    rc.texture.density_volume = desc.texture.density_volume;
+    rc.texture.color_volume   = desc.texture.color_volume;
+    rc.texture.field_volume   = desc.texture.field_volume;
+    rc.texture.field_colormap = desc.texture.field_colormap;
+    rc.matrix.model    = desc.matrix.model;
+    rc.matrix.view     = desc.matrix.view;
+    rc.matrix.proj     = desc.matrix.proj;
+    rc.matrix.inv_proj = desc.matrix.inv_proj;
+    rc.clip_volume.min = desc.clip_volume.min;
+    rc.clip_volume.max = desc.clip_volume.max;
+    rc.temporal.enabled = desc.temporal.enabled;
+    rc.iso.enabled = true;
+    rc.iso.count   = desc.iso.count;
+    rc.iso.values  = desc.iso.values;
+    rc.iso.colors  = desc.iso.colors;
+    rc.iso.optical_densities = desc.iso.optical_densities;
+    rc.iso.use_color_volume  = desc.iso.use_color_volume;
+    rc.iso.use_field         = desc.iso.use_field;
+    rc.field.range_beg = desc.field.range_beg;
+    rc.field.range_end = desc.field.range_end;
+    rc.shading.env_radiance = desc.shading.env_radiance;
+    rc.shading.roughness    = desc.shading.roughness;
+    rc.shading.dir_radiance = desc.shading.dir_radiance;
+    rc.shading.ior          = desc.shading.ior;
+    rc.shading.exposure     = desc.shading.exposure;
+    rc.shading.gamma        = desc.shading.gamma;
+    rc.voxel_spacing = desc.voxel_spacing;
+    render_raycast(rc);
+}
+
+void render_dvr(const DvrRenderDesc& desc) {
+    if (!desc.texture.density_volume || !desc.texture.transfer_function) return;
+
+    RaycastDesc rc = {};
+    rc.render_target.depth       = desc.render_target.depth;
+    rc.render_target.color       = desc.render_target.color;
+    rc.render_target.width       = desc.render_target.width;
+    rc.render_target.height      = desc.render_target.height;
+    rc.render_target.clear_color = desc.render_target.clear_color;
+    rc.texture.density_volume    = desc.texture.density_volume;
+    rc.texture.transfer_function = desc.texture.transfer_function;
+    rc.matrix.model    = desc.matrix.model;
+    rc.matrix.view     = desc.matrix.view;
+    rc.matrix.proj     = desc.matrix.proj;
+    rc.matrix.inv_proj = desc.matrix.inv_proj;
+    rc.clip_volume.min = desc.clip_volume.min;
+    rc.clip_volume.max = desc.clip_volume.max;
+    rc.temporal.enabled = desc.temporal.enabled;
+    rc.dvr.enabled = true;
+    rc.dvr.min_tf_value = desc.tf.min_value;
+    rc.dvr.max_tf_value = desc.tf.max_value;
+    rc.voxel_spacing = desc.voxel_spacing;
+    render_raycast(rc);
 }
 
 }  // namespace volume

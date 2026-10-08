@@ -2167,7 +2167,6 @@ void remove_representation(ApplicationState* state, size_t idx) {
     gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
-    if (rep.electronic_structure.dvr.tf_tex)         gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
     surface_field_free(&rep.electronic_structure.field_vol);
     md_array_swap_back_and_pop(state->representation.reps, idx);
     recompute_atom_visibility_mask(state);

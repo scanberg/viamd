@@ -48,22 +48,19 @@ void compute_transfer_function_texture(uint32_t* texture, int implot_colormap, r
 // It uses Shepard interpolation combined with RDFs encoded as gaussians to interpolate the colors of the points onto a regular grid.
 void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power = 4.0f);
 
-/*
-    Renders a volumetric texture using OpenGL.
-    - volume_texture: An OpenGL 3D texture containing the data
-    - tf_texture:     An OpenGL 1D texture containing the transfer function
-    - depth_texture:  An OpenGL 2D texture containing the depth data in the frame (for stopping ray traversal)
-    - model_matrix:   Matrix containing model to world transformation of the volume, which is assumed to occupy a unit cube [0,1] in its model-space
-    - view_matrix:    Matrix containing world to view transformation of the camera
-    - proj_matrix:    Matrix containing view to clip transformation of the camera
-    - density_scale:  global scaling of density
-    - alpha_scale:    global alpha scaling of the transfer function
-    - isosurface:     information on isovalues and associated colors
-    - voxel_spacing:  spacing of voxels in world space
-    - clip_planes:    define a subvolume (min, max)[0-1] which represents the visible portion of the volume
-*/
+// The two renderers below share no state and are never combined in one pass: a view shows either
+// the isosurfaces of a volume or a direct volume rendering of it.
+//
+// Common to both:
+//  - render_target.depth: the depth of the opaque scene (optional), rays stop there
+//  - render_target.color: the texture to blend into (0 = the currently bound framebuffer)
+//  - matrix.model: places the volume, which occupies the unit cube [0,1] of its model (= texture) space
+//  - clip_volume: the visible sub-box of the volume, in its model space
 
-struct RenderDesc {
+// ISOSURFACES
+// Up to 8 isovalues, each a surface with its own colour and an optional optical density (tau): the
+// absorption accumulated while the ray is inside that surface.
+struct IsoRenderDesc {
     struct {
         uint32_t depth = 0;
         uint32_t color = 0;
@@ -74,8 +71,7 @@ struct RenderDesc {
 
     struct {
         uint32_t density_volume = 0;
-        uint32_t color_volume   = 0;
-        uint32_t transfer_function = 0;
+        uint32_t color_volume   = 0;    // optional, see iso.use_color_volume
         uint32_t field_volume   = 0;    // same grid as density_volume, see iso.use_field
         uint32_t field_colormap = 0;    // 2D, N x 1
     } texture;
@@ -93,25 +89,17 @@ struct RenderDesc {
     } clip_volume;
 
     struct {
-        // Enables temporal jittering of the ray-casting offset
         bool enabled = false;
     } temporal;
 
     struct {
-        bool enabled = false;
         size_t count = 0;
         const float* values = NULL;
         const vec4_t* colors = NULL;
-        const float* optical_densities = NULL; // Optional per-iso surface optical density (τ) to modulate the absorption when inside the surface (if not provided, a value of 0 is used per iso surface)
-        bool use_color_volume = false;  // If true, the color of the iso surfaces will determined by the color volume instead of the provided iso.colors
-        bool use_field = false;         // If true, the iso surfaces are coloured by the field volume through the field colormap, over field.range_*
+        const float* optical_densities = NULL;  // optional, 0 per surface when not given
+        bool use_color_volume = false;          // the surfaces take their colour from the colour volume instead of iso.colors
+        bool use_field = false;                 // the surfaces are coloured by the field volume through the field colormap, over field.range_*
     } iso;
-
-    struct {
-        bool enabled = false;
-        float min_tf_value = 0.0f;
-        float max_tf_value = 1.0f;
-    } dvr;
 
     // The range of the field the colour map spans, when iso.use_field
     struct {
@@ -119,19 +107,8 @@ struct RenderDesc {
         float range_end = 1.0f;
     } field;
 
-    // A simplified shading model based on Cook-Torrance
-    // Static enviromental radiance (uniformly lit from all directions)
-    // 1 directional light positioned at {1,1,1} in viewspace
-
-    // env_radiance: The uniformly incomming radiance from all directions
-    // dir_radiance: The directional radiance incomming from a directional light
-    // roughness: Approximates the micro-roughness of the surface
-    // A value of 0.0 would approximate a perfectly smooth surface
-    // A value of 1.0 would approximate a perfectly 'diffuse' surface
-
-    // ior: corresponds to the Index of refraction of the iso surfaces.
-    // A value of 1.5 is recommended and roughly approximates plastic
-
+    // A simplified Cook-Torrance model: uniform environment radiance and one directional light at
+    // {1,1,1} in view space. roughness in [0,1], ior of the surfaces (1.5 ~ plastic).
     struct {
         vec3_t env_radiance = {0,0,0};
         float roughness = 0.4f;
@@ -144,7 +121,51 @@ struct RenderDesc {
     vec3_t voxel_spacing = {};
 };
 
-void render_volume(const RenderDesc& desc);
+void render_isosurfaces(const IsoRenderDesc& desc);
+
+// DIRECT VOLUME RENDERING
+// Emission-absorption through a 1D transfer function (a colour map with an alpha ramp), applied to
+// the density mapped from [tf.min_value, tf.max_value] to [0,1]. The colours are the colour map's
+// own, blended in display space.
+struct DvrRenderDesc {
+    struct {
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool clear_color = false;
+    } render_target;
+
+    struct {
+        uint32_t density_volume = 0;
+        uint32_t transfer_function = 0;    // 2D, N x 1
+    } texture;
+
+    struct {
+        mat4_t model = {};
+        mat4_t view = {};
+        mat4_t proj = {};
+        mat4_t inv_proj = {};
+    } matrix;
+
+    struct {
+        vec3_t min = {0, 0, 0};
+        vec3_t max = {1, 1, 1};
+    } clip_volume;
+
+    struct {
+        bool enabled = false;
+    } temporal;
+
+    struct {
+        float min_value = 0.0f;
+        float max_value = 1.0f;
+    } tf;
+
+    vec3_t voxel_spacing = {};
+};
+
+void render_dvr(const DvrRenderDesc& desc);
 
 
 }  // namespace volume
