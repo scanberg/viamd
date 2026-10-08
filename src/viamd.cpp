@@ -1660,15 +1660,15 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 if      (str_eq(ident, STR_LIT("BackgroundColor")))      viamd::extract_vec3(v.background.color, arg);
                 else if (str_eq(ident, STR_LIT("BackgroundIntensity")))  viamd::extract_flt(v.background.intensity, arg);
                 else if (str_eq(ident, STR_LIT("SsaoEnabled")))          viamd::extract_bool(v.ssao.enabled, arg);
-                else if (str_eq(ident, STR_LIT("SsaoIntensity")))        viamd::extract_flt(v.ssao.intensity, arg);
-                else if (str_eq(ident, STR_LIT("SsaoRadius")))           viamd::extract_flt(v.ssao.radius, arg);
-                else if (str_eq(ident, STR_LIT("SsaoBias")))             viamd::extract_flt(v.ssao.bias, arg);
+                // SsaoIntensity, SsaoRadius, SsaoBias and DofFocusScale belonged to the previous scale-dependent SSAO / DOF
+                // and are deliberately ignored: their values do not translate to the new parameters.
+                else if (str_eq(ident, STR_LIT("SsaoStrength")))         viamd::extract_flt(v.ssao.intensity, arg);
                 else if (str_eq(ident, STR_LIT("TonemapEnabled")))       viamd::extract_bool(v.tonemapping.enabled, arg);
                 else if (str_eq(ident, STR_LIT("Tonemapper")))           viamd::extract_enum(v.tonemapping.tonemapper, arg, (int)postprocess_pipeline::Tonemapper_ACES + 1);
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
-                else if (str_eq(ident, STR_LIT("DofFocusScale")))        viamd::extract_flt(v.dof.focus_scale, arg);
+                else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
                 else if (str_eq(ident, STR_LIT("FxaaEnabled")))          viamd::extract_bool(v.fxaa.enabled, arg);
                 else if (str_eq(ident, STR_LIT("TaaEnabled")))           viamd::extract_bool(v.temporal_aa.enabled, arg);
                 else if (str_eq(ident, STR_LIT("TaaJitter")))            viamd::extract_bool(v.temporal_aa.jitter, arg);
@@ -1976,15 +1976,13 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_vec3(state, STR_LIT("BackgroundColor"), v.background.color);
         viamd::write_flt(state,  STR_LIT("BackgroundIntensity"), v.background.intensity);
         viamd::write_bool(state, STR_LIT("SsaoEnabled"), v.ssao.enabled);
-        viamd::write_flt(state,  STR_LIT("SsaoIntensity"), v.ssao.intensity);
-        viamd::write_flt(state,  STR_LIT("SsaoRadius"), v.ssao.radius);
-        viamd::write_flt(state,  STR_LIT("SsaoBias"), v.ssao.bias);
+        viamd::write_flt(state,  STR_LIT("SsaoStrength"), v.ssao.intensity);
         viamd::write_bool(state, STR_LIT("TonemapEnabled"), v.tonemapping.enabled);
         viamd::write_int(state,  STR_LIT("Tonemapper"), (int)v.tonemapping.tonemapper);
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
-        viamd::write_flt(state,  STR_LIT("DofFocusScale"), v.dof.focus_scale);
+        viamd::write_flt(state,  STR_LIT("DofAperture"), v.dof.aperture);
         viamd::write_bool(state, STR_LIT("FxaaEnabled"), v.fxaa.enabled);
         viamd::write_bool(state, STR_LIT("TaaEnabled"), v.temporal_aa.enabled);
         viamd::write_bool(state, STR_LIT("TaaJitter"), v.temporal_aa.jitter);

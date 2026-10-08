@@ -1354,9 +1354,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Ambient Occlusion", &data->visuals.ssao.enabled);
             ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
-                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
-                ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
-                ImGui::SliderFloat("Bias", &data->visuals.ssao.bias, 0.0f, 1.0f);
+                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
             }
             ImGui::PopID();
             ImGui::EndGroup();
@@ -1381,8 +1379,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
             if (data->visuals.dof.enabled) {
                 // ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
-                ImGui::SliderFloat("Blur Strength", &data->visuals.dof.focus_scale, 0.001f, 100.f);
-                ImGui::SetItemTooltip("How strongly what is out of focus is blurred");
+                ImGui::SliderFloat("Blur Strength", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
+                ImGui::SetItemTooltip("Blur of distant objects, in percent of the view height. Independent of zoom level");
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -6612,8 +6610,6 @@ static void render(ApplicationState* state) {
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
-    settings.ssao.radius = state->visuals.ssao.radius;
-    settings.ssao.bias = state->visuals.ssao.bias;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
@@ -6622,7 +6618,7 @@ static void render(ApplicationState* state) {
 
     settings.dof.enabled = state->visuals.dof.enabled;
     settings.dof.focus_depth = state->visuals.dof.focus_depth;
-    settings.dof.focus_scale = state->visuals.dof.focus_scale;
+    settings.dof.aperture = state->visuals.dof.aperture * 0.01f;
 
     settings.fxaa.enabled = state->visuals.fxaa.enabled;
 

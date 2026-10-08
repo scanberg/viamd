@@ -1284,9 +1284,7 @@ struct ApplicationState {
 
         struct { 
             bool enabled = true;
-            float intensity = 6.0f;
-            float radius = 6.0f;
-            float bias = 0.1f;
+            float intensity = 5.0f;
         } ssao;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
@@ -1307,7 +1305,7 @@ struct ApplicationState {
         struct {
             bool enabled = false;
             float focus_depth = 10.0f;
-            float focus_scale = 10.0f;
+            float aperture = 1.0f;      // percent of the view height (CoC of an object at infinity)
         } dof;
 
         struct {

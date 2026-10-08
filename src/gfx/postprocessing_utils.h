@@ -45,17 +45,16 @@ struct Settings {
         float gamma = 2.4f;
     } tonemap;
 
+    // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
     struct {
         bool enabled = true;
-        float radius = 6.0f;
-        float intensity = 3.0f;
-        float bias = 0.1f;
+        float intensity = 5.0f;
     } ssao;
 
     struct {
         bool enabled = true;
-        float focus_depth = 0.5f;
-        float focus_scale = 10.f;
+        float focus_depth = 0.5f;   // view-space distance to the focus plane
+        float aperture = 0.01f;     // CoC of an object at infinity, as a fraction of the viewport height
     } dof;
 
     struct {

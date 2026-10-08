@@ -262,8 +262,11 @@ set(SHADER_FILES
     src/shaders/tonemap/uncharted.frag
     src/shaders/tonemap/aces.frag
     src/shaders/tonemap/fast_reversible.frag
-    src/shaders/dof/dof_half_res_prepass.frag
-    src/shaders/dof/dof.frag
+    src/shaders/dof/dof_prepass.frag
+    src/shaders/dof/dof_tile.frag
+    src/shaders/dof/dof_gather.frag
+    src/shaders/dof/dof_postfilter.frag
+    src/shaders/dof/dof_composite.frag
     src/shaders/velocity/blit_velocity.frag
     src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
@@ -272,8 +275,10 @@ set(SHADER_FILES
     src/shaders/volume/entryexit.frag
     src/shaders/volume/raycaster.frag
     src/shaders/volume/splat_color.comp
+    src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
+    src/shaders/ssao/upsample.frag
 )
 
 # Bake shaders into a single header file
