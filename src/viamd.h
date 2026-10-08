@@ -1115,6 +1115,7 @@ struct ApplicationState {
         // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
         double              last_interpolated_frame = -1.0;
         uint32_t            dirty_gpu_buffers = 0;
+        uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is

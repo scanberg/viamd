@@ -6112,6 +6112,10 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (sys.atom.count == 0) return;
 
+    if (data->mold.dirty_gpu_buffers) {
+        data->mold.gpu_buffers_version += 1;
+    }
+
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
         vec3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
