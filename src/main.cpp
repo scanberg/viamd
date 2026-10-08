@@ -3299,7 +3299,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const double min_tau = 0.0;
     const double max_tau = 1.0;
     
-    const double iso_min = 1.0e-8;
+    const double iso_min = 1.0e-2;
     const double iso_max = 5.0;
 
     if (electronic_structure_is_density_property(es)) {
