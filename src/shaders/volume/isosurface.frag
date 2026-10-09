@@ -13,8 +13,10 @@
 // Empty space: the block min/max grid (block_minmax.frag) is walked first. A block whose range holds no
 // isovalue holds no surface and is crossed in one step; inside it the ray is on a known side of every
 // surface, so its absorption is added analytically. Cells are only visited inside blocks that can hold a
-// surface. When u_use_proxy is set, the block proxy (block_proxy.vert) has also narrowed every ray to the
-// span that meets such a block, and discarded the pixels whose ray meets none.
+// surface, and there the cell min/max grid (cell_minmax.frag) gives the range of each cell in one fetch:
+// only the cells whose range holds an isovalue load their corners and get the cubic. When u_use_proxy is
+// set, the block proxy (block_proxy.vert) has also narrowed every ray to the span that meets a block that
+// can hold a surface, and discarded the pixels whose ray meets none.
 //
 // Membership: a point is INSIDE isosurface i when the density is on the far side of its value from zero,
 // d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that surface,
@@ -30,6 +32,9 @@
 
 #ifndef MAX_ISO
 #define MAX_ISO 8
+#endif
+#if MAX_ISO > 8
+#error "the range test holds at most 8 isovalues (g_iso_a, g_iso_b)"
 #endif
 
 #define MAX_CELL_HITS 8
@@ -58,7 +63,7 @@ layout(std140) uniform IsoUniforms {
     float u_use_proxy;          // u_tex_entry / u_tex_exit hold the block proxy depths
     float u_entry_from_near;    // the near plane cuts the volume: rays start there, not at the proxy entry
     float u_use_blocks;         // u_tex_minmax holds the block min/max grid
-    float u_pad;
+    float u_use_cells;          // u_tex_cells holds the cell min/max grid
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -71,6 +76,7 @@ uniform sampler2D u_tex_depth;
 uniform sampler2D u_tex_entry;  // nearest depth of the block proxy, 1 where there is none
 uniform sampler2D u_tex_exit;   // farthest depth of the block proxy, 0 where there is none
 uniform sampler3D u_tex_minmax; // RG32F, min and max over every block and its one voxel apron
+uniform sampler3D u_tex_cells;  // RG16F, the range of the corners of every cell (rounded outwards), cell c at texel c + 1
 
 #if defined(USE_COLOR_VOLUME)
 uniform sampler3D u_tex_color_volume;
@@ -109,6 +115,8 @@ float g_t_abs;      // absorption has been applied up to here
 uint  g_inside;     // membership per isosurface
 float g_tau;        // optical density of the surfaces the ray is inside of
 bool  g_known;      // membership determined yet
+vec4  g_iso_a;      // isovalues 0-3 and 4-7, unused slots repeating the first, for a branch free range test
+vec4  g_iso_b;
 
 // -----------------------------------------------------------------------------
 // Field
@@ -225,19 +233,21 @@ int deriv_roots(vec4 c, float len, out float r0, out float r1) {
 }
 
 // The crossing of g = cubic - v on [l, r], where g is monotone and its ends lie on different sides of v
-// (or one is on it). Newton, kept inside the bracket by bisection.
+// (or one is on it). Newton from the secant through the ends, kept inside the bracket by bisection.
 float solve_crossing(vec4 c, float v, float l, float r, float gl, float gr) {
     if (gl == 0.0) return l;
     if (gr == 0.0) return r;
     if ((gl < 0.0) == (gr < 0.0)) return l;   // the change is at the start of the piece (it began on v)
-    float s = 0.5 * (l + r);
+    float s = clamp(l + (r - l) * gl / (gl - gr), l, r);
     for (int i = 0; i < 8; ++i) {
         float g = cubic_eval(c, s) - v;
         if (g == 0.0) return s;
         if ((g < 0.0) == (gl < 0.0)) { l = s; gl = g; } else { r = s; gr = g; }
         float dg = cubic_deriv(c, s);
         float sn = (dg != 0.0) ? s - g / dg : 0.5 * (l + r);
-        s = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+        sn = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+        if (abs(sn - s) < 1e-5) return sn;     // voxels
+        s = sn;
     }
     return s;
 }
@@ -262,12 +272,11 @@ float tau_inside(uint mask) {
     return tau;
 }
 
+// Whether some isovalue lies in [lo, hi] (which may have infinite ends)
 bool range_holds_iso(float lo, float hi) {
-    for (int i = 0; i < u_iso_count; ++i) {
-        float v = u_iso_values[i];
-        if (lo <= v && v <= hi) return true;
-    }
-    return false;
+    vec4 a = step(vec4(lo), g_iso_a) * step(g_iso_a, vec4(hi));
+    vec4 b = step(vec4(lo), g_iso_b) * step(g_iso_b, vec4(hi));
+    return any(greaterThan(a + b, vec4(0.0)));
 }
 
 // -----------------------------------------------------------------------------
@@ -383,18 +392,21 @@ void hit(float t, int i) {
 
 // The part [tc, te] of the ray inside cell c, whose corners are lo / hi
 void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
+    vec4  mn4  = min(lo, hi);
+    vec4  mx4  = max(lo, hi);
+    bool  cand = range_holds_iso(min(min(mn4.x, mn4.y), min(mn4.z, mn4.w)), max(max(mx4.x, mx4.y), max(mx4.z, mx4.w)));
+    if (!cand && g_known) return;
+
     vec3  a   = (g_o + g_d * tc) - vec3(c);     // local coordinates where the ray enters the cell part
     float len = (te - tc) * g_dlen;            // its length in voxels
 
     if (!g_known) {
-        g_inside = membership(cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0));
+        // In a cell whose range holds no isovalue every corner is on the side of every surface the ray is on
+        g_inside = membership(cand ? cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0) : lo.x);
         g_tau    = tau_inside(g_inside);
         g_known  = true;
+        if (!cand) return;
     }
-
-    float fmin = min(min(min(lo.x, lo.y), min(lo.z, lo.w)), min(min(hi.x, hi.y), min(hi.z, hi.w)));
-    float fmax = max(max(max(lo.x, lo.y), max(lo.z, lo.w)), max(max(hi.x, hi.y), max(hi.z, hi.w)));
-    if (!range_holds_iso(fmin, fmax)) return;
 
     vec4 cf = cubic_coeffs(lo, hi, a, g_dir);
 
@@ -448,7 +460,18 @@ void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
     }
 }
 
-// Every cell the ray passes through in [t0, t1]
+// The corners of cell c: the four new ones after a step into it along axis prev (0-2) with the corners of
+// the previous cell in lo / hi, all eight otherwise
+void load_corners(int prev, ivec3 st, ivec3 c, inout vec4 lo, inout vec4 hi) {
+    if      (prev == 0) step_corners_x(st.x, c, lo, hi);
+    else if (prev == 1) step_corners_y(st.y, c, lo, hi);
+    else if (prev == 2) step_corners_z(st.z, c, lo, hi);
+    else                fetch_corners(c, lo, hi);
+}
+
+// Every cell the ray passes through in [t0, t1]. The range of a cell comes from the cell min/max grid, one
+// fetch; only a cell whose range holds an isovalue loads its corners (reusing the face it shares with the
+// previous cell when that one loaded them) and is intersected. Without the grid every cell loads them.
 void walk_cells(float t0, float t1, float eps_t, vec3 inv, bvec3 flat_axis) {
     vec3  xs = g_o + g_d * (t0 + eps_t);
     ivec3 c  = clamp(ivec3(floor(xs)), ivec3(-1), g_dim_m1);
@@ -457,27 +480,43 @@ void walk_cells(float t0, float t1, float eps_t, vec3 inv, bvec3 flat_axis) {
     vec3  tn = mix((nb - g_o) * inv, vec3(HUGE), flat_axis);
     vec3  td = mix(abs(inv), vec3(HUGE), flat_axis);
 
-    vec4 lo, hi;
-    fetch_corners(c, lo, hi);
+    bool use_cells = u_use_cells > 0.5;
+    vec4 lo = vec4(0.0);
+    vec4 hi = vec4(0.0);
+    int  prev = -1;     // lo / hi hold the corners of the cell before the last step, which was along this axis
 
     float tc = t0;
     for (int k = 0; k < MAX_STEPS; ++k) {
         float te = min(min(tn.x, tn.y), min(tn.z, t1));
+        bool  loaded = false;
         if (te > tc) {
-            process_cell(c, lo, hi, tc, te);
-            if (g_T < T_MIN) return;
+            bool cand = true;
+            if (use_cells) {
+                vec2 r = texelFetch(u_tex_cells, clamp(c + 1, ivec3(0), g_dim_m1 + 2), 0).xy;
+                cand = range_holds_iso(r.x, r.y);
+                if (!cand && !g_known) {
+                    g_inside = membership(r.x);
+                    g_tau    = tau_inside(g_inside);
+                    g_known  = true;
+                }
+            }
+            if (cand) {
+                load_corners(prev, st, c, lo, hi);
+                loaded = true;
+                process_cell(c, lo, hi, tc, te);
+                if (g_T < T_MIN) return;
+            }
         }
         if (te >= t1) return;
+        int axis;
         if (tn.x <= tn.y && tn.x <= tn.z) {
-            c.x += st.x; tn.x += td.x;
-            step_corners_x(st.x, c, lo, hi);
+            c.x += st.x; tn.x += td.x; axis = 0;
         } else if (tn.y <= tn.z) {
-            c.y += st.y; tn.y += td.y;
-            step_corners_y(st.y, c, lo, hi);
+            c.y += st.y; tn.y += td.y; axis = 1;
         } else {
-            c.z += st.z; tn.z += td.z;
-            step_corners_z(st.z, c, lo, hi);
+            c.z += st.z; tn.z += td.z; axis = 2;
         }
+        prev = loaded ? axis : -1;
         tc = max(tc, te);
     }
 }
@@ -547,6 +586,10 @@ void main() {
     g_inside = 0u;
     g_tau = 0.0;
     g_known = false;
+    for (int i = 0; i < 8; ++i) {
+        float v = u_iso_values[clamp(i, 0, max(u_iso_count - 1, 0))];
+        if (i < 4) g_iso_a[i] = v; else g_iso_b[i - 4] = v;
+    }
 
     bvec3 flat_axis = lessThan(abs(g_d), vec3(1e-20));
     vec3  inv   = 1.0 / mix(g_d, vec3(1.0), flat_axis);

@@ -274,6 +274,7 @@ set(SHADER_FILES
     src/shaders/volume/dvr.frag
     src/shaders/volume/isosurface.frag
     src/shaders/volume/block_minmax.frag
+    src/shaders/volume/cell_minmax.frag
     src/shaders/volume/block_proxy.vert
     src/shaders/volume/block_proxy.frag
     src/shaders/volume/splat_color.comp
