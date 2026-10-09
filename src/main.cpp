@@ -6558,6 +6558,19 @@ static void render(ApplicationState* state) {
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     const bool transparency_hdr_written = draw_representations_transparent(state);
+    if (transparency_hdr_written) {
+        // What the transparency buffer holds so far (the selection and highlight tints) lies under the
+        // isosurfaces, which are composited before it, in HDR: cover it by their coverage here. The
+        // overlays drawn after this stay on top of everything.
+        PUSH_GPU_SECTION("Isosurface coverage")
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+        postprocessing::blit_texture(state->gbuffer.tex.transparency_hdr);
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        POP_GPU_SECTION()
+    }
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };

@@ -3,10 +3,12 @@
 // Isosurface raycaster.
 //
 // Marches the density volume at one sample per voxel along the ray, finds where the ray crosses each
-// isovalue and refines the crossing on the trilinear field, so the surface position does not depend on
-// where the samples happen to fall (no jitter, no temporal accumulation needed). Every crossing is
-// shaded with the same model as the deferred compose pass, and the result is written as premultiplied
-// linear radiance + coverage, to be blended over the HDR scene before tone mapping.
+// isovalue and refines the crossing on the trilinear field, so the position of a crossing does not depend
+// on where the samples happen to fall (no jitter, no temporal accumulation needed). What is not found is
+// a surface the ray enters and leaves within one step: thinner than a voxel along the ray, which happens
+// at grazing silhouettes. Every crossing is shaded with the model and light of the deferred compose pass,
+// and the result is written as premultiplied linear radiance + coverage, to be blended over the HDR
+// scene before tone mapping.
 //
 // Membership: a point is INSIDE isosurface i when the density is on the far side of its value from
 // zero, d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that
@@ -93,8 +95,11 @@ float refine_crossing(vec3 pa, vec3 pb, float da, float db, float v) {
     float fa = da - v;
     float fb = db - v;
     for (int i = 0; i < REFINE_STEPS; ++i) {
-        float t  = a + (b - a) * fa / (fa - fb);
+        float denom = fa - fb;
+        if (denom == 0.0) break;
+        float t  = a + (b - a) * fa / denom;
         float ft = sample_volume(mix(pa, pb, t)) - v;
+        if (ft == 0.0) return t;        // on it; also keeps a bracket end from landing on the value
         if ((ft < 0.0) == (fa < 0.0)) {
             a  = t;
             fa = ft;
@@ -103,7 +108,8 @@ float refine_crossing(vec3 pa, vec3 pb, float da, float db, float v) {
             fb = ft;
         }
     }
-    return a + (b - a) * fa / (fa - fb);
+    float denom = fa - fb;
+    return (denom != 0.0) ? a + (b - a) * fa / denom : 0.5 * (a + b);
 }
 
 // The gradient along the view axes: its direction is the view space normal, no transform needed
@@ -141,8 +147,8 @@ float tau_inside(uint mask) {
 }
 
 // -----------------------------------------------------------------------------
-// Shading: the model of compose_deferred.frag, so a surface with alpha 1 is lit exactly like the
-// opaque geometry around it.
+// Shading: the model and light of compose_deferred.frag, so a surface with alpha 1 is lit like the
+// opaque geometry around it (with the roughness the caller gives).
 // -----------------------------------------------------------------------------
 
 float FresnelSchlick(float cos_theta, float F0) {
@@ -287,7 +293,7 @@ void main() {
             int   m = 0;
             for (int i = 0; i < u_iso_count; ++i) {
                 if ((crossed & (1u << uint(i))) == 0u) continue;
-                float f = refine_crossing(pa, pb, d0, d1, u_iso_values[i]);
+                float f = clamp(refine_crossing(pa, pb, d0, d1, u_iso_values[i]), 0.0, 1.0);
                 int j = m;
                 while (j > 0 && frac[j - 1] > f) {
                     frac[j] = frac[j - 1];

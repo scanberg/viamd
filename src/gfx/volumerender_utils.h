@@ -33,8 +33,8 @@ const char* timing_stage_name(TimingStage stage);
 // grid is built once and then not again.
 void notify_data_changed(uint32_t volume_texture);
 
-// Increases every time notify_data_changed() is called for the texture; 0 for a texture never announced.
-// For callers that cache what they render from a volume.
+// Changes every time notify_data_changed() is called for the texture, and never repeats for it; 0 for a
+// texture never announced. For callers that cache what they render from a volume.
 uint64_t data_version(uint32_t volume_texture);
 
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);

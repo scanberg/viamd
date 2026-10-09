@@ -88,7 +88,8 @@ static_assert(sizeof(DvrUniformData) == 64 + 3 * 16, "DvrUniformData must match 
 // GPU timings
 // -----------------------------------------------------------------------------
 
-static constexpr int    TIMER_QUERY_COUNT     = 64;
+// A redraw of the orbital grid alone issues three queries per panel, and they come back a few frames late
+static constexpr int    TIMER_QUERY_COUNT     = 256;
 static constexpr int    TIMER_PUBLISH_FRAMES  = 30;
 
 static struct {
@@ -248,6 +249,7 @@ static struct {
 
     BlockGrid grid[BLOCK_CACHE_SIZE];
     uint64_t  use_counter = 0;
+    uint64_t  version_counter = 0;  // versions are unique across volumes and evictions, so a (texture, version) pair never repeats
 
     struct {
         GLuint program = 0;
@@ -398,14 +400,14 @@ static BlockGrid* block_grid_acquire(GLuint volume) {
     *slot = BlockGrid{};
     slot->minmax    = minmax;
     slot->volume    = volume;
-    slot->version   = 1;
+    slot->version   = ++iso.version_counter;
     slot->last_used = ++iso.use_counter;
     return slot;
 }
 
 void notify_data_changed(uint32_t volume_texture) {
     if (!volume_texture) return;
-    block_grid_acquire(volume_texture)->version += 1;
+    block_grid_acquire(volume_texture)->version = ++iso.version_counter;
 }
 
 uint64_t data_version(uint32_t volume_texture) {
@@ -552,6 +554,10 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
     glDisable(GL_CULL_FACE);    // both faces: the nearest and the farthest of every box count
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
+    // Boxes that reach past the far plane (or between the eye and the near plane) are not clipped there
+    // but clamped to it, so the farthest depth is the far plane rather than a front face inside the box
+    const GLboolean depth_clamp = glIsEnabled(GL_DEPTH_CLAMP);
+    glEnable(GL_DEPTH_CLAMP);
 
     glUseProgram(iso.proxy.program);
     glActiveTexture(GL_TEXTURE0);
@@ -581,6 +587,7 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
     timer_end();
 
     glClearDepth(1.0);
+    if (!depth_clamp) glDisable(GL_DEPTH_CLAMP);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
     glBindVertexArray(0);
     glUseProgram(0);
@@ -811,6 +818,13 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         timer_end();
         glBindVertexArray(0);
         glUseProgram(0);
+
+        // The proxy depths are rendered into again by the next call: not left bound for sampling
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
     }
     POP_GPU_SECTION()
 

@@ -654,9 +654,25 @@ void shutdown() {
 namespace blit {
 static GLuint program_tex = 0;
 static GLuint program_tex_dither = 0;
+static GLuint program_tex_covered = 0;
 static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_color = -1;
+
+// A premultiplied texture, covered by the coverage (alpha) of another: what lies under it
+constexpr str_t f_shader_src_tex_covered = STR_LIT(R"(
+#version 150 core
+
+uniform sampler2D u_texture;
+uniform sampler2D u_cover;
+
+out vec4 out_frag;
+
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    out_frag = texelFetch(u_texture, px, 0) * (1.0 - clamp(texelFetch(u_cover, px, 0).a, 0.0, 1.0));
+}
+)");
 
 constexpr str_t f_shader_src_tex = STR_LIT(R"(
 #version 150 core
@@ -713,6 +729,8 @@ void initialize() {
 
     program_tex_dither = setup_program_from_source(STR_LIT("blit texture dither"), f_shader_src_tex_dither);
 
+    program_tex_covered = setup_program_from_source(STR_LIT("blit texture covered"), f_shader_src_tex_covered);
+
     program_col = setup_program_from_source(STR_LIT("blit color"), f_shader_src_col);
     uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
@@ -720,8 +738,9 @@ void initialize() {
 void shutdown() {
     if (program_tex) glDeleteProgram(program_tex);
     if (program_tex_dither) glDeleteProgram(program_tex_dither);
+    if (program_tex_covered) glDeleteProgram(program_tex_covered);
     if (program_col) glDeleteProgram(program_col);
-    program_tex = program_tex_dither = program_col = 0;
+    program_tex = program_tex_dither = program_tex_covered = program_col = 0;
 }
 }  // namespace blit
 
@@ -1788,6 +1807,24 @@ static void blit_texture_dither(GLuint tex, float time) {
     glUseProgram(0);
 }
 
+// tex scaled by (1 - alpha of cover), both premultiplied
+static void blit_texture_covered(GLuint tex, GLuint cover) {
+    ASSERT(glIsTexture(tex));
+    ASSERT(glIsTexture(cover));
+    glUseProgram(blit::program_tex_covered);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, cover);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(blit::program_tex_covered, "u_texture"), 0);
+    glUniform1i(glGetUniformLocation(blit::program_tex_covered, "u_cover"), 1);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
 void blit_color(vec4_t color) {
     glUseProgram(blit::program_col);
     glUniform4fv(blit::uniform_loc_color, 1, &color.x);
@@ -2091,7 +2128,11 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         PUSH_GPU_SECTION("Add Transparency")
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);    // premultiplied
-        blit_texture(in.transparency);
+        if (in.transparency_under_hdr && do_transparency_hdr) {
+            blit_texture_covered(in.transparency, in.transparency_hdr);
+        } else {
+            blit_texture(in.transparency);
+        }
         glDisable(GL_BLEND);
         POP_GPU_SECTION()
     }

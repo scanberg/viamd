@@ -6406,6 +6406,24 @@ struct QuantumChemistry : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
 
+            // The render targets, sized before the panels go into the draw list: it records the texture
+            // names, and a texture reallocated later in the frame would be drawn under a dead name
+            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
+            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
+
+            auto& gbuf = orb.gbuf;
+            if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                gbuffer_init(&gbuf, width, height);
+                for (int i = 0; i < (int)ARRAY_SIZE(orb.iso_tex); ++i) {
+                    if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
+                    if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
+                }
+            }
+            for (int i = 0; i < num_mos; ++i) {
+                if (!orb.iso_tex[i]) gl::init_texture_2D(&orb.iso_tex[i], width, height, GL_RGBA16F);
+                if (!orb.out_tex[i]) gl::init_texture_2D(&orb.out_tex[i], width, height, GL_RGBA8);
+            }
+
             for (int i = 0; i < num_mos; ++i) {
                 ImGui::PushID(i);
                 defer { ImGui::PopID(); };
@@ -6519,19 +6537,6 @@ struct QuantumChemistry : viamd::EventHandler {
             const ImVec2 origin(canvas_min.x, canvas_min.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
-            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
-
-            auto& gbuf = orb.gbuf;
-            if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                gbuffer_init(&gbuf, width, height);
-                // Reallocated at the new size as the panels need them
-                for (int i = 0; i < (int)ARRAY_SIZE(orb.iso_tex); ++i) {
-                    if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
-                    if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
-                }
-            }
-
             if (orb.show_coordinate_system_widget) {
                 float ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
                 float pad = 20.0f;
@@ -6566,6 +6571,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&orb.iso, sizeof(orb.iso), render_hash);
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                 render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                // Baked into the picking buffer, which hovering reads
+                render_hash = md_hash64(&state.picking_range_atom.beg, sizeof(state.picking_range_atom.beg), render_hash);
+                render_hash = md_hash64(&state.picking_range_bond.beg, sizeof(state.picking_range_bond.beg), render_hash);
                 render_hash = render_hash ? render_hash : 1;
             }
 
@@ -6655,9 +6663,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 // through post-processing on its own: the surfaces are composited in HDR, before tone mapping
                 PUSH_GPU_SECTION("ORB GRID PANELS")
                 for (int i = 0; i < num_mos; ++i) {
-                    if (!orb.iso_tex[i]) gl::init_texture_2D(&orb.iso_tex[i], width, height, GL_RGBA16F);
-                    if (!orb.out_tex[i]) gl::init_texture_2D(&orb.out_tex[i], width, height, GL_RGBA8);
-
                     volume::IsoRenderDesc vol_desc = {
                         .render_target = {
                             .depth  = orb.gbuf.tex.depth,
@@ -7651,6 +7656,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     NTO_Detachment,
                 };
 
+                // The render targets, sized before the panels go into the draw list: it records the texture
+                // names, and a texture reallocated later in the frame would be drawn under a dead name
+                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
+                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
+
+                auto& gbuf = nto.gbuf;
+                if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                    gbuffer_init(&gbuf, width, height);
+                    for (int i = 0; i < (int)ARRAY_SIZE(nto.iso_tex); ++i) {
+                        if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
+                        if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
+                    }
+                }
+                for (int i : nto_target_idx) {
+                    if (!nto.iso_tex[i]) gl::init_texture_2D(&nto.iso_tex[i], width, height, GL_RGBA16F);
+                    if (!nto.out_tex[i]) gl::init_texture_2D(&nto.out_tex[i], width, height, GL_RGBA8);
+                }
+
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {
 					ImGui::PushID(i);
@@ -7855,19 +7878,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
                 const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
-                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
-
-                auto& gbuf = nto.gbuf;
-                if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                    gbuffer_init(&gbuf, width, height);
-                    // Reallocated at the new size as the panels need them
-                    for (int i = 0; i < (int)ARRAY_SIZE(nto.iso_tex); ++i) {
-                        if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
-                        if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
-                    }
-                }
-
                 if (is_hovered) {
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         reset_view = true;
@@ -7915,6 +7925,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
                     render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                    // Baked into the picking buffer, which hovering reads
+                    render_hash = md_hash64(&state.picking_range_atom.beg, sizeof(state.picking_range_atom.beg), render_hash);
+                    render_hash = md_hash64(&state.picking_range_bond.beg, sizeof(state.picking_range_bond.beg), render_hash);
                     render_hash = render_hash ? render_hash : 1;
                 }
 
@@ -8110,9 +8123,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     // share, put through post-processing on its own: the surfaces are composited in HDR
                     PUSH_GPU_SECTION("NTO PANELS")
                     for (int i : nto_target_idx) {
-                        if (!nto.iso_tex[i]) gl::init_texture_2D(&nto.iso_tex[i], width, height, GL_RGBA16F);
-                        if (!nto.out_tex[i]) gl::init_texture_2D(&nto.out_tex[i], width, height, GL_RGBA8);
-
                         bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
                     
                         bool enabled = true;
@@ -8174,6 +8184,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
 
                         postprocess_inputs.transparency_hdr = iso_written ? nto.iso_tex[i] : 0;
+                        postprocess_inputs.transparency_under_hdr = true;   // the selection tint is under the surfaces
                         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.out_fbo);
                         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nto.out_tex[i], 0);
                         glDrawBuffer(GL_COLOR_ATTACHMENT0);

@@ -480,7 +480,11 @@ struct DensityVolume : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Render")) {
-                    // One or the other: the two are separate renderers and never mixed
+                    // One or the other (or neither): the two are separate renderers and never mixed
+                    if (ImGui::RadioButton("Off", !dvr.enabled && !iso.enabled)) {
+                        dvr.enabled = false;
+                        iso.enabled = false;
+                    }
                     if (ImGui::RadioButton("Direct Volume Rendering", dvr.enabled)) {
                         dvr.enabled = true;
                         iso.enabled = false;
