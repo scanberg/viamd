@@ -1728,34 +1728,8 @@ static void draw_main_menu(ApplicationState* data) {
 
             if (do_bonds) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
-                    const auto& mol = data->mold.sys;
-
-                    vec3_t* xyz = NULL;
-
-                    if (run_num_frames(data) > 0) {
-                        // Closest frame to the current animation time
-                        uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
-                        md_temp_scope_t temp_pos = md_temp_begin_in(frame_alloc);
-                        defer { md_temp_end(temp_pos); };
-
-                        xyz = (vec3_t*)md_vm_arena_push(frame_alloc, ALIGN_TO(mol.atom.count, 16) * sizeof(vec3_t));
-                        md_system_state_t frame_state = {};
-                        frame_state.num_atoms = mol.atom.count;
-                        frame_state.xyz = xyz;
-                        if (!extract_frame(data, frame_idx, &frame_state)) {
-                            MD_LOG_ERROR("Failed to extract frame data");
-                        } 
-                    } else {
-						// No trajectory, use current positions
-						xyz = data->mold.state.xyz;
-                    }
-
-                    if (xyz) {
-                        MD_LOG_DEBUG("RECALCULATING BONDS");
-                        md_util_infer_covalent_bonds(&data->mold.sys.bond, &data->mold.state, &data->mold.sys, data->mold.sys.alloc);
-                        md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
-                        data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                    }
+                    // The whole frame nearest the animation time, or the coordinates shown when there is no run
+                    recompute_covalent_bonds(data, (int64_t)(data->animation.frame + 0.5));
                 } else {
                     MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
                 }
@@ -2661,7 +2635,6 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             if (ImGui::MenuItem("Set as Centering Target")) {
                 md_bitfield_clear(&state->operations.selection_mask);
                 md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
-                recenter_mark_selection_dirty(state);
                 state->operations.recenter_query.enabled = false;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();

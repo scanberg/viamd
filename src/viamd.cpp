@@ -667,6 +667,10 @@ static void run_path_from_file(char* buf, size_t cap, str_t path) {
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
 
+    // The orientation reference was read from this run's first frame. A run loaded in its place, on the
+    // same topology, has a first frame of its own.
+    state->operations.initial_frame.valid = false;
+
     // Before anything they read goes: the contexts hold the run's files open.
     end_frame_extracts(state);
 
@@ -902,12 +906,11 @@ void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitfield_clear(&data->operations.recenter_query.mask);
         md_bitfield_clear(&data->operations.selection_mask);
-        recenter_mark_selection_dirty(data);
         data->operations.recenter_query.valid = false;
         data->operations.recenter_query.dynamic = false;
         data->operations.recenter_query.evaluated_version = 0;
         data->operations.recenter_query.ir_fingerprint = 0;
-        data->operations.initial_frame.target_version = 0;
+        data->operations.initial_frame.valid = false;
         data->operations.state_rotation = mat4_ident();
         recenter_mark_query_dirty(data);
 
@@ -983,6 +986,7 @@ void free_system_data(ApplicationState* data) {
 
     md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
     data->operations.initial_frame.rel_xyzw = nullptr;
+    data->operations.initial_frame.valid = false;
 
     md_gl_mol_destroy(data->mold.gl_mol);
 
@@ -1289,7 +1293,6 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.recenter_query.query[0] = '\0';
     recenter_mark_query_dirty(data);
     md_bitfield_clear(&data->operations.selection_mask);
-    recenter_mark_selection_dirty(data);
 }
 
 static void deserialize_files(viamd::deserialization_state_t& state, WorkspacePending& pending, str_t folder, md_allocator_i* alloc) {
@@ -1866,7 +1869,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitfield_copy(&data->operations.selection_mask, &pending.recenter_target);
-        recenter_mark_selection_dirty(data);
         recenter_update_target_data(data);
     }
 
@@ -4558,24 +4560,9 @@ void recenter_mark_query_dirty(ApplicationState* state) {
     }
 }
 
-void recenter_mark_selection_dirty(ApplicationState* state) {
-    ASSERT(state);
-    state->operations.selection_version += 1;
-    if (state->operations.selection_version == 0) {
-        state->operations.selection_version = 1;
-    }
-}
-
 const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state) {
     ASSERT(state);
     return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
-}
-
-uint64_t recenter_get_active_target_version(const ApplicationState* state) {
-    ASSERT(state);
-    const uint64_t source_version = state->operations.recenter_query.enabled ? state->operations.recenter_query.evaluated_version : state->operations.selection_version;
-    const uint64_t source_idx = state->operations.recenter_query.enabled ? 1 : 0;
-    return (source_version << 1) | source_idx;
 }
 
 bool recenter_update_query_mask(ApplicationState* state) {
@@ -4613,14 +4600,34 @@ void recenter_update(ApplicationState* state) {
     recenter_update_target_data(state);
 }
 
+// Exactly the same atoms, whatever range of bits each bitfield happens to be stored over. A hash of the
+// stored blocks is neither: it misses their offset, and the same atoms can be stored over different ranges.
+static bool same_atoms(const md_bitfield_t* a, const md_bitfield_t* b) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_bitfield_t diff = md_bitfield_create(md_temp_allocator(temp));
+    md_bitfield_xor(&diff, a, b);
+    return md_bitfield_empty(&diff);
+}
+
 void recenter_update_target_data(ApplicationState* state) {
     if (run_num_frames(state) == 0) return;
 
+    // The reference is only for keeping the orientation. Centering alone needs nothing from the first frame,
+    // so without this a target picked by a query which depends on the frame read it from disk in every frame.
+    if (!state->operations.fixate_orientation) return;
+
+    auto& ref = state->operations.initial_frame;
     const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
-    const uint64_t target_version = recenter_get_active_target_version(state);
-    if (target_version != state->operations.initial_frame.target_version) {
-        // Need to recalculate the initial frame
-        state->operations.initial_frame.target_version = target_version;
+
+    // Keyed on the atoms themselves. The versions this used to compare change every time a query is
+    // evaluated, which for one that depends on the frame is every frame, whether or not its atoms changed.
+    if (!ref.valid || !same_atoms(&ref.target_mask, &target_mask)) {
+        if (!ref.target_mask.alloc) {
+            md_bitfield_init(&ref.target_mask, state->allocator.persistent);
+        }
+        md_bitfield_copy(&ref.target_mask, &target_mask);
+        ref.valid = true;
         size_t count = md_bitfield_popcount(&target_mask);
 
         md_array_resize(state->operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
@@ -4703,11 +4710,13 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // The reference has to have been built from the SAME target that is being fitted now.
         // A size match is not sufficient: the selection can change to a different set of equal
         // size between recenter_update() and this call, which would silently pair up unrelated
-        // atoms and yield a garbage rotation. The version is the identity of the target.
+        // atoms and yield a garbage rotation. The atoms themselves are the identity of the target.
         const bool reference_valid =
+            app->operations.fixate_orientation &&
+            app->operations.initial_frame.valid &&
             app->operations.initial_frame.rel_xyzw &&
             md_array_size(app->operations.initial_frame.rel_xyzw) == count &&
-            app->operations.initial_frame.target_version == recenter_get_active_target_version(app);
+            same_atoms(&app->operations.initial_frame.target_mask, &target_mask);
 
         // R maps the CURRENT target onto the reference: R * (q - target_com) ~= p. The relative fit this
         // replaced had its operands the other way around, which yields the rotation carrying the reference
@@ -4771,6 +4780,10 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     mat4_t rotation = prev_rotation;
     bool fresh_turn = false;
     if (recenter && !md_bitfield_empty(&recenter_get_active_target_mask(app))) {
+        // Current for this target before it is fitted against. The main loop does this every frame too, but
+        // ticking 'keep orientation' applies at once, before the loop has had a chance to build it.
+        recenter_update_target_data(app);
+
         // Measured on the lattice frame coordinates: the fit is against the reference, not against a
         // previous fit's output
         mat4_t translation = mat4_ident();
@@ -4814,6 +4827,44 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     }
     app->operations.state_rotation = turn ? rotation : mat4_ident();
 
+    return true;
+}
+
+bool recompute_covalent_bonds(ApplicationState* app, int64_t frame) {
+    ASSERT(app);
+    md_system_t& sys = app->mold.sys;
+    const size_t num_atoms = sys.atom.count;
+    if (num_atoms == 0) return false;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_system_state_t state = { .alloc = temp.arena };
+    if (!md_system_state_init(&state, num_atoms)) return false;
+
+    // The bond search takes its minimum images in the cell, so its coordinates have to be in the cell's
+    // lattice frame. A frame of the run always is.
+    const size_t num_frames = run_num_frames(app);
+    if (num_frames > 0) {
+        if (!extract_frame(app, CLAMP(frame, (int64_t)0, (int64_t)num_frames - 1), &state)) {
+            MD_LOG_ERROR("Failed to extract frame data");
+            return false;
+        }
+    } else {
+        // The coordinates shown, taken back out of any turn from keeping the orientation
+        const md_system_state_t& shown = app->mold.state;
+        if (!shown.xyz || shown.num_atoms != num_atoms) return false;
+        MEMCPY(state.xyz, shown.xyz, num_atoms * sizeof(vec3_t));
+        state.unitcell = shown.unitcell;
+        if (!is_identity(app->operations.state_rotation)) {
+            mat4_batch_transform_inplace(state.xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
+        }
+    }
+
+    MD_LOG_DEBUG("RECALCULATING BONDS");
+    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
+    md_bond_build_connectivity(&sys.bond, num_atoms, sys.alloc);
+    app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     return true;
 }
 
@@ -5571,7 +5622,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             int num_tasks = 0;
             task_system::ID tasks[16];
             
-            md_system_t& sys = app->mold.sys;
+            // The event means mold.state was just written from its source, in the lattice frame of its
+            // cell: whatever turn the previous coordinates carried went with them.
+            app->operations.state_rotation = mat4_ident();
+
             if (app->operations.recalc_bonds) {
                 static int64_t cur_nearest_frame = -1;
 
@@ -5582,26 +5636,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     const bool has_frames = run_num_frames(app) > 0;
                     if (!has_frames || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
-                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, nearest_frame, has_frames]() {
-                            md_temp_scope_t temp = md_temp_begin();
-                            defer { md_temp_end(temp); };
-
-							md_system_state_t ref_state = sys.reference;
-
-                            if (has_frames) {
-                                // Use state from frame closest to the current animation time
-                                md_system_state_t frame_state = { .alloc = temp.arena };
-								md_system_state_init(&frame_state, sys.atom.count);
-                                if (!extract_frame(app, nearest_frame, &frame_state)) {
-                                    MD_LOG_ERROR("Failed to extract frame data");
-                                }
-                            }
-
-                            MD_LOG_DEBUG("RECALCULATING BONDS");
-                            md_util_infer_covalent_bonds(&sys.bond, &ref_state, &sys, sys.alloc);
-                            md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
-
-                            app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                        // From the whole frame nearest the animation time, not the interpolated state shown
+                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [app, nearest_frame]() {
+                            recompute_covalent_bonds(app, nearest_frame);
                         });
                         tasks[num_tasks++] = recalc_bond_task;
                     }
@@ -5615,10 +5652,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 task_system::enqueue_task(tasks[0]);
                 task_system::task_wait_for(tasks[num_tasks - 1]);
             }
-
-            // The event means mold.state was just written from its source, in the lattice frame of its
-            // cell: whatever turn the previous coordinates carried went with them.
-            app->operations.state_rotation = mat4_ident();
 
             // Recenter, wrap, make whole and turn, in that order (see apply_state_operations). They rewrite
             // the coordinates that update_md_buffers uploads, and nothing else flags them: the synchronous

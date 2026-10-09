@@ -1387,11 +1387,14 @@ struct ApplicationState {
 
         // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
         // This is populated by assigning a user defined selection.
-        uint64_t selection_version = 1;
         md_bitfield_t selection_mask = {0};
 
         struct {
-            uint64_t target_version = 0;
+            // The atoms the reference was built from, compared exactly against the active target. A query
+            // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
+            // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
+            md_bitfield_t target_mask = {0};
+            bool valid = false;
 
 			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
             vec4_t* rel_xyzw = nullptr;
@@ -1761,6 +1764,10 @@ md_unit_t             run_time_unit(const ApplicationState* app);
 // For a single frame now and then; anything that walks many frames keeps an extraction context of
 // its own (md_system_extract_begin) so the files stay open across them.
 bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);
+
+// Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run,
+// or in the coordinates shown when there is no run. Inferred bonds are replaced, others are kept.
+bool recompute_covalent_bonds(ApplicationState* app, int64_t frame);
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
@@ -2150,13 +2157,12 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 // Recentering operations (low level)
 
 void recenter_mark_query_dirty(ApplicationState* app);
-void recenter_mark_selection_dirty(ApplicationState* app);
 const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* app);
-uint64_t recenter_get_active_target_version(const ApplicationState* app);
 bool recenter_update_query_mask(ApplicationState* app);
 void recenter_update(ApplicationState* app);
 
-// Update the required initial frame data for the recentering target (if needed)
+// Builds the reference that keeping the orientation fits against, from the first frame of the run, when
+// the target's atoms differ from the ones it was built for. Does nothing while the orientation is not kept.
 void recenter_update_target_data(ApplicationState* app);
 
 // The recentering transform T = rotation * translation, split where the periodic images have to be
