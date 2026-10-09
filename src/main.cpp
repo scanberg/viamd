@@ -365,6 +365,7 @@ int main(int argc, char** argv) {
     // Application settings live in the ImGui .ini. Bind first, then initialize: that call
     // reads the file, so the bound values are current by the time the loop starts.
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
+    app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
     display_units::register_settings();
@@ -1325,6 +1326,18 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Separator();
             ImGui::Checkbox("Anti-Aliasing (FXAA)", &data->visuals.fxaa.enabled);
             ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
+            {
+                int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
+                if (ImGui::Combo("Isosurfaces", &iso_mode, "Fast\0Exact\0")) {
+                    data->settings.exact_isosurfaces = iso_mode == 1;
+                    app_settings::mark_dirty();
+                }
+                ImGui::SetItemTooltip("Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
+                                      "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
+                                      "a finer volume resolution makes both smaller.\n"
+                                      "Exact: intersects every cell a ray passes through, so nothing is missed and the surfaces\n"
+                                      "do not depend on any sampling. Roughly twice the GPU time of Fast.");
+            }
             // Temporal
             ImGui::BeginGroup();
             {
@@ -6824,6 +6837,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .optical_densities = iso.optical_densities,
                     .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
                     .use_field = use_field,
+                    .exact = state->settings.exact_isosurfaces,
                 },
                 .field = {
                     .range_beg = rep.electronic_structure.field_map.range_beg,

@@ -155,7 +155,7 @@ GpuTimings timings_get() {
 
 const char* timing_stage_name(TimingStage stage) {
     switch (stage) {
-    case TimingStage_BlockMinMax: return "Min/max grids";
+    case TimingStage_BlockMinMax: return "Block min/max";
     case TimingStage_EntryExit:   return "Entry / exit";
     case TimingStage_Raycast:     return "Raycast";
     default: return "";
@@ -178,6 +178,20 @@ enum IsoVariant {
     IsoVariant_Count
 };
 
+static const char* iso_variant_defines[IsoVariant_Count] = {
+    "",
+    "#define USE_COLOR_VOLUME",
+    "#define USE_FIELD",
+};
+
+// How the rays find the surfaces: isosurface_fast.frag samples once per voxel, isosurface.frag intersects
+// every cell exactly. Both read the same IsoUniforms.
+enum IsoMode {
+    IsoMode_Fast,
+    IsoMode_Exact,
+    IsoMode_Count
+};
+
 struct IsoProgram {
     GLuint program = 0;
     GLint  loc_iso_values = -1;
@@ -192,7 +206,6 @@ struct IsoProgram {
     GLint  loc_tex_entry = -1;
     GLint  loc_tex_exit = -1;
     GLint  loc_tex_minmax = -1;
-    GLint  loc_tex_cells = -1;
     GLint  block_index = -1;
 };
 
@@ -203,7 +216,7 @@ struct IsoUniformData {
     mat4_t grad_offsets;
 
     vec3_t clip_min;
-    float  block_size;
+    float  block_size;      // exact: voxels per block side of the block grid; fast: samples per voxel
     vec3_t clip_max;
     float  use_depth;
 
@@ -221,15 +234,12 @@ struct IsoUniformData {
     float  use_proxy;
     float  entry_from_near;
     float  use_blocks;
-    float  use_cells;
+    float  pad;
 };
 static_assert(sizeof(IsoUniformData) == 3 * 64 + 7 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
-// Min/max grids: what the isosurface rays skip empty space with. Per density volume a block grid (the
-// proxy boxes and the coarse skipping) and a cell grid (the range of every cell, so that only the cells
-// that can hold a surface load their corners), kept here keyed by the volume's texture and rebuilt when
-// notify_data_changed() says its texels changed. Neither depends on the isovalues. The cell grid is
-// RG16F with (dim + 1)^3 texels: about the memory of an R32F volume once more.
+// Block min/max grids: what the isosurface rays skip empty space with. One per density volume, kept
+// here keyed by the volume's texture and rebuilt when notify_data_changed() says its texels changed.
 static constexpr int BLOCK_MIN_SIZE     = 8;    // voxels per block side, at least
 static constexpr int BLOCK_MAX_PER_AXIS = 32;   // larger volumes get larger blocks: the proxy draws one box per block
 static constexpr int BLOCK_CACHE_SIZE   = 64;
@@ -237,8 +247,6 @@ static constexpr int BLOCK_CACHE_SIZE   = 64;
 struct BlockGrid {
     GLuint   volume = 0;
     GLuint   minmax = 0;            // RG32F, one texel per block
-    GLuint   cells = 0;             // RG16F, one texel per cell (rounded outwards), cell c at texel c + 1
-    bool     has_cells = false;     // cells was built with minmax
     uint64_t version = 0;           // of the volume's texels
     uint64_t built_version = 0;     // the version minmax was built from
     int      dim[3] = {};           // of the volume when built
@@ -248,7 +256,8 @@ struct BlockGrid {
 };
 
 static struct {
-    IsoProgram prog[IsoVariant_Count];
+    IsoProgram prog[IsoMode_Count][IsoVariant_Count];          // compiled on first use
+    bool       prog_failed[IsoMode_Count][IsoVariant_Count];
     GLuint ubo = 0;
     GLuint fbo = 0;
     GLuint vao = 0;     // empty: full screen triangle and proxy boxes both come from gl_VertexID
@@ -264,12 +273,6 @@ static struct {
         GLint  loc_block_size = -1;
         GLuint fbo = 0;
     } minmax;
-
-    struct {
-        GLuint program = 0;
-        GLint  loc_volume = -1;
-        GLint  loc_layer = -1;
-    } cells;
 
     struct {
         GLuint program = 0;
@@ -290,8 +293,8 @@ static struct {
     } proxy;
 } iso;
 
-static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
-    GLuint f_shader = gl::compile_shader_from_source({(const char*)isosurface_frag, isosurface_frag_size}, GL_FRAGMENT_SHADER, defines);
+static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_t defines) {
+    GLuint f_shader = gl::compile_shader_from_source(source, GL_FRAGMENT_SHADER, defines);
     if (!f_shader) {
         MD_LOG_ERROR("Isosurface shader compilation failed (" STR_FMT "), keeping the previous program", STR_ARG(defines));
         return;
@@ -314,8 +317,29 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
     p->loc_tex_entry          = glGetUniformLocation(prog, "u_tex_entry");
     p->loc_tex_exit           = glGetUniformLocation(prog, "u_tex_exit");
     p->loc_tex_minmax         = glGetUniformLocation(prog, "u_tex_minmax");
-    p->loc_tex_cells          = glGetUniformLocation(prog, "u_tex_cells");
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
+}
+
+static void iso_program_compile(int mode, int variant, GLuint v_shader) {
+    const str_t source = (mode == IsoMode_Exact) ? str_t{(const char*)isosurface_frag,      isosurface_frag_size}
+                                                 : str_t{(const char*)isosurface_fast_frag, isosurface_fast_frag_size};
+    iso_program_setup(&iso.prog[mode][variant], v_shader, source, str_from_cstr(iso_variant_defines[variant]));
+    iso.prog_failed[mode][variant] = iso.prog[mode][variant].program == 0;
+}
+
+// The program of a mode and variant, compiled the first time it is asked for; NULL if it does not compile
+static const IsoProgram* iso_program_get(int mode, int variant) {
+    IsoProgram& p = iso.prog[mode][variant];
+    if (!p.program && !iso.prog_failed[mode][variant]) {
+        GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+        if (v_shader) {
+            iso_program_compile(mode, variant, v_shader);
+            glDeleteShader(v_shader);
+        } else {
+            iso.prog_failed[mode][variant] = true;
+        }
+    }
+    return p.program ? &p : NULL;
 }
 
 static void iso_initialize() {
@@ -324,9 +348,15 @@ static void iso_initialize() {
         MD_LOG_ERROR("Isosurface vertex shader compilation failed");
         return;
     }
-    iso_program_setup(&iso.prog[IsoVariant_Uniform],     v_shader, STR_LIT(""));
-    iso_program_setup(&iso.prog[IsoVariant_ColorVolume], v_shader, STR_LIT("#define USE_COLOR_VOLUME"));
-    iso_program_setup(&iso.prog[IsoVariant_Field],       v_shader, STR_LIT("#define USE_FIELD"));
+    // Programs already made are rebuilt (a reinitialize picks up shader changes); the others wait until used
+    for (int m = 0; m < IsoMode_Count; ++m) {
+        for (int v = 0; v < IsoVariant_Count; ++v) {
+            iso.prog_failed[m][v] = false;
+            if (iso.prog[m][v].program) {
+                iso_program_compile(m, v, v_shader);
+            }
+        }
+    }
 
     {
         GLuint f_shader = gl::compile_shader_from_source({(const char*)block_minmax_frag, block_minmax_frag_size}, GL_FRAGMENT_SHADER);
@@ -340,19 +370,6 @@ static void iso_initialize() {
             iso.minmax.loc_block_size = glGetUniformLocation(iso.minmax.program, "u_block_size");
         } else {
             MD_LOG_ERROR("Block min/max shader compilation failed, isosurfaces will not skip empty space");
-        }
-    }
-    {
-        GLuint f_shader = gl::compile_shader_from_source({(const char*)cell_minmax_frag, cell_minmax_frag_size}, GL_FRAGMENT_SHADER);
-        if (f_shader) {
-            if (!iso.cells.program) iso.cells.program = glCreateProgram();
-            const GLuint shaders[] = {v_shader, f_shader};
-            gl::attach_link_detach(iso.cells.program, shaders, (int)ARRAY_SIZE(shaders));
-            glDeleteShader(f_shader);
-            iso.cells.loc_volume = glGetUniformLocation(iso.cells.program, "u_tex_volume");
-            iso.cells.loc_layer  = glGetUniformLocation(iso.cells.program, "u_layer");
-        } else {
-            MD_LOG_ERROR("Cell min/max shader compilation failed, isosurface rays will load the corners of every cell");
         }
     }
     glDeleteShader(v_shader);
@@ -423,11 +440,9 @@ static BlockGrid* block_grid_acquire(GLuint volume) {
             slot = &iso.grid[i];
         }
     }
-    const GLuint minmax = slot->minmax;     // the texture objects are reused, their storage respecified on build
-    const GLuint cells  = slot->cells;
+    const GLuint minmax = slot->minmax;     // the texture object is reused, its storage respecified on build
     *slot = BlockGrid{};
     slot->minmax    = minmax;
-    slot->cells     = cells;
     slot->volume    = volume;
     slot->version   = ++iso.version_counter;
     slot->last_used = ++iso.use_counter;
@@ -465,21 +480,6 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
     if (!g->minmax) {
         glGenTextures(1, &g->minmax);
     }
-    const bool build_cells = iso.cells.program != 0;
-    const int  cd[3] = { dim[0] + 1, dim[1] + 1, dim[2] + 1 };
-    if (build_cells && !g->cells) {
-        glGenTextures(1, &g->cells);
-    }
-    if (build_cells && (!same_dim || g->built_version == 0 || !g->has_cells)) {
-        glBindTexture(GL_TEXTURE_3D, g->cells);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_RG16F, cd[0], cd[1], cd[2], 0, GL_RG, GL_FLOAT, NULL);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_3D, 0);
-    }
     if (!same_dim || g->block_size != bs || g->built_version == 0) {
         glBindTexture(GL_TEXTURE_3D, g->minmax);
         glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, bd[0], bd[1], bd[2], 0, GL_RG, GL_FLOAT, NULL);
@@ -491,7 +491,7 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
         glBindTexture(GL_TEXTURE_3D, 0);
     }
 
-    PUSH_GPU_SECTION("ISO MIN/MAX GRIDS")
+    PUSH_GPU_SECTION("ISO BLOCK MIN/MAX")
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, iso.minmax.fbo);
     glViewport(0, 0, bd[0], bd[1]);
     glDisable(GL_DEPTH_TEST);
@@ -522,27 +522,6 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
         glUniform1i(iso.minmax.loc_layer, z);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
-
-    // The cell grid, (dim + 1)^3 texels, one layer at a time like the blocks
-    bool cells_complete = build_cells && complete;
-    if (cells_complete) {
-        glViewport(0, 0, cd[0], cd[1]);
-        glUseProgram(iso.cells.program);
-        glUniform1i(iso.cells.loc_volume, 0);
-        for (int z = 0; z < cd[2]; ++z) {
-            glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, g->cells, 0, z);
-            if (z == 0) {
-                const GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
-                if (status != GL_FRAMEBUFFER_COMPLETE) {
-                    MD_LOG_ERROR("Cell min/max framebuffer is incomplete (0x%04X)", (unsigned int)status);
-                    cells_complete = false;
-                    break;
-                }
-            }
-            glUniform1i(iso.cells.loc_layer, z);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-        }
-    }
     timer_end();
 
     glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0, 0);
@@ -553,7 +532,6 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
     if (!complete) {
         return NULL;
     }
-    g->has_cells = cells_complete;
 
     MEMCPY(g->dim, dim, sizeof(g->dim));
     MEMCPY(g->block_dim, bd, sizeof(g->block_dim));
@@ -752,12 +730,20 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     // A field takes the place of the colour volume: the two are alternatives, never both
     const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
     const bool use_color_volume = !use_field && desc.iso.use_color_volume && desc.texture.color_volume;
-    const IsoProgram& p = iso.prog[use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform];
+    const int variant = use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform;
+    int mode = desc.iso.exact ? IsoMode_Exact : IsoMode_Fast;
+    const IsoProgram* pp = iso_program_get(mode, variant);
+    if (!pp) {
+        // The other mode rather than nothing
+        mode = (mode == IsoMode_Exact) ? IsoMode_Fast : IsoMode_Exact;
+        pp = iso_program_get(mode, variant);
+    }
 
     int dim[3] = {};
-    if (!p.program || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
+    if (!pp || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
         return false;
     }
+    const IsoProgram& p = *pp;
 
     float  values[ISO_MAX_COUNT] = {};
     vec4_t colors[ISO_MAX_COUNT] = {};
@@ -819,7 +805,9 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     }
     data.use_proxy  = use_proxy ? 1.0f : 0.0f;
     data.use_blocks = grid ? 1.0f : 0.0f;
-    data.use_cells  = (grid && grid->has_cells) ? 1.0f : 0.0f;
+    if (mode == IsoMode_Fast) {
+        data.block_size = 1.0f;     // samples per voxel
+    }
 
     // The caller's framebuffer is the target when there is no colour texture
     if (!desc.render_target.color) {
@@ -859,8 +847,6 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_exit : 0);
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_3D, grid ? grid->minmax : 0);
-        glActiveTexture(GL_TEXTURE8);
-        glBindTexture(GL_TEXTURE_3D, (grid && grid->has_cells) ? grid->cells : 0);
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(p.program);
@@ -873,7 +859,6 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glUniform1i(p.loc_tex_entry, 5);
         glUniform1i(p.loc_tex_exit,  6);
         glUniform1i(p.loc_tex_minmax, 7);
-        glUniform1i(p.loc_tex_cells,  8);
         glUniform1fv(p.loc_iso_values, count, values);
         glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
         glUniform1fv(p.loc_iso_tau,    count, tau);
@@ -900,8 +885,6 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE7);
-        glBindTexture(GL_TEXTURE_3D, 0);
-        glActiveTexture(GL_TEXTURE8);
         glBindTexture(GL_TEXTURE_3D, 0);
         glActiveTexture(GL_TEXTURE0);
     }

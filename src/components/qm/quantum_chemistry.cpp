@@ -6569,6 +6569,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
                 render_hash = md_hash64(&orb.iso, sizeof(orb.iso), render_hash);
+                render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                 render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                 // Baked into the picking buffer, which hovering reads
@@ -6684,6 +6685,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             .count  = (size_t)orb.iso.count,
                             .values = orb.iso.values,
                             .colors = orb.iso.colors,
+                            .exact  = state.settings.exact_isosurfaces,
                         },
                         // Lit like the compose pass lights the atoms of the panel: env = background / 4
                         .shading = {
@@ -7918,6 +7920,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
                     render_hash = md_hash64(&nto.iso_val, sizeof(nto.iso_val), render_hash);
+                    render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
                     const vec4_t iso_colors[5] = { nto.col_pos, nto.col_neg, nto.col_den, nto.col_att, nto.col_det };
                     render_hash = md_hash64(iso_colors, sizeof(iso_colors), render_hash);
                     render_hash = md_hash64(&nto.link_attachment_detachment_density, sizeof(nto.link_attachment_detachment_density), render_hash);
@@ -8171,6 +8174,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                     .count   = count,
                                     .values  = values,
                                     .colors  = colors,
+                                    .exact   = state.settings.exact_isosurfaces,
                                 },
                                 // Lit like the compose pass lights the atoms of the panel: env = background / 4
                                 .shading = {

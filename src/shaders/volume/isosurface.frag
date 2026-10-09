@@ -1,6 +1,7 @@
 #version 410 core
 
-// Isosurface raycaster: exact intersection of the ray with the trilinear field.
+// Isosurface raycaster, exact mode: exact intersection of the ray with the trilinear field. The fast mode,
+// one filtered sample per voxel, is isosurface_fast.frag; both share the uniforms below.
 //
 // Inside a cell of the grid (the cube between eight voxel centres) the trilinearly interpolated field
 // along a ray is a cubic in the ray parameter. The ray is walked cell by cell (3D DDA), and in a cell whose
