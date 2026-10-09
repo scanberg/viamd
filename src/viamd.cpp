@@ -1214,7 +1214,10 @@ struct WorkspacePending {
     bool   has_frame;
     double frame;
 
-    bool   has_camera;
+    // Kept aside rather than written to the camera: loading the molecule puts the camera at the
+    // default view of what was loaded (init_system_data), which would overwrite it
+    bool          has_camera;
+    ViewTransform camera;
 
     md_array(md_atom_pair_t) user_bonds;
 
@@ -1696,21 +1699,23 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(data->simulation_box.color, arg);
             }
         } else if (str_eq(section, STR_LIT("Camera"))) {
-            pending.has_camera = true;
+            // A transform is only restored whole: half of one mixed with the default view is neither
+            bool has_position = false, has_orientation = false, has_distance = false;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Position"))) {
-                    viamd::extract_vec3(data->view.camera.position, arg);
+                    has_position = viamd::extract_vec3(pending.camera.position, arg);
                 } else if (str_eq(ident, STR_LIT("Orientation")) || str_eq(ident, STR_LIT("Rotation"))) {
                     // Rotation: DEPRECATED name
-                    viamd::extract_quat(data->view.camera.orientation, arg);
+                    has_orientation = viamd::extract_quat(pending.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
-                    viamd::extract_flt(data->view.camera.distance, arg);
+                    has_distance = viamd::extract_flt(pending.camera.distance, arg);
                 } else if (str_eq(ident, STR_LIT("Mode"))) {
                     viamd::extract_enum(data->view.mode, arg, (int)CameraMode::Count);
                 } else if (str_eq(ident, STR_LIT("FovY"))) {
                     viamd::extract_flt(data->view.camera.fov_y, arg);
                 }
             }
+            pending.has_camera = has_position && has_orientation && has_distance;
         } else if (str_eq(section, STR_LIT("Operations"))) {
             auto& op = data->operations;
             while (viamd::next_entry(ident, arg, state)) {
@@ -1878,9 +1883,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // The camera flies in: from the whole system to where the workspace looked from. Without a
     // stored camera, both are the whole system.
-    const ViewTransform stored = data->view.camera;
     reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
-    data->view.target = pending.has_camera ? stored : (ViewTransform)data->view.camera;
+    data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserializeEnd, viamd::EventPayloadType_DeserializationState, &state);
 }
@@ -2010,10 +2014,12 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_vec4(state, STR_LIT("SimulationBoxColor"), app_state->simulation_box.color);
     }
 
+    // The target, not the camera: the camera eases towards it over several frames (camera_animate),
+    // so saving during a fly-in or right after a drag would store a point along the way
     viamd::write_section_header(state, STR_LIT("Camera"));
-    viamd::write_vec3(state, STR_LIT("Position"), app_state->view.camera.position);
-    viamd::write_quat(state, STR_LIT("Orientation"), app_state->view.camera.orientation);
-    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.camera.distance);
+    viamd::write_vec3(state, STR_LIT("Position"), app_state->view.target.position);
+    viamd::write_quat(state, STR_LIT("Orientation"), app_state->view.target.orientation);
+    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.target.distance);
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
     viamd::write_flt(state,  STR_LIT("FovY"), app_state->view.camera.fov_y);
 
