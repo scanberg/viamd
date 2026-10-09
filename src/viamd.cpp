@@ -908,6 +908,7 @@ void init_system_data(ApplicationState* data) {
         data->operations.recenter_query.evaluated_version = 0;
         data->operations.recenter_query.ir_fingerprint = 0;
         data->operations.initial_frame.target_version = 0;
+        data->operations.state_rotation = mat4_ident();
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
@@ -4163,6 +4164,10 @@ void interpolate_system_state(ApplicationState* app) {
     // between two, which is exactly what the fractional part is for.
     app->mold.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
 
+    // Fresh coordinates, in the lattice frame of the cell: the turn the previous ones carried goes
+    // with them. The System State Changed handler puts one back if the orientation is kept.
+    app->operations.state_rotation = mat4_ident();
+
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
 
@@ -4534,6 +4539,17 @@ void interpolate_system_state(ApplicationState* app) {
     app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
+// Exact, element by element. The identities compared against here are only ever assigned, never computed.
+static bool is_identity(const mat4_t& M) {
+    const mat4_t I = mat4_ident();
+    for (int c = 0; c < 4; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            if (M.elem[c][r] != I.elem[c][r]) return false;
+        }
+    }
+    return true;
+}
+
 void recenter_mark_query_dirty(ApplicationState* state) {
     ASSERT(state);
     state->operations.recenter_query.version += 1;
@@ -4643,13 +4659,17 @@ void recenter_update_target_data(ApplicationState* state) {
     }
 }
 
-void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
-    ASSERT(M);
+bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app) {
+    ASSERT(translation);
+    ASSERT(rotation);
     ASSERT(app);
+
+    *translation = mat4_ident();
+    *rotation    = mat4_ident();
+    bool turn = false;
 
     const md_bitfield_t& target_mask = recenter_get_active_target_mask(app);
     size_t count = md_bitfield_popcount(&target_mask);
-    mat4_t transform = mat4_ident();
 
     if (count > 0) {
         md_temp_scope_t temp = md_temp_begin_in(app->allocator.frame);
@@ -4703,10 +4723,98 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
             md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
 
+        // Split at the cell centre. The translation preserves the lattice, so it is valid for coordinates
+        // in whatever image they arrived in. The turn does not: R times a lattice vector is not a lattice
+        // vector, so it may only be applied once every image is settled relative to the target. The
+        // product is the transform this used to return in one piece,
+        //     translate(target) * A * R * translate(-target_com)
         const mat4_t A = app->operations.alignment_mat;
-        transform = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
+        turn = (app->operations.fixate_orientation && reference_valid) || !is_identity(A);
+
+        *translation = mat4_translate_vec3(vec3_sub(target, target_com));
+        if (turn) {
+            *rotation = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target);
+        }
     }
-    mat4_store((float*)M, transform);
+    return turn;
+}
+
+// Every atom of mold.state through M
+static void state_transform(ApplicationState* app, const mat4_t& M) {
+    md_system_state_t& s = app->mold.state;
+    task_system::ID task = task_system::create_pool_task(STR_LIT("## Transform"), (uint32_t)s.num_atoms, [&s, M](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+        (void)thread_num;
+        mat4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
+    }, 1024);
+    task_system::enqueue_task(task);
+    task_system::task_wait_for(task);
+}
+
+bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool unwrap) {
+    ASSERT(app);
+    md_system_t& sys = app->mold.sys;
+    md_system_state_t& s = app->mold.state;
+
+    if (s.num_atoms == 0 || !s.xyz) return false;
+    if (!recenter && !pbc && !unwrap) return false;
+
+    const bool periodic = md_unitcell_flags(&s.unitcell) != 0;
+
+    // Into the lattice frame first. Wrapping or making whole turned coordinates against the unturned
+    // cell moves atoms by vectors that are not lattice vectors, to places where they have no image.
+    const mat4_t prev_rotation = app->operations.state_rotation;
+    if (!is_identity(prev_rotation)) {
+        state_transform(app, mat4_inverse(prev_rotation));
+    }
+
+    // A wrap or a make whole on its own keeps the turn the coordinates had
+    mat4_t rotation = prev_rotation;
+    bool fresh_turn = false;
+    if (recenter && !md_bitfield_empty(&recenter_get_active_target_mask(app))) {
+        // Measured on the lattice frame coordinates: the fit is against the reference, not against a
+        // previous fit's output
+        mat4_t translation = mat4_ident();
+        fresh_turn = recenter_calculate_transform(&translation, &rotation, app);
+        state_transform(app, translation);
+    }
+    const bool turn = !is_identity(rotation);
+
+    // Settle the periodic images before turning: every atom into the image nearest the cell centre,
+    // which is where the translation just put the target. Without it the turn carries the image each
+    // atom happened to be written in by the trajectory into the result, as a displacement of R times
+    // a lattice vector. That differs from frame to frame for every atom crossing the trajectory's own
+    // box, and for the whole system at once whenever the target's centre lands in another image.
+    if (periodic && (pbc || fresh_turn)) {
+        task_system::ID task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)s.num_atoms, [&s](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
+            md_util_pbc(s.xyz + range_beg, NULL, range_end - range_beg, &s.unitcell);
+        });
+        task_system::enqueue_task(task);
+        task_system::task_wait_for(task);
+    }
+
+    if (unwrap) {
+        const size_t num_structures = md_structure_count(&sys.structure);
+        if (num_structures > 0) {
+            task_system::ID task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&s, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                (void)thread_num;
+                for (uint32_t i = range_beg; i < range_end; ++i) {
+                    md_structure_t structure = {};
+                    md_structure_extract(&structure, &sys.structure, i);
+                    md_util_unwrap_structure(&s, &structure);
+                }
+            });
+            task_system::enqueue_task(task);
+            task_system::task_wait_for(task);
+        }
+    }
+
+    if (turn) {
+        state_transform(app, rotation);
+    }
+    app->operations.state_rotation = turn ? rotation : mat4_ident();
+
+    return true;
 }
 
 bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key) {
@@ -5464,14 +5572,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             task_system::ID tasks[16];
             
             md_system_t& sys = app->mold.sys;
-			md_system_state_t& sys_state = app->mold.state;
-            // Identity, not the zero matrix: a transform that never gets computed must leave
-            // the system where it is rather than collapse it onto the origin.
-            mat4_t recenter_transform = mat4_ident();
-
-            // Whether any operation below actually rewrote mold.state coordinates.
-            bool coords_modified = false;
-
             if (app->operations.recalc_bonds) {
                 static int64_t cur_nearest_frame = -1;
 
@@ -5482,7 +5582,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     const bool has_frames = run_num_frames(app) > 0;
                     if (!has_frames || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
-                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, &nearest_frame, has_frames]() {
+                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, nearest_frame, has_frames]() {
                             md_temp_scope_t temp = md_temp_begin();
                             defer { md_temp_end(temp); };
 
@@ -5508,52 +5608,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 }
             }
 
-            if (state->operations.recenter) {
-                const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
-                size_t num_idx = md_bitfield_popcount(&target_mask);
-                if (num_idx > 0) {
-                    // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
-                    task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [&recenter_transform, app]() {
-                        recenter_calculate_transform(recenter_transform.elem, app);
-                    });
-
-                    // Batch transform all atoms
-                    task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [&sys_state, &recenter_transform](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                        (void)thread_num;
-                        size_t count = range_end - range_beg;
-                        mat4_batch_transform_inplace(sys_state.xyz + range_beg, 1.0f, count, recenter_transform);
-                    }, 1024);
-
-                    tasks[num_tasks++] = calc_transform_task;
-                    tasks[num_tasks++] = apply_transform_task;
-                    coords_modified = true;
-                }
-            }
-
-            if (state->operations.apply_pbc) {
-                task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [&sys_state](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    size_t count = range_end - range_beg;
-                    md_util_pbc(sys_state.xyz + range_beg, NULL, count, &sys_state.unitcell);
-                });
-                tasks[num_tasks++] = pbc_task;
-                coords_modified = true;
-            } 
-
-            if (state->operations.unwrap_structures) {
-                size_t num_structures = md_structure_count(&sys.structure);
-                task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&sys_state, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    for (uint32_t i = range_beg; i < range_end; ++i) {
-                        md_structure_t structure = {};
-                        md_structure_extract(&structure, &sys.structure, i);
-						md_util_unwrap_structure(&sys_state, &structure);
-                    }
-                });
-                tasks[num_tasks++] = unwrap_task;
-                coords_modified = true;
-            }
-
             if (num_tasks > 0) {
                 for (int j = 1; j < num_tasks; ++j) {
                     task_system::set_task_dependency(tasks[j], tasks[j-1]);
@@ -5562,10 +5616,15 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 task_system::task_wait_for(tasks[num_tasks - 1]);
             }
 
-            // The operations above rewrote the coordinates that update_md_buffers uploads.
-            // Nothing else flags them: the synchronous broadcasts of this event do not pass
-            // through the interpolation step that would otherwise have set the bit.
-            if (coords_modified) {
+            // The event means mold.state was just written from its source, in the lattice frame of its
+            // cell: whatever turn the previous coordinates carried went with them.
+            app->operations.state_rotation = mat4_ident();
+
+            // Recenter, wrap, make whole and turn, in that order (see apply_state_operations). They rewrite
+            // the coordinates that update_md_buffers uploads, and nothing else flags them: the synchronous
+            // broadcasts of this event do not pass through the interpolation step that would otherwise
+            // have set the bit.
+            if (apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
                 app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;

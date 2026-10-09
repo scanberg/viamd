@@ -1360,6 +1360,14 @@ struct ApplicationState {
         // it survives a change of recenter target.
         mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
 
+        // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
+        // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
+        // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
+        // this is the only record of it: wrapping and making whole only work in the lattice frame (see
+        // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
+        // Back to identity whenever mold.state is rewritten from its source.
+        mat4_t state_rotation = MD_MAT4_IDENT_INIT;
+
         struct {
             char query[256] = "";
             char error[256] = "";
@@ -2150,7 +2158,22 @@ void recenter_update(ApplicationState* app);
 
 // Update the required initial frame data for the recentering target (if needed)
 void recenter_update_target_data(ApplicationState* app);
-void recenter_calculate_transform(float M[4][4], const ApplicationState* app);
+
+// The recentering transform T = rotation * translation, split where the periodic images have to be
+// settled (see apply_state_operations):
+//     translation = translate(cell_centre - com)                                  lattice preserving
+//     rotation    = translate(cell_centre) * alignment_mat * R * translate(-cell_centre)
+// rotation is exactly the identity unless the orientation is kept or alignment_mat is set, and the
+// return value says whether it is not.
+bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app);
+
+// Applies the coordinate operations to mold.state in the one order that keeps them valid together:
+//     take off operations.state_rotation -> translate -> wrap -> make whole -> turn
+// Wrapping and making whole are only defined in the lattice frame of the cell, and turning before the
+// periodic images are settled turns the arbitrary image each atom arrived in into a real displacement
+// of R times a lattice vector. So the turn comes last, and a fresh turn is always preceded by a wrap.
+// Returns true if the coordinates were touched.
+bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool unwrap);
 
 // Picking
 

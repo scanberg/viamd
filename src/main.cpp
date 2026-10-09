@@ -1593,6 +1593,7 @@ static void draw_main_menu(ApplicationState* data) {
             bool do_pbc = false;
             bool do_unwrap = false;
             bool do_bonds = false;
+            bool redo_every_frame = false;
 
             // Each operation can be applied to the frame shown now, or to every frame as it is shown.
             // The labels say what happens to the atoms, not what the operation is called internally.
@@ -1651,8 +1652,11 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->operations.fixate_orientation);
-                ImGui::SetItemTooltip("Keep orientation: when centering, also turn everything so the target\nkeeps the orientation it has in the first frame");
+                if (ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->operations.fixate_orientation) && data->operations.recenter) {
+                    // Turning it on or off while centering every frame takes effect on the frame shown, not the next one
+                    redo_every_frame = true;
+                }
+                ImGui::SetItemTooltip("Keep orientation: when centering, also turn everything so the target\nkeeps the orientation it has in the first frame.\nEverything is wrapped into the box around the target before it is turned,\nand the box turns with it.");
 
                 ImGui::SameLine();
                 ImGui::Checkbox(ICON_FA_COMMENT_DOTS "##target-query", &data->operations.recenter_query.enabled);
@@ -1710,29 +1714,15 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::EndTable();
             }
 
-            if (do_recenter) {
-                mat4_t T = mat4_ident();
-                recenter_calculate_transform(T.elem, data);
-
-                // Batch transform all atoms
-                const uint32_t grain_size = 1024;
-                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.state.num_atoms, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    size_t count = range_end - range_beg;
-                    mat4_batch_transform_inplace(data->mold.state.xyz + range_beg, 1.0f, count, T);
-                }, grain_size);
-                task_system::enqueue_task(apply_transform_task);
-                task_system::task_wait_for(apply_transform_task);
-                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+            if (redo_every_frame) {
+                do_recenter = true;
+                do_pbc     |= data->operations.apply_pbc;
+                do_unwrap  |= data->operations.unwrap_structures;
             }
 
-            if (do_pbc) {
-                md_util_system_pbc(&data->mold.state);
-                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-            }
-
-            if (do_unwrap) {
-                md_util_unwrap_system(&data->mold.state, &data->mold.sys);
+            // One pass, in the order that keeps them valid together, and in the lattice frame of the cell
+            // even when the coordinates are turned (see apply_state_operations)
+            if (apply_state_operations(data, do_recenter, do_pbc, do_unwrap)) {
                 data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
@@ -6283,7 +6273,8 @@ static void render(ApplicationState* state) {
         mat3_t A = { 0 };
 		md_unitcell_A_extract_float(A.elem, &state->mold.state.unitcell);
         immediate::Scope scope(state->gfx.world, "simulation box");
-        immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(state->simulation_box.color));
+        // Through the turn the coordinates carry, if the orientation is kept: the cell itself cannot hold one
+        immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, state->operations.state_rotation * mat4_from_mat3(A), convert_color(state->simulation_box.color));
     }
 
     {
