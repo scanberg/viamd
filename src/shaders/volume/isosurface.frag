@@ -13,10 +13,8 @@
 // Empty space: the block min/max grid (block_minmax.frag) is walked first. A block whose range holds no
 // isovalue holds no surface and is crossed in one step; inside it the ray is on a known side of every
 // surface, so its absorption is added analytically. Cells are only visited inside blocks that can hold a
-// surface, and there the cell min/max grid (cell_minmax.frag) gives the range of each cell in one fetch:
-// only the cells whose range holds an isovalue load their corners and get the cubic. When u_use_proxy is
-// set, the block proxy (block_proxy.vert) has also narrowed every ray to the span that meets a block that
-// can hold a surface, and discarded the pixels whose ray meets none.
+// surface. When u_use_proxy is set, the block proxy (block_proxy.vert) has also narrowed every ray to the
+// span that meets such a block, and discarded the pixels whose ray meets none.
 //
 // Membership: a point is INSIDE isosurface i when the density is on the far side of its value from zero,
 // d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that surface,
@@ -33,11 +31,31 @@
 #ifndef MAX_ISO
 #define MAX_ISO 8
 #endif
-#if MAX_ISO > 8
-#error "the range test holds at most 8 isovalues (g_iso_a, g_iso_b)"
-#endif
 
 #define MAX_CELL_HITS 8
+
+// Variants, chosen when the program is compiled (all give the same intersections):
+//   ISO_MICRO      the range of a cell is tested before any setup; the crossing solve starts from the secant
+//                  and stops once converged
+//   ISO_CELL_GRID  the range of a cell comes from the cell min/max grid (u_tex_cells), and only the cells
+//                  whose range holds an isovalue load their corners
+//   ISO_FLAT       blocks and cells are walked in one loop (needs the cell grid), so that the lanes of a
+//                  SIMD group stay in step whether they cross blocks or cells
+//   ISO_PRETEST    a candidate cell is first tested with the chord between the ends of the ray's part in it
+//                  and a bound on how far the cubic strays from it; the full split and solve only run when
+//                  that cannot exclude a crossing
+#ifndef ISO_MICRO
+#define ISO_MICRO 1
+#endif
+#ifndef ISO_CELL_GRID
+#define ISO_CELL_GRID 0
+#endif
+#ifndef ISO_FLAT
+#define ISO_FLAT 0
+#endif
+#ifndef ISO_PRETEST
+#define ISO_PRETEST 0
+#endif
 
 layout(std140) uniform IsoUniforms {
     mat4  u_clip_to_model;      // inverse(proj * view * model)
@@ -115,8 +133,6 @@ float g_t_abs;      // absorption has been applied up to here
 uint  g_inside;     // membership per isosurface
 float g_tau;        // optical density of the surfaces the ray is inside of
 bool  g_known;      // membership determined yet
-vec4  g_iso_a;      // isovalues 0-3 and 4-7, unused slots repeating the first, for a branch free range test
-vec4  g_iso_b;
 
 // -----------------------------------------------------------------------------
 // Field
@@ -233,11 +249,12 @@ int deriv_roots(vec4 c, float len, out float r0, out float r1) {
 }
 
 // The crossing of g = cubic - v on [l, r], where g is monotone and its ends lie on different sides of v
-// (or one is on it). Newton from the secant through the ends, kept inside the bracket by bisection.
+// (or one is on it). Newton, kept inside the bracket by bisection.
 float solve_crossing(vec4 c, float v, float l, float r, float gl, float gr) {
     if (gl == 0.0) return l;
     if (gr == 0.0) return r;
     if ((gl < 0.0) == (gr < 0.0)) return l;   // the change is at the start of the piece (it began on v)
+#if ISO_MICRO
     float s = clamp(l + (r - l) * gl / (gl - gr), l, r);
     for (int i = 0; i < 8; ++i) {
         float g = cubic_eval(c, s) - v;
@@ -250,6 +267,18 @@ float solve_crossing(vec4 c, float v, float l, float r, float gl, float gr) {
         s = sn;
     }
     return s;
+#else
+    float s = 0.5 * (l + r);
+    for (int i = 0; i < 8; ++i) {
+        float g = cubic_eval(c, s) - v;
+        if (g == 0.0) return s;
+        if ((g < 0.0) == (gl < 0.0)) { l = s; gl = g; } else { r = s; gr = g; }
+        float dg = cubic_deriv(c, s);
+        float sn = (dg != 0.0) ? s - g / dg : 0.5 * (l + r);
+        s = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+    }
+    return s;
+#endif
 }
 
 bool is_inside(float d, float v) {
@@ -272,11 +301,12 @@ float tau_inside(uint mask) {
     return tau;
 }
 
-// Whether some isovalue lies in [lo, hi] (which may have infinite ends)
 bool range_holds_iso(float lo, float hi) {
-    vec4 a = step(vec4(lo), g_iso_a) * step(g_iso_a, vec4(hi));
-    vec4 b = step(vec4(lo), g_iso_b) * step(g_iso_b, vec4(hi));
-    return any(greaterThan(a + b, vec4(0.0)));
+    for (int i = 0; i < u_iso_count; ++i) {
+        float v = u_iso_values[i];
+        if (lo <= v && v <= hi) return true;
+    }
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -392,6 +422,7 @@ void hit(float t, int i) {
 
 // The part [tc, te] of the ray inside cell c, whose corners are lo / hi
 void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
+#if ISO_MICRO
     vec4  mn4  = min(lo, hi);
     vec4  mx4  = max(lo, hi);
     bool  cand = range_holds_iso(min(min(mn4.x, mn4.y), min(mn4.z, mn4.w)), max(max(mx4.x, mx4.y), max(mx4.z, mx4.w)));
@@ -407,8 +438,45 @@ void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
         g_known  = true;
         if (!cand) return;
     }
+#else
+    vec3  a   = (g_o + g_d * tc) - vec3(c);     // local coordinates where the ray enters the cell part
+    float len = (te - tc) * g_dlen;            // its length in voxels
+
+    if (!g_known) {
+        g_inside = membership(cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0));
+        g_tau    = tau_inside(g_inside);
+        g_known  = true;
+    }
+
+    float fmin = min(min(min(lo.x, lo.y), min(lo.z, lo.w)), min(min(hi.x, hi.y), min(hi.z, hi.w)));
+    float fmax = max(max(max(lo.x, lo.y), max(lo.z, lo.w)), max(max(hi.x, hi.y), max(hi.z, hi.w)));
+    if (!range_holds_iso(fmin, fmax)) return;
+#endif
 
     vec4 cf = cubic_coeffs(lo, hi, a, g_dir);
+
+#if ISO_PRETEST
+    {
+        // Along the part, the cubic differs from the chord between its ends by s (s - len) (c2 + c3 (s + len)),
+        // at most len^2 / 4 (|c2| + 2 len |c3|). When every value that leaves is on the side of every surface
+        // the ray is on, there is no crossing here.
+        float f0  = cf.x;
+        float f1  = cubic_eval(cf, len);
+        float dev = 0.25 * len * len * (abs(cf.z) + 2.0 * len * abs(cf.w));
+        dev += 1e-5 * (abs(f0) + abs(f1) + dev);    // rounding
+        float lo_b = min(f0, f1) - dev;
+        float hi_b = max(f0, f1) + dev;
+        bool  maybe = false;
+        for (int i = 0; i < u_iso_count; ++i) {
+            float v = u_iso_values[i];
+            bool  flag = (g_inside & (1u << uint(i))) != 0u;
+            bool  all_in  = (v >= 0.0) ? (lo_b >= v) : (hi_b <= v);
+            bool  all_out = (v >= 0.0) ? (hi_b <  v) : (lo_b >  v);
+            if (flag ? !all_in : !all_out) { maybe = true; break; }
+        }
+        if (!maybe) return;
+    }
+#endif
 
     // Split into monotone pieces
     float r0, r1;
@@ -460,6 +528,7 @@ void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
     }
 }
 
+#if ISO_CELL_GRID
 // The corners of cell c: the four new ones after a step into it along axis prev (0-2) with the corners of
 // the previous cell in lo / hi, all eight otherwise
 void load_corners(int prev, ivec3 st, ivec3 c, inout vec4 lo, inout vec4 hi) {
@@ -520,6 +589,119 @@ void walk_cells(float t0, float t1, float eps_t, vec3 inv, bvec3 flat_axis) {
         tc = max(tc, te);
     }
 }
+
+#else
+// Every cell the ray passes through in [t0, t1]
+void walk_cells(float t0, float t1, float eps_t, vec3 inv, bvec3 flat_axis) {
+    vec3  xs = g_o + g_d * (t0 + eps_t);
+    ivec3 c  = clamp(ivec3(floor(xs)), ivec3(-1), g_dim_m1);
+    ivec3 st = ivec3(mix(vec3(-1.0), vec3(1.0), greaterThanEqual(g_d, vec3(0.0))));
+    vec3  nb = vec3(c) + vec3(greaterThanEqual(g_d, vec3(0.0)));        // the next boundary on each axis
+    vec3  tn = mix((nb - g_o) * inv, vec3(HUGE), flat_axis);
+    vec3  td = mix(abs(inv), vec3(HUGE), flat_axis);
+
+    vec4 lo, hi;
+    fetch_corners(c, lo, hi);
+
+    float tc = t0;
+    for (int k = 0; k < MAX_STEPS; ++k) {
+        float te = min(min(tn.x, tn.y), min(tn.z, t1));
+        if (te > tc) {
+            process_cell(c, lo, hi, tc, te);
+            if (g_T < T_MIN) return;
+        }
+        if (te >= t1) return;
+        if (tn.x <= tn.y && tn.x <= tn.z) {
+            c.x += st.x; tn.x += td.x;
+            step_corners_x(st.x, c, lo, hi);
+        } else if (tn.y <= tn.z) {
+            c.y += st.y; tn.y += td.y;
+            step_corners_y(st.y, c, lo, hi);
+        } else {
+            c.z += st.z; tn.z += td.z;
+            step_corners_z(st.z, c, lo, hi);
+        }
+        tc = max(tc, te);
+    }
+}
+
+#endif
+
+#if ISO_FLAT && ISO_CELL_GRID
+// Blocks and cells in one loop: an iteration either takes the block ahead of t or, inside a block that can
+// hold a surface, steps to the next cell (3D DDA). A block whose range holds no isovalue is crossed in one
+// step and tells the side of every surface; a cell whose range holds one is intersected. Lanes of a SIMD
+// group stay in step whether they are between blocks or walking cells.
+void walk_flat(float eps_t, vec3 inv, bvec3 flat_axis) {
+    float B       = u_block_size;
+    ivec3 bdim    = textureSize(u_tex_minmax, 0);
+    vec3  hi_side = vec3(greaterThanEqual(g_d, vec3(0.0)));
+    ivec3 st      = ivec3(mix(vec3(-1.0), vec3(1.0), greaterThanEqual(g_d, vec3(0.0))));
+    vec3  td      = mix(abs(inv), vec3(HUGE), flat_axis);
+    ivec3 last    = ivec3(-1000000);   // the cell whose corners lo / hi hold
+    vec4  lo      = vec4(0.0);
+    vec4  hi      = vec4(0.0);
+    float t       = 0.0;
+    bool  cells   = false;             // walking the cells of a block, which ends at t_block
+    float t_block = 0.0;
+    ivec3 c       = ivec3(0);
+    vec3  tn      = vec3(0.0);
+
+    for (int k = 0; k < 4 * MAX_STEPS && t < 1.0 && g_T >= T_MIN; ++k) {
+        if (!cells) {
+            // The block just ahead of t, and where the ray leaves it
+            vec3  xb  = (g_o + 0.5 + g_d * (t + eps_t)) / B;
+            ivec3 b   = clamp(ivec3(floor(xb)), ivec3(0), bdim - 1);
+            vec3  bnd = vec3(b) * B - 0.5 + B * hi_side;
+            vec3  tx  = mix((bnd - g_o) * inv, vec3(HUGE), flat_axis);
+            float tb  = max(min(1.0, min(min(tx.x, tx.y), tx.z)), t + eps_t);
+            vec2  mm  = texelFetch(u_tex_minmax, b, 0).xy;
+            if (range_holds_iso(mm.x, mm.y)) {
+                // Walk its cells from t
+                vec3 xs = g_o + g_d * (t + eps_t);
+                c  = clamp(ivec3(floor(xs)), ivec3(-1), g_dim_m1);
+                tn = mix((vec3(c) + hi_side - g_o) * inv, vec3(HUGE), flat_axis);
+                t_block = tb;
+                cells = true;
+            } else {
+                // No surface in the block: the ray is on one side of every surface throughout it
+                absorb_to(t);
+                g_inside = membership(mm.x);
+                g_tau    = tau_inside(g_inside);
+                g_known  = true;
+                t = tb;
+            }
+        } else {
+            float te = min(min(tn.x, tn.y), min(tn.z, t_block));
+            if (te > t) {
+                vec2 r = texelFetch(u_tex_cells, clamp(c + 1, ivec3(0), g_dim_m1 + 2), 0).xy;
+                if (range_holds_iso(r.x, r.y)) {
+                    ivec3 dc = c - last;
+                    if      (dc == ivec3(dc.x, 0, 0) && abs(dc.x) == 1) step_corners_x(dc.x, c, lo, hi);
+                    else if (dc == ivec3(0, dc.y, 0) && abs(dc.y) == 1) step_corners_y(dc.y, c, lo, hi);
+                    else if (dc == ivec3(0, 0, dc.z) && abs(dc.z) == 1) step_corners_z(dc.z, c, lo, hi);
+                    else if (dc != ivec3(0))                             fetch_corners(c, lo, hi);
+                    last = c;
+                    process_cell(c, lo, hi, t, te);
+                } else if (!g_known) {
+                    g_inside = membership(r.x);
+                    g_tau    = tau_inside(g_inside);
+                    g_known  = true;
+                }
+            }
+            if (te >= t_block) {
+                t = t_block;
+                cells = false;
+            } else {
+                if (tn.x <= tn.y && tn.x <= tn.z) { c.x += st.x; tn.x += td.x; }
+                else if (tn.y <= tn.z)            { c.y += st.y; tn.y += td.y; }
+                else                              { c.z += st.z; tn.z += td.z; }
+                t = max(t, te);
+            }
+        }
+    }
+}
+#endif
 
 void main() {
     ivec2 px  = ivec2(gl_FragCoord.xy);
@@ -586,10 +768,6 @@ void main() {
     g_inside = 0u;
     g_tau = 0.0;
     g_known = false;
-    for (int i = 0; i < 8; ++i) {
-        float v = u_iso_values[clamp(i, 0, max(u_iso_count - 1, 0))];
-        if (i < 4) g_iso_a[i] = v; else g_iso_b[i - 4] = v;
-    }
 
     bvec3 flat_axis = lessThan(abs(g_d), vec3(1e-20));
     vec3  inv   = 1.0 / mix(g_d, vec3(1.0), flat_axis);
@@ -598,7 +776,14 @@ void main() {
     float B = u_block_size;
     ivec3 bdim = textureSize(u_tex_minmax, 0);
 
-    float t = 0.0;
+#if ISO_FLAT && ISO_CELL_GRID
+    bool flat_walk = u_use_blocks > 0.5 && u_use_cells > 0.5;
+    if (flat_walk) walk_flat(eps_t, inv, flat_axis);
+#else
+    bool flat_walk = false;
+#endif
+
+    float t = flat_walk ? 1.0 : 0.0;    // the block loop below runs when the flat walk did not
     for (int k = 0; k < MAX_STEPS && t < 1.0 && g_T >= T_MIN; ++k) {
         if (u_use_blocks < 0.5) {
             walk_cells(0.0, 1.0, eps_t, inv, flat_axis);

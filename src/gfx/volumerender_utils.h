@@ -27,6 +27,13 @@ void timings_new_frame();
 GpuTimings timings_get();
 const char* timing_stage_name(TimingStage stage);
 
+// BENCHMARK (temporary): the isosurface traversal variants, switchable at run time to compare their GPU
+// time on the same view (see the timings above). Index 0 is the old one-sample-per-voxel marcher.
+int         iso_traversal_count();
+const char* iso_traversal_name(int i);
+int         iso_traversal_get();
+void        iso_traversal_set(int i);
+
 // The isosurface renderer keeps a coarse min/max grid per density volume to skip empty space, and has to
 // be told when a volume's texels change: call this after every upload into (or evaluation onto) a density
 // volume texture, and after (re)allocating one. A volume that is never announced still works, but its

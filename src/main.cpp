@@ -1766,6 +1766,21 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
 
+            {
+                // BENCHMARK (temporary): switch the isosurface traversal and compare the Raycast time in the
+                // tooltip of the frame time (top right) on the same view
+                int t = volume::iso_traversal_get();
+                if (ImGui::BeginCombo("Isosurface traversal", volume::iso_traversal_name(t))) {
+                    for (int i = 0; i < volume::iso_traversal_count(); ++i) {
+                        if (ImGui::Selectable(volume::iso_traversal_name(i), i == t)) {
+                            volume::iso_traversal_set(i);
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Benchmark only: how isosurface rays are traversed. Compare the Raycast time\nin the tooltip of the frame time (top right) on the same view.");
+            }
+
             // Font
             int font_size_idx = nearest_font_size_index(data->settings.font_size);
             if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {

@@ -178,6 +178,33 @@ enum IsoVariant {
     IsoVariant_Count
 };
 
+// BENCHMARK (temporary): ways of walking the rays that can be switched between at run time, to compare their
+// GPU time on the same view. All but the marcher find the same, exact intersections.
+struct IsoTraversal {
+    const char* name;
+    const char* defines;
+    bool        march;      // isosurface_march.frag, the one-sample-per-voxel raycaster of 77de1b2
+};
+
+static const IsoTraversal iso_traversals[] = {
+    { "Marcher (77de1b2)",        "",                                                                              true  },
+    { "Exact (34a89c8)",          "#define ISO_MICRO 0\n",                                                         false },
+    { "Exact + micro",            "#define ISO_MICRO 1\n",                                                         false },
+    { "Exact + micro + pretest",  "#define ISO_MICRO 1\n#define ISO_PRETEST 1\n",                                  false },
+    { "Cell grid",                "#define ISO_MICRO 1\n#define ISO_CELL_GRID 1\n",                                false },
+    { "Cell grid + pretest",      "#define ISO_MICRO 1\n#define ISO_CELL_GRID 1\n#define ISO_PRETEST 1\n",         false },
+    { "Flat",                     "#define ISO_MICRO 1\n#define ISO_CELL_GRID 1\n#define ISO_FLAT 1\n",            false },
+    { "Flat + pretest",           "#define ISO_MICRO 1\n#define ISO_CELL_GRID 1\n#define ISO_FLAT 1\n#define ISO_PRETEST 1\n", false },
+};
+static constexpr int ISO_TRAVERSAL_COUNT   = (int)ARRAY_SIZE(iso_traversals);
+static constexpr int ISO_TRAVERSAL_DEFAULT = 1;
+
+static const char* iso_variant_defines[IsoVariant_Count] = {
+    "",
+    "#define USE_COLOR_VOLUME\n",
+    "#define USE_FIELD\n",
+};
+
 struct IsoProgram {
     GLuint program = 0;
     GLint  loc_iso_values = -1;
@@ -248,7 +275,9 @@ struct BlockGrid {
 };
 
 static struct {
-    IsoProgram prog[IsoVariant_Count];
+    IsoProgram prog[ISO_TRAVERSAL_COUNT][IsoVariant_Count];        // compiled on first use
+    bool       prog_failed[ISO_TRAVERSAL_COUNT][IsoVariant_Count];
+    int        traversal = ISO_TRAVERSAL_DEFAULT;
     GLuint ubo = 0;
     GLuint fbo = 0;
     GLuint vao = 0;     // empty: full screen triangle and proxy boxes both come from gl_VertexID
@@ -290,8 +319,8 @@ static struct {
     } proxy;
 } iso;
 
-static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
-    GLuint f_shader = gl::compile_shader_from_source({(const char*)isosurface_frag, isosurface_frag_size}, GL_FRAGMENT_SHADER, defines);
+static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_t defines) {
+    GLuint f_shader = gl::compile_shader_from_source(source, GL_FRAGMENT_SHADER, defines);
     if (!f_shader) {
         MD_LOG_ERROR("Isosurface shader compilation failed (" STR_FMT "), keeping the previous program", STR_ARG(defines));
         return;
@@ -318,15 +347,48 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
+static void iso_program_compile(int t, int v, GLuint v_shader) {
+    char defines[512];
+    const int len = snprintf(defines, sizeof(defines), "%s%s", iso_variant_defines[v], iso_traversals[t].defines);
+    str_t defs;
+    defs.ptr = defines;
+    defs.len = (len > 0) ? (size_t)len : 0;
+    const str_t source = iso_traversals[t].march ? str_t{(const char*)isosurface_march_frag, isosurface_march_frag_size}
+                                                 : str_t{(const char*)isosurface_frag, isosurface_frag_size};
+    iso_program_setup(&iso.prog[t][v], v_shader, source, defs);
+    iso.prog_failed[t][v] = iso.prog[t][v].program == 0;
+}
+
+// The program of a traversal and variant, compiled the first time it is asked for. NULL if it does not compile.
+static const IsoProgram* iso_program_get(int t, int v) {
+    IsoProgram& p = iso.prog[t][v];
+    if (!p.program && !iso.prog_failed[t][v]) {
+        GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+        if (v_shader) {
+            iso_program_compile(t, v, v_shader);
+            glDeleteShader(v_shader);
+        } else {
+            iso.prog_failed[t][v] = true;
+        }
+    }
+    return p.program ? &p : NULL;
+}
+
 static void iso_initialize() {
     GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
     if (!v_shader) {
         MD_LOG_ERROR("Isosurface vertex shader compilation failed");
         return;
     }
-    iso_program_setup(&iso.prog[IsoVariant_Uniform],     v_shader, STR_LIT(""));
-    iso_program_setup(&iso.prog[IsoVariant_ColorVolume], v_shader, STR_LIT("#define USE_COLOR_VOLUME"));
-    iso_program_setup(&iso.prog[IsoVariant_Field],       v_shader, STR_LIT("#define USE_FIELD"));
+    // The programs of the current traversal, and of any other compiled before (on a reinitialize)
+    for (int t = 0; t < ISO_TRAVERSAL_COUNT; ++t) {
+        for (int v = 0; v < IsoVariant_Count; ++v) {
+            iso.prog_failed[t][v] = false;
+            if (t == iso.traversal || iso.prog[t][v].program) {
+                iso_program_compile(t, v, v_shader);
+            }
+        }
+    }
 
     {
         GLuint f_shader = gl::compile_shader_from_source({(const char*)block_minmax_frag, block_minmax_frag_size}, GL_FRAGMENT_SHADER);
@@ -752,12 +814,19 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     // A field takes the place of the colour volume: the two are alternatives, never both
     const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
     const bool use_color_volume = !use_field && desc.iso.use_color_volume && desc.texture.color_volume;
-    const IsoProgram& p = iso.prog[use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform];
+    const int variant = use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform;
+    int traversal = iso.traversal;
+    const IsoProgram* pp = iso_program_get(traversal, variant);
+    if (!pp) {
+        traversal = ISO_TRAVERSAL_DEFAULT;
+        pp = iso_program_get(traversal, variant);
+    }
 
     int dim[3] = {};
-    if (!p.program || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
+    if (!pp || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
         return false;
     }
+    const IsoProgram& p = *pp;
 
     float  values[ISO_MAX_COUNT] = {};
     vec4_t colors[ISO_MAX_COUNT] = {};
@@ -820,6 +889,9 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.use_proxy  = use_proxy ? 1.0f : 0.0f;
     data.use_blocks = grid ? 1.0f : 0.0f;
     data.use_cells  = (grid && grid->has_cells) ? 1.0f : 0.0f;
+    if (iso_traversals[traversal].march) {
+        data.block_size = 1.0f;     // u_samples_per_voxel of the marcher
+    }
 
     // The caller's framebuffer is the target when there is no colour texture
     if (!desc.render_target.color) {
@@ -909,6 +981,22 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
 
     restore_state(saved);
     return bound;
+}
+
+int iso_traversal_count() {
+    return ISO_TRAVERSAL_COUNT;
+}
+
+const char* iso_traversal_name(int i) {
+    return (0 <= i && i < ISO_TRAVERSAL_COUNT) ? iso_traversals[i].name : "";
+}
+
+int iso_traversal_get() {
+    return iso.traversal;
+}
+
+void iso_traversal_set(int i) {
+    if (0 <= i && i < ISO_TRAVERSAL_COUNT) iso.traversal = i;
 }
 
 void initialize() {
