@@ -154,12 +154,14 @@ static struct {
 
     struct {
         GLuint fbo = 0;
-        GLuint tex_half[4] = {};        // half res RGBA16F: gather far / near, post-filtered far / near (near is premultiplied)
-        GLuint tex_tile[2] = {};        // tile res RG16F: (max near |CoC|, max far CoC) per tile, gather radius after dilation
+        GLuint tex_half[2] = {};        // half res RGBA16F: gather far / near (near is premultiplied)
+        GLuint tex_tile[2] = {};        // tile res RG16F, see apply_dof
+        GLuint tex_src[3] = {};         // half res RGBA16F, mipmapped: near / far / CoC sources of the gather (dof_prepass)
+        int src_width = 0;
+        int src_height = 0;
         GLuint program_prepass = 0;
         GLuint program_tile = 0;
         GLuint program_gather = 0;
-        GLuint program_postfilter = 0;
         GLuint program_composite = 0;
     } bokeh_dof;
 
@@ -302,6 +304,29 @@ static void ensure_texture_2d(GLuint* tex, GLint internal_format, int width, int
     glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, format, type, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// Texture with a full mip chain (filled by glGenerateMipmap)
+static void ensure_texture_2d_mipmapped(GLuint* tex, GLint internal_format, int width, int height, GLenum format, GLenum type) {
+    ASSERT(tex);
+    if (!*tex) {
+        glGenTextures(1, tex);
+    }
+
+    int levels = 1;
+    while ((width >> levels) > 0 || (height >> levels) > 0) ++levels;
+
+    glBindTexture(GL_TEXTURE_2D, *tex);
+    for (int level = 0; level < levels; ++level) {
+        glTexImage2D(GL_TEXTURE_2D, level, internal_format, MAX(width >> level, 1), MAX(height >> level, 1), 0, format, type, nullptr);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -603,9 +628,10 @@ void shutdown() {
 }  // namespace tonemapping
 
 namespace dof {
-// Half-res depth of field: prepass -> tile max -> tile dilate -> gather -> postfilter -> full-res composite.
+// Half-res depth of field: prepass (+ mipmapped gather sources) -> tile max -> tile dilate -> gather -> full-res composite.
 // The CoC is aperture * (1 - focus / z), with the aperture given as a fraction of the viewport height, which makes the
 // blur independent of both the scene scale and the output resolution.
+// The gather is deterministic (no noise for TAA to average), see dof_gather.frag.
 static constexpr int   TILE             = 8;      // half-res pixels per tile side, must match TILE in dof_tile/dof_gather
 static constexpr float MAX_COC_FRACTION = 0.04f;  // CoC clamp, fraction of the viewport height
 
@@ -614,7 +640,7 @@ static GLuint setup(str_t name, const unsigned char* src, size_t size, str_t def
 }
 
 void initialize_programs() {
-    GLuint* programs[] = {&gl.bokeh_dof.program_prepass, &gl.bokeh_dof.program_tile, &gl.bokeh_dof.program_gather, &gl.bokeh_dof.program_postfilter, &gl.bokeh_dof.program_composite};
+    GLuint* programs[] = {&gl.bokeh_dof.program_prepass, &gl.bokeh_dof.program_tile, &gl.bokeh_dof.program_gather, &gl.bokeh_dof.program_composite};
     for (GLuint* prog : programs) {
         if (*prog) glDeleteProgram(*prog);
         *prog = 0;
@@ -622,7 +648,6 @@ void initialize_programs() {
     gl.bokeh_dof.program_prepass    = setup(STR_LIT("DOF prepass"),    dof_prepass_frag,    dof_prepass_frag_size);
     gl.bokeh_dof.program_tile       = setup(STR_LIT("DOF tile"),       dof_tile_frag,       dof_tile_frag_size);
     gl.bokeh_dof.program_gather     = setup(STR_LIT("DOF gather"),     dof_gather_frag,     dof_gather_frag_size);
-    gl.bokeh_dof.program_postfilter = setup(STR_LIT("DOF postfilter"), dof_postfilter_frag, dof_postfilter_frag_size);
     gl.bokeh_dof.program_composite  = setup(STR_LIT("DOF composite"),  dof_composite_frag,  dof_composite_frag_size);
 }
 
@@ -631,22 +656,30 @@ void initialize_targets(int32_t width, int32_t height) {
     const int half_h = MAX(height / 2, 1);
     const int tile_w = DIV_UP(half_w, TILE);
     const int tile_h = DIV_UP(half_h, TILE);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 2; ++i) {
         ensure_texture_2d(&gl.bokeh_dof.tex_half[i], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
     }
-    ensure_texture_2d(&gl.bokeh_dof.tex_tile[0], GL_RG16F, tile_w, tile_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    // tex_tile[0] ends up holding the near-field reach, which the gather interpolates
+    ensure_texture_2d(&gl.bokeh_dof.tex_tile[0], GL_RG16F, tile_w, tile_h, GL_RG, GL_FLOAT, GL_LINEAR, GL_LINEAR);
     ensure_texture_2d(&gl.bokeh_dof.tex_tile[1], GL_RG16F, tile_w, tile_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    for (int i = 0; i < 3; ++i) {
+        ensure_texture_2d_mipmapped(&gl.bokeh_dof.tex_src[i], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT);
+    }
+    gl.bokeh_dof.src_width  = half_w;
+    gl.bokeh_dof.src_height = half_h;
 }
 
 void shutdown() {
-    GLuint* programs[] = {&gl.bokeh_dof.program_prepass, &gl.bokeh_dof.program_tile, &gl.bokeh_dof.program_gather, &gl.bokeh_dof.program_postfilter, &gl.bokeh_dof.program_composite};
+    GLuint* programs[] = {&gl.bokeh_dof.program_prepass, &gl.bokeh_dof.program_tile, &gl.bokeh_dof.program_gather, &gl.bokeh_dof.program_composite};
     for (GLuint* prog : programs) {
         if (*prog) glDeleteProgram(*prog);
         *prog = 0;
     }
-    if (gl.bokeh_dof.tex_half[0]) glDeleteTextures(4, gl.bokeh_dof.tex_half);
+    if (gl.bokeh_dof.tex_half[0]) glDeleteTextures(2, gl.bokeh_dof.tex_half);
     if (gl.bokeh_dof.tex_tile[0]) glDeleteTextures(2, gl.bokeh_dof.tex_tile);
-    for (int i = 0; i < 4; ++i) gl.bokeh_dof.tex_half[i] = 0;
+    if (gl.bokeh_dof.tex_src[0]) glDeleteTextures(3, gl.bokeh_dof.tex_src);
+    for (int i = 0; i < 3; ++i) gl.bokeh_dof.tex_src[i] = 0;
+    for (int i = 0; i < 2; ++i) gl.bokeh_dof.tex_half[i] = 0;
     gl.bokeh_dof.tex_tile[0] = gl.bokeh_dof.tex_tile[1] = 0;
 }
 }  // namespace dof
@@ -1391,7 +1424,7 @@ void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec
 
 // Depth of field from color_tex into the currently bound color target.
 // aperture is the CoC of an object at infinity as a fraction of the viewport height (0.01 = 1% of the view height).
-void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, float aperture, int frame) {
+void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, float aperture) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
 
@@ -1411,14 +1444,29 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
 
     glBindVertexArray(gl.vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.bokeh_dof.fbo);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
     PUSH_GPU_SECTION("DOF prepass")
     {
+        // Half-res colour + CoC, and the mipmapped sources the gather integrates over
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_half_dof, 0);
+        for (int i = 0; i < 3; ++i) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1 + i, GL_TEXTURE_2D, gl.bokeh_dof.tex_src[i], 0);
+        }
+        const GLenum buffers[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+        glDrawBuffers(4, buffers);
+
+        // The mip chains also average texels outside the viewport (when the targets are larger than it): those hold
+        // nothing that spreads
+        const GLfloat zero[4] = {0, 0, 0, 0};
+        glViewport(0, 0, gl.bokeh_dof.src_width, gl.bokeh_dof.src_height);
+        glScissor(0, 0, gl.bokeh_dof.src_width, gl.bokeh_dof.src_height);
+        for (int i = 1; i < 4; ++i) {
+            glClearBufferfv(GL_COLOR, i, zero);
+        }
+
         const GLuint program = gl.bokeh_dof.program_prepass;
         glViewport(0, 0, half_w, half_h);
         glScissor(0, 0, half_w, half_h);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_half_dof, 0);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, color_tex);
@@ -1430,11 +1478,25 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glUniform1f(glGetUniformLocation(program, "u_aperture_px"), aperture_px * 0.5f);   // half-res px
         glUniform1f(glGetUniformLocation(program, "u_max_coc_px"), max_coc_px * 0.5f);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        for (int i = 0; i < 3; ++i) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1 + i, GL_TEXTURE_2D, 0, 0);
+        }
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+        glActiveTexture(GL_TEXTURE0);
+        for (int i = 0; i < 3; ++i) {
+            glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_src[i]);
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
     }
     POP_GPU_SECTION()
 
     PUSH_GPU_SECTION("DOF tiles")
     {
+        // tex_tile[0]: (max near |CoC|, max far CoC) per tile
+        // tex_tile[1]: (gather radius, near-field reach) after the reach-aware dilation
+        // tex_tile[0]: 3x3 max of the near-field reach
         const GLuint program = gl.bokeh_dof.program_tile;
         const GLint loc_dilate = glGetUniformLocation(program, "u_dilate");
         // Foreground blur reaches up to the CoC clamp; the dilation has to search that far (in tiles)
@@ -1446,15 +1508,14 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glUniform1i(glGetUniformLocation(program, "u_reach_tiles"), reach_tiles);
         glActiveTexture(GL_TEXTURE0);
 
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[0], 0);
-        glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
-        glUniform1i(loc_dilate, 0);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[1], 0);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[0]);
-        glUniform1i(loc_dilate, 1);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        const GLuint dst[3] = {gl.bokeh_dof.tex_tile[0], gl.bokeh_dof.tex_tile[1], gl.bokeh_dof.tex_tile[0]};
+        const GLuint src[3] = {gl.rt.tex_half_dof,       gl.bokeh_dof.tex_tile[0], gl.bokeh_dof.tex_tile[1]};
+        for (int pass = 0; pass < 3; ++pass) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst[pass], 0);
+            glBindTexture(GL_TEXTURE_2D, src[pass]);
+            glUniform1i(loc_dilate, pass);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
     }
     POP_GPU_SECTION()
 
@@ -1465,37 +1526,19 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
 
         // Far and near layers are written to separate targets so the composite applies the near coverage once
         const GLenum two_buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-        glDrawBuffers(2, two_buffers);
-
-        GLuint program = gl.bokeh_dof.program_gather;
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[0], 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1], 0);
-        glUseProgram(program);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[1]);
-        glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
-        glUniform1i(glGetUniformLocation(program, "u_tex_tile"), 1);
-        glUniform1i(glGetUniformLocation(program, "u_frame"), frame);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawBuffers(2, two_buffers);
 
-        program = gl.bokeh_dof.program_postfilter;
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[2], 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[3], 0);
+        const GLuint program = gl.bokeh_dof.program_gather;
         glUseProgram(program);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[0]);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1]);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
-        glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[1]);
-        glUniform1i(glGetUniformLocation(program, "u_tex_far"), 0);
-        glUniform1i(glGetUniformLocation(program, "u_tex_near"), 1);
-        glUniform1i(glGetUniformLocation(program, "u_tex_coc"), 2);
-        glUniform1i(glGetUniformLocation(program, "u_tex_tile"), 3);
+        const GLuint textures[6] = {gl.rt.tex_half_dof, gl.bokeh_dof.tex_tile[1], gl.bokeh_dof.tex_tile[0], gl.bokeh_dof.tex_src[0], gl.bokeh_dof.tex_src[1], gl.bokeh_dof.tex_src[2]};
+        const char* names[6] = {"u_tex", "u_tex_tile", "u_tex_tile_near", "u_tex_near_src", "u_tex_far_src", "u_tex_coc_src"};
+        for (int i = 0; i < 6; ++i) {
+            glActiveTexture(GL_TEXTURE0 + i);
+            glBindTexture(GL_TEXTURE_2D, textures[i]);
+            glUniform1i(glGetUniformLocation(program, names[i]), i);
+        }
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
@@ -1513,9 +1556,9 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[2]);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[0]);
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[3]);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1]);
         glUniform1i(glGetUniformLocation(program, "u_tex_color"), 0);
         glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 1);
         glUniform1i(glGetUniformLocation(program, "u_tex_far"), 2);
@@ -1974,7 +2017,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
 
-    // Rotates the SSAO / DOF sample patterns only when TAA is there to integrate them; otherwise the image is stable.
+    // Rotates the SSAO sample pattern only when TAA is there to integrate it; otherwise the image is stable.
     static int frame_index = 0;
     frame_index = (frame_index + 1) & 1023;
     const int noise_frame = do_taa ? frame_index : 0;
@@ -2092,7 +2135,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         swap_target();
         glDrawBuffer(dst_buffer);
         PUSH_GPU_SECTION("DOF")
-        apply_dof(gl.linear_depth.texture, src_texture, settings.dof.focus_depth, settings.dof.aperture, noise_frame);
+        apply_dof(gl.linear_depth.texture, src_texture, settings.dof.focus_depth, settings.dof.aperture);
         POP_GPU_SECTION()
     }
 

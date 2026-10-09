@@ -265,7 +265,6 @@ set(SHADER_FILES
     src/shaders/dof/dof_prepass.frag
     src/shaders/dof/dof_tile.frag
     src/shaders/dof/dof_gather.frag
-    src/shaders/dof/dof_postfilter.frag
     src/shaders/dof/dof_composite.frag
     src/shaders/velocity/blit_velocity.frag
     src/shaders/velocity/blit_velocity_dilate.frag
