@@ -2153,6 +2153,10 @@ static void init_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
+    // A system loaded under a representation that colours by a field: the field's values were of the
+    // old one, whatever the frame says
+    surface_field_invalidate(&rep->electronic_structure.field_vol);
+
     flag_representation_as_dirty(rep);
 }
 
@@ -2180,6 +2184,11 @@ Representation* clone_representation(ApplicationState* state, const Representati
     Representation* clone = md_array_last(state->representation.reps);
     clone->md_rep = {0};
     clone->atom_mask = {0};
+    // The volumes' textures and buffers are the original's: the clone evaluates its own, and must
+    // neither write into nor free those (each representation frees its own on removal)
+    clone->electronic_structure.density_vol.tex_id = 0;
+    clone->electronic_structure.color_vol.tex_id   = 0;
+    clone->electronic_structure.field_vol          = SurfaceFieldVolume{};
     init_representation(state, clone);
     return clone;
 }
@@ -3320,13 +3329,15 @@ static bool volume_read_values(float* dst, ApplicationState* state, const Volume
     return true;
 }
 
-// The field the isosurfaces are coloured by, on the grid of the density volume and around the
-// surfaces drawn from it. The VALUES depend on the field and the geometry (the frame, which the
-// volume hash holds) and are kept while only the isovalues change: a new isovalue evaluates the
-// voxels it adds to the band and nothing else.
+// The field the isosurfaces are coloured by, over the box of the density volume and around the
+// surfaces drawn from it (surface_field.h). The VALUES depend on the field and the geometry - the
+// frame - and on nothing else the representation chooses, so they are kept while the surfaces
+// change: a new isovalue, orbital, density or resolution evaluates only what its band adds, and on
+// the GPU, which evaluates the whole field once, nothing at all.
 static void electronic_structure_field_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    if (!surface_field_available(es.field_kind, state->mold.sys)) {
+    const md_system_t& sys = state->mold.sys;
+    if (!surface_field_available(es.field_kind, sys)) {
         surface_field_free(&es.field_vol);
         return;
     }
@@ -3334,8 +3345,12 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);
 
-    const uint64_t source_hash = md_hash64(&es.field_kind, sizeof(es.field_kind), es.vol_hash);
-    const uint64_t band_hash   = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
+    // The values are of the field at this frame; the surfaces are what the density volume holds
+    // (vol_hash names it) cut at the isovalues
+    uint64_t source_hash = md_hash64(&es.field_kind, sizeof(es.field_kind), 0);
+    source_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source_hash);
+    uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
+    band_hash = md_hash64_combine(band_hash, es.vol_hash);
     if (es.field_vol.tex_id && source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
         return;
     }
@@ -3350,11 +3365,34 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
         return;
     }
 
+    SurfaceFieldDesc desc = {};
+    desc.kind        = es.field_kind;
+    desc.sys         = &sys;
+    desc.state       = &state->mold.state;
+    desc.grid        = &es.grid;
+    desc.density     = density;
+    desc.iso_values  = iso.values;
+    desc.num_iso     = iso.count;
+    desc.source_hash = source_hash;
+    desc.band_hash   = band_hash;
+    if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+        // The QM nuclei and basis where the density was drawn: the current frame, as for the density
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
+    }
+#if MD_ENABLE_GPU
+    if (state->gpu_stream && state->gpu_volume) {
+        desc.gpu_stream  = state->gpu_stream;
+        desc.gpu_scratch = state->gpu_volume;
+        desc.gpu_scratch_dim[0] = desc.gpu_scratch_dim[1] = desc.gpu_scratch_dim[2] = GPU_VOLUME_DIM;
+    }
+#endif
+
     const md_tick_t t0 = md_tick_now();
-    if (surface_field_update(&es.field_vol, es.field_kind, state->mold.sys, state->mold.state, es.grid, density, iso.values, iso.count, source_hash, band_hash)) {
+    if (surface_field_update(&es.field_vol, desc)) {
         color_scale_update_range(&es.field_map, surface_field_span(es.field_vol));
         const SurfaceFieldVolume& fv = es.field_vol;
-        MD_LOG_DEBUG("Surface field: %zu of %zu voxels evaluated, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g", fv.num_evaluated, num_voxels,
+        MD_LOG_DEBUG("Surface field: %zu of %zu voxels (%dx%dx%d) evaluated%s, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g",
+                     fv.num_evaluated, fv.num_voxels, fv.grid.dim[0], fv.grid.dim[1], fv.grid.dim[2], fv.on_gpu ? " on the GPU" : "",
                      md_tick_to_milliseconds(md_tick_now() - t0), fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
     }
 }

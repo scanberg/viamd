@@ -94,7 +94,7 @@ struct IsoRenderDesc {
     struct {
         uint32_t density_volume = 0;
         uint32_t color_volume   = 0;    // optional, see iso.use_color_volume
-        uint32_t field_volume   = 0;    // same grid as density_volume, see iso.use_field
+        uint32_t field_volume   = 0;    // the box of density_volume at any resolution, see iso.use_field
         uint32_t field_colormap = 0;    // 2D, N x 1
     } texture;
 

@@ -984,6 +984,10 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
+// Edge length of the device evaluation scratch (ApplicationState::gpu_volume), in voxels: the largest
+// grid any evaluation on the device can write, which is the largest compute_dim makes.
+inline constexpr uint32_t GPU_VOLUME_DIM = 512;
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -992,7 +996,7 @@ struct ApplicationState {
     md_gpu_device_t gpu_device = nullptr;
 
     // Evaluation scratch. Device scoped and deliberately NOT per dataset: the volume is a fixed
-    // 512^3 R32F texture - half a gigabyte - and every evaluation reads it straight back into its
+    // GPU_VOLUME_DIM^3 R32F texture - half a gigabyte - and every evaluation reads it straight back into its
     // own destination texture, so one is enough no matter how many datasets or representations are
     // asking. The coefficient buffer is grown to fit the widest basis loaded so far, for the same
     // reason. Whoever evaluates borrows these; nobody else frees them.
