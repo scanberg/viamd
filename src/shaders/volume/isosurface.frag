@@ -1,6 +1,7 @@
 #version 410 core
 
-// Isosurface raycaster: exact intersection of the ray with the trilinear field.
+// Isosurface raycaster, exact mode: exact intersection of the ray with the trilinear field. The fast mode,
+// one filtered sample per voxel, is isosurface_fast.frag; both share the uniforms below.
 //
 // Inside a cell of the grid (the cube between eight voxel centres) the trilinearly interpolated field
 // along a ray is a cubic in the ray parameter. The ray is walked cell by cell (3D DDA), and in a cell whose
@@ -225,19 +226,21 @@ int deriv_roots(vec4 c, float len, out float r0, out float r1) {
 }
 
 // The crossing of g = cubic - v on [l, r], where g is monotone and its ends lie on different sides of v
-// (or one is on it). Newton, kept inside the bracket by bisection.
+// (or one is on it). Newton from the secant through the ends, kept inside the bracket by bisection.
 float solve_crossing(vec4 c, float v, float l, float r, float gl, float gr) {
     if (gl == 0.0) return l;
     if (gr == 0.0) return r;
     if ((gl < 0.0) == (gr < 0.0)) return l;   // the change is at the start of the piece (it began on v)
-    float s = 0.5 * (l + r);
+    float s = clamp(l + (r - l) * gl / (gl - gr), l, r);
     for (int i = 0; i < 8; ++i) {
         float g = cubic_eval(c, s) - v;
         if (g == 0.0) return s;
         if ((g < 0.0) == (gl < 0.0)) { l = s; gl = g; } else { r = s; gr = g; }
         float dg = cubic_deriv(c, s);
         float sn = (dg != 0.0) ? s - g / dg : 0.5 * (l + r);
-        s = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+        sn = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+        if (abs(sn - s) < 1e-5) return sn;     // voxels
+        s = sn;
     }
     return s;
 }
@@ -383,18 +386,21 @@ void hit(float t, int i) {
 
 // The part [tc, te] of the ray inside cell c, whose corners are lo / hi
 void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
+    vec4  mn4  = min(lo, hi);
+    vec4  mx4  = max(lo, hi);
+    bool  cand = range_holds_iso(min(min(mn4.x, mn4.y), min(mn4.z, mn4.w)), max(max(mx4.x, mx4.y), max(mx4.z, mx4.w)));
+    if (!cand && g_known) return;
+
     vec3  a   = (g_o + g_d * tc) - vec3(c);     // local coordinates where the ray enters the cell part
     float len = (te - tc) * g_dlen;            // its length in voxels
 
     if (!g_known) {
-        g_inside = membership(cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0));
+        // In a cell whose range holds no isovalue every corner is on the side of every surface the ray is on
+        g_inside = membership(cand ? cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0) : lo.x);
         g_tau    = tau_inside(g_inside);
         g_known  = true;
+        if (!cand) return;
     }
-
-    float fmin = min(min(min(lo.x, lo.y), min(lo.z, lo.w)), min(min(hi.x, hi.y), min(hi.z, hi.w)));
-    float fmax = max(max(max(lo.x, lo.y), max(lo.z, lo.w)), max(max(hi.x, hi.y), max(hi.z, hi.w)));
-    if (!range_holds_iso(fmin, fmax)) return;
 
     vec4 cf = cubic_coeffs(lo, hi, a, g_dir);
 

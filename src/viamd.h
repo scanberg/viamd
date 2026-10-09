@@ -1393,6 +1393,7 @@ struct ApplicationState {
     // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
         bool keep_representations = false;
+        bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
         float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;
 

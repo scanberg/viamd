@@ -914,6 +914,7 @@ struct DensityVolume : viamd::EventHandler {
                             .count = iso.count,
                             .values = iso.values,
                             .colors = iso.colors,
+                            .exact = state->settings.exact_isosurfaces,
                         },
                         // Lit like the compose pass lights the reference structures: env = background / 4
                         .shading = {

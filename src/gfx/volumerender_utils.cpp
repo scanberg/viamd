@@ -178,6 +178,20 @@ enum IsoVariant {
     IsoVariant_Count
 };
 
+static const char* iso_variant_defines[IsoVariant_Count] = {
+    "",
+    "#define USE_COLOR_VOLUME",
+    "#define USE_FIELD",
+};
+
+// How the rays find the surfaces: isosurface_fast.frag samples once per voxel, isosurface.frag intersects
+// every cell exactly. Both read the same IsoUniforms.
+enum IsoMode {
+    IsoMode_Fast,
+    IsoMode_Exact,
+    IsoMode_Count
+};
+
 struct IsoProgram {
     GLuint program = 0;
     GLint  loc_iso_values = -1;
@@ -202,7 +216,7 @@ struct IsoUniformData {
     mat4_t grad_offsets;
 
     vec3_t clip_min;
-    float  block_size;
+    float  block_size;      // exact: voxels per block side of the block grid; fast: samples per voxel
     vec3_t clip_max;
     float  use_depth;
 
@@ -242,7 +256,8 @@ struct BlockGrid {
 };
 
 static struct {
-    IsoProgram prog[IsoVariant_Count];
+    IsoProgram prog[IsoMode_Count][IsoVariant_Count];          // compiled on first use
+    bool       prog_failed[IsoMode_Count][IsoVariant_Count];
     GLuint ubo = 0;
     GLuint fbo = 0;
     GLuint vao = 0;     // empty: full screen triangle and proxy boxes both come from gl_VertexID
@@ -278,8 +293,8 @@ static struct {
     } proxy;
 } iso;
 
-static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
-    GLuint f_shader = gl::compile_shader_from_source({(const char*)isosurface_frag, isosurface_frag_size}, GL_FRAGMENT_SHADER, defines);
+static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_t defines) {
+    GLuint f_shader = gl::compile_shader_from_source(source, GL_FRAGMENT_SHADER, defines);
     if (!f_shader) {
         MD_LOG_ERROR("Isosurface shader compilation failed (" STR_FMT "), keeping the previous program", STR_ARG(defines));
         return;
@@ -305,15 +320,43 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
+static void iso_program_compile(int mode, int variant, GLuint v_shader) {
+    const str_t source = (mode == IsoMode_Exact) ? str_t{(const char*)isosurface_frag,      isosurface_frag_size}
+                                                 : str_t{(const char*)isosurface_fast_frag, isosurface_fast_frag_size};
+    iso_program_setup(&iso.prog[mode][variant], v_shader, source, str_from_cstr(iso_variant_defines[variant]));
+    iso.prog_failed[mode][variant] = iso.prog[mode][variant].program == 0;
+}
+
+// The program of a mode and variant, compiled the first time it is asked for; NULL if it does not compile
+static const IsoProgram* iso_program_get(int mode, int variant) {
+    IsoProgram& p = iso.prog[mode][variant];
+    if (!p.program && !iso.prog_failed[mode][variant]) {
+        GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+        if (v_shader) {
+            iso_program_compile(mode, variant, v_shader);
+            glDeleteShader(v_shader);
+        } else {
+            iso.prog_failed[mode][variant] = true;
+        }
+    }
+    return p.program ? &p : NULL;
+}
+
 static void iso_initialize() {
     GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
     if (!v_shader) {
         MD_LOG_ERROR("Isosurface vertex shader compilation failed");
         return;
     }
-    iso_program_setup(&iso.prog[IsoVariant_Uniform],     v_shader, STR_LIT(""));
-    iso_program_setup(&iso.prog[IsoVariant_ColorVolume], v_shader, STR_LIT("#define USE_COLOR_VOLUME"));
-    iso_program_setup(&iso.prog[IsoVariant_Field],       v_shader, STR_LIT("#define USE_FIELD"));
+    // Programs already made are rebuilt (a reinitialize picks up shader changes); the others wait until used
+    for (int m = 0; m < IsoMode_Count; ++m) {
+        for (int v = 0; v < IsoVariant_Count; ++v) {
+            iso.prog_failed[m][v] = false;
+            if (iso.prog[m][v].program) {
+                iso_program_compile(m, v, v_shader);
+            }
+        }
+    }
 
     {
         GLuint f_shader = gl::compile_shader_from_source({(const char*)block_minmax_frag, block_minmax_frag_size}, GL_FRAGMENT_SHADER);
@@ -687,12 +730,20 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     // A field takes the place of the colour volume: the two are alternatives, never both
     const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
     const bool use_color_volume = !use_field && desc.iso.use_color_volume && desc.texture.color_volume;
-    const IsoProgram& p = iso.prog[use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform];
+    const int variant = use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform;
+    int mode = desc.iso.exact ? IsoMode_Exact : IsoMode_Fast;
+    const IsoProgram* pp = iso_program_get(mode, variant);
+    if (!pp) {
+        // The other mode rather than nothing
+        mode = (mode == IsoMode_Exact) ? IsoMode_Fast : IsoMode_Exact;
+        pp = iso_program_get(mode, variant);
+    }
 
     int dim[3] = {};
-    if (!p.program || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
+    if (!pp || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
         return false;
     }
+    const IsoProgram& p = *pp;
 
     float  values[ISO_MAX_COUNT] = {};
     vec4_t colors[ISO_MAX_COUNT] = {};
@@ -754,6 +805,9 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     }
     data.use_proxy  = use_proxy ? 1.0f : 0.0f;
     data.use_blocks = grid ? 1.0f : 0.0f;
+    if (mode == IsoMode_Fast) {
+        data.block_size = 1.0f;     // samples per voxel
+    }
 
     // The caller's framebuffer is the target when there is no colour texture
     if (!desc.render_target.color) {

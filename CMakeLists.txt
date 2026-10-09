@@ -273,6 +273,7 @@ set(SHADER_FILES
     src/shaders/velocity/blit_neighbormax.frag
     src/shaders/volume/dvr.frag
     src/shaders/volume/isosurface.frag
+    src/shaders/volume/isosurface_fast.frag
     src/shaders/volume/block_minmax.frag
     src/shaders/volume/block_proxy.vert
     src/shaders/volume/block_proxy.frag

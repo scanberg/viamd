@@ -70,8 +70,13 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
 // ISOSURFACES
 // Up to 8 isovalues, each a surface with its own colour and an optional optical density (tau): the
 // absorption accumulated while the ray is inside that surface. The surfaces are those of the trilinearly
-// interpolated field, intersected exactly (cell by cell), so none is missed however thin or grazing. A point is inside the surface of value v
-// when the density d >= v (v >= 0) or d <= v (v < 0).
+// interpolated field. A point is inside the surface of value v when the density d >= v (v >= 0) or d <= v
+// (v < 0). Two ways to find them along a ray (iso.exact):
+//  - fast: one filtered sample per voxel, crossings refined between samples. A part of a surface thinner
+//    than about a voxel along the ray can be missed, and up close or at grazing angles the sampling can
+//    show. A finer volume makes both smaller.
+//  - exact: every cell the ray passes through is intersected exactly, so no part of a surface is missed
+//    and where a crossing lies does not depend on any sampling. Roughly twice the cost of fast.
 //
 // The output is linear, premultiplied radiance with coverage in alpha, blended over the target with
 // (ONE, ONE_MINUS_SRC_ALPHA). It is meant for an HDR target (RGBA16F) that is composited over the
@@ -112,6 +117,7 @@ struct IsoRenderDesc {
         const float* optical_densities = NULL;  // optional, 0 per surface when not given
         bool use_color_volume = false;          // the surfaces take their colour from the colour volume instead of iso.colors
         bool use_field = false;                 // the surfaces are coloured by the field volume through the field colormap, over field.range_*
+        bool exact = false;                     // exact intersection instead of one sample per voxel, see above
     } iso;
 
     // The range of the field the colour map spans, when iso.use_field
