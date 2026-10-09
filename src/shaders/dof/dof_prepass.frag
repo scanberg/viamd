@@ -1,12 +1,13 @@
 #version 410 core
 
-// Part of the half-res depth of field: prepass -> tiles -> gather -> composite.
+// Part of the half-res depth of field: prepass -> tiles -> gather (far) / near bands -> fill -> composite.
 //
 // out_frag: half-res colour + signed CoC. The CoC kept is the one of the nearest of the 4 children so foreground
 //           silhouettes (sharp or blurred) win over what is behind them (tile classification, gather centre).
 //
-// The other outputs are the sources the gather integrates over, mipmapped after this pass. Each is the box average of
-// a per full-res pixel term, so a silhouette moving by a fraction of a pixel (TAA jitter) changes them by a fraction:
+// The other outputs are the sources of the far gather (mipmapped after this pass) and of the near bands. Each is the
+// box average of a per full-res pixel term, so a silhouette moving by a fraction of a pixel (TAA jitter) changes them
+// by a fraction:
 //   out_near = (rgb, 1) * e    e = m / coc^2: the energy density of a foreground pixel spread over its CoC disk,
 //                              m = how much the pixel belongs to the blurred foreground (in front of the focus plane)
 //   out_far  = (rgb, 1) * k    k = CoC behind the focus plane: how far the pixel spreads. Weighting by it keeps sharp

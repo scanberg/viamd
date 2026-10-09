@@ -1,12 +1,12 @@
 #version 410 core
 
-// Part of the half-res depth of field: prepass -> tiles -> gather -> composite.
+// Part of the half-res depth of field: prepass -> tiles -> gather (far) / near bands -> fill -> composite.
 // Full-res composite. The far layer replaces the sharp image according to this pixel's own full-res CoC (so blurred
 // background does not leak onto sharp edges at half-res granularity); the premultiplied near layer goes on top once.
 uniform sampler2D u_tex_color;   // full-res sharp HDR
 uniform sampler2D u_tex_linear_depth;
-uniform sampler2D u_tex_far;     // half-res far layer (bilinear)
-uniform sampler2D u_tex_near;    // half-res near layer, premultiplied (bilinear)
+uniform sampler2D u_tex_far;     // half-res far layer, filled behind the foreground (bilinear), see dof_fill
+uniform sampler2D u_tex_near;    // half-res near layer, premultiplied and unnormalised (bilinear), see dof_near
 uniform float u_focus;
 uniform float u_aperture_px;     // full-res px
 uniform float u_max_coc_px;      // full-res px
@@ -34,6 +34,10 @@ void main() {
     vec2 uv = (vec2(q) + 0.5) * 0.5 / vec2(textureSize(u_tex_far, 0));
     vec3 far  = texture(u_tex_far, uv).rgb;
     vec4 near = texture(u_tex_near, uv);
+    // The near field holds the sum of colour * coverage and of coverage over all bands; overlapping foregrounds can
+    // cover a pixel more than once
+    float near_a = min(near.a, 1.0);
+    near = vec4(near.rgb * (near_a / max(near.a, 1.0e-6)), near_a);
     float blur = smoothstep(1.0, 3.0, abs(coc));
     if (blur == 0.0 && near.a == 0.0) {
         out_frag = vec4(sharp_hdr, 1.0);   // exactly the input where nothing is blurred
