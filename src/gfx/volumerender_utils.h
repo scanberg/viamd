@@ -69,7 +69,8 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
 
 // ISOSURFACES
 // Up to 8 isovalues, each a surface with its own colour and an optional optical density (tau): the
-// absorption accumulated while the ray is inside that surface. A point is inside the surface of value v
+// absorption accumulated while the ray is inside that surface. The surfaces are those of the trilinearly
+// interpolated field, intersected exactly (cell by cell), so none is missed however thin or grazing. A point is inside the surface of value v
 // when the density d >= v (v >= 0) or d <= v (v < 0).
 //
 // The output is linear, premultiplied radiance with coverage in alpha, blended over the target with

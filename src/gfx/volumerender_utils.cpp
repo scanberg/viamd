@@ -170,7 +170,6 @@ static constexpr int   ISO_MAX_COUNT = 8;
 // Optical densities are given per 1/150 world unit: the extinction per world unit inside a surface is
 // tau * ISO_OPTICAL_SCALE. Kept from the previous raycaster so existing settings look the same.
 static constexpr float ISO_OPTICAL_SCALE = 150.0f;
-static constexpr float ISO_SAMPLES_PER_VOXEL = 1.0f;
 
 enum IsoVariant {
     IsoVariant_Uniform,
@@ -192,6 +191,7 @@ struct IsoProgram {
     GLint  loc_tex_field_colormap = -1;
     GLint  loc_tex_entry = -1;
     GLint  loc_tex_exit = -1;
+    GLint  loc_tex_minmax = -1;
     GLint  block_index = -1;
 };
 
@@ -202,7 +202,7 @@ struct IsoUniformData {
     mat4_t grad_offsets;
 
     vec3_t clip_min;
-    float  samples_per_voxel;
+    float  block_size;
     vec3_t clip_max;
     float  use_depth;
 
@@ -219,8 +219,8 @@ struct IsoUniformData {
 
     float  use_proxy;
     float  entry_from_near;
-    float  pad0;
-    float  pad1;
+    float  use_blocks;
+    float  pad;
 };
 static_assert(sizeof(IsoUniformData) == 3 * 64 + 7 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
@@ -301,6 +301,7 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
     p->loc_tex_field_colormap = glGetUniformLocation(prog, "u_tex_field_colormap");
     p->loc_tex_entry          = glGetUniformLocation(prog, "u_tex_entry");
     p->loc_tex_exit           = glGetUniformLocation(prog, "u_tex_exit");
+    p->loc_tex_minmax         = glGetUniformLocation(prog, "u_tex_minmax");
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
@@ -725,7 +726,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.model_to_view     = model_to_view;
     data.grad_offsets      = view_to_model * mat4_scale(h, h, h);
     data.clip_min          = desc.clip_volume.min;
-    data.samples_per_voxel = ISO_SAMPLES_PER_VOXEL;
+    data.block_size        = 1.0f;
     data.clip_max          = desc.clip_volume.max;
     data.use_depth         = desc.render_target.depth ? 1.0f : 0.0f;
     data.env_radiance      = desc.shading.env_radiance;
@@ -742,15 +743,17 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     const SavedState saved = save_state();
 
     PUSH_GPU_SECTION("ISOSURFACES")
-    // Empty space: the blocks that can hold one of these surfaces, drawn as boxes for the span of every ray
+    // Empty space: the blocks that can hold one of these surfaces, drawn as boxes for the span of every ray,
+    // and walked by the raycaster to cross the others in one step
     bool use_proxy = false;
-    if (count > 0) {
-        if (const BlockGrid* g = block_grid_update(desc.texture.density_volume, dim)) {
-            use_proxy = proxy_render(*g, model_to_clip, desc.clip_volume.min, desc.clip_volume.max, values, tau, count,
-                                     (int)desc.render_target.width, (int)desc.render_target.height);
-        }
+    const BlockGrid* grid = count > 0 ? block_grid_update(desc.texture.density_volume, dim) : NULL;
+    if (grid) {
+        use_proxy = proxy_render(*grid, model_to_clip, desc.clip_volume.min, desc.clip_volume.max, values, tau, count,
+                                 (int)desc.render_target.width, (int)desc.render_target.height);
+        data.block_size = (float)grid->block_size;
     }
-    data.use_proxy = use_proxy ? 1.0f : 0.0f;
+    data.use_proxy  = use_proxy ? 1.0f : 0.0f;
+    data.use_blocks = grid ? 1.0f : 0.0f;
 
     // The caller's framebuffer is the target when there is no colour texture
     if (!desc.render_target.color) {
@@ -788,6 +791,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_entry : 0);
         glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_exit : 0);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_3D, grid ? grid->minmax : 0);
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(p.program);
@@ -799,6 +804,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         if (p.loc_tex_field_colormap != -1) glUniform1i(p.loc_tex_field_colormap, 4);
         glUniform1i(p.loc_tex_entry, 5);
         glUniform1i(p.loc_tex_exit,  6);
+        glUniform1i(p.loc_tex_minmax, 7);
         glUniform1fv(p.loc_iso_values, count, values);
         glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
         glUniform1fv(p.loc_iso_tau,    count, tau);
@@ -824,6 +830,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_3D, 0);
         glActiveTexture(GL_TEXTURE0);
     }
     POP_GPU_SECTION()

@@ -1,26 +1,38 @@
 #version 410 core
 
-// Isosurface raycaster.
+// Isosurface raycaster: exact intersection of the ray with the trilinear field.
 //
-// Marches the density volume at one sample per voxel along the ray, finds where the ray crosses each
-// isovalue and refines the crossing on the trilinear field, so the position of a crossing does not depend
-// on where the samples happen to fall (no jitter, no temporal accumulation needed). What is not found is
-// a surface the ray enters and leaves within one step: thinner than a voxel along the ray, which happens
-// at grazing silhouettes. Every crossing is shaded with the model and light of the deferred compose pass,
-// and the result is written as premultiplied linear radiance + coverage, to be blended over the HDR
-// scene before tone mapping.
+// Inside a cell of the grid (the cube between eight voxel centres) the trilinearly interpolated field
+// along a ray is a cubic in the ray parameter. The ray is walked cell by cell (3D DDA), and in a cell whose
+// corner values bracket an isovalue the cubic is split where its derivative vanishes into pieces that are
+// monotone, and each piece whose ends lie on different sides of the isovalue holds exactly one crossing,
+// found by safeguarded Newton iteration on the cubic. No crossing of the trilinear surface is missed,
+// however thin it is along the ray or however grazing the ray, and where a crossing is found does not
+// depend on any sampling: no step length, no jitter, no temporal accumulation.
 //
-// Membership: a point is INSIDE isosurface i when the density is on the far side of its value from
-// zero, d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that
-// surface, and the optical densities of the surfaces enclosing the ray attenuate it in between.
+// Empty space: the block min/max grid (block_minmax.frag) is walked first. A block whose range holds no
+// isovalue holds no surface and is crossed in one step; inside it the ray is on a known side of every
+// surface, so its absorption is added analytically. Cells are only visited inside blocks that can hold a
+// surface. When u_use_proxy is set, the block proxy (block_proxy.vert) has also narrowed every ray to the
+// span that meets such a block, and discarded the pixels whose ray meets none.
 //
-// Empty space: when u_use_proxy is set, the nearest and farthest depths of the blocks that can hold a
-// surface (block_proxy.vert) narrow the ray to the part that can see one, and pixels whose ray meets no
-// such block are discarded before any sampling.
+// Membership: a point is INSIDE isosurface i when the density is on the far side of its value from zero,
+// d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that surface,
+// and the optical densities of the surfaces enclosing the ray attenuate it in between.
+//
+// Every crossing is shaded with the model and light of the deferred compose pass, and the result is
+// written as premultiplied linear radiance + coverage, to be blended over the HDR scene before tone
+// mapping.
+//
+// Coordinates: model space is the texture space [0,1]^3 of the volume. Voxel space puts voxel centres on
+// the integers, x = p * dim - 0.5; cell c spans [c, c+1] and its corners are voxels c .. c+1, clamped to
+// the volume like CLAMP_TO_EDGE filtering does (the half voxel border cells are constant across).
 
 #ifndef MAX_ISO
 #define MAX_ISO 8
 #endif
+
+#define MAX_CELL_HITS 8
 
 layout(std140) uniform IsoUniforms {
     mat4  u_clip_to_model;      // inverse(proj * view * model)
@@ -28,7 +40,7 @@ layout(std140) uniform IsoUniforms {
     mat4  u_grad_offsets;       // columns 0-2: model space offsets for one voxel along view x, y, z
 
     vec3  u_clip_min;
-    float u_samples_per_voxel;
+    float u_block_size;         // voxels per block side of u_tex_minmax
     vec3  u_clip_max;
     float u_use_depth;
 
@@ -45,8 +57,8 @@ layout(std140) uniform IsoUniforms {
 
     float u_use_proxy;          // u_tex_entry / u_tex_exit hold the block proxy depths
     float u_entry_from_near;    // the near plane cuts the volume: rays start there, not at the proxy entry
-    float u_pad0;
-    float u_pad1;
+    float u_use_blocks;         // u_tex_minmax holds the block min/max grid
+    float u_pad;
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -58,6 +70,7 @@ uniform sampler3D u_tex_volume;
 uniform sampler2D u_tex_depth;
 uniform sampler2D u_tex_entry;  // nearest depth of the block proxy, 1 where there is none
 uniform sampler2D u_tex_exit;   // farthest depth of the block proxy, 0 where there is none
+uniform sampler3D u_tex_minmax; // RG32F, min and max over every block and its one voxel apron
 
 #if defined(USE_COLOR_VOLUME)
 uniform sampler3D u_tex_color_volume;
@@ -72,78 +85,189 @@ layout(location = 0) out vec4 out_color;
 const float PI      = 3.1415926535;
 const float INV_PI  = 1.0 / PI;
 const float T_MIN   = 0.005;    // early ray termination: below this transmittance the ray is opaque
-const int   REFINE_STEPS = 2;   // regula falsi iterations per crossing
+const float HUGE    = 1.0e30;
+const int   MAX_STEPS = 4096;   // per loop, a guard only
+
+// -----------------------------------------------------------------------------
+// The ray, shared by the functions below
+// -----------------------------------------------------------------------------
+
+ivec3 g_dim_m1;     // volume dimensions - 1
+vec3  g_p0;         // ray start, model space; p(t) = g_p0 + t * g_ray, t in [0, 1]
+vec3  g_ray;
+vec3  g_o;          // the same ray in voxel space: x(t) = g_o + t * g_d
+vec3  g_d;
+float g_dlen;       // |g_d|: voxels per unit t
+vec3  g_dir;        // g_d / g_dlen, the direction the cubics are parameterized along (in voxels)
+float g_ext_per_t;  // extinction per unit tau and unit t
+vec3  g_V;          // view space direction towards the eye
+
+// Shading state of the ray
+vec3  g_L;          // premultiplied radiance
+float g_T;          // transmittance
+float g_t_abs;      // absorption has been applied up to here
+uint  g_inside;     // membership per isosurface
+float g_tau;        // optical density of the surfaces the ray is inside of
+bool  g_known;      // membership determined yet
+
+// -----------------------------------------------------------------------------
+// Field
+// -----------------------------------------------------------------------------
 
 float sample_volume(vec3 p) {
     return texture(u_tex_volume, p).r;
+}
+
+float voxel(ivec3 c) {
+    return texelFetch(u_tex_volume, clamp(c, ivec3(0), g_dim_m1), 0).r;
+}
+
+// Corners of cell c: lo = (f000, f100, f010, f110), hi = the same at z + 1
+void fetch_corners(ivec3 c, out vec4 lo, out vec4 hi) {
+    lo = vec4(voxel(c), voxel(c + ivec3(1,0,0)), voxel(c + ivec3(0,1,0)), voxel(c + ivec3(1,1,0)));
+    hi = vec4(voxel(c + ivec3(0,0,1)), voxel(c + ivec3(1,0,1)), voxel(c + ivec3(0,1,1)), voxel(c + ivec3(1,1,1)));
+}
+
+// After stepping into cell c along one axis: the four corners on the shared face move over, the other
+// four are fetched
+void step_corners_x(int s, ivec3 c, inout vec4 lo, inout vec4 hi) {
+    if (s > 0) {
+        lo.xz = lo.yw; hi.xz = hi.yw;
+        lo.y = voxel(c + ivec3(1,0,0)); lo.w = voxel(c + ivec3(1,1,0));
+        hi.y = voxel(c + ivec3(1,0,1)); hi.w = voxel(c + ivec3(1,1,1));
+    } else {
+        lo.yw = lo.xz; hi.yw = hi.xz;
+        lo.x = voxel(c);                lo.z = voxel(c + ivec3(0,1,0));
+        hi.x = voxel(c + ivec3(0,0,1)); hi.z = voxel(c + ivec3(0,1,1));
+    }
+}
+
+void step_corners_y(int s, ivec3 c, inout vec4 lo, inout vec4 hi) {
+    if (s > 0) {
+        lo.xy = lo.zw; hi.xy = hi.zw;
+        lo.z = voxel(c + ivec3(0,1,0)); lo.w = voxel(c + ivec3(1,1,0));
+        hi.z = voxel(c + ivec3(0,1,1)); hi.w = voxel(c + ivec3(1,1,1));
+    } else {
+        lo.zw = lo.xy; hi.zw = hi.xy;
+        lo.x = voxel(c);                lo.y = voxel(c + ivec3(1,0,0));
+        hi.x = voxel(c + ivec3(0,0,1)); hi.y = voxel(c + ivec3(1,0,1));
+    }
+}
+
+void step_corners_z(int s, ivec3 c, inout vec4 lo, inout vec4 hi) {
+    if (s > 0) {
+        lo = hi;
+        hi = vec4(voxel(c + ivec3(0,0,1)), voxel(c + ivec3(1,0,1)), voxel(c + ivec3(0,1,1)), voxel(c + ivec3(1,1,1)));
+    } else {
+        hi = lo;
+        lo = vec4(voxel(c), voxel(c + ivec3(1,0,0)), voxel(c + ivec3(0,1,0)), voxel(c + ivec3(1,1,0)));
+    }
+}
+
+// The trilinear interpolant of a cell along a + s * b (local coordinates, s in voxels): c0 + c1 s + c2 s^2 + c3 s^3
+vec4 cubic_coeffs(vec4 lo, vec4 hi, vec3 a, vec3 b) {
+    float k0 = lo.x;
+    float k1 = lo.y - lo.x;
+    float k2 = lo.z - lo.x;
+    float k3 = hi.x - lo.x;
+    float k4 = lo.w - lo.z - lo.y + lo.x;                               // xy
+    float k5 = hi.z - hi.x - lo.z + lo.x;                               // yz
+    float k6 = hi.y - hi.x - lo.y + lo.x;                               // xz
+    float k7 = hi.w - hi.z - hi.y - lo.w + lo.y + hi.x + lo.z - lo.x;   // xyz
+    float c0 = k0 + k1*a.x + k2*a.y + k3*a.z + k4*a.x*a.y + k5*a.y*a.z + k6*a.x*a.z + k7*a.x*a.y*a.z;
+    float c1 = k1*b.x + k2*b.y + k3*b.z
+             + k4*(a.x*b.y + b.x*a.y) + k5*(a.y*b.z + b.y*a.z) + k6*(a.x*b.z + b.x*a.z)
+             + k7*(a.x*a.y*b.z + a.x*b.y*a.z + b.x*a.y*a.z);
+    float c2 = k4*b.x*b.y + k5*b.y*b.z + k6*b.x*b.z + k7*(a.x*b.y*b.z + b.x*a.y*b.z + b.x*b.y*a.z);
+    float c3 = k7*b.x*b.y*b.z;
+    return vec4(c0, c1, c2, c3);
+}
+
+float cubic_eval(vec4 c, float s) {
+    return c.x + s * (c.y + s * (c.z + s * c.w));
+}
+
+float cubic_deriv(vec4 c, float s) {
+    return c.y + s * (2.0 * c.z + 3.0 * c.w * s);
+}
+
+// Where the cubic's derivative vanishes strictly inside (0, len), in order
+int deriv_roots(vec4 c, float len, out float r0, out float r1) {
+    float A = 3.0 * c.w;
+    float B = 2.0 * c.z;
+    float C = c.y;
+    float scale = abs(A) + abs(B) + abs(C);
+    float x0 = -1.0;
+    float x1 = -1.0;
+    if (scale > 0.0) {
+        if (abs(A) <= 1e-7 * scale) {
+            if (abs(B) > 1e-7 * scale) x0 = -C / B;
+        } else {
+            float disc = B * B - 4.0 * A * C;
+            if (disc >= 0.0) {
+                float sq = sqrt(disc);
+                float q  = -0.5 * (B + (B >= 0.0 ? sq : -sq));
+                x0 = q / A;
+                x1 = (q != 0.0) ? C / q : x0;
+                if (x1 < x0) { float tmp = x0; x0 = x1; x1 = tmp; }
+            }
+        }
+    }
+    int n = 0;
+    r0 = len;
+    r1 = len;
+    if (x0 > 0.0 && x0 < len) { r0 = x0; n = 1; }
+    if (x1 > 0.0 && x1 < len && x1 != x0) {
+        if (n == 0) r0 = x1; else r1 = x1;
+        n += 1;
+    }
+    return n;
+}
+
+// The crossing of g = cubic - v on [l, r], where g is monotone and its ends lie on different sides of v
+// (or one is on it). Newton, kept inside the bracket by bisection.
+float solve_crossing(vec4 c, float v, float l, float r, float gl, float gr) {
+    if (gl == 0.0) return l;
+    if (gr == 0.0) return r;
+    if ((gl < 0.0) == (gr < 0.0)) return l;   // the change is at the start of the piece (it began on v)
+    float s = 0.5 * (l + r);
+    for (int i = 0; i < 8; ++i) {
+        float g = cubic_eval(c, s) - v;
+        if (g == 0.0) return s;
+        if ((g < 0.0) == (gl < 0.0)) { l = s; gl = g; } else { r = s; gr = g; }
+        float dg = cubic_deriv(c, s);
+        float sn = (dg != 0.0) ? s - g / dg : 0.5 * (l + r);
+        s = (sn > l && sn < r) ? sn : 0.5 * (l + r);
+    }
+    return s;
 }
 
 bool is_inside(float d, float v) {
     return (v >= 0.0) ? (d >= v) : (d <= v);
 }
 
-vec3 unproject(vec2 ndc_xy, float depth) {
-    vec4 p = u_clip_to_model * vec4(ndc_xy, depth * 2.0 - 1.0, 1.0);
-    return p.xyz / p.w;
-}
-
-// Where along [pa, pb] (as a fraction) the field crosses v, given the values at the ends on opposite
-// sides of it. Regula falsi on the trilinear field, then a final linear estimate within the bracket.
-float refine_crossing(vec3 pa, vec3 pb, float da, float db, float v) {
-    float a  = 0.0;
-    float b  = 1.0;
-    float fa = da - v;
-    float fb = db - v;
-    for (int i = 0; i < REFINE_STEPS; ++i) {
-        float denom = fa - fb;
-        if (denom == 0.0) break;
-        float t  = a + (b - a) * fa / denom;
-        float ft = sample_volume(mix(pa, pb, t)) - v;
-        if (ft == 0.0) return t;        // on it; also keeps a bracket end from landing on the value
-        if ((ft < 0.0) == (fa < 0.0)) {
-            a  = t;
-            fa = ft;
-        } else {
-            b  = t;
-            fb = ft;
-        }
+uint membership(float d) {
+    uint m = 0u;
+    for (int i = 0; i < u_iso_count; ++i) {
+        if (is_inside(d, u_iso_values[i])) m |= (1u << uint(i));
     }
-    float denom = fa - fb;
-    return (denom != 0.0) ? a + (b - a) * fa / denom : 0.5 * (a + b);
-}
-
-// The gradient along the view axes: its direction is the view space normal, no transform needed
-vec3 gradient_view(vec3 p) {
-    vec3 dx = u_grad_offsets[0].xyz;
-    vec3 dy = u_grad_offsets[1].xyz;
-    vec3 dz = u_grad_offsets[2].xyz;
-    return vec3(
-        sample_volume(p + dx) - sample_volume(p - dx),
-        sample_volume(p + dy) - sample_volume(p - dy),
-        sample_volume(p + dz) - sample_volume(p - dz));
-}
-
-vec4 surface_color(vec3 p, int i) {
-    vec4 base = u_iso_colors[i];
-#if defined(USE_COLOR_VOLUME)
-    return base * texture(u_tex_color_volume, p);
-#elif defined(USE_FIELD)
-    float f = texture(u_tex_field, p).r;
-    float t = clamp((f - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
-    return base * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
-#else
-    return base;
-#endif
+    return m;
 }
 
 float tau_inside(uint mask) {
     float tau = 0.0;
     for (int i = 0; i < u_iso_count; ++i) {
-        if ((mask & (1u << uint(i))) != 0u) {
-            tau += max(u_iso_tau[i], 0.0);
-        }
+        if ((mask & (1u << uint(i))) != 0u) tau += max(u_iso_tau[i], 0.0);
     }
     return tau;
+}
+
+bool range_holds_iso(float lo, float hi) {
+    for (int i = 0; i < u_iso_count; ++i) {
+        float v = u_iso_values[i];
+        if (lo <= v && v <= hi) return true;
+    }
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -172,10 +296,35 @@ float GeometrySchlickGGX(float NdotV, float roughness) {
     return NdotV / (NdotV * (1.0 - k) + k);
 }
 
-// Adds one surface to the premultiplied radiance L behind which the transmittance is T.
-// The diffuse part is scaled by the surface's coverage (alpha); the specular part is not, so a clear
-// surface still shows its reflections. The opacity is the coverage plus what Fresnel reflects away.
-void shade_surface(inout vec3 L, inout float T, vec3 albedo, float alpha, vec3 N, vec3 V) {
+// The gradient along the view axes: its direction is the view space normal, no transform needed.
+// Taken from the filtered field one voxel apart, which keeps the normals continuous across cells.
+vec3 gradient_view(vec3 p) {
+    vec3 dx = u_grad_offsets[0].xyz;
+    vec3 dy = u_grad_offsets[1].xyz;
+    vec3 dz = u_grad_offsets[2].xyz;
+    return vec3(
+        sample_volume(p + dx) - sample_volume(p - dx),
+        sample_volume(p + dy) - sample_volume(p - dy),
+        sample_volume(p + dz) - sample_volume(p - dz));
+}
+
+vec4 surface_color(vec3 p, int i) {
+    vec4 base = u_iso_colors[i];
+#if defined(USE_COLOR_VOLUME)
+    return base * texture(u_tex_color_volume, p);
+#elif defined(USE_FIELD)
+    float f = texture(u_tex_field, p).r;
+    float t = clamp((f - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
+    return base * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
+#else
+    return base;
+#endif
+}
+
+// Adds one surface behind which the transmittance is g_T. The diffuse part is scaled by the surface's
+// coverage (alpha); the specular part is not, so a clear surface still shows its reflections. The
+// opacity is the coverage plus what Fresnel reflects away.
+void shade_surface(vec3 albedo, float alpha, vec3 N, vec3 V) {
     float roughness = clamp(u_roughness, 0.04, 1.0);
     float F0 = clamp(u_F0, 0.0, 1.0);
 
@@ -204,8 +353,133 @@ void shade_surface(inout vec3 L, inout float T, vec3 albedo, float alpha, vec3 N
     float a       = clamp(alpha, 0.0, 1.0);
     float opacity = 1.0 - (1.0 - a) * (1.0 - Fv);
 
-    L += T * (a * diffuse + specular);
-    T *= 1.0 - opacity;
+    g_L += g_T * (a * diffuse + specular);
+    g_T *= 1.0 - opacity;
+}
+
+// -----------------------------------------------------------------------------
+// Walking the ray
+// -----------------------------------------------------------------------------
+
+void absorb_to(float t) {
+    if (g_tau > 0.0 && t > g_t_abs) {
+        g_T *= exp(-g_tau * (t - g_t_abs) * g_ext_per_t);
+    }
+    g_t_abs = max(g_t_abs, t);
+}
+
+void hit(float t, int i) {
+    absorb_to(t);
+    vec3 p = g_p0 + t * g_ray;
+    vec3 N = gradient_view(p);
+    float nl = length(N);
+    N = (nl > 1e-20) ? N / nl : g_V;
+    if (dot(N, g_V) < 0.0) N = -N;
+    vec4 c = surface_color(p, i);
+    shade_surface(c.rgb, c.a, N, g_V);
+    g_inside ^= (1u << uint(i));
+    g_tau = tau_inside(g_inside);
+}
+
+// The part [tc, te] of the ray inside cell c, whose corners are lo / hi
+void process_cell(ivec3 c, vec4 lo, vec4 hi, float tc, float te) {
+    vec3  a   = (g_o + g_d * tc) - vec3(c);     // local coordinates where the ray enters the cell part
+    float len = (te - tc) * g_dlen;            // its length in voxels
+
+    if (!g_known) {
+        g_inside = membership(cubic_eval(cubic_coeffs(lo, hi, a, g_dir), 0.0));
+        g_tau    = tau_inside(g_inside);
+        g_known  = true;
+    }
+
+    float fmin = min(min(min(lo.x, lo.y), min(lo.z, lo.w)), min(min(hi.x, hi.y), min(hi.z, hi.w)));
+    float fmax = max(max(max(lo.x, lo.y), max(lo.z, lo.w)), max(max(hi.x, hi.y), max(hi.z, hi.w)));
+    if (!range_holds_iso(fmin, fmax)) return;
+
+    vec4 cf = cubic_coeffs(lo, hi, a, g_dir);
+
+    // Split into monotone pieces
+    float r0, r1;
+    int nr = deriv_roots(cf, len, r0, r1);
+    float s[4];
+    s[0] = 0.0;
+    s[1] = (nr > 0) ? r0 : len;
+    s[2] = (nr > 1) ? r1 : len;
+    s[3] = len;
+    int np = nr + 1;
+    float f[4];
+    f[0] = cubic_eval(cf, s[0]);
+    f[1] = cubic_eval(cf, s[1]);
+    f[2] = cubic_eval(cf, s[2]);
+    f[3] = cubic_eval(cf, len);
+    // f[np] must be the end of the last piece
+    if (np == 1) f[1] = f[3];
+    if (np == 2) f[2] = f[3];
+
+    // Every crossing in the cell, in order along the ray. The side at the start of the cell is the one
+    // carried along the ray, not re-evaluated, so a crossing on a cell face is counted exactly once.
+    float hs[MAX_CELL_HITS];
+    int   hi_[MAX_CELL_HITS];
+    int   m = 0;
+    for (int i = 0; i < u_iso_count; ++i) {
+        float v = u_iso_values[i];
+        bool flag = (g_inside & (1u << uint(i))) != 0u;
+        for (int j = 0; j < np; ++j) {
+            bool fe = is_inside(f[j + 1], v);
+            if (fe != flag && m < MAX_CELL_HITS) {
+                float h = solve_crossing(cf, v, s[j], s[j + 1], f[j] - v, f[j + 1] - v);
+                int k = m;
+                while (k > 0 && hs[k - 1] > h) {
+                    hs[k]  = hs[k - 1];
+                    hi_[k] = hi_[k - 1];
+                    --k;
+                }
+                hs[k]  = h;
+                hi_[k] = i;
+                ++m;
+            }
+            flag = fe;
+        }
+    }
+
+    for (int k = 0; k < m; ++k) {
+        hit(tc + hs[k] / g_dlen, hi_[k]);
+        if (g_T < T_MIN) return;
+    }
+}
+
+// Every cell the ray passes through in [t0, t1]
+void walk_cells(float t0, float t1, float eps_t, vec3 inv, bvec3 flat_axis) {
+    vec3  xs = g_o + g_d * (t0 + eps_t);
+    ivec3 c  = clamp(ivec3(floor(xs)), ivec3(-1), g_dim_m1);
+    ivec3 st = ivec3(mix(vec3(-1.0), vec3(1.0), greaterThanEqual(g_d, vec3(0.0))));
+    vec3  nb = vec3(c) + vec3(greaterThanEqual(g_d, vec3(0.0)));        // the next boundary on each axis
+    vec3  tn = mix((nb - g_o) * inv, vec3(HUGE), flat_axis);
+    vec3  td = mix(abs(inv), vec3(HUGE), flat_axis);
+
+    vec4 lo, hi;
+    fetch_corners(c, lo, hi);
+
+    float tc = t0;
+    for (int k = 0; k < MAX_STEPS; ++k) {
+        float te = min(min(tn.x, tn.y), min(tn.z, t1));
+        if (te > tc) {
+            process_cell(c, lo, hi, tc, te);
+            if (g_T < T_MIN) return;
+        }
+        if (te >= t1) return;
+        if (tn.x <= tn.y && tn.x <= tn.z) {
+            c.x += st.x; tn.x += td.x;
+            step_corners_x(st.x, c, lo, hi);
+        } else if (tn.y <= tn.z) {
+            c.y += st.y; tn.y += td.y;
+            step_corners_y(st.y, c, lo, hi);
+        } else {
+            c.z += st.z; tn.z += td.z;
+            step_corners_z(st.z, c, lo, hi);
+        }
+        tc = max(tc, te);
+    }
 }
 
 void main() {
@@ -225,8 +499,10 @@ void main() {
     // The ray from the near plane to the opaque scene (or the far plane), clipped to the clip box
     float depth = (u_use_depth > 0.5) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
     if (proxy_entry >= depth) discard;
-    vec3 pn  = unproject(ndc, 0.0);
-    vec3 pf  = unproject(ndc, depth);
+    vec4 pn4 = u_clip_to_model * vec4(ndc, -1.0, 1.0);
+    vec4 pf4 = u_clip_to_model * vec4(ndc, depth * 2.0 - 1.0, 1.0);
+    vec3 pn  = pn4.xyz / pn4.w;
+    vec3 pf  = pf4.xyz / pf4.w;
     vec3 seg = pf - pn;
 
     vec3 inv_seg = 1.0 / mix(seg, vec3(1e-20), equal(seg, vec3(0.0)));
@@ -237,99 +513,76 @@ void main() {
     float s0 = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float s1 = min(min(tmax.x, tmax.y), min(tmax.z, 1.0));
 
+    vec3 dim = vec3(textureSize(u_tex_volume, 0));
     if (u_use_proxy > 0.5) {
         // The proxy span as parameters on the same segment, widened by half a voxel so that depth
         // quantization cannot start a ray just past a surface that touches a block face
-        vec3  dim_v  = vec3(textureSize(u_tex_volume, 0));
-        float margin = 0.5 / max(length(seg * dim_v), 1e-6);
+        float margin = 0.5 / max(length(seg * dim), 1e-6);
         float inv_ss = 1.0 / max(dot(seg, seg), 1e-30);
         if (proxy_entry > 0.0) {
-            s0 = max(s0, dot(unproject(ndc, proxy_entry) - pn, seg) * inv_ss - margin);
+            vec4 pe = u_clip_to_model * vec4(ndc, proxy_entry * 2.0 - 1.0, 1.0);
+            s0 = max(s0, dot(pe.xyz / pe.w - pn, seg) * inv_ss - margin);
         }
         if (proxy_exit < depth) {
-            s1 = min(s1, dot(unproject(ndc, proxy_exit) - pn, seg) * inv_ss + margin);
+            vec4 px4 = u_clip_to_model * vec4(ndc, proxy_exit * 2.0 - 1.0, 1.0);
+            s1 = min(s1, dot(px4.xyz / px4.w - pn, seg) * inv_ss + margin);
         }
     }
     if (s0 >= s1) discard;
 
-    vec3  p0  = pn + seg * s0;
-    vec3  ray = seg * (s1 - s0);
-    float len = length(ray);
-    if (len < 1e-6) discard;
+    g_dim_m1 = ivec3(dim) - 1;
+    g_p0  = pn + seg * s0;
+    g_ray = seg * (s1 - s0);
+    g_o   = g_p0 * dim - 0.5;
+    g_d   = g_ray * dim;
+    g_dlen = length(g_d);
+    if (g_dlen < 1e-6) discard;
+    g_dir = g_d / g_dlen;
+    g_ext_per_t = length(mat3(u_model_to_view) * g_ray) * u_optical_scale;
+    g_V = -normalize(mat3(u_model_to_view) * g_ray);
 
-    vec3  dir   = ray / len;
-    vec3  dim   = vec3(textureSize(u_tex_volume, 0));
-    int   n     = max(1, int(ceil(len * length(dir * dim) * u_samples_per_voxel)));
-    vec3  dp    = ray / float(n);
-    float ext_step = length(mat3(u_model_to_view) * dp) * u_optical_scale;  // extinction per unit tau over one step
-    vec3  V     = -normalize(mat3(u_model_to_view) * dir);
+    g_L = vec3(0.0);
+    g_T = 1.0;
+    g_t_abs = 0.0;
+    g_inside = 0u;
+    g_tau = 0.0;
+    g_known = false;
 
-    float d0 = sample_volume(p0);
-    uint inside = 0u;
-    for (int i = 0; i < u_iso_count; ++i) {
-        if (is_inside(d0, u_iso_values[i])) inside |= (1u << uint(i));
-    }
-    float tau = tau_inside(inside);
+    bvec3 flat_axis = lessThan(abs(g_d), vec3(1e-20));
+    vec3  inv   = 1.0 / mix(g_d, vec3(1.0), flat_axis);
+    float eps_t = 1e-3 / max(max(abs(g_d.x), abs(g_d.y)), abs(g_d.z));   // a thousandth of a voxel
 
-    vec3  L = vec3(0.0);
-    float T = 1.0;
-    vec3  pa = p0;
+    float B = u_block_size;
+    ivec3 bdim = textureSize(u_tex_minmax, 0);
 
-    for (int s = 1; s <= n; ++s) {
-        vec3  pb = p0 + dp * float(s);
-        float d1 = sample_volume(pb);
-
-        uint crossed = 0u;
-        for (int i = 0; i < u_iso_count; ++i) {
-            if (is_inside(d0, u_iso_values[i]) != is_inside(d1, u_iso_values[i])) crossed |= (1u << uint(i));
+    float t = 0.0;
+    for (int k = 0; k < MAX_STEPS && t < 1.0 && g_T >= T_MIN; ++k) {
+        if (u_use_blocks < 0.5) {
+            walk_cells(0.0, 1.0, eps_t, inv, flat_axis);
+            break;
         }
 
-        if (crossed == 0u) {
-            if (tau > 0.0) T *= exp(-tau * ext_step);
+        // The block just ahead of t, and where the ray leaves it
+        vec3  xb  = (g_o + 0.5 + g_d * (t + eps_t)) / B;
+        ivec3 b   = clamp(ivec3(floor(xb)), ivec3(0), bdim - 1);
+        vec3  bnd = vec3(b) * B - 0.5 + B * vec3(greaterThanEqual(g_d, vec3(0.0)));
+        vec3  tx  = mix((bnd - g_o) * inv, vec3(HUGE), flat_axis);
+        float tb  = min(1.0, min(min(tx.x, tx.y), tx.z));
+        tb = max(tb, t + eps_t);
+
+        vec2 mm = texelFetch(u_tex_minmax, b, 0).xy;
+        if (range_holds_iso(mm.x, mm.y)) {
+            walk_cells(t, tb, eps_t, inv, flat_axis);
         } else {
-            // Locate every crossing in this step and take them in order along the ray
-            float frac[MAX_ISO];
-            int   idx[MAX_ISO];
-            int   m = 0;
-            for (int i = 0; i < u_iso_count; ++i) {
-                if ((crossed & (1u << uint(i))) == 0u) continue;
-                float f = clamp(refine_crossing(pa, pb, d0, d1, u_iso_values[i]), 0.0, 1.0);
-                int j = m;
-                while (j > 0 && frac[j - 1] > f) {
-                    frac[j] = frac[j - 1];
-                    idx[j]  = idx[j - 1];
-                    --j;
-                }
-                frac[j] = f;
-                idx[j]  = i;
-                ++m;
-            }
-
-            float last = 0.0;
-            for (int h = 0; h < m; ++h) {
-                if (tau > 0.0) T *= exp(-tau * ext_step * (frac[h] - last));
-                last = frac[h];
-
-                int  i  = idx[h];
-                vec3 ph = mix(pa, pb, frac[h]);
-                vec3 N  = gradient_view(ph);
-                float nl = length(N);
-                N = (nl > 1e-20) ? N / nl : V;
-                if (dot(N, V) < 0.0) N = -N;
-
-                vec4 c = surface_color(ph, i);
-                shade_surface(L, T, c.rgb, c.a, N, V);
-
-                inside ^= (1u << uint(i));
-                tau = tau_inside(inside);
-            }
-            if (tau > 0.0) T *= exp(-tau * ext_step * (1.0 - last));
+            // No surface in the block: the ray is on one side of every surface throughout it
+            absorb_to(t);
+            g_inside = membership(mm.x);
+            g_tau    = tau_inside(g_inside);
+            g_known  = true;
         }
-
-        if (T < T_MIN) break;
-        pa = pb;
-        d0 = d1;
+        t = tb;
     }
+    absorb_to(1.0);
 
-    out_color = vec4(L, 1.0 - T);
+    out_color = vec4(g_L, 1.0 - g_T);
 }
