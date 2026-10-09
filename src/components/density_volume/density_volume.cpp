@@ -847,10 +847,7 @@ struct DensityVolume : viamd::EventHandler {
                         .view_matrix = &world_to_view.elem[0][0],
                         .proj_matrix = &view_to_clip.elem[0][0],
                     },
-                    .picking_offset = {
-                        .atom_base = state->picking_range_atom.beg,
-                        .bond_base = state->picking_range_bond.beg,
-                    }
+                    .picking_offset = gl_picking_offset(*state),
                 };
 
                 md_gl_draw(&draw_args);

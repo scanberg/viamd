@@ -6758,10 +6758,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
             },
-            .picking_offset = {
-                .atom_base = state->picking_range_atom.beg,
-                .bond_base = state->picking_range_bond.beg,
-            },
+            .picking_offset = gl_picking_offset(*state),
             .max_bond_length = max_bond_length,
         };
 
@@ -6897,6 +6894,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
+        .picking_offset = gl_picking_offset(*data),
         .atom_mask = mask,
 		.max_bond_length = max_bond_length,
     };

@@ -445,35 +445,6 @@ void shutdown() {
 }
 }
 
-namespace highlight {
-
-static struct {
-    GLuint program = 0;
-    GLuint selection_texture = 0;
-    struct {
-        GLint texture_atom_idx = -1;
-        GLint buffer_selection = -1;
-        GLint highlight = -1;
-        GLint selection = -1;
-        GLint outline = -1;
-    } uniform_loc;
-} highlight;
-
-void initialize() {
-    highlight.program = setup_program_from_source(STR_LIT("highlight"), {(const char*)highlight_frag, highlight_frag_size});
-    if (!highlight.selection_texture) glGenTextures(1, &highlight.selection_texture);
-    highlight.uniform_loc.texture_atom_idx = glGetUniformLocation(highlight.program, "u_texture_atom_idx");
-    highlight.uniform_loc.buffer_selection = glGetUniformLocation(highlight.program, "u_buffer_selection");
-    highlight.uniform_loc.highlight = glGetUniformLocation(highlight.program, "u_highlight");
-    highlight.uniform_loc.selection = glGetUniformLocation(highlight.program, "u_selection");
-    highlight.uniform_loc.outline = glGetUniformLocation(highlight.program, "u_outline");
-}
-
-void shutdown() {
-    if (highlight.program) glDeleteProgram(highlight.program);
-}
-}  // namespace highlight
-
 namespace hsv {
 
 static struct {
@@ -1132,7 +1103,6 @@ static void initialize_programs() {
     ssao::initialize_programs();
     dof::initialize_programs();
     velocity::initialize_programs();
-    highlight::initialize();
     hsv::initialize();
     tonemapping::initialize();
     temporal::initialize();
@@ -1230,7 +1200,6 @@ void shutdown() {
     ssao::shutdown();
     dof::shutdown();
     velocity::shutdown();
-    highlight::shutdown();
     hsv::shutdown();
     tonemapping::shutdown();
     temporal::shutdown();
@@ -1463,29 +1432,6 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
-    glUseProgram(0);
-}
-
-void highlight_selection(GLuint atom_idx_tex, GLuint selection_buffer, const vec3_t& highlight, const vec3_t& selection, const vec3_t& outline) {
-    ASSERT(glIsTexture(atom_idx_tex));
-    ASSERT(glIsBuffer(selection_buffer));
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, atom_idx_tex);
-
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_BUFFER, highlight::highlight.selection_texture);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, selection_buffer);
-
-    glUseProgram(highlight::highlight.program);
-    glUniform1i(highlight::highlight.uniform_loc.texture_atom_idx, 0);
-    glUniform1i(highlight::highlight.uniform_loc.buffer_selection, 1);
-    glUniform3fv(highlight::highlight.uniform_loc.highlight, 1, &highlight.x);
-    glUniform3fv(highlight::highlight.uniform_loc.selection, 1, &selection.x);
-    glUniform3fv(highlight::highlight.uniform_loc.outline, 1, &outline.x);
-    glBindVertexArray(gl.vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
     glUseProgram(0);
 }
 

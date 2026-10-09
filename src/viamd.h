@@ -94,6 +94,9 @@ typedef uint64_t InteractionSurfaceID;
 constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
+// A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
+// drawn per segment, not per atom, so a hit names the segment and resolves to the component it stems from.
+constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("picking domain backbone segment");
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
@@ -1209,6 +1212,7 @@ struct ApplicationState {
 
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
+    PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -1514,11 +1518,31 @@ struct LoadDataPayload {
     str_t path_to_file;
 };
 
+// A picking tooltip, gathered from every handler that recognises the hit and drawn as one window: a title names what
+// is under the cursor, then rows give one property each, drawn as two aligned columns (key, value). Handlers add to it
+// with tooltip_title and tooltip_row; a title after rows begins a new section. What goes in one: PICKING TOOLTIP in
+// viamd.cpp.
+enum class TooltipLineKind : uint8_t { Title, Row };
+
+struct TooltipLine {
+    TooltipLineKind kind = TooltipLineKind::Title;
+    str_t key  = {};    // Row only, and must live for the frame (a literal, a label of the system, frame memory)
+    str_t text = {};
+};
+
 struct PickingTooltipTextRequest {
     const ApplicationState& app;
     const PickingHit& hit;
-    md_strb_t sb = {};
+    md_allocator_i* alloc = nullptr;    // Frame memory, for the lines and their text
+    md_array(TooltipLine) lines = 0;
 };
+
+// In UTF-8 escapes: not every compiler reads the source as UTF-8
+#define TOOLTIP_SEP      " \xC2\xB7 "   // ' · ' between the parts of a title
+#define TOOLTIP_ANGSTROM "\xC3\x85"     // Å
+
+void tooltip_title(PickingTooltipTextRequest* req, const char* format, ...);
+void tooltip_row(PickingTooltipTextRequest* req, str_t key, const char* format, ...);
 
 enum ViewFitRound {
     ViewFitRound_Highlight = 0,
@@ -1672,6 +1696,22 @@ static inline void mask_set_atom_by_selection_granularity(md_bitfield_t* mask, s
         ASSERT(false);
     }
     md_bitfield_set_range(mask, range.beg, range.end);
+}
+
+// Sets the bits of a component, or of its instance at Instance granularity, for a hit that names a component rather
+// than an atom (a backbone segment of the cartoon or ribbons). There is no atom to pick there, so Atom granularity
+// selects the component as well.
+static inline void mask_set_component_by_selection_granularity(md_bitfield_t* mask, size_t comp_idx, SelectionGranularity granularity, const md_system_t& sys) {
+    ASSERT(mask);
+    if (comp_idx >= sys.component.count) return;
+
+    const md_urange_t range = md_system_component_atom_range(&sys, comp_idx);
+    if (range.beg == range.end) return;
+    if (granularity == SelectionGranularity::Atom) {
+        granularity = SelectionGranularity::Component;
+    }
+    // Any atom of the component finds the component, and its instance
+    mask_set_atom_by_selection_granularity(mask, range.beg, granularity, sys);
 }
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
@@ -2216,6 +2256,16 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
 
 // The range a keyed object was given this frame, or NULL when it was not reserved one.
 const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key);
+
+// The picking offsets for drawing the system with md_gl, one per reserved range. Every md_gl_draw of the system takes
+// them from here: a base left at 0 makes that kind write into the atom range and pick as the wrong atoms.
+static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& state) {
+    return {
+        .atom_base     = state.picking_range_atom.beg,
+        .bond_base     = state.picking_range_bond.beg,
+        .backbone_base = state.picking_range_backbone.beg,
+    };
+}
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);

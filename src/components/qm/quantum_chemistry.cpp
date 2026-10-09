@@ -1047,10 +1047,15 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (req->hit.domain == PickingDomain_CriticalPoints) {
                     uint32_t cp_idx = req->hit.local_idx;
                     if (cp_idx < critical_points.simp_graph.num_vertices) {
-                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
-                        const char* str = md_topo_critical_point_type_str(type);
-                        float value = critical_points.simp_graph.vertices[cp_idx].value;
-                        md_strb_fmt(&req->sb, "Type: %s\nValue: %.7f", str, value);
+                        const md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
+                        const md_topo_vert_t& v = critical_points.simp_graph.vertices[cp_idx];
+                        // The type in lower case, as the tooltip uses it as words ("split saddle")
+                        char type_str[32];
+                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", md_topo_critical_point_type_str(type));
+                        convert_to_lower(type_str, (size_t)CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
+                        tooltip_title(req, "critical point" TOOLTIP_SEP "%s", type_str);
+                        tooltip_row(req, STR_LIT("value"), "%.6g", v.value);
+                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, v.x, v.y, v.z);
                     }
                 }
                 break;
@@ -6573,8 +6578,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                 render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                 // Baked into the picking buffer, which hovering reads
-                render_hash = md_hash64(&state.picking_range_atom.beg, sizeof(state.picking_range_atom.beg), render_hash);
-                render_hash = md_hash64(&state.picking_range_bond.beg, sizeof(state.picking_range_bond.beg), render_hash);
+                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                 render_hash = render_hash ? render_hash : 1;
             }
 
@@ -6615,10 +6620,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = {
-                       .atom_base = state.picking_range_atom.beg,
-                       .bond_base = state.picking_range_bond.beg,
-                    },
+                    .picking_offset = gl_picking_offset(state),
                 };
 
                 md_gl_draw(&draw_args);
@@ -7929,8 +7931,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
                     render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                     // Baked into the picking buffer, which hovering reads
-                    render_hash = md_hash64(&state.picking_range_atom.beg, sizeof(state.picking_range_atom.beg), render_hash);
-                    render_hash = md_hash64(&state.picking_range_bond.beg, sizeof(state.picking_range_bond.beg), render_hash);
+                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                    render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                     render_hash = render_hash ? render_hash : 1;
                 }
 
@@ -7973,10 +7975,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .proj_matrix = (const float*)proj_mat.elem,
                             },
 
-                            .picking_offset = {
-                                .atom_base = state.picking_range_atom.beg,
-                                .bond_base = state.picking_range_bond.beg,
-                            },
+                            .picking_offset = gl_picking_offset(state),
 
                             .atom_mask = atom_mask,
                         };
