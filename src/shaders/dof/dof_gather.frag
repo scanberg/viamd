@@ -1,82 +1,73 @@
 #version 410 core
 
-// Part of the half-res depth of field: prepass -> tile max -> tile dilate -> gather -> postfilter -> composite.
-// Half-res scatter-as-gather with separate near / far layers (in the spirit of Sousa 2013, Jimenez 2014).
-// The sample count grows with the gather radius (16..DOF_MAX_SAMPLES), so small blurs stay cheap and large ones are
-// not reduced to a sparse stipple.
+// Part of the half-res depth of field: prepass -> tiles -> gather (far) / near bands -> fill -> composite.
+// Far field (what is at / behind the focus plane), scatter-as-gather evaluated as a quadrature rather than a point
+// sampled estimate: the disk of the centre's own CoC is integrated with a fixed pattern (no per-pixel or per-frame
+// rotation), every sample reading the mip level whose texels are as large as the spacing between samples, so it stands
+// for the average over its share of the disk. The result is smooth in space and time on its own; a noisy estimate
+// (rotated per frame for TAA to average) flickers instead, since TAA clips the history to the 3x3 neighbourhood of the
+// current frame, which cannot hold the variance of noise correlated over several pixels.
 //
-// Outputs (both consumed by dof_postfilter, then dof_composite):
-//   out_far  rgb = far-field blur (what is at / behind the focus plane), a unused
-//   out_near rgb = near-field colour * coverage (premultiplied), a = coverage of this pixel by the foreground blur
-// Keeping the layers apart lets the composite apply the near coverage exactly once.
+// A sample contributes where its own CoC reaches the centre too, so a blurred background never bleeds over a sharper
+// object in front of it.
+//
+// Where the centre belongs to the foreground (near field, dof_near), what is behind it is unknown here: it is left as
+// a hole (alpha 0), which dof_fill fills from the far layer around.
+//
+// Output (consumed by dof_fill): rgb * a, a = 1 - how much the centre belongs to the near field.
 #ifndef TILE
 #define TILE 8
 #endif
-#ifndef DOF_MAX_SAMPLES
-#define DOF_MAX_SAMPLES 64
+#ifndef FAR_SAMPLES
+#define FAR_SAMPLES 32
 #endif
-uniform sampler2D u_tex;        // half-res: rgb, signed coc (half-res px)
-uniform sampler2D u_tex_tile;   // .r = gather radius per tile (half-res px)
-uniform int u_frame;
-layout(location = 0) out vec4 out_far;
-layout(location = 1) out vec4 out_near;
+uniform sampler2D u_tex;            // half-res: rgb, signed coc (half-res px)
+uniform sampler2D u_tex_tile;       // .r = gather radius per tile (half-res px)
+uniform sampler2D u_tex_far_src;    // mipmapped (rgb, 1) * far CoC
+uniform sampler2D u_tex_coc_src;    // mipmapped (-, -, coc * far CoC, -)
+out vec4 out_far;
 
 const float GOLDEN_ANGLE = 2.39996323;
+const float SQRT_PI      = 1.7724539;
 
-int sample_count(float R) { return clamp(int(ceil(R * 1.6)), 16, DOF_MAX_SAMPLES); }
+// Sample i of n on the unit disk (Vogel spiral)
+vec2 disk(int i, int n) {
+    float a = float(i) * GOLDEN_ANGLE;
+    return vec2(cos(a), sin(a)) * sqrt((float(i) + 0.5) / float(n));
+}
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    ivec2 s = textureSize(u_tex, 0) - 1;
-    vec4 c = texelFetch(u_tex, p, 0);
+    vec4  c = texelFetch(u_tex, p, 0);
     float R = texelFetch(u_tex_tile, min(p / TILE, textureSize(u_tex_tile, 0) - 1), 0).r;
     if (R < 0.5) {
-        out_far  = vec4(c.rgb, 0.0);
-        out_near = vec4(0.0);
+        out_far = vec4(c.rgb, 1.0);
         return;
     }
 
-    float cc = abs(c.a);
-    int   n  = sample_count(R);
-    // interleaved gradient noise rotation (Jimenez 2014); the postfilter / TAA smooth what is left
-    float rot = 6.2831853 * fract(52.9829189 * fract(dot(vec2(p) + float(u_frame) * 5.588238, vec2(0.06711056, 0.00583715))));
-    vec2  cs  = vec2(cos(rot), sin(rot));
-
-    // far field (at / behind the focus plane): footprint limited by the centre's own CoC, so a blurred background never
-    // bleeds over a sharper foreground.
-    vec3  far_sum = c.rgb;
-    float far_w   = 1.0;
-    // near field: every sample in front of the focus plane whose CoC reaches the centre. Its energy is spread over
-    // pi*coc^2, each sample stands for pi*R^2/n of area -> coverage += (R^2/n) / coc^2.
-    vec3  near_sum = vec3(0);
-    float near_w   = 0.0;
-    float near_cov = 0.0;
-    float area     = R * R / float(n);
-
-    for (int i = 0; i < DOF_MAX_SAMPLES; ++i) {
-        if (i >= n) break;
-        float r = sqrt((float(i) + 0.5) / float(n)) * R;
-        float a = float(i) * GOLDEN_ANGLE;
-        vec2  d = vec2(cos(a), sin(a));
-        vec2  o = vec2(d.x * cs.x - d.y * cs.y, d.x * cs.y + d.y * cs.x) * r;
-        vec4  sm = texelFetch(u_tex, clamp(p + ivec2(round(o)), ivec2(0), s), 0);
-        float sc = abs(sm.a);
-        if (sm.a < 0.0) {
-            float w = clamp(sc - r + 1.0, 0.0, 1.0);
-            near_sum += sm.rgb * w;
-            near_w   += w;
-            near_cov += w * area / max(sc * sc, 1.0);
-        } else {
-            float w = clamp(min(sc, cc) - r + 1.0, 0.0, 1.0);
-            far_sum += sm.rgb * w;
-            far_w   += w;
+    vec3  far = c.rgb;
+    float cc  = c.a;
+    if (cc > 1.0) {
+        vec2  inv_size = 1.0 / vec2(textureSize(u_tex_far_src, 0));
+        vec2  uv0      = (vec2(p) + 0.5) * inv_size;
+        const int NF = FAR_SAMPLES;
+        float spacing = max(cc * SQRT_PI / sqrt(float(NF)), 1.0);   // cc * sqrt(pi / NF)
+        float lod     = log2(spacing);
+        vec4  acc     = vec4(0);
+        for (int i = 0; i < NF; ++i) {
+            vec2  o  = disk(i, NF) * cc;
+            vec2  uv = uv0 + o * inv_size;
+            vec4  s  = textureLod(u_tex_far_src, uv, lod);
+            if (s.a <= 1.0e-4) continue;
+            float sc    = textureLod(u_tex_coc_src, uv, lod).b / s.a;
+            float reach = clamp((min(sc, cc) - length(o)) / spacing + 0.5, 0.0, 1.0);
+            acc += s * reach;
         }
+        // The centre counts as one sample of its own CoC: where little or nothing reaches it the result goes smoothly
+        // to the centre's colour instead of switching to it.
+        far = (acc.rgb + c.rgb * cc) / (acc.a + cc);
     }
 
-    float near_a = clamp(near_cov, 0.0, 1.0);
-    if (c.a < 0.0) near_a = max(near_a, smoothstep(0.5, 1.5, cc));   // the centre itself is foreground
-    vec3 near_col = near_w > 0.0 ? near_sum / near_w : c.rgb;
-
-    out_far  = vec4(far_sum / far_w, 0.0);
-    out_near = vec4(near_col * near_a, near_a);
+    float valid = 1.0 - smoothstep(0.5, 1.5, -c.a);
+    out_far = vec4(far * valid, valid);
 }
