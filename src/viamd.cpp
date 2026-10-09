@@ -1,5 +1,7 @@
 ﻿
 #include <md_util.h>
+#include <md_qm.h>
+
 #include <md_filter.h>
 
 #include <core/md_log.h>
@@ -3101,34 +3103,69 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
         return nullptr;
     }
 
-    md_attribute_format_t format = {};
-    if (!md_attribute_slice_format(&format, attr, slice)) {
-        MD_LOG_ERROR("The slice does not address '" STR_FMT "'", STR_ARG(density_path));
+    // Square or packed, stored or computed on demand: md_qm reads either, and says why when the
+    // slice does not narrow it to one symmetric matrix
+    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, attr, slice);
+    if (dim == 0) {
+        return nullptr;
+    }
+    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * dim * dim);
+    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, attr, slice) != dim) {
         return nullptr;
     }
 
-    // Square is not pedantry: the GL and GPU density paths both pack the upper triangle and never
-    // read the lower half, so a non square matrix would be silently half consumed.
-    if (format.rank != 2 || format.shape[0] != format.shape[1] || format.components != 1) {
-        MD_LOG_ERROR("'" STR_FMT "' does not slice down to a square density matrix", STR_ARG(density_path));
-        return nullptr;
-    }
-
-    const size_t count = md_attribute_slice_count(attr, slice);
-    if (count == 0) {
-        return nullptr;
-    }
-
-    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * count);
-    if (!dst) {
-        return nullptr;
-    }
-    if (md_attribute_extract_f64(dst, count, attr, slice, md_unit_none()) != count) {
-        return nullptr;
-    }
-
-    if (out_dim) *out_dim = format.shape[0];
+    if (out_dim) *out_dim = dim;
     return dst;
+}
+
+// The same matrix as its packed upper triangle in float - what both density paths hand the shader.
+// A packed attribute is extracted as it is and nothing larger is ever made; a square one is
+// extracted whole into scratch first.
+float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice_ptr) {
+    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
+        return nullptr;
+    }
+
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, slice);
+    if (dim == 0) {
+        return nullptr;
+    }
+    const size_t len = dim * (dim + 1) / 2;
+    float* dst = (float*)md_temp_alloc(temp, sizeof(float) * len);
+    if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, slice) != dim) {
+        return nullptr;
+    }
+
+    if (out_dim) *out_dim = dim;
+    return dst;
+}
+
+static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                       const vec3_t* atom_pos, size_t num_atom_pos,
+                                       const float* packed, size_t dim, md_gto_op_t op) {
+    if (!packed || dim == 0) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
+        return false;
+    }
+
+    if (md_gto_basis_num_ao(&basis) != dim) {
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&basis), dim);
+        return false;
+    }
+
+    md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), packed, false, op);
+    volume::notify_data_changed(vol_tex);
+    return true;
 }
 
 bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
@@ -3162,13 +3199,14 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
-    size_t  dim = 0;
-    double* density_matrix = density_matrix_extract(&dim, temp, sys, density_path, slice);
-    if (!density_matrix) {
+    // Packed from the start: the shader reads the upper triangle as float, so that is all that is made
+    size_t dim = 0;
+    const float* packed = density_packed_extract(&dim, temp, sys, density_path, slice);
+    if (!packed) {
         return false;
     }
 
-    return density_matrix_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, density_matrix, dim, op);
+    return density_packed_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, packed, dim, op);
 }
 
 static bool es_attribute_exists(const md_system_t& sys, str_t path) {
@@ -3526,6 +3564,8 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 }
 
 #if MD_ENABLE_GPU
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op);
+
 bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
                                            const double* density_matrix, size_t dim, md_gto_op_t op) {
     ASSERT(state);
@@ -3552,6 +3592,12 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
     md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
     md_gpu_upload_end(state->gpu_stream);
 
+    density_gpu_launch(state, grid, op);
+    return true;
+}
+
+// The density kernel over whatever was last uploaded to the coefficient buffer
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op) {
     md_gto_gpu_density_desc_t desc = {
         .basis         = state->mold.gpu_basis,
         .atom_xyz      = state->mold.gpu_atoms,
@@ -3562,7 +3608,6 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
         .op            = op,
     };
     md_gto_gpu_density_launch(state->gpu_stream, &desc);
-    return true;
 }
 
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
@@ -3572,16 +3617,42 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
         return false;
     }
 
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    size_t dim = 0;
-    const double* density_matrix = density_matrix_extract(&dim, temp, state->mold.sys, density_path, slice);
-    if (!density_matrix) {
+    const md_system_t&       sys       = state->mold.sys;
+    const md_system_state_t& sys_state = state->mold.state;
+    const md_attribute_slice_t s = slice ? *slice : md_attribute_slice_all();
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
         return false;
     }
 
-    return density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op);
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s);
+    if (dim == 0) {
+        return false;
+    }
+    if (num_cgtos != dim) {
+        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
+        return false;
+    }
+    if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
+        return false;
+    }
+
+    // Straight into the upload buffer: the packed float triangle is exactly what the kernel reads, so
+    // a packed attribute - a density property read from its file - never exists in any other form
+    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
+    if (!dst) {
+        return false;
+    }
+    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, attr, s) == dim;
+    md_gpu_upload_end(state->gpu_stream);
+    if (!extracted) {
+        return false;
+    }
+
+    density_gpu_launch(state, grid, op);
+    return true;
 }
 #endif
 

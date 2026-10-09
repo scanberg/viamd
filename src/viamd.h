@@ -2047,11 +2047,17 @@ size_t es_excited_state_count(const md_system_t& sys);
 // Returns how many were written.
 size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff);
 
-// One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', in the
-// double precision md_gto asks for. Allocated from temp; NULL when the path is absent or the slice
-// does not narrow it to a square matrix. Pass a zero slice (or NULL) for an attribute which is
-// already {A,A}, md_attribute_slice_1(state) for one indexed by state. out_dim receives A.
+// One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
+// double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow
+// it to one symmetric matrix. Either storage is read: square ({A,A}, or {S,A,A} with
+// md_attribute_slice_1(state)), or packed (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, as the density
+// properties are). out_dim receives A.
 double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice);
+
+// The same matrix as its packed upper triangle in float, A(A+1)/2 values - the form both density
+// evaluation paths hand the shader. Prefer it wherever the matrix only goes on to be evaluated: a
+// packed attribute is read as it is, and its full double matrix is never made.
+float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice);
 
 // Evaluates one density into a 3D texture, from the same two sources as orbital_evaluate_gl: the
 // basis/ attributes and the state's atom positions. density_path plus 'slice' name the matrix -
