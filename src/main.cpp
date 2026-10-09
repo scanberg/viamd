@@ -3385,12 +3385,16 @@ static void draw_representations_window(ApplicationState* state) {
             if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
-                        // Do not enlist Electronic Structure if there are no orbitals available
-                        size_t num_orbitals = 0;
-                        if (!es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) || num_orbitals == 0) continue;
+                        // Enlisted when the system carries ANY electronic structure source - orbitals are
+                        // one, and a file without an SCF block can still carry density properties
+                        if (es_source_mask(state->mold.sys) == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;
+                        if (rep.type == RepresentationType::ElectronicStructure) {
+                            // The default source is orbitals, which this system may not have
+                            electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
+                        }
                         update_rep = true;
                     }
                 }

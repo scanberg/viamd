@@ -1845,6 +1845,16 @@ size_t density_properties_gather(DensityProperty out[], size_t cap, const md_sys
 // answer, and a second reader publishing them satisfies it without anyone being told.
 ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys);
 
+// Points an electronic structure representation at something this system carries. A source the
+// system has is left as it is; otherwise the first one it has, in the enum's order, is taken with that
+// source's defaults - so orbitals stay the first choice wherever there are any, and a file with only
+// density properties gets a density property rather than an orbital source it cannot evaluate. A
+// density property source is also pointed at an actual property, as it otherwise evaluates nothing
+// until the representation's window has been drawn. Returns false when the system carries no
+// electronic structure at all, and leaves the representation untouched.
+bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys);
+
+
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
 // Writes at most cap-1 characters plus a terminator, returns the length written.
 int dipole_label_pretty(char* buf, size_t cap, str_t group);

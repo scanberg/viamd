@@ -3898,6 +3898,45 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     return mask;
 }
 
+bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys) {
+    ASSERT(es);
+    const ElectronicStructureSourceFlags mask = es_source_mask(sys);
+    if (mask == 0) {
+        return false;
+    }
+
+    if (!electronic_structure_source_supported(mask, es->source)) {
+        for (int n = 0; n < (int)ElectronicStructureSource::Count; ++n) {
+            const ElectronicStructureSource source = (ElectronicStructureSource)n;
+            if (electronic_structure_source_supported(mask, source)) {
+                es->source = source;
+                electronic_structure_set_source_defaults(es);
+                break;
+            }
+        }
+    }
+
+    // The same rule the representation window applies when it draws: a key naming none of the
+    // properties this system has is replaced by the first one.
+    if (es->source == ElectronicStructureSource::DensityProperty) {
+        DensityProperty props[64];
+        const size_t num_props = MIN(density_properties_gather(props, ARRAY_SIZE(props), sys), ARRAY_SIZE(props));
+        bool found = false;
+        for (size_t i = 0; i < num_props; ++i) {
+            if (props[i].key == es->density_property_key) {
+                found = true;
+                break;
+            }
+        }
+        if (!found && num_props > 0) {
+            es->density_property_key = props[0].key;
+        }
+    }
+
+    return true;
+}
+
+
 // Per atom scalar fields are deliberately not gathered anywhere. They live in the system's attribute
 // table under atom/, whoever loaded the data put them there, and the UI reads that table directly
 // through atom_attribute_query.
@@ -3937,8 +3976,10 @@ void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     size_t num_coarse_grained = 0;
-    size_t num_orbitals = 0;
-    bool orbitals_present = es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0;
+    // Any electronic structure, not orbitals in particular: a file can carry density properties and
+    // no SCF block, and its density properties are as much something to show as orbitals would be.
+    const bool electronic_structure_present = es_source_mask(state->mold.sys) != 0;
+
 
     if (state->mold.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
@@ -4021,10 +4062,12 @@ void create_default_representations(ApplicationState* state) {
     }
 
 done:
-    if (orbitals_present) {
+    if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
+        electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
+
 
 		// ONE representation, for the ground state moment. A group each meant a VeloxChem file with
 		// transition dipoles opened with a representation per group, and with the electric,
