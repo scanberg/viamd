@@ -823,11 +823,13 @@ struct DensityVolume : viamd::EventHandler {
 
                 md_gl_draw_op_t op = {};
                 op.type = (md_gl_rep_type_t)rep.type;
-                MEMCPY(&op.args, rep.param, sizeof(op.args));
+                MEMCPY(&op.args, rep.param, MIN(sizeof(op.args), sizeof(rep.param)));
                 if (op.type == MD_GL_REP_BALL_AND_STICK) {
                     op.args.ball_and_stick.color_mode = MD_GL_BOND_MODE_NEAREST;
+                    op.args.ball_and_stick.bond_orders = true;
                 } else if (op.type == MD_GL_REP_LICORICE) {
                     op.args.licorice.color_mode = MD_GL_BOND_MODE_NEAREST;
+                    op.args.licorice.bond_orders = true;
                 }
 
                 for (size_t i = 0; i < num_reps; ++i) {

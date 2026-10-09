@@ -899,6 +899,7 @@ struct Representation {
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+    bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
 
     ElectronicStructureRepresentation electronic_structure = {};
     AtomAttributeColoring atom_attribute = {};

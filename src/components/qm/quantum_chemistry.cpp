@@ -6608,6 +6608,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 draw_op.type = MD_GL_REP_BALL_AND_STICK;
                 draw_op.args.ball_and_stick.ball_scale   = 1.0f;
                 draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.args.ball_and_stick.bond_orders  = true;
                 draw_op.rep = gl_rep;
 
                 md_gl_draw_args_t draw_args = {
@@ -7962,6 +7963,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         draw_op.type = MD_GL_REP_BALL_AND_STICK;
                         draw_op.args.ball_and_stick.ball_scale   = 1.0f;
                         draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                        draw_op.args.ball_and_stick.bond_orders  = true;
                         draw_op.rep = rep;
 
                         md_gl_draw_args_t draw_args = {

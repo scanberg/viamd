@@ -1640,6 +1640,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_flt(rep->bond_sharpness, arg);
         } else if (str_eq(ident, STR_LIT("BondBaseColor"))) {
             viamd::extract_vec4(rep->bond_base_color, arg);
+        } else if (str_eq(ident, STR_LIT("BondOrders"))) {
+            viamd::extract_bool(rep->bond_orders, arg);
         } else if (str_eq(ident, STR_LIT("Radius"))) {
             // DEPRECATED
             viamd::extract_flt(rep->scale.x, arg);
@@ -1811,6 +1813,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_int(state,  STR_LIT("BondColor"), (int)rep.bond_color);
     viamd::write_flt(state,  STR_LIT("BondSharpness"), rep.bond_sharpness);
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
+    viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
 
     viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
     viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);

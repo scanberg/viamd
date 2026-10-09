@@ -3577,6 +3577,10 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (advanced) {
                     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+                        update_rep |= ImGui::Checkbox("bond orders", &rep.bond_orders);
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");
+                        }
                         // Draw options for how bonds should be colored
 					    update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
                         if (rep.bond_color == BondColorMode::SmoothAtom) {
@@ -6100,6 +6104,7 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
         md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
+        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
     }
 
     data->mold.dirty_gpu_buffers = 0;
@@ -6662,6 +6667,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                         op.args.licorice.sharpness = rep.bond_sharpness;
                         op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+                        op.args.licorice.bond_orders = rep.bond_orders;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6672,6 +6678,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                         op.args.ball_and_stick.sharpness = rep.bond_sharpness;
                         op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+                        op.args.ball_and_stick.bond_orders = rep.bond_orders;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6862,7 +6869,14 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
                 .rep = data->representation.reps[i].md_rep,
                 .model_matrix = NULL,
             };
-            MEMCPY(&op.args, &rep.scale, sizeof(op.args));
+            // The scales lead every struct of the args. The geometry has to be that of the opaque pass, which this
+            // draws again with GL_EQUAL depth: the bond orders too.
+            MEMCPY(&op.args, &rep.scale, MIN(sizeof(op.args), sizeof(rep.scale)));
+            if (rep.type == RepresentationType::Licorice) {
+                op.args.licorice.bond_orders = rep.bond_orders;
+            } else if (rep.type == RepresentationType::BallAndStick) {
+                op.args.ball_and_stick.bond_orders = rep.bond_orders;
+            }
             md_array_push(draw_ops, op, frame_alloc);
         }
     }
