@@ -29,7 +29,9 @@ struct GBuffer {
         uint32_t velocity = 0;
         uint32_t picking = 0;
         uint32_t transparency = 0;
-        uint32_t history = 0;
+        uint32_t transparency_hdr = 0;  // RGBA16F, premultiplied linear radiance blended over the scene before tone mapping (isosurfaces). Not attached to fbo.
+        uint32_t history = 0;       // TAA history written this frame
+        uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
     } tex;
 
     uint32_t fbo = 0;

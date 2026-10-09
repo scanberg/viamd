@@ -282,7 +282,9 @@ void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_sy
 void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_inst_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
+// secondary_structure: one per segment of sys.protein_backbone, for the displayed state usually
+// displayed_secondary_structure (viamd.h); NULL colors everything as unknown
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
 
 static inline vec4_t scale_saturation(vec4_t rgba, float scale) {
     vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));

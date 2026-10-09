@@ -253,6 +253,10 @@ struct DensityVolume : viamd::EventHandler {
                 }
             }
         }
+        // Workspaces from before the two were exclusive can have both on: DVR wins, as it did by default
+        if (dvr.enabled && iso.enabled) {
+            iso.enabled = false;
+        }
         dvr.tf.dirty = true;
         dirty_rep = true;
         dirty_vol = true;
@@ -375,7 +379,7 @@ struct DensityVolume : viamd::EventHandler {
                     color_atoms_inst_idx(colors, num_atoms, sys);
                     break;
                 case ColorMapping::SecondaryStructure:
-                    color_atoms_secondary_structure(colors, num_atoms, sys);
+                    color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state));
                     break;
                 default:
                     ASSERT(false);
@@ -421,6 +425,7 @@ struct DensityVolume : viamd::EventHandler {
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
                 gl::set_texture_3D_data(volume_texture.id, 0, prop_attr->data, GL_R32F);
+                volume::notify_data_changed(volume_texture.id);
             }
         }
     }
@@ -474,7 +479,15 @@ struct DensityVolume : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Render")) {
-                    ImGui::Checkbox("Direct Volume Rendering", &dvr.enabled);
+                    // One or the other (or neither): the two are separate renderers and never mixed
+                    if (ImGui::RadioButton("Off", !dvr.enabled && !iso.enabled)) {
+                        dvr.enabled = false;
+                        iso.enabled = false;
+                    }
+                    if (ImGui::RadioButton("Direct Volume Rendering", dvr.enabled)) {
+                        dvr.enabled = true;
+                        iso.enabled = false;
+                    }
                     if (dvr.enabled) {
                         ImGui::Indent();
                         if (ImPlot::ColormapButton(ImPlot::GetColormapName(dvr.tf.colormap), button_size, dvr.tf.colormap)) {
@@ -500,7 +513,10 @@ struct DensityVolume : viamd::EventHandler {
 
                         ImGui::Unindent();
                     }
-                    ImGui::Checkbox("Iso Surfaces", &iso.enabled);
+                    if (ImGui::RadioButton("Iso Surfaces", iso.enabled)) {
+                        iso.enabled = true;
+                        dvr.enabled = false;
+                    }
                     if (iso.enabled) {
                         ImGui::Indent();
                         for (int i = 0; i < (int)iso.count; ++i) {
@@ -565,7 +581,7 @@ struct DensityVolume : viamd::EventHandler {
                         }
 
                         if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
-                            for (int i = 0; i < (int)ColorMapping::Property; ++i) {
+                            for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
                                 if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
                                     rep.colormap = (ColorMapping)i;
                                     dirty_rep = true;
@@ -830,10 +846,7 @@ struct DensityVolume : viamd::EventHandler {
                         .view_matrix = &world_to_view.elem[0][0],
                         .proj_matrix = &view_to_clip.elem[0][0],
                     },
-                    .picking_offset = {
-                        .atom_base = state->picking_range_atom.beg,
-                        .bond_base = state->picking_range_bond.beg,
-                    }
+                    .picking_offset = gl_picking_offset(*state),
                 };
 
                 md_gl_draw(&draw_args);
@@ -841,51 +854,74 @@ struct DensityVolume : viamd::EventHandler {
                 glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             }
 
+            bool iso_written = false;
             if (show_density_volume) {
-                volume::RenderDesc vol_desc = {
-                    .render_target = {
-                        .depth  = gbuf.tex.depth,
-                        .color  = gbuf.tex.transparency,
-                        .width  = gbuf.width,
-                        .height = gbuf.height,
-                    },
-                    .texture = {
-                        .density_volume = volume_texture.id,
-                        .transfer_function = dvr.tf.id,
-                    },
-                    .matrix = {
-                        .model = model_mat,
-                        .view = world_to_view,
-                        .proj = view_to_clip,
-                        .inv_proj = clip_to_view,
-                    },
-                    .clip_volume = {
-                        .min = clip_volume.min,
-                        .max = clip_volume.max,
-                    },
-                    .iso = {
-                        .enabled = iso.enabled,
-                        .count = iso.count,
-                        .values = iso.values,
-                        .colors = iso.colors,
-                    },
-                    .dvr = {
-                        .enabled = dvr.enabled,
-                        .min_tf_value = dvr.tf.min_val,
-                        .max_tf_value = dvr.tf.max_val,
-                    },
-                    .shading = {
-                        .env_radiance = state->visuals.background.color * state->visuals.background.intensity,
-                        .roughness = 0.3f,
-                        .dir_radiance = {10,10,10},
-                        .ior = 1.5f,
-                        .exposure = state->visuals.tonemapping.exposure,
-                        .gamma = state->visuals.tonemapping.gamma,
-                    },
-                    .voxel_spacing = voxel_spacing
-                    
-                };
-                volume::render_volume(vol_desc);
+                if (dvr.enabled) {
+                    volume::DvrRenderDesc vol_desc = {
+                        .render_target = {
+                            .depth  = gbuf.tex.depth,
+                            .color  = gbuf.tex.transparency,
+                            .width  = gbuf.width,
+                            .height = gbuf.height,
+                        },
+                        .texture = {
+                            .density_volume = volume_texture.id,
+                            .transfer_function = dvr.tf.id,
+                        },
+                        .matrix = {
+                            .model = model_mat,
+                            .view = world_to_view,
+                            .proj = view_to_clip,
+                            .inv_proj = clip_to_view,
+                        },
+                        .clip_volume = {
+                            .min = clip_volume.min,
+                            .max = clip_volume.max,
+                        },
+                        .tf = {
+                            .min_value = dvr.tf.min_val,
+                            .max_value = dvr.tf.max_val,
+                        },
+                    };
+                    volume::render_dvr(vol_desc);
+                } else if (iso.enabled) {
+                    volume::IsoRenderDesc vol_desc = {
+                        .render_target = {
+                            .depth  = gbuf.tex.depth,
+                            .color  = gbuf.tex.transparency_hdr,
+                            .width  = gbuf.width,
+                            .height = gbuf.height,
+                            .clear_color = true,
+                        },
+                        .texture = {
+                            .density_volume = volume_texture.id,
+                        },
+                        .matrix = {
+                            .model = model_mat,
+                            .view = world_to_view,
+                            .proj = view_to_clip,
+                            .inv_proj = clip_to_view,
+                        },
+                        .clip_volume = {
+                            .min = clip_volume.min,
+                            .max = clip_volume.max,
+                        },
+                        .iso = {
+                            .count = iso.count,
+                            .values = iso.values,
+                            .colors = iso.colors,
+                            .exact = state->settings.exact_isosurfaces,
+                        },
+                        // Lit like the compose pass lights the reference structures: env = background / 4
+                        .shading = {
+                            .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
+                            .roughness = 0.3f,
+                            .dir_radiance = {10,10,10},
+                            .ior = 1.5f,
+                        },
+                    };
+                    iso_written = volume::render_isosurfaces(vol_desc);
+                }
             }
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
@@ -897,7 +933,8 @@ struct DensityVolume : viamd::EventHandler {
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                // Into the transparency buffer, which holds premultiplied colour
+                glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 				immediate::Queue* queue = immediate::queue_create("Density Volume Bounds");
 
@@ -938,6 +975,7 @@ struct DensityVolume : viamd::EventHandler {
             postprocess_inputs.normal = gbuf.tex.normal;
             postprocess_inputs.velocity = gbuf.tex.velocity;
             postprocess_inputs.transparency = gbuf.tex.transparency;
+            postprocess_inputs.transparency_hdr = iso_written ? gbuf.tex.transparency_hdr : 0;
 
             ViewParam view_param = {
                 .matrix = {

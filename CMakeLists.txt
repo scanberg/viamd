@@ -172,8 +172,10 @@ endif()
 
 set(SRC_FILES
     src/app_settings.cpp
+    src/color_scale.cpp
     src/color_utils.cpp
     src/display_units.cpp
+    src/surface_field.cpp
     src/event.cpp
     src/image.cpp
     src/imgui_widgets.cpp
@@ -188,8 +190,10 @@ set(SRC_FILES
     src/viamd.cpp
 
     src/app_settings.h
+    src/color_scale.h
     src/color_utils.h
     src/display_units.h
+    src/surface_field.h
     src/event.h
     src/image.h
     src/imgui_widgets.h
@@ -249,7 +253,6 @@ if (NOT VIAMD_ENABLE_QM)
 endif()
 
 set(SHADER_FILES 
-    src/shaders/highlight.frag
     src/shaders/scale_hsv.frag
     src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
@@ -260,18 +263,29 @@ set(SHADER_FILES
     src/shaders/tonemap/uncharted.frag
     src/shaders/tonemap/aces.frag
     src/shaders/tonemap/fast_reversible.frag
-    src/shaders/dof/dof_half_res_prepass.frag
-    src/shaders/dof/dof.frag
+    src/shaders/dof/dof_prepass.frag
+    src/shaders/dof/dof_tile.frag
+    src/shaders/dof/dof_gather.frag
+    src/shaders/dof/dof_near_down.frag
+    src/shaders/dof/dof_near.frag
+    src/shaders/dof/dof_fill.frag
+    src/shaders/dof/dof_composite.frag
     src/shaders/velocity/blit_velocity.frag
     src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
-    src/shaders/volume/entryexit.vert
-    src/shaders/volume/entryexit.frag
-    src/shaders/volume/raycaster.frag
+    src/shaders/volume/dvr.frag
+    src/shaders/volume/isosurface.frag
+    src/shaders/volume/isosurface_fast.frag
+    src/shaders/volume/block_minmax.frag
+    src/shaders/volume/cell_minmax.frag
+    src/shaders/volume/block_proxy.vert
+    src/shaders/volume/block_proxy.frag
     src/shaders/volume/splat_color.comp
+    src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
+    src/shaders/ssao/upsample.frag
 )
 
 # Bake shaders into a single header file

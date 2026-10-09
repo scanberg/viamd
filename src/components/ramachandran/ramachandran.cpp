@@ -18,6 +18,7 @@
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
 #include <md_system.h>
+#include <md_util.h>
 
 #include <viamd_event.h>
 #include <viamd.h>
@@ -474,7 +475,10 @@ struct Ramachandran : viamd::EventHandler {
         rama_rep_t filt = {};
     } rama_data;
 
+    // The backbone segments of each ramachandran type (general, glycine, proline, pre-proline). Derived from the
+    // topology, by this window only, so it lives here and is rebuilt when the topology version moves.
     md_array(uint32_t) rama_type_indices[4] = {};
+    uint64_t rama_topology_version = 0;
 
     struct {
         ImVec4 base_outline         = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -713,13 +717,26 @@ struct Ramachandran : viamd::EventHandler {
         if (!task_system::task_is_running(compute_density_full) &&
             !task_system::task_is_running(compute_density_filt))
         {
-            md_array_shrink(rama_type_indices[0], 0);
-            md_array_shrink(rama_type_indices[1], 0);
-            md_array_shrink(rama_type_indices[2], 0);
-            md_array_shrink(rama_type_indices[3], 0);
+            classify_segments(state);
+            full_fingerprint = 0;
+            filt_fingerprint = 0;
+        }
+    }
 
-            for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.sys.protein_backbone.segment.rama_type); ++i) {
-                switch (state.mold.sys.protein_backbone.segment.rama_type[i]) {
+    void classify_segments(const ApplicationState& state) {
+        const md_system_t& sys = state.mold.sys;
+        md_array_shrink(rama_type_indices[0], 0);
+        md_array_shrink(rama_type_indices[1], 0);
+        md_array_shrink(rama_type_indices[2], 0);
+        md_array_shrink(rama_type_indices[3], 0);
+
+        const size_t num_segments = sys.protein_backbone.segment.count;
+        if (num_segments > 0) {
+            md_temp_scope_t temp = md_temp_begin();
+            md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
+            md_util_backbone_ramachandran_classify(types, num_segments, &sys);
+            for (uint32_t i = 0; i < (uint32_t)num_segments; ++i) {
+                switch (types[i]) {
                 case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
@@ -727,13 +744,19 @@ struct Ramachandran : viamd::EventHandler {
                 default: break;
                 }
             }
-
-            full_fingerprint = 0;
-            filt_fingerprint = 0;
+            md_temp_end(temp);
         }
+        rama_topology_version = sys.topology_version;
     }
 
     void update(ApplicationState& state) {
+        // The topology changed since the segments were classified (bonds edited, inferred again)
+        if (rama_topology_version != state.mold.sys.topology_version &&
+            !task_system::task_is_running(compute_density_full) && !task_system::task_is_running(compute_density_filt)) {
+            classify_segments(state);
+            full_fingerprint = 0;
+            filt_fingerprint = 0;
+        }
         if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
             const size_t num_frames = run_num_frames(&state);
             if (num_frames > 0) {
@@ -853,6 +876,8 @@ struct Ramachandran : viamd::EventHandler {
             }
 
             const auto& sys = state.mold.sys;
+            // The angles of the displayed state, which it carries in its attributes (NULL when it has none)
+            const md_backbone_angles_t* curr_angles = md_util_state_backbone_angles(&state.mold.state, &sys);
             md_bitfield_t* selection_mask = &state.selection.selection_mask;
             md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
 
@@ -956,7 +981,7 @@ struct Ramachandran : viamd::EventHandler {
                             md_bitfield_clear(highlight_mask);
                         }
 
-                        if (show_curr && sys.protein_backbone.segment.angle) {
+                        if (show_curr && curr_angles) {
                             const uint32_t* indices = rama_type_indices[plot_idx];
 
                             double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
@@ -973,9 +998,9 @@ struct Ramachandran : viamd::EventHandler {
                             for (size_t i = 0; i < md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
 
-                                if (sys.protein_backbone.segment.angle[idx].phi == 0 && sys.protein_backbone.segment.angle[idx].psi == 0) continue;
+                                if (curr_angles[idx].phi == 0 && curr_angles[idx].psi == 0) continue;
 
-								md_backbone_angles_t bb_angles = sys.protein_backbone.segment.angle[idx];
+								md_backbone_angles_t bb_angles = curr_angles[idx];
                                 ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(bb_angles.phi), RAD_TO_DEG(bb_angles.psi));
                                 coord.x = deperiodize_ortho(coord.x, ref_x, 360.0);
                                 coord.y = deperiodize_ortho(coord.y, ref_y, 360.0);
@@ -1021,7 +1046,7 @@ struct Ramachandran : viamd::EventHandler {
 
                             for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
-								md_backbone_angles_t bb_angles = sys.protein_backbone.segment.angle[idx];
+								md_backbone_angles_t bb_angles = curr_angles[idx];
                                 if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
 
                                 int64_t atom_idx = sys.protein_backbone.segment.atoms[idx].ca;
@@ -1058,18 +1083,18 @@ struct Ramachandran : viamd::EventHandler {
                             ImPlot::SetNextMarkerStyle(marker, style.base_size, style.base_fill, 1.0f, style.base_outline);
                             ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                             if (md_array_size(indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(curr_angles), indices, view_mid };
                                 ImPlot::PlotScatterG("##Current", index_getter, &user_data, (int)md_array_size(indices));
                             }
 
                             if (md_array_size(selection_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), selection_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(curr_angles), selection_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.selection_fill, style.interaction_weight, style.selection_outline);
                                 ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
                             }
 
                             if (md_array_size(highlight_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), highlight_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(curr_angles), highlight_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
                             }

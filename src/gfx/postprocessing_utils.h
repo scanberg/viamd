@@ -13,6 +13,7 @@ void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
 void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
 
 void blit_texture(GLuint tex);
+// Writes the colour premultiplied by its alpha, (rgb * a, a): meant for the transparency buffer
 void blit_color(vec4_t color);
 
 }  // namespace postprocessing
@@ -31,8 +32,11 @@ struct Inputs {
     GLuint color = 0;
     GLuint normal = 0;
     GLuint velocity = 0;
-    GLuint transparency = 0;
-    GLuint history = 0;
+    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
+    GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces)
+    bool   transparency_under_hdr = false;  // transparency lies under transparency_hdr (a selection tint under isosurfaces): it is covered by its alpha
+    GLuint history = 0;         // TAA history target, written this frame
+    GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
 };
 
 struct Settings {
@@ -45,17 +49,16 @@ struct Settings {
         float gamma = 2.4f;
     } tonemap;
 
+    // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
     struct {
         bool enabled = true;
-        float radius = 6.0f;
-        float intensity = 3.0f;
-        float bias = 0.1f;
+        float intensity = 5.0f;
     } ssao;
 
     struct {
         bool enabled = true;
-        float focus_depth = 0.5f;
-        float focus_scale = 10.f;
+        float focus_depth = 0.5f;   // view-space distance to the focus plane
+        float aperture = 0.01f;     // CoC of an object at infinity, as a fraction of the viewport height
     } dof;
 
     struct {

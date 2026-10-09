@@ -27,8 +27,10 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     if (!gbuf->tex.normal) glGenTextures(1, &gbuf->tex.normal);
     if (!gbuf->tex.velocity) glGenTextures(1, &gbuf->tex.velocity);
     if (!gbuf->tex.transparency) glGenTextures(1, &gbuf->tex.transparency);
+    if (!gbuf->tex.transparency_hdr) glGenTextures(1, &gbuf->tex.transparency_hdr);
     if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
     if (!gbuf->tex.history) glGenTextures(1, &gbuf->tex.history);
+    if (!gbuf->tex.history_prev) glGenTextures(1, &gbuf->tex.history_prev);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
     // A DEPTH_STENCIL internal format requires format GL_DEPTH_STENCIL and type
@@ -77,13 +79,25 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // Temporal history is not attached to the G-buffer FBO, but it follows the same size/lifetime.
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.history);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R11F_G11F_B10F, width, height, 0, GL_RGB, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.transparency_hdr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Temporal history is not attached to the G-buffer FBO, but it follows the same size/lifetime.
+    const uint32_t history_textures[2] = {gbuf->tex.history, gbuf->tex.history_prev};
+    // RGB10_A2: the history holds display referred (tone mapped) colour. R11F_G11F_B10F has a 5-6 bit mantissa, too
+    // coarse for the exponential blend to converge (feedback ~0.95 moves less than one step per frame).
+    for (uint32_t tex : history_textures) {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB10_A2, width, height, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -127,14 +141,16 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     GLuint clear_fbo = 0;
     glGenFramebuffers(1, &clear_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, clear_fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuf->tex.history, 0);
-    GLenum clear_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
-    if (clear_status != GL_FRAMEBUFFER_COMPLETE) {
-        MD_LOG_ERROR("History clear framebuffer is incomplete (0x%04X)", (unsigned int)clear_status);
+    for (uint32_t tex : history_textures) {
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLenum clear_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (clear_status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("History clear framebuffer is incomplete (0x%04X)", (unsigned int)clear_status);
+        }
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
     }
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_COLOR_BUFFER_BIT);
     glDeleteFramebuffers(1, &clear_fbo);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -177,6 +193,8 @@ void gbuffer_free(GBuffer* gbuf) {
     if (gbuf->tex.normal) glDeleteTextures(1, &gbuf->tex.normal);
     if (gbuf->tex.velocity) glDeleteTextures(1, &gbuf->tex.velocity);
     if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
+    if (gbuf->tex.transparency_hdr) glDeleteTextures(1, &gbuf->tex.transparency_hdr);
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
     if (gbuf->tex.history) glDeleteTextures(1, &gbuf->tex.history);
+    if (gbuf->tex.history_prev) glDeleteTextures(1, &gbuf->tex.history_prev);
 }

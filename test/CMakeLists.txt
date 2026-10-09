@@ -61,6 +61,7 @@ target_compile_features(viamd_test PRIVATE cxx_std_20)
 # that dispatch are themselves tested against.
 target_compile_definitions(viamd_test PRIVATE UTEST_USE_OLD_QPC
     VIAMD_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/test_data"
+    VIAMD_ASE_TRAJ_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/unittest/ase_traj_data"
     ${VIAMD_DEFINES} ${MD_DEFINES})
 target_compile_options(viamd_test PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)
 

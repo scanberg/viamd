@@ -48,6 +48,7 @@ enum LoaderType_ {
     LoaderType_EDR,     // GROMACS energy file, supplements a loaded trajectory
     LoaderType_XVG,     // xmgrace columns (GROMACS analysis output), a series along the loaded trajectory
     LoaderType_CSV,     // comma separated columns, a series along the loaded trajectory
+    LoaderType_ASE_TRAJ, // ASE trajectory (.traj): a system and its trajectory in one file
     LoaderType_COUNT
 };
 

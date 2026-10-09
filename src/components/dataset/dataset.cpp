@@ -87,8 +87,27 @@ struct AtomTypeLoadState {
     float      radius = 0;
     float      mass   = 0;
     uint32_t   color  = 0;
-    md_flags_t flags  = MD_FLAG_NONE;
+    md_atom_type_flags_t flags = MD_ATOM_TYPE_FLAG_NONE;
 };
+
+// The user may turn an atom type into a coarse grained bead and back (an atom). A virtual site stays one.
+static inline bool type_is_bead(md_atom_type_flags_t flags) {
+    return md_atom_type_flags_particle_kind(flags) == MD_PARTICLE_BEAD;
+}
+
+static inline md_atom_type_flags_t type_with_bead(md_atom_type_flags_t flags, bool bead) {
+    if (bead) return md_atom_type_flags_set_particle_kind(flags, MD_PARTICLE_BEAD);
+    return type_is_bead(flags) ? md_atom_type_flags_set_particle_kind(flags, MD_PARTICLE_ATOM) : flags;
+}
+
+// What a particle is, is topology: whatever was derived from it is stale when it changes
+static inline void set_type_bead(md_system_t& sys, size_t i, bool bead) {
+    const md_atom_type_flags_t flags = type_with_bead(sys.atom.type.flags[i], bead);
+    if (flags != sys.atom.type.flags[i]) {
+        sys.atom.type.flags[i] = flags;
+        md_system_topology_changed(&sys);
+    }
+}
 
 // A single deserialized [AtomType] section. The workspace is parsed before the system is loaded, so these
 // are buffered here and applied once the atom types actually exist (see apply_pending_atom_type_overrides).
@@ -246,7 +265,7 @@ struct Dataset : viamd::EventHandler {
             item.load.flags  = sys.atom.type.flags[i];
 
             // Coarse grained types have no element to inherit from, so they always carry custom properties
-            item.use_defaults = !(item.load.flags & MD_FLAG_COARSE_GRAINED);
+            item.use_defaults = !type_is_bead(item.load.flags);
 
             atom_types[i] = item;
         }
@@ -476,10 +495,10 @@ struct Dataset : viamd::EventHandler {
         delta.radius = type.radius[i] != base_radius;
         delta.mass   = type.mass[i]   != base_mass;
         delta.color  = type.color[i]  != base_color;
-        delta.coarse = (type.flags[i] & MD_FLAG_COARSE_GRAINED) != (load.flags & MD_FLAG_COARSE_GRAINED);
+        delta.coarse = type_is_bead(type.flags[i]) != type_is_bead(load.flags);
 
-        // use_defaults is not stored in the system, its implicit default follows the coarse grained flag
-        delta.defaults = item.use_defaults != !(load.flags & MD_FLAG_COARSE_GRAINED);
+        // use_defaults is not stored in the system, its implicit default follows whether the type is a bead
+        delta.defaults = item.use_defaults != !type_is_bead(load.flags);
         return delta;
     }
 
@@ -516,7 +535,7 @@ struct Dataset : viamd::EventHandler {
             if (delta.radius)   viamd::write_flt (state, STR_LIT("Radius"),        type.radius[i]);
             if (delta.mass)     viamd::write_flt (state, STR_LIT("Mass"),          type.mass[i]);
             if (delta.color)    viamd::write_vec4(state, STR_LIT("Color"),         vec4_from_u32(type.color[i]));
-            if (delta.coarse)   viamd::write_bool(state, STR_LIT("CoarseGrained"), (type.flags[i] & MD_FLAG_COARSE_GRAINED) != 0);
+            if (delta.coarse)   viamd::write_bool(state, STR_LIT("CoarseGrained"), type_is_bead(type.flags[i]));
             if (delta.defaults) viamd::write_bool(state, STR_LIT("UseDefaults"),   item.use_defaults);
         }
     }
@@ -624,11 +643,7 @@ struct Dataset : viamd::EventHandler {
                     type.color[i] = ovr.color;
                 }
                 if (ovr.has_coarse_grained) {
-                    if (ovr.coarse_grained) {
-                        type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
-                    } else {
-                        type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
-                    }
+                    set_type_bead(sys, i, ovr.coarse_grained);
                 }
                 if (ovr.has_use_defaults) {
                     item.use_defaults = ovr.use_defaults;
@@ -994,14 +1009,29 @@ struct Dataset : viamd::EventHandler {
     int  expanded_instance = -1;
     bool use_short_labels = true;
 
-    // What an entity is, from its flags and what its residues were recognised as. The flags alone
-    // miss a peptide one of whose residues has an unusual backbone.
-    static const char* entity_kind(md_flags_t flags, size_t amino, size_t nucleic, size_t residues) {
-        if (flags & MD_FLAG_WATER)          return "Water";
-        if (flags & MD_FLAG_ION)            return "Ion";
-        if (flags & MD_FLAG_COARSE_GRAINED) return amino ? "Protein (CG)" : "Coarse grained";
-        if ((flags & MD_FLAG_POLYPEPTIDE) || (amino && 2 * amino >= residues))     return residues > 1 ? "Protein" : "Amino acid";
-        if ((flags & MD_FLAG_NUCLEOTIDE)  || (nucleic && 2 * nucleic >= residues)) return residues > 1 ? "Nucleic acid" : "Nucleotide";
+    // What an entity is: its kind, and for a small molecule what its residue is
+    struct EntityCounts {
+        size_t amino = 0;       // components which are amino acids
+        size_t nucleic = 0;     // nucleotides
+        size_t ion = 0;         // ions
+        size_t beads = 0;       // coarse grained beads
+    };
+
+    static const char* entity_kind(md_entity_kind_t kind, const EntityCounts& n, size_t residues) {
+        switch (kind) {
+        case MD_ENTITY_KIND_WATER:      return "Water";
+        case MD_ENTITY_KIND_PEPTIDE:    return n.beads ? "Protein (CG)" : "Protein";
+        case MD_ENTITY_KIND_DNA:        return "DNA";
+        case MD_ENTITY_KIND_RNA:        return "RNA";
+        case MD_ENTITY_KIND_NUCLEIC:    return "Nucleic acid";
+        case MD_ENTITY_KIND_BRANCHED:   return "Oligosaccharide";
+        case MD_ENTITY_KIND_POLYMER:    return "Polymer";
+        default: break;
+        }
+        if (n.ion && n.ion == residues)         return "Ion";
+        if (n.amino && n.amino == residues)     return "Amino acid";
+        if (n.nucleic && n.nucleic == residues) return "Nucleotide";
+        if (n.beads)                            return "Coarse grained";
         return "Other";
     }
 
@@ -1048,17 +1078,14 @@ struct Dataset : viamd::EventHandler {
         // The row each atom counts toward; the last row is the atoms of no instance
         int32_t* atom_row = md_temp_alloc_array(temp, int32_t, sys.atom.count + 1);
         for (size_t a = 0; a < sys.atom.count; ++a) atom_row[a] = -1;
-        size_t* amino   = md_temp_alloc_array(temp, size_t, sys.entity.count + 1);
-        size_t* nucleic = md_temp_alloc_array(temp, size_t, sys.entity.count + 1);
-        MEMSET(amino,   0, (sys.entity.count + 1) * sizeof(size_t));
-        MEMSET(nucleic, 0, (sys.entity.count + 1) * sizeof(size_t));
+        EntityCounts* counts = md_temp_alloc_array(temp, EntityCounts, sys.entity.count + 1);
+        for (size_t e = 0; e <= sys.entity.count; ++e) counts[e] = EntityCounts{};
 
         for (size_t e = 0; e < sys.entity.count; ++e) {
             EntityRow row = {};
             row.entity = (int)e;
-            const md_flags_t flags = md_entity_flags(&sys.entity, e);
             row.kind = "Other";
-            row.polymer = flags & (MD_FLAG_POLYMER | MD_FLAG_POLYPEPTIDE | MD_FLAG_NUCLEOTIDE);
+            row.polymer = md_entity_kind_is_polymer(md_entity_kind(&sys.entity, e));
             str_t desc = entity_display_name(md_entity_description(&sys.entity, e));
             if (str_empty(desc)) desc = md_entity_id(&sys.entity, e);
             str_copy_to_char_buf(row.name, sizeof(row.name), desc);
@@ -1080,13 +1107,15 @@ struct Dataset : viamd::EventHandler {
             row.num_atoms += atoms.end - atoms.beg;
             for (uint32_t a = atoms.beg; a < atoms.end && a < sys.atom.count; ++a) {
                 row.mass += md_atom_mass(&sys.atom, a);
-                if (charge) row.charge += charge[a];
+                if (charge && !atom_attribute_value_absent(charge[a])) row.charge += charge[a];
                 atom_row[a] = e;
+                counts[e].beads += md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD;
             }
             for (uint32_t k = comps.beg; k < comps.end; ++k) {
-                const md_flags_t f = md_component_flags(&sys.component, k);
-                if (f & MD_FLAG_AMINO_ACID) amino[e] += 1;
-                if (f & MD_FLAG_NUCLEOTIDE) nucleic[e] += 1;
+                const md_component_kind_t kind = md_component_kind(&sys.component, k);
+                counts[e].amino   += kind == MD_COMPONENT_KIND_AMINO_ACID;
+                counts[e].nucleic += kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+                counts[e].ion     += kind == MD_COMPONENT_KIND_ION;
             }
         }
 
@@ -1100,7 +1129,8 @@ struct Dataset : viamd::EventHandler {
             atom_row[a] = rest_row;
             rest.num_atoms += 1;
             rest.mass += md_atom_mass(&sys.atom, a);
-            if (charge) rest.charge += charge[a];
+            // An atom without a charge (a QM atom beside an embedding's sites) adds none
+            if (charge && !atom_attribute_value_absent(charge[a])) rest.charge += charge[a];
         }
         if (rest.num_atoms > 0) {
             md_array_push(c.rows, rest, data.allocator.persistent);
@@ -1120,7 +1150,7 @@ struct Dataset : viamd::EventHandler {
             EntityRow& row = c.rows[i];
             if (row.res_min == UINT32_MAX) row.res_min = 0;
             if (row.entity >= 0) {
-                row.kind = entity_kind(md_entity_flags(&sys.entity, row.entity), amino[row.entity], nucleic[row.entity], row.num_residues);
+                row.kind = entity_kind(md_entity_kind(&sys.entity, row.entity), counts[row.entity], row.num_residues);
             }
             c.mass += row.mass;
             c.charge += row.charge;
@@ -1128,26 +1158,30 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t b = 0; b < sys.bond.count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
-            if      (f & MD_BOND_FLAG_USER_DEFINED) c.bonds_user += 1;
-            else if (f & MD_BOND_FLAG_TOPOLOGY)     c.bonds_topology += 1;
-            else if (f & MD_BOND_FLAG_INFERRED)     c.bonds_inferred += 1;
-            else                                    c.bonds_file += 1;
+            switch (md_bond_origin((md_bond_flags_t)f)) {
+            case MD_BOND_ORIGIN_USER:     c.bonds_user     += 1; break;
+            case MD_BOND_ORIGIN_TOPOLOGY: c.bonds_topology += 1; break;
+            case MD_BOND_ORIGIN_INFERRED: c.bonds_inferred += 1; break;
+            default:                      c.bonds_file     += 1; break;
+            }
         }
 
         for (size_t a = 0; a < sys.atom.count; ++a) {
             if (atom_without_element(sys, a)) c.atoms_without_element += 1;
         }
-        for (size_t i = 0; i < sys.component.count; ++i) {
-            const md_flags_t f = md_component_flags(&sys.component, i);
-            if ((f & MD_FLAG_AMINO_ACID) && !(f & MD_FLAG_POLYPEPTIDE)) c.unresolved_amino += 1;
-            if ((f & MD_FLAG_NUCLEOTIDE) && !(f & MD_FLAG_NUCLEIC_ACID)) c.unresolved_nucleic += 1;
+        // The backbones of coarse grained residues are beads, which atom names cannot resolve, so they are not counted
+        for (size_t i = 0; i < sys.component.count && !md_system_is_coarse_grained(&sys); ++i) {
+            const md_component_flags_t f = md_component_flags(&sys.component, i);
+            if (f & MD_COMPONENT_FLAG_RESOLVED) continue;
+            c.unresolved_amino   += md_component_flags_kind(f) == MD_COMPONENT_KIND_AMINO_ACID;
+            c.unresolved_nucleic += md_component_flags_kind(f) == MD_COMPONENT_KIND_NUCLEOTIDE;
         }
     }
 
     // No element, not a bead, and not a massless virtual site (TIP4P's M carries no element by design)
     static bool atom_without_element(const md_system_t& sys, size_t a) {
         if (md_atom_atomic_number(&sys.atom, a) != 0) return false;
-        if (sys.atom.flags && (sys.atom.flags[a] & MD_FLAG_COARSE_GRAINED)) return false;
+        if (md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD) return false;
         return md_atom_mass(&sys.atom, a) > 0.0f;
     }
 
@@ -1181,8 +1215,8 @@ struct Dataset : viamd::EventHandler {
 
         for (uint32_t comp_idx = range.beg; comp_idx < end; ++comp_idx) {
             str_t comp_name = md_component_name(&sys.component, comp_idx);
-            const md_flags_t comp_flags = md_component_flags(&sys.component, comp_idx);
-            const bool short_label = short_labels && (comp_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE));
+            const md_component_kind_t comp_kind = md_component_kind(&sys.component, comp_idx);
+            const bool short_label = short_labels && (comp_kind == MD_COMPONENT_KIND_AMINO_ACID || comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE);
             if (short_label) {
                 const uint32_t color = component_color(comp_name);
                 comp_name = convert_to_short(comp_name);
@@ -1437,15 +1471,15 @@ struct Dataset : viamd::EventHandler {
                 handle_item_click(data);
             }
         }
-        auto residue_warning = [&](size_t count, md_flags_t has, md_flags_t lacks, const char* what) {
+        auto residue_warning = [&](size_t count, md_component_kind_t kind, const char* what) {
             if (count == 0) return;
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu residues are named like %s but their backbone was not found", count, what);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their atom names may not follow the usual convention.");
                 md_bitfield_clear(&data.selection.highlight_mask);
                 for (size_t i = 0; i < sys.component.count; ++i) {
-                    const md_flags_t f = md_component_flags(&sys.component, i);
-                    if ((f & has) && !(f & lacks)) {
+                    const md_component_flags_t f = md_component_flags(&sys.component, i);
+                    if (md_component_flags_kind(f) == kind && !(f & MD_COMPONENT_FLAG_RESOLVED)) {
                         const md_urange_t r = md_system_component_atom_range(&sys, i);
                         md_bitfield_set_range(&data.selection.highlight_mask, r.beg, r.end);
                     }
@@ -1453,8 +1487,8 @@ struct Dataset : viamd::EventHandler {
                 handle_item_click(data);
             }
         };
-        residue_warning(c.unresolved_amino,   MD_FLAG_AMINO_ACID, MD_FLAG_POLYPEPTIDE, "amino acids");
-        residue_warning(c.unresolved_nucleic, MD_FLAG_NUCLEOTIDE, MD_FLAG_NUCLEIC_ACID, "nucleotides");
+        residue_warning(c.unresolved_amino,   MD_COMPONENT_KIND_AMINO_ACID, "amino acids");
+        residue_warning(c.unresolved_nucleic, MD_COMPONENT_KIND_NUCLEOTIDE, "nucleotides");
 
         if (c.has_charge && fabs(c.charge) >= 0.01) {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " The system is not neutral (%+.3f e)", c.charge);
@@ -1465,7 +1499,7 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsItemHovered()) {
                 md_bitfield_clear(&data.selection.highlight_mask);
                 for (size_t b = 0; b < sys.bond.count; ++b) {
-                    if (sys.bond.flags && (sys.bond.flags[b] & MD_BOND_FLAG_USER_DEFINED)) {
+                    if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
                         md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[0]);
                         md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[1]);
                     }
@@ -1914,7 +1948,7 @@ struct Dataset : viamd::EventHandler {
         float    mass   = load.mass;
         uint32_t color  = load.color;
 
-        item.use_defaults = !(load.flags & MD_FLAG_COARSE_GRAINED);
+        item.use_defaults = !type_is_bead(load.flags);
         if (item.use_defaults) {
             const ElementDefaultDelta ed = compute_element_default_delta(load.z);
             const ElementDefault& def = element_defaults[load.z];
@@ -1931,7 +1965,7 @@ struct Dataset : viamd::EventHandler {
         type.radius[i] = radius;
         type.mass[i]   = mass;
         type.color[i]  = color;
-        type.flags[i]  = (type.flags[i] & ~MD_FLAG_COARSE_GRAINED) | (load.flags & MD_FLAG_COARSE_GRAINED);
+        set_type_bead(data.mold.sys, i, type_is_bead(load.flags));
     }
 
     // Push the element defaults onto an atom type which is linked to them
@@ -1952,7 +1986,7 @@ struct Dataset : viamd::EventHandler {
     void atom_type_tooltip(const ApplicationState& data, size_t i) const {
         const md_atom_type_data_t& type = data.mold.sys.atom.type;
         const DatasetItem& item = atom_types[i];
-        const bool cg = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+        const bool cg = type_is_bead(type.flags[i]);
         const str_t name    = md_atom_type_name(&type, i);
         const str_t ff_type = md_atom_type_ff_type(&type, i);
         char num[32];
@@ -2023,8 +2057,8 @@ struct Dataset : viamd::EventHandler {
     static int compare3(double a, double b) { return (a > b) - (a < b); }
 
     int compare_atom_types(const md_atom_type_data_t& type, int a, int b, ImGuiID column) const {
-        const bool cg_a = type.flags[a] & MD_FLAG_COARSE_GRAINED;
-        const bool cg_b = type.flags[b] & MD_FLAG_COARSE_GRAINED;
+        const bool cg_a = type_is_bead(type.flags[a]);
+        const bool cg_b = type_is_bead(type.flags[b]);
         switch (column) {
         case AtomTypeCol_Type:     return strcmp(atom_types[a].label, atom_types[b].label);
         case AtomTypeCol_Element:  return compare3(cg_a ? (int)MD_Z_Count : (int)type.z[a], cg_b ? (int)MD_Z_Count : (int)type.z[b]); // Beads have no element and go last
@@ -2078,13 +2112,9 @@ struct Dataset : viamd::EventHandler {
             }
         }
 
-        bool coarse_grained = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+        bool coarse_grained = type_is_bead(type.flags[i]);
         if (ImGui::Checkbox("Coarse grained", &coarse_grained)) {
-            if (coarse_grained) {
-                type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
-            } else {
-                type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
-            }
+            set_type_bead(data.mold.sys, i, coarse_grained);
         }
 
         if (!coarse_grained) {
@@ -2198,7 +2228,7 @@ struct Dataset : viamd::EventHandler {
         auto passes_filter = [&](size_t i) {
             if (i < first) return false;
             if (str_empty(filter)) return true;
-            const bool cg = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+            const bool cg = type_is_bead(type.flags[i]);
             return contains_ignore_case(str_from_cstr(atom_types[i].label), filter) || (!cg && str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
         };
 
@@ -2300,7 +2330,7 @@ struct Dataset : viamd::EventHandler {
             for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                 const size_t i = (size_t)rows[r];
                 DatasetItem& item = atom_types[i];
-                const bool cg       = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+                const bool cg       = type_is_bead(type.flags[i]);
                 const bool linked   = item.use_defaults && !cg;
                 const bool modified = (bool)compute_atom_type_delta(type, item, i);
                 const bool selected = atom_type_selected == (int)i;

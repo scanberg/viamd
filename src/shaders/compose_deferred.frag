@@ -46,14 +46,6 @@ vec3 decode_normal(vec2 enc) {
     return n;
 }
 
-vec4 rand4(vec2 n) {
-    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* vec4(43758.5453, 28001.8384, 50849.4141, 12996.89));
-}
-
-vec4 srand4(vec2 n) {
-    return rand4(n) * 2.0 - 1.0;
-}
-
 const float PI = 3.1415926535;
 const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
@@ -138,9 +130,6 @@ void main() {
 
         vec2 tex_coord = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_texture_depth, 0));
         vec3 view_coord = linear_depth_to_view_coord(tex_coord, linear_depth);
-
-        // Add noise to reduce banding
-        color.rgb = clamp(color.rgb + color.rgb * srand4(tex_coord + u_time).rgb * 0.15, 0.0, 1.0);
 
         vec3 N = normal;
         vec3 V = -normalize(view_coord);
