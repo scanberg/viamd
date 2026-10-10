@@ -15,6 +15,11 @@
 // The sectors are spaced so that each carries the same share of the cosine-weighted hemisphere (the slice measure
 // cos(theta - gamma) |sin theta| integrated in closed form), so visibility is simply 1 - occupied / 32.
 //
+// No atan, sin or cos per step: a step whose front and back points both lie behind the projected normal's tangent
+// is skipped on a dot product (most steps around convex atoms), cos(2 theta - gamma) is expanded in the components of
+// the normalized step direction, and the angle that remains in the measure comes from a polynomial acos (6.7e-5 rad,
+// far below the 0.1 rad of a sector).
+//
 // Scale-free like ssao.frag: steps are spaced log-uniformly in screen space between u_r_min and u_r_max, the assumed
 // thickness of a sample is proportional to its lateral distance, and the depth comes from the rotated-grid mip chain
 // with the footprint growing with the step distance (McGuire et al. 2012).
@@ -66,10 +71,20 @@ vec3 decode_normal(vec2 enc) {
     return vec3(fenc * g, 1.0 - f / 2.0);
 }
 
-// Cosine-weighted measure of the slice from the view direction (theta = 0) to theta, for a projected normal at angle
-// gamma: integral of cos(t - gamma) |sin t| dt. Monotonic over the hemisphere [gamma - pi/2, gamma + pi/2].
-float slice_measure(float theta, float gamma, float cos_g, float sin_g) {
-    return sign(theta) * 0.25 * (cos_g + 2.0 * theta * sin_g - cos(2.0 * theta - gamma));
+// acos, Abramowitz & Stegun 4.4.45: |error| <= 6.7e-5
+float fast_acos(float x) {
+    float a = abs(x);
+    float r = sqrt(1.0 - a) * (1.5707288 + a * (-0.2121144 + a * (0.0742610 + a * -0.0187293)));
+    return x >= 0.0 ? r : PI - r;
+}
+
+// Cosine-weighted measure of the slice from the view direction (theta = 0) to the in-plane direction (a, b) =
+// (cos theta, sin theta), for a projected normal at angle gamma: integral of cos(t - gamma) |sin t| dt
+// = sign(theta) (cos gamma + 2 theta sin gamma - cos(2 theta - gamma)) / 4. Monotonic over the hemisphere.
+float slice_measure(float a, float b, float cos_g, float sin_g) {
+    float theta = (b < 0.0 ? -1.0 : 1.0) * fast_acos(a);
+    float cos_2t_g = (a * a - b * b) * cos_g + 2.0 * a * b * sin_g;
+    return (b < 0.0 ? -0.25 : 0.25) * (cos_g + 2.0 * theta * sin_g - cos_2t_g);
 }
 
 void main() {
@@ -98,15 +113,22 @@ void main() {
     int   s_ofs = int(bitfieldReverse(uint(u_frame & 15)) >> 28u);
     int   k     = (BAYER[(hp.y & 3) * 4 + (hp.x & 3)] + s_ofs) & 15;
     float rk    = float(bitfieldReverse(uint(k)) >> 28u) / 16.0;
-    float rot   = (float(k) + 0.5) / 16.0;
-    float log_ratio = log2(u_r_max / u_r_min);
+    float phi0  = PI * (float(k) + 0.5) / (16.0 * float(AO_NUM_SLICES));
+    vec2  d     = vec2(cos(phi0), sin(phi0));
+    const float SLICE_STEP = PI / float(AO_NUM_SLICES);
+    const vec2  slice_rot  = vec2(cos(SLICE_STEP), sin(SLICE_STEP));
+
+    // Steps at s_i = r_min * ratio^(i + phase): one exp2 per side, then a multiply per step
+    float log_ratio  = log2(u_r_max / u_r_min);
+    float step_ratio = exp2(log_ratio / float(AO_NUM_STEPS));
+    float s_first[2] = float[2](u_r_min * exp2(rk * log_ratio / float(AO_NUM_STEPS)),
+                                u_r_min * exp2(fract(rk + 0.5) * log_ratio / float(AO_NUM_STEPS)));
 
     float vis_sum = 0.0;
     float w_sum   = 0.0;
 
     for (int sl = 0; sl < AO_NUM_SLICES; ++sl) {
-        float phi = PI * (float(sl) + rot) / float(AO_NUM_SLICES);
-        vec2  d   = vec2(cos(phi), sin(phi));
+        if (sl > 0) d = vec2(d.x * slice_rot.x - d.y * slice_rot.y, d.x * slice_rot.y + d.y * slice_rot.x);
 
         // Slice frame: o is the in-plane direction perpendicular to V on the +d side
         vec3  dir3 = vec3(d, 0.0);
@@ -116,27 +138,25 @@ void main() {
         float n_len = length(n_p);
         if (n_len < 1e-4) continue;
         float cos_g = clamp(dot(n_p, V) / n_len, -1.0, 1.0);
-        float gamma = (dot(n_p, o) < 0.0 ? -1.0 : 1.0) * acos(cos_g);
-        float sin_g = sin(gamma);
-        float lo = gamma - HALF_PI;
-        float hi = gamma + HALF_PI;
-        float m_lo = slice_measure(lo, gamma, cos_g, sin_g);
-        float inv_total = 1.0 / (cos_g + gamma * sin_g);    // = measure(hi) - measure(lo)
+        float sgn_g = dot(n_p, o) < 0.0 ? -1.0 : 1.0;
+        float gamma = sgn_g * fast_acos(cos_g);
+        float sin_g = sgn_g * sqrt(1.0 - cos_g * cos_g);
+        float total = cos_g + gamma * sin_g;                    // measure(hi) - measure(lo)
+        float m_lo  = -0.5 * (cos_g + (gamma - HALF_PI) * sin_g); // measure(lo), lo = gamma - pi/2
+        float inv_total = 1.0 / total;
 
         // Stochastic rounding of the arcs onto the sectors keeps small arcs unbiased on average
         float bit_ofs = fract(rk * 7.0 + float(sl) * 0.618034);
         uint  bits = 0u;
 
         for (int side = 0; side < 2; ++side) {
-            vec2  sd    = side == 0 ? d : -d;
-            float phase = side == 0 ? rk : fract(rk + 0.5);
-            for (int i = 0; i < AO_NUM_STEPS; ++i) {
-                float t = (float(i) + phase) / float(AO_NUM_STEPS);
-                float s = u_r_min * exp2(t * log_ratio);         // lateral distance in full-res px
-                vec2  spx = frag_px + sd * s;
+            vec2  sd = side == 0 ? d : -d;
+            float s  = s_first[side];
+            for (int i = 0; i < AO_NUM_STEPS; ++i, s *= step_ratio) {
+                vec2  spx = frag_px + sd * s;                    // s: lateral distance in full-res px
                 if (any(lessThan(spx, vec2(0.0))) || any(greaterThanEqual(spx, u_full_res))) break;
 
-                int   m  = clamp(int(log2(s)) - AO_LOG_Q, 1, AO_MAX_MIP);
+                int   m  = clamp(findMSB(int(s)) - AO_LOG_Q, 1, AO_MAX_MIP);
                 ivec2 tx = ivec2(spx) >> m;
                 float sz = texelFetch(u_tex_linear_depth, tx, m).r;
                 if (sz >= u_z_max) continue;
@@ -146,19 +166,25 @@ void main() {
                 // Front face and the same point pushed back along its view ray by the assumed thickness
                 float thick = AO_THICKNESS * s * px_world;
 #if AO_PERSPECTIVE
-                vec3 Sb = S + normalize(S) * thick;
+                vec3 push = normalize(S) * thick;
 #else
-                vec3 Sb = S + vec3(0, 0, thick);
+                vec3 push = vec3(0, 0, thick);
 #endif
                 vec3  Df = S - P;
-                vec3  Db = Sb - P;
-                float th_f = clamp(atan(dot(Df, o), dot(Df, V)), lo, hi);
-                float th_b = clamp(atan(dot(Db, o), dot(Db, V)), lo, hi);
-                if (th_f == th_b) continue;     // entirely below the horizon of the hemisphere (convex surroundings)
-                float u0 = (slice_measure(min(th_f, th_b), gamma, cos_g, sin_g) - m_lo) * inv_total;
-                float u1 = (slice_measure(max(th_f, th_b), gamma, cos_g, sin_g) - m_lo) * inv_total;
-                uint  b0 = uint(clamp(floor(u0 * 32.0 + bit_ofs), 0.0, 32.0));
-                uint  b1 = uint(clamp(floor(u1 * 32.0 + bit_ofs), 0.0, 32.0));
+                float hf = dot(Df, n_p);
+                float hb = hf + dot(push, n_p);
+                if (hf <= 0.0 && hb <= 0.0) continue;   // both behind the tangent: no part of the arc is in the hemisphere
+                vec3  Db = Df + push;
+
+                // In-plane directions of the two points; outside the hemisphere they clamp to its edge on their side
+                vec2  ef = vec2(dot(Df, V), dot(Df, o));
+                vec2  eb = vec2(dot(Db, V), dot(Db, o));
+                ef *= inversesqrt(max(dot(ef, ef), 1e-30));
+                eb *= inversesqrt(max(dot(eb, eb), 1e-30));
+                float uf = hf > 0.0 ? (slice_measure(ef.x, ef.y, cos_g, sin_g) - m_lo) * inv_total : (ef.y > 0.0 ? 1.0 : 0.0);
+                float ub = hb > 0.0 ? (slice_measure(eb.x, eb.y, cos_g, sin_g) - m_lo) * inv_total : (eb.y > 0.0 ? 1.0 : 0.0);
+                uint  b0 = uint(clamp(floor(min(uf, ub) * 32.0 + bit_ofs), 0.0, 32.0));
+                uint  b1 = uint(clamp(floor(max(uf, ub) * 32.0 + bit_ofs), 0.0, 32.0));
                 if (b1 > b0) {
                     uint count = b1 - b0;
                     bits |= (count >= 32u ? 0xFFFFFFFFu : ((1u << count) - 1u)) << b0;
@@ -167,7 +193,7 @@ void main() {
         }
 
         // Slice weight: projected normal length x its share of the cosine-weighted hemisphere
-        float w = n_len * (cos_g + gamma * sin_g);
+        float w = n_len * total;
         vis_sum += w * (1.0 - float(bitCount(bits)) / 32.0);
         w_sum   += w;
     }
