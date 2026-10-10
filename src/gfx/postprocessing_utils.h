@@ -53,6 +53,7 @@ struct Settings {
     struct {
         bool enabled = true;
         float intensity = 5.0f;
+        bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
     } ssao;
 
     struct {

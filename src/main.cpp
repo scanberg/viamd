@@ -1375,6 +1375,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
                 ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
+                ImGui::Checkbox("Temporal Filter", &data->visuals.ssao.temporal);
+                ImGui::SetItemTooltip("Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
             }
             ImGui::PopID();
             ImGui::EndGroup();
@@ -6505,6 +6507,7 @@ static void render(ApplicationState* state) {
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
+    settings.ssao.temporal = state->visuals.ssao.temporal;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;

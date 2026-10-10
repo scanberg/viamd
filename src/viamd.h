@@ -1289,6 +1289,7 @@ struct ApplicationState {
         struct { 
             bool enabled = true;
             float intensity = 5.0f;
+            bool temporal = true;
         } ssao;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1

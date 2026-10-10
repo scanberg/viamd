@@ -1,23 +1,21 @@
 #version 410 core
 
 // Separable bilateral blur at half resolution.
-// Box kernel with half-weight end taps: with BLUR_RADIUS = 2*n it integrates exactly n periods of the 4x4 sample
+// Box kernel with half-weight end taps: with u_radius = 2*n it integrates exactly n periods of the 4x4 sample
 // pattern, so the interleaving structure cancels on smooth surfaces. Edge-stopping uses the distance of the tap from
 // the centre pixel's tangent plane (needs the centre normal only), measured in pixel footprints -> scale-free.
 #ifndef AO_PERSPECTIVE
 #define AO_PERSPECTIVE 1
 #endif
-#ifndef BLUR_RADIUS
-#define BLUR_RADIUS 4
-#endif
 #define BLUR_TOLERANCE_PX 2.0     // tangent-plane distance tolerance, in full-res pixel footprints
-uniform sampler2D u_tex;        // RG16F (visibility, z), half res
+uniform sampler2D u_tex;        // RG32F (visibility, z), half res
 uniform sampler2D u_tex_normal; // full-res G-buffer normal
 uniform vec4  u_proj_info;
 uniform vec2  u_full_res;
 uniform ivec2 u_dir;
 uniform float u_px_scale;       // world size of a FULL-res pixel at depth 1 (persp) / absolute (ortho)
 uniform float u_z_max;
+uniform int   u_radius;         // even: 4 without temporal filtering (two pattern periods), 2 with it (one)
 out vec2 out_frag;
 
 vec3 uv_to_view(vec2 uv, float z) {
@@ -50,13 +48,13 @@ void main() {
     float inv_tol = 1.0 / (BLUR_TOLERANCE_PX * u_px_scale);
 #endif
     float sum = c.x, wsum = 1.0;
-    for (int i = -BLUR_RADIUS; i <= BLUR_RADIUS; ++i) {
+    for (int i = -u_radius; i <= u_radius; ++i) {
         if (i == 0) continue;
         ivec2 q = clamp(p + u_dir * i, ivec2(0), size - 1);
         vec2 s = texelFetch(u_tex, q, 0).rg;
         vec3 S = uv_to_view(rep_px(q) / u_full_res, s.y);
         float d = abs(dot(S - P, N)) * inv_tol;
-        float w = (abs(i) == BLUR_RADIUS ? 0.5 : 1.0) * clamp(1.0 - d, 0.0, 1.0);
+        float w = (abs(i) == u_radius ? 0.5 : 1.0) * clamp(1.0 - d, 0.0, 1.0);
         sum += s.x * w;
         wsum += w;
     }

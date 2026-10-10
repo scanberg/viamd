@@ -35,7 +35,7 @@ uniform float u_r_min;          // full-res px
 uniform float u_r_max;          // full-res px
 uniform float u_intensity;
 uniform float u_z_max;
-uniform int   u_frame;          // 0 for a stable pattern, frame index when TAA can integrate it
+uniform int   u_frame;          // 0 for a stable pattern, frame index when the temporal filter integrates it
 
 out vec2 out_frag;  // (visibility, linear depth): depth is carried along for the bilateral blur and upsample
 
@@ -77,12 +77,18 @@ void main() {
 #endif
 
     // 4x4 interleaved pattern: 16 (rotation, radial phase) pairs from a Hammersley set, Bayer-ordered so that
-    // neighbours differ. The blur integrates exactly one period of it. u_frame decorrelates frames for TAA.
+    // neighbours differ. The blur integrates exactly one period of it.
+    // Over time the pattern is permuted, never rotated: every frame adds the same offset to all indices, so each 4x4
+    // block still holds the same 16 pairs (smooth surfaces, where the blur averages a full period, do not change at
+    // all) while each pixel steps through all 16 of them in 16 frames. The offset follows the bit-reversed frame index,
+    // so any aligned run of 2^n frames visits evenly spaced rotations. A global rotation instead changes the whole set
+    // at once, which shows up as blotches of blur-kernel size that a 3x3 TAA neighbourhood cannot tell from content.
     const int BAYER[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-    int   k   = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    int   s   = int(bitfieldReverse(uint(u_frame & 15)) >> 28u);
+    int   k   = (BAYER[(hp.y & 3) * 4 + (hp.x & 3)] + s) & 15;
     float rk  = float(bitfieldReverse(uint(k)) >> 28u) / 16.0;
-    float rot = 6.2831853 * fract((float(k) + 0.5) / 16.0 + float(u_frame) * 0.618034);
-    float jr  = fract(rk + 1.0 / 32.0 + float(u_frame) * 0.7548777);
+    float rot = 6.2831853 * (float(k) + 0.5) / 16.0;
+    float jr  = fract(rk + 1.0 / 32.0);
     vec2  cs  = vec2(cos(rot), sin(rot));
 
     float log_ratio = log2(u_r_max / u_r_min);

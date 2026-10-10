@@ -1984,6 +1984,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 // SsaoIntensity, SsaoRadius, SsaoBias and DofFocusScale belonged to the previous scale-dependent SSAO / DOF
                 // and are deliberately ignored: their values do not translate to the new parameters.
                 else if (str_eq(ident, STR_LIT("SsaoStrength")))         viamd::extract_flt(v.ssao.intensity, arg);
+                else if (str_eq(ident, STR_LIT("SsaoTemporal")))         viamd::extract_bool(v.ssao.temporal, arg);
                 else if (str_eq(ident, STR_LIT("TonemapEnabled")))       viamd::extract_bool(v.tonemapping.enabled, arg);
                 else if (str_eq(ident, STR_LIT("Tonemapper")))           viamd::extract_enum(v.tonemapping.tonemapper, arg, (int)postprocess_pipeline::Tonemapper_ACES + 1);
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
@@ -2298,6 +2299,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("BackgroundIntensity"), v.background.intensity);
         viamd::write_bool(state, STR_LIT("SsaoEnabled"), v.ssao.enabled);
         viamd::write_flt(state,  STR_LIT("SsaoStrength"), v.ssao.intensity);
+        viamd::write_bool(state, STR_LIT("SsaoTemporal"), v.ssao.temporal);
         viamd::write_bool(state, STR_LIT("TonemapEnabled"), v.tonemapping.enabled);
         viamd::write_int(state,  STR_LIT("Tonemapper"), (int)v.tonemapping.tonemapper);
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
