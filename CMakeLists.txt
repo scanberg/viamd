@@ -285,6 +285,7 @@ set(SHADER_FILES
     src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/ssao_temporal.frag
+    src/shaders/ssao/ssao_bitmask.frag
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
 )

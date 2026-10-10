@@ -156,8 +156,20 @@ static struct {
         mat4_t history_view = {};       // view and projection the history was written with
         mat4_t history_proj = {};
         uint32_t frame = 0;             // drives the per-frame permutation of the sample pattern
+        int history_mode = 0;           // estimator the history was accumulated with
+        // GPU time, from timestamp queries read back a few frames late (TIMER_FRAMES in flight)
+        struct {
+            GLuint query[4][3] = {};    // per frame in flight: start, after the estimator, end
+            bool   pending[4] = {};
+            int    next = 0;
+            double accum_total = 0.0;
+            double accum_estimator = 0.0;
+            int    accum_frames = 0;
+            postprocess_pipeline::SsaoTimings published = {};
+        } timer;
         // Index 0 = orthographic, 1 = perspective
-        GLuint program_ao[2] = {};
+        GLuint program_ao[2] = {};          // ssao.frag:         point samples ("Performance")
+        GLuint program_ao_quality[2] = {};  // ssao_bitmask.frag: slices with a visibility bitmask ("Quality")
         GLuint program_temporal[2] = {};
         GLuint program_blur[2] = {};
         GLuint program_upsample[2] = {};
@@ -404,15 +416,18 @@ static GLuint setup_variant(str_t name, str_t src, bool perspective) {
 
 void initialize_programs() {
     const str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
+    const str_t quality_src  = {(const char*)ssao_bitmask_frag, ssao_bitmask_frag_size};
     const str_t temporal_src = {(const char*)ssao_temporal_frag, ssao_temporal_frag_size};
     const str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
     const str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
     for (int i = 0; i < 2; ++i) {
-        if (gl.ssao.program_ao[i])       glDeleteProgram(gl.ssao.program_ao[i]);
-        if (gl.ssao.program_temporal[i]) glDeleteProgram(gl.ssao.program_temporal[i]);
-        if (gl.ssao.program_blur[i])     glDeleteProgram(gl.ssao.program_blur[i]);
-        if (gl.ssao.program_upsample[i]) glDeleteProgram(gl.ssao.program_upsample[i]);
-        gl.ssao.program_ao[i]       = setup_variant(STR_LIT("ssao"),          ao_src,       i == 1);
+        if (gl.ssao.program_ao[i])         glDeleteProgram(gl.ssao.program_ao[i]);
+        if (gl.ssao.program_ao_quality[i]) glDeleteProgram(gl.ssao.program_ao_quality[i]);
+        if (gl.ssao.program_temporal[i])   glDeleteProgram(gl.ssao.program_temporal[i]);
+        if (gl.ssao.program_blur[i])       glDeleteProgram(gl.ssao.program_blur[i]);
+        if (gl.ssao.program_upsample[i])   glDeleteProgram(gl.ssao.program_upsample[i]);
+        gl.ssao.program_ao[i]         = setup_variant(STR_LIT("ssao"),          ao_src,       i == 1);
+        gl.ssao.program_ao_quality[i] = setup_variant(STR_LIT("ssao quality"),  quality_src,  i == 1);
         gl.ssao.program_temporal[i] = setup_variant(STR_LIT("ssao temporal"), temporal_src, i == 1);
         gl.ssao.program_blur[i]     = setup_variant(STR_LIT("ssao blur"),     blur_src,     i == 1);
         gl.ssao.program_upsample[i] = setup_variant(STR_LIT("ssao upsample"), upsample_src, i == 1);
@@ -440,12 +455,47 @@ void shutdown() {
     gl.ssao.tex_history[0] = gl.ssao.tex_history[1] = 0;
     gl.ssao.history_valid = false;
     for (int i = 0; i < 2; ++i) {
-        if (gl.ssao.program_ao[i])       glDeleteProgram(gl.ssao.program_ao[i]);
-        if (gl.ssao.program_temporal[i]) glDeleteProgram(gl.ssao.program_temporal[i]);
-        if (gl.ssao.program_blur[i])     glDeleteProgram(gl.ssao.program_blur[i]);
-        if (gl.ssao.program_upsample[i]) glDeleteProgram(gl.ssao.program_upsample[i]);
-        gl.ssao.program_ao[i] = gl.ssao.program_temporal[i] = gl.ssao.program_blur[i] = gl.ssao.program_upsample[i] = 0;
+        if (gl.ssao.program_ao[i])         glDeleteProgram(gl.ssao.program_ao[i]);
+        if (gl.ssao.program_ao_quality[i]) glDeleteProgram(gl.ssao.program_ao_quality[i]);
+        if (gl.ssao.program_temporal[i])   glDeleteProgram(gl.ssao.program_temporal[i]);
+        if (gl.ssao.program_blur[i])       glDeleteProgram(gl.ssao.program_blur[i]);
+        if (gl.ssao.program_upsample[i])   glDeleteProgram(gl.ssao.program_upsample[i]);
+        gl.ssao.program_ao[i] = gl.ssao.program_ao_quality[i] = 0;
+        gl.ssao.program_temporal[i] = gl.ssao.program_blur[i] = gl.ssao.program_upsample[i] = 0;
     }
+    if (gl.ssao.timer.query[0][0]) glDeleteQueries(ARRAY_SIZE(gl.ssao.timer.query) * 3, &gl.ssao.timer.query[0][0]);
+    gl.ssao.timer = {};
+}
+
+// Collects the timestamps of frames that have completed and publishes averages over TIMER_PUBLISH_FRAMES frames.
+// Returns the query set to record this frame into, or nullptr while all of them are still in flight.
+static constexpr int TIMER_PUBLISH_FRAMES = 30;
+static GLuint* timer_frame_queries() {
+    auto& t = gl.ssao.timer;
+    if (!t.query[0][0]) glGenQueries(ARRAY_SIZE(t.query) * 3, &t.query[0][0]);
+    for (int f = 0; f < (int)ARRAY_SIZE(t.query); ++f) {
+        if (!t.pending[f]) continue;
+        GLint available = 0;
+        glGetQueryObjectiv(t.query[f][2], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) continue;
+        GLuint64 ns[3] = {};
+        for (int i = 0; i < 3; ++i) glGetQueryObjectui64v(t.query[f][i], GL_QUERY_RESULT, &ns[i]);
+        t.accum_estimator += (double)(ns[1] - ns[0]) * 1.0e-6;
+        t.accum_total     += (double)(ns[2] - ns[0]) * 1.0e-6;
+        t.accum_frames    += 1;
+        t.pending[f] = false;
+    }
+    if (t.accum_frames >= TIMER_PUBLISH_FRAMES) {
+        t.published.estimator_ms = (float)(t.accum_estimator / t.accum_frames);
+        t.published.total_ms     = (float)(t.accum_total / t.accum_frames);
+        t.accum_estimator = t.accum_total = 0.0;
+        t.accum_frames = 0;
+    }
+    const int f = t.next;
+    if (t.pending[f]) return nullptr;
+    t.next = (f + 1) % (int)ARRAY_SIZE(t.query);
+    t.pending[f] = true;
+    return t.query[f];
 }
 
 }  // namespace ssao
@@ -1293,7 +1343,9 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]);
 // z_far is the far clip distance: background pixels hold exactly that linear depth and are skipped.
 // With temporal set, the sample pattern is permuted every frame and accumulated in a history (shaders/ssao/
 // ssao_temporal.frag), reprojected with velocity_tex. Without it the pattern is fixed and the result stable.
-void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, float intensity, bool temporal) {
+// mode selects the estimator; everything after it (temporal filter, blur, upsample) is shared.
+void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, float intensity, bool temporal,
+                  postprocess_pipeline::SsaoMode mode) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
     ASSERT(!temporal || glIsTexture(velocity_tex));
@@ -1313,12 +1365,17 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
     const float  z_max     = z_far * 0.99f;
     const float  r_max     = MAX(ssao::R_MAX_FRACTION * (float)height, 2.0f * ssao::R_MIN_PX);
 
-    // The history is only usable if it was written in the directly preceding frame of this view, at this size
+    // The history is only usable if it was written in the directly preceding frame of this view, at this size and
+    // with this estimator (switching modes shows the other estimator at once instead of blending into it)
     const bool history_valid = temporal && gl.ssao.history_valid &&
         gl.ssao.history_width == half_w && gl.ssao.history_height == half_h && gl.ssao.history_variant == variant &&
+        gl.ssao.history_mode == (int)mode &&
         memcmp(&gl.ssao.history_view, &view_param.matrix.prev.view, sizeof(mat4_t)) == 0 &&
         memcmp(&gl.ssao.history_proj, &view_param.matrix.prev.proj, sizeof(mat4_t)) == 0;
     const int frame = temporal ? (int)(gl.ssao.frame++ & 15) : 0;
+
+    GLuint* timer = ssao::timer_frame_queries();
+    if (timer) glQueryCounter(timer[0], GL_TIMESTAMP);
 
     glBindVertexArray(gl.vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
@@ -1328,7 +1385,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
 
     PUSH_GPU_SECTION("AO")
     {
-        const GLuint program = gl.ssao.program_ao[variant];
+        const GLuint program = mode == postprocess_pipeline::SsaoMode_Quality ? gl.ssao.program_ao_quality[variant] : gl.ssao.program_ao[variant];
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex[0], 0);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
@@ -1348,6 +1405,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
+    if (timer) glQueryCounter(timer[1], GL_TIMESTAMP);
 
     // Index into gl.ssao.tex of the latest result
     int src = 0;
@@ -1405,6 +1463,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         gl.ssao.history_width   = half_w;
         gl.ssao.history_height  = half_h;
         gl.ssao.history_variant = variant;
+        gl.ssao.history_mode    = (int)mode;
         gl.ssao.history_view    = view_param.matrix.curr.view;
         gl.ssao.history_proj    = view_param.matrix.curr.proj;
         src = 1;
@@ -1460,6 +1519,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glDisable(GL_BLEND);
     }
     POP_GPU_SECTION()
+    if (timer) glQueryCounter(timer[2], GL_TIMESTAMP);
 
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(0);
@@ -2369,7 +2429,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_ssao) {
         PUSH_GPU_SECTION("SSAO")
         const bool temporal = settings.ssao.temporal && in.velocity != 0;
-        compute_ssao(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, settings.ssao.intensity, temporal);
+        compute_ssao(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, settings.ssao.intensity, temporal, settings.ssao.mode);
         POP_GPU_SECTION()
     }
 
@@ -2500,6 +2560,10 @@ void initialize(int width, int height) {
 
 void shutdown() {
     postprocessing::shutdown();
+}
+
+SsaoTimings ssao_timings() {
+    return postprocessing::gl.ssao.timer.published;
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {

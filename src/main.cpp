@@ -1374,6 +1374,18 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Ambient Occlusion", &data->visuals.ssao.enabled);
             ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
+                const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
+                int mode = (int)data->visuals.ssao.mode;
+                if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
+                }
+                ImGui::SetItemTooltip("Performance: point samples.\nQuality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
+                const postprocess_pipeline::SsaoTimings t = postprocess_pipeline::ssao_timings();
+                if (t.total_ms > 0.0f) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%.2f ms", t.total_ms);
+                    ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", t.estimator_ms, t.total_ms);
+                }
                 ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
                 ImGui::Checkbox("Temporal Filter", &data->visuals.ssao.temporal);
                 ImGui::SetItemTooltip("Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
@@ -1794,6 +1806,11 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
                 for (int i = 0; i < volume::TimingStage_Count; ++i) {
                     ImGui::Text("  %-14s %.3f ms", volume::timing_stage_name((volume::TimingStage)i), t.ms[i]);
+                }
+                if (data->visuals.ssao.enabled) {
+                    const postprocess_pipeline::SsaoTimings ao = postprocess_pipeline::ssao_timings();
+                    ImGui::Text("Ambient occlusion, GPU per frame: %.3f ms", ao.total_ms);
+                    ImGui::Text("  %-14s %.3f ms", "Estimator", ao.estimator_ms);
                 }
                 ImGui::EndTooltip();
             }
@@ -6508,6 +6525,7 @@ static void render(ApplicationState* state) {
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
     settings.ssao.temporal = state->visuals.ssao.temporal;
+    settings.ssao.mode = state->visuals.ssao.mode;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;

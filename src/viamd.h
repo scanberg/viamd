@@ -1290,6 +1290,7 @@ struct ApplicationState {
             bool enabled = true;
             float intensity = 5.0f;
             bool temporal = true;
+            postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Performance;
         } ssao;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1

@@ -27,6 +27,13 @@ enum Tonemapper {
     Tonemapper_ACES,
 };
 
+// Estimator of the ambient occlusion. Both feed the same temporal filter, blur and upsample.
+enum SsaoMode {
+    SsaoMode_Performance,   // point samples (shaders/ssao/ssao.frag)
+    SsaoMode_Quality,       // screen-space slices with a visibility bitmask (shaders/ssao/ssao_bitmask.frag)
+    SsaoMode_Count
+};
+
 struct Inputs {
     GLuint depth = 0;
     GLuint color = 0;
@@ -54,6 +61,7 @@ struct Settings {
         bool enabled = true;
         float intensity = 5.0f;
         bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
+        SsaoMode mode = SsaoMode_Performance;
     } ssao;
 
     struct {
@@ -82,8 +90,15 @@ struct Settings {
     } sharpen;
 };
 
+// GPU time of the ambient occlusion, averaged over a number of frames (0 until the first results are in)
+struct SsaoTimings {
+    float estimator_ms = 0.0f;  // the AO pass alone
+    float total_ms = 0.0f;      // estimator, temporal filter, blur and upsample
+};
+
 void initialize(int width, int height);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
+SsaoTimings ssao_timings();
 
 }  // namespace postprocess_pipeline
