@@ -5273,14 +5273,6 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
 
         if (hovered_marker) {
-            if (!str_empty(hovered_marker->text)) {
-                ImGui::BeginTooltip();
-                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
-                if (state->script.sub_idx != -1) {
-                    ImGui::Text("Currently inspected idx: %i", state->script.sub_idx + 1);
-                }
-                ImGui::EndTooltip();
-            }
             if (hovered_marker->atoms || !md_script_vis_ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
@@ -5316,6 +5308,27 @@ static void draw_script_editor_window(ApplicationState* state) {
                     SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
                     modify_selection(state, &state->selection.highlight_mask, op);
                 }
+            }
+
+            // After the visualization is set: the value is computed with it
+            if (!str_empty(hovered_marker->text)) {
+                ImGui::BeginTooltip();
+                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
+                if (hovered_marker->type == script_editor::MarkerType_Visualization) {
+                    const str_t value = script_vis_value_text(state);
+                    // A value known since the compilation is in the text already, unless it was too long to keep there
+                    const bool dynamic = str_find_str(NULL, hovered_marker->text, STR_LIT("[d]"));
+                    const bool has_value = str_find_char(NULL, hovered_marker->text, '\n');
+                    if (!str_empty(value) && (dynamic || !has_value || state->script.sub_idx != -1)) {
+                        ImGui::Separator();
+                        if (dynamic) ImGui::TextDisabled("At the frame shown");
+                        ImGui::Text(STR_FMT, STR_ARG(value));
+                    }
+                }
+                if (state->script.sub_idx != -1) {
+                    ImGui::TextDisabled("Element %i, the mouse wheel steps through them", state->script.sub_idx + 1);
+                }
+                ImGui::EndTooltip();
             }
         } else {
             state->script.sub_idx = -1;

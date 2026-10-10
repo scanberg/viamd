@@ -2462,6 +2462,9 @@ const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_
 //
 // Sets ref, visualized in the IR which made it. Nothing if it no longer resolves.
 void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags = 0);
+// What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
+// beside the type. Empty while it is computed, and for a visualization of an expression.
+str_t script_vis_value_text(ApplicationState* state);
 // Sets an expression, compiled against the script being edited (its identifiers)
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
 // Clears what is set. Start of every frame, before anything sets one.

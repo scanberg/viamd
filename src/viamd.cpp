@@ -6190,6 +6190,7 @@ struct ScriptVisJob {
     const md_system_t* sys = nullptr;
     md_system_state_t state = {};
     md_script_vis_t vis = {};
+    str_t value_text = {};          // Ref: what the value is where the atoms were (md_script_vis_value_text), in the arena
     bool ok = false;
 };
 
@@ -6266,6 +6267,13 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
         job->ok = (tgt.kind == ScriptVisTarget::Ref)
             ? md_script_vis_eval_ref(&job->vis, tgt.ref, tgt.subidx, &ctx, tgt.flags)
             : md_script_vis_eval_string(&job->vis, tgt.str, &ctx, tgt.flags);
+        if (job->ok && tgt.kind == ScriptVisTarget::Ref) {
+            char buf[2048];
+            const size_t len = md_script_vis_value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, &ctx);
+            if (len) {
+                job->value_text = str_copy({buf, len}, job->arena);
+            }
+        }
     });
     task_system::enqueue_task(task);
 
@@ -6312,6 +6320,19 @@ void script_vis_update(ApplicationState* state) {
             md_bitfield_copy(&state->selection.highlight_mask, &sc.vis_shown->atom_mask);
         }
     }
+}
+
+str_t script_vis_value_text(ApplicationState* state) {
+    ASSERT(state);
+    const auto& sc = state->script;
+    if (sc.vis_target.kind != ScriptVisTarget::Ref || !sc.vis_result || !sc.vis_result->ok) {
+        return {};
+    }
+    // Of what is set: while the next one is computed, the text is that of the atoms where they were
+    if (sc.vis_result->key != vis_target_key(state, sc.vis_target)) {
+        return {};
+    }
+    return sc.vis_result->value_text;
 }
 
 void script_vis_reset(ApplicationState* state) {
