@@ -5722,7 +5722,8 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
 		} else if (left_click || right_click) {
 			event->kind = InteractionSurfaceEventKind::Click;
             event->selection_mode = state.selection_mode;
-        } else {
+        } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            // No hover while a button is held: the view is being rotated, panned or zoomed
             event->kind = InteractionSurfaceEventKind::Hover;
         }
     }
@@ -5988,8 +5989,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         }
                     }
                     
-                    // Commit to selection mask upon click release, for hover we only update the highlight mask
-                    if (surf->kind == InteractionSurfaceEventKind::Click) {
+                    // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
+                    if (surf->kind == InteractionSurfaceEventKind::Click && surf->selection_mode != InteractionSelectionMode::None) {
                         // The single selection sequence records the order in which individual atoms were picked
                         // and is what the context menu turns into script suggestions. Only a real click advances
                         // it: a Hover event always carries selection_mode None, so doing this above would reset
@@ -6003,10 +6004,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                                 else if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                     single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
                                 }
-                                else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                    single_selection_sequence_clear(&state->selection.single_selection_sequence);
-                                    single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
-                                }
                             }
                         }
 
@@ -6017,14 +6014,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
                             }
-                            else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                md_bitfield_clear(&state->selection.selection_mask);
-                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
-                            }
                         }
                         else if (surf->hit.domain == 0) {
-                            // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
-                            if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
+                            // A remove-click on empty space clears the selection
+                            if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_clear(&state->selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }

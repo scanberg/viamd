@@ -9,7 +9,6 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -616,7 +615,9 @@ int main(int argc, char** argv) {
             }
             
             // Since this is the main interaction view, we still broadcast all kinds of events, even if we have handled some explicitly here.
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+            if (event.kind != InteractionSurfaceEventKind::None) {
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+            }
         }
 
         InteractionSurfaceViewTransformArgs view_args = {
