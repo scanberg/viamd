@@ -650,12 +650,6 @@ int main(int argc, char** argv) {
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
-#if EXPERIMENTAL_GFX_API
-            if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
-                use_gfx = !use_gfx;
-            }
-#endif
-
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 state.show_debug_window = true;
             }
