@@ -1,45 +1,21 @@
-# Movie feature: status
+# Movie feature: developer notes
 
-Branch `video`; no pull request yet.
+Branch `video`; no pull request yet. Merged with `scanberg/viamd` master through `ac191f75`. The GUI has been checked by hand on Linux.
 
-Merged `scanberg/viamd` master through `ac191f75`, including renderer, ASE loader, camera/recentering fixes, SSAO quality/temporal modes, shift-only selection interaction, picking improvements, ESP coloring and the mdlib update. Movie focus modes, recording, editor and live preview are retained. Depth-of-field blur now uses aperture units; legacy blur and occlusion-radius keys are retained but inactive (see the manual).
-
-Each camera key now has its own **Look at** (a fixed point, or atoms tracked through the
-trajectory) and **Focus on** (what is sharp, with transition and ease), set with two
-buttons in the key table: **Fixed point / Track selection** for aim and **Look-at / Track selection** for focus. Both can use a selection typed in the filter language (`resname("AIN")`). Saved legacy point/distance focus keys still work. The blur is the **Depth of field blur** look parameter. A key without an explicit focus target returns to look-at, rather than inheriting the previous target. Global focus is always Auto; old global fixed/target modes migrate with a notification. While the movie owns focus the global controls are read-only. Scene editing holds a separate internal depth, while movie-camera surfaces evaluate movie keys. The viewport shows three paths (camera, look-at, focus)
-and the camera lane has Look at and Focus rows. The opt-in "Independent camera / look-at / focus"
-switch and the separate tracks are gone: workspaces that used them (and keys that followed a
-follow target) are converted when loaded, which can change the eye path of such a movie slightly.
-
-The camera table is ordered #, Name, Time, Frame, FOV, Go to, Update, Look at,
-Focus on, Ease, Spin, Roll, Copy, Dup, Remove. Shift+K captures a key over the
-Movie window or viewport, except while typing or recording.
-The table occupies a resizable full-width bottom pane on every tab; its height is saved.
-Upper timeline/controls default to a 68/32 width split. Lens distance points are
-editable again, including tracked targets; dragging moves the eye along the line
-of sight while preserving aim and focus settings. The live picture stays above the table.
-New/reset movies fit lanes to the window, pin trajectory frames when adding camera keys,
-and select Depth of field blur for Look. Camera work shows ruler/camera/trajectory/lens;
-Scene work shows ruler/trajectory/representations/overlays/Look (blur);
-All shows ruler/camera/trajectory/lens/representations/Look.
-Opening Movie starts unkeyed blur at zero, preserves keyed blur, and restores viewport
-blur on close. Tab switching works over the active Movie window except while typing.
+The user manual is [`docs/movie_maker.md`](docs/movie_maker.md); this file is for developers: where the code is, what must stay compatible, and what is left.
 
 | File | What it is |
 |---|---|
 | `docs/movie_maker.md` | The user manual (also the text for the GitHub wiki, a separate repository) |
-| `gui-checklist.md` | Manual GUI checks, including look at and focus on per key |
-| `PR_DESCRIPTION.md` | The pull request text |
-| `docs/examples/aspirin_phospholipase_movie.via` | The first example workspace (its trajectory files are not in the repository) |
-| `docs/examples/aspirin_binding_movie.via` | A 60 s example with a dolly zoom, a bullet-time orbit, representation hand-overs and energy plots; see the manual |
-| `docs/examples/fov_and_focus.via` | Self-contained 36 s FOV tutorial with movie-local moving focus, a rack to a fixed target, and a no-blur key |
+| `PR_DESCRIPTION.md` | The pull request text; remove it before merging |
+| `docs/examples/fov_and_focus.via` + `.xyz` | Self-contained FOV and focus tutorial; in the older track format, so it also tests conversion on load |
+| `docs/examples/aspirin_phospholipase_movie.via`, `aspirin_binding_movie.via` | Example movies (their trajectory files are not in the repository) |
+| `docs/aspirin_binding_movie_article.md`, `docs/examples/tools/aspirin_movie/` | Case study of the binding movie and the scripts used to build it; may lag behind the editor |
 
 ## Build and test
 
-- Build: `cmake --build build --target viamd viamd_test -j8`; run `cmake -S . -B build` after adding files.
-- Tests: all 109 movie-key tests and all 268 tests pass, including atom sets, eye and aim evaluated separately, default focus returning to look-at after an explicit target, interrupted focus transitions, Spin pivot/axis, camera bands, conversion of older tracks and follow keys (with the optics tutorial), focus encoding, history/time scaling and distance edits with unit conversion that retain tracked look-at and focus settings. They cover pure logic only; the frame sink tests use a fake script, so ffmpeg is not needed.
-- VS Code CMake Tools currently reports no active configure preset. The existing `build` tree successfully builds `viamd` and `viamd_test` through a temporary VS Code Make task. VS Code's test runner does not discover the C++ tests; the executable passes.
-- The GUI could not be run while the code was written, so everything in `gui-checklist.md` beyond blocks 1 to 5 is untested. Windows and macOS are untested (the ffmpeg pipe uses `popen` / `_popen`).
+- `cmake --build build --target viamd viamd_test -j8` (run `cmake -S . -B build` after adding files), then `./build/bin/viamd_test` (268 tests; `--filter=viamd_movie_keys.*` for the 109 movie-key ones).
+- The tests cover logic only: key evaluation (eye, aim and focus separately, transitions, spin, easing), conversion of older workspaces, group edits, undo, time scaling, overlay maths and the frame sink (with a fake script, so no ffmpeg is needed).
 
 ## Where things live
 
@@ -57,19 +33,15 @@ blur on close. Tab switching works over the active Movie window except while typ
 
 Numbers that are saved and must never be renumbered, only added to: parameter ids in `movie_param_table` (main.cpp), `RepProp` (movie_keys.h), `MovieOverlayType` (movie_overlay.h; 6 and 7 are timeline and distribution, 9 is the old one-figure version split on read), the `Lanes` bits (1, 2, 4 tracks; 8 parameter; 16 representation lane; 32 overlay; 64 overview; 256 camera; 1024 ruler; 128, 512, 2048 are the "set" flags of the last three) and the `PathOptions` bits (mask 31, default 15; bit 16 shows the path in Movie preview).
 
-## What is there
+## Behaviour that must stay
 
-- **Editor:** one window, timeline left and tabbed controls right, resizable and collapsible; shared playback; Scene view / Movie preview switch (Tab); frame placed beside the Movie window with a shifted projection; Show path / Fit path / Live picture on the top row; green Preview button plays the movie with the windows hidden and a bottom control bar (Space, Esc) with separate poses, **Fit path** and a live picture of the movie camera.
-- **Timing:** movie length as the master value, trajectory start/end anchors, frame pins, backward trajectory, **Match Animation speed**, **Snap to frames**.
-- **Camera:** keys with a per-key look-at (fixed or atoms) and focus (target, transition, ease; blur is a look parameter); ease, spin, orbit, loops, keep upright with roll, names; three colored viewport paths (camera, look-at, focus) with draggable handles; camera lane rows for keys, look at, focus, spin and frame.
-- **Looks and representations:** keyed look parameters; keyed representation properties (visibility with transition, scales, tint, saturation, colors) with stable representation ids; the overview lane by system with block editing and swap.
-- **Overlays:** text, time stamp, scale bar, time bar, logo, image, timeline, distribution, property visualization; markers (labels on up to three rows); subplot ids and names; overlays shown together are moved apart (`movie_overlay_avoid`).
-- **Timeline panel:** lane toggles with presets and a Layout popup; ruler, trajectory, camera, lens (FOV and distance on two axes), look parameter, representation lane, overview and overlay lanes; multi-select across all of them with group move, stretch, inspector, keyboard and copy/paste; lane layout saved in the workspace.
-- **Output:** PNG sequence, MP4 H.264 / H.265, WebM VP9 via ffmpeg; scale, samples, render range, pause/resume, time left, workspace copy.
-- Undo/redo for everything on the timeline. Workspaces from earlier versions are migrated on read.
+- **Focus ownership.** The movie owns focus while its window is open, in Preview and while recording (`movie_focus_owned`). On entry it saves the viewport's focus depth (`editor_focus_distance`) and blur (`editor_saved_aperture`) and starts unkeyed blur at 0; on exit it restores keyed parameters, then the blur. The ordinary viewport is always Auto (focus at look-at); old global modes are converted to Auto on load and Auto is what is saved.
+- **Per-key targets.** `CameraKeyframe::look_set` (0 = fixed point) and `focus_target` (`LookAt`, `Point`, `Distance`, `Selection`; Point and Distance are legacy, read-only in the GUI). A key on `LookAt` returns focus to its look-at; it does not inherit an earlier target.
+- **Shortcuts outside the `WantCaptureKeyboard` guard** (so they work over the Movie window): Shift+K, Tab, Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z. All are blocked while typing, recording, and (except Shift+K) in Preview.
 
 ## Known limits
 
+- Recording has not been tried on Windows and macOS (the ffmpeg pipe uses `_popen` / `popen`).
 - Only some representation properties can be keyed (not type, filter, color mapping, the other colors or electronic structure settings). Tint and saturation recolor atoms every frame: slow for very large systems.
 - The global follow target of older workspaces is not part of undo and can no longer be set (a key's **Look at** / **Focus on** replace it).
 - Where a frame curve turns around the trajectory slows to a stop; for a hard reversal add a key at the turn-around frame with Linear ease.
@@ -83,7 +55,7 @@ Numbers that are saved and must never be renumbered, only added to: parameter id
 
 ## Left for later
 
-- The screenshots in `docs/images/movie` show the earlier two-window layout; retake them from the combined editor.
+- Retake the screenshots in `docs/images/movie`; they show the earlier two-window layout (`overview.png`, `movie_window.png`, `timing_and_keyframes.png`, `look_at_pick.png`, `looks_and_overlays.png`, `movie_timeline.png`).
 - Text overlays with live values (`{time}`, `{frame}`, a script property) and entrance/exit animations.
 - Saved overlay templates.
 - Editing representations during a recording, and a transparent background.

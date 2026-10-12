@@ -1,32 +1,29 @@
 # Making movies
 
-VIAMD records a movie of a trajectory. You choose how long it is, place camera keyframes, key look settings (exposure, background and so on) and the properties of representations (show or hide one, change its size or color), and add overlays (text, a time stamp, a scale bar, a time bar, images, plots of trajectory properties, the visualization of a script property, the VIAMD logo). The result is an MP4 (H.264 or H.265) or WebM file encoded by ffmpeg, or a numbered PNG sequence.
+VIAMD records a movie of a trajectory. You choose how long it is, place camera keyframes, key look settings (exposure, background, depth-of-field blur and so on) and the properties of representations (show or hide one, change its size or color), and add overlays (text, a time stamp, a scale bar, a time bar, images, plots of trajectory properties, the visualization of a script property, the VIAMD logo). The result is an MP4 (H.264 or H.265) or WebM file encoded by ffmpeg, or a numbered PNG sequence.
 
-![The movie tools in an earlier layout, with the camera path in the viewport](images/movie/overview.png)
+![The movie tools with the camera path in the viewport](images/movie/overview.png)
 
-*The screenshots show an earlier layout with the timeline and the controls in two windows. They are now the two panels of one window, and the settings are the same.*
+*Some screenshots show an earlier layout of the editor; the settings they show are the same.*
 
-Contents: [The editor](#the-editor) · [Quick start](#quick-start) · [Output](#output) · [Timing](#timing) · [Camera](#camera) · [Looks](#looks) · [Representations](#representations) · [Overlays](#overlays) · [The timeline](#the-timeline) · [Saving](#saving) · [Example](#example-workspace) · [Tips](#tips) · [Known limits](#known-limits)
+Contents: [The editor](#the-editor) · [Shortcuts](#shortcuts) · [Quick start](#quick-start) · [The timeline](#the-timeline) · [Output](#output) · [Timing](#timing) · [Camera](#camera) · [Looks](#looks) · [Representations](#representations) · [Overlays](#overlays) · [Saving](#saving) · [Example workspaces](#example-workspaces) · [Tips](#tips) · [Known limits](#known-limits)
 
 ## The editor
 
 Open it with **Windows > Movie**. One window holds everything:
 
-**Ctrl+Z** undoes movie edits with either the Movie window or viewport active;
-**Ctrl+Y** or **Ctrl+Shift+Z** redoes them. While typing, these shortcuts belong
-to the text field. Movie undo/redo shortcuts are disabled during recording and fullscreen Preview.
+- **Top:** playback (**Play Preview**, **Play from start**, **Repeat**), the preview-time scrubber, the **Timeline** and **Controls** boxes (hide either panel; one always stays), **Fit path**, **Show path**, **Live picture**, and at the right the **Scene view / Movie preview** switch and the green **Preview** button.
+- **Left, the timeline:** lanes on a shared time axis for the trajectory frame, camera, lens (field of view and distance), looks, representations and overlays. See [The timeline](#the-timeline).
+- **Right, the controls:** **Undo** / **Redo**, the **Keyframes** section (**Add Keyframe**, **with trajectory frame**, **Key on Selection**; while recording also **Stop Recording**, **Pause** and the progress), then the tabs **Output**, **Timing**, **Camera**, **Looks**, **Representations** and **Overlays**.
+- **Bottom, across the full width:** the [camera keyframe table](#the-keyframe-table), shown whichever tab is open.
 
-- **Left, the timeline:** lanes on a shared time axis for the trajectory frame, camera, lens (field of view and distance), looks, representations and overlays.
-- **Right, the controls:** tabs **Output**, **Timing**, **Camera**, **Looks**, **Representations** and **Overlays**.
-- **Bottom, across the full width:** the camera keyframe table, available from every tab. Drag its horizontal divider to resize it; the height is saved with the workspace. The upper area gives most of its width to the timeline.
-- Drag the divider to resize the panels. Each scrolls on its own. The **Timeline** and **Controls** boxes hide either one (one always stays).
-- **Top:** playback (**Play Preview**, **Play from start**, **Repeat**) and the preview-time scrubber.
-- **Right, above the tabs:** **Undo** and **Redo** (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z) cover everything on the movie: camera keys, look and representation keys, overlays, the length and the trajectory timing. Below them the **Keyframes** section: **Add Keyframe**, **with trajectory frame**, **Key on Selection**. While recording, **Stop Recording**, **Pause** and the progress are shown there too.
-- **Start Recording** is at the bottom of the **Output** tab, with a summary of frames, seconds and pixel size.
+Drag the vertical divider to share the width between timeline and controls (the timeline gets most of it by default), and the horizontal divider to set the height of the keyframe table (saved with the workspace). Each panel scrolls on its own. **Start Recording** is at the bottom of the **Output** tab.
 
-### Scene view, Movie preview and Preview
+**Undo** and **Redo** cover everything on the movie: camera keys and their targets, look and representation keys, overlays, the length and the trajectory timing.
 
-The large button at the top right (or **Tab**; hold Tab to peek at the other one) switches the viewport between two views. Tab also works when the Movie window has keyboard focus, except while typing. Neither changes the keys, the playback or the recording, and the switch is disabled while recording.
+### Scene view and Movie preview
+
+The large button at the top right, or **Tab**, switches the viewport between two views; hold Tab to peek at the other one and let go to come back. Neither changes the keys, the playback or the recording, and the switch is disabled while recording.
 
 | | **Scene view** | **Movie preview** |
 |---|---|---|
@@ -34,29 +31,100 @@ The large button at the top right (or **Tab**; hold Tab to peek at the other one
 | Shows | The recording frame (outside dimmed), the camera path and key handles | The recording frame (outside dimmed), the overlays, and the path only if **Show path** is ticked in this mode |
 | Scrubbing and playing | The green movie camera moves along the path; the trajectory plays; your view stays | The viewport is the movie camera, following the keys: a camera turning around the system looks like the system turning |
 
-Each mode remembers its own view. The first time you enter Scene view it frames the whole camera path, seen from where you were looking; **Fit path** does that again. Both frame it, close and centred, in the frame. Both modes show the same recording frame, the same size and in the same place (in the part of the viewport the Movie window leaves free, beside, above or below it), with what is outside dimmed: what is in the frame is what a key added from the view records, so keys are aimed the same way in both modes. The view turns around the middle of the frame, and in Scene view the mouse wheel zooms towards the point under the mouse. **Add Keyframe** (K) adds a key at the preview time with what the frame shows, in both modes; **Update position** in the key table works in both too. To add a key where the path already has the camera, without changing the path's shape, right click **Add Keyframe** > **Add a key on the path**, or double click the Camera lane at that time.
+Each mode remembers its own view. The first time you enter Scene view it frames the whole camera path, seen from where you were looking; **Fit path** does that again. Both modes show the same recording frame, the same size and in the same place: in the part of the viewport the Movie window leaves free (beside, above or below it), with the movie camera's view centred in it as in the recording. Move the window and the frame moves along; when the window floats in the middle, or outside the main window, the frame is centred in the whole viewport. What is in the frame is what a key added from the view records, so keys are aimed the same way in both modes. The view turns around the middle of the frame, and in Scene view the mouse wheel zooms towards the point under the mouse.
 
-Next to the Timeline and Controls boxes: **Fit path** (Scene view only), **Show path** and **Live picture** (Scene view only). **Show path** has a setting of its own in each mode: in Scene view it draws the path, in Movie preview it adds the path over the movie camera's view.
+**Show path** has a setting of its own in each mode: in Scene view it draws the path, in Movie preview it adds the path over the movie camera's view.
 
-In Movie preview the frame is placed in the part of the viewport the Movie window leaves free, so the window never hides the picture, with the movie camera's view centred in the frame as in the recording (the projection is shifted with the frame; the camera and the keys do not change). Move the window and the frame moves along. When the window floats in the middle, or is moved out of the main window, the frame is centred in the whole viewport.
-
-**Live picture** shows a small live picture of the movie camera, with overlays, at the lower right of the upper panels, above the keyframe table, so you can drag the path in the viewport and watch the shot at the same time. Right-click it for its size (**Small**, **Medium**, **Large**, **Extra large**) or to hide it. The sizes grow with the Movie window's width, limited to about 65 % of the upper area's height. It costs one extra render when the picture changes (at most about 20 times a second), so switch it off on very large systems. It has no temporal anti-aliasing or sharpening, and no property visualization.
+**Live picture** (Scene view) shows a small live picture of the movie camera, with overlays, at the lower right of the upper panels, so you can drag the path in the viewport and watch the shot at the same time. Right-click it for its size (**Small** to **Extra large**, limited to about 65 % of the upper area's height) or to hide it. It costs one extra render when the picture changes (at most about 20 times a second), so switch it off on very large systems. It has no temporal anti-aliasing or sharpening, and no property visualization.
 
 ### Preview: watch the movie
 
-The green **Preview** button next to the switch plays the movie in the viewport as it will be recorded, with every window, the menu and the camera path hidden and black outside the frame. It always starts from the beginning of the movie. A bar at the bottom has play/pause, back to the start, the time slider (scrubbing pauses, release resumes), **Repeat** and **Exit preview**. It hides after a moment while the mouse is still and the movie plays; move the mouse to bring it back. **Space** plays and pauses, **Esc** leaves. Whenever the Movie window is up, **Space** plays and pauses the movie (as **Play Preview**), not the trajectory; in a text field it types a space. Opening the Movie window stops the trajectory if it was playing; closing it stops the movie, and **Space** plays the trajectory again. Leaving stops the playback and goes back to Scene view if that was shown. It cannot be entered while recording.
+The green **Preview** button plays the movie in the viewport as it will be recorded, from the beginning, with every window, the menu and the camera path hidden and black outside the frame. A bar at the bottom has play/pause, back to the start, the time slider (scrubbing pauses, release resumes), **Repeat** and **Exit preview**; it hides while the mouse is still and the movie plays. **Space** plays and pauses, **Esc** leaves. Leaving goes back to the view you came from. It cannot be entered while recording.
+
+Whenever the Movie window is open, **Space** plays and pauses the movie, not the trajectory. Opening the Movie window stops the trajectory if it was playing; closing it stops the movie.
+
+## Shortcuts
+
+None of these act while typing in a text field, and the editing ones are disabled while recording and in fullscreen Preview (except where noted).
+
+| Key | Where | What it does |
+|---|---|---|
+| **K** | Viewport | Adds a camera key at the preview time with what the frame shows |
+| **Shift+K** | Movie window or viewport, also in Preview | Adds a camera key, whichever has keyboard focus |
+| **Tab** (hold to peek) | Movie window or viewport | Switches Scene view / Movie preview |
+| **Space** | Movie window open, or Preview | Plays / pauses the movie |
+| **Esc** | Preview / recording / a drag / a pick | Leaves Preview, stops recording, cancels a drag in the viewport, puts down picked items |
+| **Ctrl+Z** | Movie window or viewport | Undoes a movie edit |
+| **Ctrl+Y**, **Ctrl+Shift+Z** | Movie window or viewport | Redoes it |
+| **Ctrl+C** / **Ctrl+V** | Over the lanes | Copies / pastes the picked keys, the first at the preview time |
+| **Ctrl+C** / **Ctrl+V** | Elsewhere | Copies the camera key at the preview time / pastes it there |
+| **Ctrl+A** | Over the lanes | Picks all camera keys and the shown look and representation keys |
+| **Delete** | Over the lanes | Removes picked keys and blocks |
+| **Left / Right** | Over the lanes | Moves picked keys one frame (Shift one second, Ctrl ten frames) |
+| **Up / Down** | Over the lanes | Changes the value of the lane last used (Shift ten steps) |
+| **Ctrl + wheel** | Over the lanes | Zooms time |
+| **Shift + wheel**, middle mouse | Over the lanes | Pans time |
+| **Ctrl + click** | On the camera path | Adds a key at that time without moving the camera |
+| **Ctrl + drag** | A key handle in the viewport | Moves eye and aim together |
+| **Double-click** | Viewport | Aims at the clicked point, eye fixed |
+| **Double-click** | Camera lane | Adds a key on the path at that time |
 
 ## Quick start
 
 1. Load a trajectory and open **Windows > Movie**.
 2. **Output:** click **Select Output Folder...** and pick a format.
 3. **Movie length (s)** (Output or Timing): 60 s for a new movie; type another and press Enter. At first the trajectory fills the movie.
-4. Set the preview time to 0, set up the view, press **K** (**Add Keyframe**).
+4. Set the preview time to 0, set up the view, press **K** (or **Add Keyframe**).
 5. Move the preview time, set up another view, press **K** again. Repeat.
-6. Press **Play Preview** (or **Play from start**). Switch to **Movie preview** to see the frame and overlays, or press the green **Preview** to watch it without the windows.
+6. Press **Play Preview**. Switch to **Movie preview** to see the frame and overlays, or press the green **Preview** to watch it without the windows.
 7. **Start Recording** (bottom of **Output**). Esc or **Stop Recording** stops early.
 
 When the recording ends, your own view, the animation playback and the screenshot settings are restored.
+
+## The timeline
+
+![The Movie timeline](images/movie/movie_timeline.png)
+
+The lanes share the time axis; the yellow line is the playhead. Above them, **Lanes** is a row of toggles, one per lane (lit when shown): **Ruler**, **Camera**, **Trajectory**, **Lens**, **Representations**, **Overlays**, **Rep keys** and **Look**, in the order the lanes are drawn. When **Rep keys** or **Look** is on, a second row picks what they show. Numbers on the lanes' axes and in the mouse readout have at most two decimals.
+
+The presets on the line below set the lanes for a kind of work:
+
+| Preset | Lanes |
+|---|---|
+| **Camera work** | Ruler, Camera, Trajectory, Lens |
+| **Scene work** | Ruler, Trajectory, Representations, Overlays, Look (on **Depth of field blur**) |
+| **All** | Ruler, Camera, Trajectory, Lens, Representations, Look |
+
+A new movie uses **All**, **Fit to window** and **Depth of field blur** in the Look lane; a workspace keeps its own layout. **Layout...** has the lane height, **Fit to window**, **Snap to frames**, **Show whole movie** and the representations lane's **Lines** and **Block height**.
+
+### Lanes
+
+- **Ruler:** the time axis with a tick per frame once frames are a few pixels apart, the movie's markers as yellow triangles (click to go there), and the preview time. Click or drag in it to move the preview time. Every lane has its name in its top left corner.
+- **Trajectory:** the frame shown at each moment. Drag the blue **Start** and **End** lines. Orange dots are keys with a pinned frame: drag sideways for time, up or down for frame.
+- **Camera lane:** the camera on one lane. Before the first key and after the last one the lane is hatched grey: the camera holds still there. The first row has keys as orange dots with number and name (yellow at the preview time). Drag sideways to change when, click to go there, right-click for **Go to** and **Remove** (and the name), double-click an empty spot to add a key there on the path, without moving the camera. Row **Look at**: a blue band over keys that look at atoms ("3 atoms", "atom 12"). Row **Focus**: a magenta band from each key that tracks a focus target to the next key, its transition darker, with what is sharp and the blur. Row **Spin**: a purple band over stretches with extra turns (`+2 x`). Row **Frame**: a green mark, with the frame number, at each key that pins a frame. A key added by double-click looks at the atoms its two neighbours look at; a spin's turns stay with the part ending at the later key.
+- **Lens:** field of view (left axis, degrees, 1 to 170) and camera distance (right axis) on one plot, with a legend. Drag dots sideways for time and up or down for value; each dot belongs to its curve's axis (distance moves the camera along its line of sight).
+- **Look parameter lane:** the parameter chosen at the top. Double-click adds a key, drag changes it, right-click removes.
+- **Representation lane:** the property chosen with the two lists next to it. The line is the value, dots are keys; same editing. For **Visible**, double-click turns it around at that time; the first one on a representation without keys also keys its present state at 0 so it holds until then.
+- **Representation overview:** see [above](#the-overview-lane).
+- **Overlay lane:** overlays as bars (one row and color per kind), markers as small yellow triangles. Drag a bar to move it, an end to change when it starts or stops. Moving a whole bar moves the in and out times of its subplots; small ticks in a bar show where subplots come in. Hover for name and times.
+
+### Picking and moving things together
+
+Camera keys, trajectory, lens (distance and FOV), look-parameter and representation-lane keys, overlay bars and overview blocks can be picked and moved as a group.
+
+- **Pick:** click an item (a white ring shows it). **Ctrl + click** adds or removes. **Drag on a lane's empty background** draws a box (Ctrl or Shift: adds; in the camera lane it picks by time only). A click on the background puts all down. **Pick all** (Ctrl + A) picks the camera keys and the shown look and representation keys. A camera key is one key in every lane it appears in. Clicking a key's handle in the viewport picks it too.
+- **Move:** drag a picked item and all move by the same time and, in lanes with a value, by the same amount (frame, distance, FOV, parameter value, property value; colors and **Visible** move in time only). A tooltip shows how far (`5 keys: +1.20 s  +0.5`). The group stays inside the movie, keeping the spacing, and lands on frames with **Snap to frames**. Dragging an unpicked key picks it alone. One drag is one undo step. A key landing on another in the same lane replaces it on release.
+- **Bars and blocks:** dragging a picked bar or block by its middle moves everything picked by the same time, and takes along what is timed inside a bar. A block stops at other blocks of its representation. Dragging an end still changes only that end. **Delete** removes picked blocks and keys (never an overlay). Unkeyed blocks cannot be picked.
+- **Stretch:** the percentage box next to **Copy** stretches the time between picked items about the first one or the preview time (the list beside it). 100 % is unchanged. It stops where something would leave the movie. One undo step.
+- **Inspector:** a line above the lanes says how many of each kind are picked. **first at** moves all so the first is at the typed time. The ease list sets how the movie gets to every picked key (**(mixed)** when they differ). One picked camera key can be renamed there.
+- **Keyboard:** see [Shortcuts](#shortcuts). **Pick all**, **Put down**, **Delete**, **Copy** and **Paste** above the lanes do the same.
+
+### Zoom, panning and layout
+
+- Ctrl + wheel zooms time; **Show whole movie** resets. Because dragging on the background picks, pan with the **middle mouse button**, **Shift + wheel** or sideways scrolling.
+- **Lane height** (60 to 400 px) times each lane's proportion (drag between lanes to change it). The window scrolls with the wheel when lanes do not fit; the overview, overlay and camera lanes grow to fit their rows without making others taller. **Fit to window** shares the window height among the lanes instead, and then the wheel zooms.
+- The **Lanes** toggles hide or show a lane; the settings below are in **Layout...**.
+- **Snap to frames** (default on): dragged keys, the playhead, the trajectory start and end, and keys added at the preview time land on a frame at the **Output FPS**.
 
 ## Output
 
@@ -92,39 +160,41 @@ To vary the speed, pin frames on camera keyframes (**Frame** column below): betw
 
 ## Camera
 
-A keyframe is a camera (eye position, look-at point, distance, field of view) at a time, and it can say what it **looks at** and what is **in focus**, each without touching the rest. Between keys the camera moves smoothly; before the first and after the last it holds still.
+A keyframe is a camera (eye position, look-at point, distance, field of view) at a time. It also says what the camera **looks at** and what is **in focus**, each independently of the rest. Between keys the camera moves smoothly; before the first and after the last it holds still.
 
 In Movie preview, previewing and recording always follow the keys; in Scene view your own camera stays and the green movie camera moves along the path.
 
-### Keyframes section (above the tabs)
+### Adding keys
 
-- **Add Keyframe** (**K**): key of what the frame shows at the preview time. When there is a key at the preview time already, the new one goes **2 s later** and the preview time moves there (refused past the movie end). Right click: **Add a key on the path**. **with trajectory frame** is checked by default and also pins the frame shown now.
-- **Key on Selection:** key at the preview time framing the selected atoms, from the current direction, and moves the viewport there. Molecules split by the periodic cell are framed as one.
+- **Add Keyframe** (**K**, or **Shift+K** from anywhere in the editor): a key with what the frame shows at the preview time. When there is a key at the preview time already, the new one goes **2 s later** and the preview time moves there (refused past the movie end). **with trajectory frame** (checked by default) also pins the frame shown now.
+- **Add a key on the path** (right-click **Add Keyframe**, double-click the Camera lane, or **Ctrl + click** on the path in the viewport): a key where the path already has the camera, so the path keeps its shape.
+- **Key on Selection:** a key at the preview time framing the selected atoms from the current direction, and moves the viewport there. Molecules split by the periodic cell are framed as one.
 
 ### Camera tab
 
 - **Add Orbit:** fields for turns, duration and axis (**Camera up**, **World X/Y/Z**) set a key at the preview time and another one *duration* later after the camera has gone round the look-at point. Refused if it would run past the movie end.
 - **Seamless loop** and **Close Loop:** make the path cyclic so a repeating movie does not jump. **Close Loop** adds a final key in the first key's pose and turns the loop on.
-- **Keep upright** (on for new movies), **Up**, **From view:** the camera stays level with the chosen world axis up on screen, so loops and spins cannot leave it tilted. **From view** picks the axis closest to the view's up. Keys then give only where the camera looks from and at; the tilt is the key's **Roll (deg)** (positive leans left, 0 levels), eased smoothly. A key made from the view (**K**, **Add Keyframe**, **Key on Selection**, **Update position**) takes the view's own tilt as its Roll, so it plays back as it was seen; set Roll to 0 to level it. A spin around **Camera up** turns around the up axis. Off, the keys' own tilts are used, as in old workspaces; the **Roll** column then shows each tilt with a **Level** button.
+- **Keep upright** (on for new movies), **Up**, **From view:** the camera stays level with the chosen world axis up on screen, so loops and spins cannot leave it tilted. **From view** picks the axis closest to the view's up. Keys then give only where the camera looks from and at; the tilt is the key's **Roll (deg)** (positive leans left, 0 levels), eased smoothly. A key made from the view takes the view's own tilt as its Roll, so it plays back as it was seen; set Roll to 0 to level it. A spin around **Camera up** turns around the up axis. Off, the keys' own tilts are used; the **Roll** column then shows each tilt with a **Level** button.
 - **Paste Keyframe:** puts in the key copied from the table (see below).
+- Path drawing options: time ticks, sight lines, cameras, spin rings (see [The camera path in the viewport](#the-camera-path-in-the-viewport)).
 
 ### The keyframe table
 
 ![Keyframe table, key 2 waiting for an atom to be clicked](images/movie/look_at_pick.png)
 
-The table occupies the full-width bottom section, independently of the selected controls tab. Columns resize by dragging their borders; the table scrolls sideways when wider than the window.
+The table fills the bottom of the Movie window. Columns resize by dragging their borders; the table scrolls sideways when wider than the window.
 
 | Column | Meaning |
 |---|---|
 | **#** | The key's number. Drag it onto another row to move the key's pose there; times stay. |
-| **Name** | A name of up to 23 characters ("intro", "close-up"), shown in the camera lane and saved. |
+| **Name** | Up to 23 characters ("intro", "close-up"), shown in the camera lane and saved. |
 | **Time (s)** | When. The list re-sorts when you finish editing. |
 | **Frame** | Tick to pin a trajectory frame to the key, then drag the number. A frame lower than the previous pin plays backwards. |
 | **FOV (deg)** | Field of view. Narrow it to zoom without moving. |
 | **Go to** | Moves the viewport to the key. Clicking a key's orange marker in the **Timelines** window does the same. |
 | **Update** | Moves the key's eye to the viewport camera, still looking at the same point; also takes the FOV and, if pinned, the frame. |
-| **Look at** | **Fixed point** or **Track selection**. Edit the point/use view aim, or track a typed selection, selected atoms or a picked atom. The eye keeps its place. See [Look at and focus on](#look-at-and-focus-on). |
-| **Focus on** | **look-at** follows the movie camera's aim at this key. Choose a separate target to decouple focus, with its own transition and ease. |
+| **Look at** | **Fixed point** or **Track selection**. See [Look at and focus on](#look-at-and-focus-on). |
+| **Focus on** | **Look-at** or **Track selection**. See [Look at and focus on](#look-at-and-focus-on). |
 | **Ease** | How the movie gets *to* this key: **Smooth** passes without stopping, **Ease in/out** slows at both ends, **Linear** is constant speed, **Hold** stays then jumps. |
 | **Spin** | Extra whole turns around the look-at point on the way to this key. **...** opens the axis and **Constant speed**. |
 | **Roll (deg)** | See **Keep upright**. |
@@ -132,76 +202,68 @@ The table occupies the full-width bottom section, independently of the selected 
 | **Dup** | Copies the key to one second later. |
 | **Remove** | Deletes the key. |
 
-**Shift+K** captures a key while the Movie window or viewport has keyboard focus,
-including fullscreen Preview. It is disabled during recording and while typing in a
-text field. Plain **K** keeps its viewport shortcut behavior.
-
-To edit a key: go to it, move around, **Update position**, and **Look at** / **Focus on** to choose the targets. A line below the table shows the eye, look-at point and distance at the preview time (and the focus distance with depth of field).
+To edit a key: **Go to** it, move around, **Update**, then choose its **Look at** and **Focus on**. A line below the table shows the eye, look-at point and distance at the preview time (and the focus distance when there is blur).
 
 ### Look at and focus on
 
-Every key can say two things besides where the eye is, each on its own and independently of the other keys' times:
+Each key sets, independently of its eye position:
 
-- **Look at:** what the camera is aimed at. A **fixed point** (the default: where the pose aims) or **atoms**, tracked through the trajectory: a selection typed in the language of the filters (`protein`, `resname("AIN")`, `resid(12)`, a named selection ...; Enter applies it, red when it is not valid or selects nothing), the current selection, or one atom picked in the viewport. An expression is evaluated again for the system and frame that are shown, so it keeps working when the system is replaced; the centre is mass-weighted and made whole across periodic boundaries. The aim moves from one key's look-at to the next with the key's easing, so a camera can look at one molecule and then turn to another while the eye travels its own way. The look-at path is the *yellow* one in the viewport.
-- **Focus on:** what is sharp. Choose **Look-at** (default) or **Track selection**, independently of aim. A tracked target can be a typed selection, selected atoms or a picked atom, with **Transition** (seconds, from the key's time) and **Ease**. Choosing Track selection uses the selected atoms, or starts viewport picking if nothing is selected; expressions can be applied directly in either popup. Choosing Fixed point for look-at freezes the current tracked centre. A default focus key returns to look-at, rather than inheriting an earlier target. Explicit transitions finish no later than the next camera key. Saved legacy fixed-point/distance focus keys remain readable and retain their effect until you choose a different target. The focus path is the *magenta* one.
+- **Look at**, what the camera is aimed at:
+  - **Fixed point** (default): where the key's pose aims. Drag or type its coordinates, or **Use view aim** to take the viewport's.
+  - **Track selection**: the centre of atoms, followed through the trajectory. Use a selection typed in the filter language (`protein`, `resname("AIN")`, `resid(12)`, a named selection ...; Enter applies, red when it is invalid or empty), the current selection, or one atom picked in the viewport. The centre is mass-weighted and made whole across periodic boundaries, and the expression is evaluated again for the system and frame shown.
+  - Switching a tracked key back to **Fixed point** freezes the centre where it is now.
+- **Focus on**, what is sharp:
+  - **Look-at** (default): whatever this key looks at, fixed or tracked.
+  - **Track selection**: other atoms, chosen as above, with **Transition** (seconds from the key's time) and **Ease**. A transition finishes no later than the next camera key.
+  - A key on **Look-at** brings the focus back to its look-at; it does not carry an earlier key's target forward. To keep focus on the same atoms over several keys, set it on each.
 
-**How blurred the rest is** is the look parameter **Depth of field blur** (Looks tab and look-parameter lane), not part of the key: key it, ease it and smooth it like any other look parameter, with **Key the blur here** in the Focus on popup as a shortcut. Movie blur is on when that parameter is above 0, without the global depth-of-field switch; zero makes everything sharp, regardless of the focus target.
+The aim moves from one key's look-at to the next with the key's easing, so the camera can look at one molecule and then turn to another while the eye travels its own way. Choosing **Track selection** uses the selected atoms, or starts picking in the viewport when nothing is selected (Esc cancels). Targets are saved with the key and are copied, pasted, moved, stretched and deleted with it; undo covers them, and changing the movie length scales their transitions. Atoms missing from the current system are reported once and the key's saved point is used.
 
-Opening Movie sets its unkeyed blur to **zero**, independently of the ordinary viewport's blur. Saved movie blur keys still apply at the preview time and during playback; closing Movie restores the ordinary viewport's blur.
+**How blurred the rest is** is not part of the key: it is the look parameter **Depth of field blur** (Looks tab and Look lane). Key it, ease it and smooth it like any other look parameter; **Key the blur here** in the Focus on popup is a shortcut. Zero makes everything sharp whatever the focus target. Opening the Movie window starts the movie's unkeyed blur at zero; keyed blur still applies at the preview time and during playback.
 
-Where a key is selected, **Look at** and **Focus on** act on that key only. Their targets are saved with the key and are copied, pasted, moved, stretched and deleted with it; undo covers them, and a movie's length scales their transitions.
+**Examples.**
+- *Follow a general direction, keep a moving molecule sharp:* keys with **Look at: Fixed point** along the path, and on the first one **Focus on: Track selection** `resname("AIN")`; repeat it on later keys that should keep it. Key **Depth of field blur** above 0.
+- *Rack focus on a still shot:* two keys with the same pose a few seconds apart; the second sets **Focus on: Track selection** to the other object with a **Transition** of 1 to 2 s.
+- *Blur only for a while:* key **Depth of field blur** at 0, then up, then back to 0.
 
-Movie preview, the live picture, fullscreen Preview and recording always evaluate movie focus, including default look-at keys. Global controls show **Focus: driven by movie** and are read-only while the movie is open. The Scene view's editor camera keeps a separate internal depth captured on entry; movie target changes do not pull its focus. Closing the movie restores the ordinary viewport's Auto focus and saved blur settings. Atoms that are not in the current system are reported once and the key's saved point is used.
+### Movie focus and the ordinary viewport
 
-Workspaces made with the separate **Look-at** and **Focus** tracks, or with keys that followed a follow target or an atom, are converted when loaded: a camera key is added (on the path, so the movie goes the same way) where a track had a key, tracked keys look at the centre of their atoms, the focus keys become **Focus on** of the key at their time and their blur becomes keys of **Depth of field blur** with the same transitions. The eye path of such a movie can differ slightly from before.
+Outside the movie, **Visuals > Depth of Field** always focuses on the camera's look-at point (**Auto**): double-clicking an object aims there and so focuses there. Its **Blur Strength** is saved with the workspace.
+
+While the Movie window is open, in Preview and while recording, the movie owns the focus: Movie preview, the live picture, Preview and the recording follow the keys, and the Depth of Field controls show **Focus: driven by movie** and are read-only. Scene view keeps its own focus depth, taken when the movie opens, so changing a key's target does not refocus your editor camera. Closing the Movie window gives back the viewport's own focus and blur.
+
+**Blur Strength** and the movie's **Depth of field blur** use the same units: the blur of distant objects as a percentage of the view height, independent of zoom.
 
 ### The camera path in the viewport
 
-**Show path** (at the top of the Movie window) draws the path over the viewport while the editor is open (not in recorded frames). What to draw (time ticks, sight lines, cameras, spin rings) is set here in the Camera tab.
+**Show path** draws the paths over the viewport while the editor is open (never in recorded frames):
 
-- The eye's path is blue, the look-at path yellow; each is brighter ahead of the preview time than behind.
-- **Time ticks:** dots at round times (the step adapts to the movie length) with the time written at some, and chevrons for the direction. Close dots mean slow, far apart mean fast, so the easing can be read off. Yellow diamonds mark the same times on the look-at path.
+- **Camera** (blue), **look-at** (yellow) and **focus** (magenta, where a key tracks a focus target). Each is brighter ahead of the preview time than behind.
+- **Time ticks:** dots at round times (the step adapts to the movie length) with the time written at some, and chevrons for the direction. Close dots mean slow, far apart fast, so the easing can be read off. Yellow diamonds mark the same times on the look-at path.
 - **Sight lines:** a thin line from the eye to its target at each tick. **Cameras:** a camera drawn at each key, orange at the preview time. **Spin rings:** the circle a spin goes round, with arrows and the turn count.
-- **Key handles:** a round one on the eye (with the key's number and name) and a ring with a cross on what it looks at, joined by a line. White for a key that looks at a fixed point; blue for one that looks at atoms; orange at the preview time. Hovering one highlights the key in the camera lane and vice versa. **Click** goes to the key and picks it. **Drag** the eye handle to move the eye (the target stays), the ring to move the target (the eye stays), **Ctrl** to move both. The handle moves in the plane facing you; Esc cancels; a drag is one undo step.
+- **Key handles:** a round one on the eye (with the key's number and name) and a ring with a cross on what it looks at (and on the focus target), joined by a line. White for a fixed point, blue for atoms, orange at the preview time. Hovering one highlights the key in the camera lane and vice versa. **Click** goes to the key and picks it. **Drag** a handle to move that part of the key only (a tracked look-at or focus becomes a fixed point); **Ctrl** moves the eye and the aim together. The handle moves in the plane facing you; Esc cancels; a drag is one undo step.
 - **Ctrl + click on the path** adds a key at that time without moving the camera.
 - The **green camera** is the camera at the preview time: a green dot on the eye, a green ring (**looks at**), and a thick arrow between them. Orbit the scene to see the path from other sides.
-- With keys that look at atoms, the look-at path follows them through the trajectory. It is computed a few points at a time (frames must be read), so it grows for a moment; the old path stays until the new one is ready.
-
-### Three paths
-
-The viewport shows the paths of the **camera** (blue), what it **looks at** (yellow) and what is **in focus** (magenta, where a key sets it), each with a handle at every key that sets it. **Drag** a handle to move that part of the key only (a tracked look-at or focus becomes a fixed point), **Ctrl** to move the eye and the aim together; release to apply, Esc cancels. **Ctrl + click** on the path adds a camera key there. The spin is made about the look-at point.
-
-### Global depth of field (ordinary viewport)
-
-Under **Visuals > Depth of Field**, focus is always **Auto (look-at)**: the camera's look-at/orbit point defines the sharp depth. Double-clicking an object resets that point and thus focus. There is no global Fixed mode. Old global fixed/target modes are converted to Auto on load, with a notification; movie focus keys are unaffected. Blur settings are saved with the workspace and remain separate from movie targets.
-Target tracking belongs to **Movie > Camera > Focus on**, not global settings.
-Legacy global target modes load as Auto with a notification. Old Looks **Focus distance**
-keys are retained but inactive; use a key's **Focus on > Distance** instead.
-Existing movie keys without an explicit focus now mean look-at, not inherited focus;
-repeat an explicit target on later keys if it should continue through them.
-
-**Blur Strength** uses the upstream renderer's aperture: blur of distant objects as a percentage of the view height, independent of zoom level. The movie's **Depth of field blur** keys use the same units.
+- With keys that look at atoms, the look-at path follows them through the trajectory. It is computed a few points at a time, so it grows for a moment; the old path stays until the new one is ready.
 
 ### A small FOV and focus tutorial
 
-Open [fov_and_focus.via](examples/fov_and_focus.via) and press the green **Preview** button. Its companion [fov_and_focus.xyz](examples/fov_and_focus.xyz) is a tiny synthetic trajectory, included in the repository: no aspirin files are needed. Keep the two files together.
+Open [fov_and_focus.via](examples/fov_and_focus.via) and press the green **Preview** button. Its companion [fov_and_focus.xyz](examples/fov_and_focus.xyz) is a tiny synthetic trajectory in the repository; keep the two files together.
 
-- **0-18 s, field of view:** all atoms and the camera stay fixed; blur is off. FOV changes from **45 to 20 degrees** (objects grow), then to **70 degrees** (objects shrink), then back to 45. This is lens zoom, not camera travel. The Camera table shows the changing FOV while distance stays at 32 A.
-- **18-32 s, depth of field:** FOV, camera position and aim stay fixed. A movie-local focus key turns blur on over two seconds and tracks the centre carbon. The red foreground oxygens become sharp when it reaches their depth (22.5 s), then the blue background nitrogens become sharp at their depth (31.5 s).
+- **0-18 s, field of view:** the atoms and the camera stay fixed; blur is off. FOV goes from **45 to 20 degrees** (objects grow), then to **70 degrees** (objects shrink), then back to 45. This is lens zoom, not camera travel: the Camera table shows the FOV changing while the distance stays at 32 A.
+- **18-32 s, depth of field:** FOV, position and aim stay fixed. Blur turns on over two seconds and focus tracks the centre carbon. The red foreground oxygens become sharp when it reaches their depth (22.5 s), then the blue background nitrogens (31.5 s).
 - **32-34 s:** focus racks from the moving carbon to a fixed point on the red oxygen over one second.
-- **34-36 s:** a no-blur key fades blur to zero over one second. All atoms become sharp again.
+- **34-36 s:** blur fades to zero over one second; everything is sharp again.
 
-Open **Focus on** of the keys at 18, 32 and 34 s: the key at 18 s stores the carbon (atoms), the key at 32 s the red oxygen's fixed position, and the key at 34 s goes back to what the camera looks at. The blur, 0 to 3.5 % and back, is keys of **Depth of field blur** in the Looks tab. The example is in the format of the earlier separate tracks: it is converted to keys when it is loaded.
+Open **Focus on** of the keys at 18, 32 and 34 s: the first tracks the carbon, the second holds the oxygen's fixed position (an older kind of focus key, shown read-only), the third is back on **Look-at**. The blur, 0 to 3.5 % and back, is keys of **Depth of field blur** in the Looks tab.
 
-**In short:** FOV changes how much you see and the apparent size; depth of field changes what is sharp. Narrow FOV does not by itself enable blur. Increasing **Blur Strength** strengthens depth separation, not zoom.
+**In short:** FOV changes how much you see and how big things look; depth of field changes what is sharp. A narrow FOV does not blur by itself, and more blur does not zoom.
 
 ## Looks
 
 ![Look parameters and overlays](images/movie/looks_and_overlays.png)
 
-Background color and intensity, ambient occlusion, exposure, depth-of-field blur, near and far clipping planes and focus distance can change during the movie.
-
-After the upstream renderer update, occlusion radius is no longer adjustable. Old occlusion-radius and depth-of-field-blur keys are retained in workspaces but inactive, with a message when loaded: their old units cannot be converted reliably. Re-key **Depth of field blur** using the new aperture units. Other parameter IDs are unchanged.
+Background color and intensity, ambient occlusion, exposure, depth-of-field blur and the near and far clipping planes can change during the movie.
 
 1. Pick the parameter in the list.
 2. Set it up in **Visuals** at some preview time.
@@ -274,52 +336,18 @@ Overlays are drawn in recorded frames and in **Movie preview**. In the **Overlay
 
 *Markers.* Expand **Timeline markers** under the overlay inspector. **Add marker at the preview time** or **Add one at each camera key**, then set time, label and target. **All timeline subplots** puts the line and label on every timeline; choosing a subplot puts them on that subplot only, in any timeline overlay containing it. Targets use stable subplot identities, survive renaming and save/load, and a missing one is reported, not reassigned. **Markers** in an overlay hides its markers. Marker times scale with the movie length. Each marker has a color of its own: the swatch before its time picks one, right click goes back to automatic, which gives markers different colors from a palette in time order. Its line and label in the overlays and its triangle in the ruler and overlay lane have that color. Older workspaces load with automatic colors. A label starts at its marker and runs right in the first half of the plot; in the second half it ends at its marker and runs left, so labels near the end stay readable. A label that would run into one written before (on the same subplot) goes on a lower row (up to three, as room allows); if every row is taken it goes on the other side of the marker, and only if that is taken too does it overlap, where it overlaps least. Labels never run past the plot's edges. The marker labels in the editor's ruler are placed the same way, on lines above the frame numbers.
 
-## The timeline
-
-![The Movie timeline](images/movie/movie_timeline.png)
-
-The lanes share the time axis; the yellow line is the playhead. Above them, **Lanes** is a row of toggles, one per lane (lit when shown): **Ruler**, **Camera**, **Trajectory**, **Lens**, **Representations**, **Overlays**, **Rep keys** and **Look**, in the order the lanes are drawn. On the line below, **All**, **Camera work** and **Scene work** are presets and **Layout...** opens lane height, **Fit to window**, **Snap to frames**, **Show whole movie** and the representations lane's **Lines** and **Block height**. When the **Rep keys** or **Look** lanes are on, a second row picks what they show. Numbers on the lanes' axes and in the mouse readout are short: at most two decimals, without trailing zeros.
-
-New/reset movies use **Fit to window**, the **All** lane set, and **Depth of field blur** as the Look parameter. Saved workspace layouts take precedence. Presets are:
-
-- **Camera work:** Ruler, Camera, Trajectory, Lens.
-- **Scene work:** Ruler, Trajectory, Representations, Overlays, Look; selects Depth of field blur.
-- **All:** Ruler, Camera, Trajectory, Lens, Representations, Look.
-
-Overlays and Rep keys can still be toggled individually.
-
-### Lanes
-
-- **Ruler:** the time axis with a tick per frame once frames are a few pixels apart, the movie's markers as yellow triangles (click to go there), and the preview time. Click or drag in it to move the preview time. Every lane has its name in its top left corner.
-- **Trajectory:** the frame shown at each moment. Drag the blue **Start** and **End** lines. Orange dots are keys with a pinned frame: drag sideways for time, up or down for frame.
-- **Camera lane:** the camera on one lane. Before the first key and after the last one the lane is hatched grey: the camera holds still there. The first row has keys as orange dots with number and name (yellow at the preview time). Drag sideways to change when, click to go there, right-click for **Go to** and **Remove** (and the name), double-click an empty spot to add a key there on the path, without moving the camera. Row **Look at**: a blue band over keys that look at atoms ("3 atoms", "atom 12"). Row **Focus**: a magenta band from each key that sets the focus to the next one that does, its transition darker, with what is sharp and the blur. Row **Spin**: a purple band over stretches with extra turns (`+2 x`). Row **Frame**: a green mark, with the frame number, at each key that pins a frame. A key added by double-click looks at the atoms its two neighbours look at; a spin's turns stay with the part ending at the later key.
-- **Lens:** field of view (left axis, degrees, 1 to 170) and camera distance (right axis) on one plot, with a legend. Drag dots sideways for time and up or down for value; each dot belongs to its curve's axis (distance moves the camera along its line of sight).
-- **Look parameter lane:** the parameter chosen at the top. Double-click adds a key, drag changes it, right-click removes.
-- **Representation lane:** the property chosen with the two lists next to it. The line is the value, dots are keys; same editing. For **Visible**, double-click turns it around at that time; the first one on a representation without keys also keys its present state at 0 so it holds until then.
-- **Representation overview:** see [above](#the-overview-lane).
-- **Overlay lane:** overlays as bars (one row and color per kind), markers as small yellow triangles. Drag a bar to move it, an end to change when it starts or stops. Moving a whole bar moves the in and out times of its subplots; small ticks in a bar show where subplots come in. Hover for name and times.
-
-### Picking and moving things together
-
-Camera keys, trajectory, lens (distance and FOV), look-parameter and representation-lane keys, overlay bars and overview blocks can be picked and moved as a group.
-
-- **Pick:** click an item (a white ring shows it). **Ctrl + click** adds or removes. **Drag on a lane's empty background** draws a box (Ctrl or Shift: adds; in the camera lane it picks by time only). A click on the background puts all down. **Pick all** (Ctrl + A) picks the camera keys and the shown look and representation keys. A camera key is one key in every lane it appears in. Clicking a key's handle in the viewport picks it too.
-- **Move:** drag a picked item and all move by the same time and, in lanes with a value, by the same amount (frame, distance, FOV, parameter value, property value; colors and **Visible** move in time only). A tooltip shows how far (`5 keys: +1.20 s  +0.5`). The group stays inside the movie, keeping the spacing, and lands on frames with **Snap to frames**. Dragging an unpicked key picks it alone. One drag is one undo step. A key landing on another in the same lane replaces it on release.
-- **Bars and blocks:** dragging a picked bar or block by its middle moves everything picked by the same time, and takes along what is timed inside a bar. A block stops at other blocks of its representation. Dragging an end still changes only that end. **Delete** removes picked blocks and keys (never an overlay). Unkeyed blocks cannot be picked.
-- **Stretch:** the percentage box next to **Copy** stretches the time between picked items about the first one or the preview time (the list beside it). 100 % is unchanged. It stops where something would leave the movie. One undo step.
-- **Inspector:** a line above the lanes says how many of each kind are picked. **first at** moves all so the first is at the typed time. The ease list sets how the movie gets to every picked key (**(mixed)** when they differ). One picked camera key can be renamed there.
-- **Keyboard** (mouse over the lanes): left/right move picked keys one frame (Shift one second, Ctrl ten frames); up/down change the value of the lane last used (Shift ten steps); **Delete** removes; **Esc** puts down; **Ctrl+C** / **Ctrl+V** copy and paste with the first at the preview time. **Pick all**, **Put down**, **Delete**, **Copy** and **Paste** above the lanes do the same.
-
-### Zoom, panning and layout
-
-- Ctrl + wheel zooms time; **Show whole movie** resets. Because dragging on the background picks, pan with the **middle mouse button**, **Shift + wheel** or sideways scrolling.
-- **Lane height** (60 to 400 px) times each lane's proportion (drag between lanes to change it). The window scrolls with the wheel when lanes do not fit; the overview, overlay and camera lanes grow to fit their rows without making others taller. **Fit to window** shares the window height among the lanes instead, and then the wheel zooms.
-- The **Lanes** toggles hide or show a lane; the settings below are in **Layout...**.
-- **Snap to frames** (default on): dragged keys, the playhead, the trajectory start and end, and keys added at the preview time land on a frame at the **Output FPS**.
-
 ## Saving
 
-The movie (length, trajectory timing, camera keys with their names, look-at and focus, look and representation keys, overlays with bin counts and markers with subplot targets, path options and timeline layout) is saved in the workspace (`.via`) under `[Movie]`, with the subplot names the overlays use. Workspaces from earlier versions load and are converted. Whether Scene view or Movie preview is shown, and which editor panels are visible, are not saved.
+The movie (length, trajectory timing, camera keys with their names, look-at and focus targets, look and representation keys, overlays with bin counts and markers with subplot targets, path options, timeline layout and keyframe table height) is saved in the workspace (`.via`) under `[Movie]`, with the subplot names the overlays use. Whether Scene view or Movie preview is shown, and which editor panels are visible, are not saved.
+
+### Older workspaces
+
+Workspaces from earlier versions load and are converted:
+
+- Separate **Look-at** and **Focus** tracks, and keys that followed a follow target or an atom, become per-key **Look at** / **Focus on**: a camera key is added on the path where a track had a key, tracked keys look at the centre of their atoms, and focus blur becomes keys of **Depth of field blur** with the same transitions. The eye path of such a movie can differ slightly.
+- Focus keys on a fixed point or at a fixed distance keep working and are shown read-only; choose **Look-at** or **Track selection** to replace them.
+- A global Fixed or target focus mode becomes **Auto**, with a notification.
+- Keys of the old **Focus distance**, **Occlusion radius** and depth-of-field blur parameters (from before the renderer update) are kept but inactive, with a message: their units cannot be converted. Key **Depth of field blur** again.
 
 ## Example workspaces
 
@@ -335,7 +363,7 @@ The movie (length, trajectory timing, camera keys with their names, look-at and 
 
 The plots are the short-range Lennard-Jones and Coulomb terms from the `.edr` between aspirin and the protein, the Ca2+ ion and the water, and the geometry (distances to the pocket and to the ion, the number of waters around aspirin, the torsion of the carboxylate), each coming in at the time it matters, with four markers. The energies are read from the `.edr` with `attr("edr/...")` in the workspace's script.
 
-The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md).
+The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md) (a case study; its screenshots and scripts may lag behind the current editor).
 
 Both refer to `aspirin-phospholipase.gro`, `.xtc` and `.edr` in their own folder, which are not in the repository. Put your copies next to the workspace and use **File > Open Workspace**.
 
@@ -352,8 +380,8 @@ Both refer to `aspirin-phospholipase.gro`, `.xtc` and `.edr` in their own folder
 
 ## Known limits
 
-- Legacy global target-focus modes convert to Auto. Use a key's **Focus on** to track an object in a movie.
 - A timeline or distribution overlay draws at most six series per subplot and the first member of a population, and a timeline overlay has one axis kind for all its subplots.
 - Solid representations cannot fade; they grow in and shrink away.
 - The Representations window is locked while recording.
+- Tracked paths in the viewport are drawn from the current trajectory frame.
 - With **Keep upright**, a spin around a horizontal axis flips over at the top and bottom (the camera cannot stay level looking along the up axis). Roll eases as a number, so 170 to -170 degrees turns the long way round.
