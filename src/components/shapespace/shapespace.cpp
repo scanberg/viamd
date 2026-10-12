@@ -42,7 +42,9 @@ struct SeriesCache {
     std::vector<vec2_t> coords;     // member major: frame f of member k at k * num_frames + f
 
     analysis_density::Triangle density;
-    uint64_t density_hash = 0;
+    uint64_t density_hash = 0;           // what the density was made of
+    uint64_t pending_hash = 0;           // what it should be made of, and since when
+    double pending_time = 0.0;
     analysis_density::Renderer renderer[DensityLayer_Count];
     uint64_t render_key[DensityLayer_Count] = {};
     bool rendered[DensityLayer_Count] = {};
@@ -128,7 +130,6 @@ struct Shapespace : viamd::EventHandler {
         c.version = v.version;
         c.num_frames = v.num_frames;
         c.count = v.count;
-        c.density_hash = 0;
         c.coords.resize((size_t)v.count * v.num_frames);
 
         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
@@ -159,7 +160,15 @@ struct Shapespace : viamd::EventHandler {
         key.smoothing = s.smoothing;
 
         const uint64_t hash = md_hash64(&key, sizeof(key), 0) | 1;
-        if (hash != c.density_hash) {
+
+        // A property changes with every frame range the script evaluates: it is the settled one which is turned into a density
+        const double now = ImGui::GetTime();
+        if (hash != c.pending_hash) {
+            c.pending_hash = hash;
+            c.pending_time = now;
+        }
+        const bool settled = c.density_hash == 0 || now - c.pending_time > 0.4;
+        if (hash != c.density_hash && settled) {
             c.density_hash = hash;
             std::vector<vec2_t> points;
             size_t groups = 0;
@@ -176,10 +185,10 @@ struct Shapespace : viamd::EventHandler {
         const analysis_density::Display display[DensityLayer_Count] = { analysis_density::Colormap, analysis_density::FilledLevels, analysis_density::Isolines };
         for (int layer = 0; layer < DensityLayer_Count; ++layer) {
             if (!enabled[layer]) continue;
-            const struct { uint64_t density; uint32_t colormap; float color[4]; uint32_t pad; } rkey = { hash, (uint32_t)s.density_colormap, { s.color.x, s.color.y, s.color.z, s.color.w }, 0 };
+            const struct { uint64_t density; uint32_t colormap; float color[4]; uint32_t levels; } rkey = { c.density_hash, (uint32_t)s.density_colormap, { s.color.x, s.color.y, s.color.z, s.color.w }, (uint32_t)s.iso_count };
             const uint64_t render_key = md_hash64(&rkey, sizeof(rkey), (uint64_t)layer) | 1;
             if (c.rendered[layer] && c.render_key[layer] == render_key) continue;
-            c.rendered[layer] = c.renderer[layer].render(c.density, display[layer], s.density_colormap, s.color);
+            c.rendered[layer] = c.renderer[layer].render(c.density, display[layer], s.density_colormap, s.color, s.iso_count);
             c.render_key[layer] = render_key;
         }
     }
@@ -331,7 +340,7 @@ struct Shapespace : viamd::EventHandler {
             ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
             defer { ImPlot::PopStyleVar(1); };
 
-            const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend;
+            const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
             const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
             const float x_reset[2] = {-0.10f, 1.10f};
@@ -372,6 +381,9 @@ struct Shapespace : viamd::EventHandler {
                 for (int j = 0; j < sp.count; ++j) {
                     const SeriesCache* c = series_cache[j];
                     if (!c) continue;
+                    // The legend shows and hides a series as a whole
+                    const ImPlotItem* item = ImPlot::GetItem(plot_id[j]);
+                    if (item && !item->Show) continue;
                     for (int layer = 0; layer < DensityLayer_Count; ++layer) {
                         if (c->rendered[layer]) c->renderer[layer].draw(sp.series[j].density_alpha);
                     }

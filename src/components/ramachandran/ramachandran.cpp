@@ -65,6 +65,7 @@ enum RamachandranDisplayMode {
 struct rama_rep_t {
     uint32_t map_tex[4] = {};
     uint32_t iso_tex[4] = {};
+    float    den_max[4] = {};	// The peak density of each type
     float    den_sum[4] = {};	// Density sum for each ramachandran type (General, Glycine, Proline and PreProline)
     uint32_t den_tex = 0;		// This uses 4 channels, one for each ramachandran type (General, Glycine, Proline and PreProline)
 };
@@ -334,6 +335,8 @@ struct RamaSeries {
     uint64_t rep_generation = 0;
     uint64_t fingerprint = 0;
     uint64_t requested = 0;
+    uint64_t pending_hash = 0;          // What the density should be made of, and since when
+    double pending_time = 0.0;
     uint64_t map_hash = 0;
     bool mapped = false;                // The rows are known to be residues of the backbone
     bool used = false;
@@ -674,6 +677,7 @@ struct Ramachandran : viamd::EventHandler {
         st.map_hash = hash;
         st.mapped = false;
         ++st.generation;
+        st.rep_generation = 0;
         st.fingerprint = 0;
 
         md_allocator_i* alloc = md_get_heap_allocator();
@@ -812,8 +816,16 @@ struct Ramachandran : viamd::EventHandler {
             struct { uint64_t version; float sigma; uint32_t pad; } key = { v.version, sigma, 0 };
             const uint64_t hash = md_hash64(&key, sizeof(key), st.generation);
             st.requested = hash;
-            if (st.fingerprint != hash) {
-                st.rep_generation = 0;
+
+            // A property changes with every frame range the script evaluates: the settled one is turned into a
+            // density, and the one before it stays on screen until then
+            const double now = ImGui::GetTime();
+            if (hash != st.pending_hash) {
+                st.pending_hash = hash;
+                st.pending_time = now;
+            }
+            const bool settled = st.rep_generation == 0 || now - st.pending_time > 0.4;
+            if (st.fingerprint != hash && settled) {
                 if (!task_system::task_is_running(st.compute)) {
                     st.fingerprint = hash;
                     st.compute = rama_rep_compute_density(&st, angles, (uint32_t)num_frames, stride, sigma);
@@ -916,9 +928,11 @@ struct Ramachandran : viamd::EventHandler {
             SeriesVectorView views[PLOT_MAX_SERIES_PER_SUBPLOT];
             bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
             RamaSeries* states[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+            char plot_ids[PLOT_MAX_SERIES_PER_SUBPLOT][SERIES_PATH_CAP + 72];
             for (int j = 0; j < sp.count; ++j) {
                 resolved[j] = series_resolve_vector(&views[j], &state, sp.series[j].key, 2);
                 series_label(views[j].label, sizeof(views[j].label), &state, sp.series[j].key);
+                snprintf(plot_ids[j], sizeof(plot_ids[j]), "%s##%u", views[j].label, sp.series[j].uid);
                 if (resolved[j]) states[j] = find_state(sp.series[j].uid);
             }
 
@@ -979,6 +993,9 @@ struct Ramachandran : viamd::EventHandler {
                                 const RamaSeries& st = *states[j];
                                 const PlotSeries& s = sp.series[j];
                                 if (!shows_density(s)) continue;
+                                // The legend shows and hides a series as a whole
+                                const ImPlotItem* item = ImPlot::GetItem(plot_ids[j]);
+                                if (item && !item->Show) continue;
                                 const rama_rep_t& rep = st.rep;
                                 if (st.rep_generation != st.generation || rep.den_sum[plot_idx] <= 0) continue;
                                 if (s.density_map) {
@@ -1110,7 +1127,11 @@ struct Ramachandran : viamd::EventHandler {
                         };
 
                         for (int j = 0; j < sp.count; ++j) {
-                            if (!curr_angles[j]) continue;
+                            if (!curr_angles[j]) {
+                                // Still an entry of the legend
+                                if (states[j]) ImPlot::PlotDummy(plot_ids[j]);
+                                continue;
+                            }
                             const RamaSeries& st = *states[j];
                             const PlotSeries& s = sp.series[j];
                             const uint32_t* indices = st.type_indices[plot_idx];
@@ -1133,8 +1154,7 @@ struct Ramachandran : viamd::EventHandler {
                                 }
                             }
 
-                            char id[SERIES_PATH_CAP + 72];
-                            snprintf(id, sizeof(id), "%s##%s", views[j].label, s.key.path);
+                            const char* id = plot_ids[j];
 
                             if (md_array_size(indices) > 0) {
                                 UserData user_data = { (const vec2_t*)(curr_angles[j]), indices, view_mid };
@@ -1251,43 +1271,48 @@ struct Ramachandran : viamd::EventHandler {
 
             // Renders the maps of one density into its representation: contours and the bands between them, and a colormap.
             // The sums relative to the reference scale the iso values.
-            auto render_layer = [&](rama_rep_t* rep, bool fill, bool lines, bool map, ImPlotColormap cmap, const float scl[4], ImVec4 color, bool reference_levels) {
+            auto render_layer = [&](rama_rep_t* rep, bool fill, bool lines, bool map, ImPlotColormap cmap, const float scl[4], ImVec4 color, bool reference_levels, int levels, const float* peak) {
                 if (fill || lines) {
-                    const uint32_t count = 3;
-                    uint32_t fill_cols[4][count] = {0};
-                    uint32_t line_cols[4][count] = {0};
-                    float    values[4][count] = {0};
+                    // The reference has its fixed probabilities. A series has contours at evenly spaced fractions of
+                    // the peak of each type, the first value being the empty level.
+                    const uint32_t count = reference_levels ? 3 : (uint32_t)CLAMP(levels, 1, 7) + 1;
+                    uint32_t fill_cols[4][8] = {0};
+                    uint32_t line_cols[4][8] = {0};
+                    float    values[4][8] = {0};
 
-                    MEMCPY(values, ref_iso_values, sizeof(ref_iso_values));
-                    for (uint32_t j = 0; j < count; ++j) {
-                        values[0][j] *= MAX(scl[0], FLT_EPSILON);
-                        values[1][j] *= MAX(scl[1], FLT_EPSILON);
-                        values[2][j] *= MAX(scl[2], FLT_EPSILON);
-                        values[3][j] *= MAX(scl[3], FLT_EPSILON);
+                    for (uint32_t j = 0; j < 4; ++j) {
+                        for (uint32_t i = 0; i < count; ++i) {
+                            if (reference_levels) {
+                                values[j][i] = ref_iso_values[j][i] * MAX(scl[j], FLT_EPSILON);
+                            } else {
+                                // A type without samples has no contours
+                                values[j][i] = i == 0 ? 0.0f : (peak[j] > 0.0f ? peak[j] * (float)i / (float)count : 1.0e30f);
+                            }
+                        }
                     }
 
-                    // The contours and the bands are tones of one colour
+                    // The contours and the bands are tones of one colour, from light to full with the level
                     ImVec4 base  = color;
                     ImVec4 light = color;
                     float h, sat, val;
                     ImGui::ColorConvertRGBtoHSV(base.x, base.y, base.z, h, sat, val);
                     ImGui::ColorConvertHSVtoRGB(h, sat * 0.5f, val, light.x, light.y, light.z);
-                    const uint32_t line_tones[3] = {
+                    const uint32_t ref_line_tones[3] = {
                         0,
                         ImGui::ColorConvertFloat4ToU32(base),
                         ImGui::ColorConvertFloat4ToU32(light),
                     };
-                    const uint32_t fill_tones[3] = {
-                        0,
-                        ImGui::ColorConvertFloat4ToU32(ImVec4(light.x, light.y, light.z, light.w * 0.35f)),
-                        ImGui::ColorConvertFloat4ToU32(ImVec4(base.x, base.y, base.z, base.w * 0.55f)),
-                    };
 
-                    for (int j = 0; j < 4; ++j) {
-                        for (uint32_t i = 0; i < count; ++i) {
-                            if (fill)  fill_cols[j][i] = reference_levels ? ref_iso_level_colors[j][i] : fill_tones[i];
+                    for (uint32_t i = 1; i < count; ++i) {
+                        const float t = reference_levels ? 1.0f : (float)i / (float)(count - 1);
+                        const ImVec4 tone = ImVec4(light.x + (base.x - light.x) * t, light.y + (base.y - light.y) * t,
+                                                   light.z + (base.z - light.z) * t, base.w);
+                        const uint32_t line_tone = reference_levels ? ref_line_tones[i] : ImGui::ColorConvertFloat4ToU32(tone);
+                        const uint32_t fill_tone = ImGui::ColorConvertFloat4ToU32(ImVec4(tone.x, tone.y, tone.z, tone.w * (0.15f + 0.45f * t)));
+                        for (int j = 0; j < 4; ++j) {
+                            if (fill) fill_cols[j][i] = reference_levels ? ref_iso_level_colors[j][i] : fill_tone;
                             // Bands alone get contours of their own colour, which keeps their edges clean
-                            line_cols[j][i] = lines ? line_tones[i] : fill_cols[j][i];
+                            line_cols[j][i] = lines ? line_tone : fill_cols[j][i];
                         }
                     }
 
@@ -1322,7 +1347,7 @@ struct Ramachandran : viamd::EventHandler {
 
             const float ref_scl[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
             if (show_reference) {
-                render_layer(&rama_data.ref, ref_mode == IsoLevels, ref_mode == IsoLines, ref_mode == Colormap, ref_colormap, ref_scl, ref_line_color, true);
+                render_layer(&rama_data.ref, ref_mode == IsoLevels, ref_mode == IsoLines, ref_mode == Colormap, ref_colormap, ref_scl, ref_line_color, true, 2, nullptr);
             }
 
             const float* ref_sum = rama_data.ref.den_sum;
@@ -1336,7 +1361,7 @@ struct Ramachandran : viamd::EventHandler {
                 const float scl[4] = {
                     rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
                 };
-                render_layer(rep, s.iso_levels, s.iso_lines, s.density_map, s.density_colormap, scl, s.color, false);
+                render_layer(rep, s.iso_levels, s.iso_lines, s.density_map, s.density_colormap, scl, s.color, false, s.iso_count, rep->den_max);
             }
 
             POP_GPU_SECTION();
@@ -1428,6 +1453,7 @@ struct Ramachandran : viamd::EventHandler {
             md_allocator_i* alloc;
             uint32_t complete;
             float density_sum[4];
+            float density_max[4];
             uint64_t generation;
             uint64_t fingerprint;
         };
@@ -1501,6 +1527,11 @@ struct Ramachandran : viamd::EventHandler {
             blur_density_gaussian(data->density_tex, density_tex_dim, data->sigma);
 
             for (int i = 0; i < 4; ++i) data->density_sum[i] = (float)sum[i];
+            float peak[4] = {0, 0, 0, 0};
+            for (size_t i = 0; i < (size_t)density_tex_dim * density_tex_dim; ++i) {
+                for (int c = 0; c < 4; ++c) peak[c] = MAX(peak[c], data->density_tex[i].elem[c]);
+            }
+            for (int i = 0; i < 4; ++i) data->density_max[i] = peak[i];
             data->complete = 1;
         });
 
@@ -1511,6 +1542,7 @@ struct Ramachandran : viamd::EventHandler {
                 rama_rep_t* rep = &st->rep;
                 for (int i = 0; i < 4; ++i) {
                     rep->den_sum[i] = data->density_sum[i];
+                    rep->den_max[i] = data->density_max[i];
                 }
                 gl::set_texture_2D_data(rep->den_tex, 0, data->density_tex, GL_RGBA32F);
                 st->rep_generation = data->generation;

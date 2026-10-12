@@ -64,7 +64,7 @@ struct Renderer {
     }
 
     // line_color is the colour of the isolines and of the filled levels, the colormap is for Colormap
-    bool render(const Triangle& density, Display display, ImPlotColormap colormap, ImVec4 line_color = ImVec4(1,1,1,1)) {
+    bool render(const Triangle& density, Display display, ImPlotColormap colormap, ImVec4 line_color = ImVec4(1,1,1,1), int levels = 4) {
         GLint old_program, old_vao, old_fbo, old_texture, old_active, viewport[4];
         glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &old_vao);
@@ -126,18 +126,22 @@ struct Renderer {
             glUniform1uiv(loc("u_map_length"), 4, lengths);
             glUniform2fv(loc("u_map_range"), 4, ranges);
         } else {
-            ImVec4 levels[8], lines[8];
-            float values[8];
-            for (int i = 0; i < 8; ++i) {
-                values[i] = i / 8.0f;
+            // Contours at evenly spaced fractions of the peak, the first value being the empty level
+            const int n = levels < 1 ? 1 : (levels > 7 ? 7 : levels);
+            float peak = 0.0f;
+            for (float v : data) peak = v > peak ? v : peak;
+            ImVec4 level_colors[8] = {}, lines[8] = {};
+            float values[8] = {};
+            for (int i = 1; i <= n; ++i) {
+                values[i] = peak > 0.0f ? peak * i / (n + 1) : 1.0e30f;
                 // Contours alone, or the bands between them: the other is a layer of its own
                 lines[i] = display == Isolines ? line_color : ImVec4(0,0,0,0);
-                levels[i] = display == FilledLevels ? ImVec4(line_color.x, line_color.y, line_color.z, line_color.w * (0.1f + 0.5f * i / 7.0f)) : ImVec4(0,0,0,0);
-                if (i == 0) levels[i].w = lines[i].w = 0;
+                level_colors[i] = display == FilledLevels ? ImVec4(line_color.x, line_color.y, line_color.z, line_color.w * (0.1f + 0.5f * (float)i / n)) : ImVec4(0,0,0,0);
             }
-            const GLuint lengths[4] = {8,8,8,8};
+            const GLuint count = (GLuint)n + 1;
+            const GLuint lengths[4] = {count,count,count,count};
             glUniform1fv(loc("u_iso_values"), 8, values);
-            glUniform4fv(loc("u_iso_level_colors"), 8, &levels[0].x);
+            glUniform4fv(loc("u_iso_level_colors"), 8, &level_colors[0].x);
             glUniform4fv(loc("u_iso_contour_colors"), 8, &lines[0].x);
             glUniform1uiv(loc("u_iso_offset"), 4, offsets);
             glUniform1uiv(loc("u_iso_length"), 4, lengths);

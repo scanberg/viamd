@@ -900,6 +900,7 @@ void plot_vector_style_popup(PlotSeries& s, bool point_color) {
     ImGui::Checkbox("Isolines", &s.iso_lines);
     ImGui::Checkbox("Filled levels", &s.iso_levels);
     ImGui::Checkbox("Colormap", &s.density_map);
+    if (s.iso_lines || s.iso_levels) ImGui::SliderInt("Levels", &s.iso_count, 1, 7);
     if (s.iso_lines || s.iso_levels || s.density_map) {
         if (s.density_map) ImPlot::ColormapSelection("Density Color Map", &s.density_colormap);
         ImGui::SliderFloat("Opacity", &s.density_alpha, 0.0f, 1.0f);
@@ -1253,6 +1254,7 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_bool(state, STR_LIT("IsoLines"), s.iso_lines);
             viamd::write_bool(state, STR_LIT("IsoLevels"), s.iso_levels);
             viamd::write_bool(state, STR_LIT("DensityMap"), s.density_map);
+            viamd::write_int (state, STR_LIT("IsoCount"), s.iso_count);
             viamd::write_int (state, STR_LIT("DensityColormap"), (int)s.density_colormap);
             viamd::write_flt (state, STR_LIT("DensityAlpha"), s.density_alpha);
             viamd::write_flt (state, STR_LIT("Smoothing"), s.smoothing);
@@ -1327,6 +1329,8 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 viamd::extract_bool(s.iso_levels, arg);
             } else if (str_eq_cstr(ident, "DensityMap")) {
                 viamd::extract_bool(s.density_map, arg);
+            } else if (str_eq_cstr(ident, "IsoCount") && viamd::extract_int(i, arg)) {
+                s.iso_count = CLAMP(i, 1, 7);
             } else if (str_eq_cstr(ident, "DensityColormap") && viamd::extract_int(i, arg)) {
                 s.density_colormap = (ImPlotColormap)i;
             } else if (str_eq_cstr(ident, "DensityAlpha")) {

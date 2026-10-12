@@ -139,6 +139,7 @@ struct PlotSeries {
     bool            iso_lines = true;           // contours, in the colour of the series
     bool            iso_levels = false;         // the bands between them, filled
     bool            density_map = false;        // a colormap of the density
+    int             iso_count = 4;              // contours, at evenly spaced fractions of the peak density
     ImPlotColormap  density_colormap = ImPlotColormap_Viridis;
     float           density_alpha = 0.8f;
     float           smoothing = 2.0f;
