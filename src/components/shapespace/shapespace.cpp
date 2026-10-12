@@ -31,6 +31,7 @@
 
 // What is known about a series between frames: its points in the triangle and the density of them
 struct SeriesCache {
+    uint32_t uid = 0;
     char path[SERIES_PATH_CAP] = "";
     uint64_t version = 0;
     uint32_t num_frames = 0;
@@ -46,6 +47,15 @@ struct SeriesCache {
     ImPlotColormap rendered_colormap = -1;
     bool used = false;
 };
+
+static analysis_density::Display density_display(VectorDensity d) {
+    switch (d) {
+    case VectorDensity_Isolines: return analysis_density::Isolines;
+    case VectorDensity_Levels:   return analysis_density::FilledLevels;
+    case VectorDensity_Colormap: return analysis_density::Colormap;
+    default:                     return analysis_density::Scatter;
+    }
+}
 
 struct Shapespace : viamd::EventHandler {
     // The shortcut: a selection which becomes a shapespace() property of the script
@@ -66,12 +76,6 @@ struct Shapespace : viamd::EventHandler {
 
     // What the plot shows. Only the first subplot is used, the layout is the one of the timeline's
     PlotSubplot plot[PLOT_MAX_SUBPLOTS];
-
-    analysis_density::Display display = analysis_density::Scatter;
-    bool show_scatter = true;
-    float smoothing = 2.0f;
-    float density_opacity = 0.8f;
-    ImPlotColormap density_colormap = ImPlotColormap_Viridis;
 
     std::vector<std::unique_ptr<SeriesCache>> caches;
 
@@ -102,33 +106,26 @@ struct Shapespace : viamd::EventHandler {
         str_copy_to_char_buf(property_name, sizeof(property_name), STR_LIT("shape"));
         property_error[0] = '\0';
         pending_name[0] = '\0';
-        display = analysis_density::Scatter;
-        show_scatter = true;
-        smoothing = 2.0f;
-        density_opacity = 0.8f;
-        density_colormap = ImPlotColormap_Viridis;
         plot_clear(plot, PLOT_MAX_SUBPLOTS);
         clear_caches();
         clear_input();
     }
 
-    SeriesCache& cache_for(const char* path) {
+    SeriesCache& cache_for(uint32_t uid, const char* path) {
         for (auto& c : caches) {
-            if (strcmp(c->path, path) == 0) return *c;
+            if (c->uid != uid) continue;
+            if (strcmp(c->path, path) != 0) {
+                str_copy_to_char_buf(c->path, sizeof(c->path), str_from_cstr(path));
+                c->version = 0;
+                c->density_hash = 0;
+            }
+            return *c;
         }
         caches.push_back(std::make_unique<SeriesCache>());
         SeriesCache& c = *caches.back();
+        c.uid = uid;
         str_copy_to_char_buf(c.path, sizeof(c.path), str_from_cstr(path));
         return c;
-    }
-
-    void frame_range(size_t num_frames, size_t& beg, size_t& end) const {
-        beg = 0;
-        end = num_frames;
-        if (app_state->timeline.filter.enabled) {
-            beg = (size_t)CLAMP(app_state->timeline.filter.beg_frame, 0.0, (double)num_frames);
-            end = (size_t)CLAMP(app_state->timeline.filter.end_frame, (double)beg, (double)num_frames);
-        }
     }
 
     // The weights of every frame as points in the triangle
@@ -164,7 +161,7 @@ struct Shapespace : viamd::EventHandler {
         }
         key.beg = beg;
         key.end = end;
-        key.smoothing = smoothing;
+        key.smoothing = s.smoothing;
 
         const uint64_t hash = md_hash64(&key, sizeof(key), 0) | 1;
         if (hash != c.density_hash) {
@@ -176,15 +173,16 @@ struct Shapespace : viamd::EventHandler {
                 points.insert(points.end(), c.coords.begin() + (size_t)k * c.num_frames, c.coords.begin() + (size_t)(k + 1) * c.num_frames);
                 ++groups;
             }
-            c.density.update(points.data(), c.num_frames, groups, beg, end, smoothing);
+            c.density.update(points.data(), c.num_frames, groups, beg, end, s.smoothing);
             c.render_dirty = true;
         }
-        if (c.render_dirty || !c.rendered || c.rendered_display != display || c.rendered_colormap != density_colormap) {
-            c.rendered = c.renderer.render(c.density, display, density_colormap);
+        const analysis_density::Display display = density_display(s.density);
+        if (c.render_dirty || !c.rendered || c.rendered_display != display || c.rendered_colormap != s.density_colormap) {
+            c.rendered = c.renderer.render(c.density, display, s.density_colormap);
             if (c.rendered) {
                 c.render_dirty = false;
                 c.rendered_display = display;
-                c.rendered_colormap = density_colormap;
+                c.rendered_colormap = s.density_colormap;
             }
         }
     }
@@ -281,24 +279,6 @@ struct Shapespace : viamd::EventHandler {
                     if (ImGui::MenuItem("CSV")) export_shape_space(STR_LIT("csv"));
                     ImGui::EndMenu();
                 }
-                if (ImGui::BeginMenu("Settings")) {
-                    if (ImGui::BeginCombo("Display", analysis_density::display_names[display])) {
-                        for (int i = 0; i < analysis_density::DisplayCount; ++i) {
-                            if (ImGui::Selectable(analysis_density::display_names[i], display == i)) {
-                                display = (analysis_density::Display)i;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (display != analysis_density::Scatter) {
-                        ImGui::Checkbox("Scatter overlay", &show_scatter);
-                        ImGui::SliderFloat("Smoothing", &smoothing, 0.25f, 6.0f, "%.2f");
-                        ImPlot::ColormapSelection("Density Color Map", &density_colormap);
-                        ImGui::SliderFloat("Density Opacity", &density_opacity, 0.0f, 1.0f);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Probability density relative to a uniform triangle. Independent of sample count.");
-                    }
-                    ImGui::EndMenu();
-                }
                 ImGui::EndMenuBar();
             }
 
@@ -342,15 +322,19 @@ struct Shapespace : viamd::EventHandler {
                 snprintf(plot_id[j], sizeof(plot_id[j]), "%s##%s", views[j].label, s.key.path);
                 if (!resolved[j]) continue;
 
-                SeriesCache& c = cache_for(s.key.path);
+                SeriesCache& c = cache_for(s.uid, s.key.path);
                 c.used = true;
                 series_cache[j] = &c;
                 update_points(c, views[j]);
-                frame_range(c.num_frames, beg[j], end[j]);
-                if (display != analysis_density::Scatter) {
+                uint32_t frame_beg, frame_end;
+                series_vector_frame_range(app_state, s, c.num_frames, &frame_beg, &frame_end);
+                beg[j] = frame_beg;
+                end[j] = frame_end;
+                if (s.density != VectorDensity_None && s.range != VectorRange_Current) {
                     update_density(c, s, beg[j], end[j]);
                 } else {
                     c.density_hash = 0;
+                    c.rendered = false;
                 }
             }
             for (size_t i = caches.size(); i-- > 0;) {
@@ -371,6 +355,7 @@ struct Shapespace : viamd::EventHandler {
             const double zoom_constraints[2] = {0.1, 1.5};
 
             int remove_idx = -1;
+            int duplicate_idx = -1;
 
             if (ImPlot::BeginPlot("##Shapespace Plot", ImVec2(-1,-1), flags)) {
                 ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
@@ -401,11 +386,11 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
                 ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
                 ImPlot::PopPlotClipRect();
-                if (display != analysis_density::Scatter) {
-                    for (int j = 0; j < sp.count; ++j) {
-                        if (series_cache[j] && series_cache[j]->rendered && !series_cache[j]->render_dirty) {
-                            series_cache[j]->renderer.draw(density_opacity);
-                        }
+                for (int j = 0; j < sp.count; ++j) {
+                    const PlotSeries& s = sp.series[j];
+                    if (series_cache[j] && s.density != VectorDensity_None && s.range != VectorRange_Current &&
+                        series_cache[j]->rendered && !series_cache[j]->render_dirty) {
+                        series_cache[j]->renderer.draw(s.density_alpha);
                     }
                 }
                 ImPlot::PushPlotClipRect();
@@ -447,7 +432,6 @@ struct Shapespace : viamd::EventHandler {
                         ImPlot::PlotDummy(id);
                     } else {
                         const SeriesCache& c = *series_cache[j];
-                        const bool draw_scatter = display == analysis_density::Scatter || show_scatter;
                         const size_t count = beg[j] < end[j] ? end[j] - beg[j] : 0;
                         for (uint32_t k = 0; k < c.count; ++k) {
                             if (c.count > 1 && !s.population_mask.test(k)) continue;
@@ -458,7 +442,7 @@ struct Shapespace : viamd::EventHandler {
                                 col.w *= s.colormap_alpha;
                             }
                             const vec2_t* points = c.coords.data() + (size_t)k * c.num_frames + beg[j];
-                            if (draw_scatter) {
+                            if (s.show_points) {
                                 ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, col, 1.0f, col);
                             } else {
                                 ImPlot::SetNextMarkerStyle(s.marker, 0.0f, ImVec4(0,0,0,0), 0.0f, ImVec4(0,0,0,0));
@@ -470,7 +454,7 @@ struct Shapespace : viamd::EventHandler {
                             if (item->LegendHovered && hovered_series == -1) {
                                 hovered_series = j;
                             }
-                            for (size_t f = beg[j]; f < end[j]; ++f) {
+                            for (size_t f = beg[j]; s.show_points && f < end[j]; ++f) {
                                 const vec2_t delta = mouse_coord - c.coords[(size_t)k * c.num_frames + f];
                                 const float d2 = vec2_dot(delta, delta);
                                 if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
@@ -488,20 +472,23 @@ struct Shapespace : viamd::EventHandler {
                             remove_idx = j;
                             ImGui::CloseCurrentPopup();
                         }
-                        if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
-                            for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
-                                if (ImGui::Selectable(ImPlot::GetMarkerName(m), s.marker == m)) s.marker = (ImPlotMarker)m;
-                            }
-                            ImGui::EndCombo();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Duplicate")) {
+                            duplicate_idx = j;
+                            ImGui::CloseCurrentPopup();
                         }
-                        ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
-                        int hovered_pop_idx = -1;
-                        plot_series_style_popup(app_state, s, resolved[j] ? (int)views[j].count : 1, views[j].script_ident, views[j].vis_payload, &hovered_pop_idx);
+                        const bool population = resolved[j] && views[j].count > 1;
+                        plot_vector_style_popup(s, !population);
+                        if (population) {
+                            ImGui::Separator();
+                            int hovered_pop_idx = -1;
+                            plot_series_style_popup(app_state, s, (int)views[j].count, views[j].script_ident, views[j].vis_payload, &hovered_pop_idx);
+                        }
                         ImPlot::EndLegendPopup();
                     }
 
                     if (ImPlot::BeginDragDropSourceItem(id)) {
-                        series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color);
+                        series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color, s.uid);
                         ImPlot::EndDragDropSource();
                     }
                 }
@@ -543,8 +530,9 @@ struct Shapespace : viamd::EventHandler {
                         if (payload->DataSize == sizeof(SeriesDragPayload)) {
                             const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
                             SeriesVectorView v;
-                            if (series_resolve_vector(&v, app_state, dnd->key, 3)) {
-                                plot_add_series(app_state, sp, dnd->key);
+                            // A series dragged within the plot is already there
+                            if (dnd->src_subplot != 0 && series_resolve_vector(&v, app_state, dnd->key, 3)) {
+                                plot_add_series_copy(app_state, sp, dnd->key);
                             }
                         }
                     }
@@ -554,6 +542,15 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::EndPlot();
             }
 
+            if (duplicate_idx != -1 && duplicate_idx < sp.count) {
+                const PlotSeries original = sp.series[duplicate_idx];
+                const int idx = plot_add_series_copy(app_state, sp, original.key);
+                if (idx != -1) {
+                    const uint32_t uid = sp.series[idx].uid;
+                    sp.series[idx] = original;
+                    sp.series[idx].uid = uid;
+                }
+            }
             if (remove_idx != -1) {
                 plot_remove_series(sp, remove_idx);
             }
@@ -563,7 +560,7 @@ struct Shapespace : viamd::EventHandler {
                 const ImGuiPayload* payload = ImGui::GetDragDropPayload();
                 if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
                     const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_series(sp, dnd->key) : -1;
+                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_uid(sp, dnd->src_uid) : -1;
                     if (idx != -1) plot_remove_series(sp, idx);
                 }
             }
@@ -614,18 +611,6 @@ struct Shapespace : viamd::EventHandler {
                             str_t filter;
                             viamd::extract_str(filter, arg);
                             str_copy_to_char_buf(input, sizeof(input), filter);
-                        } else if (str_eq(ident, STR_LIT("Display"))) {
-                            viamd::extract_enum(display, arg, analysis_density::DisplayCount);
-                        } else if (str_eq(ident, STR_LIT("ShowScatter"))) {
-                            viamd::extract_bool(show_scatter, arg);
-                        } else if (str_eq(ident, STR_LIT("Smoothing"))) {
-                            viamd::extract_flt(smoothing, arg);
-                            smoothing = std::isfinite(smoothing) ? CLAMP(smoothing, 0.25f, 6.0f) : 2.0f;
-                        } else if (str_eq(ident, STR_LIT("DensityOpacity"))) {
-                            viamd::extract_flt(density_opacity, arg);
-                            density_opacity = std::isfinite(density_opacity) ? CLAMP(density_opacity, 0.0f, 1.0f) : 0.8f;
-                        } else if (str_eq(ident, STR_LIT("DensityColormap"))) {
-                            viamd::extract_enum(density_colormap, arg, ImPlot::GetColormapCount());
                         } else if (str_eq(ident, STR_LIT("PropertyName"))) {
                             viamd::extract_to_char_buf(property_name, sizeof(property_name), arg);
                         }
@@ -640,11 +625,6 @@ struct Shapespace : viamd::EventHandler {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, STR_LIT("ShapeSpace"));
                 viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
-                viamd::write_int(state, STR_LIT("Display"), display);
-                viamd::write_bool(state, STR_LIT("ShowScatter"), show_scatter);
-                viamd::write_flt(state, STR_LIT("Smoothing"), smoothing);
-                viamd::write_flt(state, STR_LIT("DensityOpacity"), density_opacity);
-                viamd::write_int(state, STR_LIT("DensityColormap"), density_colormap);
                 viamd::write_str(state, STR_LIT("PropertyName"), str_from_cstr(property_name));
                 plot_layout_serialize(state, STR_LIT("ShapeSpaceLayout"), STR_LIT("ShapeSpaceSeries"), plot, 1);
                 break;

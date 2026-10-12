@@ -163,10 +163,11 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
     return color;
 }
 
-void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src_subplot, const char* label, ImVec4 color) {
+void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src_subplot, const char* label, ImVec4 color, uint32_t src_uid) {
     SeriesDragPayload payload;
     payload.key = key;
     payload.src_subplot = src_subplot;
+    payload.src_uid = src_uid;
     ImGui::SetDragDropPayload(dnd_type, &payload, sizeof(payload));
     ImPlot::ItemIcon(color);
     ImGui::SameLine();
@@ -878,6 +879,54 @@ void plot_series_list_item(ApplicationState* data, const char* dnd_type, PlotSub
     ImGui::PopID();
 }
 
+void plot_vector_style_popup(PlotSeries& s, bool point_color) {
+    ImGui::Checkbox("Points", &s.show_points);
+    if (s.show_points) {
+        if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
+            for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
+                if (ImGui::Selectable(ImPlot::GetMarkerName(m), s.marker == m)) s.marker = (ImPlotMarker)m;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
+        if (point_color) ImGui::ColorEdit4("Color", &s.color.x);
+    }
+
+    ImGui::Separator();
+    const char* density_names[VectorDensity_Count] = {"None", "Isolines", "Filled levels", "Colormap"};
+    int density = (int)s.density;
+    if (ImGui::Combo("Density", &density, density_names, VectorDensity_Count)) s.density = (VectorDensity)density;
+    if (s.density != VectorDensity_None) {
+        if (s.density == VectorDensity_Colormap || s.density == VectorDensity_Levels) {
+            ImPlot::ColormapSelection("Density Color Map", &s.density_colormap);
+        }
+        if (s.density == VectorDensity_Isolines && point_color) {
+            ImGui::TextDisabled("Lines use the colour of the series");
+        }
+        ImGui::SliderFloat("Density Opacity", &s.density_alpha, 0.0f, 1.0f);
+        ImGui::SliderFloat("Smoothing", &s.smoothing, 0.25f, 6.0f, "%.2f");
+    }
+
+    ImGui::Separator();
+    const char* range_names[VectorRange_Count] = {"Full trajectory", "Filtered trajectory", "Current frame"};
+    int range = (int)s.range;
+    if (ImGui::Combo("Frames", &range, range_names, VectorRange_Count)) s.range = (VectorRange)range;
+}
+
+void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end) {
+    *beg = 0;
+    *end = num_frames;
+    if (num_frames == 0) return;
+    if (s.range == VectorRange_Filtered && app->timeline.filter.enabled) {
+        *beg = MIN((uint32_t)MAX(0.0, app->timeline.filter.beg_frame), num_frames - 1);
+        *end = MIN((uint32_t)MAX(0.0, app->timeline.filter.end_frame) + 1, num_frames);
+        if (*end < *beg) *end = *beg;
+    } else if (s.range == VectorRange_Current) {
+        *beg = MIN((uint32_t)MAX(0.0, app->animation.frame + 0.5), num_frames - 1);
+        *end = *beg + 1;
+    }
+}
+
 int series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out) {
     int result = 0;
     if (!ImGui::BeginMenu("Properties")) return result;
@@ -926,9 +975,10 @@ bool series_vector_drop(ApplicationState* app, uint32_t components, SeriesKey* o
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VECTOR_SERIES_DND)) {
             if (payload->DataSize == sizeof(SeriesDragPayload)) {
                 SeriesVectorView view;
-                const SeriesKey& key = ((const SeriesDragPayload*)payload->Data)->key;
-                if (series_resolve_vector(&view, app, key, components)) {
-                    *out = key;
+                const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+                // One dragged out of a plot is already in a window: it is not added again
+                if (dnd->src_subplot < 0 && series_resolve_vector(&view, app, dnd->key, components)) {
+                    *out = dnd->key;
                     dropped = true;
                 }
             }
@@ -971,10 +1021,26 @@ int plot_find_series(const PlotSubplot& sp, const SeriesKey& key) {
     return -1;
 }
 
+static uint32_t next_series_uid() {
+    static uint32_t counter = 0;
+    return ++counter;
+}
+
+int plot_find_uid(const PlotSubplot& sp, uint32_t uid) {
+    for (int i = 0; uid != 0 && i < sp.count; ++i) {
+        if (sp.series[i].uid == uid) return i;
+    }
+    return -1;
+}
+
 int plot_add_series(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key) {
-    if (key.path[0] == '\0') return -1;
     const int existing = plot_find_series(sp, key);
     if (existing != -1) return existing;
+    return plot_add_series_copy(app, sp, key);
+}
+
+int plot_add_series_copy(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key) {
+    if (key.path[0] == '\0') return -1;
     if (sp.count >= PLOT_MAX_SERIES_PER_SUBPLOT) {
         MD_LOG_INFO("A subplot holds at most %d series", PLOT_MAX_SERIES_PER_SUBPLOT);
         return -1;
@@ -982,6 +1048,7 @@ int plot_add_series(const ApplicationState* app, PlotSubplot& sp, const SeriesKe
     PlotSeries& s = sp.series[sp.count];
     s = PlotSeries{};
     s.key = key;
+    s.uid = next_series_uid();
     s.color = series_default_color(app, key);
     s.population_mask.set();
     return sp.count++;
@@ -1101,6 +1168,12 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_bool(state, STR_LIT("UseColormap"), s.use_colormap);
             viamd::write_int (state, STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, STR_LIT("ColormapAlpha"), s.colormap_alpha);
+            viamd::write_bool(state, STR_LIT("ShowPoints"), s.show_points);
+            viamd::write_int (state, STR_LIT("Density"), (int)s.density);
+            viamd::write_int (state, STR_LIT("Range"), (int)s.range);
+            viamd::write_int (state, STR_LIT("DensityColormap"), (int)s.density_colormap);
+            viamd::write_flt (state, STR_LIT("DensityAlpha"), s.density_alpha);
+            viamd::write_flt (state, STR_LIT("Smoothing"), s.smoothing);
         }
     }
 }
@@ -1164,15 +1237,29 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 s.colormap = (ImPlotColormap)i;
             } else if (str_eq_cstr(ident, "ColormapAlpha")) {
                 viamd::extract_flt(s.colormap_alpha, arg);
+            } else if (str_eq_cstr(ident, "ShowPoints")) {
+                viamd::extract_bool(s.show_points, arg);
+            } else if (str_eq_cstr(ident, "Density") && viamd::extract_int(i, arg)) {
+                s.density = (VectorDensity)CLAMP(i, 0, (int)VectorDensity_Count - 1);
+            } else if (str_eq_cstr(ident, "Range") && viamd::extract_int(i, arg)) {
+                s.range = (VectorRange)CLAMP(i, 0, (int)VectorRange_Count - 1);
+            } else if (str_eq_cstr(ident, "DensityColormap") && viamd::extract_int(i, arg)) {
+                s.density_colormap = (ImPlotColormap)i;
+            } else if (str_eq_cstr(ident, "DensityAlpha")) {
+                viamd::extract_flt(s.density_alpha, arg);
+            } else if (str_eq_cstr(ident, "Smoothing")) {
+                viamd::extract_flt(s.smoothing, arg);
             }
         }
 
         if (0 <= subplot && subplot < PLOT_MAX_SUBPLOTS) {
-            const int idx = plot_add_series(app, subplots[subplot], s.key);
+            const int idx = plot_add_series_copy(app, subplots[subplot], s.key);
             if (idx != -1) {
                 PlotSeries& dst = subplots[subplot].series[idx];
                 const ImVec4 default_color = dst.color;
+                const uint32_t uid = dst.uid;
                 dst = s;
+                dst.uid = uid;
                 if (!has_color) dst.color = default_color;
             }
         }

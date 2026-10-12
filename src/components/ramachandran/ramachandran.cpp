@@ -326,6 +326,7 @@ static void rama_rep_free(rama_rep_t* rep) {
 // the densities of its trajectory. Kept for as long as the application runs, as a task may still be on its
 // way to deliver into it when the series leaves the plot.
 struct RamaSeries {
+    uint32_t uid = 0;
     char path[SERIES_PATH_CAP] = "";
     rama_rep_t full = {};
     rama_rep_t filt = {};
@@ -409,23 +410,21 @@ struct Ramachandran : viamd::EventHandler {
         float interaction_weight    = 2.0f;
     } style;
 
-    float blur_sigma = 5.0f;
 
     // DRAW STATE
     ImPlotRect selection_rect;
     SelectionOperator op = SelectionOperator::Or;
     bool is_selecting[4] = {false, false, false, false};
 
+    // The reference layer, the one which is not a series
     float ref_alpha  = 0.85f;
-    float full_alpha = 0.85f;
-    float filt_alpha = 0.85f;
 
-    RamachandranDisplayMode display_mode[3] = { IsoLevels, IsoLines, IsoLines };
-    ImPlotColormap colormap[3] = { ImPlotColormap_Hot, ImPlotColormap_Plasma, ImPlotColormap_Viridis };
-    ImVec4 isoline_colors[3]   = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
+    RamachandranDisplayMode ref_mode = IsoLevels;
+    ImPlotColormap ref_colormap = ImPlotColormap_Hot;
+    ImVec4 ref_line_color = {1,1,1,1};
 
     int layout_mode = 0;
-    bool show_layer[4] = {true, true, true, true};
+    bool show_reference = true;
 
     ImPlotRect viewrect = ImPlotRect(-180, 180, -180, 180);
 
@@ -443,12 +442,11 @@ struct Ramachandran : viamd::EventHandler {
         input_hash = 0;
         input_valid = false;
         plot_clear(plot, PLOT_MAX_SUBPLOTS);
-        blur_sigma = 5.0f;
-        ref_alpha = full_alpha = filt_alpha = 0.85f;
-        display_mode[0] = IsoLevels; display_mode[1] = IsoLines; display_mode[2] = IsoLines;
-        colormap[0] = ImPlotColormap_Hot; colormap[1] = ImPlotColormap_Plasma; colormap[2] = ImPlotColormap_Viridis;
-        for (int i = 0; i < 3; ++i) isoline_colors[i] = {1,1,1,1};
-        for (int i = 0; i < 4; ++i) show_layer[i] = true;
+        ref_alpha = 0.85f;
+        ref_mode = IsoLevels;
+        ref_colormap = ImPlotColormap_Hot;
+        ref_line_color = {1,1,1,1};
+        show_reference = true;
         layout_mode = 0;
         invalidate_densities();
     }
@@ -457,20 +455,11 @@ struct Ramachandran : viamd::EventHandler {
         viamd::write_section_header(state, STR_LIT("Ramachandran"));
         viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
         viamd::write_str(state, STR_LIT("PropertyName"), str_from_cstr(property_name));
-        viamd::write_flt(state, STR_LIT("BlurSigma"), blur_sigma);
-        const float alpha[3] = { ref_alpha, full_alpha, filt_alpha };
-        viamd::write_flt_vec(state, STR_LIT("LayerAlpha"), alpha, 3);
-        const int modes[3] = { (int)display_mode[0], (int)display_mode[1], (int)display_mode[2] };
-        viamd::write_int_vec(state, STR_LIT("LayerDisplayMode"), modes, 3);
-        const int cmaps[3] = { (int)colormap[0], (int)colormap[1], (int)colormap[2] };
-        viamd::write_int_vec(state, STR_LIT("LayerColormap"), cmaps, 3);
-        for (int i = 0; i < 3; ++i) {
-            char key[32];
-            snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
-            viamd::write_vec4(state, str_from_cstr(key), vec4_set(isoline_colors[i].x, isoline_colors[i].y, isoline_colors[i].z, isoline_colors[i].w));
-        }
-        const int layers[4] = { show_layer[0], show_layer[1], show_layer[2], show_layer[3] };
-        viamd::write_int_vec(state, STR_LIT("ShowLayer"), layers, 4);
+        viamd::write_flt(state, STR_LIT("ReferenceAlpha"), ref_alpha);
+        viamd::write_int(state, STR_LIT("ReferenceMode"), (int)ref_mode);
+        viamd::write_int(state, STR_LIT("ReferenceColormap"), (int)ref_colormap);
+        viamd::write_vec4(state, STR_LIT("ReferenceLineColor"), vec4_set(ref_line_color.x, ref_line_color.y, ref_line_color.z, ref_line_color.w));
+        viamd::write_bool(state, STR_LIT("ShowReference"), show_reference);
         viamd::write_int(state, STR_LIT("LayoutMode"), layout_mode);
         plot_layout_serialize(state, STR_LIT("RamachandranLayout"), STR_LIT("RamachandranSeries"), plot, 1);
     }
@@ -483,38 +472,21 @@ struct Ramachandran : viamd::EventHandler {
                 if (viamd::extract_str(filter, arg)) str_copy_to_char_buf(input, sizeof(input), filter);
             } else if (str_eq_cstr(ident, "PropertyName")) {
                 viamd::extract_to_char_buf(property_name, sizeof(property_name), arg);
-            } else if (str_eq_cstr(ident, "BlurSigma")) {
-                viamd::extract_flt(blur_sigma, arg);
-            } else if (str_eq_cstr(ident, "LayerAlpha")) {
-                float a[3];
-                if (viamd::extract_flt_vec(a, 3, arg)) { ref_alpha = a[0]; full_alpha = a[1]; filt_alpha = a[2]; }
-            } else if (str_eq_cstr(ident, "LayerDisplayMode")) {
-                int m[3];
-                if (viamd::extract_int_vec(m, 3, arg)) {
-                    for (int i = 0; i < 3; ++i) display_mode[i] = (RamachandranDisplayMode)CLAMP(m[i], (int)IsoLevels, (int)Colormap);
-                }
-            } else if (str_eq_cstr(ident, "LayerColormap")) {
-                int c[3];
-                if (viamd::extract_int_vec(c, 3, arg)) {
-                    for (int i = 0; i < 3; ++i) colormap[i] = (ImPlotColormap)c[i];
-                }
-            } else if (str_eq_cstr(ident, "ShowLayer")) {
-                int l[4];
-                if (viamd::extract_int_vec(l, 4, arg)) {
-                    for (int i = 0; i < 4; ++i) show_layer[i] = l[i] != 0;
-                }
+            } else if (str_eq_cstr(ident, "ReferenceAlpha")) {
+                viamd::extract_flt(ref_alpha, arg);
+            } else if (str_eq_cstr(ident, "ReferenceMode")) {
+                int m;
+                if (viamd::extract_int(m, arg)) ref_mode = (RamachandranDisplayMode)CLAMP(m, (int)IsoLevels, (int)Colormap);
+            } else if (str_eq_cstr(ident, "ReferenceColormap")) {
+                int c;
+                if (viamd::extract_int(c, arg)) ref_colormap = (ImPlotColormap)c;
+            } else if (str_eq_cstr(ident, "ReferenceLineColor")) {
+                vec4_t c;
+                if (viamd::extract_vec4(c, arg)) ref_line_color = ImVec4(c.x, c.y, c.z, c.w);
+            } else if (str_eq_cstr(ident, "ShowReference")) {
+                viamd::extract_bool(show_reference, arg);
             } else if (str_eq_cstr(ident, "LayoutMode")) {
                 viamd::extract_int(layout_mode, arg);
-            } else {
-                for (int i = 0; i < 3; ++i) {
-                    char key[32];
-                    snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
-                    if (str_eq_cstr(ident, key)) {
-                        vec4_t c;
-                        if (viamd::extract_vec4(c, arg)) isoline_colors[i] = ImVec4(c.x, c.y, c.z, c.w);
-                        break;
-                    }
-                }
             }
         }
     }
@@ -666,16 +638,39 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
-    RamaSeries& series_state(const char* path) {
+    RamaSeries* find_state(uint32_t uid) {
         for (auto& st : series_states) {
-            if (strcmp(st->path, path) == 0) return *st;
+            if (st->uid == uid) return st.get();
         }
-        series_states.push_back(std::make_unique<RamaSeries>());
-        RamaSeries& st = *series_states.back();
-        str_copy_to_char_buf(st.path, sizeof(st.path), str_from_cstr(path));
-        rama_rep_init(&st.full);
-        rama_rep_init(&st.filt);
-        return st;
+        return nullptr;
+    }
+
+    // The state of a series. One which no series uses is taken over before a new one is made: its
+    // textures are large, and a task still on its way to it delivers nothing, as its generation moves on.
+    RamaSeries& acquire_state(uint32_t uid, const char* path) {
+        RamaSeries* st = find_state(uid);
+        if (!st) {
+            for (auto& candidate : series_states) {
+                if (!candidate->used) { st = candidate.get(); break; }
+            }
+        }
+        if (!st) {
+            series_states.push_back(std::make_unique<RamaSeries>());
+            st = series_states.back().get();
+            rama_rep_init(&st->full);
+            rama_rep_init(&st->filt);
+            st->uid = 0;
+        }
+        if (st->uid != uid || strcmp(st->path, path) != 0) {
+            st->uid = uid;
+            str_copy_to_char_buf(st->path, sizeof(st->path), str_from_cstr(path));
+            st->map_hash = 0;
+            st->mapped = false;
+            ++st->generation;
+            st->full_generation = st->filt_generation = 0;
+            st->full_fingerprint = st->filt_fingerprint = 0;
+        }
+        return *st;
     }
 
     // The residues of the backbone which the rows of a property are, in the order of the system: what the
@@ -783,52 +778,81 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
+    // Which of the densities of a series is shown: the full trajectory's, the filtered one's, or none
+    static int density_source(const ApplicationState& state, const PlotSeries& s) {
+        if (s.density == VectorDensity_None || s.range == VectorRange_Current) return -1;
+        return (s.range == VectorRange_Filtered && state.timeline.filter.enabled) ? 1 : 0;
+    }
+
+    static RamachandranDisplayMode display_mode_of(VectorDensity d) {
+        return d == VectorDensity_Isolines ? IsoLines : d == VectorDensity_Levels ? IsoLevels : Colormap;
+    }
+
+    // The pixels of blur of a density, from the smoothing of the series
+    static float blur_of(const PlotSeries& s) { return s.smoothing * 2.5f; }
+
     void update(ApplicationState& state) {
         app_state = &state;
         update_input(state);
         update_pending(state);
 
-        for (auto& st : series_states) st->used = false;
-
         const PlotSubplot& sp = plot[0];
+        SeriesVectorView views[PLOT_MAX_SERIES_PER_SUBPLOT];
+        bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+
+        // The states which are in use stay with their series, before any is taken over
+        for (auto& st : series_states) st->used = false;
         for (int j = 0; j < sp.count; ++j) {
-            SeriesVectorView v;
-            if (!series_resolve_vector(&v, &state, sp.series[j].key, 2)) continue;
-            RamaSeries& st = series_state(sp.series[j].key.path);
+            resolved[j] = series_resolve_vector(&views[j], &state, sp.series[j].key, 2);
+            if (!resolved[j]) continue;
+            if (RamaSeries* st = find_state(sp.series[j].uid)) st->used = true;
+        }
+
+        for (int j = 0; j < sp.count; ++j) {
+            if (!resolved[j]) continue;
+            const PlotSeries& s = sp.series[j];
+            const SeriesVectorView& v = views[j];
+            RamaSeries& st = acquire_state(s.uid, s.key.path);
             st.used = true;
             map_series(state, st, v);
 
             const size_t num_frames = v.num_frames;
-            if (!show_window || num_frames == 0) continue;
+            const int source = density_source(state, s);
+            if (!show_window || num_frames == 0 || source < 0) continue;
 
-            // The density is derived from every frame of the property, so it is rebuilt exactly when
-            // the property's version moves.
+            // The density is derived from the frames of the property, so it is rebuilt exactly when
+            // the property's version, or the blur, moves.
             const md_backbone_angles_t* angles = (const md_backbone_angles_t*)v.data;
             const uint32_t stride = v.count;
+            const float sigma = blur_of(s);
 
-            const uint64_t full_hash = md_hash64(&v.version, sizeof(v.version), st.generation);
-            st.full_requested = full_hash;
-            if (st.full_fingerprint != full_hash) {
-                st.full_generation = 0;
-                if (!task_system::task_is_running(st.compute_full)) {
-                    st.full_fingerprint = full_hash;
-                    st.compute_full = rama_rep_compute_density(&st, true, angles, 0, (uint32_t)num_frames, stride);
-                } else {
-                    task_system::task_interrupt(st.compute_full);
+            struct { uint64_t version; float sigma; } key = { v.version, sigma };
+            const uint64_t base_hash = md_hash64(&key, sizeof(key), st.generation);
+
+            if (source == 0) {
+                st.full_requested = base_hash;
+                if (st.full_fingerprint != base_hash) {
+                    st.full_generation = 0;
+                    if (!task_system::task_is_running(st.compute_full)) {
+                        st.full_fingerprint = base_hash;
+                        st.compute_full = rama_rep_compute_density(&st, true, angles, 0, (uint32_t)num_frames, stride, sigma);
+                    } else {
+                        task_system::task_interrupt(st.compute_full);
+                    }
                 }
-            }
-
-            const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint, sizeof(state.timeline.filter.fingerprint), full_hash);
-            st.filt_requested = filt_hash;
-            if (st.filt_fingerprint != filt_hash) {
-                st.filt_generation = 0;
-                if (!task_system::task_is_running(st.compute_filt)) {
-                    st.filt_fingerprint = filt_hash;
-                    const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
-                    const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
-                    st.compute_filt = rama_rep_compute_density(&st, false, angles, frame_beg, frame_end, stride);
-                } else {
-                    task_system::task_interrupt(st.compute_filt);
+            } else {
+                const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint, sizeof(state.timeline.filter.fingerprint), base_hash);
+                st.filt_requested = filt_hash;
+                if (st.filt_fingerprint != filt_hash) {
+                    st.filt_generation = 0;
+                    if (!task_system::task_is_running(st.compute_filt)) {
+                        st.filt_fingerprint = filt_hash;
+                        uint32_t frame_beg, frame_end;
+                        series_vector_frame_range(&state, s, (uint32_t)num_frames, &frame_beg, &frame_end);
+                        st.compute_filt = rama_rep_compute_density(&st, false, angles, frame_beg, frame_end, stride, sigma);
+                    } else {
+                        task_system::task_interrupt(st.compute_filt);
+                    }
                 }
             }
         }
@@ -843,7 +867,6 @@ struct Ramachandran : viamd::EventHandler {
         ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Ramachandran", &show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
             constexpr const char* plot_labels[4] = {"##General", "##Glycine", "##Proline", "##Pre-Proline"};
-            constexpr const char* layer_labels[3] = { "Reference", "Full Trajectory", "Filtered Trajectory" };
             constexpr const char* option_labels[3] = { "IsoLevels", "IsoLines", "Colormap" };
 
             constexpr const float min_ext = -180.0f;
@@ -879,30 +902,20 @@ struct Ramachandran : viamd::EventHandler {
                 }
                 if (ImGui::BeginMenu("Layers")) {
 
-                    ImGui::Separator();
-                    ImGui::Text("Layers");
-                    for (int i = 0; i < 3; ++i) {
-                        ImGui::Checkbox(layer_labels[i], &show_layer[i]);
-                        if (show_layer[i]) {
-                            ImGui::PushID(i);
-                            if (ImGui::BeginCombo(layer_labels[i], option_labels[display_mode[i]])) {
-                                if (ImGui::Selectable(option_labels[IsoLevels], display_mode[i] == IsoLevels)) display_mode[i] = IsoLevels;
-                                if (ImGui::Selectable(option_labels[IsoLines],  display_mode[i] == IsoLines))  display_mode[i] = IsoLines;
-                                if (ImGui::Selectable(option_labels[Colormap],  display_mode[i] == Colormap))  display_mode[i] = Colormap;
-                                ImGui::EndCombo();
-                            }
-                            if (display_mode[i] == Colormap) {
-                                ImPlot::ColormapSelection("Color Map", &colormap[i]);
-                            } else if (display_mode[i] == IsoLines) {
-                                ImGui::ColorEdit4Minimal("Line Color", &isoline_colors[i].x);
-                            }
-                            ImGui::PopID();
+                    ImGui::Checkbox("Reference", &show_reference);
+                    if (show_reference) {
+                        if (ImGui::BeginCombo("Display", option_labels[ref_mode])) {
+                            if (ImGui::Selectable(option_labels[IsoLevels], ref_mode == IsoLevels)) ref_mode = IsoLevels;
+                            if (ImGui::Selectable(option_labels[IsoLines],  ref_mode == IsoLines))  ref_mode = IsoLines;
+                            if (ImGui::Selectable(option_labels[Colormap],  ref_mode == Colormap))  ref_mode = Colormap;
+                            ImGui::EndCombo();
                         }
-                        ImGui::Separator();
-                    }
-                    ImGui::Checkbox("Current", &show_layer[3]);
-                    if (ImGui::SliderFloat("Density Blur Sigma", &blur_sigma, 0.1f, 10.0f)) {
-                        invalidate_densities();
+                        if (ref_mode == Colormap) {
+                            ImPlot::ColormapSelection("Color Map", &ref_colormap);
+                        } else if (ref_mode == IsoLines) {
+                            ImGui::ColorEdit4Minimal("Line Color", &ref_line_color.x);
+                        }
+                        ImGui::SliderFloat("Opacity", &ref_alpha, 0.0f, 1.0f);
                     }
                     ImGui::EndMenu();
                 }
@@ -920,7 +933,7 @@ struct Ramachandran : viamd::EventHandler {
             // A property dropped on the window is added to the plot
             SeriesKey dropped = {};
             if (series_vector_drop(&state, 2, &dropped)) {
-                plot_add_series(&state, sp, dropped);
+                plot_add_series_copy(&state, sp, dropped);
             }
 
             // The shortcut
@@ -949,11 +962,12 @@ struct Ramachandran : viamd::EventHandler {
             bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
             RamaSeries* states[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
             int remove_idx = -1;
+            int duplicate_idx = -1;
             for (int j = 0; j < sp.count; ++j) {
                 PlotSeries& s = sp.series[j];
                 resolved[j] = series_resolve_vector(&views[j], &state, s.key, 2);
                 series_label(views[j].label, sizeof(views[j].label), &state, s.key);
-                if (resolved[j]) states[j] = &series_state(s.key.path);
+                if (resolved[j]) states[j] = find_state(s.uid);
 
                 ImGui::PushID(j);
                 ImGui::ColorButton("##color", s.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetFontSize(), ImGui::GetFontSize()));
@@ -964,7 +978,7 @@ struct Ramachandran : viamd::EventHandler {
                     script_set_hovered_property(&state, str_from_cstr(views[j].script_ident));
                 }
                 if (ImGui::BeginDragDropSource()) {
-                    series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color);
+                    series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color, s.uid);
                     ImGui::EndDragDropSource();
                 }
                 if (ImGui::BeginPopupContextItem("##series-style")) {
@@ -972,22 +986,29 @@ struct Ramachandran : viamd::EventHandler {
                         remove_idx = j;
                         ImGui::CloseCurrentPopup();
                     }
-                    if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
-                        for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
-                            if (ImGui::Selectable(ImPlot::GetMarkerName(m), s.marker == m)) s.marker = (ImPlotMarker)m;
-                        }
-                        ImGui::EndCombo();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Duplicate")) {
+                        duplicate_idx = j;
+                        ImGui::CloseCurrentPopup();
                     }
-                    ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
-                    ImGui::ColorEdit4("Color", &s.color.x);
+                    plot_vector_style_popup(s);
                     ImGui::EndPopup();
                 }
                 ImGui::PopID();
                 if (j + 1 < sp.count) ImGui::SameLine();
             }
-            if (remove_idx != -1) {
+            if (duplicate_idx != -1 || remove_idx != -1) {
                 // The series of this frame are no longer the ones of the plot
-                plot_remove_series(sp, remove_idx);
+                if (duplicate_idx != -1) {
+                    const PlotSeries original = sp.series[duplicate_idx];
+                    const int idx = plot_add_series_copy(&state, sp, original.key);
+                    if (idx != -1) {
+                        const uint32_t uid = sp.series[idx].uid;
+                        sp.series[idx] = original;
+                        sp.series[idx].uid = uid;
+                    }
+                }
+                if (remove_idx != -1) plot_remove_series(sp, remove_idx);
                 ImGui::End();
                 return;
             }
@@ -1040,23 +1061,21 @@ struct Ramachandran : viamd::EventHandler {
                         {
                             ImPlot::PushPlotClipRect();
                             ImDrawList* dl = ImPlot::GetPlotDrawList();
-                            if (show_layer[0]) {
-                                const uint32_t ref_tex = display_mode[0] == Colormap ? rama_data.ref.map_tex[plot_idx] : rama_data.ref.iso_tex[plot_idx];
+                            if (show_reference) {
+                                const uint32_t ref_tex = ref_mode == Colormap ? rama_data.ref.map_tex[plot_idx] : rama_data.ref.iso_tex[plot_idx];
                                 dl->AddImage((ImTextureID)(intptr_t)ref_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, ref_alpha));
                             }
                             for (int j = 0; j < sp.count; ++j) {
                                 if (!states[j]) continue;
                                 const RamaSeries& st = *states[j];
-                                const bool show_full = show_layer[1] && st.full_generation == st.generation && st.full.den_sum[plot_idx] > 0;
-                                const bool show_filt = show_layer[2] && state.timeline.filter.enabled && st.filt_generation == st.generation && st.filt.den_sum[plot_idx] > 0;
-                                if (show_full) {
-                                    const uint32_t tex = display_mode[1] == Colormap ? st.full.map_tex[plot_idx] : st.full.iso_tex[plot_idx];
-                                    dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, full_alpha));
-                                }
-                                if (show_filt) {
-                                    const uint32_t tex = display_mode[2] == Colormap ? st.filt.map_tex[plot_idx] : st.filt.iso_tex[plot_idx];
-                                    dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, filt_alpha));
-                                }
+                                const PlotSeries& s = sp.series[j];
+                                const int source = density_source(state, s);
+                                if (source < 0) continue;
+                                const rama_rep_t& rep = source == 0 ? st.full : st.filt;
+                                const uint64_t generation = source == 0 ? st.full_generation : st.filt_generation;
+                                if (generation != st.generation || rep.den_sum[plot_idx] <= 0) continue;
+                                const uint32_t tex = s.density == VectorDensity_Colormap ? rep.map_tex[plot_idx] : rep.iso_tex[plot_idx];
+                                dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, s.density_alpha));
                             }
                             ImPlot::PopPlotClipRect();
                         }
@@ -1103,8 +1122,8 @@ struct Ramachandran : viamd::EventHandler {
 
                         // The points of the current frame, a series each
                         const md_backbone_angles_t* curr_angles[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
-                        for (int j = 0; show_layer[3] && j < sp.count; ++j) {
-                            if (!states[j] || views[j].num_frames == 0) continue;
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!states[j] || views[j].num_frames == 0 || !sp.series[j].show_points) continue;
                             const uint32_t frame = MIN((uint32_t)MAX(0.0, state.animation.frame + 0.5), views[j].num_frames - 1);
                             curr_angles[j] = (const md_backbone_angles_t*)views[j].data + (size_t)frame * views[j].count;
                             const RamaSeries& st = *states[j];
@@ -1320,9 +1339,8 @@ struct Ramachandran : viamd::EventHandler {
             uint32_t max_dim = (uint32_t)MAX(plot_size.x, plot_size.y);
 
             // Renders the maps of one density into its representation. The sums relative to the reference scale the iso values.
-            auto render_layer = [&](rama_rep_t* rep, int layer, const float scl[4], ImVec4 line_color) {
-                const int i = layer;
-                if (display_mode[i] == IsoLevels || display_mode[i] == IsoLines) {
+            auto render_layer = [&](rama_rep_t* rep, RamachandranDisplayMode mode, ImPlotColormap cmap, const float scl[4], ImVec4 line_color) {
+                if (mode == IsoLevels || mode == IsoLines) {
                     const uint32_t count = 3;
                     uint32_t colors[4][count] = {0};
                     uint32_t  lines[4][count] = {0};
@@ -1336,7 +1354,7 @@ struct Ramachandran : viamd::EventHandler {
                         values[3][j] *= MAX(scl[3], FLT_EPSILON);
                     }
 
-                    if (display_mode[i] == IsoLevels) {
+                    if (mode == IsoLevels) {
                         MEMCPY(colors, ref_iso_level_colors, sizeof(colors));
                         MEMCPY(lines,  ref_iso_level_colors, sizeof(lines));
                     }
@@ -1367,12 +1385,12 @@ struct Ramachandran : viamd::EventHandler {
                     };
 
                     rama_rep_render_iso(rep, viewport.elem, maps, max_dim);
-                } else if (display_mode[i] == Colormap) {
+                } else if (mode == Colormap) {
                     // Fill in colors based on active color_map
                     uint32_t colors[32] = {0};
-                    uint32_t num_colors = ImPlot::GetColormapSize(colormap[i]);
+                    uint32_t num_colors = ImPlot::GetColormapSize(cmap);
                     for (uint32_t j = 0; j < num_colors; ++j) {
-                        colors[j] = ImPlot::GetColormapColorU32(j, colormap[i]);
+                        colors[j] = ImPlot::GetColormapColorU32(j, cmap);
                     }
                     // Mask off the first color to be transparent
                     colors[0] = colors[0] & 0x00FFFFFFU;
@@ -1388,24 +1406,21 @@ struct Ramachandran : viamd::EventHandler {
             };
 
             const float ref_scl[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-            if (show_layer[0]) render_layer(&rama_data.ref, 0, ref_scl, isoline_colors[0]);
+            if (show_reference) render_layer(&rama_data.ref, ref_mode, ref_colormap, ref_scl, ref_line_color);
 
             const float* ref_sum = rama_data.ref.den_sum;
             for (int j = 0; j < sp.count; ++j) {
                 if (!states[j]) continue;
                 RamaSeries& st = *states[j];
-                for (int layer = 1; layer <= 2; ++layer) {
-                    const bool is_full = layer == 1;
-                    const bool shown = show_layer[layer] && (is_full || state.timeline.filter.enabled) &&
-                        (is_full ? st.full_generation : st.filt_generation) == st.generation;
-                    if (!shown) continue;
-                    rama_rep_t* rep = is_full ? &st.full : &st.filt;
-                    const float scl[4] = {
-                        rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
-                    };
-                    // With several series the lines are told apart by the colour of the series
-                    render_layer(rep, layer, scl, sp.count > 1 ? sp.series[j].color : isoline_colors[layer]);
-                }
+                const PlotSeries& s = sp.series[j];
+                const int source = density_source(state, s);
+                if (source < 0) continue;
+                rama_rep_t* rep = source == 0 ? &st.full : &st.filt;
+                if ((source == 0 ? st.full_generation : st.filt_generation) != st.generation) continue;
+                const float scl[4] = {
+                    rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
+                };
+                render_layer(rep, display_mode_of(s.density), s.density_colormap, scl, s.color);
             }
 
             POP_GPU_SECTION();
@@ -1417,7 +1432,7 @@ struct Ramachandran : viamd::EventHandler {
                 const ImGuiPayload* payload = ImGui::GetDragDropPayload();
                 if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
                     const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_series(sp, dnd->key) : -1;
+                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_uid(sp, dnd->src_uid) : -1;
                     if (idx != -1) plot_remove_series(sp, idx);
                 }
             }
@@ -1487,7 +1502,7 @@ struct Ramachandran : viamd::EventHandler {
         return true;
     }
 
-    task_system::ID rama_rep_compute_density(RamaSeries* st, bool full, const md_backbone_angles_t* angles, uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride) {
+    task_system::ID rama_rep_compute_density(RamaSeries* st, bool full, const md_backbone_angles_t* angles, uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma) {
         if (frame_end <= frame_beg || frame_stride == 0) return 0;
 
         struct UserData {
@@ -1535,7 +1550,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->frame_beg = frame_beg;
         user_data->frame_end = frame_end;
         user_data->frame_stride = frame_stride;
-        user_data->sigma = blur_sigma;
+        user_data->sigma = sigma;
         user_data->alloc = alloc;
         user_data->complete = 0;
         user_data->generation = st->generation;

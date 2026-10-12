@@ -100,8 +100,9 @@ str_t series_script_ident(const SeriesKey& key);
 struct SeriesDragPayload {
     SeriesKey key;
     int src_subplot = -1;
+    uint32_t src_uid = 0;       // The series dragged out of a plot, when it is one of several of the same key
 };
-void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src_subplot, const char* label, ImVec4 color);
+void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src_subplot, const char* label, ImVec4 color, uint32_t src_uid = 0);
 
 // ## Subplots
 
@@ -115,8 +116,26 @@ enum PlotType : uint8_t {
 
 // One entry of a subplot: which series, and how it is drawn there. The same series in two
 // subplots is two entries, each with its own style.
+// How a series of vectors (ramachandran(), shapespace()) is shown: as points, as a density of them, or both
+enum VectorDensity : uint8_t {
+    VectorDensity_None = 0,
+    VectorDensity_Isolines,
+    VectorDensity_Levels,
+    VectorDensity_Colormap,
+    VectorDensity_Count
+};
+
+// Which frames of the series it shows
+enum VectorRange : uint8_t {
+    VectorRange_Full = 0,       // every frame
+    VectorRange_Filtered,       // the frames of the timeline's filter, every frame when it is off
+    VectorRange_Current,        // the displayed frame
+    VectorRange_Count
+};
+
 struct PlotSeries {
     SeriesKey key;
+    uint32_t uid = 0;           // Names this entry in its plot for as long as it lives: the same key can be there twice
 
     ImVec4          color = {1,1,1,1};
     bool            use_colormap = false;       // one colour per population member
@@ -131,6 +150,14 @@ struct PlotSeries {
 
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
+
+    // Vectors
+    bool            show_points = true;
+    VectorDensity   density = VectorDensity_None;
+    VectorRange     range = VectorRange_Full;
+    ImPlotColormap  density_colormap = ImPlotColormap_Viridis;
+    float           density_alpha = 0.8f;
+    float           smoothing = 2.0f;
 };
 
 struct PlotSubplot {
@@ -139,6 +166,9 @@ struct PlotSubplot {
 };
 
 int  plot_find_series(const PlotSubplot& sp, const SeriesKey& key);
+int  plot_find_uid(const PlotSubplot& sp, uint32_t uid);
+// Adds the series even when its key is already in the subplot, which is how a series is shown twice
+int  plot_add_series_copy(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key);
 // Adds the series with its default style and returns its index; the index it already has if it
 // is there, -1 when the subplot is full.
 int  plot_add_series(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key);
@@ -269,6 +299,11 @@ void plot_series_style_popup(ApplicationState* app, PlotSeries& s, int dim, cons
 void plot_series_list_item(ApplicationState* app, const char* dnd_type, PlotSubplot& first, const SeriesKey& key);
 
 // ## Vectors
+
+// The style of a series of vectors: points, density, which frames. Call inside a popup.
+void plot_vector_style_popup(PlotSeries& s, bool point_color = true);
+// The frames [beg, end) of a series of num_frames
+void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end);
 
 // A script property with a vector per member (ramachandran(), shapespace()): num_frames * count
 // vectors of 'components' floats, the frame first
