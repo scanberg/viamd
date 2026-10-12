@@ -63,7 +63,8 @@ uniform sampler2D u_tex_exit;   // farthest depth of the block proxy, 0 where th
 #if defined(USE_COLOR_VOLUME)
 uniform sampler3D u_tex_color_volume;
 #elif defined(USE_FIELD)
-// A scalar field on the density volume's own grid and the colour map it is shown through
+// A scalar field over the density volume's box (at its own resolution, sampled by the same
+// normalised coordinates) and the colour map it is shown through
 uniform sampler3D u_tex_field;
 uniform sampler2D u_tex_field_colormap;
 #endif

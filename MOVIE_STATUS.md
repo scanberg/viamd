@@ -2,7 +2,7 @@
 
 Branch `video`; no pull request yet.
 
-Merged `scanberg/viamd` master through `381f3fad`, including renderer, ASE loader and camera/recentering fixes. Movie focus modes, recording, editor and live preview are retained. Depth-of-field blur now uses aperture units; legacy blur and occlusion-radius keys are retained but inactive (see the manual).
+Merged `scanberg/viamd` master through `ac191f75`, including renderer, ASE loader, camera/recentering fixes, SSAO quality/temporal modes, shift-only selection interaction, picking improvements, ESP coloring and the mdlib update. Movie focus modes, recording, editor and live preview are retained. Depth-of-field blur now uses aperture units; legacy blur and occlusion-radius keys are retained but inactive (see the manual).
 
 Each camera key now has its own **Look at** (a fixed point, or atoms tracked through the
 trajectory) and **Focus on** (what is sharp, with transition and ease), set with two

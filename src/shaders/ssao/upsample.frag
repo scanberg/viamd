@@ -5,7 +5,7 @@
 #ifndef AO_PERSPECTIVE
 #define AO_PERSPECTIVE 1
 #endif
-uniform sampler2D u_tex_ao;            // RG16F half res (visibility, linear depth), CLAMP_TO_EDGE
+uniform sampler2D u_tex_ao;            // RG32F half res (visibility, linear depth), CLAMP_TO_EDGE
 uniform sampler2D u_tex_linear_depth;  // full-res linear depth (level 0)
 uniform float u_px_scale;
 uniform float u_z_max;

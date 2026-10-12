@@ -1,5 +1,9 @@
 ﻿
 #include <md_util.h>
+#include <md_qm.h>
+
+#include <stdarg.h>
+
 #include <md_filter.h>
 
 #include <core/md_log.h>
@@ -124,205 +128,470 @@ void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
 
 static void init_all_representations(ApplicationState* state);
 
-static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& state, const PickingHit& hit) {
-    ASSERT(sb);
-    const md_system_t& sys = state.mold.sys;
-	const md_system_state_t& sys_state = state.mold.state;
+// PICKING TOOLTIP
+//
+// The tooltip describes the object under the cursor: an atom, a bond, or a backbone segment of the cartoon or ribbons,
+// which stands for its residue. What a click selects is the highlight's to show, as that follows the selection
+// granularity; the tooltip does not change with it, so the same atom always reads the same.
+//
+// The title names the object and where it sits (residue, chain). Each row gives one property, grouped by what it means
+// rather than by the bitfield it is stored in: kind, role, chemistry, region, source. Keys, and values that are our own
+// words, are lower case; names from the file (atoms, residues, chains, entities) and element symbols are printed as
+// given. A row with nothing to say is left out. The index row spells the object in the script's terms, from 1.
+//
+// The font carries Latin-1, Greek and U+2010-2027 (application.cpp): the middle dot, the en dash, Å, °, ², φ and ψ
+// print; an arrow, the minus sign U+2212 and the prime U+2032 do not, so '-', '/' and "'" stand in for them.
 
-    if (hit.domain == PickingDomain_Atom && hit.local_idx < sys.atom.count) {
-        int atom_idx = hit.local_idx;
-        int local_idx = atom_idx;
-        const vec3_t pos = md_state_coord(&sys_state, atom_idx);
-        str_t type = md_atom_name(&sys.atom, atom_idx);
-        md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom_idx);
-        str_t elem = z ? md_util_element_name(z)   : str_t{};
-        str_t symb = z ? md_util_element_symbol(z) : str_t{};
+static str_t tooltip_vprintf(md_allocator_i* alloc, const char* format, va_list args) {
+    va_list args_len;
+    va_copy(args_len, args);
+    const int len = vsnprintf(NULL, 0, format, args_len);
+    va_end(args_len);
+    if (len <= 0) return {};
 
-        int comp_idx = md_component_find_by_atom_idx(&sys.component, atom_idx);
-        str_t comp_name = {};
-        int comp_seq_id = 0;
-        if (comp_idx != -1) {
-            comp_name   = md_component_name(&sys.component, comp_idx);
-            comp_seq_id = md_component_seq_id(&sys.component, comp_idx);
-            md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
-            local_idx = atom_idx - range.beg;
-        }
+    char* buf = (char*)md_alloc(alloc, (size_t)len + 1);
+    vsnprintf(buf, (size_t)len + 1, format, args);
+    return {buf, (size_t)len};
+}
 
-        int inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
-        str_t inst_id = {};
-		str_t auth_id = {};
-        if (inst_idx != -1) {
-            inst_id = md_instance_id(&sys.instance, inst_idx);
-			auth_id = md_instance_auth_id(&sys.instance, inst_idx);
-        }
+void tooltip_title(PickingTooltipTextRequest* req, const char* format, ...) {
+    ASSERT(req && req->alloc);
+    va_list args;
+    va_start(args, format);
+    const TooltipLine line = {.kind = TooltipLineKind::Title, .text = tooltip_vprintf(req->alloc, format, args)};
+    va_end(args);
+    md_array_push(req->lines, line, req->alloc);
+}
 
-        // @NOTE(Robin): External indices begin with 1 not 0
-		if (state.selection.granularity == SelectionGranularity::Atom) {
-            md_strb_fmt(sb, "atom[%i]", atom_idx + 1);
-            if (comp_idx != -1) {
-                md_strb_fmt(sb, "[%i]: ", local_idx + 1);
-            } else {
-				md_strb_push_cstr(sb, ": ");
-            }
-            md_strb_push_str(sb, type);
-			md_strb_push_char(sb, ' ');
-            if (z) {
-                md_strb_fmt(sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
-            }
-            md_strb_fmt(sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
-        }
-        
-        if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
-            md_strb_fmt(sb, "component[%i]", comp_idx + 1);
-            if (comp_name) {
-                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(comp_name));
-            }
-			md_strb_fmt(sb, " (seq_id: %i)\n", comp_seq_id);
-        }
-        if (inst_idx != -1) {
-            md_strb_fmt(sb, "structure[%i]", inst_idx + 1);
-            if (inst_id) {
-                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(inst_id));
-            }
-			if (auth_id) {
-                md_strb_fmt(sb, " (" STR_FMT ")", STR_ARG(auth_id));
-            }
-            md_strb_push_char(sb, '\n');
-        }
+void tooltip_row(PickingTooltipTextRequest* req, str_t key, const char* format, ...) {
+    ASSERT(req && req->alloc);
+    va_list args;
+    va_start(args, format);
+    const TooltipLine line = {.kind = TooltipLineKind::Row, .key = key, .text = tooltip_vprintf(req->alloc, format, args)};
+    va_end(args);
+    md_array_push(req->lines, line, req->alloc);
+}
 
-        // What the level the selection works at says about it: the atom's particle, role and chemistry, the kind
-        // of the component and its place in the chain, or the kind of the instance's entity
-        const md_component_kind_t comp_kind = comp_idx != -1 ? md_component_kind(&sys.component, comp_idx) : MD_COMPONENT_KIND_OTHER;
-        const bool nucleotide = comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE;
-
-        if (state.selection.granularity == SelectionGranularity::Atom) {
-            const md_particle_kind_t particle = md_atom_particle_kind(&sys.atom, atom_idx);
-            if (particle != MD_PARTICLE_ATOM) {
-                md_strb_fmt(sb, "particle: %s\n", md_particle_kind_name(particle));
-            }
-            const md_atom_flags_t flags = md_system_atom_flags(&sys, atom_idx);
-            if (flags) {
-                *sb += "flags: ";
-                if (flags & MD_ATOM_FLAG_BACKBONE)       { *sb += "BACKBONE "; }
-                if (flags & MD_ATOM_FLAG_SIDE_CHAIN)     { *sb += "SIDE-CHAIN "; }
-                if (flags & MD_ATOM_FLAG_NUCLEOSIDE)     { *sb += "NUCLEOSIDE "; }
-                if (flags & MD_ATOM_FLAG_NUCLEOBASE)     { *sb += "NUCLEOBASE "; }
-                if (flags & MD_ATOM_FLAG_TERMINAL_BEG)   { *sb += nucleotide ? "5'-TERMINUS " : "N-TERMINUS "; }
-                if (flags & MD_ATOM_FLAG_TERMINAL_END)   { *sb += nucleotide ? "3'-TERMINUS " : "C-TERMINUS "; }
-                switch (md_atom_flags_hybridization(flags)) {
-                case MD_HYBRIDIZATION_SP:  *sb += "SP ";  break;
-                case MD_HYBRIDIZATION_SP2: *sb += "SP2 "; break;
-                case MD_HYBRIDIZATION_SP3: *sb += "SP3 "; break;
-                default: break;
-                }
-                if (flags & MD_ATOM_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
-                if (flags & MD_ATOM_FLAG_QM)             { *sb += "QM "; }
-                *sb += "\n";
-            }
-        } else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
-            const md_component_flags_t flags = md_system_component_flags(&sys, comp_idx);
-            if (comp_kind != MD_COMPONENT_KIND_OTHER || flags) {
-                md_strb_fmt(sb, "kind: %s", md_component_kind_name(comp_kind));
-                if ((comp_kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) { *sb += ", unresolved"; }
-                if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) { *sb += nucleotide ? ", 5'-terminus" : ", N-terminus"; }
-                if (flags & MD_COMPONENT_FLAG_TERMINAL_END) { *sb += nucleotide ? ", 3'-terminus" : ", C-terminus"; }
-                *sb += "\n";
-            }
-        } else if (state.selection.granularity == SelectionGranularity::Instance && inst_idx != -1) {
-            const md_entity_idx_t ent_idx = md_instance_entity_idx(&sys.instance, inst_idx);
-            if (ent_idx != -1) {
-                const str_t desc = md_entity_description(&sys.entity, ent_idx);
-                md_strb_fmt(sb, "entity[%i]: " STR_FMT " (%s%s)\n", ent_idx + 1, STR_ARG(desc), md_entity_kind_name(md_entity_kind(&sys.entity, ent_idx)),
-                    (md_entity_flags(&sys.entity, ent_idx) & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "");
-            }
-        }
-        if (state.selection.granularity == SelectionGranularity::Atom) {
-            const int charge = md_atom_formal_charge(&sys.atom, atom_idx);
-            const int num_h  = md_atom_hydrogen_count(&sys.atom, atom_idx);
-            if (charge) md_strb_fmt(sb, "formal charge: %+d\n", charge);
-            if (num_h > 0) md_strb_fmt(sb, "hydrogens: %d\n", num_h);
-        }
-        /*
-        // @TODO: REIMPLEMENT THIS
-        if (res_idx < sys.backbone.segment.angleangles.size() && res_idx < sys.backbone.segments.size() && valid_backbone_atoms(sys.backbone.segments[res_idx])) {
-        const auto angles = RAD_TO_DEG((vec2)sys.backbone.angles[res_idx]);
-        len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
-        }
-        */
+// A row of a list built in sb, left out when the list is empty
+static void tooltip_row_list(PickingTooltipTextRequest* req, str_t key, const md_strb_t& sb) {
+    if (!md_strb_empty(sb)) {
+        tooltip_row(req, key, "%s", md_strb_to_cstr(sb));
     }
-    else if (hit.domain == PickingDomain_Bond) {
-        int bond_idx = hit.local_idx;
-        if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
-            md_atom_pair_t   pair = sys.bond.pairs[bond_idx];
-            md_bond_flags_t flags = sys.bond.flags[bond_idx];
-            char bond_flags_buf[256] = {};
-            int  len = 0;
+}
 
-            typedef struct {
-                md_bond_flags_t flag;
-                const char* label;
-            } bond_flag_label_t;
+static void tooltip_list_add(md_strb_t* sb, const char* item) {
+    if (!md_strb_empty(*sb)) *sb += ", ";
+    *sb += item;
+}
 
-            bond_flag_label_t bond_flag_map[] = {
-                {MD_BOND_FLAG_AROMATIC,        "AROMATIC"},
-                {MD_BOND_FLAG_DELOCALIZED,     "DELOCALIZED"},
-                {MD_BOND_FLAG_COORDINATE,      "COORD"},
-                {MD_BOND_FLAG_ORDER_PERCEIVED, "ORDER-PERCEIVED"},
-            };
+// A lower case copy, for names the system spells capitalised ("Carbon") where the tooltip uses them as words
+static str_t tooltip_lower(md_allocator_i* alloc, str_t str) {
+    if (str_empty(str)) return {};
+    char* buf = (char*)md_alloc(alloc, str.len + 1);
+    MEMCPY(buf, str.ptr, str.len);
+    buf[str.len] = '\0';
+    convert_to_lower(buf, str.len);
+    return {buf, str.len};
+}
 
-            // Where the bond came from is a value, not a set of bits (md_bond_origin)
-            static const char* origin_label[] = {"FILE", "TOPOLOGY", "USER", "INFERRED"};
-            len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "%s ", origin_label[md_bond_origin(flags) & 3]);
+// " e", " Å", or nothing for a dimensionless value
+static void tooltip_unit_suffix(char* buf, size_t cap, md_unit_t unit) {
+    ASSERT(buf && cap > 1);
+    buf[0] = '\0';
+    if (md_unit_print(buf + 1, cap - 1, unit) > 0) {
+        buf[0] = ' ';
+    }
+}
 
-            for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
-                if (flags & bond_flag_map[i].flag) {
-                    len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "%s ", bond_flag_map[i].label);
-                }
-            }
-            
-            // The order is a value, not a set of bits (md_bond_order)
-            const int order = md_bond_order(flags);
-            char bond_type = '-';
-            if (order == MD_BOND_ORDER_DOUBLE)    bond_type = '=';
-            if (order == MD_BOND_ORDER_TRIPLE)    bond_type = '#';
-            if (order == MD_BOND_ORDER_QUADRUPLE) bond_type = '$';
-            if (flags & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) bond_type = ':';
-            if (order) {
-                len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "ORDER-%d ", order);
-            }
+// Where an atom sits: its residue and its chain, -1 for either it is not in
+struct TooltipPlace {
+    int comp_idx = -1;
+    int inst_idx = -1;
+};
 
-            vec3_t p0 = md_state_coord(&sys_state, pair.idx[0]);
-            vec3_t p1 = md_state_coord(&sys_state, pair.idx[1]);
-            float d = vec3_distance(p0, p1);
+static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_idx) {
+    return {
+        .comp_idx = md_component_find_by_atom_idx(&sys.component, atom_idx),
+        .inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx),
+    };
+}
 
-            str_t type0 = md_atom_name(&sys.atom, pair.idx[0]);
-            str_t type1 = md_atom_name(&sys.atom, pair.idx[1]);
+// "ALA 42", or the component's index when it has no name
+static void tooltip_append_residue(md_strb_t* sb, const md_system_t& sys, int comp_idx) {
+    const str_t name = md_component_name(&sys.component, comp_idx);
+    if (!str_empty(name)) {
+        md_strb_fmt(sb, STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
+    } else {
+        md_strb_fmt(sb, "component %d", comp_idx + 1);
+    }
+}
 
-            md_strb_fmt(sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
-            md_strb_fmt(sb, "flags: %.*s\n", len, bond_flags_buf);
-            md_strb_fmt(sb, "length: %.3f\n", d);
+// "chain A", with the author's id where it differs ("chain C (auth A)"), or the instance's index when it has no id
+static void tooltip_append_chain(md_strb_t* sb, const md_system_t& sys, int inst_idx) {
+    const str_t id   = md_instance_id(&sys.instance, inst_idx);
+    const str_t auth = md_instance_auth_id(&sys.instance, inst_idx);
+    if (!str_empty(id)) {
+        md_strb_fmt(sb, "chain " STR_FMT, STR_ARG(id));
+    } else {
+        md_strb_fmt(sb, "instance %d", inst_idx + 1);
+    }
+    if (!str_empty(auth) && !str_eq(auth, id)) {
+        md_strb_fmt(sb, " (auth " STR_FMT ")", STR_ARG(auth));
+    }
+}
+
+// The rest of a title: " · ALA 42 · chain A" for one place, and for the two ends of a bond that crosses over
+// " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B"
+static void tooltip_append_place(md_strb_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
+    auto sep = [sb]() { if (!md_strb_empty(*sb)) *sb += TOOLTIP_SEP; };
+    const bool two_insts = b && b->inst_idx != a.inst_idx;
+    const bool two_comps = b && b->comp_idx != a.comp_idx;
+
+    if (a.comp_idx != -1) {
+        sep();
+        tooltip_append_residue(sb, sys, a.comp_idx);
+        if (two_comps && !two_insts && b->comp_idx != -1) {
+            *sb += " / ";
+            tooltip_append_residue(sb, sys, b->comp_idx);
         }
+    }
+    if (a.inst_idx != -1) {
+        sep();
+        tooltip_append_chain(sb, sys, a.inst_idx);
+    }
+    if (two_insts) {
+        *sb += " / ";
+        if (b->comp_idx != -1) {
+            tooltip_append_residue(sb, sys, b->comp_idx);
+            if (b->inst_idx != -1) *sb += TOOLTIP_SEP;
+        }
+        if (b->inst_idx != -1) {
+            tooltip_append_chain(sb, sys, b->inst_idx);
+        }
+    }
+}
+
+// "component(56) instance(1)", after whatever sb holds
+static void tooltip_append_index(md_strb_t* sb, const TooltipPlace& place) {
+    if (place.comp_idx != -1) md_strb_fmt(sb, "%scomponent(%d)", md_strb_empty(*sb) ? "" : " ", place.comp_idx + 1);
+    if (place.inst_idx != -1) md_strb_fmt(sb, "%sinstance(%d)",  md_strb_empty(*sb) ? "" : " ", place.inst_idx + 1);
+}
+
+// The atom's name, else its element's symbol, else its index
+static void tooltip_append_atom_name(md_strb_t* sb, const md_system_t& sys, size_t atom_idx) {
+    str_t name = md_atom_name(&sys.atom, atom_idx);
+    if (str_empty(name)) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom_idx);
+        if (z) name = md_util_element_symbol(z);
+    }
+    if (!str_empty(name)) {
+        *sb += name;
+    } else {
+        md_strb_fmt(sb, "atom %zu", atom_idx + 1);
+    }
+}
+
+// Values of the attribute table for one atom: the field a visible representation is coloured by, at the variant it
+// shows, which is the value behind the colour; then every field with one value per atom (a partial charge, a B-factor,
+// an occupancy). Fields the atom's rows already give from the system itself are skipped, as are absent values.
+static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t atom_idx) {
+    const md_system_t& sys = state.mold.sys;
+
+    struct Field {
+        const md_attribute_t* attr;
+        int variant;    // -1 for a field without a variant axis
+    };
+    Field fields[6];
+    size_t num_fields = 0;
+
+    auto add = [&](const md_attribute_t* attr, int variant) {
+        if (!attr || num_fields == ARRAY_SIZE(fields)) return;
+        for (size_t i = 0; i < num_fields; ++i) {
+            if (fields[i].attr == attr && fields[i].variant == variant) return;
+        }
+        fields[num_fields++] = {attr, variant};
+    };
+
+    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+        const Representation& rep = state.representation.reps[i];
+        if (!rep.enabled || rep.color_mapping != ColorMapping::Attribute) continue;
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, rep.atom_attribute.key);
+        if (!attr) continue;
+        const int variant = attr->format.rank > 1 ? CLAMP(rep.atom_attribute.variant_idx, 0, atom_attribute_variant_count(attr) - 1) : -1;
+        add(attr, variant);
+    }
+
+    md_attribute_id_t ids[32];
+    const size_t num_ids = MIN(atom_attribute_query(ids, ARRAY_SIZE(ids), sys), ARRAY_SIZE(ids));
+    for (size_t i = 0; i < num_ids; ++i) {
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
+        if (!attr || attr->format.rank != 1) continue;
+        if (str_eq(attr->path, STR_LIT("atom/formal_charge")) || str_eq(attr->path, STR_LIT("atom/mass"))) continue;
+        add(attr, -1);
+    }
+
+    for (size_t i = 0; i < num_fields; ++i) {
+        const md_attribute_t* attr = fields[i].attr;
+        const int variant = fields[i].variant;
+        const md_attribute_slice_t slice = variant >= 0 ? md_attribute_slice_2((uint32_t)variant, atom_idx) : md_attribute_slice_1(atom_idx);
+
+        float value = 0.0f;
+        if (md_attribute_extract_f32(&value, 1, attr, slice, md_unit_none()) != 1 || atom_attribute_value_absent(value)) continue;
+
+        str_t key = atom_attribute_label(attr);
+        if (variant >= 0) {
+            key = str_printf(req->alloc, STR_FMT " (%d)", STR_ARG(key), variant + 1);
+        }
+        char unit[32];
+        tooltip_unit_suffix(unit, sizeof(unit), attr->unit);
+        // A charge reads with its sign and to a thousandth of e; anything else by its significant digits
+        const bool charge = md_unit_base_equal(attr->unit, md_unit_elementary_charge());
+        tooltip_row(req, key, charge ? "%+.3f%s" : "%.4g%s", value, unit);
+    }
+}
+
+static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t atom_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const TooltipPlace place = tooltip_place_of_atom(sys, atom_idx);
+
+    md_strb_t title = md_strb_create(req->alloc);
+    tooltip_append_atom_name(&title, sys, atom_idx);
+    tooltip_append_place(&title, sys, place);
+    tooltip_title(req, "%s", md_strb_to_cstr(title));
+
+    const md_atomic_number_t z        = md_atom_atomic_number(&sys.atom, atom_idx);
+    const md_particle_kind_t particle = md_atom_particle_kind(&sys.atom, atom_idx);
+    const md_atom_flags_t    flags    = md_system_atom_flags(&sys, atom_idx);
+    const bool nucleotide = place.comp_idx != -1 && md_component_kind(&sys.component, place.comp_idx) == MD_COMPONENT_KIND_NUCLEOTIDE;
+
+    // What it is
+    if (particle != MD_PARTICLE_ATOM) {
+        tooltip_row(req, STR_LIT("particle"), "%s", md_particle_kind_name(particle));
+    }
+    if (z) {
+        const str_t symbol = md_util_element_symbol(z);
+        const str_t name   = tooltip_lower(req->alloc, md_util_element_name(z));
+        tooltip_row(req, STR_LIT("element"), STR_FMT " (" STR_FMT ")", STR_ARG(symbol), STR_ARG(name));
+    }
+    const str_t ff_type = md_atom_type_ff_type(&sys.atom.type, (size_t)md_atom_type_idx(&sys.atom, atom_idx));
+    if (!str_empty(ff_type)) {
+        tooltip_row(req, STR_LIT("type"), STR_FMT, STR_ARG(ff_type));
+    }
+    if (particle != MD_PARTICLE_ATOM) {
+        // An atom weighs what its element does, a bead what its force field says
+        const float mass = md_atom_mass(&sys.atom, atom_idx);
+        if (mass > 0.0f) tooltip_row(req, STR_LIT("mass"), "%.3f Da", mass);
+    }
+
+    // Its part in the residue. A nucleoside is the sugar and the base: what of it is not the base is the sugar.
+    md_strb_t role = md_strb_create(req->alloc);
+    if (flags & MD_ATOM_FLAG_BACKBONE)   tooltip_list_add(&role, "backbone");
+    if (flags & MD_ATOM_FLAG_SIDE_CHAIN) tooltip_list_add(&role, "side chain");
+    if (flags & MD_ATOM_FLAG_NUCLEOBASE) {
+        tooltip_list_add(&role, "base");
+    } else if (flags & MD_ATOM_FLAG_NUCLEOSIDE) {
+        tooltip_list_add(&role, "sugar");
+    }
+    if (flags & MD_ATOM_FLAG_TERMINAL_BEG) tooltip_list_add(&role, nucleotide ? "5' end" : "N-terminus");
+    if (flags & MD_ATOM_FLAG_TERMINAL_END) tooltip_list_add(&role, nucleotide ? "3' end" : "C-terminus");
+    tooltip_row_list(req, STR_LIT("role"), role);
+
+    // Its chemistry
+    md_strb_t chem = md_strb_create(req->alloc);
+    const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
+    if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
+    if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
+    const int num_h = md_atom_hydrogen_count(&sys.atom, atom_idx);
+    if (num_h > 0) md_strb_fmt(&chem, "%s%d H", md_strb_empty(chem) ? "" : ", ", num_h);
+    tooltip_row_list(req, STR_LIT("chemistry"), chem);
+
+    const int formal_charge = md_atom_formal_charge(&sys.atom, atom_idx);
+    if (formal_charge) {
+        tooltip_row(req, STR_LIT("formal charge"), "%+d", formal_charge);
+    }
+    if (flags & MD_ATOM_FLAG_QM) {
+        tooltip_row(req, STR_LIT("region"), "QM");
+    }
+
+    tooltip_atom_attribute_rows(req, state, atom_idx);
+
+    const vec3_t pos = md_state_coord(&state.mold.state, atom_idx);
+    tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
+
+    md_strb_t index = md_strb_create(req->alloc);
+    md_strb_fmt(&index, "atom(%u)", atom_idx + 1);
+    tooltip_append_index(&index, place);
+    tooltip_row_list(req, STR_LIT("index"), index);
+}
+
+static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t bond_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const md_system_state_t& sys_state = state.mold.state;
+    const md_atom_pair_t  pair  = sys.bond.pairs[bond_idx];
+    const md_bond_flags_t flags = sys.bond.flags[bond_idx];
+    const int order = md_bond_order(flags);
+
+    char symbol = '-';
+    if (order == MD_BOND_ORDER_DOUBLE)    symbol = '=';
+    if (order == MD_BOND_ORDER_TRIPLE)    symbol = '#';
+    if (order == MD_BOND_ORDER_QUADRUPLE) symbol = '$';
+    if (flags & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) symbol = ':';
+
+    const TooltipPlace place[2] = {
+        tooltip_place_of_atom(sys, pair.idx[0]),
+        tooltip_place_of_atom(sys, pair.idx[1]),
+    };
+
+    md_strb_t title = md_strb_create(req->alloc);
+    tooltip_append_atom_name(&title, sys, pair.idx[0]);
+    title += symbol;
+    tooltip_append_atom_name(&title, sys, pair.idx[1]);
+    tooltip_append_place(&title, sys, place[0], &place[1]);
+    tooltip_title(req, "%s", md_strb_to_cstr(title));
+
+    // What it is: an aromatic or delocalized bond is that before it is of an order
+    static const char* order_names[] = {"", "single", "double", "triple", "quadruple"};
+    md_strb_t kind = md_strb_create(req->alloc);
+    if (flags & MD_BOND_FLAG_AROMATIC) {
+        tooltip_list_add(&kind, "aromatic");
+    } else if (flags & MD_BOND_FLAG_DELOCALIZED) {
+        tooltip_list_add(&kind, "delocalized");
+    } else if (0 < order && order < (int)ARRAY_SIZE(order_names)) {
+        tooltip_list_add(&kind, order_names[order]);
+    }
+    if (flags & MD_BOND_FLAG_COORDINATE) tooltip_list_add(&kind, "coordinate");
+    tooltip_row_list(req, STR_LIT("kind"), kind);
+
+    // Across a periodic boundary the bond is the short way round
+    vec3_t d = vec3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
+    md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+    tooltip_row(req, STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, vec3_length(d));
+
+    md_strb_t source = md_strb_create(req->alloc);
+    tooltip_list_add(&source, md_bond_origin_name(md_bond_origin(flags)));
+    if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&source, "order perceived");
+    tooltip_row_list(req, STR_LIT("source"), source);
+
+    tooltip_row(req, STR_LIT("index"), "atom(%d) atom(%d)", pair.idx[0] + 1, pair.idx[1] + 1);
+}
+
+// A backbone segment stands for its residue: the cartoon and ribbons have no atoms to speak of. What the segment adds is
+// the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
+// dihedrals. phi and psi need a neighbour on either side within the chain, so the ends of a chain, and chains too
+// short to assign, have none (md_util_backbone_angles_compute).
+static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const md_protein_backbone_data_t& bb = sys.protein_backbone;
+    ASSERT(seg_idx < bb.segment.count && bb.segment.comp_idx);
+
+    const int comp_idx = bb.segment.comp_idx[seg_idx];
+    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) return;
+    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const TooltipPlace place = {
+        .comp_idx = comp_idx,
+        .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
+    };
+
+    md_strb_t title = md_strb_create(req->alloc);
+    tooltip_append_place(&title, sys, place);
+    tooltip_title(req, "%s", md_strb_to_cstr(title));
+
+    const md_component_kind_t  kind  = md_component_kind(&sys.component, comp_idx);
+    const md_component_flags_t flags = md_system_component_flags(&sys, comp_idx);
+    const bool nucleotide = kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+
+    md_strb_t kind_list = md_strb_create(req->alloc);
+    if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
+    if ((kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
+    if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
+    if (flags & MD_COMPONENT_FLAG_TERMINAL_END) tooltip_list_add(&kind_list, nucleotide ? "3' end" : "C-terminus");
+    tooltip_row_list(req, STR_LIT("kind"), kind_list);
+
+    if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
+        tooltip_row(req, STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
+    }
+
+    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&state.mold.state, &sys);
+    if (angles && bb.range.offset) {
+        for (size_t i = 0; i < bb.range.count; ++i) {
+            const uint32_t beg = bb.range.offset[i];
+            const uint32_t end = bb.range.offset[i + 1];
+            if (seg_idx < beg || end <= seg_idx) continue;
+            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end) {
+                // phi, psi and the degree sign in UTF-8 escapes
+                tooltip_row(req, STR_LIT("\xCF\x86, \xCF\x88"), "%.1f\xC2\xB0, %.1f\xC2\xB0", RAD_TO_DEG(angles[seg_idx].phi), RAD_TO_DEG(angles[seg_idx].psi));
+            }
+            break;
+        }
+    }
+
+    tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
+
+    // The molecule it is part of, which the title names only by its chain
+    if (place.inst_idx != -1) {
+        const md_entity_idx_t ent_idx = md_instance_entity_idx(&sys.instance, place.inst_idx);
+        if (ent_idx != -1) {
+            const str_t desc = md_entity_description(&sys.entity, ent_idx);
+            const md_entity_flags_t ent_flags = md_entity_flags(&sys.entity, ent_idx);
+            const char* ent_kind = md_entity_kind_name(md_entity_kind(&sys.entity, ent_idx));
+            const char* inferred = (ent_flags & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "";
+            if (!str_empty(desc)) {
+                tooltip_row(req, STR_LIT("entity"), STR_FMT " (%s%s)", STR_ARG(desc), ent_kind, inferred);
+            } else {
+                tooltip_row(req, STR_LIT("entity"), "%s%s", ent_kind, inferred);
+            }
+        }
+    }
+
+    md_strb_t index = md_strb_create(req->alloc);
+    tooltip_append_index(&index, place);
+    tooltip_row_list(req, STR_LIT("index"), index);
+}
+
+// The hit names the group and the element outright - its range was reserved against that group's attribute - so there
+// is no list to rebuild and nothing to look the index up in.
+static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+    const md_system_t& sys = state.mold.sys;
+    DipoleGroup group = {};
+    if (!dipole_group_from_key(&group, sys, hit.key) || hit.local_idx >= group.count) return;
+
+    char label[64];
+    const int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
+    tooltip_title(req, "dipole" TOOLTIP_SEP "%.*s", label_len, label);
+
+    vec3_t vec = {0, 0, 0};
+    if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
+        char unit[32];
+        if (md_unit_is_atomic(group.unit)) {
+            snprintf(unit, sizeof(unit), " a.u.");
+        } else {
+            tooltip_unit_suffix(unit, sizeof(unit), group.unit);
+        }
+        tooltip_row(req, STR_LIT("magnitude"), "%.3f%s", vec3_length(vec), unit);
+        tooltip_row(req, STR_LIT("vector"), "%.3f, %.3f, %.3f%s", vec.x, vec.y, vec.z, unit);
+    }
+}
+
+static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+    ASSERT(req);
+    const md_system_t& sys = state.mold.sys;
+
+    if (hit.domain == PickingDomain_Atom) {
+        if (hit.local_idx < sys.atom.count) tooltip_atom(req, state, hit.local_idx);
+    } else if (hit.domain == PickingDomain_Bond) {
+        if (hit.local_idx < sys.bond.count) tooltip_bond(req, state, hit.local_idx);
+    } else if (hit.domain == PickingDomain_BackboneSegment) {
+        if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
-        // The hit names the group and the element outright - its range was reserved against that
-        // group's attribute - so there is no list to rebuild and nothing to look the index up in.
-        DipoleGroup group = {};
-        if (dipole_group_from_key(&group, sys, hit.key) && hit.local_idx < group.count) {
-            char label[64];
-            int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
-            md_strb_fmt(sb, "dipole: %.*s\n", label_len, label);
+        tooltip_dipole(req, state, hit);
+    }
+}
 
-            vec3_t vec = {0, 0, 0};
-            if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
-                char unit_buf[32];
-				size_t unit_len = 0;
-				if (md_unit_is_atomic(group.unit)) {
-					unit_len = snprintf(unit_buf, sizeof(unit_buf), "a.u.");
-				} else {
-                    unit_len = md_unit_print(unit_buf, sizeof(unit_buf), group.unit);
-                }
-                md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", vec.x, vec.y, vec.z, (int)unit_len, unit_buf);
-            }
-        }
+static void tooltip_text(str_t str) {
+    if (str_empty(str)) {
+        ImGui::TextUnformatted("");
+    } else {
+        ImGui::TextUnformatted(str.ptr, str.ptr + str.len);
     }
 }
 
@@ -335,22 +604,53 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
     PickingTooltipTextRequest tooltip_request = {
         .app = state,
         .hit = hit,
-        .sb = md_strb_create(state.allocator.frame),
+        .alloc = state.allocator.frame,
     };
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingTooltipTextRequest, viamd::EventPayloadType_PickingTooltipTextRequest, &tooltip_request);
 
-    if (!md_strb_empty(tooltip_request.sb)) {
-        const ImVec2 offset = { 10.f, 18.f };
-        const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
-        ImGui::SetNextWindowPos(new_pos);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-        ImGui::Begin("##Picking Tooltip Window", 0,
-            ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-        ImGui::Text("%s", md_strb_to_cstr(tooltip_request.sb));
-        ImGui::End();
-        ImGui::PopStyleColor();
+    const size_t num_lines = md_array_size(tooltip_request.lines);
+    if (num_lines == 0) return;
+
+    const ImVec2 offset = { 10.f, 18.f };
+    const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
+    ImGui::SetNextWindowPos(new_pos);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+    ImGui::Begin("##Picking Tooltip Window", 0,
+        ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+
+    // A title begins a section, and the rows under it are one table so that their keys and values line up
+    bool table_open = false;
+    int  num_tables = 0;
+    for (size_t i = 0; i < num_lines; ++i) {
+        const TooltipLine& line = tooltip_request.lines[i];
+        if (line.kind == TooltipLineKind::Title) {
+            if (table_open) {
+                ImGui::EndTable();
+                table_open = false;
+            }
+            if (i > 0) ImGui::Separator();
+            tooltip_text(line.text);
+        } else {
+            if (!table_open) {
+                char id[16];
+                snprintf(id, sizeof(id), "##rows%d", num_tables++);
+                table_open = ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit);
+                if (!table_open) continue;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            tooltip_text(line.key);
+            ImGui::PopStyleColor();
+            ImGui::TableSetColumnIndex(1);
+            tooltip_text(line.text);
+        }
     }
+    if (table_open) ImGui::EndTable();
+
+    ImGui::End();
+    ImGui::PopStyleColor();
 }
 
 void interrupt_async_tasks(ApplicationState* state) {
@@ -1809,6 +2109,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 // SsaoIntensity, SsaoRadius, SsaoBias and DofFocusScale belonged to the previous scale-dependent SSAO / DOF
                 // and are deliberately ignored: their values do not translate to the new parameters.
                 else if (str_eq(ident, STR_LIT("SsaoStrength")))         viamd::extract_flt(v.ssao.intensity, arg);
+                else if (str_eq(ident, STR_LIT("SsaoTemporal")))         viamd::extract_bool(v.ssao.temporal, arg);
+                else if (str_eq(ident, STR_LIT("SsaoMode")))             viamd::extract_enum(v.ssao.mode, arg, (int)postprocess_pipeline::SsaoMode_Count);
                 else if (str_eq(ident, STR_LIT("TonemapEnabled")))       viamd::extract_bool(v.tonemapping.enabled, arg);
                 else if (str_eq(ident, STR_LIT("Tonemapper")))           viamd::extract_enum(v.tonemapping.tonemapper, arg, (int)postprocess_pipeline::Tonemapper_ACES + 1);
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
@@ -2574,6 +2876,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("BackgroundIntensity"), v.background.intensity);
         viamd::write_bool(state, STR_LIT("SsaoEnabled"), v.ssao.enabled);
         viamd::write_flt(state,  STR_LIT("SsaoStrength"), v.ssao.intensity);
+        viamd::write_bool(state, STR_LIT("SsaoTemporal"), v.ssao.temporal);
+        viamd::write_int(state,  STR_LIT("SsaoMode"), (int)v.ssao.mode);
         viamd::write_bool(state, STR_LIT("TonemapEnabled"), v.tonemapping.enabled);
         viamd::write_int(state,  STR_LIT("Tonemapper"), (int)v.tonemapping.tonemapper);
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
@@ -2869,6 +3173,10 @@ static void init_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
+    // A system loaded under a representation that colours by a field: the field's values were of the
+    // old one, whatever the frame says
+    surface_field_invalidate(&rep->electronic_structure.field_vol);
+
     flag_representation_as_dirty(rep);
 }
 
@@ -2898,6 +3206,11 @@ Representation* clone_representation(ApplicationState* state, const Representati
     clone->id = state->representation.next_id++;
     clone->md_rep = {0};
     clone->atom_mask = {0};
+    // The volumes' textures and buffers are the original's: the clone evaluates its own, and must
+    // neither write into nor free those (each representation frees its own on removal)
+    clone->electronic_structure.density_vol.tex_id = 0;
+    clone->electronic_structure.color_vol.tex_id   = 0;
+    clone->electronic_structure.field_vol          = SurfaceFieldVolume{};
     init_representation(state, clone);
     return clone;
 }
@@ -3816,34 +4129,69 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
         return nullptr;
     }
 
-    md_attribute_format_t format = {};
-    if (!md_attribute_slice_format(&format, attr, slice)) {
-        MD_LOG_ERROR("The slice does not address '" STR_FMT "'", STR_ARG(density_path));
+    // Square or packed, stored or computed on demand: md_qm reads either, and says why when the
+    // slice does not narrow it to one symmetric matrix
+    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, attr, slice);
+    if (dim == 0) {
+        return nullptr;
+    }
+    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * dim * dim);
+    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, attr, slice) != dim) {
         return nullptr;
     }
 
-    // Square is not pedantry: the GL and GPU density paths both pack the upper triangle and never
-    // read the lower half, so a non square matrix would be silently half consumed.
-    if (format.rank != 2 || format.shape[0] != format.shape[1] || format.components != 1) {
-        MD_LOG_ERROR("'" STR_FMT "' does not slice down to a square density matrix", STR_ARG(density_path));
-        return nullptr;
-    }
-
-    const size_t count = md_attribute_slice_count(attr, slice);
-    if (count == 0) {
-        return nullptr;
-    }
-
-    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * count);
-    if (!dst) {
-        return nullptr;
-    }
-    if (md_attribute_extract_f64(dst, count, attr, slice, md_unit_none()) != count) {
-        return nullptr;
-    }
-
-    if (out_dim) *out_dim = format.shape[0];
+    if (out_dim) *out_dim = dim;
     return dst;
+}
+
+// The same matrix as its packed upper triangle in float - what both density paths hand the shader.
+// A packed attribute is extracted as it is and nothing larger is ever made; a square one is
+// extracted whole into scratch first.
+float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice_ptr) {
+    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
+        return nullptr;
+    }
+
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, slice);
+    if (dim == 0) {
+        return nullptr;
+    }
+    const size_t len = dim * (dim + 1) / 2;
+    float* dst = (float*)md_temp_alloc(temp, sizeof(float) * len);
+    if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, slice) != dim) {
+        return nullptr;
+    }
+
+    if (out_dim) *out_dim = dim;
+    return dst;
+}
+
+static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                       const vec3_t* atom_pos, size_t num_atom_pos,
+                                       const float* packed, size_t dim, md_gto_op_t op) {
+    if (!packed || dim == 0) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
+        return false;
+    }
+
+    if (md_gto_basis_num_ao(&basis) != dim) {
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&basis), dim);
+        return false;
+    }
+
+    md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), packed, false, op);
+    volume::notify_data_changed(vol_tex);
+    return true;
 }
 
 bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
@@ -3877,13 +4225,14 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
-    size_t  dim = 0;
-    double* density_matrix = density_matrix_extract(&dim, temp, sys, density_path, slice);
-    if (!density_matrix) {
+    // Packed from the start: the shader reads the upper triangle as float, so that is all that is made
+    size_t dim = 0;
+    const float* packed = density_packed_extract(&dim, temp, sys, density_path, slice);
+    if (!packed) {
         return false;
     }
 
-    return density_matrix_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, density_matrix, dim, op);
+    return density_packed_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, packed, dim, op);
 }
 
 static bool es_attribute_exists(const md_system_t& sys, str_t path) {
@@ -4044,13 +4393,15 @@ static bool volume_read_values(float* dst, ApplicationState* state, const Volume
     return true;
 }
 
-// The field the isosurfaces are coloured by, on the grid of the density volume and around the
-// surfaces drawn from it. The VALUES depend on the field and the geometry (the frame, which the
-// volume hash holds) and are kept while only the isovalues change: a new isovalue evaluates the
-// voxels it adds to the band and nothing else.
+// The field the isosurfaces are coloured by, over the box of the density volume and around the
+// surfaces drawn from it (surface_field.h). The VALUES depend on the field and the geometry - the
+// frame - and on nothing else the representation chooses, so they are kept while the surfaces
+// change: a new isovalue, orbital, density or resolution evaluates only what its band adds, and on
+// the GPU, which evaluates the whole field once, nothing at all.
 static void electronic_structure_field_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    if (!surface_field_available(es.field_kind, state->mold.sys)) {
+    const md_system_t& sys = state->mold.sys;
+    if (!surface_field_available(es.field_kind, sys)) {
         surface_field_free(&es.field_vol);
         return;
     }
@@ -4058,8 +4409,12 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);
 
-    const uint64_t source_hash = md_hash64(&es.field_kind, sizeof(es.field_kind), es.vol_hash);
-    const uint64_t band_hash   = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
+    // The values are of the field at this frame; the surfaces are what the density volume holds
+    // (vol_hash names it) cut at the isovalues
+    uint64_t source_hash = md_hash64(&es.field_kind, sizeof(es.field_kind), 0);
+    source_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source_hash);
+    uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
+    band_hash = md_hash64_combine(band_hash, es.vol_hash);
     if (es.field_vol.tex_id && source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
         return;
     }
@@ -4074,11 +4429,34 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
         return;
     }
 
+    SurfaceFieldDesc desc = {};
+    desc.kind        = es.field_kind;
+    desc.sys         = &sys;
+    desc.state       = &state->mold.state;
+    desc.grid        = &es.grid;
+    desc.density     = density;
+    desc.iso_values  = iso.values;
+    desc.num_iso     = iso.count;
+    desc.source_hash = source_hash;
+    desc.band_hash   = band_hash;
+    if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+        // The QM nuclei and basis where the density was drawn: the current frame, as for the density
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
+    }
+#if MD_ENABLE_GPU
+    if (state->gpu_stream && state->gpu_volume) {
+        desc.gpu_stream  = state->gpu_stream;
+        desc.gpu_scratch = state->gpu_volume;
+        desc.gpu_scratch_dim[0] = desc.gpu_scratch_dim[1] = desc.gpu_scratch_dim[2] = GPU_VOLUME_DIM;
+    }
+#endif
+
     const md_tick_t t0 = md_tick_now();
-    if (surface_field_update(&es.field_vol, es.field_kind, state->mold.sys, state->mold.state, es.grid, density, iso.values, iso.count, source_hash, band_hash)) {
+    if (surface_field_update(&es.field_vol, desc)) {
         color_scale_update_range(&es.field_map, surface_field_span(es.field_vol));
         const SurfaceFieldVolume& fv = es.field_vol;
-        MD_LOG_DEBUG("Surface field: %zu of %zu voxels evaluated, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g", fv.num_evaluated, num_voxels,
+        MD_LOG_DEBUG("Surface field: %zu of %zu voxels (%dx%dx%d) evaluated%s, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g",
+                     fv.num_evaluated, fv.num_voxels, fv.grid.dim[0], fv.grid.dim[1], fv.grid.dim[2], fv.on_gpu ? " on the GPU" : "",
                      md_tick_to_milliseconds(md_tick_now() - t0), fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
     }
 }
@@ -4212,6 +4590,8 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 }
 
 #if MD_ENABLE_GPU
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op);
+
 bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
                                            const double* density_matrix, size_t dim, md_gto_op_t op) {
     ASSERT(state);
@@ -4238,6 +4618,12 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
     md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
     md_gpu_upload_end(state->gpu_stream);
 
+    density_gpu_launch(state, grid, op);
+    return true;
+}
+
+// The density kernel over whatever was last uploaded to the coefficient buffer
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op) {
     md_gto_gpu_density_desc_t desc = {
         .basis         = state->mold.gpu_basis,
         .atom_xyz      = state->mold.gpu_atoms,
@@ -4248,7 +4634,6 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
         .op            = op,
     };
     md_gto_gpu_density_launch(state->gpu_stream, &desc);
-    return true;
 }
 
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
@@ -4258,16 +4643,42 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
         return false;
     }
 
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    size_t dim = 0;
-    const double* density_matrix = density_matrix_extract(&dim, temp, state->mold.sys, density_path, slice);
-    if (!density_matrix) {
+    const md_system_t&       sys       = state->mold.sys;
+    const md_system_state_t& sys_state = state->mold.state;
+    const md_attribute_slice_t s = slice ? *slice : md_attribute_slice_all();
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
         return false;
     }
 
-    return density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op);
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s);
+    if (dim == 0) {
+        return false;
+    }
+    if (num_cgtos != dim) {
+        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
+        return false;
+    }
+    if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
+        return false;
+    }
+
+    // Straight into the upload buffer: the packed float triangle is exactly what the kernel reads, so
+    // a packed attribute - a density property read from its file - never exists in any other form
+    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
+    if (!dst) {
+        return false;
+    }
+    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, attr, s) == dim;
+    md_gpu_upload_end(state->gpu_stream);
+    if (!extracted) {
+        return false;
+    }
+
+    density_gpu_launch(state, grid, op);
+    return true;
 }
 #endif
 
@@ -4622,6 +5033,45 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     return mask;
 }
 
+bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys) {
+    ASSERT(es);
+    const ElectronicStructureSourceFlags mask = es_source_mask(sys);
+    if (mask == 0) {
+        return false;
+    }
+
+    if (!electronic_structure_source_supported(mask, es->source)) {
+        for (int n = 0; n < (int)ElectronicStructureSource::Count; ++n) {
+            const ElectronicStructureSource source = (ElectronicStructureSource)n;
+            if (electronic_structure_source_supported(mask, source)) {
+                es->source = source;
+                electronic_structure_set_source_defaults(es);
+                break;
+            }
+        }
+    }
+
+    // The same rule the representation window applies when it draws: a key naming none of the
+    // properties this system has is replaced by the first one.
+    if (es->source == ElectronicStructureSource::DensityProperty) {
+        DensityProperty props[64];
+        const size_t num_props = MIN(density_properties_gather(props, ARRAY_SIZE(props), sys), ARRAY_SIZE(props));
+        bool found = false;
+        for (size_t i = 0; i < num_props; ++i) {
+            if (props[i].key == es->density_property_key) {
+                found = true;
+                break;
+            }
+        }
+        if (!found && num_props > 0) {
+            es->density_property_key = props[0].key;
+        }
+    }
+
+    return true;
+}
+
+
 // Per atom scalar fields are deliberately not gathered anywhere. They live in the system's attribute
 // table under atom/, whoever loaded the data put them there, and the UI reads that table directly
 // through atom_attribute_query.
@@ -4661,8 +5111,10 @@ void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     size_t num_coarse_grained = 0;
-    size_t num_orbitals = 0;
-    bool orbitals_present = es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0;
+    // Any electronic structure, not orbitals in particular: a file can carry density properties and
+    // no SCF block, and its density properties are as much something to show as orbitals would be.
+    const bool electronic_structure_present = es_source_mask(state->mold.sys) != 0;
+
 
     if (state->mold.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
@@ -4745,10 +5197,12 @@ void create_default_representations(ApplicationState* state) {
     }
 
 done:
-    if (orbitals_present) {
+    if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
+        electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
+
 
 		// ONE representation, for the ground state moment. A group each meant a VeloxChem file with
 		// transition dipoles opened with a representation per group, and with the electric,
@@ -6007,7 +6461,8 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
 		} else if (left_click || right_click) {
 			event->kind = InteractionSurfaceEventKind::Click;
             event->selection_mode = state.selection_mode;
-        } else {
+        } else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+            // No hover while a button is held: the view is being rotated, panned or zoomed
             event->kind = InteractionSurfaceEventKind::Hover;
         }
     }
@@ -6225,6 +6680,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             size_t num_bonds = state->mold.sys.bond.count;
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
+            // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
+            picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -6262,10 +6719,17 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[0], state->selection.granularity, state->mold.sys);
                             mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[1], state->selection.granularity, state->mold.sys);
                         }
+                    } else if (surf->hit.domain == PickingDomain_BackboneSegment) {
+                        const md_protein_backbone_data_t& bb = state->mold.sys.protein_backbone;
+                        const size_t seg_idx = surf->hit.local_idx;
+                        if (seg_idx < bb.segment.count && bb.segment.comp_idx) {
+                            // A cartoon segment stands for the component it stems from: at least that is hovered and selected
+                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)bb.segment.comp_idx[seg_idx], state->selection.granularity, state->mold.sys);
+                        }
                     }
                     
-                    // Commit to selection mask upon click release, for hover we only update the highlight mask
-                    if (surf->kind == InteractionSurfaceEventKind::Click) {
+                    // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
+                    if (surf->kind == InteractionSurfaceEventKind::Click && surf->selection_mode != InteractionSelectionMode::None) {
                         // The single selection sequence records the order in which individual atoms were picked
                         // and is what the context menu turns into script suggestions. Only a real click advances
                         // it: a Hover event always carries selection_mode None, so doing this above would reset
@@ -6279,28 +6743,20 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                                 else if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                     single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
                                 }
-                                else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                    single_selection_sequence_clear(&state->selection.single_selection_sequence);
-                                    single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
-                                }
                             }
                         }
 
-                        if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
+                        if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond || surf->hit.domain == PickingDomain_BackboneSegment) {
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
                             }
-                            else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                md_bitfield_clear(&state->selection.selection_mask);
-                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
-                            }
                         }
                         else if (surf->hit.domain == 0) {
-                            // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
-                            if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
+                            // A remove-click on empty space clears the selection
+                            if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_clear(&state->selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }
@@ -6320,9 +6776,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         case viamd::EventType_ViamdPickingTooltipTextRequest: {
             ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
-            if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond || req->hit.domain == PickingDomain_Dipole) {
-                fill_picking_tooltip_text(&req->sb, *state, req->hit);
-            }
+            fill_picking_tooltip(req, *state, req->hit);
             break;
         }
         case viamd::EventType_ViamdViewFit: {

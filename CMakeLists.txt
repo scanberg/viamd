@@ -259,7 +259,6 @@ if (NOT VIAMD_ENABLE_QM)
 endif()
 
 set(SHADER_FILES 
-    src/shaders/highlight.frag
     src/shaders/scale_hsv.frag
     src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
@@ -291,6 +290,8 @@ set(SHADER_FILES
     src/shaders/volume/splat_color.comp
     src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
+    src/shaders/ssao/ssao_temporal.frag
+    src/shaders/ssao/ssao_bitmask.frag
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
 )

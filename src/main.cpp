@@ -9,7 +9,6 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -20,6 +19,7 @@
 #include <md_csv.h>
 #include <md_lammps.h>
 #include <md_pdb.h>
+#include <md_gto_int.h>
 
 #include <core/md_log.h>
 #include <core/md_str.h>
@@ -438,15 +438,19 @@ int main(int argc, char** argv) {
             .type            = MD_GPU_TEX_3D,
             .format          = MD_GPU_FORMAT_R32_FLOAT,
             .usage           = MD_GPU_TEX_STORAGE,
-            .width           = 512,
-            .height          = 512,
-            .depth_or_layers = 512,
+            .width           = GPU_VOLUME_DIM,
+            .height          = GPU_VOLUME_DIM,
+            .depth_or_layers = GPU_VOLUME_DIM,
             .label           = "Evaluation volume",
         };
         state.gpu_volume = md_gpu_texture_create(state.gpu_stream, &vol_desc);
         if (!state.gpu_volume) {
             VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
         }
+
+        // Potentials (surface fields). Kernels are made on first use, so this costs nothing until a
+        // surface is coloured by one.
+        md_gto_int_gpu_initialize(state.gpu_device);
     }
 #endif
 
@@ -703,7 +707,9 @@ int main(int argc, char** argv) {
             }
             
             // Since this is the main interaction view, we still broadcast all kinds of events, even if we have handled some explicitly here.
-            if (!surface_blocked) viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+            if (!surface_blocked && event.kind != InteractionSurfaceEventKind::None) {
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+            }
         }
 
         // In Scene view of the movie, the wheel zooms towards the mouse, around the middle of the frame. The viewport around the
@@ -776,12 +782,6 @@ int main(int argc, char** argv) {
             movie_add_keyframe_from_view(&state);
         }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
-#if EXPERIMENTAL_GFX_API
-            if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
-                use_gfx = !use_gfx;
-            }
-#endif
-
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 state.show_debug_window = true;
             }
@@ -1351,6 +1351,7 @@ int main(int argc, char** argv) {
         // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
         system_gpu_data_free(&state);
+        md_gto_int_gpu_shutdown();
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
@@ -1570,7 +1571,21 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Ambient Occlusion", &data->visuals.ssao.enabled);
             ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
+                const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
+                int mode = (int)data->visuals.ssao.mode;
+                if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
+                }
+                ImGui::SetItemTooltip("Performance: point samples.\nQuality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
+                const postprocess_pipeline::SsaoTimings t = postprocess_pipeline::ssao_timings();
+                if (t.total_ms > 0.0f) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%.2f ms", t.total_ms);
+                    ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", t.estimator_ms, t.total_ms);
+                }
                 ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
+                ImGui::Checkbox("Temporal Filter", &data->visuals.ssao.temporal);
+                ImGui::SetItemTooltip("Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
             }
             ImGui::PopID();
             ImGui::EndGroup();
@@ -1997,6 +2012,11 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
                 for (int i = 0; i < volume::TimingStage_Count; ++i) {
                     ImGui::Text("  %-14s %.3f ms", volume::timing_stage_name((volume::TimingStage)i), t.ms[i]);
+                }
+                if (data->visuals.ssao.enabled) {
+                    const postprocess_pipeline::SsaoTimings ao = postprocess_pipeline::ssao_timings();
+                    ImGui::Text("Ambient occlusion, GPU per frame: %.3f ms", ao.total_ms);
+                    ImGui::Text("  %-14s %.3f ms", "Estimator", ao.estimator_ms);
                 }
                 ImGui::EndTooltip();
             }
@@ -3065,12 +3085,17 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             ImGui::BeginDisabled(!enabled);
             if (ImGui::Selectable(surface_coloring_str[i], es.coloring == c)) {
                 es.coloring = c;
+                // A field this dataset can make, if the one the representation names is not
+                if (c == SurfaceColoring::Field && !surface_field_available(es.field_kind, sys)) {
+                    es.field_kind = surface_field_first_available(sys);
+                }
                 update_rep = true;
             }
             ImGui::EndDisabled();
             if (!enabled && c == SurfaceColoring::Field) {
-                ImGui::SetItemTooltip("Nothing in this dataset to make a field from: the embedding potential needs classical charges (atom/charge)\n"
-                                       "on atoms outside the QM region");
+                ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
+                                      "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
+                                      "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
         }
         ImGui::EndCombo();
@@ -3104,6 +3129,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "The QM region is left out, whatever charges a topology gives its atoms.\n"
                               "For a polarizable embedding this is the potential of its PERMANENT multipoles:\n"
                               "the induced dipoles are solved for during the calculation and not stored.");
+    } else if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+        ImGui::SetItemTooltip("The electrostatic potential of the QM region on the surface: its nuclei and its ground state\n"
+                              "electron density, exact over the basis. Negative (red) where the electrons dominate - lone pairs,\n"
+                              "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
+                              "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
+                              "An embedding's environment is not part of it.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
@@ -3112,7 +3143,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     color_scale_draw_controls(&es.field_map, surface_field_span(vol), surface_field_unit(es.field_kind),
                               "on surface", "its 1st to 99th percentile on the surface");
     if (advanced && vol.num_surface_samples > 0) {
-        ImGui::TextDisabled("%zu of %zu voxels evaluated", vol.num_evaluated, vol.num_voxels);
+        ImGui::TextDisabled("%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
+                            vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
 
     return update_rep;
@@ -3602,12 +3634,16 @@ static void draw_representations_window(ApplicationState* state) {
             if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
-                        // Do not enlist Electronic Structure if there are no orbitals available
-                        size_t num_orbitals = 0;
-                        if (!es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) || num_orbitals == 0) continue;
+                        // Enlisted when the system carries ANY electronic structure source - orbitals are
+                        // one, and a file without an SCF block can still carry density properties
+                        if (es_source_mask(state->mold.sys) == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;
+                        if (rep.type == RepresentationType::ElectronicStructure) {
+                            // The default source is orbitals, which this system may not have
+                            electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
+                        }
                         update_rep = true;
                     }
                 }
@@ -13548,6 +13584,8 @@ static void render_scene(ApplicationState* state, bool pip) {
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
+    settings.ssao.temporal = state->visuals.ssao.temporal;
+    settings.ssao.mode = state->visuals.ssao.mode;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
@@ -13836,10 +13874,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
             },
-            .picking_offset = {
-                .atom_base = state->picking_range_atom.beg,
-                .bond_base = state->picking_range_bond.beg,
-            },
+            .picking_offset = gl_picking_offset(*state),
             .max_bond_length = max_bond_length,
         };
 
@@ -13976,6 +14011,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
+        .picking_offset = gl_picking_offset(*data),
         .atom_mask = mask,
 		.max_bond_length = max_bond_length,
     };
