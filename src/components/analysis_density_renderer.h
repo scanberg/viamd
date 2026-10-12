@@ -63,7 +63,8 @@ struct Renderer {
         return true;
     }
 
-    bool render(const Triangle& density, Display display, ImPlotColormap colormap) {
+    // line_color is the colour of the isolines and of the filled levels, the colormap is for Colormap
+    bool render(const Triangle& density, Display display, ImPlotColormap colormap, ImVec4 line_color = ImVec4(1,1,1,1)) {
         GLint old_program, old_vao, old_fbo, old_texture, old_active, viewport[4];
         glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &old_vao);
@@ -129,8 +130,9 @@ struct Renderer {
             float values[8];
             for (int i = 0; i < 8; ++i) {
                 values[i] = i / 8.0f;
-                lines[i] = ImPlot::SampleColormap(values[i], colormap);
-                levels[i] = display == FilledLevels ? lines[i] : ImVec4(0,0,0,0);
+                // Contours alone, or the bands between them: the other is a layer of its own
+                lines[i] = display == Isolines ? line_color : ImVec4(0,0,0,0);
+                levels[i] = display == FilledLevels ? ImVec4(line_color.x, line_color.y, line_color.z, line_color.w * (0.1f + 0.5f * i / 7.0f)) : ImVec4(0,0,0,0);
                 if (i == 0) levels[i].w = lines[i].w = 0;
             }
             const GLuint lengths[4] = {8,8,8,8};

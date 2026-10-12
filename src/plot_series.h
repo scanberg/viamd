@@ -116,20 +116,10 @@ enum PlotType : uint8_t {
 
 // One entry of a subplot: which series, and how it is drawn there. The same series in two
 // subplots is two entries, each with its own style.
-// How a series of vectors (ramachandran(), shapespace()) is shown: as points, as a density of them, or both
-enum VectorDensity : uint8_t {
-    VectorDensity_None = 0,
-    VectorDensity_Isolines,
-    VectorDensity_Levels,
-    VectorDensity_Colormap,
-    VectorDensity_Count
-};
-
-// Which frames of the series it shows
+// Which frames the density of a series of vectors (ramachandran(), shapespace()) is made of
 enum VectorRange : uint8_t {
     VectorRange_Full = 0,       // every frame
     VectorRange_Filtered,       // the frames of the timeline's filter, every frame when it is off
-    VectorRange_Current,        // the displayed frame
     VectorRange_Count
 };
 
@@ -151,9 +141,11 @@ struct PlotSeries {
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
 
-    // Vectors
+    // Vectors: the members at the displayed frame, and layers of the density of every member over the frames
     bool            show_points = true;
-    VectorDensity   density = VectorDensity_None;
+    bool            iso_lines = true;           // contours, in the colour of the series
+    bool            iso_levels = false;         // the bands between them, filled
+    bool            density_map = false;        // a colormap of the density
     VectorRange     range = VectorRange_Full;
     ImPlotColormap  density_colormap = ImPlotColormap_Viridis;
     float           density_alpha = 0.8f;
@@ -300,7 +292,7 @@ void plot_series_list_item(ApplicationState* app, const char* dnd_type, PlotSubp
 
 // ## Vectors
 
-// The style of a series of vectors: points, density, which frames. Call inside a popup.
+// The style of a series of vectors: points, the layers of the density, which frames. Call inside a popup.
 void plot_vector_style_popup(PlotSeries& s, bool point_color = true);
 // The frames [beg, end) of a series of num_frames
 void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end);
@@ -320,12 +312,20 @@ struct SeriesVectorView {
 // False unless the key is a resident script property of that many components
 bool series_resolve_vector(SeriesVectorView* out, ApplicationState* app, const SeriesKey& key, uint32_t components);
 
-// The "Property" menu of a window that shows one: the vector properties of that many components,
-// each also a drag source. 'current' is the one shown, null for the window's own selection.
-// Returns 1 when a property was chosen (in *out), 2 when the window's own selection was.
-int  series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out);
-// A drop target over the current window for VECTOR_SERIES_DND, true when a matching property is dropped
-bool series_vector_drop(ApplicationState* app, uint32_t components, SeriesKey* out);
+// A window of series of vectors of that many components shares these: the menus, the bar of series under
+// its toolbar, which also takes the properties dropped on the window, and the removal of a series dragged out.
+
+// Adds a series with the style of a vector, the same property again when allow_duplicate. Returns its index.
+int  plot_add_vector_series(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key, bool allow_duplicate);
+// The properties which can be shown: a click toggles one, a drag carries it
+void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components);
+// The layers of every series. Call inside a menu.
+void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components);
+// A chip for each series: right click edits it, drag moves it out of the window to remove it. Changes are applied before it returns.
+// members: the vectors of a series are the members of a population, each with a colour of its own.
+void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t components, bool members = true);
+// Call at the end of the window: removes the series dragged out of it and dropped where nothing takes it
+void series_vector_drag_out(PlotSubplot& sp);
 
 // ## Listing script properties
 

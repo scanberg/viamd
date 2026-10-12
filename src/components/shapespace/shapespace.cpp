@@ -29,6 +29,9 @@
 #include <memory>
 #include <vector>
 
+// The layers of the density of a series, in the order they are drawn
+enum DensityLayer { DensityLayer_Map, DensityLayer_Levels, DensityLayer_Lines, DensityLayer_Count };
+
 // What is known about a series between frames: its points in the triangle and the density of them
 struct SeriesCache {
     uint32_t uid = 0;
@@ -39,23 +42,12 @@ struct SeriesCache {
     std::vector<vec2_t> coords;     // member major: frame f of member k at k * num_frames + f
 
     analysis_density::Triangle density;
-    analysis_density::Renderer renderer;
     uint64_t density_hash = 0;
-    bool render_dirty = true;
-    bool rendered = false;
-    analysis_density::Display rendered_display = analysis_density::Scatter;
-    ImPlotColormap rendered_colormap = -1;
+    analysis_density::Renderer renderer[DensityLayer_Count];
+    uint64_t render_key[DensityLayer_Count] = {};
+    bool rendered[DensityLayer_Count] = {};
     bool used = false;
 };
-
-static analysis_density::Display density_display(VectorDensity d) {
-    switch (d) {
-    case VectorDensity_Isolines: return analysis_density::Isolines;
-    case VectorDensity_Levels:   return analysis_density::FilledLevels;
-    case VectorDensity_Colormap: return analysis_density::Colormap;
-    default:                     return analysis_density::Scatter;
-    }
-}
 
 struct Shapespace : viamd::EventHandler {
     // The shortcut: a selection which becomes a shapespace() property of the script
@@ -85,7 +77,9 @@ struct Shapespace : viamd::EventHandler {
     Shapespace() { viamd::event_system_register_handler(*this); }
 
     void clear_caches() {
-        for (auto& c : caches) c->renderer.destroy();
+        for (auto& c : caches) {
+            for (auto& r : c->renderer) r.destroy();
+        }
         caches.clear();
     }
 
@@ -148,6 +142,7 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
+    // The density of the members of a series over its frames, and the layers of it which the series shows
     void update_density(SeriesCache& c, const PlotSeries& s, size_t beg, size_t end) {
         struct Key {
             uint64_t version;
@@ -174,16 +169,18 @@ struct Shapespace : viamd::EventHandler {
                 ++groups;
             }
             c.density.update(points.data(), c.num_frames, groups, beg, end, s.smoothing);
-            c.render_dirty = true;
+            for (bool& r : c.rendered) r = false;
         }
-        const analysis_density::Display display = density_display(s.density);
-        if (c.render_dirty || !c.rendered || c.rendered_display != display || c.rendered_colormap != s.density_colormap) {
-            c.rendered = c.renderer.render(c.density, display, s.density_colormap);
-            if (c.rendered) {
-                c.render_dirty = false;
-                c.rendered_display = display;
-                c.rendered_colormap = s.density_colormap;
-            }
+
+        const bool enabled[DensityLayer_Count] = { s.density_map, s.iso_levels, s.iso_lines };
+        const analysis_density::Display display[DensityLayer_Count] = { analysis_density::Colormap, analysis_density::FilledLevels, analysis_density::Isolines };
+        for (int layer = 0; layer < DensityLayer_Count; ++layer) {
+            if (!enabled[layer]) continue;
+            const struct { uint64_t density; uint32_t colormap; float color[4]; uint32_t pad; } rkey = { hash, (uint32_t)s.density_colormap, { s.color.x, s.color.y, s.color.z, s.color.w }, 0 };
+            const uint64_t render_key = md_hash64(&rkey, sizeof(rkey), (uint64_t)layer) | 1;
+            if (c.rendered[layer] && c.render_key[layer] == render_key) continue;
+            c.rendered[layer] = c.renderer[layer].render(c.density, display[layer], s.density_colormap, s.color);
+            c.render_key[layer] = render_key;
         }
     }
 
@@ -235,24 +232,10 @@ struct Shapespace : viamd::EventHandler {
         const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
         SeriesVectorView v;
         if (series_resolve_vector(&v, app_state, key, 3)) {
-            plot_add_series(app_state, plot[0], key);
+            plot_add_vector_series(app_state, plot[0], key, false);
             pending_name[0] = '\0';
         } else if (ImGui::GetTime() - pending_time > 20.0) {
             pending_name[0] = '\0';
-        }
-    }
-
-    void draw_properties_menu() {
-        PlotSubplot& sp = plot[0];
-        int num_listed = 0;
-        series_for_each_script_property(app_state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
-            SeriesVectorView v;
-            if (!series_resolve_vector(&v, app_state, key, 3)) return;
-            plot_series_list_item(app_state, VECTOR_SERIES_DND, sp, key);
-            num_listed += 1;
-        });
-        if (num_listed == 0) {
-            ImGui::TextDisabled("No shape properties, create one below or define shapespace() in the script editor");
         }
     }
 
@@ -271,7 +254,11 @@ struct Shapespace : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Properties")) {
-                    draw_properties_menu();
+                    series_vector_properties_menu(app_state, sp, 3);
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Layers")) {
+                    series_vector_layers_menu(app_state, sp, 3);
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Export", sp.count > 0)) {
@@ -306,40 +293,39 @@ struct Shapespace : viamd::EventHandler {
             if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
             if (pending_name[0]) ImGui::TextDisabled("Waiting for '%s' to be evaluated...", pending_name);
 
+            // The series, which this may add to or remove from
+            series_vector_bar(app_state, sp, 3);
+
             // What the series are, before anything is drawn
             SeriesVectorView views[PLOT_MAX_SERIES_PER_SUBPLOT];
             bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
             char plot_id[PLOT_MAX_SERIES_PER_SUBPLOT][SERIES_PATH_CAP + 72];
             SeriesCache* series_cache[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
-            size_t beg[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
-            size_t end[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
 
             for (auto& c : caches) c->used = false;
             for (int j = 0; j < sp.count; ++j) {
                 const PlotSeries& s = sp.series[j];
                 resolved[j] = series_resolve_vector(&views[j], app_state, s.key, 3);
                 series_label(views[j].label, sizeof(views[j].label), app_state, s.key);
-                snprintf(plot_id[j], sizeof(plot_id[j]), "%s##%s", views[j].label, s.key.path);
+                snprintf(plot_id[j], sizeof(plot_id[j]), "%s##%u", views[j].label, s.uid);
                 if (!resolved[j]) continue;
 
                 SeriesCache& c = cache_for(s.uid, s.key.path);
                 c.used = true;
                 series_cache[j] = &c;
                 update_points(c, views[j]);
-                uint32_t frame_beg, frame_end;
-                series_vector_frame_range(app_state, s, c.num_frames, &frame_beg, &frame_end);
-                beg[j] = frame_beg;
-                end[j] = frame_end;
-                if (s.density != VectorDensity_None && s.range != VectorRange_Current) {
-                    update_density(c, s, beg[j], end[j]);
+                if (s.iso_lines || s.iso_levels || s.density_map) {
+                    uint32_t frame_beg, frame_end;
+                    series_vector_frame_range(app_state, s, c.num_frames, &frame_beg, &frame_end);
+                    update_density(c, s, frame_beg, frame_end);
                 } else {
                     c.density_hash = 0;
-                    c.rendered = false;
+                    for (bool& r : c.rendered) r = false;
                 }
             }
             for (size_t i = caches.size(); i-- > 0;) {
                 if (!caches[i]->used) {
-                    caches[i]->renderer.destroy();
+                    for (auto& r : caches[i]->renderer) r.destroy();
                     caches.erase(caches.begin() + i);
                 }
             }
@@ -347,15 +333,12 @@ struct Shapespace : viamd::EventHandler {
             ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
             defer { ImPlot::PopStyleVar(1); };
 
-            const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
+            const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText | ImPlotFlags_NoLegend;
             const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
             const float x_reset[2] = {-0.10f, 1.10f};
             const float y_reset[2] = {-0.10f, 0.98f};
             const double zoom_constraints[2] = {0.1, 1.5};
-
-            int remove_idx = -1;
-            int duplicate_idx = -1;
 
             if (ImPlot::BeginPlot("##Shapespace Plot", ImVec2(-1,-1), flags)) {
                 ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
@@ -386,11 +369,13 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
                 ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
                 ImPlot::PopPlotClipRect();
+
+                // The layers of the density of each series, below the points
                 for (int j = 0; j < sp.count; ++j) {
-                    const PlotSeries& s = sp.series[j];
-                    if (series_cache[j] && s.density != VectorDensity_None && s.range != VectorRange_Current &&
-                        series_cache[j]->rendered && !series_cache[j]->render_dirty) {
-                        series_cache[j]->renderer.draw(s.density_alpha);
+                    const SeriesCache* c = series_cache[j];
+                    if (!c) continue;
+                    for (int layer = 0; layer < DensityLayer_Count; ++layer) {
+                        if (c->rendered[layer]) c->renderer[layer].draw(sp.series[j].density_alpha);
                     }
                 }
                 ImPlot::PushPlotClipRect();
@@ -414,82 +399,46 @@ struct Shapespace : viamd::EventHandler {
 
                 int   hovered_series = -1;
                 int   hovered_member = -1;
-                int   hovered_frame  = -1;
                 float hovered_point_min_dist = FLT_MAX;
+                uint32_t hovered_frame = 0;
 
                 const vec2_t mouse_coord = {(float)ImPlot::GetPlotMousePos().x, (float)ImPlot::GetPlotMousePos().y};
 
                 const ImPlotRect lim = ImPlot::GetPlotLimits();
                 const float scl = (float)lim.X.Max - (float)lim.X.Min;
-                const float MAX_D2 = 0.0001f * scl * scl;
+                const float MAX_D2 = 0.0004f * scl * scl;
 
+                // The members of every series at the displayed frame
                 for (int j = 0; j < sp.count; ++j) {
-                    PlotSeries& s = sp.series[j];
+                    const PlotSeries& s = sp.series[j];
                     const char* id = plot_id[j];
-
-                    if (!resolved[j]) {
-                        // Nothing behind the series right now: still a legend entry, which can be removed
+                    const SeriesCache* c = series_cache[j];
+                    if (!c || !s.show_points || c->num_frames == 0) {
                         ImPlot::PlotDummy(id);
-                    } else {
-                        const SeriesCache& c = *series_cache[j];
-                        const size_t count = beg[j] < end[j] ? end[j] - beg[j] : 0;
-                        for (uint32_t k = 0; k < c.count; ++k) {
-                            if (c.count > 1 && !s.population_mask.test(k)) continue;
-
-                            ImVec4 col = s.color;
-                            if (s.use_colormap && c.count > 1) {
-                                col = ImPlot::SampleColormap((float)k / (float)(c.count - 1), s.colormap);
-                                col.w *= s.colormap_alpha;
-                            }
-                            const vec2_t* points = c.coords.data() + (size_t)k * c.num_frames + beg[j];
-                            if (s.show_points) {
-                                ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, col, 1.0f, col);
-                            } else {
-                                ImPlot::SetNextMarkerStyle(s.marker, 0.0f, ImVec4(0,0,0,0), 0.0f, ImVec4(0,0,0,0));
-                            }
-                            ImPlot::PlotScatterG(id, getter, (void*)points, (int)count);
-
-                            ImPlotItem* item = ImPlot::GetItem(id);
-                            if (!item || !item->Show) continue;
-                            if (item->LegendHovered && hovered_series == -1) {
-                                hovered_series = j;
-                            }
-                            for (size_t f = beg[j]; s.show_points && f < end[j]; ++f) {
-                                const vec2_t delta = mouse_coord - c.coords[(size_t)k * c.num_frames + f];
-                                const float d2 = vec2_dot(delta, delta);
-                                if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
-                                    hovered_point_min_dist = d2;
-                                    hovered_series = j;
-                                    hovered_member = (int)k;
-                                    hovered_frame  = (int)f;
-                                }
-                            }
-                        }
+                        continue;
                     }
 
-                    if (ImPlot::BeginLegendPopup(id)) {
-                        if (ImGui::DeleteButton("Remove")) {
-                            remove_idx = j;
-                            ImGui::CloseCurrentPopup();
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Duplicate")) {
-                            duplicate_idx = j;
-                            ImGui::CloseCurrentPopup();
-                        }
-                        const bool population = resolved[j] && views[j].count > 1;
-                        plot_vector_style_popup(s, !population);
-                        if (population) {
-                            ImGui::Separator();
-                            int hovered_pop_idx = -1;
-                            plot_series_style_popup(app_state, s, (int)views[j].count, views[j].script_ident, views[j].vis_payload, &hovered_pop_idx);
-                        }
-                        ImPlot::EndLegendPopup();
-                    }
+                    const uint32_t frame = MIN((uint32_t)MAX(0.0, app_state->animation.frame + 0.5), c->num_frames - 1);
+                    for (uint32_t k = 0; k < c->count; ++k) {
+                        if (c->count > 1 && !s.population_mask.test(k)) continue;
 
-                    if (ImPlot::BeginDragDropSourceItem(id)) {
-                        series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color, s.uid);
-                        ImPlot::EndDragDropSource();
+                        ImVec4 col = s.color;
+                        if (s.use_colormap && c->count > 1) {
+                            col = ImPlot::SampleColormap((float)k / (float)(c->count - 1), s.colormap);
+                            col.w *= s.colormap_alpha;
+                        }
+                        const vec2_t* point = c->coords.data() + (size_t)k * c->num_frames + frame;
+                        ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, col, 1.0f, col);
+                        ImPlot::PlotScatterG(id, getter, (void*)point, 1);
+
+                        const vec2_t delta = mouse_coord - *point;
+                        const float d2 = vec2_dot(delta, delta);
+                        if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
+                            hovered_point_min_dist = d2;
+                            hovered_series = j;
+                            hovered_member = (int)k;
+                            hovered_frame = frame;
+                        }
                     }
                 }
 
@@ -497,73 +446,22 @@ struct Shapespace : viamd::EventHandler {
                     md_bitfield_clear(&app_state->selection.highlight_mask);
                 }
 
-                // Redraw hovered index
                 if (hovered_series != -1 && resolved[hovered_series]) {
                     const SeriesVectorView& v = views[hovered_series];
-                    const SeriesCache& c = *series_cache[hovered_series];
-                    if (hovered_frame != -1) {
-                        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                        ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, sp.series[hovered_series].marker_size * 1.1f + 1.0f);
-                        ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
-                        const vec2_t* point = c.coords.data() + (size_t)hovered_member * c.num_frames + hovered_frame;
-                        ImPlot::PlotScatterG("##hovered idx", getter, (void*)point, 1);
-                        ImPlot::PopStyleColor();
-                        ImPlot::PopStyleVar(2);
-
-                        const float* w = v.data + ((size_t)hovered_frame * v.count + hovered_member) * 3;
-                        char buf[160] = "";
-                        int len = 0;
-                        if (v.count > 1) len += snprintf(buf, sizeof(buf), "Structure: %i, ", hovered_member + 1);
-                        snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", hovered_frame, w[0], w[1], w[2]);
-                        ImGui::SetTooltip("%s", buf);
-
-                        if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
-                            app_state->animation.frame = hovered_frame;
-                        }
-                    }
+                    const float* w = v.data + ((size_t)hovered_frame * v.count + hovered_member) * 3;
+                    char buf[160] = "";
+                    int len = 0;
+                    if (v.count > 1) len += snprintf(buf, sizeof(buf), "Structure: %i, ", hovered_member + 1);
+                    snprintf(buf + len, sizeof(buf) - len, "Frame: %u, lin: %.2f, plan: %.2f, iso: %.2f", hovered_frame, w[0], w[1], w[2]);
+                    ImGui::SetTooltip("%s", buf);
                     script_visualize_payload(app_state, v.vis_payload, v.count > 1 ? hovered_member : -1, ~MD_SCRIPT_VISUALIZE_SDF);
                     script_set_hovered_property(app_state, str_from_cstr(v.script_ident), hovered_member);
-                }
-
-                if (ImPlot::BeginDragDropTargetPlot()) {
-                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VECTOR_SERIES_DND)) {
-                        if (payload->DataSize == sizeof(SeriesDragPayload)) {
-                            const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                            SeriesVectorView v;
-                            // A series dragged within the plot is already there
-                            if (dnd->src_subplot != 0 && series_resolve_vector(&v, app_state, dnd->key, 3)) {
-                                plot_add_series_copy(app_state, sp, dnd->key);
-                            }
-                        }
-                    }
-                    ImPlot::EndDragDropTarget();
                 }
 
                 ImPlot::EndPlot();
             }
 
-            if (duplicate_idx != -1 && duplicate_idx < sp.count) {
-                const PlotSeries original = sp.series[duplicate_idx];
-                const int idx = plot_add_series_copy(app_state, sp, original.key);
-                if (idx != -1) {
-                    const uint32_t uid = sp.series[idx].uid;
-                    sp.series[idx] = original;
-                    sp.series[idx].uid = uid;
-                }
-            }
-            if (remove_idx != -1) {
-                plot_remove_series(sp, remove_idx);
-            }
-
-            // A series dragged out of the plot and dropped where nothing takes it is removed
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-                if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
-                    const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_uid(sp, dnd->src_uid) : -1;
-                    if (idx != -1) plot_remove_series(sp, idx);
-                }
-            }
+            series_vector_drag_out(sp);
         }
         ImGui::End();
     }

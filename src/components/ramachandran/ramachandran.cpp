@@ -771,7 +771,7 @@ struct Ramachandran : viamd::EventHandler {
         const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
         SeriesVectorView v;
         if (series_resolve_vector(&v, &state, key, 2)) {
-            plot_add_series(&state, plot[0], key);
+            plot_add_vector_series(&state, plot[0], key, false);
             pending_name[0] = '\0';
         } else if (ImGui::GetTime() - pending_time > 20.0) {
             pending_name[0] = '\0';
@@ -780,12 +780,8 @@ struct Ramachandran : viamd::EventHandler {
 
     // Which of the densities of a series is shown: the full trajectory's, the filtered one's, or none
     static int density_source(const ApplicationState& state, const PlotSeries& s) {
-        if (s.density == VectorDensity_None || s.range == VectorRange_Current) return -1;
+        if (!(s.iso_lines || s.iso_levels || s.density_map)) return -1;
         return (s.range == VectorRange_Filtered && state.timeline.filter.enabled) ? 1 : 0;
-    }
-
-    static RamachandranDisplayMode display_mode_of(VectorDensity d) {
-        return d == VectorDensity_Isolines ? IsoLines : d == VectorDensity_Levels ? IsoLevels : Colormap;
     }
 
     // The pixels of blur of a density, from the smoothing of the series
@@ -888,16 +884,7 @@ struct Ramachandran : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Properties")) {
-                    int num_listed = 0;
-                    series_for_each_script_property(&state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
-                        SeriesVectorView v;
-                        if (!series_resolve_vector(&v, &state, key, 2)) return;
-                        plot_series_list_item(&state, VECTOR_SERIES_DND, sp, key);
-                        num_listed += 1;
-                    });
-                    if (num_listed == 0) {
-                        ImGui::TextDisabled("No ramachandran properties, create one below or define ramachandran() in the script editor");
-                    }
+                    series_vector_properties_menu(&state, sp, 2);
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Layers")) {
@@ -917,6 +904,8 @@ struct Ramachandran : viamd::EventHandler {
                         }
                         ImGui::SliderFloat("Opacity", &ref_alpha, 0.0f, 1.0f);
                     }
+                    ImGui::SeparatorText("Series");
+                    series_vector_layers_menu(&state, sp, 2);
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("View")) {
@@ -928,12 +917,6 @@ struct Ramachandran : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
-            }
-
-            // A property dropped on the window is added to the plot
-            SeriesKey dropped = {};
-            if (series_vector_drop(&state, 2, &dropped)) {
-                plot_add_series_copy(&state, sp, dropped);
             }
 
             // The shortcut
@@ -957,60 +940,16 @@ struct Ramachandran : viamd::EventHandler {
             if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
             if (pending_name[0]) ImGui::TextDisabled("Waiting for '%s' to be evaluated...", pending_name);
 
-            // The series: a click toggles its visibility in the plot, a right click edits it, and it is dragged out to remove it
+            // The series, which this may add to or remove from
+            series_vector_bar(&state, sp, 2, false);
+
             SeriesVectorView views[PLOT_MAX_SERIES_PER_SUBPLOT];
             bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
             RamaSeries* states[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
-            int remove_idx = -1;
-            int duplicate_idx = -1;
             for (int j = 0; j < sp.count; ++j) {
-                PlotSeries& s = sp.series[j];
-                resolved[j] = series_resolve_vector(&views[j], &state, s.key, 2);
-                series_label(views[j].label, sizeof(views[j].label), &state, s.key);
-                if (resolved[j]) states[j] = find_state(s.uid);
-
-                ImGui::PushID(j);
-                ImGui::ColorButton("##color", s.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetFontSize(), ImGui::GetFontSize()));
-                ImGui::SameLine();
-                ImGui::Selectable(views[j].label, false, ImGuiSelectableFlags_None, ImVec2(ImGui::CalcTextSize(views[j].label).x, 0));
-                if (ImGui::IsItemHovered() && resolved[j]) {
-                    script_visualize_payload(&state, views[j].vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                    script_set_hovered_property(&state, str_from_cstr(views[j].script_ident));
-                }
-                if (ImGui::BeginDragDropSource()) {
-                    series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color, s.uid);
-                    ImGui::EndDragDropSource();
-                }
-                if (ImGui::BeginPopupContextItem("##series-style")) {
-                    if (ImGui::DeleteButton("Remove")) {
-                        remove_idx = j;
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Duplicate")) {
-                        duplicate_idx = j;
-                        ImGui::CloseCurrentPopup();
-                    }
-                    plot_vector_style_popup(s);
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
-                if (j + 1 < sp.count) ImGui::SameLine();
-            }
-            if (duplicate_idx != -1 || remove_idx != -1) {
-                // The series of this frame are no longer the ones of the plot
-                if (duplicate_idx != -1) {
-                    const PlotSeries original = sp.series[duplicate_idx];
-                    const int idx = plot_add_series_copy(&state, sp, original.key);
-                    if (idx != -1) {
-                        const uint32_t uid = sp.series[idx].uid;
-                        sp.series[idx] = original;
-                        sp.series[idx].uid = uid;
-                    }
-                }
-                if (remove_idx != -1) plot_remove_series(sp, remove_idx);
-                ImGui::End();
-                return;
+                resolved[j] = series_resolve_vector(&views[j], &state, sp.series[j].key, 2);
+                series_label(views[j].label, sizeof(views[j].label), &state, sp.series[j].key);
+                if (resolved[j]) states[j] = find_state(sp.series[j].uid);
             }
 
             const auto& sys = state.mold.sys;
@@ -1074,8 +1013,12 @@ struct Ramachandran : viamd::EventHandler {
                                 const rama_rep_t& rep = source == 0 ? st.full : st.filt;
                                 const uint64_t generation = source == 0 ? st.full_generation : st.filt_generation;
                                 if (generation != st.generation || rep.den_sum[plot_idx] <= 0) continue;
-                                const uint32_t tex = s.density == VectorDensity_Colormap ? rep.map_tex[plot_idx] : rep.iso_tex[plot_idx];
-                                dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, s.density_alpha));
+                                if (s.density_map) {
+                                    dl->AddImage((ImTextureID)(intptr_t)rep.map_tex[plot_idx], plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, s.density_alpha));
+                                }
+                                if (s.iso_levels || s.iso_lines) {
+                                    dl->AddImage((ImTextureID)(intptr_t)rep.iso_tex[plot_idx], plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, s.density_alpha));
+                                }
                             }
                             ImPlot::PopPlotClipRect();
                         }
@@ -1227,7 +1170,7 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (md_array_size(indices) > 0) {
                                 UserData user_data = { (const vec2_t*)(curr_angles[j]), indices, view_mid };
-                                ImPlot::SetNextMarkerStyle(s.marker, s.marker_size * 3.0f, s.color, 1.0f, s.color);
+                                ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, s.color, 1.0f, s.color);
                                 ImPlot::PlotScatterG(id, index_getter, &user_data, (int)md_array_size(indices));
                             }
 
@@ -1338,12 +1281,13 @@ struct Ramachandran : viamd::EventHandler {
 
             uint32_t max_dim = (uint32_t)MAX(plot_size.x, plot_size.y);
 
-            // Renders the maps of one density into its representation. The sums relative to the reference scale the iso values.
-            auto render_layer = [&](rama_rep_t* rep, RamachandranDisplayMode mode, ImPlotColormap cmap, const float scl[4], ImVec4 line_color) {
-                if (mode == IsoLevels || mode == IsoLines) {
+            // Renders the maps of one density into its representation: contours and the bands between them, and a colormap.
+            // The sums relative to the reference scale the iso values.
+            auto render_layer = [&](rama_rep_t* rep, bool fill, bool lines, bool map, ImPlotColormap cmap, const float scl[4], ImVec4 color, bool reference_levels) {
+                if (fill || lines) {
                     const uint32_t count = 3;
-                    uint32_t colors[4][count] = {0};
-                    uint32_t  lines[4][count] = {0};
+                    uint32_t fill_cols[4][count] = {0};
+                    uint32_t line_cols[4][count] = {0};
                     float    values[4][count] = {0};
 
                     MEMCPY(values, ref_iso_values, sizeof(ref_iso_values));
@@ -1354,38 +1298,41 @@ struct Ramachandran : viamd::EventHandler {
                         values[3][j] *= MAX(scl[3], FLT_EPSILON);
                     }
 
-                    if (mode == IsoLevels) {
-                        MEMCPY(colors, ref_iso_level_colors, sizeof(colors));
-                        MEMCPY(lines,  ref_iso_level_colors, sizeof(lines));
-                    }
-                    else {
-                        ImVec4 rgba_base  = line_color;
-                        ImVec4 rgba_light = line_color;
-                        float h, s, v;
-                        ImGui::ColorConvertRGBtoHSV(rgba_base.x, rgba_base.y, rgba_base.z, h, s, v);
-                        ImGui::ColorConvertHSVtoRGB(h, s * 0.5f, v, rgba_light.x, rgba_light.y, rgba_light.z);
+                    // The contours and the bands are tones of one colour
+                    ImVec4 base  = color;
+                    ImVec4 light = color;
+                    float h, sat, val;
+                    ImGui::ColorConvertRGBtoHSV(base.x, base.y, base.z, h, sat, val);
+                    ImGui::ColorConvertHSVtoRGB(h, sat * 0.5f, val, light.x, light.y, light.z);
+                    const uint32_t line_tones[3] = {
+                        0,
+                        ImGui::ColorConvertFloat4ToU32(base),
+                        ImGui::ColorConvertFloat4ToU32(light),
+                    };
+                    const uint32_t fill_tones[3] = {
+                        0,
+                        ImGui::ColorConvertFloat4ToU32(ImVec4(light.x, light.y, light.z, light.w * 0.35f)),
+                        ImGui::ColorConvertFloat4ToU32(ImVec4(base.x, base.y, base.z, base.w * 0.55f)),
+                    };
 
-                        uint32_t line_colors[3] = {
-                            0,
-                            ImGui::ColorConvertFloat4ToU32(rgba_base),
-                            ImGui::ColorConvertFloat4ToU32(rgba_light),
-                        };
-                        for (int j = 0; j < 4; ++j) {
-                            lines[j][0] = line_colors[0];
-                            lines[j][1] = line_colors[1];
-                            lines[j][2] = line_colors[2];
+                    for (int j = 0; j < 4; ++j) {
+                        for (uint32_t i = 0; i < count; ++i) {
+                            if (fill)  fill_cols[j][i] = reference_levels ? ref_iso_level_colors[j][i] : fill_tones[i];
+                            // Bands alone get contours of their own colour, which keeps their edges clean
+                            line_cols[j][i] = lines ? line_tones[i] : fill_cols[j][i];
                         }
                     }
 
                     rama_isomap_t maps[4] = {
-                        { .values = values[0], .level_colors = colors[0], .contour_colors = lines[0], .count = count },
-                        { .values = values[1], .level_colors = colors[1], .contour_colors = lines[1], .count = count },
-                        { .values = values[2], .level_colors = colors[2], .contour_colors = lines[2], .count = count },
-                        { .values = values[3], .level_colors = colors[3], .contour_colors = lines[3], .count = count },
+                        { .values = values[0], .level_colors = fill_cols[0], .contour_colors = line_cols[0], .count = count },
+                        { .values = values[1], .level_colors = fill_cols[1], .contour_colors = line_cols[1], .count = count },
+                        { .values = values[2], .level_colors = fill_cols[2], .contour_colors = line_cols[2], .count = count },
+                        { .values = values[3], .level_colors = fill_cols[3], .contour_colors = line_cols[3], .count = count },
                     };
 
                     rama_rep_render_iso(rep, viewport.elem, maps, max_dim);
-                } else if (mode == Colormap) {
+                }
+                if (map) {
                     // Fill in colors based on active color_map
                     uint32_t colors[32] = {0};
                     uint32_t num_colors = ImPlot::GetColormapSize(cmap);
@@ -1406,7 +1353,9 @@ struct Ramachandran : viamd::EventHandler {
             };
 
             const float ref_scl[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-            if (show_reference) render_layer(&rama_data.ref, ref_mode, ref_colormap, ref_scl, ref_line_color);
+            if (show_reference) {
+                render_layer(&rama_data.ref, ref_mode == IsoLevels, ref_mode == IsoLines, ref_mode == Colormap, ref_colormap, ref_scl, ref_line_color, true);
+            }
 
             const float* ref_sum = rama_data.ref.den_sum;
             for (int j = 0; j < sp.count; ++j) {
@@ -1420,22 +1369,14 @@ struct Ramachandran : viamd::EventHandler {
                 const float scl[4] = {
                     rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
                 };
-                render_layer(rep, display_mode_of(s.density), s.density_colormap, scl, s.color);
+                render_layer(rep, s.iso_levels, s.iso_lines, s.density_map, s.density_colormap, scl, s.color, false);
             }
 
             POP_GPU_SECTION();
 
             ImPlot::MapInputDefault();
 
-            // A series dragged out of the window and dropped where nothing takes it is removed
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-                if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
-                    const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_uid(sp, dnd->src_uid) : -1;
-                    if (idx != -1) plot_remove_series(sp, idx);
-                }
-            }
+            series_vector_drag_out(sp);
         }
         ImGui::End();
     }

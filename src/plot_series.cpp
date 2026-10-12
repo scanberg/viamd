@@ -1,6 +1,7 @@
 #include <plot_series.h>
 #include <imgui_internal.h>
 #include <implot_widgets.h>
+#include <imgui_widgets.h>
 
 #include <viamd.h>
 #include <display_units.h>
@@ -880,7 +881,8 @@ void plot_series_list_item(ApplicationState* data, const char* dnd_type, PlotSub
 }
 
 void plot_vector_style_popup(PlotSeries& s, bool point_color) {
-    ImGui::Checkbox("Points", &s.show_points);
+    ImGui::SeparatorText("Points");
+    ImGui::Checkbox("Displayed frame", &s.show_points);
     if (s.show_points) {
         if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
             for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
@@ -889,28 +891,21 @@ void plot_vector_style_popup(PlotSeries& s, bool point_color) {
             ImGui::EndCombo();
         }
         ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
-        if (point_color) ImGui::ColorEdit4("Color", &s.color.x);
     }
+    if (point_color) ImGui::ColorEdit4("Color", &s.color.x);
 
-    ImGui::Separator();
-    const char* density_names[VectorDensity_Count] = {"None", "Isolines", "Filled levels", "Colormap"};
-    int density = (int)s.density;
-    if (ImGui::Combo("Density", &density, density_names, VectorDensity_Count)) s.density = (VectorDensity)density;
-    if (s.density != VectorDensity_None) {
-        if (s.density == VectorDensity_Colormap || s.density == VectorDensity_Levels) {
-            ImPlot::ColormapSelection("Density Color Map", &s.density_colormap);
-        }
-        if (s.density == VectorDensity_Isolines && point_color) {
-            ImGui::TextDisabled("Lines use the colour of the series");
-        }
-        ImGui::SliderFloat("Density Opacity", &s.density_alpha, 0.0f, 1.0f);
+    ImGui::SeparatorText("Density");
+    ImGui::Checkbox("Isolines", &s.iso_lines);
+    ImGui::Checkbox("Filled levels", &s.iso_levels);
+    ImGui::Checkbox("Colormap", &s.density_map);
+    if (s.iso_lines || s.iso_levels || s.density_map) {
+        if (s.density_map) ImPlot::ColormapSelection("Density Color Map", &s.density_colormap);
+        ImGui::SliderFloat("Opacity", &s.density_alpha, 0.0f, 1.0f);
         ImGui::SliderFloat("Smoothing", &s.smoothing, 0.25f, 6.0f, "%.2f");
+        const char* range_names[VectorRange_Count] = {"Full trajectory", "Filtered trajectory"};
+        int range = (int)s.range;
+        if (ImGui::Combo("Frames", &range, range_names, VectorRange_Count)) s.range = (VectorRange)range;
     }
-
-    ImGui::Separator();
-    const char* range_names[VectorRange_Count] = {"Full trajectory", "Filtered trajectory", "Current frame"};
-    int range = (int)s.range;
-    if (ImGui::Combo("Frames", &range, range_names, VectorRange_Count)) s.range = (VectorRange)range;
 }
 
 void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end) {
@@ -921,71 +916,166 @@ void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s,
         *beg = MIN((uint32_t)MAX(0.0, app->timeline.filter.beg_frame), num_frames - 1);
         *end = MIN((uint32_t)MAX(0.0, app->timeline.filter.end_frame) + 1, num_frames);
         if (*end < *beg) *end = *beg;
-    } else if (s.range == VectorRange_Current) {
-        *beg = MIN((uint32_t)MAX(0.0, app->animation.frame + 0.5), num_frames - 1);
-        *end = *beg + 1;
     }
 }
 
-int series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out) {
-    int result = 0;
-    if (!ImGui::BeginMenu("Properties")) return result;
-
-    if (ImGui::Selectable("Selection", current == nullptr)) {
-        result = 2;
-        ImGui::CloseCurrentPopup();
+int plot_add_vector_series(const ApplicationState* app, PlotSubplot& sp, const SeriesKey& key, bool allow_duplicate) {
+    if (!allow_duplicate) {
+        const int existing = plot_find_series(sp, key);
+        if (existing != -1) return existing;
     }
-    ImGui::Separator();
+    const int idx = plot_add_series_copy(app, sp, key);
+    if (idx != -1) {
+        sp.series[idx].marker = ImPlotMarker_Circle;
+        sp.series[idx].marker_size = 5.0f;
+    }
+    return idx;
+}
 
-    int candidates = 0;
+void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components) {
+    int num_listed = 0;
     series_for_each_script_property(app, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
-        SeriesVectorView view;
-        if (!series_resolve_vector(&view, app, key, components)) return;
-        ++candidates;
+        SeriesVectorView v;
+        if (!series_resolve_vector(&v, app, key, components)) return;
+        num_listed += 1;
+
+        char label[96];
+        series_label(label, sizeof(label), app, key);
+        const ImVec4 color = series_default_color(app, key);
+        const int idx = plot_find_series(sp, key);
 
         ImGui::PushID(key.path);
-        ImPlot::ItemIcon(series_default_color(app, key));
+        ImPlot::ItemIcon(color);
         ImGui::SameLine();
-        if (ImGui::Selectable(view.label, current && series_key_equal(*current, key))) {
-            *out = key;
-            result = 1;
-            ImGui::CloseCurrentPopup();
-        }
-        if (ImGui::BeginDragDropSource()) {
-            series_set_drag_payload(VECTOR_SERIES_DND, key, -1, view.label, series_default_color(app, key));
-            ImGui::EndDragDropSource();
+        if (ImGui::Selectable(label, idx != -1, ImGuiSelectableFlags_DontClosePopups)) {
+            if (idx != -1) plot_remove_series(sp, idx);
+            else           plot_add_vector_series(app, sp, key, false);
         }
         if (ImGui::IsItemHovered()) {
-            script_visualize_payload(app, view.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
-            script_set_hovered_property(app, str_from_cstr(view.script_ident));
+            script_visualize_payload(app, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_set_hovered_property(app, str_from_cstr(v.script_ident));
+        }
+        if (ImGui::BeginDragDropSource()) {
+            series_set_drag_payload(VECTOR_SERIES_DND, key, -1, label, color);
+            ImGui::EndDragDropSource();
         }
         ImGui::PopID();
     });
-    if (candidates == 0) {
-        ImGui::TextDisabled("No properties with %u components.", components);
+    if (num_listed == 0) {
+        ImGui::TextDisabled("No properties with %u components, create one below or in the script editor", components);
     }
-    ImGui::EndMenu();
-    return result;
 }
 
-bool series_vector_drop(ApplicationState* app, uint32_t components, SeriesKey* out) {
-    bool dropped = false;
+void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components) {
+    (void)components;
+    if (sp.count == 0) {
+        ImGui::TextDisabled("No series");
+        return;
+    }
+    for (int j = 0; j < sp.count; ++j) {
+        PlotSeries& s = sp.series[j];
+        char label[96];
+        series_label(label, sizeof(label), app, s.key);
+        ImGui::PushID((int)s.uid);
+        ImPlot::ItemIcon(s.color);
+        ImGui::SameLine();
+        if (ImGui::TreeNode(label)) {
+            plot_vector_style_popup(s);
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+}
+
+void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t components, bool members) {
+    // A property dropped anywhere on the window is added. One dragged out of a plot is already in a window.
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (ImGui::BeginDragDropTargetCustom(window->InnerRect, ImGui::GetID("##vector-drop"))) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VECTOR_SERIES_DND)) {
             if (payload->DataSize == sizeof(SeriesDragPayload)) {
                 SeriesVectorView view;
                 const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
-                // One dragged out of a plot is already in a window: it is not added again
                 if (dnd->src_subplot < 0 && series_resolve_vector(&view, app, dnd->key, components)) {
-                    *out = dnd->key;
-                    dropped = true;
+                    plot_add_vector_series(app, sp, dnd->key, true);
                 }
             }
         }
         ImGui::EndDragDropTarget();
     }
-    return dropped;
+
+    int remove_idx = -1;
+    int duplicate_idx = -1;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float icon = ImGui::GetFontSize();
+
+    for (int j = 0; j < sp.count; ++j) {
+        PlotSeries& s = sp.series[j];
+        SeriesVectorView v;
+        const bool resolved = series_resolve_vector(&v, app, s.key, components);
+        char label[96];
+        series_label(label, sizeof(label), app, s.key);
+
+        const float text_w = ImGui::CalcTextSize(label).x;
+        if (j > 0) {
+            const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+            if (ImGui::GetItemRectMax().x + spacing + icon + spacing + text_w < right) ImGui::SameLine();
+        }
+
+        ImGui::PushID((int)s.uid);
+        ImGui::ColorButton("##color", s.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(icon, icon));
+        ImGui::SameLine();
+        ImGui::Selectable(label, false, ImGuiSelectableFlags_None, ImVec2(text_w, 0));
+        if (ImGui::IsItemHovered() && resolved) {
+            script_visualize_payload(app, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_set_hovered_property(app, str_from_cstr(v.script_ident));
+        }
+        if (ImGui::BeginDragDropSource()) {
+            series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, label, s.color, s.uid);
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::BeginPopupContextItem("##series-style")) {
+            if (ImGui::DeleteButton("Remove")) {
+                remove_idx = j;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Duplicate")) {
+                duplicate_idx = j;
+                ImGui::CloseCurrentPopup();
+            }
+            // With several members the colour is one per member, from a colormap or the series'
+            const bool population = members && resolved && v.count > 1;
+            plot_vector_style_popup(s, !population);
+            if (population) {
+                ImGui::SeparatorText("Members");
+                int hovered_pop_idx = -1;
+                plot_series_style_popup(app, s, (int)v.count, v.script_ident, v.vis_payload, &hovered_pop_idx);
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+
+    if (duplicate_idx != -1 && duplicate_idx < sp.count) {
+        const PlotSeries original = sp.series[duplicate_idx];
+        const int idx = plot_add_series_copy(app, sp, original.key);
+        if (idx != -1) {
+            const uint32_t uid = sp.series[idx].uid;
+            sp.series[idx] = original;
+            sp.series[idx].uid = uid;
+        }
+    }
+    if (remove_idx != -1) plot_remove_series(sp, remove_idx);
+}
+
+void series_vector_drag_out(PlotSubplot& sp) {
+    if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left)) return;
+    const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+    if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+        const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+        const int idx = dnd && dnd->src_subplot == 0 ? plot_find_uid(sp, dnd->src_uid) : -1;
+        if (idx != -1) plot_remove_series(sp, idx);
+    }
 }
 
 // ## Script properties
@@ -1169,7 +1259,9 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_int (state, STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, STR_LIT("ColormapAlpha"), s.colormap_alpha);
             viamd::write_bool(state, STR_LIT("ShowPoints"), s.show_points);
-            viamd::write_int (state, STR_LIT("Density"), (int)s.density);
+            viamd::write_bool(state, STR_LIT("IsoLines"), s.iso_lines);
+            viamd::write_bool(state, STR_LIT("IsoLevels"), s.iso_levels);
+            viamd::write_bool(state, STR_LIT("DensityMap"), s.density_map);
             viamd::write_int (state, STR_LIT("Range"), (int)s.range);
             viamd::write_int (state, STR_LIT("DensityColormap"), (int)s.density_colormap);
             viamd::write_flt (state, STR_LIT("DensityAlpha"), s.density_alpha);
@@ -1239,10 +1331,14 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 viamd::extract_flt(s.colormap_alpha, arg);
             } else if (str_eq_cstr(ident, "ShowPoints")) {
                 viamd::extract_bool(s.show_points, arg);
-            } else if (str_eq_cstr(ident, "Density") && viamd::extract_int(i, arg)) {
-                s.density = (VectorDensity)CLAMP(i, 0, (int)VectorDensity_Count - 1);
+            } else if (str_eq_cstr(ident, "IsoLines")) {
+                viamd::extract_bool(s.iso_lines, arg);
+            } else if (str_eq_cstr(ident, "IsoLevels")) {
+                viamd::extract_bool(s.iso_levels, arg);
+            } else if (str_eq_cstr(ident, "DensityMap")) {
+                viamd::extract_bool(s.density_map, arg);
             } else if (str_eq_cstr(ident, "Range") && viamd::extract_int(i, arg)) {
-                s.range = (VectorRange)CLAMP(i, 0, (int)VectorRange_Count - 1);
+                s.range = i == 1 ? VectorRange_Filtered : VectorRange_Full;
             } else if (str_eq_cstr(ident, "DensityColormap") && viamd::extract_int(i, arg)) {
                 s.density_colormap = (ImPlotColormap)i;
             } else if (str_eq_cstr(ident, "DensityAlpha")) {
