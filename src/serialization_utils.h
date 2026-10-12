@@ -5,7 +5,7 @@
 #include <core/md_str_builder.h>
 #include <core/md_vec_math.h>
 
-struct md_bitfield_t;
+struct md_bitset_t;
 
 // Reading and writing the workspace text format:
 //
@@ -54,7 +54,7 @@ void write_dbl(serialization_state_t& state, str_t ident, double val);
 void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem, size_t len);
 void write_str(serialization_state_t& state, str_t ident, str_t str);
 // Base64 between ### markers: any bit pattern survives the line based format
-void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf);
+void write_bitset(serialization_state_t& state, str_t ident, const md_bitset_t* bs);
 
 static inline void write_vec3(serialization_state_t& state, str_t ident, vec3_t v)  { write_flt_vec(state, ident, v.elem, 3); }
 static inline void write_vec4(serialization_state_t& state, str_t ident, vec4_t v)  { write_flt_vec(state, ident, v.elem, 4); }
@@ -71,7 +71,9 @@ bool extract_flt (float& val, str_t arg);
 bool extract_flt_vec (float* elem, size_t len, str_t arg);
 bool extract_str (str_t& str, str_t arg);
 bool extract_to_char_buf(char* buf, size_t cap, str_t arg);
-bool extract_bitfield(md_bitfield_t* bf, str_t arg);
+// The set is allocated with alloc. Reads the byte format of the former md_bitfield masks, and the one for sets
+// reaching beyond 2^24 (see md_bitset_serialize)
+bool extract_bitset(md_bitset_t* bs, str_t arg, struct md_allocator_i* alloc);
 
 // An integer into an enum, accepted only within [0, count)
 template <typename T>

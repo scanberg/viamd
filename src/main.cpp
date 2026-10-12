@@ -269,7 +269,7 @@ static void update_timeline_time_unit(ApplicationState* state) {
     state->timeline.view_range.end_x *= ratio;
 }
 
-static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
+static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, atom_mask, op);
 }
@@ -347,13 +347,16 @@ int main(int argc, char** argv) {
 
     md_temp_arena_system_init();
 
-    md_bitfield_init(&state.selection.selection_mask, persistent_alloc);
-    md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
-    md_bitfield_init(&state.selection.query.mask, persistent_alloc);
-    md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-    md_bitfield_init(&state.operations.selection_mask, persistent_alloc);
-    md_bitfield_init(&state.operations.recenter_query.mask, persistent_alloc);
-    md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
+    // The masks are edited in place. Over any atom index: they hold only the words they write, and a mask over a
+    // system's atoms needs no resizing when another is loaded.
+    md_bitmask_init(&state.selection.selection_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.query.mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    // Sets, replaced whole
+    state.operations.selection_mask = md_bitset_empty_set();
+    state.operations.recenter_query.mask = md_bitset_empty_set();
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
@@ -516,8 +519,7 @@ int main(int argc, char** argv) {
 
         file_queue_process(&state);
 
-        state.script.vis = {0};
-        md_script_vis_init(&state.script.vis, state.allocator.frame);
+        script_vis_begin_frame(&state);
 
         picking_handler_new_frame(&state.picking_handler);
         viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, picking_handler_current_space(&state.picking_handler));
@@ -587,25 +589,25 @@ int main(int argc, char** argv) {
             event.world_to_clip = world_to_clip;
 
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
-                const md_bitfield_t* candidate_mask = &state.representation.visibility_mask;
+                md_bitset_t candidate_mask = md_bitmask_view(&state.representation.visibility_mask);
                 if (event.selection_mode == InteractionSelectionMode::Remove) {
                     // When removing, only consider currently selected atoms as candidates for region selection
-                    candidate_mask = &state.selection.selection_mask;
+                    candidate_mask = md_bitmask_view(&state.selection.selection_mask);
                 }
                 point_set_region_mask_compute(&state.selection.highlight_mask,
                     state.mold.state.xyz, state.mold.state.num_atoms,
-                    candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
+                    &candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                 grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
                 if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                     // Merge highlight into selection
                     if (event.selection_mode == InteractionSelectionMode::Append) {
-                        md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                        md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                     }
                     else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                        md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                        md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                     }
-                    md_bitfield_clear(&state.selection.highlight_mask);
+                    md_bitmask_clear(&state.selection.highlight_mask);
                     // A region select is not a sequence of individual picks, so whatever order was
                     // recorded before no longer describes the selection.
                     single_selection_sequence_clear(&state.selection.single_selection_sequence);
@@ -713,14 +715,10 @@ int main(int argc, char** argv) {
         }
 
         if (state.timeline.filter.temporal_window.enabled) {
-            const double pre_beg = state.timeline.filter.beg_frame;
-            const double pre_end = state.timeline.filter.end_frame;
+            // The script's filter frame set follows (see the evaluation below)
             const double half_window_ext = state.timeline.filter.temporal_window.extent_in_frames * 0.5;
             state.timeline.filter.beg_frame = CLAMP(round(state.animation.frame - half_window_ext), 0.0, max_frame);
             state.timeline.filter.end_frame = CLAMP(round(state.animation.frame + half_window_ext), 0.0, max_frame);
-            if (state.script.ir && (state.timeline.filter.beg_frame != pre_beg || state.timeline.filter.end_frame != pre_end)) {
-                state.script.evaluate_filt = true;
-            }
         }
 
         if (state.timeline.filter.enabled) {
@@ -773,10 +771,9 @@ int main(int argc, char** argv) {
             script_editor::markers_clear(&state.editor_markers);
 
             if (state.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
-                // We cannot recompile while it is evaluating.
-                // Need to interrupt and wait for tasks to finish.
-                if (state.script.full_eval) md_script_eval_interrupt(state.script.full_eval);
-                if (state.script.filt_eval) md_script_eval_interrupt(state.script.filt_eval);
+                // The evaluations are of what is about to be replaced, so they are stopped. Their IR is not
+                // affected: the compilation goes into a new one, and the old is freed once nothing holds it.
+                if (state.script.eval) md_script_eval_interrupt(state.script.eval);
 
                 // Try aquire all semaphores
                 {
@@ -788,11 +785,8 @@ int main(int argc, char** argv) {
                     state.script.compile_ir = false;
                     state.script.time_since_last_change = 0;
 
-                    if (state.script.ir && state.script.ir != state.script.eval_ir) {
-                        md_script_ir_free(state.script.ir);
-                    }
-                    
-                    state.script.ir = md_script_ir_create(persistent_alloc);
+                    // The previous IR is freed once nothing uses it (script_ir_collect)
+                    state.script.ir = script_ir_create(&state);
 
                     std::string src = state.editor.GetText();
                     str_t src_str {src.data(), src.length()};
@@ -819,8 +813,8 @@ int main(int argc, char** argv) {
                     const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
                     for (size_t i = 0; i < num_stored_selections; ++i) {
                         str_t name = str_from_cstr(state.selection.stored_selections[i].name);
-                        const md_bitfield_t* bf = &state.selection.stored_selections[i].atom_mask;
-                        md_script_ir_add_identifier_bitfield(state.script.ir, name, bf);
+                        const md_bitset_t* bf = &state.selection.stored_selections[i].atom_mask;
+                        md_script_ir_add_identifier_bitset(state.script.ir, name, *bf);
                     }
                     
                     if (src_str) {
@@ -847,7 +841,7 @@ int main(int argc, char** argv) {
                         const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(state.script.ir);
                         for (size_t i = 0; i < num_tokens; ++i) {
                             const md_script_vis_token_t& tok = vis_tokens[i];
-                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.payload);
+                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.ref);
                         }
 
                         if (md_script_ir_valid(state.script.ir)) {
@@ -856,7 +850,6 @@ int main(int argc, char** argv) {
                                 state.script.ir_fingerprint = ir_figerprint;
                             }
                         } else {
-                            md_script_ir_free(state.script.ir);
                             state.script.ir = nullptr;
                         }
                     }
@@ -864,92 +857,100 @@ int main(int argc, char** argv) {
             }
         }
 
+        // IRs replaced, once no task may be on them. Before the evaluation is started again below, which could
+        // otherwise keep a task running every frame
+        script_ir_collect(&state);
+
         if (num_frames > 0) {
             if (state.script.eval_init) {
-                if (task_system::task_is_running(state.tasks.evaluate_full)) md_script_eval_interrupt(state.script.full_eval);
-                if (task_system::task_is_running(state.tasks.evaluate_filt)) md_script_eval_interrupt(state.script.filt_eval);
-                    
-                if (task_system::task_is_running(state.tasks.evaluate_full) == false &&
-                    task_system::task_is_running(state.tasks.evaluate_filt) == false) {
+                if (task_system::task_is_running(state.tasks.evaluate)) {
+                    md_script_eval_interrupt(state.script.eval);
+                } else {
                     state.script.eval_init = false;
 
-                    if (state.script.full_eval) {
-                        md_script_eval_free(state.script.full_eval);
-                    }
-                    if (state.script.filt_eval) {
-                        md_script_eval_free(state.script.filt_eval);
-                    }
-                
-                    if (md_script_ir_valid(state.script.ir)) {
-                        if (state.script.ir != state.script.eval_ir) {
-                            md_script_ir_free(state.script.eval_ir);
-                            state.script.eval_ir = state.script.ir;
-                        }
-                        state.script.full_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
-                        state.script.filt_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
+                    // Not remade below if the last compilation failed (in the same frame as the request)
+                    if (state.script.eval) {
+                        md_script_eval_free(state.script.eval);
+                        state.script.eval = nullptr;
                     }
 
-                    // The evaluations' tables were freed and new ones allocated, possibly in the
+                    if (md_script_ir_valid(state.script.ir)) {
+                        state.script.eval_ir = state.script.ir;
+                        // Every frame, and the timeline filter's: none yet, it is applied below
+                        md_bitset_t none = md_bitset_empty_set();
+                        const md_bitset_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &none };
+                        const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = SCRIPT_FRAME_SET_COUNT, .frame_sets = sets };
+                        state.script.eval = md_script_eval_create_desc(state.script.eval_ir, &desc, state.allocator.persistent);
+                        state.script.filter_frames = {};
+                    }
+
+                    // The evaluation's tables were freed and new ones allocated, possibly in the
                     // same place: nothing derived from the old ones may be taken for the new.
                     series_cache_free(&state);
 
-                    state.script.evaluate_filt = true;
-                    state.script.evaluate_full = true;
+                    state.script.evaluate = true;
                 }
             }
 
-            if (state.script.full_eval && state.script.evaluate_full) {
-                if (task_system::task_is_running(state.tasks.evaluate_full)) {
-                    md_script_eval_interrupt(state.script.full_eval);
-                } else {
-                    if (md_script_ir_valid(state.script.eval_ir) &&
-                        md_script_eval_ir_fingerprint(state.script.full_eval) == md_script_ir_fingerprint(state.script.eval_ir))
-                    {
-                        state.script.evaluate_full = false;
-                        md_script_eval_clear_data(state.script.full_eval);
+            if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
+                md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
+            {
+                // The filter frame set follows the timeline filter, and is empty while there is none
+                ScriptFilterFrames filter = {};
+                if (state.timeline.filter.enabled) {
+                    const uint32_t frames = (uint32_t)num_frames;
+                    filter.enabled = true;
+                    filter.beg = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, frames - 1);
+                    filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
+                }
+                const ScriptFilterFrames& applied = state.script.filter_frames;
+                const bool filter_changed = filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end;
 
-                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
+                if (state.script.evaluate || filter_changed) {
+                    if (task_system::task_is_running(state.tasks.evaluate)) {
+                        // Started again once it has stopped. Nothing it has done is lost: only the frames
+                        // the sets have not added yet are evaluated.
+                        md_script_eval_interrupt(state.script.eval);
+                    } else {
+                        state.script.evaluate = false;
+                        if (filter_changed) {
+                            const md_bitset_t frames = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
+                            md_script_eval_set_frame_set(state.script.eval, SCRIPT_FRAME_SET_FILTER, &frames);
+                            state.script.filter_frames = filter;
+                        }
+                        md_script_eval_reset_interrupt(state.script.eval);
+
+                        // What is left to do, over the union of the sets
+                        const md_bitset_t pending = md_script_eval_pending_frames(state.script.eval, frame_alloc);
+                        const size_t count = md_bitset_count(pending);
+                        if (count > 0) {
+                            md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
+                            size_t n = 0;
+                            md_bitset_iter_t it = md_bitset_iter(pending);
+                            while (md_bitset_iter_next(&it) && n < count) {
+                                state.script.eval_frames[n++] = (uint32_t)it.idx;
+                            }
+
+                            // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
+                            // not freed until it has finished. Nor are the frames touched.
+                            const md_script_ir_t* ir = state.script.eval_ir;
+                            md_script_eval_t* eval = state.script.eval;
+                            const uint32_t* frames = state.script.eval_frames;
+                            state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                 (void)thread_num;
-                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), frame_beg, frame_end);
+                                md_script_eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
                             });
-                            
+
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_tick_now();
-                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
+                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval"), [t0 = time, n]() {
                                 uint64_t t1 = md_tick_now();
                                 double s = md_tick_to_seconds(t1 - t0);
-                                VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
+                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, s);
                             });
+                            task_system::set_task_dependency(time_task, state.tasks.evaluate);
 #endif
-                            task_system::set_task_dependency(time_task, state.tasks.evaluate_full);
-                            task_system::enqueue_task(state.tasks.evaluate_full);
-                        }
-                    }
-                }
-            }
-
-            if (state.script.filt_eval && state.script.evaluate_filt && state.timeline.filter.enabled) {
-                if (task_system::task_is_running(state.tasks.evaluate_filt)) {
-                    md_script_eval_interrupt(state.script.filt_eval);
-                } else {
-                    if (md_script_ir_valid(state.script.eval_ir) &&
-                        md_script_eval_ir_fingerprint(state.script.filt_eval) == md_script_ir_fingerprint(state.script.eval_ir))
-                    {
-                        state.script.evaluate_filt = false;
-                        md_script_eval_clear_data(state.script.filt_eval);
-
-                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            const uint32_t traj_frames = (uint32_t)run_num_frames(&state);
-                            const uint32_t beg_frame = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, traj_frames-1);
-                            const uint32_t end_frame = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                            if (beg_frame != end_frame) {
-                                state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                    (void)thread_num;
-                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), offset + beg, offset + end);
-                                });
-                                task_system::enqueue_task(state.tasks.evaluate_filt);
-                            }
+                            task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
                 }
@@ -966,7 +967,10 @@ int main(int argc, char** argv) {
             state.representation.atom_visibility_mask_dirty = false;
         }
 
-        if (state.script.vis.text) {
+        // Everything which sets what the script visualizes has run
+        script_vis_update(&state);
+
+        if (state.script.vis_shown && state.script.vis_shown->text) {
             PUSH_CPU_SECTION("Draw vis text");
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
             if (window) {
@@ -982,9 +986,10 @@ int main(int argc, char** argv) {
                 const float rect_rounding = 5.f;
                 const ImVec2 rect_padding = ImVec2(4.f, 2.f);
 
-                size_t num_text = md_array_size(state.script.vis.text);
+                const md_script_vis_text_t* texts = state.script.vis_shown->text;
+                size_t num_text = md_array_size(texts);
                 for (size_t i = 0; i < num_text; ++i) {
-                    const md_script_vis_text_t& vis_text = state.script.vis.text[i];
+                    const md_script_vis_text_t& vis_text = texts[i];
 
                     const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(vis_text.pos, 1.0f));
                     const vec4_t c = p / p.w;
@@ -1081,14 +1086,21 @@ int main(int argc, char** argv) {
         // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
         uint64_t v_hash = state.representation.visibility_mask_hash;
-        uint64_t h_hash = md_bitfield_hash64(&state.selection.highlight_mask, 0);
-        uint64_t s_hash = md_bitfield_hash64(&state.selection.selection_mask, 0);
+        uint64_t h_hash = md_bitset_hash64(md_bitmask_view(&state.selection.highlight_mask), 0);
+        uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.selection.selection_mask), 0);
         uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
         
-        uint64_t r_hash = 0;
+        // What each representation is: not the bytes of the struct, which hold handles, pointers and flags that
+        // change without the representation changing (its atom mask, for one, is replaced whenever it is evaluated)
+        uint64_t r_hash = md_array_size(state.representation.reps);
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-			md_hash64(&state.representation.reps[i], sizeof(Representation), r_hash);
-		}
+            const Representation& rep = state.representation.reps[i];
+            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)rep.enabled };
+            r_hash = md_hash64(kind, sizeof(kind), r_hash);
+            const str_t filt = str_from_cstrn(rep.filt, sizeof(rep.filt));
+            r_hash = md_hash64(filt.ptr, filt.len, r_hash);
+            r_hash = md_bitset_hash64(rep.atom_mask, r_hash);
+        }
 
         // These represent the 'current' state so we can compare against it to see if they were modified
         static uint64_t highlight_hash = 0;
@@ -1142,6 +1154,7 @@ int main(int argc, char** argv) {
     }
 
     interrupt_async_tasks(&state);
+    script_vis_reset(&state);
     series_cache_free(&state);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdShutdown);
@@ -1452,19 +1465,20 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
             ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole components (residues) or whole instances (chains, molecules)");
-            size_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
+            size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
-                md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_not(&data->selection.highlight_mask, &data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.selection_mask));
+                md_bitmask_invert_range(&data->selection.highlight_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) data->selection.query.show_window = true;
             if (num_selected_atoms == 0) ImGui::PushDisabled();
             if (ImGui::MenuItem("Grow"))  data->selection.grow.show_window = true;
             if (num_selected_atoms == 0) ImGui::PopDisabled();
             if (ImGui::MenuItem("Clear")) {
-                md_bitfield_clear(&data->selection.selection_mask);
+                md_bitmask_clear(&data->selection.selection_mask);
                 single_selection_sequence_clear(&data->selection.single_selection_sequence);
             }
             ImGui::Spacing();
@@ -1472,7 +1486,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // STORED SELECTIONS
             {
-                md_bitfield_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->selection.highlight_mask);
                 // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
                 // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
@@ -1499,17 +1513,17 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
-                        md_bitfield_copy(&data->selection.selection_mask, &sel.atom_mask);
+                        md_bitmask_assign(&data->selection.selection_mask, sel.atom_mask);
                         flag_all_representations_as_dirty(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
-                        md_bitfield_copy(&data->selection.highlight_mask, &sel.atom_mask);
+                        md_bitmask_assign(&data->selection.highlight_mask, sel.atom_mask);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
                         ImGui::SetTooltip("Store the active selection into this selection");
-                        md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
+                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->selection.selection_mask), persistent_alloc);
                         data->script.compile_ir = true;
                         flag_all_representations_as_dirty(data);
                     }
@@ -1524,7 +1538,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
                     snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), &data->selection.selection_mask);
+                    create_selection(data, str_from_cstr(name_buf), md_bitmask_view(&data->selection.selection_mask));
                 }
 
                 //ImGui::PopItemFlag();
@@ -1615,7 +1629,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
                 if (ImGui::IsWindowHovered()) {
-                    md_bitfield_clear(&data->selection.highlight_mask);
+                    md_bitmask_clear(&data->selection.highlight_mask);
                 }
                 ImGui::TableSetupColumn("Now");
                 ImGui::TableSetupColumn("Every frame");
@@ -1623,8 +1637,8 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::TableHeadersRow();
 
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 175.f;
-                const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
-                const bool recenter_available = !md_bitfield_empty(&target_mask);
+                const md_bitset_t& target_mask = recenter_get_active_target_mask(data);
+                const bool recenter_available = !md_bitset_empty(target_mask);
                 const char* no_target_tip =
                     "There is nothing to center on yet. Select atoms and choose 'Set as Centering Target' in the\n"
                     "right-click menu of the viewport, or tick " ICON_FA_COMMENT_DOTS " and pick the target with a query.";
@@ -1648,7 +1662,7 @@ static void draw_main_menu(ApplicationState* data) {
                     } else {
                         ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
                         // Highlight the target atoms that the system will be recentered around
-                        md_bitfield_copy (&data->selection.highlight_mask, &target_mask);
+                        md_bitmask_assign(&data->selection.highlight_mask, target_mask);
                     }
                 }
 
@@ -1742,7 +1756,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_bonds) {
-                if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
+                if (!task_system::task_is_running(data->tasks.evaluate) && !task_system::task_is_running(data->script.vis_task)) {
                     // The whole frame nearest the animation time, or the coordinates shown when there is no run
                     recompute_covalent_bonds(data, (int64_t)(data->animation.frame + 0.5));
                 } else {
@@ -2124,7 +2138,8 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     md_temp_end(temp);
 }
 
-static md_array(str_t) generate_script_selection_suggestions(str_t ident, const md_bitfield_t* bf, const md_system_t* sys) {
+static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bitset_t sel, const md_system_t* sys) {
+    const md_bitset_t* bf = &sel;
     md_array(str_t) suggestions = 0;
 
     bool within_same_comp = true;
@@ -2133,9 +2148,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_instance_idx_t inst_idx = -1;
     md_component_idx_t comp_idx = -1;
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        uint64_t a_idx = md_bitfield_iter_idx(&it);
+    md_bitset_iter_t it = md_bitset_iter(*bf);
+    while (md_bitset_iter_next(&it)) {
+        uint64_t a_idx = it.idx;
         int32_t  i_idx = md_system_instance_find_by_atom_idx(sys, a_idx);
         int32_t  c_idx = md_system_component_find_by_atom_idx(sys, a_idx);
 
@@ -2156,19 +2171,19 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         }
     }
     
-    const size_t popcount = md_bitfield_popcount(bf);
+    const size_t popcount = md_bitset_count(*bf);
     
     md_strb_t sb = md_strb_create(frame_alloc);
     defer { md_strb_free(&sb); };
 
-    auto write_atom_remainder = [](md_strb_t& sb, const md_bitfield_t* bf, int ref_idx = 0) {
+    auto write_atom_remainder = [](md_strb_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
         // Add any remainder
-        const uint64_t remainder = md_bitfield_popcount(bf);
+        const uint64_t remainder = md_bitset_count(*bf);
         if (remainder) {
             int* indices = (int*)md_alloc(frame_alloc, remainder * sizeof(int));
             defer { md_free(frame_alloc, indices, remainder * sizeof(int)); };
 
-            md_bitfield_iter_extract_indices(indices, remainder, md_bitfield_iter_create(bf));
+            md_bitset_iter_extract_indices(indices, remainder, md_bitset_iter(*bf));
             sb += "atom(";
             write_script_range(sb, indices, remainder, ref_idx);
             sb += ")";
@@ -2209,18 +2224,22 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         }
     }
 
-    md_bitfield_t tmp_bf = md_bitfield_create(frame_alloc);
-    md_bitfield_copy(&tmp_bf, bf);
-    
+    // What is left once complete chains and residues are taken out
+    md_bitmask_t remainder = md_bitmask_create(0, (uint32_t)sys->atom.count, frame_alloc);
+    md_bitmask_assign(&remainder, *bf);
+    auto remainder_has_all = [&remainder](md_urange_t range) {
+        return range.beg < range.end && md_bitmask_test_all_range(&remainder, range.beg, range.end);
+    };
+
     md_array(int) complete_chains = 0;
     md_array(int) complete_residues = 0;
     
     if (sys->instance.count) {
         for (size_t i = 0; i < sys->instance.count; ++i) {    
             const md_urange_t range = md_system_instance_atom_range(sys, i);
-            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
+            if (remainder_has_all(range)) {
                 md_array_push(complete_chains, (int)i, frame_alloc);
-                md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
+                md_bitmask_clear_range(&remainder, range.beg, range.end);
             }
         }
     }
@@ -2228,14 +2247,15 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (sys->component.count) {
         for (size_t i = 0; i < sys->component.count; ++i) {    
             const md_urange_t range = md_component_atom_range(&sys->component, i);
-            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
+            if (remainder_has_all(range)) {
                 md_array_push(complete_residues, (int)i, frame_alloc);
-                md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
+                md_bitmask_clear_range(&remainder, range.beg, range.end);
             }
         }
     }
 
-    const uint64_t atom_remainder_count = md_bitfield_popcount(&tmp_bf);
+    const uint64_t atom_remainder_count = md_bitmask_count(&remainder);
+    const md_bitset_t tmp_bf = md_bitmask_view(&remainder);
     
     if (complete_chains) {
         md_strb_reset(&sb);
@@ -2349,13 +2369,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
     if (!state->mold.sys.atom.count) return;
 
     const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
-    const size_t num_atoms_selected = md_bitfield_popcount(&state->selection.selection_mask);
+    const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
             int idx[2];
-            md_bitfield_iter_extract_indices(idx, 2, md_bitfield_iter_create(&state->selection.selection_mask));
+            md_bitset_iter_extract_indices(idx, 2, md_bitmask_iter(&state->selection.selection_mask));
 
             md_bond_idx_t bond_idx = md_system_bond_find(&state->mold.sys, idx[0], idx[1]);
             if (bond_idx == -1) {
@@ -2563,10 +2583,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 }
             }
             if (num_atoms_selected >= 1) {
-                const md_bitfield_t* bf = &state->selection.selection_mask;
+                const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
                 str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), frame_alloc);
                 
-                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &state->mold.sys);
+                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, sel, &state->mold.sys);
 
 			    char buf[128]; // Buffer for limiting menu item size
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
@@ -2628,11 +2648,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
-                md_bitfield_not_inplace(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_invert_range(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_not(&state->selection.highlight_mask, &state->selection.selection_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
+                md_bitmask_invert_range(&state->selection.highlight_mask, 0, state->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) {
                 state->selection.query.show_window = true;
@@ -2644,7 +2665,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     ImGui::CloseCurrentPopup();
                 }
                 if (ImGui::MenuItem("Clear")) {
-                    md_bitfield_clear(&state->selection.selection_mask);
+                    md_bitmask_clear(&state->selection.selection_mask);
                     single_selection_sequence_clear(&state->selection.single_selection_sequence);
                 }
             }
@@ -2653,15 +2674,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Centering Target")) {
-                md_bitfield_clear(&state->operations.selection_mask);
-                md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
+                md_bitset_assign(&state->operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
                 state->operations.recenter_query.enabled = false;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_clear(&state->selection.highlight_mask);
-                md_bitfield_copy(&state->selection.highlight_mask, &state->selection.selection_mask);
+                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
             }
         }
 
@@ -2674,7 +2693,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
     if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
         static uint64_t sel_popcount = 0;
-        const uint64_t popcount = md_bitfield_popcount(&data->selection.selection_mask);
+        const uint64_t popcount = md_bitmask_count(&data->selection.selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const char* fmt = (data->selection.grow.mode == SelectionGrowthMode::CovalentBond) ? "%.0f" : "%.2f";
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
@@ -2690,21 +2709,23 @@ static void draw_selection_grow_window(ApplicationState* data) {
         if (data->selection.grow.mask_invalid) {
             sel_popcount = popcount;
             data->selection.grow.mask_invalid = false;
-            md_bitfield_copy(&data->selection.grow.mask, &data->selection.selection_mask);
+            md_bitmask_t* grow = &data->selection.grow.mask;
+            md_bitmask_assign(grow, md_bitmask_view(&data->selection.selection_mask));
+            const md_bitset_t viable = md_bitmask_view(&data->representation.visibility_mask);
 
             switch (data->selection.grow.mode) {
             case SelectionGrowthMode::CovalentBond:
-                md_util_mask_grow_by_bonds(&data->selection.grow.mask, &data->mold.sys, (int)data->selection.grow.extent, &data->representation.visibility_mask);
+                md_util_mask_grow_by_bonds(grow, &data->mold.sys, (int)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.state, data->selection.grow.extent, &data->representation.visibility_mask);
+                md_util_mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
                 break;
             }
             default:
                 ASSERT(false);
             }
 
-            grow_mask_by_selection_granularity(&data->selection.grow.mask, data->selection.granularity, data->mold.sys);
+            grow_mask_by_selection_granularity(grow, data->selection.granularity, data->mold.sys);
         }
 
         const bool show_preview =   (ImGui::GetHoveredID() == ImGui::GetID("##Extent")) ||
@@ -2712,10 +2733,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
                                     (ImGui::GetHoveredID() == ImGui::GetID("Apply"));
 
         if (show_preview) {
-            md_bitfield_copy(&data->selection.highlight_mask, &data->selection.grow.mask);
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
         }
         if (apply) {
-            md_bitfield_copy(&data->selection.selection_mask, &data->selection.grow.mask);
+            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
             data->selection.grow.mask_invalid = true;
         }
     }
@@ -2754,22 +2775,20 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = md_filter(&data->selection.query.mask, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            md_bitset_t result = md_bitset_empty_set();
+            data->selection.query.query_ok = md_filter(&result, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error), frame_alloc);
             query_frame = data->animation.frame;
 
-            if (data->selection.query.query_ok) {
-                grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
-            } else {
-                md_bitfield_clear(&data->selection.query.mask);
-            }
+            md_bitmask_assign(&data->selection.query.mask, data->selection.query.query_ok ? result : md_bitset_empty_set());
+            grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
         }
 
         if (preview) {
-            md_bitfield_copy(&data->selection.highlight_mask, &data->selection.query.mask);
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.query.mask));
         }
 
         if (apply && data->selection.query.query_ok) {
-            md_bitfield_copy(&data->selection.selection_mask, &data->selection.query.mask);
+            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
     }
@@ -3585,6 +3604,10 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (advanced) {
                     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+                        update_rep |= ImGui::Checkbox("bond orders", &rep.bond_orders);
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");
+                        }
                         // Draw options for how bonds should be colored
 					    update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
                         if (rep.bond_color == BondColorMode::SmoothAtom) {
@@ -3696,11 +3719,8 @@ static void draw_async_task_window(ApplicationState* data) {
             ImGui::SameLine();
             if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
                 task_system::task_interrupt(id);
-                if (id == data->tasks.evaluate_full) {
-                    md_script_eval_interrupt(data->script.full_eval);
-                }
-                else if(id == data->tasks.evaluate_filt) {
-                    md_script_eval_interrupt(data->script.filt_eval);
+                if (id == data->tasks.evaluate) {
+                    md_script_eval_interrupt(data->script.eval);
                 }
             }
         }
@@ -4016,7 +4036,7 @@ static ImVec4 plot_highlight(ImVec4 color) {
 
 // The part of a legend entry's popup both windows share: colour or colormap, and which members of
 // a population are drawn. A member hovered in the popup is written to hovered_pop_idx.
-static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, const md_script_vis_payload_o* vis_payload, int* hovered_pop_idx) {
+static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, md_script_vis_ref_t vis_ref, int* hovered_pop_idx) {
     if (dim > 1) {
         const char* color_type_labels[] = {"Solid", "Colormap"};
         int color_type = s.use_colormap ? 1 : 0;
@@ -4051,7 +4071,7 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
             }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
-                    script_visualize_payload(data, vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                    script_visualize_ref(data, vis_ref, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                     script_set_hovered_property(data, str_from_cstr(script_ident), k);
                 }
                 *hovered_pop_idx = k;
@@ -4085,8 +4105,7 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     if (ImGui::IsItemHovered()) {
         const str_t ident = series_script_ident(key);
         if (!str_empty(ident)) {
-            const md_script_vis_payload_o* vis = data->script.eval_ir ? md_script_ir_property_vis_payload(data->script.eval_ir, ident) : nullptr;
-            script_visualize_payload(data, vis, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_visualize_ref(data, md_script_ir_property_vis_ref(data->script.eval_ir, ident), -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
             script_set_hovered_property(data, ident);
         } else {
             ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
@@ -4130,7 +4149,7 @@ static void plot_system_series_menu(ApplicationState* data, const char* dnd_type
 
 // The members of a script property's population, if it has one: the extent of its value axis
 static size_t script_property_population(const ApplicationState* data, const SeriesKey& key) {
-    const md_attributes_t* table = series_table(data, key.source);
+    const md_attributes_t* table = series_table(data, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
     if (!attr || attr->format.rank < 1 || attr->format.shape[0] == 0) return 0;
     return md_attribute_element_count(&attr->format) / attr->format.shape[0];
@@ -4202,9 +4221,6 @@ static void draw_timeline_window(ApplicationState* data) {
     if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         int& num_subplots = data->timeline.num_subplots;
         num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
-
-        double pre_filter_min = data->timeline.filter.beg_frame;
-        double pre_filter_max = data->timeline.filter.end_frame;
 
         const float* x_values   = data->timeline.x_values;
         const int num_x_values  = (int)md_array_size(data->timeline.x_values);
@@ -4346,7 +4362,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     bool print_timeline_tooltip = false;
 
                     if (ImPlot::IsPlotHovered()) {
-                        md_bitfield_clear(&data->selection.highlight_mask);
+                        md_bitmask_clear(&data->selection.highlight_mask);
                         script_set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
@@ -4484,7 +4500,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident));
                             }
                             if (!resolved[j]) {
@@ -4521,7 +4537,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             }
 
                             int popup_hovered_pop = -1;
-                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
                                 hovered_idx = j;
                                 hovered_pop_idx = popup_hovered_pop;
@@ -4590,7 +4606,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
-                        script_visualize_payload(data, v.vis_payload, pop_idx, ~MD_SCRIPT_VISUALIZE_SDF);
+                        script_visualize_ref(data, v.vis_ref, pop_idx, ~MD_SCRIPT_VISUALIZE_SDF);
                         script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
@@ -4647,9 +4663,6 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlot::GetInputMap() = old_map;
         }
 
-        if (data->timeline.filter.enabled && (data->timeline.filter.beg_frame != pre_filter_min || data->timeline.filter.end_frame != pre_filter_max)) {
-            data->script.evaluate_filt = true;
-        }
 
         // A series dragged out of a plot and dropped outside any of them is taken out of that plot
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -4888,7 +4901,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             const SeriesHistogramView& v = views[hovered_idx];
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
-                                script_visualize_payload(data, v.vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
                             if (hovered_label[0] != '\0') {
                                 ImGui::SetTooltip("%s", hovered_label);
@@ -4911,7 +4924,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident));
                             }
                             if (!resolved[j]) {
@@ -4953,7 +4966,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
 
                             int popup_hovered_pop = -1;
-                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
                                 hovered_idx = j;
                                 hovered_pop_idx = popup_hovered_pop;
@@ -5283,42 +5296,36 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
 
         if (editor_hovered) {
-            md_bitfield_clear(&state->selection.highlight_mask);
+            md_bitmask_clear(&state->selection.highlight_mask);
         }
 
         if (hovered_marker) {
-            if (!str_empty(hovered_marker->text)) {
-                ImGui::BeginTooltip();
-                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
-                if (state->script.sub_idx != -1) {
-                    ImGui::Text("Currently inspected idx: %i", state->script.sub_idx + 1);
-                }
-                ImGui::EndTooltip();
-            }
-            if (hovered_marker->atoms || hovered_marker->payload) {
+            if (hovered_marker->atoms || !md_script_vis_ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
-                    md_bitfield_copy(&state->selection.highlight_mask, hovered_marker->atoms);
+                    md_bitmask_assign(&state->selection.highlight_mask, *hovered_marker->atoms);
                 }
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
                     script_set_hovered_property(state, STR_LIT(""));
-                    if (md_script_ir_valid(state->script.ir)) {
-                        const md_script_vis_payload_o* payload = hovered_marker->payload;
-                        str_t payload_ident = md_script_payload_ident(payload);
-                        int payload_dim  = md_script_payload_dim(payload); 
+                    // The markers come from the IR last compiled. One which did not compile is gone, and its
+                    // markers resolve in nothing
+                    const md_script_vis_ref_t ref = hovered_marker->vis_ref;
+                    if (const md_script_ir_t* ir = script_ir_of(state, ref)) {
+                        str_t ref_ident = md_script_vis_ref_ident(ir, ref);
+                        int ref_dim  = md_script_vis_ref_dim(ir, ref);
 
-                        if (payload_dim > 1) {
+                        if (ref_dim > 1) {
                             int delta = (int)ImGui::GetIO().MouseWheel;
                             if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
                                 delta *= 10;
                             }
                             state->script.sub_idx += delta;
-                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
+                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)ref_dim - 1);
                         }
 
-                        script_visualize_payload(state, payload, state->script.sub_idx, 0);
-                        script_set_hovered_property(state, payload_ident, state->script.sub_idx);
+                        script_visualize_ref(state, ref, state->script.sub_idx, 0);
+                        script_set_hovered_property(state, ref_ident, state->script.sub_idx);
                     }
                 }
 
@@ -5326,8 +5333,29 @@ static void draw_script_editor_window(ApplicationState* state) {
                 bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
                     SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(state, &state->selection.highlight_mask, op);
+                    modify_selection(state, md_bitmask_view(&state->selection.highlight_mask), op);
                 }
+            }
+
+            // After the visualization is set: the value is computed with it
+            if (!str_empty(hovered_marker->text)) {
+                ImGui::BeginTooltip();
+                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
+                if (hovered_marker->type == script_editor::MarkerType_Visualization) {
+                    const str_t value = script_vis_value_text(state);
+                    // A value known since the compilation is in the text already, unless it was too long to keep there
+                    const bool dynamic = str_find_str(NULL, hovered_marker->text, STR_LIT("[d]"));
+                    const bool has_value = str_find_char(NULL, hovered_marker->text, '\n');
+                    if (!str_empty(value) && (dynamic || !has_value || state->script.sub_idx != -1)) {
+                        ImGui::Separator();
+                        if (dynamic) ImGui::TextDisabled("At the frame shown");
+                        ImGui::Text(STR_FMT, STR_ARG(value));
+                    }
+                }
+                if (state->script.sub_idx != -1) {
+                    ImGui::TextDisabled("Element %i, the mouse wheel steps through them", state->script.sub_idx + 1);
+                }
+                ImGui::EndTooltip();
             }
         } else {
             state->script.sub_idx = -1;
@@ -5410,7 +5438,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, const md_script_vis_payload_o* vis_payload, str_t filename) {
+static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, md_script_vis_ref_t vis_ref, str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
@@ -5420,7 +5448,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
         return false;
     }
 
-    if (!vis_payload) {
+    if (md_script_vis_ref_empty(vis_ref)) {
         VIAMD_LOG_ERROR("Export Cube: Missing input visualization data");
         return false;
     }
@@ -5444,7 +5472,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             .sys = &data.mold.sys,
             .state = &data.mold.state,
         };
-        result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
+        result = md_script_vis_eval_ref(&vis, vis_ref, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
     }
 
     if (result == true) {
@@ -5463,8 +5491,8 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
 
             // transformation matrix from world to volume
             mat4_t M = vis.sdf.matrices[0];
-            const md_bitfield_t* bf = &vis.sdf.structures[0];
-            const int num_atoms = (int)md_bitfield_popcount(bf);
+            const md_bitset_t* bf = &vis.sdf.structures[0];
+            const int num_atoms = (int)md_bitset_count(*bf);
             const int vol_dim[3] = {(int)attr->format.shape[0], (int)attr->format.shape[1], (int)attr->format.shape[2]};
             const float* values = volume_values;
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
@@ -5484,10 +5512,9 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             const float scl = angstrom_to_bohr;
             M = mat4_mul(mat4_scale(scl, scl, scl), M);
 
-            size_t beg_bit = bf->beg_bit;
-            size_t end_bit = bf->end_bit;
-            while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-                size_t i = beg_bit - 1;
+            md_bitset_iter_t it = md_bitset_iter(*bf);
+            while (md_bitset_iter_next(&it)) {
+                size_t i = it.idx;
                 vec3_t coord = md_state_coord(&state, i);
                 coord = mat4_mul_vec3(M, coord, 1.0f);
                 int anum     = md_atom_atomic_number(&sys.atom, i);
@@ -5553,7 +5580,7 @@ static void draw_property_export_window(ApplicationState* data) {
         static int volume_format = 0;
         static int bins_exp      = 7;   // 128 bins
 
-        if (task_system::task_is_running(data->tasks.evaluate_full)) {
+        if (task_system::task_is_running(data->tasks.evaluate)) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
             return;
@@ -5679,7 +5706,7 @@ static void draw_property_export_window(ApplicationState* data) {
                 SeriesVolumeView view;
                 if (!series_resolve_volume(&view, data, selected)) {
                     VIAMD_LOG_ERROR("'%s' has no volume to export", label);
-                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_payload, path)) {
+                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_ref, path)) {
                     VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
                 }
             } else {
@@ -5769,10 +5796,10 @@ static void draw_property_export_window(ApplicationState* data) {
     ImGui::End();
 }
 
-md_array(int) extract_bitfield_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
-    size_t count = md_bitfield_popcount(bf);
+md_array(int) extract_bitfield_indices(const md_bitset_t* bf, md_allocator_i* alloc) {
+    size_t count = md_bitset_count(*bf);
     md_array(int) indices = md_array_create(int, count, alloc);
-    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
+    md_bitset_iter_extract_indices(indices, count, md_bitset_iter(*bf));
     return indices;
 }
 
@@ -5824,10 +5851,7 @@ void draw_structure_export_window(ApplicationState* data) {
             auto& query = struct_exp.query;
             bool valid = query.is_valid;
 
-            if (!md_bitfield_validate(&query.mask)) {
-                md_bitfield_init(&query.mask, persistent_alloc);
-            }
-            
+
             if (!valid) ImGui::PushInvalid();
             ImGui::InputQuery("Query", query.buf, sizeof(query.buf), query.is_valid, query.error);
             if (!valid) ImGui::PopInvalid();
@@ -5836,7 +5860,7 @@ void draw_structure_export_window(ApplicationState* data) {
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
             
             if (query.requires_evaluation) {
-                md_bitfield_clear(&query.mask);
+                md_bitset_free(&query.mask, persistent_alloc);
                 query.is_valid = md_filter(
                     &query.mask,
                     str_from_cstr(query.buf),
@@ -5845,18 +5869,18 @@ void draw_structure_export_window(ApplicationState* data) {
                     data->script.ir,
                     &query.is_dynamic,
                     query.error,
-                    sizeof(query.error)
+                    sizeof(query.error), persistent_alloc
                 );
                 query.requires_evaluation = false;
             }
 
             if (ImGui::IsWindowHovered()) {
                 // Clear highlight mask
-                md_bitfield_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->selection.highlight_mask);
             }
 
             if (query.is_valid && preview) {
-                md_bitfield_copy(&data->selection.highlight_mask, &query.mask);
+                md_bitmask_assign(&data->selection.highlight_mask, query.mask);
             }
         }
 
@@ -5873,16 +5897,16 @@ void draw_structure_export_window(ApplicationState* data) {
         auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
-                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->selection.selection_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->selection.selection_mask));
                 } break;
                 case 1: { // Visible Atoms
-                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->representation.visibility_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
                 } break;
                 case 2: { // Query
                     if (data->structure_export.query.is_dynamic) {
                         // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
                         // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
-                        md_bitfield_clear(&data->structure_export.query.mask);
+                        md_bitset_free(&data->structure_export.query.mask, persistent_alloc);
                         data->structure_export.query.is_valid = md_filter(
                             &data->structure_export.query.mask,
                             str_from_cstr(data->structure_export.query.buf),
@@ -5891,14 +5915,14 @@ void draw_structure_export_window(ApplicationState* data) {
                             data->script.ir,
                             &data->structure_export.query.is_dynamic,
                             data->structure_export.query.error,
-                            sizeof(data->structure_export.query.error)
+                            sizeof(data->structure_export.query.error), persistent_alloc
                         );
                     }
                     if (!data->structure_export.query.is_valid) {
                         VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
                         return 0;
                     } else {
-                        return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->structure_export.query.mask));
+                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(data->structure_export.query.mask));
                     }
                 } break;
                 case 3: { // All Atoms
@@ -6091,23 +6115,23 @@ static void update_md_buffers(ApplicationState* data) {
         MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.highlight_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->selection.highlight_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Highlighted;
             }
         }
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.selection_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->selection.selection_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Selected;
             }
         }
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->representation.visibility_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Visible;
             }
         }
@@ -6116,6 +6140,7 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
         md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
+        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
     }
 
     data->mold.dirty_gpu_buffers = 0;
@@ -6290,7 +6315,8 @@ static void render(ApplicationState* state) {
         immediate::Scope vis_scope(state->gfx.overlay, "visualization");
         immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
 
-        const md_script_vis_t& vis = state->script.vis;
+        static const md_script_vis_t nothing = {};
+        const md_script_vis_t& vis = state->script.vis_shown ? *state->script.vis_shown : nothing;
 
         if (vis.points) {
             immediate::points(vis_scope, (immediate::Vertex*)vis.points, md_array_size(vis.points), state->script.point_color);
@@ -6361,8 +6387,8 @@ static void render(ApplicationState* state) {
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitfield_empty(&state->selection.selection_mask);
-        const bool atom_highlight_empty = md_bitfield_empty(&state->selection.highlight_mask);
+        const bool atom_selection_empty = md_bitmask_empty(&state->selection.selection_mask);
+        const bool atom_highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
 
         glDepthMask(0);
 
@@ -6679,6 +6705,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                         op.args.licorice.sharpness = rep.bond_sharpness;
                         op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+                        op.args.licorice.bond_orders = rep.bond_orders;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6689,6 +6716,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                         op.args.ball_and_stick.sharpness = rep.bond_sharpness;
                         op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+                        op.args.ball_and_stick.bond_orders = rep.bond_orders;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6879,7 +6907,14 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
                 .rep = data->representation.reps[i].md_rep,
                 .model_matrix = NULL,
             };
-            MEMCPY(&op.args, &rep.scale, sizeof(op.args));
+            // The scales lead every struct of the args. The geometry has to be that of the opaque pass, which this
+            // draws again with GL_EQUAL depth: the bond orders too.
+            MEMCPY(&op.args, &rep.scale, MIN(sizeof(op.args), sizeof(rep.scale)));
+            if (rep.type == RepresentationType::Licorice) {
+                op.args.licorice.bond_orders = rep.bond_orders;
+            } else if (rep.type == RepresentationType::BallAndStick) {
+                op.args.ball_and_stick.bond_orders = rep.bond_orders;
+            }
             md_array_push(draw_ops, op, frame_alloc);
         }
     }

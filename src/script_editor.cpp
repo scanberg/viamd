@@ -352,7 +352,7 @@ static TextEditor::DocPos doc_pos(const Markers* m, int offset) {
 }
 
 void markers_add(Markers* m, MarkerType type, int prio, md_script_range_marker_t range, str_t text,
-                 const md_bitfield_t* atoms, const md_script_vis_payload_o* payload) {
+                 const md_bitset_t* atoms, md_script_vis_ref_t vis_ref) {
     ASSERT(m);
     ASSERT(m->arena && "markers_set_source() must be called before markers are added");
     Marker marker = {};
@@ -362,12 +362,11 @@ void markers_add(Markers* m, MarkerType type, int prio, md_script_range_marker_t
     marker.end  = doc_pos(m, range.end);
     marker.text = str_copy(text, m->arena);
     if (atoms) {
-        md_bitfield_t* copy = (md_bitfield_t*)md_alloc(m->arena, sizeof(md_bitfield_t));
-        md_bitfield_init(copy, m->arena);
-        md_bitfield_copy(copy, atoms);
+        md_bitset_t* copy = (md_bitset_t*)md_alloc(m->arena, sizeof(md_bitset_t));
+        *copy = md_bitset_copy(*atoms, m->arena);
         marker.atoms = copy;
     }
-    marker.payload = payload;
+    marker.vis_ref = vis_ref;
     md_array_push(m->list, marker, m->arena);
     m->dirty = true;
 }

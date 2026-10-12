@@ -399,7 +399,7 @@ struct SingleSelectionSequence {
 
 struct Selection {
     char name[64] = "sel";
-    md_bitfield_t atom_mask {};
+    md_bitset_t atom_mask {};
 };
 
 // One dipole group the producer published, as two attributes sharing an index space:
@@ -864,7 +864,7 @@ struct Representation {
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
-    md_bitfield_t atom_mask = {};
+    md_bitset_t atom_mask = {};
     md_gl_rep_t md_rep = {};
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t gfx_rep = {};
@@ -899,6 +899,7 @@ struct Representation {
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+    bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
 
     ElectronicStructureRepresentation electronic_structure = {};
     AtomAttributeColoring atom_attribute = {};
@@ -986,6 +987,33 @@ struct PickingReadbackRequest {
     vec2_t screen_coord = {0};
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
+
+// The frame sets of the script evaluation (md_script_eval_desc_t): every frame, and the timeline filter's
+enum {
+    SCRIPT_FRAME_SET_ALL = 0,
+    SCRIPT_FRAME_SET_FILTER,
+    SCRIPT_FRAME_SET_COUNT,
+};
+
+// The timeline filter as applied to SCRIPT_FRAME_SET_FILTER: frames [beg, end[, none while not enabled
+struct ScriptFilterFrames {
+    bool     enabled = false;
+    uint32_t beg = 0;
+    uint32_t end = 0;
+};
+
+// What the script visualization is to show this frame (script_visualize_ref, script_visualize_str)
+struct ScriptVisTarget {
+    enum Kind : uint8_t { None = 0, Ref, Str };
+    Kind kind = None;
+    md_script_vis_ref_t ref = {};       // Ref
+    str_t str = {};                     // Str: an expression, copied into the frame allocator
+    int subidx = -1;
+    md_script_vis_flags_t flags = 0;
+};
+
+// A visualization computed off the main thread (viamd.cpp)
+struct ScriptVisJob;
 
 // Edge length of the device evaluation scratch (ApplicationState::gpu_volume), in voxels: the largest
 // grid any evaluation on the device can write, which is the largest compute_dim makes.
@@ -1153,8 +1181,7 @@ struct ApplicationState {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID evaluate_full = task_system::INVALID_ID;
-        task_system::ID evaluate_filt = task_system::INVALID_ID;
+        task_system::ID evaluate = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -1162,8 +1189,10 @@ struct ApplicationState {
         SelectionGranularity granularity = SelectionGranularity::Atom;
         SingleSelectionSequence single_selection_sequence;
 
-        md_bitfield_t selection_mask {};
-        md_bitfield_t highlight_mask {};
+        // Edited in place, every frame for the highlight: masks over the atoms, in the persistent allocator
+        // (initialized at startup, see main). Everything else here holds sets, replaced whole.
+        md_bitmask_t selection_mask {};
+        md_bitmask_t highlight_mask {};
         Selection* stored_selections = NULL;
 
         struct {
@@ -1183,14 +1212,14 @@ struct ApplicationState {
         struct {
             char buf[256] = "";
             char error[256] = "";
-            md_bitfield_t mask = {0};
+            md_bitmask_t mask = {};
             bool query_ok = false;
             bool query_invalid = true;
             bool show_window = false;
         } query;
 
         struct {
-            md_bitfield_t mask = {0};
+            md_bitmask_t mask = {};
             SelectionGrowthMode mode = SelectionGrowthMode::CovalentBond;
             float extent = 1;
             bool mask_invalid = true;
@@ -1349,7 +1378,7 @@ struct ApplicationState {
     // --- REPRESENTATIONS ---
     struct {
         md_array(Representation) reps = 0;
-        md_bitfield_t visibility_mask = {0};
+        md_bitmask_t visibility_mask = {};     // the union of the masks of the enabled representations
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
@@ -1387,7 +1416,7 @@ struct ApplicationState {
             uint64_t version = 1;
             uint64_t evaluated_version = 0;
             uint64_t ir_fingerprint = 0;
-            md_bitfield_t mask = { 0 };
+            md_bitset_t mask = { 0 };
         } recenter_query;
 
         // External state which user controls
@@ -1397,13 +1426,13 @@ struct ApplicationState {
 
         // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
         // This is populated by assigning a user defined selection.
-        md_bitfield_t selection_mask = {0};
+        md_bitset_t selection_mask = {0};
 
         struct {
             // The atoms the reference was built from, compared exactly against the active target. A query
             // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
             // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
-            md_bitfield_t target_mask = {0};
+            md_bitset_t target_mask = {0};    // in the persistent allocator
             bool valid = false;
 
 			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
@@ -1457,23 +1486,34 @@ struct ApplicationState {
 
         uint64_t text_hash;
 
-        // A bit confusing and a bit of a hack,
-        // But we want to preserve the ir while evaluating it (visualizing it etc)
-        // So we only commit the 'new' ir to eval_ir upon starting evaluation
+        // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
+        // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
+        // never freed while either points at it (see script_ir_collect).
         md_script_ir_t*   ir = nullptr;
         md_script_ir_t*   eval_ir = nullptr;
 
-        md_script_eval_t* full_eval = nullptr;
-        md_script_eval_t* filt_eval = nullptr;
-        md_script_vis_t vis = {};
+        // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
+        md_array(md_script_ir_t*) all_irs = nullptr;
+
+        // One evaluation, over the frame sets SCRIPT_FRAME_SET_*: temporal properties once for every frame,
+        // distributions and volumes over each set's own frames
+        md_script_eval_t* eval = nullptr;
+        ScriptFilterFrames filter_frames = {};      // as applied to SCRIPT_FRAME_SET_FILTER
+        md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
+        // The visualization: the target is set anew every frame, the job computes it off the main thread, and
+        // what is shown is the last result while it is still for the target (see script_vis_update)
+        ScriptVisTarget vis_target = {};
+        ScriptVisJob* vis_running = nullptr;
+        ScriptVisJob* vis_result = nullptr;
+        task_system::ID vis_task = task_system::INVALID_ID;
+        const md_script_vis_t* vis_shown = nullptr;
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
 
         bool compile_ir = false;
         bool eval_init = false;
-        bool evaluate_full = false;
-        bool evaluate_filt = false;
+        bool evaluate = false;     // a new evaluation, to be started
         double time_since_last_change = 0.0;
         uint64_t ir_fingerprint = 0;
     } script;
@@ -1486,7 +1526,7 @@ struct ApplicationState {
         struct {
             char buf[256] = "";
             char error[256] = "";
-            md_bitfield_t mask = {0};
+            md_bitset_t mask = {0};
             bool is_valid = false;
             bool is_dynamic = false;
             bool requires_evaluation = false;
@@ -1601,67 +1641,51 @@ static inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
 static inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
 static inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
-static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
+// Applies op to a mask (the selection, the highlight) with the set s as the operand
+static inline void modify_field(md_bitmask_t* m, md_bitset_t s, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
-        md_bitfield_or_inplace(bf, mask);
+        md_bitmask_or(m, s);
         break;
     case SelectionOperator::And:
-        md_bitfield_and_inplace(bf, mask);
+        md_bitmask_and(m, s);
         break;
     case SelectionOperator::AndNot:
-        md_bitfield_andnot_inplace(bf, mask);
-        break;
-    case SelectionOperator::Set:
-        md_bitfield_copy(bf, mask);
-        break;
-    default:
-        ASSERT(false);
-    }
-}
-
-static inline void modify_field(md_bitfield_t* bf, md_urange_t range, SelectionOperator op) {
-    switch(op) {
-    case SelectionOperator::Or:
-        md_bitfield_set_range(bf, range.beg, range.end);
-        break;
-    case SelectionOperator::And:
-        md_bitfield_clear_range(bf, 0, range.beg);
-        md_bitfield_clear_range(bf, range.end, bf->end_bit);
-        break;
-    case SelectionOperator::AndNot:
-        md_bitfield_clear_range(bf, range.beg, range.end);
-        break;
-    case SelectionOperator::Set:
-        md_bitfield_clear(bf);
-        md_bitfield_set_range(bf, range.beg, range.end);
-        break;
     case SelectionOperator::Clear:
-        md_bitfield_clear_range(bf, range.beg, range.end);
+        md_bitmask_andnot(m, s);
+        break;
+    case SelectionOperator::Set:
+        md_bitmask_assign(m, s);
         break;
     default:
         ASSERT(false);
     }
 }
 
-static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
+static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOperator op) {
+    modify_field(m, md_bitset_range(range.beg, range.end), op);
+}
+
+// Grows the mask to whole components or instances: those it has any atom of. In place: the entities are
+// disjoint, so setting one does not change what the test of another sees.
+static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
+    if (granularity == SelectionGranularity::Atom || md_bitmask_empty(mask)) return;
+
     switch(granularity) {
-    case SelectionGranularity::Atom:
-        break;
     case SelectionGranularity::Component:
         for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
             md_urange_t range = md_system_component_atom_range(&sys, i);
-            if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
-                md_bitfield_set_range(mask, range.beg, range.end);
+            if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
+                md_bitmask_set_range(mask, range.beg, range.end);
             }
         }
         break;
     case SelectionGranularity::Instance:
         for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
             md_urange_t range = md_system_instance_atom_range(&sys, i);
-            if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
-                md_bitfield_set_range(mask, range.beg, range.end);
+            if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
+                md_bitmask_set_range(mask, range.beg, range.end);
             }
         }
         break;
@@ -1672,7 +1696,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
 
 // Sets the bits of the entity (atom, component or instance) containing atom_idx, according to granularity.
 // Cheaper than setting a single bit followed by grow_mask_by_selection_granularity, as it only looks up the owning entity.
-static inline void mask_set_atom_by_selection_granularity(md_bitfield_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
+static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     if (atom_idx >= sys.atom.count) return;
 
@@ -1697,13 +1721,13 @@ static inline void mask_set_atom_by_selection_granularity(md_bitfield_t* mask, s
     default:
         ASSERT(false);
     }
-    md_bitfield_set_range(mask, range.beg, range.end);
+    md_bitmask_set_range(mask, range.beg, range.end);
 }
 
 // Sets the bits of a component, or of its instance at Instance granularity, for a hit that names a component rather
 // than an atom (a backbone segment of the cartoon or ribbons). There is no atom to pick there, so Atom granularity
 // selects the component as well.
-static inline void mask_set_component_by_selection_granularity(md_bitfield_t* mask, size_t comp_idx, SelectionGranularity granularity, const md_system_t& sys) {
+static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mask, size_t comp_idx, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     if (comp_idx >= sys.component.count) return;
 
@@ -1844,7 +1868,8 @@ bool save_workspace(ApplicationState* app, str_t file);
 void workspace_register_window(const char* name, bool* show);
 
 // Selections
-Selection* create_selection(ApplicationState* app, str_t name, md_bitfield_t* bf = 0);
+// The selection keeps its own copy of atom_mask
+Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_mask = {});
 void remove_selection(ApplicationState* app, size_t idx);
 void remove_all_selections(ApplicationState* app);
 
@@ -1932,7 +1957,7 @@ int atom_attribute_variant_count(const md_attribute_t* attr);
 // over the atoms of 'mask' (all of them when NULL). Derived rather than stored: it belongs to whoever
 // is drawing the ramp, not to the table. Scans the whole attribute, so not something to call per
 // frame without a reason. Atoms without a value play no part; invalid when there are none with one.
-ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitfield_t* mask);
+ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitset_t* mask);
 
 // What a legend calls it: the label, and which variant when there are several ("Charge [2/5]")
 void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* attr, int variant_idx);
@@ -2219,7 +2244,7 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 // Recentering operations (low level)
 
 void recenter_mark_query_dirty(ApplicationState* app);
-const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* app);
+const md_bitset_t& recenter_get_active_target_mask(const ApplicationState* app);
 bool recenter_update_query_mask(ApplicationState* app);
 void recenter_update(ApplicationState* app);
 
@@ -2383,11 +2408,12 @@ static inline vec2_t world_to_surface_project(
     return out_coord;
 }
 
+// Sets mask to the points (of candidate_mask, all of them when NULL) which project into the region
 void point_set_region_mask_compute(
-    md_bitfield_t* mask,
+    md_bitmask_t* mask,
     const vec3_t xyz[],
     size_t count,
-    const md_bitfield_t* candidate_mask,
+    const md_bitset_t* candidate_mask,
     const mat4_t& world_to_clip,
     const vec2_t& region_min,
     const vec2_t& region_max,
@@ -2405,9 +2431,41 @@ FileQueue::Entry file_queue_pop(FileQueue* queue);
 void file_queue_process(ApplicationState* state);
 
 // view
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitfield_t* mask = nullptr);
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr);
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask) {
+    const md_bitset_t members = md_bitmask_view(mask);
+    reset_view(transform, state, &members);
+}
+
+// Script IR lifetime
+// Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the
+// evaluation task and the visualization task only, and each takes the current one (script.eval_ir, script.ir)
+// when it starts. So while neither runs, an IR which neither field points at is used by nothing, and
+// script_ir_collect frees it. Main thread, once per frame. A new task which uses an IR joins the check there.
+md_script_ir_t* script_ir_create(ApplicationState* state);
+void script_ir_collect(ApplicationState* state);
 
 // Script visualization
-void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
+// The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being
+// evaluated (whose properties the plots show). NULL if neither, e.g. once it has been recompiled.
+const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref);
+// What is visualized is set anew every frame by whatever is hovered, and the last one set in a frame is what
+// is shown. It is computed on a worker thread, never stalling the frame, and shown once ready: from then on for
+// as long as it is still what is set. When the atoms move it is computed again, while the previous result
+// stays on screen.
+//
+// Sets ref, visualized in the IR which made it. Nothing if it no longer resolves.
+void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags = 0);
+// What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
+// beside the type. Empty while it is computed, and for a visualization of an expression.
+str_t script_vis_value_text(ApplicationState* state);
+// Sets an expression, compiled against the script being edited (its identifiers)
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
+// Clears what is set. Start of every frame, before anything sets one.
+void script_vis_begin_frame(ApplicationState* state);
+// Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
+// shown (script.vis_shown), highlighting its atoms. After everything which sets one, before drawing.
+void script_vis_update(ApplicationState* state);
+// Drops every result, waiting for a running computation. Before the system goes.
+void script_vis_reset(ApplicationState* state);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

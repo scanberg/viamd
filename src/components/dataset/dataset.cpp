@@ -9,7 +9,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_log.h>
 #include <md_system.h>
 #include <md_util.h>
@@ -740,9 +740,9 @@ struct Dataset : viamd::EventHandler {
             // Shift + click on element header to select all atom types that use this element
             // Since the hover should already contain the correct selection we can just copy it to the filter mask to achieve this
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
             } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
             }
         }
     }
@@ -1187,20 +1187,21 @@ struct Dataset : viamd::EventHandler {
 
     static void highlight_entity(ApplicationState& data, int entity) {
         const md_system_t& sys = data.mold.sys;
-        md_bitfield_clear(&data.selection.highlight_mask);
+        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_clear(hb);
         if (entity < 0) {
             // The atoms of no instance
-            md_bitfield_set_range(&data.selection.highlight_mask, 0, sys.atom.count);
+            md_bitmask_set_range(hb, 0, (uint32_t)sys.atom.count);
             for (size_t i = 0; i < sys.instance.count; ++i) {
                 const md_urange_t r = md_system_instance_atom_range(&sys, i);
-                md_bitfield_clear_range(&data.selection.highlight_mask, r.beg, r.end);
+                md_bitmask_clear_range(hb, r.beg, r.end);
             }
-            return;
-        }
-        for (size_t i = 0; i < sys.instance.count; ++i) {
-            if (md_instance_entity_idx(&sys.instance, i) == entity) {
-                const md_urange_t r = md_system_instance_atom_range(&sys, i);
-                md_bitfield_set_range(&data.selection.highlight_mask, r.beg, r.end);
+        } else {
+            for (size_t i = 0; i < sys.instance.count; ++i) {
+                if (md_instance_entity_idx(&sys.instance, i) == entity) {
+                    const md_urange_t r = md_system_instance_atom_range(&sys, i);
+                    md_bitmask_set_range(hb, r.beg, r.end);
+                }
             }
         }
     }
@@ -1246,9 +1247,8 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsItemHovered()) {
                 const str_t full = md_component_name(&sys.component, comp_idx);
                 ImGui::SetTooltip(STR_FMT " %d", STR_ARG(full), md_component_seq_id(&sys.component, comp_idx));
-                md_bitfield_clear(&data.selection.highlight_mask);
                 const md_urange_t atoms = md_system_component_atom_range(&sys, comp_idx);
-                md_bitfield_set_range(&data.selection.highlight_mask, atoms.beg, atoms.end);
+                md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
                 handle_item_click(data);
             }
         }
@@ -1370,8 +1370,7 @@ struct Dataset : viamd::EventHandler {
                                 expanded_instance = expanded_instance == k ? -1 : k;
                             }
                             if (ImGui::IsItemHovered()) {
-                                md_bitfield_clear(&data.selection.highlight_mask);
-                                md_bitfield_set_range(&data.selection.highlight_mask, atoms.beg, atoms.end);
+                                md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range((uint32_t)(atoms.beg), (uint32_t)(atoms.end)));
                                 handle_item_click(data);
                             }
                             if (expanded_instance == k && row.polymer) {
@@ -1464,9 +1463,10 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu atoms have no element", c.atoms_without_element);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Their element could not be told from the file: they are drawn as unknown and\nhave no radius or colour of their own. Set it under Atom Types.");
-                md_bitfield_clear(&data.selection.highlight_mask);
+                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_clear(hb);
                 for (size_t a = 0; a < sys.atom.count; ++a) {
-                    if (atom_without_element(sys, a)) md_bitfield_set_bit(&data.selection.highlight_mask, a);
+                    if (atom_without_element(sys, a)) md_bitmask_set_bit(hb, (uint32_t)a);
                 }
                 handle_item_click(data);
             }
@@ -1476,12 +1476,13 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu residues are named like %s but their backbone was not found", count, what);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their atom names may not follow the usual convention.");
-                md_bitfield_clear(&data.selection.highlight_mask);
+                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_clear(hb);
                 for (size_t i = 0; i < sys.component.count; ++i) {
                     const md_component_flags_t f = md_component_flags(&sys.component, i);
                     if (md_component_flags_kind(f) == kind && !(f & MD_COMPONENT_FLAG_RESOLVED)) {
                         const md_urange_t r = md_system_component_atom_range(&sys, i);
-                        md_bitfield_set_range(&data.selection.highlight_mask, r.beg, r.end);
+                        md_bitmask_set_range(hb, r.beg, r.end);
                     }
                 }
                 handle_item_click(data);
@@ -1497,11 +1498,12 @@ struct Dataset : viamd::EventHandler {
         if (c.bonds_user > 0) {
             ImGui::TextDisabled(ICON_FA_CIRCLE_INFO " %zu bonds were added by you", c.bonds_user);
             if (ImGui::IsItemHovered()) {
-                md_bitfield_clear(&data.selection.highlight_mask);
+                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_clear(hb);
                 for (size_t b = 0; b < sys.bond.count; ++b) {
                     if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
-                        md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[0]);
-                        md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[1]);
+                        md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[0]);
+                        md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[1]);
                     }
                 }
             }
@@ -2312,7 +2314,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         if (ImGui::IsWindowHovered()) {
-            md_bitfield_clear(&data.selection.highlight_mask);
+            md_bitmask_clear(&data.selection.highlight_mask);
         }
 
         md_temp_scope_t temp = md_temp_begin();
@@ -2351,8 +2353,8 @@ struct Dataset : viamd::EventHandler {
                     ImGui::PopStyleVar();
 
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem)) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
-                        md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                        md_bitmask_clear(&data.selection.highlight_mask);
+                        md_bitmask_set_indices(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                         handle_item_click(data);
                         // Shift + right click is taken by deselect
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -2438,11 +2440,12 @@ struct Dataset : viamd::EventHandler {
 
         const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
         if (table_res.hovered) {
-            md_bitfield_clear(&data.selection.highlight_mask);
+            md_bitmask_t* hb = &data.selection.highlight_mask;
+            md_bitmask_clear(hb);
             for (size_t i = 0; i < num_types; ++i) {
                 const DatasetItem& item = atom_types[i];
                 if (type.z[i] == table_res.z) {
-                    md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                    md_bitmask_set_indices(hb, (uint32_t*)item.indices, md_array_size(item.indices));
                 }
             }
             handle_item_click(data);
@@ -2531,7 +2534,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(560, 700), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::IsWindowHovered()) {
-                md_bitfield_clear(&data.selection.highlight_mask);
+                md_bitmask_clear(&data.selection.highlight_mask);
             }
             if (ImGui::BeginTabBar("##system_tabs")) {
                 if (ImGui::BeginTabItem("Overview")) {
