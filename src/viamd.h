@@ -1498,6 +1498,8 @@ struct ApplicationState {
     bool show_script_reference_window = false;
     bool show_debug_window = false;
     bool show_property_export_window = false;
+    int  property_export_kind = -1;         // A PropertyExportKind the window is asked to show, consumed when it draws
+    SeriesKey property_export_key = {};
 
     TextEditor editor = {};
     script_editor::Markers editor_markers = {};
@@ -2409,6 +2411,17 @@ void file_queue_process(ApplicationState* state);
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitfield_t* mask = nullptr);
 
 // Script visualization
+// What the Property Export window can write
+enum PropertyExportKind : int {
+    PropertyExportKind_Temporal = 0,
+    PropertyExportKind_Distribution,
+    PropertyExportKind_Volume,
+    PropertyExportKind_Ramachandran,
+    PropertyExportKind_ShapeSpace,
+};
+// Every plotting window has an Export entry which opens the window on its kind, with the series selected when there is one
+void property_export_open(ApplicationState* state, PropertyExportKind kind, const SeriesKey* key = nullptr);
+
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

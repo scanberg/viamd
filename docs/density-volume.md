@@ -11,7 +11,7 @@ it to show or hide the layer, right-click it to remove or duplicate it and to ed
 style (isosurfaces or direct volume rendering, clip planes, bounding box, reference
 structures), or drag it out of the window to remove it. A property dropped again, or a
 layer duplicated, is shown a second time with a style of its own. The **Layers** menu
-holds the same settings for every layer. New layers are drawn as one isosurface, in a
+holds the same settings for every layer. **Export** opens the Property Export window on the active layer. New layers are drawn as one isosurface, in a
 color of their own.
 Reference structures, their atom picking, and camera interaction remain available
 for each visible, valid layer. The first added volume fits the camera; subsequent

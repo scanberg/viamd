@@ -270,10 +270,8 @@ struct Shapespace : viamd::EventHandler {
                     series_vector_layers_menu(app_state, sp, 3);
                     ImGui::EndMenu();
                 }
-                if (ImGui::BeginMenu("Export", sp.count > 0)) {
-                    if (ImGui::MenuItem("XVG")) export_shape_space(STR_LIT("xvg"));
-                    if (ImGui::MenuItem("CSV")) export_shape_space(STR_LIT("csv"));
-                    ImGui::EndMenu();
+                if (ImGui::MenuItem("Export", nullptr, false, sp.count > 0)) {
+                    property_export_open(app_state, PropertyExportKind_ShapeSpace, plot_first_series_key(&sp, 1));
                 }
                 ImGui::EndMenuBar();
             }
@@ -572,78 +570,6 @@ struct Shapespace : viamd::EventHandler {
             default:
                 break;
             }
-        }
-    }
-
-    // The weights of every series of the plot, a column each
-    void export_shape_space(str_t ext) {
-        char path_buf[2048];
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) return;
-        str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
-        md_array(str_t)  column_labels = 0;
-        md_array(float*) column_values = 0;
-
-        md_temp_scope_t temp_scope = md_temp_begin();
-        md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-        defer { md_temp_end(temp_scope); };
-
-        // The time column below is timeline.x_values, which is held in display units, so the
-        // label has to come from the same place rather than from the trajectory.
-        md_unit_t time_unit = app_state->timeline.time_unit;
-
-        str_t x_label = STR_INIT("Frame");
-        if (!md_unit_is_none(time_unit)) {
-            char unit_buf[64];
-            md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-            x_label = str_printf(temp_arena, "Time (%s)", unit_buf);
-        }
-        md_array_push(column_labels, x_label, temp_arena);
-        md_array_push(column_values, NULL, temp_arena);
-
-        const PlotSubplot& sp = plot[0];
-        size_t num_rows = 0;
-        for (int j = 0; j < sp.count; ++j) {
-            SeriesVectorView v;
-            if (!series_resolve_vector(&v, app_state, sp.series[j].key, 3)) continue;
-            num_rows = MAX(num_rows, (size_t)v.num_frames);
-            static const char* const names[3] = {"linear", "planar", "isotropic"};
-            for (uint32_t k = 0; k < v.count; ++k) {
-                for (int c = 0; c < 3; ++c) {
-                    const str_t label = v.count > 1 ? str_printf(temp_arena, "%s [%u] %s", v.label, k + 1, names[c])
-                                                    : str_printf(temp_arena, "%s %s", v.label, names[c]);
-                    md_array_push(column_labels, label, temp_arena);
-                    md_array_push(column_values, NULL, temp_arena);
-                    float** col = &column_values[md_array_size(column_values) - 1];
-                    for (uint32_t f = 0; f < v.num_frames; ++f) {
-                        md_array_push(*col, v.data[((size_t)f * v.count + k) * 3 + c], temp_arena);
-                    }
-                }
-            }
-        }
-        if (!num_rows) return;
-
-        const float* time = app_state->timeline.x_values;
-        for (size_t i = 0; i < num_rows; ++i) {
-            md_array_push(column_values[0], time ? time[i] : (float)i, temp_arena);
-        }
-
-        const size_t num_cols = md_array_size(column_values);
-        ASSERT(num_cols == md_array_size(column_labels));
-        if (str_eq(ext, STR_LIT("csv"))) {
-            md_csv_write_to_file(column_values, column_labels, num_cols, num_rows, path);
-        } else if (str_eq(ext, STR_LIT("xvg"))) {
-            str_t title = STR_INIT("Shape Space");
-            str_t y_label = STR_INIT("Shape Weight Ratio");
-            str_t header = md_xvg_format_header(title, x_label, y_label, md_array_size(column_labels) - 1, column_labels + 1, temp_arena);
-            str_t xvg    = md_xvg_format(header, num_cols, num_rows, column_values, temp_arena);
-            md_file_t file = {0};
-            if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                md_file_write(file, xvg.ptr, xvg.len);
-                md_file_close(&file);
-            }
-        } else {
-            MD_LOG_DEBUG("Unrecognized export format");
-            ASSERT(false);
         }
     }
 };

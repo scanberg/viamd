@@ -166,6 +166,10 @@ void plot_remove_series(PlotSubplot& sp, int index);
 // Out of one subplot and into another, keeping its style
 void plot_move_series(const ApplicationState* app, PlotSubplot& src, PlotSubplot& dst, const SeriesKey& key);
 void plot_clear(PlotSubplot* subplots, int count);
+// The first series of the first subplot which has one, NULL when there is none
+const SeriesKey* plot_first_series_key(const PlotSubplot* subplots, int count);
+// What every window with series says where it has none
+void series_empty_hint();
 
 // Workspace: the subplot count and every entry with its style, as one section plus one section
 // per entry. The layout is cleared by the caller before a workspace is read.

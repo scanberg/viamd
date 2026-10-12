@@ -1099,6 +1099,7 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
     }
 
     series_apply_action(app, sp, action_idx, action);
+    if (sp.count == 0) series_empty_hint();
 }
 
 void series_vector_drag_out(PlotSubplot& sp) {
@@ -1197,6 +1198,17 @@ void plot_move_series(const ApplicationState* app, PlotSubplot& src, PlotSubplot
         dst.series[dst.count++] = src.series[src_idx];
     }
     plot_remove_series(src, src_idx);
+}
+
+const SeriesKey* plot_first_series_key(const PlotSubplot* subplots, int count) {
+    for (int i = 0; i < count; ++i) {
+        if (subplots[i].count > 0) return &subplots[i].series[0].key;
+    }
+    return nullptr;
+}
+
+void series_empty_hint() {
+    ImGui::TextDisabled("Nothing to show yet: add a property from the Properties menu, or drag one onto this window.");
 }
 
 void plot_clear(PlotSubplot* subplots, int count) {

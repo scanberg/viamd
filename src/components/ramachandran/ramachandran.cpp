@@ -898,6 +898,9 @@ struct Ramachandran : viamd::EventHandler {
                     if (ImGui::Selectable("Preproline",   layout_mode == 4)) layout_mode = 4;
                     ImGui::EndMenu();
                 }
+                if (ImGui::MenuItem("Export", nullptr, false, sp.count > 0)) {
+                    property_export_open(&state, PropertyExportKind_Ramachandran, plot_first_series_key(&sp, 1));
+                }
                 ImGui::EndMenuBar();
             }
 

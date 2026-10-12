@@ -866,12 +866,15 @@ struct DensityVolume : viamd::EventHandler {
                     ImGui::Checkbox("Coordinate System Widget", &show_coordinate_system_widget);
                     ImGui::EndMenu();
                 }
+                if (ImGui::MenuItem("Export", nullptr, false, active_layer >= 0)) {
+                    property_export_open(state, PropertyExportKind_Volume, &layers[active_layer].volume_key);
+                }
 
                 ImGui::EndMenuBar();
             }
 
             layer_bar(state, &remove_uid, &duplicate_uid);
-            if (layers.empty()) ImGui::TextDisabled("Add from Properties or drag a volume row from Attributes.");
+            if (layers.empty()) series_empty_hint();
             if (notice[0]) ImGui::TextWrapped("%s", notice);
             // The menus above hold references into the layer list: layers are added and removed at the end
             for (auto& item : layers) update(state, item);

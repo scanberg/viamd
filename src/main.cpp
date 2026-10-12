@@ -4132,6 +4132,9 @@ static void draw_timeline_window(ApplicationState* data) {
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::MenuItem("Export")) {
+                property_export_open(data, PropertyExportKind_Temporal, plot_first_series_key(data->timeline.subplots, PLOT_MAX_SUBPLOTS));
+            }
             ImGui::EndMenuBar();
         }
 
@@ -4162,6 +4165,7 @@ static void draw_timeline_window(ApplicationState* data) {
             double filter_end = frame_to_time(data->timeline.filter.end_frame, *data);
             double time = frame_to_time(data->animation.frame, *data);
 
+            if (!plot_first_series_key(data->timeline.subplots, PLOT_MAX_SUBPLOTS)) series_empty_hint();
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
             const ImPlotFlags plot_flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
@@ -4184,9 +4188,12 @@ static void draw_timeline_window(ApplicationState* data) {
                 bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
                 for (int j = 0; j < sp.count; ++j) {
                     resolved[j] = series_resolve_temporal(&views[j], data, sp.series[j].key);
+                    // Two entries of the same series are two items of the plot
+                    snprintf(views[j].plot_id, sizeof(views[j].plot_id), "%s##%u", views[j].label, sp.series[j].uid);
                 }
 
                 int remove_idx = -1;
+                int duplicate_idx = -1;
 
                 if (ImPlot::BeginPlot("", ImVec2(), plot_flags)) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
@@ -4391,6 +4398,11 @@ static void draw_timeline_window(ApplicationState* data) {
                                 remove_idx = j;
                                 ImGui::CloseCurrentPopup();
                             }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Duplicate")) {
+                                duplicate_idx = j;
+                                ImGui::CloseCurrentPopup();
+                            }
 
                             if (resolved[j] && !v.band) {
                                 const char* plot_type_names[] = {"Line", "Scatter"};
@@ -4520,6 +4532,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     ImPlot::EndPlot();
                 }
 
+                series_apply_action(data, sp, duplicate_idx, SeriesAction_Duplicate);
                 if (remove_idx != -1) {
                     plot_remove_series(sp, remove_idx);
                 }
@@ -4634,6 +4647,9 @@ static void draw_distribution_window(ApplicationState* data) {
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::MenuItem("Export")) {
+                property_export_open(data, PropertyExportKind_Distribution, plot_first_series_key(data->distributions.subplots, PLOT_MAX_SUBPLOTS));
+            }
             ImGui::EndMenuBar();
 
         if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
@@ -4646,6 +4662,7 @@ static void draw_distribution_window(ApplicationState* data) {
         const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
         const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
+        if (!plot_first_series_key(data->distributions.subplots, PLOT_MAX_SUBPLOTS)) series_empty_hint();
         if (ImPlot::BeginSubplots("##distribution_plots", num_subplots, 1, ImVec2(-1,-1))) {
             for (int i = 0; i < num_subplots; ++i) {
                 PlotSubplot& sp = data->distributions.subplots[i];
@@ -4654,9 +4671,11 @@ static void draw_distribution_window(ApplicationState* data) {
                 bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
                 for (int j = 0; j < sp.count; ++j) {
                     resolved[j] = series_resolve_histogram(&views[j], data, sp.series[j].key, sp.series[j].num_bins);
+                    snprintf(views[j].plot_id, sizeof(views[j].plot_id), "%s##%u", views[j].label, sp.series[j].uid);
                 }
 
                 int remove_idx = -1;
+                int duplicate_idx = -1;
 
                 if (fit_subplot[i]) {
                     ImPlot::SetNextAxesToFit();
@@ -4821,6 +4840,11 @@ static void draw_distribution_window(ApplicationState* data) {
                                 remove_idx = j;
                                 ImGui::CloseCurrentPopup();
                             }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Duplicate")) {
+                                duplicate_idx = j;
+                                ImGui::CloseCurrentPopup();
+                            }
 
                             const char* plot_type_names[] = {"Line", "Area", "Bars"};
                             const PlotType plot_types[]   = {PlotType_Line, PlotType_Area, PlotType_Bars};
@@ -4942,6 +4966,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     ImPlot::EndPlot();
                 }
 
+                series_apply_action(data, sp, duplicate_idx, SeriesAction_Duplicate);
                 if (remove_idx != -1) {
                     plot_remove_series(sp, remove_idx);
                 }
@@ -5418,6 +5443,12 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
 
 #define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
 
+void property_export_open(ApplicationState* state, PropertyExportKind kind, const SeriesKey* key) {
+    state->show_property_export_window = true;
+    state->property_export_kind = (int)kind;
+    state->property_export_key = key ? *key : SeriesKey{};
+}
+
 static void draw_property_export_window(ApplicationState* data) {
     ASSERT(data);
 
@@ -5436,9 +5467,11 @@ static void draw_property_export_window(ApplicationState* data) {
     };
 
     enum ExportKind {
-        ExportKind_Temporal = 0,
-        ExportKind_Distribution,
-        ExportKind_Volume,
+        ExportKind_Temporal = PropertyExportKind_Temporal,
+        ExportKind_Distribution = PropertyExportKind_Distribution,
+        ExportKind_Volume = PropertyExportKind_Volume,
+        ExportKind_Ramachandran = PropertyExportKind_Ramachandran,
+        ExportKind_ShapeSpace = PropertyExportKind_ShapeSpace,
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
@@ -5447,6 +5480,15 @@ static void draw_property_export_window(ApplicationState* data) {
         static int table_format  = 0;
         static int volume_format = 0;
         static int bins_exp      = 7;   // 128 bins
+
+        // The Export entry of a window asks for its kind, and the series it shows
+        if (data->property_export_kind >= 0) {
+            kind = data->property_export_kind;
+            if (data->property_export_key.path[0]) selected = data->property_export_key;
+            data->property_export_kind = -1;
+        }
+        const bool vector_kind = kind == ExportKind_Ramachandran || kind == ExportKind_ShapeSpace;
+        const uint32_t vector_components = kind == ExportKind_Ramachandran ? 2 : 3;
 
         if (task_system::task_is_running(data->tasks.evaluate_full)) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
@@ -5462,11 +5504,17 @@ static void draw_property_export_window(ApplicationState* data) {
         md_array(SeriesKey) candidates = 0;
         {
             const uint32_t script_kinds =
+                vector_kind                     ? (uint32_t)MD_SCRIPT_PROPERTY_FLAG_VECTOR :
                 kind == ExportKind_Temporal     ? (uint32_t)MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
                 kind == ExportKind_Distribution ? (uint32_t)(MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) :
                                                   (uint32_t)MD_SCRIPT_PROPERTY_FLAG_VOLUME;
             auto push_script = [&](SeriesSource source) {
                 series_for_each_script_property(data, source, script_kinds, [&](const SeriesKey& key) {
+                    if (vector_kind) {
+                        SeriesVectorView v;
+                        if (series_resolve_vector(&v, data, key, vector_components)) md_array_push(candidates, key, alloc);
+                        return;
+                    }
                     md_array_push(candidates, key, alloc);
                     const bool temporal = md_script_ir_property_flags(data->script.eval_ir, series_script_ident(key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
                     if (kind == ExportKind_Distribution && temporal && script_property_population(data, key) > 1) {
@@ -5480,7 +5528,7 @@ static void draw_property_export_window(ApplicationState* data) {
             if (data->timeline.filter.enabled && kind != ExportKind_Temporal) {
                 push_script(SeriesSource_ScriptFiltered);
             }
-            if (kind != ExportKind_Volume) {
+            if (kind != ExportKind_Volume && !vector_kind) {
                 str_t groups[64];
                 const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data), ARRAY_SIZE(groups));
                 for (size_t g = 0; g < num_groups; ++g) {
@@ -5504,7 +5552,7 @@ static void draw_property_export_window(ApplicationState* data) {
         }
 
         ImGui::PushItemWidth(200);
-        ImGui::Combo("Data Type", &kind, "Temporal\0Distribution\0Density Volume\0");
+        ImGui::Combo("Data Type", &kind, "Temporal\0Distribution\0Density Volume\0Ramachandran\0Shape Space\0");
         ImGui::Separator();
 
         char selected_label[96] = "";
@@ -5604,7 +5652,43 @@ static void draw_property_export_window(ApplicationState* data) {
                     }
                 };
 
-                if (kind == ExportKind_Temporal) {
+                if (vector_kind) {
+                    // One column per component of each member, in the units the window shows
+                    SeriesVectorView view;
+                    if (series_resolve_vector(&view, data, selected, vector_components)) {
+                        num_rows = (size_t)view.num_frames;
+                        char time_unit_str[32] = "";
+                        md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
+                        x_label = md_unit_is_none(data->timeline.time_unit) ? STR_LIT("Frame") : str_printf(alloc, "Time (%s)", time_unit_str);
+                        y_label = kind == ExportKind_Ramachandran ? STR_LIT("Angle (deg)") : STR_LIT("Shape Weight Ratio");
+
+                        const float* time = data->timeline.x_values;
+                        const size_t num_time = md_array_size(time);
+                        float* x = md_temp_alloc_array(temp, float, num_rows);
+                        for (size_t r = 0; r < num_rows; ++r) x[r] = r < num_time ? time[r] : (float)r;
+                        md_array_push(column_data, x, alloc);
+                        md_array_push(column_labels, x_label, alloc);
+
+                        static const char* const rama_names[2]  = {"phi", "psi"};
+                        static const char* const shape_names[3] = {"linear", "planar", "isotropic"};
+                        const float scale = kind == ExportKind_Ramachandran ? RAD_TO_DEG(1.0f) : 1.0f;
+                        for (uint32_t k = 0; k < view.count; ++k) {
+                            for (uint32_t c = 0; c < vector_components; ++c) {
+                                const char* name = kind == ExportKind_Ramachandran ? rama_names[c] : shape_names[c];
+                                const str_t legend = view.count > 1 ? str_printf(alloc, "%s [%u] %s", label, k + 1, name)
+                                                                    : str_printf(alloc, "%s %s", label, name);
+                                float* col = md_temp_alloc_array(temp, float, num_rows);
+                                for (size_t r = 0; r < num_rows; ++r) {
+                                    col[r] = view.data[((size_t)r * view.count + k) * vector_components + c] * scale;
+                                }
+                                md_array_push(column_data, col, alloc);
+                                md_array_push(column_labels, legend, alloc);
+                                md_array_push(legends, legend, alloc);
+                            }
+                        }
+                        ok = true;
+                    }
+                } else if (kind == ExportKind_Temporal) {
                     SeriesTemporalView view;
                     if (series_resolve_temporal(&view, data, selected)) {
                         num_rows = (size_t)view.num_samples;
