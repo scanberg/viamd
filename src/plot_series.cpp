@@ -775,8 +775,10 @@ bool series_resolve_vector(SeriesVectorView* out, ApplicationState* app, const S
     ASSERT(out && app);
     *out = SeriesVectorView{};
     series_label(out->label, sizeof(out->label), app, key);
-    if (key.source != SeriesSource_Script || key.variant != SeriesVariant_Values || !app->script.eval_ir ||
+    if (!is_script(key.source) || key.variant != SeriesVariant_Values || !app->script.eval_ir ||
         !md_script_ir_valid(app->script.eval_ir)) return false;
+    // The properties evaluated over the filter's frames only exist while the filter is on
+    if (key.source == SeriesSource_ScriptFiltered && !app->timeline.filter.enabled) return false;
     const md_script_eval_t* eval = series_eval(app, key.source);
     if (!eval || md_script_eval_ir_fingerprint(eval) != md_script_ir_fingerprint(app->script.eval_ir)) return false;
     const str_t ident = series_script_ident(key);
@@ -902,20 +904,6 @@ void plot_vector_style_popup(PlotSeries& s, bool point_color) {
         if (s.density_map) ImPlot::ColormapSelection("Density Color Map", &s.density_colormap);
         ImGui::SliderFloat("Opacity", &s.density_alpha, 0.0f, 1.0f);
         ImGui::SliderFloat("Smoothing", &s.smoothing, 0.25f, 6.0f, "%.2f");
-        const char* range_names[VectorRange_Count] = {"Full trajectory", "Filtered trajectory"};
-        int range = (int)s.range;
-        if (ImGui::Combo("Frames", &range, range_names, VectorRange_Count)) s.range = (VectorRange)range;
-    }
-}
-
-void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end) {
-    *beg = 0;
-    *end = num_frames;
-    if (num_frames == 0) return;
-    if (s.range == VectorRange_Filtered && app->timeline.filter.enabled) {
-        *beg = MIN((uint32_t)MAX(0.0, app->timeline.filter.beg_frame), num_frames - 1);
-        *end = MIN((uint32_t)MAX(0.0, app->timeline.filter.end_frame) + 1, num_frames);
-        if (*end < *beg) *end = *beg;
     }
 }
 
@@ -934,7 +922,8 @@ int plot_add_vector_series(const ApplicationState* app, PlotSubplot& sp, const S
 
 void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components) {
     int num_listed = 0;
-    series_for_each_script_property(app, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
+    // The properties as evaluated over every frame, and over the frames of the timeline's filter
+    auto list = [&](SeriesSource source) { series_for_each_script_property(app, source, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
         SeriesVectorView v;
         if (!series_resolve_vector(&v, app, key, components)) return;
         num_listed += 1;
@@ -960,7 +949,9 @@ void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint3
             ImGui::EndDragDropSource();
         }
         ImGui::PopID();
-    });
+    }); };
+    list(SeriesSource_Script);
+    if (app->timeline.filter.enabled) list(SeriesSource_ScriptFiltered);
     if (num_listed == 0) {
         ImGui::TextDisabled("No properties with %u components, create one below or in the script editor", components);
     }
@@ -1262,7 +1253,6 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_bool(state, STR_LIT("IsoLines"), s.iso_lines);
             viamd::write_bool(state, STR_LIT("IsoLevels"), s.iso_levels);
             viamd::write_bool(state, STR_LIT("DensityMap"), s.density_map);
-            viamd::write_int (state, STR_LIT("Range"), (int)s.range);
             viamd::write_int (state, STR_LIT("DensityColormap"), (int)s.density_colormap);
             viamd::write_flt (state, STR_LIT("DensityAlpha"), s.density_alpha);
             viamd::write_flt (state, STR_LIT("Smoothing"), s.smoothing);
@@ -1337,8 +1327,6 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 viamd::extract_bool(s.iso_levels, arg);
             } else if (str_eq_cstr(ident, "DensityMap")) {
                 viamd::extract_bool(s.density_map, arg);
-            } else if (str_eq_cstr(ident, "Range") && viamd::extract_int(i, arg)) {
-                s.range = i == 1 ? VectorRange_Filtered : VectorRange_Full;
             } else if (str_eq_cstr(ident, "DensityColormap") && viamd::extract_int(i, arg)) {
                 s.density_colormap = (ImPlotColormap)i;
             } else if (str_eq_cstr(ident, "DensityAlpha")) {

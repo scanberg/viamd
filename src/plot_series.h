@@ -116,13 +116,6 @@ enum PlotType : uint8_t {
 
 // One entry of a subplot: which series, and how it is drawn there. The same series in two
 // subplots is two entries, each with its own style.
-// Which frames the density of a series of vectors (ramachandran(), shapespace()) is made of
-enum VectorRange : uint8_t {
-    VectorRange_Full = 0,       // every frame
-    VectorRange_Filtered,       // the frames of the timeline's filter, every frame when it is off
-    VectorRange_Count
-};
-
 struct PlotSeries {
     SeriesKey key;
     uint32_t uid = 0;           // Names this entry in its plot for as long as it lives: the same key can be there twice
@@ -146,7 +139,6 @@ struct PlotSeries {
     bool            iso_lines = true;           // contours, in the colour of the series
     bool            iso_levels = false;         // the bands between them, filled
     bool            density_map = false;        // a colormap of the density
-    VectorRange     range = VectorRange_Full;
     ImPlotColormap  density_colormap = ImPlotColormap_Viridis;
     float           density_alpha = 0.8f;
     float           smoothing = 2.0f;
@@ -294,8 +286,6 @@ void plot_series_list_item(ApplicationState* app, const char* dnd_type, PlotSubp
 
 // The style of a series of vectors: points, the layers of the density, which frames. Call inside a popup.
 void plot_vector_style_popup(PlotSeries& s, bool point_color = true);
-// The frames [beg, end) of a series of num_frames
-void series_vector_frame_range(const ApplicationState* app, const PlotSeries& s, uint32_t num_frames, uint32_t* beg, uint32_t* end);
 
 // A script property with a vector per member (ramachandran(), shapespace()): num_frames * count
 // vectors of 'components' floats, the frame first

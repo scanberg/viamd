@@ -315,9 +315,7 @@ struct Shapespace : viamd::EventHandler {
                 series_cache[j] = &c;
                 update_points(c, views[j]);
                 if (s.iso_lines || s.iso_levels || s.density_map) {
-                    uint32_t frame_beg, frame_end;
-                    series_vector_frame_range(app_state, s, c.num_frames, &frame_beg, &frame_end);
-                    update_density(c, s, frame_beg, frame_end);
+                    update_density(c, s, 0, c.num_frames);
                 } else {
                     c.density_hash = 0;
                     for (bool& r : c.rendered) r = false;

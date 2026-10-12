@@ -328,17 +328,12 @@ static void rama_rep_free(rama_rep_t* rep) {
 struct RamaSeries {
     uint32_t uid = 0;
     char path[SERIES_PATH_CAP] = "";
-    rama_rep_t full = {};
-    rama_rep_t filt = {};
-    task_system::ID compute_full = 0;
-    task_system::ID compute_filt = 0;
+    rama_rep_t rep = {};
+    task_system::ID compute = 0;
     uint64_t generation = 1;
-    uint64_t full_generation = 0;
-    uint64_t filt_generation = 0;
-    uint64_t full_fingerprint = 0;
-    uint64_t filt_fingerprint = 0;
-    uint64_t full_requested = 0;
-    uint64_t filt_requested = 0;
+    uint64_t rep_generation = 0;
+    uint64_t fingerprint = 0;
+    uint64_t requested = 0;
     uint64_t map_hash = 0;
     bool mapped = false;                // The rows are known to be residues of the backbone
     bool used = false;
@@ -602,11 +597,9 @@ struct Ramachandran : viamd::EventHandler {
 
     void shutdown() {
         for (auto& st : series_states) {
-            task_system::task_interrupt_and_wait_for(st->compute_full);
-            task_system::task_interrupt_and_wait_for(st->compute_filt);
+            task_system::task_interrupt_and_wait_for(st->compute);
             ++st->generation;
-            rama_rep_free(&st->full);
-            rama_rep_free(&st->filt);
+            rama_rep_free(&st->rep);
             for (int i = 0; i < 4; ++i) md_array_free(st->type_indices[i], md_get_heap_allocator());
             md_array_free(st->segments, md_get_heap_allocator());
         }
@@ -620,8 +613,7 @@ struct Ramachandran : viamd::EventHandler {
     void on_topology_init(ApplicationState& state) {
         (void)state;
         for (auto& st : series_states) {
-            task_system::task_interrupt_and_wait_for(st->compute_full);
-            task_system::task_interrupt_and_wait_for(st->compute_filt);
+            task_system::task_interrupt_and_wait_for(st->compute);
             st->map_hash = 0;
         }
         invalidate_densities();
@@ -633,8 +625,7 @@ struct Ramachandran : viamd::EventHandler {
     void invalidate_densities() {
         for (auto& st : series_states) {
             ++st->generation;
-            st->full_fingerprint = 0;
-            st->filt_fingerprint = 0;
+            st->fingerprint = 0;
         }
     }
 
@@ -657,8 +648,7 @@ struct Ramachandran : viamd::EventHandler {
         if (!st) {
             series_states.push_back(std::make_unique<RamaSeries>());
             st = series_states.back().get();
-            rama_rep_init(&st->full);
-            rama_rep_init(&st->filt);
+            rama_rep_init(&st->rep);
             st->uid = 0;
         }
         if (st->uid != uid || strcmp(st->path, path) != 0) {
@@ -667,8 +657,8 @@ struct Ramachandran : viamd::EventHandler {
             st->map_hash = 0;
             st->mapped = false;
             ++st->generation;
-            st->full_generation = st->filt_generation = 0;
-            st->full_fingerprint = st->filt_fingerprint = 0;
+            st->rep_generation = 0;
+            st->fingerprint = 0;
         }
         return *st;
     }
@@ -684,8 +674,7 @@ struct Ramachandran : viamd::EventHandler {
         st.map_hash = hash;
         st.mapped = false;
         ++st.generation;
-        st.full_fingerprint = 0;
-        st.filt_fingerprint = 0;
+        st.fingerprint = 0;
 
         md_allocator_i* alloc = md_get_heap_allocator();
         for (int i = 0; i < 4; ++i) md_array_shrink(st.type_indices[i], 0);
@@ -778,10 +767,8 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
-    // Which of the densities of a series is shown: the full trajectory's, the filtered one's, or none
-    static int density_source(const ApplicationState& state, const PlotSeries& s) {
-        if (!(s.iso_lines || s.iso_levels || s.density_map)) return -1;
-        return (s.range == VectorRange_Filtered && state.timeline.filter.enabled) ? 1 : 0;
+    static bool shows_density(const PlotSeries& s) {
+        return s.iso_lines || s.iso_levels || s.density_map;
     }
 
     // The pixels of blur of a density, from the smoothing of the series
@@ -813,42 +800,25 @@ struct Ramachandran : viamd::EventHandler {
             map_series(state, st, v);
 
             const size_t num_frames = v.num_frames;
-            const int source = density_source(state, s);
-            if (!show_window || num_frames == 0 || source < 0) continue;
+            if (!show_window || num_frames == 0 || !shows_density(s)) continue;
 
             // The density is derived from the frames of the property, so it is rebuilt exactly when
-            // the property's version, or the blur, moves.
+            // the property's version, or the blur, moves. A filtered property holds zeros outside
+            // its frames, which the density leaves out.
             const md_backbone_angles_t* angles = (const md_backbone_angles_t*)v.data;
             const uint32_t stride = v.count;
             const float sigma = blur_of(s);
 
-            struct { uint64_t version; float sigma; } key = { v.version, sigma };
-            const uint64_t base_hash = md_hash64(&key, sizeof(key), st.generation);
-
-            if (source == 0) {
-                st.full_requested = base_hash;
-                if (st.full_fingerprint != base_hash) {
-                    st.full_generation = 0;
-                    if (!task_system::task_is_running(st.compute_full)) {
-                        st.full_fingerprint = base_hash;
-                        st.compute_full = rama_rep_compute_density(&st, true, angles, 0, (uint32_t)num_frames, stride, sigma);
-                    } else {
-                        task_system::task_interrupt(st.compute_full);
-                    }
-                }
-            } else {
-                const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint, sizeof(state.timeline.filter.fingerprint), base_hash);
-                st.filt_requested = filt_hash;
-                if (st.filt_fingerprint != filt_hash) {
-                    st.filt_generation = 0;
-                    if (!task_system::task_is_running(st.compute_filt)) {
-                        st.filt_fingerprint = filt_hash;
-                        uint32_t frame_beg, frame_end;
-                        series_vector_frame_range(&state, s, (uint32_t)num_frames, &frame_beg, &frame_end);
-                        st.compute_filt = rama_rep_compute_density(&st, false, angles, frame_beg, frame_end, stride, sigma);
-                    } else {
-                        task_system::task_interrupt(st.compute_filt);
-                    }
+            struct { uint64_t version; float sigma; uint32_t pad; } key = { v.version, sigma, 0 };
+            const uint64_t hash = md_hash64(&key, sizeof(key), st.generation);
+            st.requested = hash;
+            if (st.fingerprint != hash) {
+                st.rep_generation = 0;
+                if (!task_system::task_is_running(st.compute)) {
+                    st.fingerprint = hash;
+                    st.compute = rama_rep_compute_density(&st, angles, (uint32_t)num_frames, stride, sigma);
+                } else {
+                    task_system::task_interrupt(st.compute);
                 }
             }
         }
@@ -1008,11 +978,9 @@ struct Ramachandran : viamd::EventHandler {
                                 if (!states[j]) continue;
                                 const RamaSeries& st = *states[j];
                                 const PlotSeries& s = sp.series[j];
-                                const int source = density_source(state, s);
-                                if (source < 0) continue;
-                                const rama_rep_t& rep = source == 0 ? st.full : st.filt;
-                                const uint64_t generation = source == 0 ? st.full_generation : st.filt_generation;
-                                if (generation != st.generation || rep.den_sum[plot_idx] <= 0) continue;
+                                if (!shows_density(s)) continue;
+                                const rama_rep_t& rep = st.rep;
+                                if (st.rep_generation != st.generation || rep.den_sum[plot_idx] <= 0) continue;
                                 if (s.density_map) {
                                     dl->AddImage((ImTextureID)(intptr_t)rep.map_tex[plot_idx], plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, s.density_alpha));
                                 }
@@ -1362,10 +1330,9 @@ struct Ramachandran : viamd::EventHandler {
                 if (!states[j]) continue;
                 RamaSeries& st = *states[j];
                 const PlotSeries& s = sp.series[j];
-                const int source = density_source(state, s);
-                if (source < 0) continue;
-                rama_rep_t* rep = source == 0 ? &st.full : &st.filt;
-                if ((source == 0 ? st.full_generation : st.filt_generation) != st.generation) continue;
+                if (!shows_density(s)) continue;
+                rama_rep_t* rep = &st.rep;
+                if (st.rep_generation != st.generation) continue;
                 const float scl[4] = {
                     rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
                 };
@@ -1443,14 +1410,15 @@ struct Ramachandran : viamd::EventHandler {
         return true;
     }
 
-    task_system::ID rama_rep_compute_density(RamaSeries* st, bool full, const md_backbone_angles_t* angles, uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride, float sigma) {
-        if (frame_end <= frame_beg || frame_stride == 0) return 0;
+    task_system::ID rama_rep_compute_density(RamaSeries* st, const md_backbone_angles_t* angles, uint32_t num_frames, uint32_t frame_stride, float sigma) {
+        if (num_frames == 0 || frame_stride == 0) return 0;
+        const uint32_t frame_beg = 0;
+        const uint32_t frame_end = num_frames;
 
         struct UserData {
             uint64_t alloc_size;
             vec4_t* density_tex;
             RamaSeries* st;
-            bool full;
             const md_backbone_angles_t* angles;     // The frames [frame_beg, frame_end) of the property, copied: it outlives nothing
             const uint32_t* type_indices[4];
             uint32_t frame_beg;
@@ -1479,7 +1447,6 @@ struct Ramachandran : viamd::EventHandler {
         user_data->alloc_size = alloc_size;
         user_data->density_tex = density_tex;
         user_data->st = st;
-        user_data->full = full;
         user_data->angles = angle_copy;
         // The worker owns its snapshot of the rows of each type
         for (int i = 0; i < 4; ++i) {
@@ -1495,7 +1462,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->alloc = alloc;
         user_data->complete = 0;
         user_data->generation = st->generation;
-        user_data->fingerprint = full ? st->full_fingerprint : st->filt_fingerprint;
+        user_data->fingerprint = st->fingerprint;
 
         task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [data = user_data]() {
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
@@ -1539,15 +1506,14 @@ struct Ramachandran : viamd::EventHandler {
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
             RamaSeries* st = data->st;
-            const uint64_t fingerprint = data->full ? st->full_requested : st->filt_requested;
+            const uint64_t fingerprint = st->requested;
             if (data->complete && data->generation == st->generation && data->fingerprint == fingerprint) {
-                rama_rep_t* rep = data->full ? &st->full : &st->filt;
+                rama_rep_t* rep = &st->rep;
                 for (int i = 0; i < 4; ++i) {
                     rep->den_sum[i] = data->density_sum[i];
                 }
                 gl::set_texture_2D_data(rep->den_tex, 0, data->density_tex, GL_RGBA32F);
-                if (data->full) st->full_generation = data->generation;
-                else            st->filt_generation = data->generation;
+                st->rep_generation = data->generation;
             }
             for (int i = 0; i < 4; ++i) md_array_free(data->type_indices[i], data->alloc);
             md_free(data->alloc, data, data->alloc_size);
