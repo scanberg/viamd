@@ -82,13 +82,13 @@ for k in keys:
     if k.roll:
         m.append('KeyframeRoll=' + f(k.roll))
 
-# Look parameters: 0 background color, 1 background intensity, 5 depth of field blur
+# Look parameters: 0 background color, 1 background intensity, 9 DOF aperture (%).
 P = []
 def param(p, t, v, ease=0):
     v = list(v) + [0] * (3 - len(v))
     P.append('ParamKey=' + vec(p, t, *v, ease))
-for t, v in [(0, 1.3), (14.5, 1.3), (19, 6), (23, 6), (25, 8), (30.5, 8), (33, 1.3)]:
-    param(5, t, [v])
+for t, v in [(0, 0), (14.5, 0), (19, 1.5), (23, 1.5), (25, 2), (30.5, 2), (33, 0)]:
+    param(9, t, [v])
 for t, c in [(0, (1, 1, 1)), (24.5, (1, 1, 1)), (26.5, (0.55, 1.0, 0.7)), (30, (0.55, 1.0, 0.7)), (33, (1, 1, 1))]:
     param(0, t, c)
 for t, v in [(0, 24), (24.5, 24), (26.5, 14), (30, 14), (33, 24)]:

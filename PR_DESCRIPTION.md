@@ -8,6 +8,10 @@ Everything is in one **Windows > Movie** editor: a timeline with draggable lanes
 
 The manual is [`docs/movie_maker.md`](docs/movie_maker.md). [`docs/examples/aspirin_phospholipase_movie.via`](docs/examples/aspirin_phospholipase_movie.via) is a finished 80 s movie using most features, and [`docs/examples/aspirin_binding_movie.via`](docs/examples/aspirin_binding_movie.via) a 60 s one with a dolly zoom, a bullet-time orbit, representation hand-overs and energy plots (their trajectory files are not in the repository).
 
+![Current Movie editor with the aspirin binding example](docs/images/movie/overview.png)
+
+*Native Linux capture, 12 October 2026: Scene view, camera-work lanes, live picture and the full-width camera table. The manual includes the current Output, Timing, target, look, representation and overlay inspectors, plus fullscreen Preview.*
+
 ### Features
 
 **Recording**
@@ -75,6 +79,7 @@ New suites: `test_camera_utils`, `test_movie_keys`, `test_frame_sink`, `test_mov
 ### Testing done and not done
 - PNG sequences and H.264 MP4s were recorded on Linux.
 - The editor was checked by hand on Linux. [`MOVIE_STATUS.md`](MOVIE_STATUS.md) has developer notes and what is left out.
+- Both aspirin examples were loaded with the actual trajectory and energy files. Their blur schedules and the binding generator use active aperture keys, re-authored for the current renderer. The binding script evaluated successfully; its bullet-time Preview was rendered and captured with 2 % aperture.
 - Merged with `scanberg/viamd` master through `ac191f75`.
 - Not tested on Windows or macOS (the ffmpeg pipe uses `_popen` / `popen`).
 

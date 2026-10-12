@@ -10,12 +10,21 @@ The user manual is [`docs/movie_maker.md`](docs/movie_maker.md); this file is fo
 | `PR_DESCRIPTION.md` | The pull request text; remove it before merging |
 | `docs/examples/fov_and_focus.via` + `.xyz` | Self-contained FOV and focus tutorial; in the older track format, so it also tests conversion on load |
 | `docs/examples/aspirin_phospholipase_movie.via`, `aspirin_binding_movie.via` | Example movies (their trajectory files are not in the repository) |
-| `docs/aspirin_binding_movie_article.md`, `docs/examples/tools/aspirin_movie/` | Case study of the binding movie and the scripts used to build it; may lag behind the editor |
+| `docs/aspirin_binding_movie_article.md`, `docs/examples/tools/aspirin_movie/` | Historical case study with a current-renderer update, plus the generation and analysis tools |
+| `docs/images/movie/` | Current native Linux captures using the 60 s aspirin binding example; embedded in the manual |
 
 ## Build and test
 
 - `cmake --build build --target viamd viamd_test -j8` (run `cmake -S . -B build` after adding files), then `./build/bin/viamd_test` (268 tests; `--filter=viamd_movie_keys.*` for the 109 movie-key ones).
 - The tests cover logic only: key evaluation (eye, aim and focus separately, transitions, spin, easing), conversion of older workspaces, group edits, undo, time scaling, overlay maths and the frame sink (with a fake script, so no ffmpeg is needed).
+
+## Documentation and example verification
+
+- Native captures taken on Linux on 12 October 2026 cover the combined editor, bottom camera table, camera-work timeline, Output, Timing, Look at / Focus on, Looks, representations, overlay Content / Appearance, distribution bins and fullscreen Preview.
+- All GUI figures use `aspirin_binding_movie.via`; viewport/layout choices and the tracking popups demonstrate edits. Scientific plots in the case study are retained as camera/data diagrams, not GUI captures.
+- Both aspirin workspaces load in the current application with active aperture keys (parameter 9), without obsolete blur-key warnings or unknown blur rows. The 60 s script was evaluated on the actual `.gro`, `.xtc` and `.edr`, and the bullet-time preview was rendered and inspected with 2 % aperture.
+- The examples and generator no longer emit legacy parameter-5 blur keys. Apertures are re-authored in percent of view height: sharp introduction and ending, moderate dolly-zoom blur, stronger bullet-time blur. The camera/timing design is unchanged.
+- The generator's blur-emission block was executed separately and matched against the shipped binding keys; both schedules, relative data paths and preservation of all non-blur workspace settings were checked. Python syntax, documentation links/anchors and all 12 movie-image references passed validation. This is not a full rerun of the scientific analysis scripts.
 
 ## Where things live
 
@@ -55,7 +64,6 @@ Numbers that are saved and must never be renumbered, only added to: parameter id
 
 ## Left for later
 
-- Capture new screenshots of the current editor: combined window with the bottom keyframe table, timeline presets, Output, Timing, Look at / Focus on, and Looks / Overlays. The old screenshots are no longer embedded in the documentation; do not reuse them.
 - Text overlays with live values (`{time}`, `{frame}`, a script property) and entrance/exit animations.
 - Saved overlay templates.
 - Editing representations during a recording, and a transparent background.

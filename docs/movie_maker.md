@@ -4,6 +4,8 @@ VIAMD records a movie of a trajectory. You choose how long it is, place camera k
 
 Contents: [The editor](#the-editor) · [Shortcuts](#shortcuts) · [Quick start](#quick-start) · [The timeline](#the-timeline) · [Output](#output) · [Timing](#timing) · [Camera](#camera) · [Looks](#looks) · [Representations](#representations) · [Overlays](#overlays) · [Saving](#saving) · [Example workspaces](#example-workspaces) · [Tips](#tips) · [Known limits](#known-limits)
 
+The screenshots below were captured from the current editor on Linux on 12 October 2026, using the [60 s aspirin binding example](examples/aspirin_binding_movie.via). Panel sizes, lane choices and per-key tracking are editing demonstrations, not untouched workspace defaults. The Looks and fullscreen Preview captures use the example's updated aperture-based blur schedule.
+
 ## The editor
 
 Open it with **Windows > Movie**. One window holds everything:
@@ -14,6 +16,10 @@ Open it with **Windows > Movie**. One window holds everything:
 - **Bottom, across the full width:** the [camera keyframe table](#the-keyframe-table), shown whichever tab is open.
 
 Drag the vertical divider to share the width between timeline and controls (the timeline gets most of it by default), and the horizontal divider to set the height of the keyframe table (saved with the workspace). Each panel scrolls on its own. **Start Recording** is at the bottom of the **Output** tab.
+
+![Current Movie editor with aspirin, camera path, live picture and bottom keyframe table](images/movie/overview.png)
+
+*Scene view: the camera path is in the viewport, the movie camera is in the live picture, and the keyframe table spans the bottom of the editor.*
 
 **Undo** and **Redo** cover everything on the movie: camera keys and their targets, look and representation keys, overlays, the length and the trajectory timing.
 
@@ -36,6 +42,10 @@ Each mode remembers its own view. The first time you enter Scene view it frames 
 ### Preview: watch the movie
 
 The green **Preview** button plays the movie in the viewport as it will be recorded, from the beginning, with every window, the menu and the camera path hidden and black outside the frame. A bar at the bottom has play/pause, back to the start, the time slider (scrubbing pauses, release resumes), **Repeat** and **Exit preview**; it hides while the mouse is still and the movie plays. **Space** plays and pauses, **Esc** leaves. Leaving goes back to the view you came from. It cannot be entered while recording.
+
+![Aspirin bullet-time shot in fullscreen Preview with energy and geometry plots](images/movie/preview.png)
+
+*Paused at about 29 s: trajectory frame 288 is held while the camera orbits aspirin. The aperture is 2 % of view height; energy plots, distances, water count, markers and the grey-backed time bar are drawn into the movie. The bottom playback controls belong to Preview, not the recording.*
 
 Whenever the Movie window is open, **Space** plays and pauses the movie, not the trajectory. Opening the Movie window stops the trajectory if it was playing; closing it stops the movie.
 
@@ -69,7 +79,7 @@ None of these act while typing in a text field, and the editing ones are disable
 
 1. Load a trajectory and open **Windows > Movie**.
 2. **Output:** click **Select Output Folder...** and pick a format.
-3. **Movie length (s)** (Output or Timing): 60 s for a new movie; type another and press Enter. At first the trajectory fills the movie.
+3. **Timing > Movie length (s)**: 60 s for a new movie; type another and press Enter. At first the trajectory fills the movie.
 4. Set the preview time to 0, set up the view, press **K** (or **Add Keyframe**).
 5. Move the preview time, set up another view, press **K** again. Repeat.
 6. Press **Play Preview**. Switch to **Movie preview** to see the frame and overlays, or press the green **Preview** to watch it without the windows.
@@ -90,6 +100,10 @@ The presets on the line below set the lanes for a kind of work:
 | **All** | Ruler, Camera, Trajectory, Lens, Representations, Look |
 
 A new movie uses **All**, **Fit to window** and **Depth of field blur** in the Look lane; a workspace keeps its own layout. **Layout...** has the lane height, **Fit to window**, **Snap to frames**, **Show whole movie** and the representations lane's **Lines** and **Block height**.
+
+![Camera-work timeline showing ruler, camera, trajectory and two-axis lens lanes](images/movie/movie_timeline.png)
+
+*Camera work: orange camera keys, green frame pins, and the lens curves (yellow field of view, blue distance). The pinned frame stays at 288 through the bullet-time interval.*
 
 ### Lanes
 
@@ -131,13 +145,17 @@ Camera keys, trajectory, lens (distance and FOV), look-parameter and representat
 | **ffmpeg** | Video only. The executable; a bare name is looked up on the PATH. |
 | **Copy ffmpeg command** | PNG only. Copies a command that encodes the sequence into an MP4. |
 | **Resolution** | **Window** (its size when recording starts), Full HD, Quad HD, 4K, 8K, or **Custom** (**Res X**, **Res Y**). |
-| **Output FPS** | Frames per second. The frame count is length × FPS. |
+| **Output FPS** | Frames per second. Both endpoints are included: `floor(length × FPS + 1e-6) + 1` frames for the whole movie (60 s at 24 FPS gives 1441). |
 | **Scale** | 100, 75, 50 or 25 % of the size above. Small renders much faster: use it to check a movie first. |
 | **Samples per frame** | With temporal anti-aliasing: how many rendered images are averaged per frame. 0 uses the jitter sequence length. Fewer is faster, more smoother. |
 | **Render only a range** | Renders the frames between two times (**Range (s)**), e.g. to redo a part. A PNG sequence keeps the frame numbers it has in the whole movie, so the files can replace the old ones. **Start at preview time** and **End at preview time** take the times from the playhead. |
 | **Save a workspace copy with the movie** | Writes `prefix.via` next to the movie with the camera path, looks, overlays and settings. Opening it and recording again gives the same movie. |
 
 While recording, **Pause** and **Resume** stop and carry on. The progress bar shows frames done and, after a few frames, the time left. The **Representations** window is locked while recording.
+
+![Output tab beside the timeline and above the full-width camera table](images/movie/movie_window.png)
+
+*Output: choose a folder, format and resolution here. The aspirin example uses Full HD, 24 FPS and a PNG sequence; recording remains disabled until an output folder is selected.*
 
 ## Timing
 
@@ -147,6 +165,10 @@ While recording, **Pause** and **Resume** stop and carry on. The progress bar sh
 - A grey line shows the average speed in frames per second and relative to the Animation window. **Match Animation speed** sets the movie length so the trajectory plays at that speed.
 
 To vary the speed, pin frames on camera keyframes (**Frame** column below): between two pins the trajectory plays at whatever speed gets from one to the other. A pin before Start or after End moves that line out to it.
+
+![Timing tab with a 60-second movie, reverse trajectory and camera frame pins](images/movie/timing_and_keyframes.png)
+
+*Timing: this example plays frames 600 to 0 over 60 s, with camera-key pins changing the pace and freezing the trajectory during the orbit. Movie length is set here, not in Output.*
 
 ## Camera
 
@@ -209,6 +231,14 @@ The aim moves from one key's look-at to the next with the key's easing, so the c
 
 **How blurred the rest is** is not part of the key: it is the look parameter **Depth of field blur** (Looks tab and Look lane). Key it, ease it and smooth it like any other look parameter; **Key the blur here** in the Focus on popup is a shortcut. Zero makes everything sharp whatever the focus target. Opening the Movie window starts the movie's unkeyed blur at zero; keyed blur still applies at the preview time and during playback.
 
+![Look at popup demonstrating aspirin tracking by selection expression](images/movie/look_at.png)
+
+*Look at: Track selection `resname("AIN")` aims at aspirin. Fixed point keeps an explicit aim instead.*
+
+![Focus on popup demonstrating independent aspirin tracking with transition and ease](images/movie/focus_on.png)
+
+*Focus on: keep Look-at, or track a different selection independently. This editing demonstration tracks aspirin with a 1 s transition; Key the blur here adds a separate look-parameter key.*
+
 **Examples.**
 - *Follow a general direction, keep a moving molecule sharp:* keys with **Look at: Fixed point** along the path, and on the first one **Focus on: Track selection** `resname("AIN")`; repeat it on later keys that should keep it. Key **Depth of field blur** above 0.
 - *Rack focus on a still shot:* two keys with the same pose a few seconds apart; the second sets **Focus on: Track selection** to the other object with a **Transition** of 1 to 2 s.
@@ -252,12 +282,22 @@ Open **Focus on** of the keys at 18, 32 and 34 s: the first tracks the carbon, t
 Background color and intensity, ambient occlusion, exposure, depth-of-field blur and the near and far clipping planes can change during the movie.
 
 1. Pick the parameter in the list.
-2. Set it up in **Visuals** at some preview time.
-3. **Key Now**.
+2. Move to the preview time and press **Key Now**.
+3. Edit the key's **Value** and **Ease** in the table, or drag it in the Look lane. For settings that remain editable in **Visuals**, you can set their value there before keying it.
 
-The table lists keys with time, value, ease and **Remove**. With **Animate parameters** on, keys are followed when scrubbing, previewing and recording; afterwards the values go back to what they were.
+For **Depth of field blur**, use the movie table or lane: the ordinary viewport's Depth of Field controls are read-only while the movie owns focus. Values are aperture in percent of view height, not the scale-dependent blur units of old workspaces.
+
+The table lists keys with time, value, ease and **Remove**. With **Animate parameters** on, keys are followed when scrubbing, previewing and recording; closing the editor restores the ordinary viewport's values.
+
+![Looks tab with the corrected aperture keys in the aspirin example](images/movie/looks.png)
+
+*The shipped binding example starts sharp, rises to 1.5 % for the dolly zoom and 2 % for bullet time, then returns to 0 at 33 s. These are active Depth of field blur keys, not legacy unknown rows.*
 
 ## Representations
+
+![Scene-work representation overview with protein, pocket, ligand and ion blocks](images/movie/representations.png)
+
+*Scene work: the overview shows the cartoon, surface and licorice hand-overs, with visibility keys and a 2.5 s transition in the inspector. The bottom camera table remains available.*
 
 ### Keying a property
 
@@ -285,6 +325,14 @@ The **Representations** lane (the representation overview) has one band per syst
 ## Overlays
 
 Overlays are drawn in recorded frames and in **Movie preview**. In the **Overlays** tab use **Add overlay...** and pick a type. Select one in the list to edit it: **Content** (type-specific), **Timing** (range and fades), **Appearance** (position, size, colors). Clicking an overlay bar in the timeline selects it too. A new movie starts with the VIAMD logo in the top left for the whole movie; **Remove** it if unwanted (the workspace remembers).
+
+![Compact overlay list and Content inspector for the aspirin energy timeline](images/movie/overlays.png)
+
+*Content: one timeline overlay contains the Coulomb and Lennard-Jones subplots, sharing an elapsed-time axis.*
+
+![Appearance inspector for the aspirin energy timeline overlay](images/movie/plot_appearance.png)
+
+*Appearance: the energy overlay is anchored Middle left and sized to 60 % of frame height. Timing controls its range and fades separately.*
 
 ### Common to all overlays
 
@@ -316,6 +364,10 @@ Overlays are drawn in recorded frames and in **Movie preview**. In the **Overlay
 - **Distribution.** Counted over the frames played since the movie started, so its bars grow to the shape of the whole, also when it appears late. A distribution of a script that is not over frames (an RDF) is drawn as it is.
 - **Number of bins** (2 to 4096) applies to all subplots of a distribution overlay without changing the Distributions window; new overlays use 128. **Use source bin counts** keeps each series' own setting (the default for older workspaces). Script distributions can only be coarsened to a divisor of the resolution they were evaluated at.
 
+![Distribution Content inspector with 32 bins for the carboxylate twist](images/movie/distribution.png)
+
+*The binding example chooses 32 bins for the carboxylate torsion. This is an example-specific setting; a newly added distribution overlay starts at 128 bins.*
+
 *Subplots that come in at different times.* Each subplot has **in at** and **out at** (movie seconds within the overlay's range; **stays to the end** when equal), and **In at preview time**. A subplot added while the preview is later in the overlay comes in there. It fades with the overlay's fades. A property that comes in later is drawn from the start of the movie as if it had always been there: a curve that comes in at 30 s appears with what it did up to then and keeps growing; a distribution has counted every frame so far. The plate covers only the subplots that are there, so it grows when one comes in, and the place of a subplot not there yet stays free, so the others do not move. For a different place, use another overlay.
 
 *Titles and look.* **Titles** writes a title above each subplot: the **Title** in its row, else the subplot's name, else none. **Text (points)** and **Lines (points)** set sizes in points (0 follows the height). **Colours** gives series colors of their own instead of those in the plots, and two buttons set light text on a dark plate or dark text on a light plate. **Width** is a part of the frame width.
@@ -337,7 +389,7 @@ Workspaces from earlier versions load and are converted:
 
 ## Example workspaces
 
-[`examples/aspirin_phospholipase_movie.via`](examples/aspirin_phospholipase_movie.via) is an 80 s movie of aspirin in phospholipase, with the trajectory played backward. It has camera keys (the first look at the aspirin), keyed depth-of-field blur, representation keys, two markers ("Pocket shown", "Aspirin enters the pocket"), a logo, title, time stamp, scale bar, a time bar with a grey plate, four timeline subplots that come in at different times, a 128-bin distribution with a title, and three property visualization overlays. It opens at the saved preview time (about 55.45 s): set the scrubber to 0 and play.
+[`examples/aspirin_phospholipase_movie.via`](examples/aspirin_phospholipase_movie.via) is an 80 s movie of aspirin in phospholipase, with the trajectory played backward. It has camera keys (the first look at the aspirin), keyed depth-of-field blur, representation keys, two markers ("Pocket shown", "Aspirin enters the pocket"), a logo, title, time stamp, scale bar, a time bar with a grey plate, four timeline subplots that come in at different times, a 128-bin distribution with a title, and three property visualization overlays. It opens at the saved preview time (about 48.63 s): set the scrubber to 0 and play. Aperture starts at 0, rises to 2 % at 20.9 s, decreases to 1.5 % at 30.79 s, and returns to 0 at 37.46 s.
 
 [`examples/aspirin_binding_movie.via`](examples/aspirin_binding_movie.via) is a 60 s movie of the same data, built to show what the tools can do together. The trajectory is played in reverse, so aspirin approaches and docks. It is in five chapters:
 
@@ -349,9 +401,11 @@ Workspaces from earlier versions load and are converted:
 
 The plots are the short-range Lennard-Jones and Coulomb terms from the `.edr` between aspirin and the protein, the Ca2+ ion and the water, and the geometry (distances to the pocket and to the ion, the number of waters around aspirin, the torsion of the carboxylate), each coming in at the time it matters, with four markers. The energies are read from the `.edr` with `attr("edr/...")` in the workspace's script.
 
-The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md). Its figures describe the trajectory and movie sequence, not the editor layout; its generation scripts may lag behind the current editor.
+The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md). Its scientific figures describe the trajectory and camera design; current application screenshots are in this manual. The [generation and analysis tools](examples/tools/aspirin_movie/) are in the repository.
 
-Both refer to `aspirin-phospholipase.gro`, `.xtc` and `.edr` in their own folder, which are not in the repository. Put your copies next to the workspace and use **File > Open Workspace**.
+Both examples have been re-authored for the current aperture-based blur parameter; these values are artistic retunings, not numeric conversions of the old renderer's units. Camera keys, trajectory timing and representation changes are unchanged.
+
+Both refer to `aspirin-phospholipase.gro`, `.xtc` and `.edr` in their own folder, which are not in the repository. Put your copies next to the workspace and use **File > Open Workspace**, then **Evaluate** its script in the Script Editor so the property plots and overlays have data.
 
 ## Tips
 

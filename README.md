@@ -37,7 +37,11 @@ itself.
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The first two chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features, respectively, where we highlight the interactive part of the software. The third chapter focuses on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting, and the fourth chapter proposes a series of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
-Making movies of a trajectory (a keyframed camera, keyed looks and representations, overlays, and MP4, WebM or PNG output) is described in the [movie manual](docs/movie_maker.md), with a finished [example workspace](docs/examples/aspirin_phospholipase_movie.via).
+Making movies of a trajectory (a keyframed camera, keyed looks and representations, overlays, and MP4, WebM or PNG output) is described in the [movie manual](docs/movie_maker.md). The [60 s aspirin binding example](docs/examples/aspirin_binding_movie.via) combines a dolly zoom, a bullet-time orbit, representation changes and energy plots; it requires the external aspirin trajectory files described in the manual.
+
+[![Current Movie editor using the aspirin binding example](docs/images/movie/overview.png)](docs/movie_maker.md)
+
+*Current `video` branch, captured on Linux on 12 October 2026: timeline left, controls right, camera table across the bottom, and Scene view with a live movie picture.*
 
 A series of videos is available on [youtube](https://youtube.com/playlist?list=PLNx9MpJY8ffr9CeK7WefdOnuGRw_E5rSj&si=VatBHEwiL7jWyhPK).
 
@@ -90,5 +94,4 @@ https://github.com/nothings/stb
 <p align="center">
 <img src="https://github.com/user-attachments/assets/39b69b10-88a1-43a7-9d69-68513ac4e632"  width="150" alt="This is the VIAMD logo" >
 </p>
-
 

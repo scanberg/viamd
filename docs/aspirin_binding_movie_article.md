@@ -2,13 +2,19 @@
 
 **Prompt and review:** M. Linares **·** **Design and implementation:** GitHub Copilot (Claude Sonnet 5.5), working inside VS Code on the `video` branch of VIAMD
 
-*Technical note, 8 October 2026. Files: `docs/examples/aspirin_binding_movie.via` and this text.*
+*Technical note, 8 October 2026. Workspace: [aspirin_binding_movie.via](examples/aspirin_binding_movie.via).*
+
+**Current application update, 12 October 2026.** The workspace has now been opened with the actual aspirin trajectory and energy files in VIAMD on Linux, its script evaluated, and its bullet-time Preview rendered and inspected. Its depth-of-field keys and the [generator](examples/tools/aspirin_movie/gen_movie.py) have been re-authored for the current aperture-based renderer (0, 1.5 and 2 % of view height), preserving the camera and trajectory schedule. The [movie manual](movie_maker.md) shows the current editor layout. The analysis figures below remain diagrams of the data and camera design, not screenshots of an older GUI.
+
+![Current aspirin bullet-time Preview with aperture blur and energy overlays](images/movie/preview.png)
+
+*Actual application Preview near 29 s, with trajectory frame 288 held and aperture 2 %. Playback controls at the bottom are not recorded.*
 
 ---
 
 ## Abstract
 
-A molecular dynamics (MD) trajectory is a table of coordinates and energies; a movie is an argument about it. We document how a short prompt, "produce a one-minute movie of the protein-aspirin example, with interesting geometries and energy terms, a dolly zoom and a Matrix-style bullet effect, with transitions between representations, tracking the protein, the aspirin, the water and the Ca$^{2+}$ ion, and focusing on LJ-SR and Coul-SR", was turned into a finished workspace for the movie maker of VIAMD. The work had four parts. First, the 601-frame, 3 ns trajectory and its energy file were analysed to find the events worth showing: a surface capture of aspirin by a lysine near frame 288 (Coul-SR with the protein reaches $-156$ kJ/mol), a descent into the pocket, and a Ca$^{2+}$ bridge that takes over at the end (Coul-SR with the ion reaches $-359$ kJ/mol). Second, the physics of those terms was examined: the sum of the six aspirin interaction terms stays within about 5% ($-484 \to -462$ kJ/mol) while water is traded for protein and calcium ($-484 \to -182$ and $0 \to -280$ kJ/mol). Third, each event was matched with a cinematic device chosen because it answers a question about the data: a dolly zoom at touchdown, a frozen-time orbit at the Coulomb minimum, slow motion at the calcium handshake. Fourth, the camera, trajectory-time schedule, representation hand-overs and overlays were specified as keys, verified numerically with VIAMD's own camera code, and written to a workspace file. We report the reasoning, the numbers behind each choice, the iterations that corrected the first design, and what was not verified. The movie has not been seen by its designer; it was judged by the person who prompted it.
+A molecular dynamics (MD) trajectory is a table of coordinates and energies; a movie is an argument about it. We document how a short prompt, "produce a one-minute movie of the protein-aspirin example, with interesting geometries and energy terms, a dolly zoom and a Matrix-style bullet effect, with transitions between representations, tracking the protein, the aspirin, the water and the Ca$^{2+}$ ion, and focusing on LJ-SR and Coul-SR", was turned into a finished workspace for the movie maker of VIAMD. The work had four parts. First, the 601-frame, 3 ns trajectory and its energy file were analysed to find the events worth showing: a surface capture of aspirin by a lysine near frame 288 (Coul-SR with the protein reaches $-156$ kJ/mol), a descent into the pocket, and a Ca$^{2+}$ bridge that takes over at the end (Coul-SR with the ion reaches $-359$ kJ/mol). Second, the physics of those terms was examined: the sum of the six aspirin interaction terms stays within about 5% ($-484 \to -462$ kJ/mol) while water is traded for protein and calcium ($-484 \to -182$ and $0 \to -280$ kJ/mol). Third, each event was matched with a cinematic device chosen because it answers a question about the data: a dolly zoom at touchdown, a frozen-time orbit at the Coulomb minimum, slow motion at the calcium handshake. Fourth, the camera, trajectory-time schedule, representation hand-overs and overlays were specified as keys, verified numerically with VIAMD's own camera code, and written to a workspace file. We report the reasoning, the numbers behind each choice, the iterations that corrected the first design, and what was not verified at the original design stage. The original movie was judged by the person who prompted it; subsequent application verification is recorded separately below.
 
 **Keywords:** molecular visualization, molecular dynamics, electrostatics, Ca$^{2+}$ binding, phospholipase A2, computational cinematography, VIAMD.
 
@@ -20,7 +26,7 @@ Interactive analysis tools such as VIAMD [1] are good at asking questions of a t
 
 This note records how such a movie was produced by prompting, not by hand editing. The aim is twofold. For the reader of the movie, it explains why aspirin is placed where it is in the frame, why representations change when they do, and why time stops at a particular frame. For the person who wants to prompt another movie, it records which pieces of the brief mattered and which decisions the brief left open.
 
-We keep a strict line between what was measured and what was chosen. Section 3 and Section 4 are about the data. Sections 5 to 9 are about choices. Section 11 lists what was not verified.
+We keep a strict line between what was measured and what was chosen. Section 3 and Section 4 are about the data. Sections 5 to 9 are about choices. Section 11 distinguishes original verification limits from subsequent application checks.
 
 ## 2. The brief
 
@@ -218,7 +224,7 @@ Three other choices make the dolly zoom legible.
 
 - **A backdrop with depth cues.** A cartoon is a thin ribbon with weak parallax, so just before the dolly zoom the cartoon shrinks away and a space-filling surface (`protein-vdw`, colored by residue index) grows in over 2.5 s starting at 15.5 s. The surface is the thing that appears to rise.
 - **A quiet backdrop.** The surface's saturation is keyed from 1.0 at 17 s down to 0.35 at 19.5 s, so that the only saturated object left in the frame is the aspirin (ball-and-stick at 2.4 times the normal scale until 16 s, shrinking later).
-- **Depth of field.** The blur strength is raised from 1.3 to 6 between 14.5 and 19 s and held until 23 s. The look-at point stays sharp, and the stretched background is blurred.
+- **Depth of field.** In the current workspace, aperture rises from 0 to 1.5 % of view height between 14.5 and 19 s and is held until 23 s, then rises to 2 % for bullet time and returns to 0 at 33 s. Focus is at each key's look-at point. These are re-authored settings for the current renderer, not a numeric conversion of the original scale-dependent blur values (1.3, 6 and 8).
 
 During the dolly zoom the trajectory is also slowed (7.5 frames per second on average, 38 ps/s), so the aspirin does not drift out of the frame; it touches down at about 18 s (frame 330).
 
@@ -340,12 +346,20 @@ LJ_Ca = attr("edr/lj_sr_ca_ain");                 LJ_water = attr("edr/lj_sr_ain
 - The trajectory pins were moved onto camera keys (25 s instead of 24 and 24.5 s), because a frame can only be pinned on a key.
 - The first handshake keys put the eye inside the protein (0.3 to 2.4 Å from atoms), and the first finale passed 3.6 Å from its surface; both were changed, and the finale now leaves along the open direction (azimuth 70°, elevation 50°).
 
-### 11.3 What was not checked
+### 11.3 What was not checked at the original design stage
 
-- **No frame of the movie was rendered by the assistant.** The workspace was designed without a graphical session. Stand-in projections (a scatter plot of atoms through the computed camera) were used to check composition. The look, including the light mint background, the Dutch angle, depth of field, saturation, the plates behind the plots and the legibility of the labels, is untested by the designer, and the movie was judged by the person who prompted it.
+The following describes the 8 October design, before a graphical session was available; subsequent loading and rendering checks are recorded in Section 11.4.
+
+- **No frame of the original movie was rendered by the assistant.** The workspace was designed without a graphical session. Stand-in projections (a scatter plot of atoms through the computed camera) were used to check composition. The look, including the light mint background, the Dutch angle, depth of field, saturation, the plates behind the plots and the legibility of the labels, was untested by the designer, and the movie was judged by the person who prompted it.
 - **The loading of the workspace** was not run in the application. The format was followed carefully, but a loader warning would be the first thing to look for.
 - **The physics is one trajectory.** A single event does not give statistics. The reverse direction is a reading, not a mechanism (Section 4.2). The energies are short-range, instantaneous, and group-resolved only for the listed pairs (Section 4.1). The estimate of the erfc factor assumes unknown simulation parameters.
 - **Names.** The identification of the protein as a secretory phospholipase A2 is inferred from the calcium coordination and the residue count, not from the file header.
+
+### 11.4 Current application verification (12 October 2026)
+
+The binding workspace was loaded in the current Linux application with the actual `.gro`, `.xtc` and `.edr`, and its script evaluated successfully. The combined editor and its inspectors were captured for the [manual](movie_maker.md), and fullscreen Preview was inspected during the frozen-frame orbit. The current aperture keys appear as **Depth of field blur**, with no obsolete blur-key warnings or unknown blur rows. The 80 s companion example was also loaded and its updated keys checked.
+
+The new blur schedule is an artistic retuning in percent of view height. The scientific analysis, camera keys, trajectory pins and representation schedule have not been changed. This check does not establish cross-platform recording support or add scientific validation of the reversed trajectory.
 
 ## 12. Discussion
 
@@ -353,11 +367,11 @@ The movie works, we believe, because each device is tied to a number. The dolly 
 
 For the person who prompts, two lessons stand out. First, the prompt was short and left four decisions open (where to stop time, how to track a moving molecule, what to show in which representation, and what the direction of time implies). An assistant that analyses the data first, as P1 asked, can resolve them from evidence. Second, the iteration loop that mattered most was a *measurement* loop, not a creative one: the width of the dolly zoom and the distance of the handshake camera were corrected by numbers (the off-centre excursion, the clearance, the frame height), and those numbers are cheap to compute and expensive to discover in a render.
 
-**Open questions for the next version.** A second bullet time at the calcium handshake, with the camera inside the open sector (azimuth 60° to 150°), would pair the two traps. A figure with the actual renders, and the two traps compared on the same energy axis, would make the exchange of Section 4.4 explicit. A trajectory computed in the forward binding direction, with the same system, would let the reversed movie be compared with a real binding event.
+**Open questions for the next version.** A second bullet time at the calcium handshake, with the camera inside the open sector (azimuth 60° to 150°), would pair the two traps. A side-by-side rendered comparison of the two traps on the same energy axis would make the exchange of Section 4.4 explicit. A trajectory computed in the forward binding direction, with the same system, would let the reversed movie be compared with a real binding event.
 
 ## Data and code availability
 
-The workspace is `docs/examples/aspirin_binding_movie.via`, and the manual in `docs/movie_maker.md` describes the movie maker. The data files (`aspirin-phospholipase.gro`, `.xtc`, `.edr`) are not in the repository. The scripts used for the analysis, the camera evaluation, the figures and the generation of the workspace were temporary files kept outside the repository and can be added on request. The figures of this note are in `docs/images/aspirin_movie/`.
+The [workspace](examples/aspirin_binding_movie.via), [manual](movie_maker.md), and [analysis, camera evaluation, figure and generation tools](examples/tools/aspirin_movie/) are in the repository. The data files (`aspirin-phospholipase.gro`, `.xtc`, `.edr`) are not: place your copies alongside the workspace and evaluate its script after opening it. The [scientific figures](images/aspirin_movie/) describe the original data and camera design; [application captures](images/movie/) show the current GUI and the re-authored aperture blur.
 
 ## References
 
@@ -399,9 +413,11 @@ The azimuth is measured in the xy plane from +x toward +y, and the elevation fro
 
 ## Appendix B. Look keys
 
+Current workspace settings. Aperture is expressed in percent of view height and uses parameter 9; the original renderer's parameter-5 blur keys have been replaced, not converted.
+
 | Parameter | Keys (time s: value) |
 |---|---|
-| Depth-of-field blur | 0: 1.3, 14.5: 1.3, 19: 6, 23: 6, 25: 8, 30.5: 8, 33: 1.3 |
+| Depth-of-field aperture (%) | 0: 0, 14.5: 0, 19: 1.5, 23: 1.5, 25: 2, 30.5: 2, 33: 0 |
 | Background color | white until 24.5; (0.55, 1.0, 0.7) from 26.5 to 30; white at 33 |
 | Background intensity | 24 until 24.5; 14 from 26.5 to 30; 24 at 33 |
 | `protein-vdw` saturation | 1.0 until 17; 0.35 from 19.5 to 23; 1.0 at 24.5 |
