@@ -259,6 +259,15 @@ struct SeriesVolumeView {
 };
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key);
 
+// ## Editing series
+
+// The style of one series: colour or colormap, and which of its 'dim' population members are drawn.
+// Hovering a member sets *hovered_pop_idx and highlights it in the 3D view.
+void plot_series_style_popup(ApplicationState* app, PlotSeries& s, int dim, const char* script_ident, const md_script_vis_payload_o* vis_payload, int* hovered_pop_idx);
+
+// One entry of a list of series: a click toggles it in 'first', a drag carries it (dnd_type)
+void plot_series_list_item(ApplicationState* app, const char* dnd_type, PlotSubplot& first, const SeriesKey& key);
+
 // ## Vectors
 
 // A script property with a vector per member (ramachandran(), shapespace()): num_frames * count

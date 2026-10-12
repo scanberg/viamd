@@ -801,6 +801,10 @@ struct Ramachandran : viamd::EventHandler {
             }
 
             if (ImGui::BeginMenuBar()) {
+                SeriesKey chosen = {};
+                const int pick = series_vector_menu(&state, 2, use_source ? &source_key : nullptr, &chosen);
+                if (pick == 1) { source_key = chosen; use_source = true; }
+                if (pick == 2) use_source = false;
                 if (ImGui::BeginMenu("Layers")) {
 
                     ImGui::Separator();
@@ -846,10 +850,6 @@ struct Ramachandran : viamd::EventHandler {
                     if (ImGui::Selectable("Preproline",   layout_mode == 4)) layout_mode = 4;
                     ImGui::EndMenu();
                 }
-                SeriesKey chosen = {};
-                const int pick = series_vector_menu(&state, 2, use_source ? &source_key : nullptr, &chosen);
-                if (pick == 1) { source_key = chosen; use_source = true; }
-                if (pick == 2) use_source = false;
                 ImGui::EndMenuBar();
             }
 

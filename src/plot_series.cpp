@@ -1,5 +1,6 @@
 #include <plot_series.h>
 #include <imgui_internal.h>
+#include <implot_widgets.h>
 
 #include <viamd.h>
 #include <display_units.h>
@@ -793,9 +794,93 @@ bool series_resolve_vector(SeriesVectorView* out, ApplicationState* app, const S
     return true;
 }
 
+void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, const md_script_vis_payload_o* vis_payload, int* hovered_pop_idx) {
+    if (dim > 1) {
+        const char* color_type_labels[] = {"Solid", "Colormap"};
+        int color_type = s.use_colormap ? 1 : 0;
+        if (ImGui::Combo("Color Type", &color_type, color_type_labels, IM_ARRAYSIZE(color_type_labels))) {
+            s.use_colormap = color_type == 1;
+        }
+    }
+    if (s.use_colormap && dim > 1) {
+        ImPlot::ColormapSelection("##Colormap", &s.colormap);
+        ImGui::SliderFloat("Alpha", &s.colormap_alpha, 0.0f, 1.0f);
+    } else {
+        ImGui::ColorEdit4("Color", &s.color.x);
+    }
+
+    if (dim > 1) {
+        ImGui::Separator();
+        if (ImGui::Button("Set All")) {
+            s.population_mask.set();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear All")) {
+            s.population_mask.reset();
+        }
+
+        const float sz = ImGui::GetFontSize() * 1.5f;
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
+        for (int k = 0; k < MIN(dim, PLOT_MAX_POPULATION); ++k) {
+            char lbl[32];
+            snprintf(lbl, sizeof(lbl), "%d", k+1);
+            if (ImGui::Selectable(lbl, s.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
+                s.population_mask.flip(k);
+            }
+            if (ImGui::IsItemHovered()) {
+                if (script_ident[0] != '\0') {
+                    script_visualize_payload(data, vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                    script_set_hovered_property(data, str_from_cstr(script_ident), k);
+                }
+                *hovered_pop_idx = k;
+            }
+            if (!k || ((k+1) % 10)) {
+                ImGui::SameLine();
+            }
+        }
+        ImGui::PopStyleVar();
+    }
+}
+
+// One entry in a list of series: a click toggles it in the first subplot, a drag puts it in any
+void plot_series_list_item(ApplicationState* data, const char* dnd_type, PlotSubplot& first, const SeriesKey& key) {
+    char label[96];
+    series_label(label, sizeof(label), data, key);
+    const ImVec4 color = series_default_color(data, key);
+    const int idx = plot_find_series(first, key);
+
+    ImGui::PushID(key.path);
+    ImGui::PushID((int)key.variant * SeriesSource_Count + (int)key.source);
+    ImPlot::ItemIcon(color);
+    ImGui::SameLine();
+    if (ImGui::Selectable(label, idx != -1, ImGuiSelectableFlags_DontClosePopups)) {
+        if (idx != -1) {
+            plot_remove_series(first, idx);
+        } else {
+            plot_add_series(data, first, key);
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        const str_t ident = series_script_ident(key);
+        if (!str_empty(ident)) {
+            const md_script_vis_payload_o* vis = data->script.eval_ir ? md_script_ir_property_vis_payload(data->script.eval_ir, ident) : nullptr;
+            script_visualize_payload(data, vis, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_set_hovered_property(data, ident);
+        } else {
+            ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
+        }
+    }
+    if (ImGui::BeginDragDropSource()) {
+        series_set_drag_payload(dnd_type, key, -1, label, color);
+        ImGui::EndDragDropSource();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
 int series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out) {
     int result = 0;
-    if (!ImGui::BeginMenu("Property")) return result;
+    if (!ImGui::BeginMenu("Properties")) return result;
 
     if (ImGui::Selectable("Selection", current == nullptr)) {
         result = 2;
