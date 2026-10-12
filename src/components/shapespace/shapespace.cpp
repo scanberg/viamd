@@ -278,6 +278,10 @@ struct Shapespace : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
+            if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+                app_state->animation.mode = app_state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
+            }
+
             // The shortcut
             ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x, 150.f));
             ImGui::InputQuery("##input", input, sizeof(input), input_valid);
@@ -341,6 +345,8 @@ struct Shapespace : viamd::EventHandler {
             defer { ImPlot::PopStyleVar(1); };
 
             const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
+            SeriesAction action = SeriesAction_None;
+            int action_idx = -1;
             const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
 
             const float x_reset[2] = {-0.10f, 1.10f};
@@ -422,6 +428,7 @@ struct Shapespace : viamd::EventHandler {
                 for (int j = 0; j < sp.count; ++j) {
                     const PlotSeries& s = sp.series[j];
                     const char* id = plot_id[j];
+                    series_sync_visibility(sp.series[j], id);
                     const SeriesCache* c = series_cache[j];
                     if (!c || !s.show_points || c->num_frames == 0) {
                         ImPlot::PlotDummy(id);
@@ -467,6 +474,14 @@ struct Shapespace : viamd::EventHandler {
                     md_bitfield_clear(&app_state->selection.highlight_mask);
                 }
 
+                // The legend entries edit their series like the chips do
+                for (int j = 0; j < sp.count; ++j) {
+                    if (ImPlot::BeginLegendPopup(plot_id[j])) {
+                        const SeriesAction a = series_vector_editor(app_state, sp.series[j], 3, true);
+                        if (a != SeriesAction_None) { action = a; action_idx = j; }
+                        ImPlot::EndLegendPopup();
+                    }
+                }
                 if (hovered_series != -1 && resolved[hovered_series]) {
                     const SeriesVectorView& v = views[hovered_series];
                     const float* w = v.data + ((size_t)hovered_frame * v.count + hovered_member) * 3;
@@ -486,6 +501,8 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::EndPlot();
             }
 
+            series_visibility_done(sp);
+            series_apply_action(app_state, sp, action_idx, action);
             series_vector_drag_out(sp);
         }
         ImGui::End();

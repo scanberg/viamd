@@ -901,6 +901,10 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
+            if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+                state.animation.mode = state.animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
+            }
+
             // The shortcut
             ImGui::SetNextItemWidth(-1);
             ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid);
@@ -955,6 +959,8 @@ struct Ramachandran : viamd::EventHandler {
             };
 
             ImVec2 plot_size = {0,0};
+            SeriesAction action = SeriesAction_None;
+            int action_idx = -1;
 
             ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
             defer { ImPlot::PopStyleVar(); };
@@ -1127,6 +1133,7 @@ struct Ramachandran : viamd::EventHandler {
                         };
 
                         for (int j = 0; j < sp.count; ++j) {
+                            series_sync_visibility(sp.series[j], plot_ids[j]);
                             if (!curr_angles[j]) {
                                 // Still an entry of the legend
                                 if (states[j]) ImPlot::PlotDummy(plot_ids[j]);
@@ -1172,6 +1179,15 @@ struct Ramachandran : viamd::EventHandler {
                                 UserData user_data = { (const vec2_t*)(curr_angles[j]), highlight_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(s.marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
+                            }
+                        }
+
+                        // The legend entries edit their series like the chips do
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (ImPlot::BeginLegendPopup(plot_ids[j])) {
+                                const SeriesAction a = series_vector_editor(&state, sp.series[j], 2, false);
+                                if (a != SeriesAction_None) { action = a; action_idx = j; }
+                                ImPlot::EndLegendPopup();
                             }
                         }
 
@@ -1369,6 +1385,8 @@ struct Ramachandran : viamd::EventHandler {
 
             ImPlot::MapInputDefault();
 
+            series_visibility_done(sp);
+            series_apply_action(&state, sp, action_idx, action);
             series_vector_drag_out(sp);
         }
         ImGui::End();

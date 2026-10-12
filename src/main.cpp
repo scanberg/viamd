@@ -4635,6 +4635,10 @@ static void draw_distribution_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
+
+        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
+        }
         }
 
         const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;

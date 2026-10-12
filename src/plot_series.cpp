@@ -1,5 +1,6 @@
 #include <plot_series.h>
 #include <imgui_internal.h>
+#include <implot_internal.h>
 #include <implot_widgets.h>
 #include <imgui_widgets.h>
 
@@ -936,8 +937,9 @@ void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint3
 
         char label[96];
         series_label(label, sizeof(label), app, key);
-        const ImVec4 color = series_default_color(app, key);
         const int idx = plot_find_series(sp, key);
+        // The colour it has in the window once it is there
+        const ImVec4 color = idx != -1 ? sp.series[idx].color : series_default_color(app, key);
 
         ImGui::PushID(key.path);
         ImPlot::ItemIcon(color);
@@ -983,6 +985,57 @@ void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t 
     }
 }
 
+SeriesAction series_vector_editor(ApplicationState* app, PlotSeries& s, uint32_t components, bool members) {
+    SeriesAction action = SeriesAction_None;
+    SeriesVectorView v;
+    const bool resolved = series_resolve_vector(&v, app, s.key, components);
+    if (ImGui::DeleteButton("Remove")) {
+        action = SeriesAction_Remove;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate")) {
+        action = SeriesAction_Duplicate;
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::Checkbox("Visible", &s.visible)) s.visible_toggle = true;
+    // With several members the colour is one per member, from a colormap or the series'
+    const bool population = members && resolved && v.count > 1;
+    plot_vector_style_popup(s, !population, components == 3);
+    if (population) {
+        ImGui::SeparatorText("Members");
+        int hovered_pop_idx = -1;
+        plot_series_style_popup(app, s, (int)v.count, v.script_ident, v.vis_payload, &hovered_pop_idx);
+    }
+    return action;
+}
+
+void series_apply_action(const ApplicationState* app, PlotSubplot& sp, int index, SeriesAction action) {
+    if (index < 0 || index >= sp.count) return;
+    if (action == SeriesAction_Duplicate) {
+        const PlotSeries original = sp.series[index];
+        const int idx = plot_add_series_copy(app, sp, original.key);
+        if (idx != -1) {
+            const uint32_t uid = sp.series[idx].uid;
+            sp.series[idx] = original;
+            sp.series[idx].uid = uid;
+        }
+    } else if (action == SeriesAction_Remove) {
+        plot_remove_series(sp, index);
+    }
+}
+
+void series_sync_visibility(PlotSeries& s, const char* plot_id) {
+    ImPlotItem* item = ImPlot::GetItem(plot_id);
+    if (!item) return;
+    if (s.visible_toggle) item->Show = s.visible;
+    else                  s.visible = item->Show;
+}
+
+void series_visibility_done(PlotSubplot& sp) {
+    for (int j = 0; j < sp.count; ++j) sp.series[j].visible_toggle = false;
+}
+
 void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t components, bool members) {
     // A property dropped anywhere on the window is added. One dragged out of a plot is already in a window.
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -999,8 +1052,8 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
         ImGui::EndDragDropTarget();
     }
 
-    int remove_idx = -1;
-    int duplicate_idx = -1;
+    int action_idx = -1;
+    SeriesAction action = SeriesAction_None;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float icon = ImGui::GetFontSize();
 
@@ -1018,9 +1071,17 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
         }
 
         ImGui::PushID((int)s.uid);
-        ImGui::ColorButton("##color", s.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(icon, icon));
+        ImVec4 color = s.color;
+        if (!s.visible) color.w = 0.3f;
+        ImGui::ColorButton("##color", color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(icon, icon));
         ImGui::SameLine();
-        ImGui::Selectable(label, false, ImGuiSelectableFlags_None, ImVec2(text_w, 0));
+        const bool dim = !s.visible || !resolved;
+        if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        if (ImGui::Selectable(label, false, ImGuiSelectableFlags_None, ImVec2(text_w, 0))) {
+            s.visible = !s.visible;
+            s.visible_toggle = true;
+        }
+        if (dim) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered() && resolved) {
             script_visualize_payload(app, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
             script_set_hovered_property(app, str_from_cstr(v.script_ident));
@@ -1030,38 +1091,14 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
             ImGui::EndDragDropSource();
         }
         if (ImGui::BeginPopupContextItem("##series-style")) {
-            if (ImGui::DeleteButton("Remove")) {
-                remove_idx = j;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Duplicate")) {
-                duplicate_idx = j;
-                ImGui::CloseCurrentPopup();
-            }
-            // With several members the colour is one per member, from a colormap or the series'
-            const bool population = members && resolved && v.count > 1;
-            plot_vector_style_popup(s, !population, components == 3);
-            if (population) {
-                ImGui::SeparatorText("Members");
-                int hovered_pop_idx = -1;
-                plot_series_style_popup(app, s, (int)v.count, v.script_ident, v.vis_payload, &hovered_pop_idx);
-            }
+            const SeriesAction a = series_vector_editor(app, s, components, members);
+            if (a != SeriesAction_None) { action = a; action_idx = j; }
             ImGui::EndPopup();
         }
         ImGui::PopID();
     }
 
-    if (duplicate_idx != -1 && duplicate_idx < sp.count) {
-        const PlotSeries original = sp.series[duplicate_idx];
-        const int idx = plot_add_series_copy(app, sp, original.key);
-        if (idx != -1) {
-            const uint32_t uid = sp.series[idx].uid;
-            sp.series[idx] = original;
-            sp.series[idx].uid = uid;
-        }
-    }
-    if (remove_idx != -1) plot_remove_series(sp, remove_idx);
+    series_apply_action(app, sp, action_idx, action);
 }
 
 void series_vector_drag_out(PlotSubplot& sp) {

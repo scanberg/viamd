@@ -817,7 +817,8 @@ struct DensityVolume : viamd::EventHandler {
                             const bool is_selected = find_layer(key) >= 0;
                             ImGui::PushID(key.source);
                             ImGui::PushID(key.path);
-                            ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
+                            const int existing = find_layer(key);
+                            ImPlot::ItemIcon(existing >= 0 ? layer_color(layers[existing]) : series_default_color(state, key)); ImGui::SameLine();
                             if (ImGui::Selectable(label, is_selected, ImGuiSelectableFlags_DontClosePopups)) {
                                 toggle_key = key;
                             }

@@ -144,6 +144,10 @@ struct PlotSeries {
     ImPlotColormap  density_colormap = ImPlotColormap_Viridis;
     float           density_alpha = 0.8f;
     float           smoothing = 2.0f;
+
+    // Shown or hidden, as its legend entry in a plot or its chip says. Not saved with the workspace.
+    bool            visible = true;
+    bool            visible_toggle = false;     // The chip asked: the legend entry follows once
 };
 
 struct PlotSubplot {
@@ -313,9 +317,24 @@ int  plot_add_vector_series(const ApplicationState* app, PlotSubplot& sp, const 
 void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components);
 // The layers of every series. Call inside a menu.
 void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components);
-// A chip for each series: right click edits it, drag moves it out of the window to remove it. Changes are applied before it returns.
+// A chip for each series: a click shows or hides it, right click edits it, drag moves it out of the window to remove it.
+// Changes are applied before it returns.
 // members: the vectors of a series are the members of a population, each with a colour of its own.
 void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t components, bool members = true);
+
+enum SeriesAction : int {
+    SeriesAction_None = 0,
+    SeriesAction_Remove,
+    SeriesAction_Duplicate,
+};
+// What the right click of a series offers, whether it is a chip or a legend entry of a plot: remove, duplicate and the style.
+// Call inside the popup. Apply the returned action with series_apply_action once the series are not being iterated.
+SeriesAction series_vector_editor(ApplicationState* app, PlotSeries& s, uint32_t components, bool members);
+void         series_apply_action(const ApplicationState* app, PlotSubplot& sp, int index, SeriesAction action);
+// Inside a plot, after its setup and before its items: the series follows the chip or the legend entry which was clicked last
+void series_sync_visibility(PlotSeries& s, const char* plot_id);
+// After the plots of the window
+void series_visibility_done(PlotSubplot& sp);
 // Call at the end of the window: removes the series dragged out of it and dropped where nothing takes it
 void series_vector_drag_out(PlotSubplot& sp);
 
