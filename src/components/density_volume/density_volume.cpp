@@ -35,7 +35,7 @@ struct DensityVolumeLayer {
     SeriesKey volume_key = {};
 
     struct {
-        bool enabled = true;
+        bool enabled = false;
         struct {
             uint32_t id = 0;
             float alpha_scale = 1.f;
@@ -47,10 +47,10 @@ struct DensityVolumeLayer {
     } dvr;
 
     struct {
-        bool enabled = false;
-        float values[8] = {};
-        vec4_t colors[8] = {};
-        size_t count = 0;
+        bool enabled = true;
+        float values[8] = {0.1f};
+        vec4_t colors[8] = {{0.2f, 0.1f, 0.9f, 1.0f}};
+        size_t count = 1;
     } iso;
 
     struct {
@@ -161,6 +161,12 @@ struct DensityVolume : viamd::EventHandler {
             layers.emplace_back();
             idx = (int)layers.size() - 1;
             layers[idx].volume_key = key;
+            // Distinct default colors keep several isosurfaces apart
+            static const vec4_t palette[] = {
+                {0.2f, 0.1f, 0.9f, 1.0f}, {0.9f, 0.3f, 0.1f, 1.0f}, {0.1f, 0.7f, 0.3f, 1.0f},
+                {0.9f, 0.8f, 0.1f, 1.0f}, {0.6f, 0.2f, 0.8f, 1.0f}, {0.1f, 0.7f, 0.8f, 1.0f},
+            };
+            layers[idx].iso.colors[0] = palette[idx % ARRAY_SIZE(palette)];
             layers[idx].dirty_rep = layers[idx].dirty_vol = true;
         }
         layers[idx].visible = true;
