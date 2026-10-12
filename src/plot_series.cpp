@@ -882,10 +882,15 @@ void plot_series_list_item(ApplicationState* data, const char* dnd_type, PlotSub
     ImGui::PopID();
 }
 
-void plot_vector_style_popup(PlotSeries& s, bool point_color) {
+void plot_vector_style_popup(PlotSeries& s, bool point_color, bool all_frames) {
     ImGui::SeparatorText("Points");
-    ImGui::Checkbox("Displayed frame", &s.show_points);
+    ImGui::Checkbox("Points", &s.show_points);
     if (s.show_points) {
+        if (all_frames) {
+            const char* frames[2] = {"Displayed frame", "Every frame"};
+            int which = s.points_all ? 1 : 0;
+            if (ImGui::Combo("Frames", &which, frames, 2)) s.points_all = which == 1;
+        }
         if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
             for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
                 if (ImGui::Selectable(ImPlot::GetMarkerName(m), s.marker == m)) s.marker = (ImPlotMarker)m;
@@ -959,7 +964,6 @@ void series_vector_properties_menu(ApplicationState* app, PlotSubplot& sp, uint3
 }
 
 void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t components) {
-    (void)components;
     if (sp.count == 0) {
         ImGui::TextDisabled("No series");
         return;
@@ -972,7 +976,7 @@ void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t 
         ImPlot::ItemIcon(s.color);
         ImGui::SameLine();
         if (ImGui::TreeNode(label)) {
-            plot_vector_style_popup(s);
+            plot_vector_style_popup(s, true, components == 3);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -1037,7 +1041,7 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
             }
             // With several members the colour is one per member, from a colormap or the series'
             const bool population = members && resolved && v.count > 1;
-            plot_vector_style_popup(s, !population);
+            plot_vector_style_popup(s, !population, components == 3);
             if (population) {
                 ImGui::SeparatorText("Members");
                 int hovered_pop_idx = -1;
@@ -1251,6 +1255,7 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_int (state, STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, STR_LIT("ColormapAlpha"), s.colormap_alpha);
             viamd::write_bool(state, STR_LIT("ShowPoints"), s.show_points);
+            viamd::write_bool(state, STR_LIT("PointsAll"), s.points_all);
             viamd::write_bool(state, STR_LIT("IsoLines"), s.iso_lines);
             viamd::write_bool(state, STR_LIT("IsoLevels"), s.iso_levels);
             viamd::write_bool(state, STR_LIT("DensityMap"), s.density_map);
@@ -1323,6 +1328,8 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 viamd::extract_flt(s.colormap_alpha, arg);
             } else if (str_eq_cstr(ident, "ShowPoints")) {
                 viamd::extract_bool(s.show_points, arg);
+            } else if (str_eq_cstr(ident, "PointsAll")) {
+                viamd::extract_bool(s.points_all, arg);
             } else if (str_eq_cstr(ident, "IsoLines")) {
                 viamd::extract_bool(s.iso_lines, arg);
             } else if (str_eq_cstr(ident, "IsoLevels")) {

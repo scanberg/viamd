@@ -671,7 +671,7 @@ struct Ramachandran : viamd::EventHandler {
     // as general residues, and cannot be selected.
     void map_series(ApplicationState& state, RamaSeries& st, const SeriesVectorView& v) {
         const md_system_t& sys = state.mold.sys;
-        struct { uint64_t ir; uint64_t topology; uint32_t count; } key = { state.script.ir_fingerprint, sys.topology_version, v.count };
+        struct { uint64_t ir; uint64_t topology; uint32_t count; uint32_t pad; } key = { state.script.ir_fingerprint, sys.topology_version, v.count, 0 };
         const uint64_t hash = md_hash64(&key, sizeof(key), 0) | 1;
         if (st.map_hash == hash) return;
         st.map_hash = hash;
@@ -1285,8 +1285,8 @@ struct Ramachandran : viamd::EventHandler {
                             if (reference_levels) {
                                 values[j][i] = ref_iso_values[j][i] * MAX(scl[j], FLT_EPSILON);
                             } else {
-                                // A type without samples has no contours
-                                values[j][i] = i == 0 ? 0.0f : (peak[j] > 0.0f ? peak[j] * (float)i / (float)count : 1.0e30f);
+                                // A type without samples has no contours, and still needs values which differ
+                                values[j][i] = peak[j] > 0.0f ? peak[j] * (float)i / (float)count : (float)i;
                             }
                         }
                     }
@@ -1310,6 +1310,7 @@ struct Ramachandran : viamd::EventHandler {
                         const uint32_t line_tone = reference_levels ? ref_line_tones[i] : ImGui::ColorConvertFloat4ToU32(tone);
                         const uint32_t fill_tone = ImGui::ColorConvertFloat4ToU32(ImVec4(tone.x, tone.y, tone.z, tone.w * (0.15f + 0.45f * t)));
                         for (int j = 0; j < 4; ++j) {
+                            if (!reference_levels && !(peak[j] > 0.0f)) continue;
                             if (fill) fill_cols[j][i] = reference_levels ? ref_iso_level_colors[j][i] : fill_tone;
                             // Bands alone get contours of their own colour, which keeps their edges clean
                             line_cols[j][i] = lines ? line_tone : fill_cols[j][i];

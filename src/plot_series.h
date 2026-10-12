@@ -136,6 +136,7 @@ struct PlotSeries {
 
     // Vectors: the members at the displayed frame, and layers of the density of every member over the frames
     bool            show_points = true;
+    bool            points_all = false;         // every frame, not only the displayed one
     bool            iso_lines = true;           // contours, in the colour of the series
     bool            iso_levels = false;         // the bands between them, filled
     bool            density_map = false;        // a colormap of the density
@@ -286,7 +287,7 @@ void plot_series_list_item(ApplicationState* app, const char* dnd_type, PlotSubp
 // ## Vectors
 
 // The style of a series of vectors: points, the layers of the density, which frames. Call inside a popup.
-void plot_vector_style_popup(PlotSeries& s, bool point_color = true);
+void plot_vector_style_popup(PlotSeries& s, bool point_color = true, bool all_frames = false);
 
 // A script property with a vector per member (ramachandran(), shapespace()): num_frames * count
 // vectors of 'components' floats, the frame first

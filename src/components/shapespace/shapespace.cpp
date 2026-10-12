@@ -437,17 +437,28 @@ struct Shapespace : viamd::EventHandler {
                             col = ImPlot::SampleColormap((float)k / (float)(c->count - 1), s.colormap);
                             col.w *= s.colormap_alpha;
                         }
-                        const vec2_t* point = c->coords.data() + (size_t)k * c->num_frames + frame;
-                        ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, col, 1.0f, col);
-                        ImPlot::PlotScatterG(id, getter, (void*)point, 1);
+                        const vec2_t* all = c->coords.data() + (size_t)k * c->num_frames;
+                        const vec2_t* point = all + frame;
+                        const uint32_t first = s.points_all ? 0 : frame;
+                        const uint32_t last  = s.points_all ? c->num_frames : frame + 1;
 
-                        const vec2_t delta = mouse_coord - *point;
-                        const float d2 = vec2_dot(delta, delta);
-                        if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
-                            hovered_point_min_dist = d2;
-                            hovered_series = j;
-                            hovered_member = (int)k;
-                            hovered_frame = frame;
+                        ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, col, 1.0f, col);
+                        ImPlot::PlotScatterG(id, getter, (void*)(all + first), (int)(last - first));
+                        if (s.points_all) {
+                            // The displayed frame among the others
+                            ImPlot::SetNextMarkerStyle(s.marker, s.marker_size * 1.6f, col, 2.0f, ImVec4(1,1,1,1));
+                            ImPlot::PlotScatterG("##displayed", getter, (void*)point, 1);
+                        }
+
+                        for (uint32_t f = first; f < last; ++f) {
+                            const vec2_t delta = mouse_coord - all[f];
+                            const float d2 = vec2_dot(delta, delta);
+                            if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
+                                hovered_point_min_dist = d2;
+                                hovered_series = j;
+                                hovered_member = (int)k;
+                                hovered_frame = f;
+                            }
                         }
                     }
                 }
@@ -464,6 +475,10 @@ struct Shapespace : viamd::EventHandler {
                     if (v.count > 1) len += snprintf(buf, sizeof(buf), "Structure: %i, ", hovered_member + 1);
                     snprintf(buf + len, sizeof(buf) - len, "Frame: %u, lin: %.2f, plan: %.2f, iso: %.2f", hovered_frame, w[0], w[1], w[2]);
                     ImGui::SetTooltip("%s", buf);
+                    // A point of another frame takes the displayed one there
+                    if (sp.series[hovered_series].points_all && ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
+                        app_state->animation.frame = hovered_frame;
+                    }
                     script_visualize_payload(app_state, v.vis_payload, v.count > 1 ? hovered_member : -1, ~MD_SCRIPT_VISUALIZE_SDF);
                     script_set_hovered_property(app_state, str_from_cstr(v.script_ident), hovered_member);
                 }

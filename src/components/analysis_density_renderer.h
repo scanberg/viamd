@@ -133,8 +133,10 @@ struct Renderer {
             ImVec4 level_colors[8] = {}, lines[8] = {};
             float values[8] = {};
             for (int i = 1; i <= n; ++i) {
-                values[i] = peak > 0.0f ? peak * i / (n + 1) : 1.0e30f;
+                // Without a density there is nothing to contour, and the values still have to differ
+                values[i] = peak > 0.0f ? peak * i / (n + 1) : (float)i;
                 // Contours alone, or the bands between them: the other is a layer of its own
+                if (peak <= 0.0f) continue;
                 lines[i] = display == Isolines ? line_color : ImVec4(0,0,0,0);
                 level_colors[i] = display == FilledLevels ? ImVec4(line_color.x, line_color.y, line_color.z, line_color.w * (0.1f + 0.5f * (float)i / n)) : ImVec4(0,0,0,0);
             }
