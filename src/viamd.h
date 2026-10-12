@@ -401,9 +401,9 @@ inline const char* movie_output_str[(int)MovieOutput::Count] = {
 // What depth of field keeps sharp
 enum class DofFocusMode : int {
     LookAt,    // What the camera looks at (the orbit pivot)
-    Distance,  // A distance from the camera, which can be keyed
-    Target,    // The movie's follow target, wherever the camera is
-    FocusTarget, // Independent of the movie camera's follow target.
+    Distance,  // Reserved legacy workspace value; migrated to Auto.
+    Target,    // Reserved legacy workspace value; migrated to Auto.
+    FocusTarget, // Reserved legacy workspace value; migrated to Auto.
     Count,
 };
 
@@ -1131,21 +1131,22 @@ struct ApplicationState {
         bool  show_window = false;
         bool  editor_timeline = true;
         bool  editor_controls = true;
+        float editor_keyframe_fraction = 0.30f;
         bool  editor_select_overlays = false;
         int   overlay_selected = 0;
         bool  timeline_tracks[3] = {true, true, true};
         bool  timeline_param_lane = true;     // The lane of a keyed look parameter
         bool  timeline_rep_overview = true;   // When each representation is shown, as bars, grouped by name
-        bool  timeline_rep_lane = true;       // The lane of a keyed property of a representation, below the look parameter's
+        bool  timeline_rep_lane = false;      // The lane of a keyed property of a representation, below the look parameter's
         bool  timeline_ruler = true;          // The time ruler above the lanes: frames, notes, click to scrub
         bool  timeline_camera_lane = true;    // The camera keys, what they follow and where they spin, on one lane above the curves
         float timeline_row_ratios[9] = {1, 1, 1, 1, 1, 0.6f, 0.8f, 0.6f, 0.45f};
         float timeline_lane_height = 150.0f;  // The height of a lane at ratio 1, in pixels, when the window scrolls instead of fitting them
-        bool  timeline_fit_window = false;    // The lanes share the height of the window instead, however small
+        bool  timeline_fit_window = true;     // The lanes share the height of the window instead, however small
         bool  timeline_rep_equal_rows = true; // Every system has a band of one row's height, its overlapping blocks share it
         float timeline_rep_block_height = 1.0f; // Height of the blocks in the representations lane, times the usual
         bool  timeline_rep_separate = false;  // Every representation has a line of its own, grouped by system (before the above)
-        bool  timeline_overlay_lane = true;   // The overlays as bars, below the lane of the representation
+        bool  timeline_overlay_lane = false;  // The overlays as bars, below the lane of the representation
         double timeline_view_begin = 0.0;
         double timeline_view_end = 0.0;
         float timeline_view_duration = 0.0f;
@@ -1261,6 +1262,9 @@ struct ApplicationState {
         float  traj_begin    = 0.0f;
         float  traj_end      = 5.0f;
         float  playhead      = 0.0f; // Time previewed in the viewport and used for new keyframes
+        bool editor_focus_active = false;
+        float editor_focus_distance = 10.0f;
+        float editor_saved_aperture = 0.0f;
 
         double cur_time    = 0.0;    // Movie time currently being captured
         int    frame_index = 0;      // The output frame being captured, numbers the file and sets cur_time
@@ -1304,7 +1308,7 @@ struct ApplicationState {
         // Look parameters (background, depth of field, clipping ...) keyed over time
         std::vector<ParamKey> param_keys;
         bool animate_params = true;
-        int  param_selected = 0;              // What 'Key Now' keys
+        int  param_selected = 4;              // Depth of field blur in movie_param_table; what 'Key Now' keys
         // What a parameter was before the keys took hold of it, put back when they let go
         float param_saved[MOVIE_MAX_PARAMS][3] = {};
         bool  param_saved_valid[MOVIE_MAX_PARAMS] = {};
@@ -1332,7 +1336,7 @@ struct ApplicationState {
         bool preview_loop    = false;
 
         // What 'Add Keyframe' and 'Add Orbit' make
-        bool     key_includes_frame = false;
+        bool     key_includes_frame = true;
         bool     snap_frames        = true;   // Times dragged on the timeline land on frames of the movie
         CameraKeyframe key_clipboard = {};    // Copied with 'Copy' in the keyframe table, put in with 'Paste'
         bool     has_key_clipboard  = false;

@@ -86,8 +86,7 @@ struct CameraKeyframe {
     // is only where that was when the key was made.
     uint32_t look_set = 0;
 
-    // What is sharp from this key on. A key without 'focus_on' leaves the focus as the key before it set it; before the first
-    // that sets it, what the camera looks at is sharp. The change takes 'focus_transition' seconds from the key's time.
+    // Without an explicit target, focus follows look-at. Explicit changes take focus_transition seconds from this key.
     bool        focus_on = false;
     FocusTarget focus_target = FocusTarget::LookAt;
     uint32_t    focus_set = 0;                 // Selection: the atoms

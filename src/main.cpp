@@ -234,6 +234,9 @@ static void draw_movie_timeline_panel(ApplicationState* state);
 static void draw_movie_recording_banner(ApplicationState* state);
 static void movie_draw_camera_path(ApplicationState* state, ImDrawList* dl);
 static float dof_focus_depth(const ApplicationState* state, const ViewTransform& view);
+static bool movie_focus_active(const ApplicationState* state);
+static bool movie_focus_owned(const ApplicationState* state);
+static void movie_params_restore(ApplicationState* state);
 static bool movie_target_center(const ApplicationState* state, const md_bitfield_t* mask, const md_system_state_t& system_state, vec3_t* out);
 static bool movie_key_look_at_atom(ApplicationState* state, int key_idx, int32_t atom);
 static bool movie_key_focus_on_atoms(ApplicationState* state, int key_idx, const std::vector<uint32_t>& atoms);
@@ -585,6 +588,16 @@ int main(int argc, char** argv) {
         if (state.movie.play_mode && (!state.movie.show_window || state.movie.state == MovieRecordingState::Recording)) movie_play_mode(&state, false);
         const bool play_mode = state.movie.play_mode;
         if (play_mode) draw_movie_play_bar(&state);
+        const bool focus_owned = movie_focus_owned(&state);
+        if (focus_owned && !state.movie.editor_focus_active) {
+            state.movie.editor_focus_distance = state.view.camera.distance;
+            state.movie.editor_saved_aperture = state.visuals.dof.aperture;
+            state.visuals.dof.aperture = 0.0f;
+        } else if (!focus_owned && state.movie.editor_focus_active) {
+            movie_params_restore(&state);
+            state.visuals.dof.aperture = state.movie.editor_saved_aperture;
+        }
+        state.movie.editor_focus_active = focus_owned;
         if (!play_mode) {
         if (state.show_script_window) draw_script_editor_window(&state);
         if (state.show_script_reference_window) draw_script_reference_window(&state);
@@ -742,6 +755,26 @@ int main(int argc, char** argv) {
         }
 
         // Capture non-window specific keyboard events
+        if (state.movie.show_window && !state.movie.play_mode && !movie_recording &&
+            !ImGui::GetIO().WantTextInput) {
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
+                movie_undo(&state);
+            } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y) ||
+                       ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) {
+                movie_redo(&state);
+            }
+        }
+        if (state.movie.show_window && !state.movie.play_mode && !movie_recording &&
+            !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+            movie_set_scene_view(&state, state.movie.show_frame);
+            state.movie.peek_active = true;
+            state.movie.peek_t0 = ImGui::GetTime();
+        }
+        if ((state.movie.show_window || state.movie.play_mode) && !movie_recording &&
+            !ImGui::GetIO().WantTextInput && ImGui::GetIO().KeyShift &&
+            ImGui::IsKeyPressed(KEY_ADD_MOVIE_KEYFRAME, false)) {
+            movie_add_keyframe_from_view(&state);
+        }
         if (!ImGui::GetIO().WantCaptureKeyboard) {
 #if EXPERIMENTAL_GFX_API
             if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
@@ -780,23 +813,14 @@ int main(int argc, char** argv) {
             }
             if (state.movie.play_mode) {
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) movie_play_mode(&state, false);
-            } else if (state.movie.show_window && !movie_recording && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-                // Tab changes between Scene view and Movie preview; held, it only looks at the other one for a moment
-                movie_set_scene_view(&state, state.movie.show_frame);
-                state.movie.peek_active = true;
-                state.movie.peek_t0 = ImGui::GetTime();
             }
 
-            if (state.movie.show_window && !movie_recording && !state.movie.play_mode && ImGui::IsKeyPressed(KEY_ADD_MOVIE_KEYFRAME, false)) {
+            if (state.movie.show_window && !movie_recording && !state.movie.play_mode && !ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(KEY_ADD_MOVIE_KEYFRAME, false)) {
                 movie_add_keyframe_from_view(&state);
             }
 
             if (state.movie.show_window && !movie_recording && !state.movie.play_mode) {
-                if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
-                    movie_undo(&state);
-                } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y) || ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) {
-                    movie_redo(&state);
-                } else if (state.movie.shortcut_frame == ImGui::GetFrameCount()) {
+                if (state.movie.shortcut_frame == ImGui::GetFrameCount()) {
                     // the lanes took a shortcut this frame
                 } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_C)) {
                     movie_copy_keyframe_at_playhead(&state);
@@ -1568,57 +1592,19 @@ static void draw_main_menu(ApplicationState* data) {
 
             // DOF
             ImGui::BeginGroup();
+            const bool driven = movie_focus_owned(data);
+            ImGui::BeginDisabled(driven);
             ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
-            if (data->visuals.dof.enabled) {
-                int mode = (int)data->visuals.dof.focus_mode;
-                static const char* const focus_modes[4] = {"Look-at point", "Distance", "Follow target", "Focus target"};
-                if (ImGui::BeginCombo("Focus", focus_modes[CLAMP(mode, 0, 3)])) {
-                    // The follow target is no longer set anywhere: it is offered only to a workspace that has one
-                    for (int k = 0; k < 4; ++k) {
-                        if (k == 2 && mode != 2) continue;
-                        if (ImGui::Selectable(focus_modes[k], k == mode)) data->visuals.dof.focus_mode = (DofFocusMode)k;
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::SetItemTooltip("What is sharp.\n"
-                    "Look-at point: what the camera looks at (the point it orbits).\n"
-                    "Distance: a distance from the camera that you set, and can key in the Movie window.\n"
-                    "Follow target: the middle of the follow target of an older workspace.\n"
-                    "Focus target: an independent atom or group; changes sharpness without moving or aiming the camera.");
-                if (data->visuals.dof.focus_mode == DofFocusMode::Distance) {
-                    ImGui::SliderFloat("Focus distance", &data->visuals.dof.focus_distance, 0.01f, 1000.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("From view")) {
-                        data->visuals.dof.focus_distance = data->view.camera.distance;
-                    }
-                    ImGui::SetItemTooltip("Take the distance to what the camera looks at now");
-                } else if (data->visuals.dof.focus_mode == DofFocusMode::Target && md_bitfield_empty(&data->movie.follow_mask)) {
-                    ImGui::TextDisabled("No follow target set: using the look-at point");
-                } else if (data->visuals.dof.focus_mode == DofFocusMode::FocusTarget) {
-                    auto& dof = data->visuals.dof;
-                    if (ImGui::Button("Set focus from selection")) {
-                        vec3_t center;
-                        if (movie_target_center(data, &data->selection.selection_mask, data->mold.state, &center)) {
-                            md_bitfield_copy(&dof.target_mask, &data->selection.selection_mask);
-                        } else {
-                            VIAMD_LOG_ERROR("Select an atom or group in the current system to focus on");
-                        }
-                    }
-                    ImGui::SetItemTooltip("Track the selected atom or the centre of a selected group for focus only.\nThe camera path, look-at point and camera follow target are unchanged.");
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Clear##focus_target")) md_bitfield_clear(&dof.target_mask);
-                    vec3_t center;
-                    if (!movie_target_center(data, &dof.target_mask, data->mold.state, &center)) {
-                        ImGui::TextDisabled("No valid focus target: using the look-at point");
-                    } else if (camera_depth_of_point(data->view.camera, center) <= 0.0f) {
-                        ImGui::TextDisabled("Focus target is behind the camera: focus clamped near the eye");
-                    } else {
-                        ImGui::TextDisabled("Focus target: %zu atom(s)", md_bitfield_popcount(&dof.target_mask));
-                    }
-                }
+            ImGui::EndDisabled();
+            if (data->visuals.dof.enabled || driven) {
+                ImGui::TextDisabled(driven ? "Focus: driven by movie. Scene view keeps its own depth." : "Focus: Auto (look-at)");
+                ImGui::SetItemTooltip("Ordinary viewport focus always follows the look-at/orbit point.\nDouble-click an object to reset that point. Movie targets are edited in Focus on.");
                 ImGui::TextDisabled("Focus at %.2f from the camera", dof_focus_depth(data, data->view.camera));
+                ImGui::BeginDisabled(driven);
                 ImGui::SliderFloat("Blur Strength", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
-                ImGui::SetItemTooltip("Blur of distant objects, in percent of the view height. Independent of zoom level");
+                ImGui::SetItemTooltip(driven ? "Movie blur is controlled in Looks > Depth of field blur." :
+                    "Blur of distant objects, in percent of the view height. Independent of zoom level");
+                ImGui::EndDisabled();
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -6513,7 +6499,6 @@ static const MovieParamDesc movie_param_table[] = {
     { MovieParam_DofAperture,         "Depth of field blur",   1, false, 0.0f, 4.0f, false, [](ApplicationState* s) { return &s->visuals.dof.aperture; }, "Blur of distant objects, in percent of the view height. Depth of field has to be enabled." },
     { MovieParam_NearClip,            "Near clipping plane",  1, false, 0.01f, 5000.0f, true,  [](ApplicationState* s) { return &s->view.camera.near_plane; }, "Distance from the camera to where things start to show. Raise it to cut into the structure." },
     { MovieParam_FarClip,             "Far clipping plane",   1, false, 1.0f, 100000.0f,true,  [](ApplicationState* s) { return &s->view.camera.far_plane; }, "Distance from the camera to where things stop showing." },
-    { MovieParam_FocusDistance,       "Focus distance",       1, false, 0.01f, 1000.0f, true,  [](ApplicationState* s) { return &s->visuals.dof.focus_distance; }, "How far from the camera depth of field is sharp, so focus can be pulled during the movie. Depth of field has to be enabled and its Focus set to Distance." },
 };
 static_assert(sizeof(movie_param_table) / sizeof(movie_param_table[0]) <= MOVIE_MAX_PARAMS, "more parameters than MOVIE_MAX_PARAMS");
 
@@ -6869,19 +6854,15 @@ static vec3_t movie_focus_evaluate(const MovieResolved& r, double time, const Vi
     return movie_focus_point(r.keys.data(), r.keys.size(), r.focus.data(), time, camera);
 }
 
-// Whether the blur of the depth of field is keyed, so that the movie blurs without the global switch
-static bool movie_blur_keyed(const ApplicationState* state) {
+static bool movie_focus_owned(const ApplicationState* state) {
     const auto& m = state->movie;
-    if (!m.animate_params) return false;
-    for (const ParamKey& k : m.param_keys) if (k.param == MOVIE_PARAM_DOF_APERTURE) return true;
-    return false;
+    return m.show_window || m.play_mode || m.state == MovieRecordingState::Recording;
 }
 
-// Whether the movie decides what is sharp: while it is edited or recorded and a key sets the focus
+// The scene editor has its own fixed depth; only movie-camera surfaces evaluate movie focus.
 static bool movie_focus_active(const ApplicationState* state) {
     const auto& m = state->movie;
-    return (m.show_window || m.state == MovieRecordingState::Recording) &&
-        movie_focus_keys_exist(m.keyframes, md_array_size(m.keyframes));
+    return movie_focus_owned(state) && (m.show_frame || m.pip_pass || m.play_mode || m.state == MovieRecordingState::Recording);
 }
 
 static double movie_focus_time(const ApplicationState* state) {
@@ -6974,20 +6955,8 @@ static float dof_focus_depth(const ApplicationState* state, const ViewTransform&
         const MovieResolved r = movie_resolve(state, m.keyframes, md_array_size(m.keyframes));
         return MAX(camera_depth_of_point(view, movie_focus_evaluate(r, movie_focus_time(state), view)), 1.0e-3f);
     }
-    const auto& dof = state->visuals.dof;
-    float depth = view.distance;
-    if (dof.focus_mode == DofFocusMode::Distance) {
-        depth = dof.focus_distance;
-    } else if (dof.focus_mode == DofFocusMode::Target) {
-        vec3_t center;
-        if (movie_follow_center(state, &center)) depth = camera_depth_of_point(view, center);
-    } else if (dof.focus_mode == DofFocusMode::FocusTarget) {
-        vec3_t center;
-        if (movie_target_center(state, &dof.target_mask, state->mold.state, &center)) {
-            depth = camera_depth_of_point(view, center);
-        }
-    }
-    return MAX(depth, 1.0e-3f);
+    if (movie_focus_owned(state)) return MAX(state->movie.editor_focus_distance, 1.0e-3f);
+    return MAX(view.distance, 1.0e-3f);
 }
 
 static void movie_camera_apply(ApplicationState* state, double time, const CameraKeyframe* keys, size_t num_keys) {
@@ -9509,6 +9478,16 @@ static void movie_group_drag(ApplicationState* data, KeyKind kind, int64_t subje
         kd.active = true;
         kd.moved = false;
         kd.start = movie_keys_snapshot(data);
+        if (lane.lane == KeyLane::Distance) {
+            const auto resolved = movie_resolve(data, m.keyframes, md_array_size(m.keyframes));
+            for (auto& key : kd.start.camera) {
+                if (!m.sel.contains(KeyKind::Camera, 0, key.time)) continue;
+                for (size_t i = 0; i < resolved.keys.size(); ++i) if (resolved.keys[i].time == key.time) {
+                    camera_aim_at(&key.transform, resolved.look[i]);
+                    break;
+                }
+            }
+        }
         kd.start_sel = m.sel;
         kd.x0 = time;
         kd.y0 = y;
@@ -10010,8 +9989,6 @@ static void draw_movie_strip(ApplicationState* data, float movie_len, bool locke
             ImPlot::PushStyleColor(ImPlotCol_Line, colors[track]);
             ImPlot::PlotLine(titles[track], xs, track == 0 ? frm : track == 1 ? dist : fov, N);
             ImPlot::PopStyleColor();
-            // The distance is what the eye and the look-at make of it: it has no keys of its own
-            if (track == 1) continue;
 
             KeyShift lane;
             lane.lane = track == 0 ? KeyLane::Frame : track == 1 ? KeyLane::Distance : KeyLane::Fov;
@@ -10024,7 +10001,12 @@ static void draw_movie_strip(ApplicationState* data, float movie_len, bool locke
             for (size_t i = 0; i < n; ++i) {
                 const CameraKeyframe key = m.keyframes[i];
                 if (track == 0 && !key.use_frame) continue;
-                const double key_y = track == 0 ? key.frame : track == 1 ? key.transform.distance * distance_scale : key.fov_y * MOVIE_RAD_TO_DEG;
+                ViewTransform live = key.transform;
+                if (track == 1) {
+                    float unused_fov;
+                    movie_camera_evaluate(data, key.time, m.keyframes, n, &live, &unused_fov);
+                }
+                const double key_y = track == 0 ? key.frame : track == 1 ? live.distance * distance_scale : key.fov_y * MOVIE_RAD_TO_DEG;
                 const MovieKeyPointResult r = movie_key_point(data, locked, KeyKind::Camera, 0, key.time, key_y, 2000 + 2 * (int)i + ci, key_col, 7.0f, lane, &any_held);
                 over_key |= r.hovered;
                 char label[16];
@@ -10046,9 +10028,13 @@ static void draw_movie_strip(ApplicationState* data, float movie_len, bool locke
                     if (k.time < x0 || k.time > x1) continue;
                     for (int ci = 0; ci < num_curves; ++ci) {
                         const int track = curves[ci];
-                        if (track == 1) continue;
                         if (track == 0 && !k.use_frame) continue;
-                        const double ky = track == 0 ? k.frame : track == 1 ? k.transform.distance * distance_scale : k.fov_y * MOVIE_RAD_TO_DEG;
+                        ViewTransform live = k.transform;
+                        if (track == 1) {
+                            float unused_fov;
+                            movie_camera_evaluate(data, k.time, m.keyframes, md_array_size(m.keyframes), &live, &unused_fov);
+                        }
+                        const double ky = track == 0 ? k.frame : track == 1 ? live.distance * distance_scale : k.fov_y * MOVIE_RAD_TO_DEG;
                         const float py = ImPlot::PlotToPixels(k.time, ky, ImAxis_X1, ci == 0 ? ImAxis_Y1 : ImAxis_Y2).y;
                         if (py >= MIN(py0, py1) && py <= MAX(py0, py1)) m.sel.add(KeyKind::Camera, 0, k.time);
                     }
@@ -11190,14 +11176,18 @@ static void draw_movie_timeline_options(ApplicationState* data) {
     // The presets and the layout on a line of their own, under the lanes
     ImGui::Dummy(ImVec2(ImGui::CalcTextSize("Lanes").x, 0.0f));
     ImGui::SameLine(0.0f, fs * 0.25f);
-    if (ImGui::SmallButton("All")) preset(true, true, true, true, true, true, true, true);
-    ImGui::SetItemTooltip("Shows every lane.");
+    if (ImGui::SmallButton("All")) preset(true, true, true, true, true, false, true, false);
+    ImGui::SetItemTooltip("Ruler, camera, trajectory, lens, representations and look parameter.");
     ImGui::SameLine(0.0f, fs * 0.25f);
     if (ImGui::SmallButton("Camera work")) preset(true, true, true, true, false, false, false, false);
     ImGui::SetItemTooltip("Ruler, camera, trajectory and lens.");
     ImGui::SameLine(0.0f, fs * 0.25f);
-    if (ImGui::SmallButton("Scene work")) preset(true, false, false, false, true, true, true, true);
-    ImGui::SetItemTooltip("Ruler, representations, overlays, representation keys and look parameter.");
+    if (ImGui::SmallButton("Scene work")) {
+        preset(true, false, true, false, true, false, true, true);
+        for (int i = 0; i < num_params; ++i)
+            if (movie_param_table[i].id == MOVIE_PARAM_DOF_APERTURE) m.param_selected = i;
+    }
+    ImGui::SetItemTooltip("Ruler, trajectory, representations, overlays and depth of field blur.");
     ImGui::SameLine(0.0f, fs);
     if (ImGui::SmallButton("Layout...")) ImGui::OpenPopup("movie_lane_layout");
     ImGui::SetItemTooltip("Lane height, fit to window, snapping, the representations lane's lines and block height.");
@@ -11911,8 +11901,30 @@ static void draw_movie_key_look_popup(ApplicationState* data, int i) {
     if (i < 0 || i >= (int)md_array_size(m.keyframes)) return;
     CameraKeyframe& key = m.keyframes[i];
     ImGui::TextDisabled("Keyframe %d looks at", i + 1);
-    ImGui::Text("%s", key.look_set != 0 ? movie_set_label(data, key.look_set).c_str() : "a fixed point");
+    if (ImGui::RadioButton("Fixed point", key.look_set == 0)) {
+        vec3_t point = camera_get_look_at(key.transform);
+        if (key.look_set != 0 && !movie_set_center(data, key.look_set, &point))
+            VIAMD_LOG_ERROR("Look-at target unavailable: freezing its saved point");
+        movie_key_look_at_point(data, i, point);
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Track selection", key.look_set != 0)) {
+        const auto atoms = movie_selection_atoms(data);
+        if (!atoms.empty()) movie_key_look_at_atoms(data, i, atoms);
+        else {
+            m.look_pick_key = i;
+            m.focus_pick_key = -1;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SetItemTooltip("Track selected atoms; with no selection, pick an atom in the viewport.\nYou can also type a selection expression below.");
+    if (key.look_set == 0) {
+        vec3_t point = camera_get_look_at(key.transform);
+        if (ImGui::DragFloat3("Fixed point##look", point.elem, 0.1f)) movie_key_look_at_point(data, i, point);
+        if (ImGui::Button("Use view aim")) movie_key_look_at_point(data, i, camera_get_look_at(data->view.target));
+    } else ImGui::TextDisabled("Tracking: %s", movie_set_label(data, key.look_set).c_str());
     ImGui::Separator();
+    ImGui::TextDisabled("Track selection");
     {
         std::string expr;
         const MovieAtomSet* set = movie_atoms_find(m.atom_sets, key.look_set);
@@ -11928,33 +11940,40 @@ static void draw_movie_key_look_popup(ApplicationState* data, int i) {
         m.focus_pick_key = -1;
     }
     ImGui::SetItemTooltip("Click an atom: it is tracked through the trajectory. Esc cancels.");
-    if (ImGui::MenuItem("The point the view is aimed at")) movie_key_look_at_point(data, i, camera_get_look_at(data->view.target));
-    ImGui::SetItemTooltip("A fixed point: where the current view is looking.");
-    if (ImGui::MenuItem("Stop tracking", nullptr, false, key.look_set != 0)) key.look_set = 0;
-    ImGui::SetItemTooltip("It looks at where it looks now and stays there.");
 }
 
-// What is sharp from a key on. A key that does not set it leaves it as the key before it set it; by default it is what the camera
-// looks at.
+// Focus defaults to this key's look-at; an explicit target decouples it.
 static void draw_movie_key_focus_popup(ApplicationState* data, int i) {
     auto& m = data->movie;
     if (i < 0 || i >= (int)md_array_size(m.keyframes)) return;
     CameraKeyframe& key = m.keyframes[i];
     ImGui::TextDisabled("Keyframe %d: what is sharp", i + 1);
-    bool on = key.focus_on;
-    if (ImGui::Checkbox("Set the focus on this key", &on)) {
-        if (on) movie_key_focus_begin(data, i);
-        else key.focus_on = false;
+    if (ImGui::RadioButton("Look-at", !key.focus_on || key.focus_target == FocusTarget::LookAt)) {
+        key.focus_on = false;
+        key.focus_target = FocusTarget::LookAt;
+        key.focus_set = 0;
     }
-    ImGui::SetItemTooltip("Off: the focus stays as the key before it set it. Before the first key that sets it, what the camera looks at is sharp.");
-    ImGui::BeginDisabled(!key.focus_on);
+    ImGui::SetItemTooltip("Focus follows the movie camera's aim at this key, even if an earlier key focused elsewhere.");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Track selection", key.focus_on && key.focus_target == FocusTarget::Selection)) {
+        const auto atoms = movie_selection_atoms(data);
+        if (!atoms.empty()) movie_key_focus_on_atoms(data, i, atoms);
+        else {
+            m.focus_pick_key = i;
+            m.look_pick_key = -1;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SetItemTooltip("Track selected atoms; with no selection, pick an atom in the viewport.\nYou can also type a selection expression below.");
+    if (key.focus_on && (key.focus_target == FocusTarget::Point || key.focus_target == FocusTarget::Distance))
+        ImGui::TextDisabled("Saved legacy focus: %s (preserved until you choose another target)", movie_focus_label(data, key).c_str());
     ImGui::Separator();
+    ImGui::TextDisabled("Track selection");
     {
         std::string expr;
         const MovieAtomSet* set = key.focus_target == FocusTarget::Selection ? movie_atoms_find(m.atom_sets, key.focus_set) : nullptr;
         if (movie_expr_field(data, "##focus_expr", set ? set->expr : std::string(), &expr)) movie_key_focus_on_expr(data, i, expr);
     }
-    if (ImGui::Selectable("What the camera looks at", key.focus_target == FocusTarget::LookAt, ImGuiSelectableFlags_NoAutoClosePopups)) key.focus_target = FocusTarget::LookAt;
     const std::vector<uint32_t> selected = movie_selection_atoms(data);
     char label[64];
     snprintf(label, sizeof(label), "The selection (%zu atoms)", selected.size());
@@ -11966,22 +11985,8 @@ static void draw_movie_key_focus_popup(ApplicationState* data, int i) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::SetItemTooltip("Click an atom: it is tracked through the trajectory. Esc cancels.");
-    if (ImGui::Selectable("The point the view is aimed at", key.focus_target == FocusTarget::Point, ImGuiSelectableFlags_NoAutoClosePopups)) {
-        key.focus_target = FocusTarget::Point;
-        key.focus_point = camera_get_look_at(data->view.target);
-    }
-    char unit[32];
-    const float scale = (float)display_units::factor_print(unit, sizeof(unit), md_unit_angstrom());
-    float distance = key.focus_distance * scale;
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
-    char format[48];
-    snprintf(format, sizeof(format), "%%.1f %s", unit);
-    if (ImGui::DragFloat("Distance##focus_distance", &distance, 0.1f * scale, 0.0f, 1.0e4f, format)) {
-        key.focus_distance = MAX(distance / scale, 0.0f);
-        key.focus_target = FocusTarget::Distance;
-    }
-    ImGui::SetItemTooltip("Sharp at a distance from the camera.");
     ImGui::Separator();
+    ImGui::BeginDisabled(!key.focus_on);
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
     ImGui::DragFloat("Transition##focus_transition", &key.focus_transition, 0.05f, 0.0f, 60.0f, "%.1f s");
     ImGui::SetItemTooltip("How long the focus takes to change to this, from the key's time.");
@@ -12012,18 +12017,22 @@ static void draw_movie_keyframe_table(ApplicationState* data, float movie_len, b
 
     // Columns can be resized, and the table scrolls sideways when they do not fit
     const float fs = ImGui::GetFontSize();
-    if (ImGui::BeginTable("##keyframes", 11, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollX)) {
+    if (ImGui::BeginTable("##keyframes_focus_v2", 15, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollX)) {
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, fs * 1.8f);
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, fs * 7.0f);
         ImGui::TableSetupColumn("Time (s)", ImGuiTableColumnFlags_WidthFixed, fs * 5.0f);
         ImGui::TableSetupColumn("Frame", ImGuiTableColumnFlags_WidthFixed, fs * 5.0f);
         ImGui::TableSetupColumn("FOV (deg)", ImGuiTableColumnFlags_WidthFixed, fs * 5.0f);
+        ImGui::TableSetupColumn("Go to", ImGuiTableColumnFlags_WidthFixed, fs * 2.5f);
+        ImGui::TableSetupColumn("Update", ImGuiTableColumnFlags_WidthFixed, fs * 3.0f);
         ImGui::TableSetupColumn("Look at", ImGuiTableColumnFlags_WidthFixed, fs * 6.5f);
         ImGui::TableSetupColumn("Focus on", ImGuiTableColumnFlags_WidthFixed, fs * 6.5f);
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, fs * 6.0f);
         ImGui::TableSetupColumn("Ease", ImGuiTableColumnFlags_WidthFixed, fs * 6.0f);
         ImGui::TableSetupColumn("Spin", ImGuiTableColumnFlags_WidthFixed, fs * 7.0f);
         ImGui::TableSetupColumn("Roll (deg)", ImGuiTableColumnFlags_WidthFixed, fs * 6.0f);
+        ImGui::TableSetupColumn("Copy", ImGuiTableColumnFlags_WidthFixed, fs * 2.5f);
+        ImGui::TableSetupColumn("Dup", ImGuiTableColumnFlags_WidthFixed, fs * 2.5f);
+        ImGui::TableSetupColumn("Remove", ImGuiTableColumnFlags_WidthFixed, fs * 3.0f);
         ImGui::TableHeadersRow();
 
         for (int i = 0; i < (int)md_array_size(m.keyframes); ++i) {
@@ -12089,11 +12098,11 @@ static void draw_movie_keyframe_table(ApplicationState* data, float movie_len, b
                 key.fov_y = fov_deg * MOVIE_DEG_TO_RAD;
             }
 
-            ImGui::TableNextColumn();
+            ImGui::TableSetColumnIndex(7);
             {
                 const bool picking = m.look_pick_key == i;
                 if (picking) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                const std::string text = std::string(ICON_FA_CROSSHAIRS " ") + (key.look_set != 0 ? movie_set_label(data, key.look_set) : "fixed");
+                const std::string text = std::string(ICON_FA_CROSSHAIRS " ") + (key.look_set != 0 ? "Track: " + movie_set_label(data, key.look_set) : "Fixed");
                 if (ImGui::Button((text + "##look").c_str(), ImVec2(-FLT_MIN, 0.0f))) ImGui::OpenPopup("##look_popup");
                 if (picking) ImGui::PopStyleColor();
                 ImGui::SetItemTooltip(picking ? "Click an atom in the viewport. Esc cancels." :
@@ -12108,21 +12117,23 @@ static void draw_movie_keyframe_table(ApplicationState* data, float movie_len, b
             {
                 const bool picking = m.focus_pick_key == i;
                 if (picking) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-                const std::string text = std::string(ICON_FA_BULLSEYE " ") + (key.focus_on ? movie_focus_label(data, key) : "auto");
+                const std::string text = std::string(ICON_FA_BULLSEYE " ") +
+                    (key.focus_on && key.focus_target == FocusTarget::Selection ? "Track: " + movie_focus_label(data, key) :
+                        key.focus_on ? movie_focus_label(data, key) : "Look-at");
                 if (ImGui::Button((text + "##focus").c_str(), ImVec2(-FLT_MIN, 0.0f))) ImGui::OpenPopup("##focus_popup");
                 if (picking) ImGui::PopStyleColor();
                 ImGui::SetItemTooltip(picking ? "Click an atom in the viewport. Esc cancels." :
-                    "Focus on: what is sharp from this keyframe on. 'auto' leaves it as the keyframe before it set it, and before the\nfirst keyframe that sets it, what the camera looks at is sharp.");
+                    "Focus on: defaults to what the movie camera looks at at this key.\nChoose a separate target to track an object without changing aim.");
                 if (ImGui::BeginPopup("##focus_popup")) {
                     draw_movie_key_focus_popup(data, i);
                     ImGui::EndPopup();
                 }
             }
 
-            ImGui::TableNextColumn();
+            ImGui::TableSetColumnIndex(5);
             if (ImGui::SmallButton(ICON_FA_ARROW_RIGHT_TO_BRACKET "##goto")) movie_goto_keyframe(data, (size_t)i);
             ImGui::SetItemTooltip("Go to: move the view to this keyframe");
-            ImGui::SameLine();
+            ImGui::TableNextColumn();
             if (ImGui::SmallButton(ICON_FA_CAMERA "##update")) {
                 // The camera moves to the current view's eye, still looking at the point the keyframe looks at
                 const vec3_t look = camera_get_look_at(key.transform);
@@ -12135,23 +12146,7 @@ static void draw_movie_keyframe_table(ApplicationState* data, float movie_len, b
                 if (key.use_frame) key.frame = data->animation.frame;
             }
             ImGui::SetItemTooltip("Update position: move this keyframe's camera to the current view's position. What it looks at stays.");
-            ImGui::SameLine();
-            if (ImGui::SmallButton(ICON_FA_ELLIPSIS "##more")) ImGui::OpenPopup("##key_more");
-            ImGui::SetItemTooltip("Duplicate, Copy, Remove");
-            if (ImGui::BeginPopup("##key_more")) {
-            if (ImGui::MenuItem(ICON_FA_CLONE " Duplicate")) dup_idx = i;
-            ImGui::SetItemTooltip("Copy it to one second later");
-            if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
-                m.key_clipboard = key;
-                m.has_key_clipboard = true;
-            }
-            ImGui::SetItemTooltip("Remember this keyframe, to put it in at the preview time with 'Paste Keyframe'");
-            ImGui::Separator();
-            if (ImGui::MenuItem(ICON_FA_TRASH_CAN " Remove")) remove_idx = i;
-            ImGui::EndPopup();
-            }
-
-            ImGui::TableNextColumn();
+            ImGui::TableSetColumnIndex(9);
             if (i == 0) {
                 ImGui::TextDisabled("-");
                 ImGui::SetItemTooltip("How the movie gets to a keyframe is set on that keyframe, so the first has none.");
@@ -12203,6 +12198,18 @@ static void draw_movie_keyframe_table(ApplicationState* data, float movie_len, b
                 if (ImGui::SmallButton("Level")) camera_level(&key.transform, *movie_up_vector(data));
                 ImGui::SetItemTooltip("Turn this keyframe's camera about where it looks so that it is level, %s being up.", movie_up_axis_str[CLAMP(m.up_axis, 0, 5)]);
             }
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton(ICON_FA_COPY "##copy")) {
+                m.key_clipboard = key;
+                m.has_key_clipboard = true;
+            }
+            ImGui::SetItemTooltip("Copy this keyframe for Paste Keyframe");
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton(ICON_FA_CLONE "##duplicate")) dup_idx = i;
+            ImGui::SetItemTooltip("Duplicate one second later");
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton(ICON_FA_TRASH_CAN "##remove")) remove_idx = i;
+            ImGui::SetItemTooltip("Remove this keyframe");
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -12834,9 +12841,6 @@ static void draw_movie_settings_panel(ApplicationState* data) {
         ImGui::SetItemTooltip("Adds a keyframe of the current view at the preview time and another after the orbit's duration,\nwhere the camera is back in the same place after its turns.");
         ImGui::EndDisabled();
 
-        ImGui::BeginDisabled(recording);
-        draw_movie_keyframe_table(data, movie_len, recording);
-        ImGui::EndDisabled();
         ImGui::EndTabItem();
     }
 
@@ -12943,29 +12947,50 @@ static void draw_movie_window(ApplicationState* data) {
         ImGui::EndDisabled();
         ImGui::Separator();
         draw_movie_preview_controls(data);
-        const int columns = m.editor_timeline && m.editor_controls ? 2 : 1;
-        if (ImGui::BeginTable("Movie editor split", columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp)) {
-            if (m.editor_timeline) ImGui::TableSetupColumn("Timeline", ImGuiTableColumnFlags_WidthStretch, 0.55f);
-            if (m.editor_controls) ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthStretch, 0.45f);
-            if (m.editor_timeline) {
-                ImGui::TableNextColumn();
-                if (ImGui::BeginChild("Movie timeline", ImVec2(0, 0))) draw_movie_timeline_panel(data);
-                ImGui::EndChild();
+        const float available = MAX(1.0f, ImGui::GetContentRegionAvail().y);
+        const float divider = 6.0f;
+        const float min_pane = ImGui::GetFrameHeight() * 3.0f;
+        const float bottom_height = CLAMP(available * m.editor_keyframe_fraction, MIN(min_pane, available * 0.25f), available * 0.65f);
+        const float upper_height = MAX(1.0f, available - bottom_height - divider - ImGui::GetStyle().ItemSpacing.y * 2);
+        if (ImGui::BeginChild("Movie upper panes", ImVec2(0, upper_height))) {
+            const int columns = m.editor_timeline && m.editor_controls ? 2 : 1;
+            if (ImGui::BeginTable("Movie editor split bottom keys", columns, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp)) {
+                if (m.editor_timeline) ImGui::TableSetupColumn("Timeline", ImGuiTableColumnFlags_WidthStretch, 0.68f);
+                if (m.editor_controls) ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthStretch, 0.32f);
+                if (m.editor_timeline) {
+                    ImGui::TableNextColumn();
+                    if (ImGui::BeginChild("Movie timeline", ImVec2(0, 0))) draw_movie_timeline_panel(data);
+                    ImGui::EndChild();
+                }
+                if (m.editor_controls) {
+                    ImGui::TableNextColumn();
+                    if (ImGui::BeginChild("Movie controls", ImVec2(0, 0))) draw_movie_settings_panel(data);
+                    ImGui::EndChild();
+                }
+                ImGui::EndTable();
             }
-            if (m.editor_controls) {
-                ImGui::TableNextColumn();
-                if (ImGui::BeginChild("Movie controls", ImVec2(0, 0))) draw_movie_settings_panel(data);
-                ImGui::EndChild();
-            }
-            ImGui::EndTable();
         }
+        ImGui::EndChild();
+        const ImVec2 divider_pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("Movie keyframe divider", ImVec2(-FLT_MIN, divider));
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemActive() && available > 0) m.editor_keyframe_fraction =
+            CLAMP(m.editor_keyframe_fraction - ImGui::GetIO().MouseDelta.y / available, 0.15f, 0.65f);
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(divider_pos.x, divider_pos.y + divider * 0.5f),
+            ImVec2(divider_pos.x + ImGui::GetItemRectSize().x, divider_pos.y + divider * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Separator), 2);
+        if (ImGui::BeginChild("Movie keyframes bottom", ImVec2(0, 0))) {
+            ImGui::SeparatorText("Camera keyframes");
+            ImGui::BeginDisabled(m.state == MovieRecordingState::Recording);
+            draw_movie_keyframe_table(data, (float)movie_duration(data), m.state == MovieRecordingState::Recording);
+            ImGui::EndDisabled();
+        }
+        ImGui::EndChild();
 
-        // The live preview of the movie camera, over the lower right corner while Scene view is shown. It is a child so that it is on top of
-        // the panels; the scene is rendered for it by movie_render_pip as long as this is asked for every frame.
+        // Keep the live picture above the full-width keyframe pane.
         if (m.pip_enabled && movie_scene_view(data)) {
             m.pip_requested_frame = ImGui::GetFrameCount();
             {
-                // A part of the window's width, so that it grows on a large screen, but never more than about 45 % of its height
                 static const float parts[4] = {0.18f, 0.26f, 0.36f, 0.50f};
                 static const float least[4] = {200.0f, 280.0f, 360.0f, 480.0f};
                 int fw = 0, fh = 0;
@@ -12974,14 +12999,14 @@ static void draw_movie_window(ApplicationState* data) {
                 const ImVec2 ws = ImGui::GetWindowSize();
                 const int s = CLAMP(m.pip_size, 0, 3);
                 float w = MAX(parts[s] * ws.x, least[s]);
-                w = MIN(w, MIN(0.45f * ws.y * aspect, 0.7f * ws.x));
+                w = MIN(w, MIN(0.65f * upper_height * aspect, 0.7f * ws.x));
                 m.pip_target_w = MAX(64, ((int)w + 8) / 16 * 16);
             }
             if (m.pip_valid && m.pip_tex) {
                 const ImVec2 size((float)m.pip_w, (float)m.pip_h);
                 const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
                 const float margin = ImGui::GetStyle().ScrollbarSize + 8.0f;
-                ImGui::SetCursorScreenPos(ImVec2(wp.x + ws.x - size.x - margin, wp.y + ws.y - size.y - margin));
+                ImGui::SetCursorScreenPos(ImVec2(wp.x + ws.x - size.x - margin, divider_pos.y - size.y - margin));
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
                 if (ImGui::BeginChild("##movie_pip", size, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground)) {
@@ -13538,7 +13563,9 @@ static void render_scene(ApplicationState* state, bool pip) {
         const auto& m = state->movie;
         const MovieResolved r = movie_resolve(state, m.keyframes, md_array_size(m.keyframes));
         settings.dof.focus_depth = MAX(camera_depth_of_point(state->view.camera, movie_focus_evaluate(r, movie_focus_time(state), state->view.camera)), 1.0e-3f);
-        settings.dof.enabled = (state->visuals.dof.enabled || movie_blur_keyed(state)) && state->visuals.dof.aperture > 0.0f;
+        settings.dof.enabled = state->visuals.dof.aperture > 0.0f;
+    } else if (movie_focus_owned(state)) {
+        settings.dof.aperture = state->movie.editor_saved_aperture * 0.01f;
     }
 
     settings.fxaa.enabled = state->visuals.fxaa.enabled;

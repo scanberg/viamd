@@ -87,9 +87,9 @@ void movie_keys_from_follow(std::vector<CameraKeyframe>* keys, std::vector<Movie
 // Whether any key sets the focus
 bool movie_focus_keys_exist(const CameraKeyframe* keys, size_t count);
 
-// What is sharp at 'time', from the keys that set the focus: the point (in the space of the camera). 'points' are aligned with
-// 'keys': where the atoms of a Selection focus are now. Before the first key that sets it, what the camera looks at is sharp.
-// A key's change starts at its time and takes its transition, shortened to end at the next key that sets the focus.
+// What is sharp at 'time'. 'points' are aligned with 'keys': the live Selection centres.
+// A key without an explicit target returns focus to look-at. Explicit transitions start at the key's time
+// and finish no later than the next camera key.
 // How blurred the rest is belongs to the look parameter of the blur.
 vec3_t movie_focus_point(const CameraKeyframe* keys, size_t count, const vec3_t* points, double time, const ViewTransform& camera);
 

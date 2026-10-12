@@ -124,7 +124,52 @@ UTEST(viamd_movie_keys, the_focus_is_what_the_camera_looks_at_until_a_key_sets_i
     EXPECT_TRUE(movie_focus_keys_exist(keys, 2));
     EXPECT_NEAR(32.0f, movie_focus_depth(keys, 2, nullptr, 4, camera), 1.0e-5f);
     EXPECT_NEAR(40.0f, movie_focus_depth(keys, 2, nullptr, 5, camera), 1.0e-5f);
-    EXPECT_NEAR(48.0f, movie_focus_depth(keys, 2, nullptr, 9, camera), 1.0e-5f);   // A key that sets nothing leaves it so
+    EXPECT_NEAR(48.0f, movie_focus_depth(keys, 2, nullptr, 9, camera), 1.0e-5f);
+}
+
+UTEST(viamd_movie_keys, default_focus_returns_to_look_at_after_an_explicit_target) {
+    ViewTransform camera = front_camera();
+    CameraKeyframe keys[3];
+    keys[0].time = 0;
+    keys[0].focus_on = true;
+    keys[0].focus_target = FocusTarget::Selection;
+    keys[0].focus_transition = 0;
+    keys[1].time = 5;
+    keys[1].focus_on = false;
+    keys[2].time = 10;
+    keys[2].focus_on = true;
+    keys[2].focus_target = FocusTarget::Distance;
+    keys[2].focus_distance = 48;
+    keys[2].focus_transition = 2;
+    keys[2].focus_ease = KeyEase::Linear;
+    vec3_t points[3] = {vec3_set(0, 0, -8), {}, {}};
+    EXPECT_NEAR(48.0f, movie_focus_depth(keys, 3, points, 4, camera), 1.0e-5f);
+    EXPECT_NEAR(32.0f, movie_focus_depth(keys, 3, points, 5, camera), 1.0e-5f);
+    camera.distance = 24;
+    EXPECT_NEAR(24.0f, movie_focus_depth(keys, 3, points, 7, camera), 1.0e-5f);
+    EXPECT_NEAR(36.0f, movie_focus_depth(keys, 3, points, 11, camera), 1.0e-5f);
+    EXPECT_NEAR(48.0f, movie_focus_depth(keys, 3, points, 12, camera), 1.0e-5f);
+    EXPECT_NEAR(48.0f, movie_focus_depth(keys, 3, points, 4, camera), 1.0e-5f);
+    EXPECT_NEAR(24.0f, movie_focus_depth(keys, 3, points, 5, camera), 1.0e-5f);
+}
+
+UTEST(viamd_movie_keys, default_focus_interrupts_a_transition_and_holds_look_at) {
+    ViewTransform camera = front_camera();
+    CameraKeyframe keys[3];
+    keys[0].time = 0;
+    keys[1].time = 10;
+    keys[1].focus_on = true;
+    keys[1].focus_target = FocusTarget::Distance;
+    keys[1].focus_distance = 48;
+    keys[1].focus_transition = 8;
+    keys[1].focus_ease = KeyEase::Linear;
+    keys[2].time = 12;
+    EXPECT_NEAR(40.0f, movie_focus_depth(keys, 3, nullptr, 11, camera), 1.0e-5f);
+    EXPECT_NEAR(32.0f, movie_focus_depth(keys, 3, nullptr, 12, camera), 1.0e-5f);
+    EXPECT_NEAR(32.0f, movie_focus_depth(keys, 3, nullptr, 40, camera), 1.0e-5f);
+    camera.distance = 20;
+    EXPECT_NEAR(20.0f, movie_focus_depth(keys, 3, nullptr, 40, camera), 1.0e-5f);
+    EXPECT_NEAR(20.0f, movie_focus_depth(nullptr, 0, nullptr, 0, camera), 1.0e-5f);
 }
 
 UTEST(viamd_movie_keys, the_focus_switches_between_targets_and_follows_atoms) {
@@ -1825,6 +1870,11 @@ UTEST(viamd_movie_keys, a_distance_moves_along_the_line_of_sight_and_the_camera_
     MovieKeys start;
     CameraKeyframe k = cam_key(1.0, 10.0f);
     k.transform.position = {2, 3, 10};
+    k.look_set = 7;
+    k.focus_on = true;
+    k.focus_target = FocusTarget::Selection;
+    k.focus_set = 8;
+    k.focus_point = {4, 5, 6};
     start.camera.push_back(k);
     const vec3_t look = camera_get_look_at(k.transform);
     KeySelection sel;
@@ -1839,7 +1889,15 @@ UTEST(viamd_movie_keys, a_distance_moves_along_the_line_of_sight_and_the_camera_
     EXPECT_NEAR(out.camera[0].transform.distance, 13.0f, 1.0e-5f);
     const vec3_t look_after = camera_get_look_at(out.camera[0].transform);
     EXPECT_NEAR(look_after.x, look.x, 1.0e-4f);
+    EXPECT_NEAR(look_after.y, look.y, 1.0e-4f);
     EXPECT_NEAR(look_after.z, look.z, 1.0e-4f);
+    EXPECT_EQ(out.camera[0].look_set, 7u);
+    EXPECT_TRUE(out.camera[0].focus_on);
+    EXPECT_EQ(out.camera[0].focus_target, FocusTarget::Selection);
+    EXPECT_EQ(out.camera[0].focus_set, 8u);
+    EXPECT_NEAR(out.camera[0].focus_point.x, 4.0f, 1.0e-5f);
+    EXPECT_NEAR(out.camera[0].focus_point.y, 5.0f, 1.0e-5f);
+    EXPECT_NEAR(out.camera[0].focus_point.z, 6.0f, 1.0e-5f);
     s.dy = -1000.0;
     movie_keys_shift(&out, &out_sel, start, sel, 0.0, s, 20.0);
     EXPECT_GT(out.camera[0].transform.distance, 0.0f);

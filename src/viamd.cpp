@@ -1359,6 +1359,14 @@ static void workspace_reset(ApplicationState* data) {
         m.traj_begin = 0.0f;
         m.traj_end = 60.0f;
         m.playhead = 0.0f;
+        m.editor_focus_active = false;
+        m.editor_keyframe_fraction = 0.30f;
+        m.timeline_tracks[0] = m.timeline_tracks[1] = m.timeline_tracks[2] = true;
+        m.timeline_ruler = m.timeline_camera_lane = m.timeline_rep_overview = m.timeline_param_lane = true;
+        m.timeline_rep_lane = m.timeline_overlay_lane = false;
+        m.timeline_fit_window = true;
+        m.key_includes_frame = true;
+        m.param_selected = 4;
         snprintf(m.filename_prefix, sizeof(m.filename_prefix), "frame");
         m.preview_playing = false;
         m.show_path = true;
@@ -1806,7 +1814,13 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
-                else if (str_eq(ident, STR_LIT("DofFocusMode")))         viamd::extract_enum(v.dof.focus_mode, arg, (int)DofFocusMode::Count);
+                else if (str_eq(ident, STR_LIT("DofFocusMode"))) {
+                    if (viamd::extract_enum(v.dof.focus_mode, arg, (int)DofFocusMode::Count) &&
+                        v.dof.focus_mode != DofFocusMode::LookAt) {
+                        v.dof.focus_mode = DofFocusMode::LookAt;
+                        VIAMD_LOG_INFO("Workspace: global fixed/target focus replaced by Auto. Movie focus keys are preserved.");
+                    }
+                }
                 else if (str_eq(ident, STR_LIT("DofFocusDistance")))     viamd::extract_flt(v.dof.focus_distance, arg);
                 else if (str_eq(ident, STR_LIT("DofFocusTarget")))       pending.has_focus_target = deserialize_mask(&pending.focus_target, arg);
                 else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
@@ -1896,6 +1910,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     if (viamd::extract_flt(h, arg)) m.timeline_lane_height = CLAMP(h, 60.0f, 400.0f);
                 }
                 else if (str_eq(ident, STR_LIT("FitLanes")))       viamd::extract_bool(m.timeline_fit_window, arg);
+                else if (str_eq(ident, STR_LIT("KeyframePane"))) {
+                    float fraction;
+                    if (viamd::extract_flt(fraction, arg)) m.editor_keyframe_fraction = CLAMP(fraction, 0.15f, 0.65f);
+                }
                 else if (str_eq(ident, STR_LIT("RepEqualRows")))   viamd::extract_bool(m.timeline_rep_equal_rows, arg);
                 else if (str_eq(ident, STR_LIT("RepSeparateRows"))) viamd::extract_bool(m.timeline_rep_separate, arg);
                 else if (str_eq(ident, STR_LIT("RepBlockHeight"))) {
@@ -2065,6 +2083,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                         if (0 <= key.param && key.param < MOVIE_MAX_PARAMS) {
                             if (key.param == 3 || key.param == 5) {
                                 VIAMD_LOG_INFO("Workspace: legacy occlusion radius / depth-of-field blur key retained but inactive with the new renderer; re-key blur strength using aperture");
+                            } else if (key.param == 8) {
+                                VIAMD_LOG_INFO("Workspace: legacy global focus-distance key retained but inactive. Set Movie > Focus on > Distance instead.");
                             }
                             m.param_keys.push_back(key);
                         }
@@ -2559,7 +2579,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
-        viamd::write_int(state,  STR_LIT("DofFocusMode"), (int)v.dof.focus_mode);
+        viamd::write_int(state,  STR_LIT("DofFocusMode"), (int)DofFocusMode::LookAt);
         viamd::write_flt(state,  STR_LIT("DofFocusDistance"), v.dof.focus_distance);
         if (!md_bitfield_empty(&v.dof.target_mask)) {
             viamd::write_bitfield(state, STR_LIT("DofFocusTarget"), &v.dof.target_mask);
@@ -2616,6 +2636,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
             (m.timeline_rep_overview ? 64 : 0) | 128 | (m.timeline_camera_lane ? 256 : 0) | 512 | (m.timeline_ruler ? 1024 : 0) | 2048);
         viamd::write_flt (state, STR_LIT("LaneHeight"), m.timeline_lane_height);
         viamd::write_bool(state, STR_LIT("FitLanes"), m.timeline_fit_window);
+        viamd::write_flt(state, STR_LIT("KeyframePane"), m.editor_keyframe_fraction);
         viamd::write_bool(state, STR_LIT("RepEqualRows"), m.timeline_rep_equal_rows);
         viamd::write_bool(state, STR_LIT("RepSeparateRows"), m.timeline_rep_separate);
         viamd::write_flt (state, STR_LIT("RepBlockHeight"), m.timeline_rep_block_height);

@@ -285,9 +285,9 @@ vec3_t movie_focus_point(const CameraKeyframe* keys, size_t count, const vec3_t*
     std::vector<Focus> f;
     f.push_back({-DBL_MAX, FocusTarget::LookAt, {}, 10.0f, 0.0f, KeyEase::EaseInOut});
     for (size_t i = 0; i < count; ++i) {
-        if (!keys[i].focus_on) continue;
-        f.push_back({keys[i].time, keys[i].focus_target, points ? points[i] : keys[i].focus_point, keys[i].focus_distance,
-            keys[i].focus_transition, keys[i].focus_ease});
+        f.push_back({keys[i].time, keys[i].focus_on ? keys[i].focus_target : FocusTarget::LookAt,
+            points ? points[i] : keys[i].focus_point, keys[i].focus_distance,
+            keys[i].focus_on ? keys[i].focus_transition : 0.0f, keys[i].focus_ease});
     }
     std::stable_sort(f.begin(), f.end(), [](const Focus& a, const Focus& b) { return a.time < b.time; });
     size_t current = 0, previous = 0;

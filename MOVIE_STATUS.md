@@ -6,11 +6,24 @@ Merged `scanberg/viamd` master through `381f3fad`, including renderer, ASE loade
 
 Each camera key now has its own **Look at** (a fixed point, or atoms tracked through the
 trajectory) and **Focus on** (what is sharp, with transition and ease), set with two
-buttons in the key table. Both can be a selection typed in the filter language (`resname("AIN")`). The blur is the **Depth of field blur** look parameter. The focus is the look-at point by default and a key that does not set
-it keeps the focus of the key before. The viewport shows three paths (camera, look-at, focus)
+buttons in the key table: **Fixed point / Track selection** for aim and **Look-at / Track selection** for focus. Both can use a selection typed in the filter language (`resname("AIN")`). Saved legacy point/distance focus keys still work. The blur is the **Depth of field blur** look parameter. A key without an explicit focus target returns to look-at, rather than inheriting the previous target. Global focus is always Auto; old global fixed/target modes migrate with a notification. While the movie owns focus the global controls are read-only. Scene editing holds a separate internal depth, while movie-camera surfaces evaluate movie keys. The viewport shows three paths (camera, look-at, focus)
 and the camera lane has Look at and Focus rows. The opt-in "Independent camera / look-at / focus"
 switch and the separate tracks are gone: workspaces that used them (and keys that followed a
 follow target) are converted when loaded, which can change the eye path of such a movie slightly.
+
+The camera table is ordered #, Name, Time, Frame, FOV, Go to, Update, Look at,
+Focus on, Ease, Spin, Roll, Copy, Dup, Remove. Shift+K captures a key over the
+Movie window or viewport, except while typing or recording.
+The table occupies a resizable full-width bottom pane on every tab; its height is saved.
+Upper timeline/controls default to a 68/32 width split. Lens distance points are
+editable again, including tracked targets; dragging moves the eye along the line
+of sight while preserving aim and focus settings. The live picture stays above the table.
+New/reset movies fit lanes to the window, pin trajectory frames when adding camera keys,
+and select Depth of field blur for Look. Camera work shows ruler/camera/trajectory/lens;
+Scene work shows ruler/trajectory/representations/overlays/Look (blur);
+All shows ruler/camera/trajectory/lens/representations/Look.
+Opening Movie starts unkeyed blur at zero, preserves keyed blur, and restores viewport
+blur on close. Tab switching works over the active Movie window except while typing.
 
 | File | What it is |
 |---|---|
@@ -24,7 +37,7 @@ follow target) are converted when loaded, which can change the eye path of such 
 ## Build and test
 
 - Build: `cmake --build build --target viamd viamd_test -j8`; run `cmake -S . -B build` after adding files.
-- Tests: all 266 tests pass, including atom sets, eye and aim evaluated separately, the default focus and focus transitions, Spin pivot/axis, camera bands, conversion of older tracks and follow keys (with the optics tutorial), focus encoding, history/time scaling and group edits that keep a key's look-at and focus. They cover pure logic only; the frame sink tests use a fake script, so ffmpeg is not needed.
+- Tests: all 109 movie-key tests and all 268 tests pass, including atom sets, eye and aim evaluated separately, default focus returning to look-at after an explicit target, interrupted focus transitions, Spin pivot/axis, camera bands, conversion of older tracks and follow keys (with the optics tutorial), focus encoding, history/time scaling and distance edits with unit conversion that retain tracked look-at and focus settings. They cover pure logic only; the frame sink tests use a fake script, so ffmpeg is not needed.
 - VS Code CMake Tools currently reports no active configure preset. The existing `build` tree successfully builds `viamd` and `viamd_test` through a temporary VS Code Make task. VS Code's test runner does not discover the C++ tests; the executable passes.
 - The GUI could not be run while the code was written, so everything in `gui-checklist.md` beyond blocks 1 to 5 is untested. Windows and macOS are untested (the ffmpeg pipe uses `popen` / `_popen`).
 
