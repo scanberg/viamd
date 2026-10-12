@@ -3,7 +3,7 @@
 // The system's table (topology columns, the run and everything loaded along it) and the script
 // evaluations' tables (script/<ident> and its siblings) are listed side by side, one row per
 // attribute, with what it is, how it is stored and whether the Timelines and Distributions windows
-// can show it. A row that can be shown is dragged from here into a subplot of either window.
+// can show it. Volume rows can also be dragged into Density Volume.
 //
 // Opened with KEY_SHOW_ATTRIBUTE_WINDOW (Ctrl+Shift+A) from anywhere, or from the Windows menu.
 
@@ -192,15 +192,16 @@ struct Attributes : viamd::EventHandler {
             }
         }
 
-        ImGui::TextDisabled("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot.", md_array_size(rows), total);
+        ImGui::TextDisabled("%zu of %zu attributes. Drag plot rows into Timelines / Distributions, or volume rows into Density Volume.", md_array_size(rows), total);
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Hideable;
-        if (ImGui::BeginTable("##attributes", 8, table_flags)) {
+        if (ImGui::BeginTable("##attributes", 9, table_flags)) {
             const float icon_w = ImGui::GetFrameHeight();
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn(ICON_FA_CHART_LINE,   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
             ImGui::TableSetupColumn(ICON_FA_CHART_COLUMN, ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
+            ImGui::TableSetupColumn(ICON_FA_CUBE, ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
             ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch, 4.0f);
             ImGui::TableSetupColumn("Label",   ImGuiTableColumnFlags_WidthStretch, 2.0f);
             ImGui::TableSetupColumn("Format",  ImGuiTableColumnFlags_WidthStretch, 1.6f);
@@ -210,11 +211,11 @@ struct Attributes : viamd::EventHandler {
 
             // Header, with what the two marks mean
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            const char* header_tips[2] = { "Can be shown in the Timelines window", "Can be shown in the Distributions window" };
-            for (int c = 0; c < 8; ++c) {
+            const char* header_tips[3] = { "Can be shown in the Timelines window", "Can be shown in the Distributions window", "Can be shown in Density Volume" };
+            for (int c = 0; c < 9; ++c) {
                 if (!ImGui::TableSetColumnIndex(c)) continue;
                 ImGui::TableHeader(ImGui::TableGetColumnName(c));
-                if (c < 2 && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", header_tips[c]);
+                if (c < 3 && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", header_tips[c]);
             }
 
             const ImVec4 on_color  = ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -229,6 +230,7 @@ struct Attributes : viamd::EventHandler {
                     const SeriesKey key = series_key(row.source, attr.path);
                     const bool timeline = row.views & SeriesView_Timeline;
                     const bool distribution = row.views & SeriesView_Distribution;
+                    const bool volume = row.views & SeriesView_Volume;
 
                     ImGui::TableNextRow();
                     ImGui::PushID(r);
@@ -237,9 +239,11 @@ struct Attributes : viamd::EventHandler {
                     ImGui::TextColored(timeline ? on_color : off_color, "%s", timeline ? ICON_FA_CHART_LINE : "-");
                     ImGui::TableSetColumnIndex(1);
                     ImGui::TextColored(distribution ? on_color : off_color, "%s", distribution ? ICON_FA_CHART_COLUMN : "-");
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextColored(volume ? on_color : off_color, "%s", volume ? ICON_FA_CUBE : "-");
 
                     // The path spans the row: it is what is hovered, dragged and right clicked
-                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TableSetColumnIndex(3);
                     char path_buf[512];
                     str_copy_to_char_buf(path_buf, sizeof(path_buf), attr.path);
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
@@ -250,7 +254,7 @@ struct Attributes : viamd::EventHandler {
                         series_label(label, sizeof(label), &state, key);
                         // As a timeline series when it is one, which a distribution subplot accepts
                         // as well; otherwise as what only a distribution subplot takes
-                        const char* dnd_type = timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
+                        const char* dnd_type = volume ? VOLUME_SERIES_DND : timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
                         series_set_drag_payload(dnd_type, key, -1, label, series_default_color(&state, key));
                         ImGui::EndDragDropSource();
                     }
@@ -274,27 +278,27 @@ struct Attributes : viamd::EventHandler {
                     }
 
 
-                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TableSetColumnIndex(4);
                     if (!str_empty(attr.label)) ImGui::TextUnformatted(attr.label.ptr, attr.label.ptr + attr.label.len);
 
-                    ImGui::TableSetColumnIndex(4);
+                    ImGui::TableSetColumnIndex(5);
                     {
                         char buf[96];
                         format_string(buf, sizeof(buf), attr.format);
                         ImGui::TextUnformatted(buf);
                     }
 
-                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TableSetColumnIndex(6);
                     {
                         char buf[32] = "";
                         md_unit_print(buf, sizeof(buf), attr.unit);
                         ImGui::TextUnformatted(buf[0] ? buf : "-");
                     }
 
-                    ImGui::TableSetColumnIndex(6);
+                    ImGui::TableSetColumnIndex(7);
                     ImGui::TextUnformatted(storage_name(attr));
 
-                    ImGui::TableSetColumnIndex(7);
+                    ImGui::TableSetColumnIndex(8);
                     ImGui::TextUnformatted(source_name(row.source));
 
                     if (hovered) {
@@ -310,7 +314,9 @@ struct Attributes : viamd::EventHandler {
                             ImGui::Text("Value: " STR_FMT, STR_ARG(value));
                         }
                         ImGui::Separator();
-                        if (timeline && distribution) {
+                        if (volume) {
+                            ImGui::TextUnformatted("Scalar volume: drag into Density Volume");
+                        } else if (timeline && distribution) {
                             ImGui::TextUnformatted("Drag into a Timelines or Distributions subplot");
                         } else if (timeline) {
                             ImGui::TextUnformatted("Drag into a Timelines subplot");

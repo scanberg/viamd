@@ -14,6 +14,9 @@
 
 #include <implot_internal.h>
 #include <implot_widgets.h>
+#include <vector>
+#include <algorithm>
+#include <cmath>
 
 constexpr uint64_t interaction_surface_density_vol = HASH_STR_LIT64("interaction surface density volume");
 
@@ -23,14 +26,13 @@ enum LegendColorMapMode_ {
     LegendColorMapMode_Split,
 };
 
-struct DensityVolume : viamd::EventHandler {
-    bool show_window = false;
-    bool enabled = false;
-
-    // The volume property shown, by path; empty for none. One at a time.
+struct DensityVolumeLayer {
+    bool visible = true;
+    bool valid = false;
+    uint64_t data_version = 0;
+    uint64_t script_fingerprint = 0;
+    double frame = -1;
     SeriesKey volume_key = {};
-
-    md_allocator_i* arena = nullptr;
 
     struct {
         bool enabled = true;
@@ -103,6 +105,16 @@ struct DensityVolume : viamd::EventHandler {
     // Base model matrix to position the volume correctly in the world.
     mat4_t model_mat = mat4_ident();
 
+    ViewTransform default_view = {};
+};
+
+struct DensityVolume : viamd::EventHandler {
+    bool show_window = false;
+    md_allocator_i* arena = nullptr;
+    std::vector<DensityVolumeLayer> layers;
+    int active_layer = -1;
+    char notice[160] = "";
+    bool fit_new_layer = false;
     GBuffer gbuf = {};
     PickingSurface picking_surface = {};
     Camera camera = {};
@@ -115,40 +127,71 @@ struct DensityVolume : viamd::EventHandler {
 
     // ## Workspace: which volume is shown, and how
 
-    void reset_workspace_settings() {
-        volume_key = {};
-        dvr.enabled = true;
-        dvr.tf.alpha_scale = 1.0f;
-        dvr.tf.colormap = DEFAULT_COLORMAP;
-        dvr.tf.min_val = 0.0f;
-        dvr.tf.max_val = 1.0f;
-        dvr.tf.dirty = true;
-        iso.enabled = false;
-        iso.count = 0;
-        MEMSET(iso.values, 0, sizeof(iso.values));
-        MEMSET(iso.colors, 0, sizeof(iso.colors));
-        clip_volume.min = {0, 0, 0};
-        clip_volume.max = {1, 1, 1};
-        legend.enabled = true;
-        legend.checkerboard = true;
-        legend.colormap_mode = LegendColorMapMode_Split;
-        resolution_scale = 2.0f;
-        clip_volume_color = {1,0,0,1};
-        bounding_box_color = {0,0,0,1};
-        show_bounding_box = true;
-        show_reference_structures = true;
-        show_reference_ensemble = false;
-        show_coordinate_system_widget = true;
-        rep.type = RepresentationType::BallAndStick;
-        rep.colormap = ColorMapping::Type;
-        rep.param[0] = rep.param[1] = rep.param[2] = rep.param[3] = 1.0f;
-        rep.color = {1,1,1,1};
-        dirty_rep = true;
-        dirty_vol = true;
+    void free_layer(DensityVolumeLayer& layer) {
+        gl::free_texture(&layer.volume_texture.id);
+        gl::free_texture(&layer.dvr.tf.id);
+        for (size_t i = 0; i < md_array_size(layer.reps); ++i) {
+            md_gl_rep_destroy(layer.reps[i].gl_rep);
+            md_array_free(layer.reps[i].atom_indices, arena);
+        }
+        md_array_free(layer.reps, arena);
+        layer.reps = nullptr;
     }
 
-    void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("DensityVolume"));
+    int find_layer(const SeriesKey& key) const {
+        for (size_t i = 0; i < layers.size(); ++i) {
+            if (series_key_equal(layers[i].volume_key, key)) return (int)i;
+        }
+        return -1;
+    }
+
+    void add_layer(ApplicationState* state, const SeriesKey& key) {
+        if (key.path[SERIES_PATH_CAP - 1] != '\0' || key.source >= SeriesSource_Count ||
+            !(series_views(state, key) & SeriesView_Volume) || key.variant != SeriesVariant_Values) {
+            snprintf(notice, sizeof(notice), "Only resident scalar volume properties can be added.");
+            return;
+        }
+        int idx = find_layer(key);
+        if (idx == -1) {
+            if (layers.size() >= volume::MAX_OVERLAY_LAYERS) {
+                snprintf(notice, sizeof(notice), "At most %d layers: remove one before adding another.", volume::MAX_OVERLAY_LAYERS);
+                return;
+            }
+            fit_new_layer = layers.empty();
+            layers.emplace_back();
+            idx = (int)layers.size() - 1;
+            layers[idx].volume_key = key;
+            layers[idx].dirty_rep = layers[idx].dirty_vol = true;
+        }
+        layers[idx].visible = true;
+        active_layer = idx;
+        notice[0] = '\0';
+    }
+
+    void reset_workspace_settings() {
+        for (auto& layer : layers) free_layer(layer);
+        layers.clear();
+        active_layer = -1;
+        fit_new_layer = true;
+        notice[0] = '\0';
+    }
+
+    void serialize_layer(viamd::serialization_state_t& state, DensityVolumeLayer& layer) {
+        auto& volume_key = layer.volume_key;
+        auto& dvr = layer.dvr;
+        auto& iso = layer.iso;
+        auto& clip_volume = layer.clip_volume;
+        auto& legend = layer.legend;
+        auto& rep = layer.rep;
+        auto& resolution_scale = layer.resolution_scale;
+        auto& clip_volume_color = layer.clip_volume_color;
+        auto& bounding_box_color = layer.bounding_box_color;
+        auto& show_bounding_box = layer.show_bounding_box;
+        auto& show_reference_structures = layer.show_reference_structures;
+        auto& show_reference_ensemble = layer.show_reference_ensemble;
+        auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
+        viamd::write_section_header(state, STR_LIT("DensityVolumeLayer"));
+        viamd::write_bool(state, STR_LIT("Visible"), layer.visible);
         if (volume_key.path[0] != '\0') {
             viamd::write_str(state, STR_LIT("PropertySource"), str_from_cstr(series_source_name(volume_key.source)));
             viamd::write_str(state, STR_LIT("PropertyPath"), str_from_cstr(volume_key.path));
@@ -185,14 +228,43 @@ struct DensityVolume : viamd::EventHandler {
         viamd::write_vec4(state, STR_LIT("RepColor"), rep.color);
     }
 
-    void deserialize(viamd::deserialization_state_t& state) {
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("DensityVolume"));
+        viamd::write_int(state, STR_LIT("LayerCount"), (int64_t)layers.size());
+        viamd::write_int(state, STR_LIT("ActiveLayer"), active_layer);
+        for (auto& layer : layers) serialize_layer(state, layer);
+    }
+
+    void deserialize(viamd::deserialization_state_t& state, bool legacy) {
+        DensityVolumeLayer layer;
+        auto& volume_key = layer.volume_key;
+        auto& dvr = layer.dvr;
+        auto& iso = layer.iso;
+        auto& clip_volume = layer.clip_volume;
+        auto& legend = layer.legend;
+        auto& rep = layer.rep;
+        auto& resolution_scale = layer.resolution_scale;
+        auto& clip_volume_color = layer.clip_volume_color;
+        auto& bounding_box_color = layer.bounding_box_color;
+        auto& show_bounding_box = layer.show_bounding_box;
+        auto& show_reference_structures = layer.show_reference_structures;
+        auto& show_reference_ensemble = layer.show_reference_ensemble;
+        auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
         SeriesSource source = SeriesSource_Script;
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "PropertySource")) {
+            if (str_eq_cstr(ident, "LayerCount")) {
+                // A new-format header holds no property settings.
+                legacy = false;
+            } else if (str_eq_cstr(ident, "ActiveLayer")) {
+                viamd::extract_int(active_layer, arg);
+            } else if (str_eq_cstr(ident, "Visible")) {
+                viamd::extract_bool(layer.visible, arg);
+            } else if (str_eq_cstr(ident, "PropertySource")) {
                 str_t name;
                 viamd::extract_str(name, arg);
                 series_source_from_name(&source, name);
+                volume_key.source = source;
             } else if (str_eq_cstr(ident, "PropertyPath")) {
                 str_t path;
                 viamd::extract_str(path, arg);
@@ -258,11 +330,35 @@ struct DensityVolume : viamd::EventHandler {
             iso.enabled = false;
         }
         dvr.tf.dirty = true;
-        dirty_rep = true;
-        dirty_vol = true;
+        layer.dirty_rep = true;
+        layer.dirty_vol = true;
+        dvr.tf.colormap = CLAMP(dvr.tf.colormap, 0, ImPlot::GetColormapCount() - 1);
+        if (!std::isfinite(dvr.tf.alpha_scale) || dvr.tf.alpha_scale < 0) dvr.tf.alpha_scale = 1;
+        if (!std::isfinite(dvr.tf.min_val)) dvr.tf.min_val = 0;
+        if (!std::isfinite(dvr.tf.max_val) || dvr.tf.max_val <= dvr.tf.min_val) dvr.tf.max_val = dvr.tf.min_val + 1;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(clip_volume.min.elem[axis])) clip_volume.min.elem[axis] = 0;
+            if (!std::isfinite(clip_volume.max.elem[axis])) clip_volume.max.elem[axis] = 1;
+            clip_volume.min.elem[axis] = CLAMP(clip_volume.min.elem[axis], 0.f, 1.f);
+            clip_volume.max.elem[axis] = CLAMP(clip_volume.max.elem[axis], clip_volume.min.elem[axis], 1.f);
+        }
+        legend.colormap_mode = CLAMP(legend.colormap_mode, 0, 2);
+        if (volume_key.path[0] && layers.size() < volume::MAX_OVERLAY_LAYERS && find_layer(volume_key) == -1) {
+            layers.push_back(layer);
+            if (legacy || active_layer < 0) active_layer = 0;
+        }
     }
 
-    void update(ApplicationState* state) {
+    void update(ApplicationState* state, DensityVolumeLayer& layer) {
+        auto& volume_key = layer.volume_key;
+        auto& dvr = layer.dvr;
+        auto& rep = layer.rep;
+        auto& reps = layer.reps;
+        auto& dirty_vol = layer.dirty_vol;
+        auto& dirty_rep = layer.dirty_rep;
+        auto& model_mat = layer.model_mat;
+        auto& voxel_spacing = layer.voxel_spacing;
+        auto& volume_texture = layer.volume_texture;
         md_allocator_i* temp_arena = state->allocator.frame;
         md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
         defer { md_temp_end(temp_scope); };
@@ -282,36 +378,26 @@ struct DensityVolume : viamd::EventHandler {
         const md_script_vis_payload_o* vis_payload = vol_view.vis_payload;
         const uint64_t data_version = vol_view.version;
 
-        bool reset_view = false;
-        static SeriesKey s_volume_key = {};
-        static bool s_first = true;
-        if (s_first || !series_key_equal(s_volume_key, volume_key)) {
-            if (!s_first && s_volume_key.path[0] == '\0' && selected) {
-                reset_view = true;
-            }
-            s_first = false;
-            s_volume_key = volume_key;
-            dirty_vol = true;
-            dirty_rep = true;
+        if (!resolved) {
+            layer.valid = false;
+            dirty_rep = dirty_vol = true;
+            return;
         }
-        show_density_volume = selected;
-
-        static uint64_t s_script_fingerprint = 0;
-        if (s_script_fingerprint != md_script_ir_fingerprint(state->script.eval_ir)) {
-            s_script_fingerprint = md_script_ir_fingerprint(state->script.eval_ir);
+        const uint64_t fingerprint = md_script_ir_fingerprint(state->script.eval_ir);
+        if (layer.script_fingerprint != fingerprint) {
+            layer.script_fingerprint = fingerprint;
             dirty_vol = true;
             dirty_rep = true;
         }
 
-        static uint64_t s_data_version = 0;
-        if (s_data_version != data_version) {
-            s_data_version = data_version;
+        if (layer.data_version != data_version) {
+            layer.data_version = data_version;
             dirty_vol = true;
+            dirty_rep = true;
         }
 
-        static double s_frame = 0;
-        if (s_frame != state->animation.frame) {
-            s_frame = state->animation.frame;
+        if (layer.frame != state->animation.frame) {
+            layer.frame = state->animation.frame;
             dirty_rep = true;
         }
 
@@ -332,7 +418,8 @@ struct DensityVolume : viamd::EventHandler {
                     result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
                 }
 
-                if (result) {
+                layer.valid = result && vis.sdf.extent > 0 && std::isfinite(vis.sdf.extent);
+                if (layer.valid) {
                     if (vis.sdf.extent) {
                         const float s = vis.sdf.extent;
                         vec3_t min_aabb = vec3_set1(-s);
@@ -340,10 +427,11 @@ struct DensityVolume : viamd::EventHandler {
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
                         const uint32_t* dim = prop_attr->format.shape;
                         voxel_spacing = vec3_t{2*s / dim[0], 2*s / dim[1], 2*s / dim[2]};
-                        default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
-                        if (reset_view) {
-                            target = default_view;
-                            camera = default_view;
+                        layer.default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
+                        if (fit_new_layer) {
+                            target = layer.default_view;
+                            camera = layer.default_view;
+                            fit_new_layer = false;
                         }
                     }
                     num_reps = md_array_size(vis.sdf.structures);
@@ -418,9 +506,18 @@ struct DensityVolume : viamd::EventHandler {
 
         if (dirty_vol) {
             if (prop_attr) {
+                int dim[3] = { (int)prop_attr->format.shape[0], (int)prop_attr->format.shape[1], (int)prop_attr->format.shape[2] };
+                GLint max_dim = 0;
+                glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_dim);
+                for (int axis = 0; axis < 3; ++axis) {
+                    if (dim[axis] <= 0 || dim[axis] > max_dim) {
+                        layer.valid = false;
+                        return;
+                    }
+                }
                 dirty_vol = false;
-                if (!volume_texture.id) {
-                    int dim[3] = { (int)prop_attr->format.shape[0], (int)prop_attr->format.shape[1], (int)prop_attr->format.shape[2] };
+                if (!volume_texture.id || MEMCMP(volume_texture.dim, dim, sizeof(dim)) != 0) {
+                    gl::free_texture(&volume_texture.id);
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
@@ -440,6 +537,23 @@ struct DensityVolume : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             const ImVec2 button_size = {160, 0};
+            SeriesKey add_key = {};
+            // A scratch settings object keeps the menus usable when the layer list is empty.
+            DensityVolumeLayer empty;
+            active_layer = layers.empty() ? -1 : CLAMP(active_layer, 0, (int)layers.size() - 1);
+            auto& layer = active_layer >= 0 ? layers[active_layer] : empty;
+            auto& dvr = layer.dvr;
+            auto& iso = layer.iso;
+            auto& clip_volume = layer.clip_volume;
+            auto& legend = layer.legend;
+            auto& rep = layer.rep;
+            auto& dirty_rep = layer.dirty_rep;
+            auto& show_bounding_box = layer.show_bounding_box;
+            auto& bounding_box_color = layer.bounding_box_color;
+            auto& show_reference_structures = layer.show_reference_structures;
+            auto& show_reference_ensemble = layer.show_reference_ensemble;
+            auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
+            if (active_layer >= 0) default_view = layer.default_view;
 
             if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
                 state->animation.mode = state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -447,17 +561,22 @@ struct DensityVolume : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Property")) {
-                    // One volume at a time: picking one replaces the other, picking it again hides it
                     int candidate_count = 0;
                     auto list = [&](SeriesSource source) {
                         series_for_each_script_property(state, source, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& key) {
                             char label[96];
                             series_label(label, sizeof(label), state, key);
-                            const bool is_selected = series_key_equal(key, volume_key);
+                            const bool is_selected = find_layer(key) >= 0;
                             ImGui::PushID(key.source);
+                            ImGui::PushID(key.path);
                             ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
                             if (ImGui::Selectable(label, is_selected)) {
-                                volume_key = is_selected ? SeriesKey{} : key;
+                                add_key = key;
+                                ImGui::CloseCurrentPopup();
+                            }
+                            if (ImGui::BeginDragDropSource()) {
+                                series_set_drag_payload(VOLUME_SERIES_DND, key, -1, label, series_default_color(state, key));
+                                ImGui::EndDragDropSource();
                             }
                             if (ImGui::IsItemHovered()) {
                                 const str_t ident = series_script_ident(key);
@@ -465,6 +584,7 @@ struct DensityVolume : viamd::EventHandler {
                                 script_visualize_payload(state, vis, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
                                 script_set_hovered_property(state, ident);
                             }
+                            ImGui::PopID();
                             ImGui::PopID();
                             candidate_count += 1;
                         });
@@ -479,7 +599,7 @@ struct DensityVolume : viamd::EventHandler {
                     }
                     ImGui::EndMenu();
                 }
-                if (ImGui::BeginMenu("Render")) {
+                if (ImGui::BeginMenu("Render", active_layer >= 0)) {
                     // One or the other (or neither): the two are separate renderers and never mixed
                     if (ImGui::RadioButton("Off", !dvr.enabled && !iso.enabled)) {
                         dvr.enabled = false;
@@ -553,13 +673,13 @@ struct DensityVolume : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
 
-                if (ImGui::BeginMenu("Clip planes")) {
+                if (ImGui::BeginMenu("Clip planes", active_layer >= 0)) {
                     ImGui::RangeSliderFloat("x", &clip_volume.min.x, &clip_volume.max.x, 0.0f, 1.0f);
                     ImGui::RangeSliderFloat("y", &clip_volume.min.y, &clip_volume.max.y, 0.0f, 1.0f);
                     ImGui::RangeSliderFloat("z", &clip_volume.min.z, &clip_volume.max.z, 0.0f, 1.0f);
                     ImGui::EndMenu();
                 }
-                if (ImGui::BeginMenu("Show")) {
+                if (ImGui::BeginMenu("Show", active_layer >= 0)) {
                     ImGui::Checkbox("Bounding Box", &show_bounding_box);
                     if (show_bounding_box) {
                         ImGui::Indent();
@@ -583,7 +703,7 @@ struct DensityVolume : viamd::EventHandler {
 
                         if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
                             for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
-                                if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
+                                if (ImGui::Selectable(color_mapping_str[i], (int)rep.colormap == i)) {
                                     rep.colormap = (ColorMapping)i;
                                     dirty_rep = true;
                                 }
@@ -634,7 +754,32 @@ struct DensityVolume : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            update(state);
+            ImGui::TextDisabled("Layers (%zu/%d): select a row to edit its Render / Clip / Show settings", layers.size(), volume::MAX_OVERLAY_LAYERS);
+            int remove = -1;
+            int move = 0;
+            int move_index = -1;
+            for (int i = 0; i < (int)layers.size(); ++i) {
+                ImGui::PushID(i);
+                auto& item = layers[i];
+                ImGui::Checkbox("##visible", &item.visible);
+                ImGui::SameLine();
+                char label[128];
+                series_label(label, sizeof(label), state, item.volume_key);
+                if (ImGui::Selectable(label, active_layer == i, 0, ImVec2(ImMax(80.f, ImGui::GetContentRegionAvail().x - 105.f), 0))) active_layer = i;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (%s)%s", item.volume_key.path, series_source_name(item.volume_key.source), item.valid ? "" : "\nMissing or invalid data: not rendered");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Up") && i > 0) { move_index = i; move = -1; }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Dn") && i + 1 < (int)layers.size()) { move_index = i; move = 1; }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("X")) remove = i;
+                ImGui::PopID();
+            }
+            if (layers.empty()) ImGui::TextDisabled("Add from Property or drag a volume row from Attributes.");
+            if (notice[0]) ImGui::TextWrapped("%s", notice);
+            if (layers.size() > 1) ImGui::TextDisabled("Overlays: shared depth-sorted ray sampling (fast surfaces).");
+            // Apply structural edits after rendering: menu references point into the layer list.
+            for (auto& item : layers) update(state, item);
 
             // Animate camera towards targets
             camera_animate(&camera, target, state->app.timing.delta_s);
@@ -664,6 +809,17 @@ struct DensityVolume : viamd::EventHandler {
 
             const InteractionSurfaceFlags surface_flags = InteractionSurfaceFlags_NoRegionSelect;
             InteractionSurfaceState surface_state = interaction_surface(interaction_surface_density_vol, vec_cast(canvas_sz), surface_flags);
+            SeriesKey dropped_key = {};
+            bool dropped = false;
+            if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect, ImGui::GetID("##volume-drop"))) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VOLUME_SERIES_DND)) {
+                    if (payload->DataSize == sizeof(SeriesDragPayload)) {
+                        dropped_key = ((const SeriesDragPayload*)payload->Data)->key;
+                        dropped = true;
+                    }
+                }
+                ImGui::EndDragDropTarget();
+            }
             const ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             const ImVec2 canvas_p1 = ImGui::GetItemRectMax();
             const ImRect canvas_rect = ImRect(canvas_p0, canvas_p1);
@@ -736,7 +892,7 @@ struct DensityVolume : viamd::EventHandler {
             draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
-            if (dvr.enabled && legend.enabled) {
+            if (layer.visible && layer.valid && dvr.enabled && legend.enabled) {
                 ImVec2 canvas_ext = canvas_p1 - canvas_p0;
                 ImVec2 cmap_ext = {MIN(canvas_ext.x * 0.5f, 250.0f), MIN(canvas_ext.y * 0.25f, 30.0f)};
                 ImVec2 cmap_pad = {10, 10};
@@ -812,19 +968,20 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0,  gbuf.width, gbuf.height);
 
-            const bool selected_property = volume_key.path[0] != '\0';
-
-            size_t num_reps = md_array_size(reps);
-            if (selected_property && show_reference_structures && num_reps > 0) {
-                if (!show_reference_ensemble) {
+            for (auto& item : layers) {
+                if (!item.visible || !item.valid || !item.show_reference_structures) continue;
+                auto& reps = item.reps;
+                size_t num_reps = md_array_size(reps);
+                if (!num_reps) continue;
+                if (!item.show_reference_ensemble) {
                     num_reps = 1;
                 }
 
                 md_gl_draw_op_t* draw_ops = md_array_create(md_gl_draw_op_t, num_reps, temp_arena);
 
                 md_gl_draw_op_t op = {};
-                op.type = (md_gl_rep_type_t)rep.type;
-                MEMCPY(&op.args, rep.param, sizeof(op.args));
+                op.type = (md_gl_rep_type_t)item.rep.type;
+                MEMCPY(&op.args, item.rep.param, sizeof(op.args));
                 if (op.type == MD_GL_REP_BALL_AND_STICK) {
                     op.args.ball_and_stick.color_mode = MD_GL_BOND_MODE_NEAREST;
                 } else if (op.type == MD_GL_REP_LICORICE) {
@@ -852,11 +1009,46 @@ struct DensityVolume : viamd::EventHandler {
 
                 md_gl_draw(&draw_args);
 
-                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             }
 
             bool iso_written = false;
-            if (show_density_volume) {
+            volume::OverlayLayer overlay_layers[volume::MAX_OVERLAY_LAYERS] = {};
+            size_t overlay_count = 0;
+            DensityVolumeLayer* single = nullptr;
+            for (auto& item : layers) {
+                if (!item.visible || !item.valid || (!item.dvr.enabled && (!item.iso.enabled || !item.iso.count))) continue;
+                auto& out = overlay_layers[overlay_count++];
+                out.volume_texture = item.volume_texture.id;
+                out.transfer_texture = item.dvr.tf.id;
+                out.model = item.model_mat;
+                out.clip_min = item.clip_volume.min;
+                out.clip_max = item.clip_volume.max;
+                out.dvr = item.dvr.enabled;
+                out.tf_min = item.dvr.tf.min_val;
+                out.tf_max = item.dvr.tf.max_val;
+                out.iso_count = item.iso.enabled ? item.iso.count : 0;
+                MEMCPY(out.iso_values, item.iso.values, sizeof(out.iso_values));
+                MEMCPY(out.iso_colors, item.iso.colors, sizeof(out.iso_colors));
+                single = &item;
+            }
+            if (overlay_count > 1) {
+                volume::OverlayRenderDesc desc = {};
+                desc.layers = overlay_layers;
+                desc.count = overlay_count;
+                desc.depth = gbuf.tex.depth;
+                desc.color = gbuf.tex.transparency_hdr;
+                desc.width = gbuf.width;
+                desc.height = gbuf.height;
+                desc.view = world_to_view;
+                desc.proj = view_to_clip;
+                desc.env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f;
+                iso_written = volume::render_overlays(desc);
+            } else if (single) {
+                auto& dvr = single->dvr;
+                auto& iso = single->iso;
+                auto& volume_texture = single->volume_texture;
+                auto& model_mat = single->model_mat;
+                auto& clip_volume = single->clip_volume;
                 if (dvr.enabled) {
                     volume::DvrRenderDesc vol_desc = {
                         .render_target = {
@@ -930,7 +1122,8 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0, gbuf.width, gbuf.height);
 
-            if (show_bounding_box && selected_property) {
+            for (auto& item : layers) {
+                if (!item.visible || !item.valid || !item.show_bounding_box) continue;
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);
@@ -939,12 +1132,12 @@ struct DensityVolume : viamd::EventHandler {
 
 				immediate::Queue* queue = immediate::queue_create("Density Volume Bounds");
 
-                immediate::set_model(queue, model_mat);
+                immediate::set_model(queue, item.model_mat);
 
-                uint32_t box_color = convert_color(bounding_box_color);
-                uint32_t clip_color = convert_color(clip_volume_color);
+                uint32_t box_color = convert_color(item.bounding_box_color);
+                uint32_t clip_color = convert_color(item.clip_volume_color);
                 immediate::box_wireframe(queue, {0,0,0}, {1,1,1}, box_color);
-                immediate::box_wireframe(queue, clip_volume.min, clip_volume.max, clip_color);
+                immediate::box_wireframe(queue, item.clip_volume.min, item.clip_volume.max, clip_color);
 
                 immediate::RenderParams params = {};
                 params.view = world_to_view;
@@ -1004,6 +1197,18 @@ struct DensityVolume : viamd::EventHandler {
             glDrawBuffer(GL_BACK);
 
             POP_GPU_SECTION();
+            if (remove >= 0) {
+                free_layer(layers[remove]);
+                layers.erase(layers.begin() + remove);
+                if (active_layer > remove) --active_layer;
+                active_layer = layers.empty() ? -1 : CLAMP(active_layer, 0, (int)layers.size() - 1);
+            } else if (move_index >= 0) {
+                std::swap(layers[move_index], layers[move_index + move]);
+                if (active_layer == move_index) active_layer += move;
+                else if (active_layer == move_index + move) active_layer -= move;
+            }
+            if (dropped) add_layer(state, dropped_key);
+            if (add_key.path[0]) add_layer(state, add_key);
         }
 
         ImGui::End();
@@ -1031,12 +1236,15 @@ struct DensityVolume : viamd::EventHandler {
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
                 if (str_eq(viamd::section_header(state), STR_LIT("DensityVolume"))) {
-                    deserialize(state);
+                    deserialize(state, true);
+                } else if (str_eq(viamd::section_header(state), STR_LIT("DensityVolumeLayer"))) {
+                    deserialize(state, false);
                 }
                 break;
             }
             case viamd::EventType_ViamdShutdown: {
                 // Cleanup component
+                reset_workspace_settings();
                 md_arena_allocator_destroy(arena);
                 break;
             }
@@ -1044,8 +1252,12 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemFree: {
-                md_array_shrink(reps, 0);
-                model_mat = {0};
+                for (auto& layer : layers) {
+                    free_layer(layer);
+                    layer.valid = false;
+                    layer.dirty_rep = layer.dirty_vol = true;
+                    layer.script_fingerprint = layer.data_version = 0;
+                }
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {

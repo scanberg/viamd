@@ -9,6 +9,7 @@
 #include <core/md_log.h>
 #include <core/md_str_builder.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_os.h>
 
 #include <viamd.h>
 #include <viamd_event.h>
@@ -5017,6 +5018,60 @@ void recenter_mark_query_dirty(ApplicationState* state) {
 const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state) {
     ASSERT(state);
     return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
+}
+
+bool script_compile_source(ApplicationState* state, md_script_ir_t* ir, str_t source) {
+    char buf[4096];
+    const size_t len = md_path_write_cwd(buf, sizeof(buf));
+    if (!len) {
+        VIAMD_LOG_ERROR("Cannot determine the script's working directory.");
+        return false;
+    }
+    const str_t old_cwd = {buf, len};
+    defer {
+        if (!md_path_set_cwd(old_cwd)) VIAMD_LOG_ERROR("Cannot restore the working directory after script compilation.");
+    };
+    str_t cwd = {};
+    const char* path = state->files.workspace[0] ? state->files.workspace
+        : state->files.trajectory[0] ? state->files.trajectory : state->files.molecule;
+    if (path[0]) extract_folder_path(&cwd, str_from_cstr(path));
+    if (!str_empty(cwd) && !md_path_set_cwd(cwd)) {
+        VIAMD_LOG_ERROR("Cannot access the script's working directory: " STR_FMT, STR_ARG(cwd));
+        return false;
+    }
+    for (size_t i = 0; i < md_array_size(state->selection.stored_selections); ++i) {
+        const Selection& sel = state->selection.stored_selections[i];
+        if (!md_script_ir_add_identifier_bitfield(ir, str_from_cstr(sel.name), &sel.atom_mask)) return false;
+    }
+    return str_empty(source) || md_script_ir_compile_from_source(ir, source, &state->mold.sys, nullptr);
+}
+
+bool script_append_statement(ApplicationState* state, str_t statement) {
+    if (state->editor.IsReadOnlyEnabled()) {
+        VIAMD_LOG_ERROR("Cannot create a property while the script editor is read-only.");
+        return false;
+    }
+    std::string source = state->editor.GetText();
+    if (!source.empty()) source += '\n';
+    source.append(statement.ptr, statement.len);
+    md_script_ir_t* candidate = md_script_ir_create(state->allocator.frame);
+    defer { md_script_ir_free(candidate); };
+    if (!script_compile_source(state, candidate, {source.data(), source.size()})) {
+        VIAMD_LOG_ERROR("Could not add the property; fix script errors before creating it.");
+        const md_log_token_t* errors = md_script_ir_errors(candidate);
+        for (size_t i = 0; i < md_script_ir_num_errors(candidate); ++i) {
+            VIAMD_LOG_ERROR("Cannot create property: " STR_FMT, STR_ARG(errors[i].text));
+        }
+        state->show_script_window = true;
+        return false;
+    }
+    script_editor::append_line(state->editor, statement);
+    state->script.compile_ir = true;
+    state->script.evaluate_after_compile = true;
+    state->script.time_since_last_change = 0;
+    state->show_script_window = true;
+    VIAMD_LOG_SUCCESS("Property added to the script.");
+    return true;
 }
 
 bool recenter_update_query_mask(ApplicationState* state) {

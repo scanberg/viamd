@@ -336,6 +336,15 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         *reason = "Text, not numbers";
         return 0;
     }
+    if (is_script(key.source) && (script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_VOLUME)) {
+        if (attr->format.type == MD_ATTRIBUTE_TYPE_F32 && attr->format.rank == 3 &&
+            attr->format.components == 1 && attribute_numeric_resident(attr) &&
+            attr->format.shape[0] && attr->format.shape[1] && attr->format.shape[2]) {
+            return SeriesView_Volume;
+        }
+        *reason = "A volume must be a resident, nonempty scalar f32 grid";
+        return 0;
+    }
 
     const bool temporal = attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL;
     if (temporal) {
@@ -741,14 +750,18 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     ASSERT(out && app);
     *out = SeriesVolumeView{};
     series_label(out->label, sizeof(out->label), app, key);
-    if (!is_script(key.source)) return false;
+    if (!is_script(key.source) || key.variant != SeriesVariant_Values ||
+        !(series_views(app, key) & SeriesView_Volume)) return false;
+    const md_script_eval_t* eval = series_eval(app, key.source);
+    if (!eval || md_script_eval_ir_fingerprint(eval) != md_script_ir_fingerprint(app->script.eval_ir)) return false;
+    if (key.source == SeriesSource_ScriptFiltered && !app->timeline.filter.enabled) return false;
     const str_t ident = series_script_ident(key);
     str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
     out->vis_payload = app->script.eval_ir ? md_script_ir_property_vis_payload(app->script.eval_ir, ident) : nullptr;
 
     const md_attributes_t* table = series_table(app, key.source);
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
-    if (!attr || !attr->data || attr->format.rank != 3) return false;
+    if (!attr || !attr->data || !out->vis_payload || !md_script_ir_valid(app->script.eval_ir)) return false;
     out->attr = attr;
     out->version = attr->version;
     return true;

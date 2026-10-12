@@ -42,6 +42,28 @@ Documentation about VIAMD is available on the github [wiki](https://github.com/s
 
 A series of videos is available on [youtube](https://youtube.com/playlist?list=PLNx9MpJY8ffr9CeK7WefdOnuGRw_E5rSj&si=VatBHEwiL7jWyhPK).
 
+### Analysis windows
+
+Ramachandran and Shape Space start with an `all` selection. Their selection fields choose
+the residues or structures to analyse; the timeline's frame filter independently chooses
+the time interval. **Create Property** adds named, editable calculations to the script,
+using `ramachandran(...)` for backbone angle pairs and `shape_space(...)` for linear,
+planar and isotropic shape weights. The old `shape_weights(...)` spelling remains available
+with a deprecation warning so existing scripts and workspaces still load.
+
+Both views offer isolines, filled density levels and colormaps alongside their points.
+Shape Space density is constrained to its triangular domain rather than periodically
+wrapped like backbone angles. Display smoothing does not change the computed script properties.
+
+Density Volume accepts multiple volume properties in one shared 3D view. Add properties
+from its property menu or drag volume entries from Attributes into the view; each layer
+has its own visibility and rendering settings. Window settings and property choices are
+saved in the workspace, including support for older single-volume workspaces.
+See [Density Volume controls and overlay behavior](docs/density-volume.md) for details.
+
+See the [script reference](ext/mdlib/docs/script_reference.md) for function signatures,
+selection rules and examples.
+
 ## Update
 If you want to stay informed about the latest updates of VIAMD, please register your email address on the [form](https://forms.gle/fAxuWob8nMLcrS5h9). 
 
@@ -91,6 +113,4 @@ https://github.com/nothings/stb
 <p align="center">
 <img src="https://github.com/user-attachments/assets/39b69b10-88a1-43a7-9d69-68513ac4e632"  width="150" alt="This is the VIAMD logo" >
 </p>
-
-
 

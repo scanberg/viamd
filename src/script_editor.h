@@ -48,7 +48,7 @@ bool has_focus_after_render();
 // variables, procedures, constants and keywords, the parameters of the procedure being called, and the values that
 // selectors take, such as the residue names of the system in resname("|") or the attribute paths in attr("|").
 // Suggestions are ranked by how well they match what has been typed: the characters typed have to appear in order in
-// a suggestion (ignoring case) and the first one has to start it or one of its parts, so 'sw' finds shape_weights and
+// a suggestion (ignoring case) and the first one has to start it or one of its parts, so 'ss' finds shape_space and
 // 'pot' edr/potential. They pop up while typing and Ctrl+Space asks for them (also on macOS); Tab or Enter inserts the
 // selected one, Escape closes the list.
 // sys is where the values come from, it is read when suggestions are made and may be NULL. The editor keeps a

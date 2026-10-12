@@ -184,5 +184,35 @@ struct DvrRenderDesc {
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)
 void render_dvr(const DvrRenderDesc& desc);
 
+// Intersecting volumes cannot be composited by blending their completed ray images.
+// This pass samples them on a shared world-space ray, combines DVR extinction, and
+// sorts surface crossings within each step. Output is premultiplied linear HDR.
+// Surfaces use refined sampled crossings (not the exact single-volume cell solver).
+constexpr int MAX_OVERLAY_LAYERS = 6; // 13 fragment texture units, within GL 4.1's minimum
+struct OverlayLayer {
+    uint32_t volume_texture = 0;
+    uint32_t transfer_texture = 0;
+    mat4_t model = mat4_ident();
+    vec3_t clip_min = {0,0,0};
+    vec3_t clip_max = {1,1,1};
+    bool dvr = true;
+    float tf_min = 0;
+    float tf_max = 1;
+    size_t iso_count = 0;
+    float iso_values[8] = {};
+    vec4_t iso_colors[8] = {};
+};
+struct OverlayRenderDesc {
+    const OverlayLayer* layers = nullptr;
+    size_t count = 0;
+    uint32_t depth = 0;
+    uint32_t color = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    mat4_t view = mat4_ident();
+    mat4_t proj = mat4_ident();
+    vec3_t env_radiance = {};
+};
+bool render_overlays(const OverlayRenderDesc& desc);
 
 }  // namespace volume

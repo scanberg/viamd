@@ -20,27 +20,18 @@
 
 #include <serialization_utils.h>
 #include <imgui_widgets.h>
+#include <implot_widgets.h>
 #include <implot_internal.h>
-
-/*
-    @NOTE:
-    It would be nice to have a colormap applied to the points in the plot where they are graded by t=time
-    However, the current implot api for scatterplot does not currently support that.
-    Bummer!
-*/
+#include <components/analysis_density.h>
+#include <components/analysis_density_renderer.h>
+#include <atomic>
+#include <cmath>
 
 enum ColorMode {
     ColorMode_Uniform,
     ColorMode_Colormap,
     ColorMode_Count,
 };
-
-/*
-static const char* colormode_lbl[] = {
-    "Uniform",
-    "Colormap",
-};
-*/
 
 struct Shapespace : viamd::EventHandler {
     char input[256] = "all";
@@ -49,7 +40,6 @@ struct Shapespace : viamd::EventHandler {
     bool input_valid = false;
     bool show_window = false;
 
-    //md_system_state_t app_state = {0};
     // Used to compare against the current 'app_state' if things should be reevaluated
     uint64_t eval_hash   = 0;
 
@@ -59,6 +49,8 @@ struct Shapespace : viamd::EventHandler {
 
     md_array(vec3_t) weights = 0;
     md_array(vec2_t) coords  = 0;
+    md_array(vec3_t) pending_weights = 0;
+    md_array(vec2_t) pending_coords = 0;
     md_array(md_bitfield_t) bitfields = 0;
     md_bitfield_t joined_bitfield = {};
 
@@ -70,12 +62,86 @@ struct Shapespace : viamd::EventHandler {
     ColorMode mode = ColorMode_Colormap;
     ImPlotColormap colormap = 0;
     ImVec4 color = {0.5f,1.0f,0.5f,1.0f};
+    analysis_density::Display display = analysis_density::Scatter;
+    bool show_scatter = true;
+    float smoothing = 2.0f;
+    float density_opacity = 0.8f;
+    ImPlotColormap density_colormap = ImPlotColormap_Viridis;
+    char property_name[128] = "shape";
+    char property_error[256] = "";
+
+    analysis_density::Triangle density;
+    analysis_density::Renderer density_renderer;
+    bool density_render_dirty = true;
+    analysis_density::Display rendered_display = analysis_density::Scatter;
+    ImPlotColormap rendered_colormap = -1;
+    uint64_t data_generation = 1;
+    size_t density_beg = 0;
+    size_t density_end = 0;
+    float density_smoothing = -1.0f;
+    bool evaluation_pending = false;
+    std::atomic<bool> evaluation_failed{false};
 
     task_system::ID evaluate_task = 0;
 
     ApplicationState* app_state = 0;
 
     Shapespace() { viamd::event_system_register_handler(*this); }
+
+    void clear_data() {
+        task_system::task_interrupt_and_wait_for(evaluate_task);
+        evaluate_task = 0;
+        evaluation_pending = false;
+        bitfields = 0;
+        weights = 0;
+        coords = 0;
+        pending_weights = 0;
+        pending_coords = 0;
+        num_frames = num_structures = 0;
+        eval_hash = 0;
+        input_valid = false;
+        density.clear();
+        density_render_dirty = true;
+        ++data_generation;
+        if (arena) {
+            md_arena_allocator_reset(arena);
+            joined_bitfield = {};
+            md_bitfield_init(&joined_bitfield, arena);
+        }
+    }
+
+    uint64_t evaluation_hash() const {
+        return md_hash64(input, sizeof(input), app_state->script.ir_fingerprint ^
+            (1ULL << (uint64_t)use_mass) ^ data_generation);
+    }
+
+    void frame_range(size_t& beg, size_t& end) const {
+        beg = 0;
+        end = num_frames;
+        if (app_state->timeline.filter.enabled) {
+            beg = (size_t)CLAMP(app_state->timeline.filter.beg_frame, 0.0, (double)num_frames);
+            end = (size_t)CLAMP(app_state->timeline.filter.end_frame, (double)beg, (double)num_frames);
+        }
+    }
+
+    void create_property() {
+        property_error[0] = '\0';
+        if (!md_script_identifier_name_valid(str_from_cstr(property_name))) {
+            snprintf(property_error, sizeof(property_error), "Enter a valid script identifier as the property base name.");
+            return;
+        }
+        // A grouped selection produces rows of three components. Transpose before
+        // destructuring so each property retains the selection's groups.
+        char statement[1024];
+        snprintf(statement, sizeof(statement),
+            "{%s_linear, %s_planar, %s_isotropic} = %sshape_space(%s, %s)%s;",
+            property_name, property_name, property_name,
+            num_structures > 1 ? "transpose(" : "", input, use_mass ? "true" : "false",
+            num_structures > 1 ? ")" : "");
+        if (!script_append_statement(app_state, str_from_cstr(statement))) {
+            snprintf(property_error, sizeof(property_error), "Could not create properties: check the name and selection for script errors or duplicate identifiers.");
+        }
+    }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
@@ -90,13 +156,33 @@ struct Shapespace : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDeserializeBegin:
+                clear_data();
                 str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
                 marker_size = 1.5f;
                 use_mass = true;
+                mode = ColorMode_Colormap;
+                colormap = 0;
+                color = {0.5f,1.0f,0.5f,1.0f};
+                display = analysis_density::Scatter;
+                show_scatter = true;
+                smoothing = 2.0f;
+                density_opacity = 0.8f;
+                density_colormap = ImPlotColormap_Viridis;
+                str_copy_to_char_buf(property_name, sizeof(property_name), STR_LIT("shape"));
+                property_error[0] = '\0';
+                break;
+            case viamd::EventType_ViamdSystemFree:
+            case viamd::EventType_ViamdTrajectoryFree:
+            case viamd::EventType_ViamdSystemInit:
+            case viamd::EventType_ViamdTrajectoryInit:
+            case viamd::EventType_ViamdLoadData:
+                clear_data();
                 break;
             case viamd::EventType_ViamdShutdown:
-                task_system::task_interrupt_and_wait_for(evaluate_task);
+                clear_data();
+                density_renderer.destroy();
                 md_arena_allocator_destroy(arena);
+                arena = 0;
                 break;
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
@@ -115,8 +201,29 @@ struct Shapespace : viamd::EventHandler {
                             str_copy_to_char_buf(input, sizeof(input), filter);
                         } else if (str_eq(ident, STR_LIT("MarkerSize"))) {
                             viamd::extract_flt(marker_size, arg);
+                            marker_size = std::isfinite(marker_size) ? CLAMP(marker_size, 0.01f, 10.0f) : 1.5f;
                         } else if (str_eq(ident, STR_LIT("UseMass"))) {
                             viamd::extract_bool(use_mass, arg);
+                        } else if (str_eq(ident, STR_LIT("Display"))) {
+                            viamd::extract_enum(display, arg, analysis_density::DisplayCount);
+                        } else if (str_eq(ident, STR_LIT("ShowScatter"))) {
+                            viamd::extract_bool(show_scatter, arg);
+                        } else if (str_eq(ident, STR_LIT("Smoothing"))) {
+                            viamd::extract_flt(smoothing, arg);
+                            smoothing = std::isfinite(smoothing) ? CLAMP(smoothing, 0.25f, 6.0f) : 2.0f;
+                        } else if (str_eq(ident, STR_LIT("DensityOpacity"))) {
+                            viamd::extract_flt(density_opacity, arg);
+                            density_opacity = std::isfinite(density_opacity) ? CLAMP(density_opacity, 0.0f, 1.0f) : 0.8f;
+                        } else if (str_eq(ident, STR_LIT("DensityColormap"))) {
+                            viamd::extract_enum(density_colormap, arg, ImPlot::GetColormapCount());
+                        } else if (str_eq(ident, STR_LIT("ColorMode"))) {
+                            viamd::extract_enum(mode, arg, ColorMode_Count);
+                        } else if (str_eq(ident, STR_LIT("Colormap"))) {
+                            viamd::extract_enum(colormap, arg, ImPlot::GetColormapCount());
+                        } else if (str_eq(ident, STR_LIT("Color"))) {
+                            viamd::extract_flt_vec(&color.x, 4, arg);
+                        } else if (str_eq(ident, STR_LIT("PropertyName"))) {
+                            viamd::extract_to_char_buf(property_name, sizeof(property_name), arg);
                         }
                     }
                 }
@@ -128,6 +235,15 @@ struct Shapespace : viamd::EventHandler {
                 viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
                 viamd::write_flt(state, STR_LIT("MarkerSize"), marker_size);
                 viamd::write_bool(state, STR_LIT("UseMass"), use_mass);
+                viamd::write_int(state, STR_LIT("Display"), display);
+                viamd::write_bool(state, STR_LIT("ShowScatter"), show_scatter);
+                viamd::write_flt(state, STR_LIT("Smoothing"), smoothing);
+                viamd::write_flt(state, STR_LIT("DensityOpacity"), density_opacity);
+                viamd::write_int(state, STR_LIT("DensityColormap"), density_colormap);
+                viamd::write_int(state, STR_LIT("ColorMode"), mode);
+                viamd::write_int(state, STR_LIT("Colormap"), colormap);
+                viamd::write_flt_vec(state, STR_LIT("Color"), &color.x, 4);
+                viamd::write_str(state, STR_LIT("PropertyName"), str_from_cstr(property_name));
                 break;
             }
             default:
@@ -139,13 +255,26 @@ struct Shapespace : viamd::EventHandler {
     void draw_window() {
         if (!show_window) return;
 
+        if (evaluation_pending && !task_system::task_is_running(evaluate_task)) {
+            task_system::task_wait_for(evaluate_task);
+            evaluation_pending = false;
+            if (eval_hash == evaluation_hash() && !evaluation_failed.load()) {
+                weights = pending_weights;
+                coords = pending_coords;
+                density_smoothing = -1.0f;
+            } else if (evaluation_failed.load()) {
+                snprintf(error, sizeof(error), "Could not read all selected trajectory frames.");
+                input_valid = false;
+            }
+        }
+
         ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
         defer { ImGui::PopStyleVar(1); };
 
         if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("Export")) {
+                if (ImGui::BeginMenu("Export", coords != nullptr)) {
                     if (ImGui::MenuItem("XVG")) {
                         export_shape_space(STR_LIT("xvg"));
                     }
@@ -157,10 +286,10 @@ struct Shapespace : viamd::EventHandler {
                 if (ImGui::BeginMenu("Settings")) {
                     static constexpr float marker_min_size = 0.01f;
                     static constexpr float marker_max_size = 10.0f;
-#if 0
-                    if (ImGui::BeginCombo("Color", colormode_lbl[mode])) {
+                    const char* color_names[] = {"Uniform", "Colormap"};
+                    if (ImGui::BeginCombo("Scatter Color", color_names[mode])) {
                         for (int i = 0; i < (int)ColorMode_Count; ++i) {
-                            if (ImGui::Selectable(colormode_lbl[i], (int)mode == i)) {
+                            if (ImGui::Selectable(color_names[i], (int)mode == i)) {
                                 mode = (ColorMode)i;
                             }
                         }
@@ -171,7 +300,21 @@ struct Shapespace : viamd::EventHandler {
                     } else if (mode == ColorMode_Uniform) {
                         ImGui::ColorPicker4("Uniform Color", &color.x);
                     }
-#endif
+                    if (ImGui::BeginCombo("Display", analysis_density::display_names[display])) {
+                        for (int i = 0; i < analysis_density::DisplayCount; ++i) {
+                            if (ImGui::Selectable(analysis_density::display_names[i], display == i)) {
+                                display = (analysis_density::Display)i;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (display != analysis_density::Scatter) {
+                        ImGui::Checkbox("Scatter overlay", &show_scatter);
+                        ImGui::SliderFloat("Smoothing", &smoothing, 0.25f, 6.0f, "%.2f");
+                        ImPlot::ColormapSelection("Density Color Map", &density_colormap);
+                        ImGui::SliderFloat("Density Opacity", &density_opacity, 0.0f, 1.0f);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Probability density relative to a uniform triangle. Independent of sample count.");
+                    }
                     ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
                     ImGui::Checkbox("Use Mass", &use_mass);
                     ImGui::EndMenu();
@@ -181,13 +324,45 @@ struct Shapespace : viamd::EventHandler {
 
             const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
             ImGui::PushItemWidth(item_width);
-            ImGui::InputQuery("##input", input, sizeof(input), input_valid);
+            ImGui::InputQuery("##input", input, sizeof(input), input_valid && eval_hash == evaluation_hash());
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
-                if (input_valid) {
+                if (input_valid && eval_hash == evaluation_hash()) {
                     md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
                 } else if (error[0] != '\0') {
                     ImGui::SetTooltip("%s", error);
+                }
+            }
+            ImGui::SetNextItemWidth(MAX(60.0f, ImGui::GetContentRegionAvail().x - 145.0f));
+            ImGui::InputText("##Property Name", property_name, sizeof(property_name));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Base name for the three shape properties.");
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!input_valid || evaluation_pending || !coords || eval_hash != evaluation_hash());
+            if (ImGui::Button("Create Properties")) create_property();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Create named linear, planar and isotropic temporal properties from this selection.");
+            }
+            if (property_error[0]) ImGui::TextWrapped("%s", property_error);
+            if (evaluation_pending) ImGui::TextUnformatted("Evaluating shape space...");
+            if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
+
+            size_t frame_beg, frame_end;
+            frame_range(frame_beg, frame_end);
+            if (coords && display != analysis_density::Scatter &&
+                (density_smoothing != smoothing || density_beg != frame_beg || density_end != frame_end)) {
+                density.update(coords, num_frames, num_structures, frame_beg, frame_end, smoothing);
+                density_smoothing = smoothing;
+                density_beg = frame_beg;
+                density_end = frame_end;
+                density_render_dirty = true;
+            }
+            if (coords && display != analysis_density::Scatter &&
+                (density_render_dirty || rendered_display != display || rendered_colormap != density_colormap)) {
+                if (density_renderer.render(density, display, density_colormap)) {
+                    density_render_dirty = false;
+                    rendered_display = display;
+                    rendered_colormap = density_colormap;
                 }
             }
 
@@ -222,7 +397,7 @@ struct Shapespace : viamd::EventHandler {
                 const ImVec2 pos_pla = ImPlot::PlotToPixels(pla);
                 const ImVec2 pos_lin = ImPlot::PlotToPixels(lin);
 
-                static const char* text_sph = "Spherical";
+                static const char* text_sph = "Isotropic";
                 static const char* text_pla = "Planar";
                 static const char* text_lin = "Linear";
 
@@ -233,6 +408,11 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::PushPlotClipRect();
                 ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
                 ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
+                ImPlot::PopPlotClipRect();
+                if (coords && display != analysis_density::Scatter && !density_render_dirty) {
+                    density_renderer.draw(density_opacity);
+                }
+                ImPlot::PushPlotClipRect();
 
                 ImPlot::GetPlotDrawList()->AddText(text_sph_offset, IM_COL32(255, 255, 255, 255), text_sph);
                 ImPlot::GetPlotDrawList()->AddText(text_pla_offset, IM_COL32(255, 255, 255, 255), text_pla);
@@ -263,13 +443,10 @@ struct Shapespace : viamd::EventHandler {
 
                 ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size);
                 ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                for (int i = 0; i < (int)num_structures; ++i) {
-                    int offset = (int)num_frames * i;
-                    int count  = (int)num_frames;
-                    if (app_state->timeline.filter.enabled) {
-                        offset += (int)app_state->timeline.filter.beg_frame;
-                        count = (int)MAX(app_state->timeline.filter.end_frame - app_state->timeline.filter.beg_frame, 0);
-                    }
+                ImPlot::PushColormap(colormap);
+                for (int i = 0; coords && i < (int)num_structures; ++i) {
+                    int offset = (int)num_frames * i + (int)frame_beg;
+                    int count  = (int)(frame_end - frame_beg);
                     vec2_t* coordinates = coords + offset;
                     char buf[32] = "";
                     if (num_structures == 1) {
@@ -277,6 +454,9 @@ struct Shapespace : viamd::EventHandler {
                     } else {
                         snprintf(buf, sizeof(buf), "%i", i+1);
                     }
+                    const bool draw_scatter = display == analysis_density::Scatter || show_scatter;
+                    if (mode == ColorMode_Uniform) ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, marker_size, color, 1.0f, color);
+                    if (!draw_scatter) ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 0.0f, ImVec4(0,0,0,0), 0.0f, ImVec4(0,0,0,0));
                     ImPlot::PlotScatterG(buf, getter, coordinates, count);
 
                     ImPlotItem* item = ImPlot::GetItem(buf);
@@ -284,6 +464,7 @@ struct Shapespace : viamd::EventHandler {
                         if (item->LegendHovered) {
                             hovered_structure_idx = i;
                         }
+                        ImPlot::PopColormap();
 
                         if (item->Show) {
                             for (int32_t j = offset; j < offset + count; ++j ) {
@@ -308,12 +489,8 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size * 1.1f);
                 ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
                 if (hovered_structure_idx != -1) {
-                    int offset = (int)num_frames * hovered_structure_idx;
-                    int count  = (int)num_frames;
-                    if (app_state->timeline.filter.enabled) {
-                        offset += (int)app_state->timeline.filter.beg_frame;
-                        count   = MAX((int)(app_state->timeline.filter.end_frame - app_state->timeline.filter.beg_frame), 0);
-                    }
+                    int offset = (int)num_frames * hovered_structure_idx + (int)frame_beg;
+                    int count  = (int)(frame_end - frame_beg);
                     vec2_t* coordinates = coords + offset;
                     ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                     if (hovered_structure_idx < (int)md_array_size(bitfields)) {
@@ -351,45 +528,41 @@ struct Shapespace : viamd::EventHandler {
         ImGui::End();
 
         // Create a hash from everything which dictates the app_state of an evaluation to compare against
-        uint64_t hash = md_hash64(input, sizeof(input), app_state->script.ir_fingerprint ^ (1ULL << (uint64_t)use_mass));
+        uint64_t hash = evaluation_hash();
         if (hash != eval_hash) {
             if (task_system::task_is_running(evaluate_task)) {
                 task_system::task_interrupt (evaluate_task);
             } else {
-                bitfields = 0;
-                weights = 0;
-                coords = 0;
-                num_frames = 0;
-                num_structures = 0;
-                md_arena_allocator_reset(arena);
-                joined_bitfield = {0};
-                md_bitfield_init(&joined_bitfield, arena);
+                clear_data();
+                hash = evaluation_hash();
+                eval_hash = hash;
 
-                input_valid = false;
                 MEMSET(error, 0, sizeof(error));
                 if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, &app_state->mold.state, app_state->script.ir, NULL, error, sizeof(error), arena)) {
-                    eval_hash = hash;
-
-                    input_valid = true;                    
                     num_structures = md_array_size(bitfields);
                     if (!num_structures) {
-                        MD_LOG_ERROR("No structures present when attempting to populate shape space");
+                        snprintf(error, sizeof(error), "The selection contains no structures.");
                         return;
                     }
                     num_frames = run_num_frames(app_state);
                     if (!num_frames) {
-                        MD_LOG_ERROR("No trajectory frames present when attempting to populate shape space");
+                        snprintf(error, sizeof(error), "No trajectory frames are available.");
                         return;
                     }
                     for (size_t i = 0; i < num_structures; ++i) {
+                        if (!md_bitfield_popcount(&bitfields[i])) {
+                            snprintf(error, sizeof(error), "Selection group %zu contains no atoms.", i + 1);
+                            return;
+                        }
                         md_bitfield_or_inplace(&joined_bitfield, &bitfields[i]);
                     }
-
-                    md_array_resize(weights, num_frames * num_structures, arena);
-                    md_array_resize(coords,  num_frames * num_structures, arena);
-                    MEMSET(weights, 0, md_array_bytes(weights));
-                    MEMSET(coords,  0, md_array_bytes(coords));
-                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    input_valid = true;
+                    evaluation_pending = true;
+                    evaluation_failed.store(false);
+                    md_array_resize(pending_weights, num_frames * num_structures, arena);
+                    md_array_resize(pending_coords,  num_frames * num_structures, arena);
+                    const bool evaluate_mass = use_mass;
+                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this, evaluate_mass](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
@@ -400,7 +573,7 @@ struct Shapespace : viamd::EventHandler {
 
                         vec3_t* xyz = (vec3_t*)md_temp_alloc(temp_scope, bytes);
                         float* w = 0;
-                        if (shapespace->use_mass) {
+                        if (evaluate_mass) {
                             w = (float*)md_temp_alloc(temp_scope, stride * sizeof(float));
                             md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
                         }
@@ -411,6 +584,7 @@ struct Shapespace : viamd::EventHandler {
                         const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
                         md_system_extract_t* ex = md_system_extract_begin(&app_state->mold.sys, str_from_cstr(app_state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
                         if (!ex) {
+                            shapespace->evaluation_failed.store(true);
                             return;
                         }
                         defer { md_system_extract_end(ex); };
@@ -421,6 +595,7 @@ struct Shapespace : viamd::EventHandler {
                             frame_state.num_atoms = app_state->mold.sys.atom.count;
                             frame_state.xyz = xyz;
                             if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
+                                shapespace->evaluation_failed.store(true);
                                 continue;
                             }
 
@@ -445,12 +620,21 @@ struct Shapespace : viamd::EventHandler {
                                 const vec3_t weights = md_util_shape_weights(&M);
 
                                 dst_idx = shapespace->num_frames * i + frame_idx;
-                                shapespace->weights[dst_idx] = weights;
-                                shapespace->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
+                                if (!std::isfinite(weights.x) || !std::isfinite(weights.y) || !std::isfinite(weights.z)) {
+                                    shapespace->evaluation_failed.store(true);
+                                }
+                                shapespace->pending_weights[dst_idx] = weights;
+                                shapespace->pending_coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                             }
                         }
                     });
 
+                    if (!evaluate_task) {
+                        evaluation_pending = false;
+                        input_valid = false;
+                        snprintf(error, sizeof(error), "Could not schedule shape-space evaluation.");
+                        return;
+                    }
                     task_system::enqueue_task(evaluate_task);
                 }
             }

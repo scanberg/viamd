@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
                 file_queue_push(&state.file_queue, path, FileFlags_DisableCacheWrite);
-                state.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
+                state.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_space(all);");
             }
         }
 #endif
@@ -797,35 +797,8 @@ int main(int argc, char** argv) {
                     std::string src = state.editor.GetText();
                     str_t src_str {src.data(), src.length()};
 
-                    char buf[1024];
-                    size_t len = md_path_write_cwd(buf, sizeof(buf));
-                    str_t old_cwd = {buf, len};
-                    defer {
-                        md_path_set_cwd(old_cwd);
-                    };
-                    
-                    str_t cwd = {};
-                    if (state.files.workspace[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
-                    } else if (state.files.trajectory[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.trajectory));
-                    } else if (state.files.molecule[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.molecule));
-                    }
-                    if (!str_empty(cwd)) {
-                        md_path_set_cwd(cwd);
-                    }
-
-                    const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
-                    for (size_t i = 0; i < num_stored_selections; ++i) {
-                        str_t name = str_from_cstr(state.selection.stored_selections[i].name);
-                        const md_bitfield_t* bf = &state.selection.stored_selections[i].atom_mask;
-                        md_script_ir_add_identifier_bitfield(state.script.ir, name, bf);
-                    }
-                    
+                    const bool compiled = script_compile_source(&state, state.script.ir, src_str);
                     if (src_str) {
-                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, NULL);
-
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
                         script_editor::Markers* markers = &state.editor_markers;
                         script_editor::markers_set_source(markers, src_str);
@@ -850,16 +823,18 @@ int main(int argc, char** argv) {
                             script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.payload);
                         }
 
-                        if (md_script_ir_valid(state.script.ir)) {
+                        if (compiled && md_script_ir_valid(state.script.ir)) {
                             uint64_t ir_figerprint = md_script_ir_fingerprint(state.script.ir);
                             if (state.script.ir_fingerprint != ir_figerprint) {
                                 state.script.ir_fingerprint = ir_figerprint;
                             }
+                            if (state.script.evaluate_after_compile) state.script.eval_init = true;
                         } else {
                             md_script_ir_free(state.script.ir);
                             state.script.ir = nullptr;
                         }
                     }
+                    state.script.evaluate_after_compile = false;
                 }
             }
         }

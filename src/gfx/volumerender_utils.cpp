@@ -47,6 +47,8 @@ void main() {
 
 namespace volume {
 
+#include "volume_overlay_shader.inl"
+
 static struct {
     GLuint vao = 0;     // empty: the full screen triangle comes from gl_VertexID
     GLuint ubo = 0;
@@ -55,6 +57,7 @@ static struct {
 
     struct {
         GLuint dvr = 0;
+        GLuint overlays = 0;
         GLuint splat_color = 0;
     } program;
 
@@ -955,7 +958,10 @@ void initialize() {
     }
 }
 
-void shutdown() {}
+void shutdown() {
+    if (gl.program.overlays) glDeleteProgram(gl.program.overlays);
+    gl.program.overlays = 0;
+}
 
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
     vec3_t ext = max_world_aabb - min_world_aabb;
@@ -1290,6 +1296,97 @@ void render_dvr(const DvrRenderDesc& desc) {
     POP_GPU_SECTION()
 
     restore_state(saved);
+}
+
+bool render_overlays(const OverlayRenderDesc& desc) {
+    if (!desc.layers || !desc.count || desc.count > MAX_OVERLAY_LAYERS ||
+        !desc.depth || !desc.color || !desc.width || !desc.height) return false;
+    if (!gl.program.overlays) {
+        GLuint vertex = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+        GLuint fragment = gl::compile_shader_from_source(overlay_fragment_source, GL_FRAGMENT_SHADER);
+        if (vertex && fragment) {
+            gl.program.overlays = glCreateProgram();
+            const GLuint shaders[] = {vertex, fragment};
+            if (!gl::attach_link_detach(gl.program.overlays, shaders, 2)) {
+                glDeleteProgram(gl.program.overlays);
+                gl.program.overlays = 0;
+            }
+        }
+        if (vertex) glDeleteShader(vertex);
+        if (fragment) glDeleteShader(fragment);
+        if (!gl.program.overlays) return false;
+    }
+    const SavedState saved = save_state();
+    bool written = false;
+    if (bind_color_target(gl.fbo, desc.color, desc.width, desc.height, true)) {
+        GLuint program = gl.program.overlays;
+        glUseProgram(program);
+        auto loc = [&](const char* name) { return glGetUniformLocation(program, name); };
+        glUniform1i(loc("u_count"), (int)desc.count);
+        glUniform2f(loc("u_inv_res"), 1.f / desc.width, 1.f / desc.height);
+        glUniform3fv(loc("u_env"), 1, desc.env_radiance.elem);
+        const mat4_t clip_to_view = mat4_inverse(desc.proj);
+        glUniformMatrix4fv(loc("u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, desc.depth);
+        glUniform1i(loc("u_depth"), 0);
+        // All array elements are active samplers, even when fewer layers are drawn.
+        // Give unused elements distinct units too, avoiding 2D/3D sampler aliasing.
+        for (int i = 0; i < MAX_OVERLAY_LAYERS; ++i) {
+            char name[64];
+            snprintf(name, sizeof(name), "u_volume[%d]", i);
+            glUniform1i(loc(name), 1+i*2);
+            snprintf(name, sizeof(name), "u_tf[%d]", i);
+            glUniform1i(loc(name), 2+i*2);
+        }
+        for (size_t i = 0; i < desc.count; ++i) {
+            const auto& layer = desc.layers[i];
+            char name[64];
+            auto indexed = [&](const char* base) {
+                snprintf(name, sizeof(name), "%s[%zu]", base, i);
+                return loc(name);
+            };
+            const mat4_t clip_to_model = mat4_inverse(desc.proj * desc.view * layer.model);
+            const mat4_t normal_to_view = desc.view * mat4_transpose(mat4_inverse(layer.model));
+            float normal[9] = {};
+            for (int col = 0; col < 3; ++col) for (int row = 0; row < 3; ++row) normal[col*3+row] = normal_to_view.elem[col][row];
+            glUniformMatrix4fv(indexed("u_clip_to_model"), 1, GL_FALSE, &clip_to_model.elem[0][0]);
+            glUniformMatrix3fv(indexed("u_normal_to_view"), 1, GL_FALSE, normal);
+            glUniform3fv(indexed("u_min"), 1, layer.clip_min.elem);
+            glUniform3fv(indexed("u_max"), 1, layer.clip_max.elem);
+            const float extent = layer.tf_max - layer.tf_min;
+            glUniform2f(indexed("u_range"), layer.tf_min, extent > 0 ? 1.f / extent : 0.f);
+            glUniform1i(indexed("u_dvr"), layer.dvr ? 1 : 0);
+            glUniform1i(indexed("u_iso_count"), (int)MIN(layer.iso_count, (size_t)8));
+            snprintf(name, sizeof(name), "u_values[%zu]", i*8);
+            glUniform1fv(loc(name), 8, layer.iso_values);
+            snprintf(name, sizeof(name), "u_colors[%zu]", i*8);
+            glUniform4fv(loc(name), 8, layer.iso_colors[0].elem);
+            const int volume_unit = 1 + (int)i*2, tf_unit = volume_unit+1;
+            glActiveTexture(GL_TEXTURE0 + volume_unit);
+            glBindTexture(GL_TEXTURE_3D, layer.volume_texture);
+            glUniform1i(indexed("u_volume"), volume_unit);
+            glActiveTexture(GL_TEXTURE0 + tf_unit);
+            glBindTexture(GL_TEXTURE_2D, layer.transfer_texture);
+            glUniform1i(indexed("u_tf"), tf_unit);
+        }
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glBindVertexArray(gl.vao);
+        timer_begin(TimingStage_Raycast);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        timer_end();
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glActiveTexture(GL_TEXTURE0);
+        written = true;
+    }
+    restore_state(saved);
+    return written;
 }
 
 }  // namespace volume

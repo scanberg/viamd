@@ -1471,6 +1471,7 @@ struct ApplicationState {
         int sub_idx = -1;
 
         bool compile_ir = false;
+        bool evaluate_after_compile = false;
         bool eval_init = false;
         bool evaluate_full = false;
         bool evaluate_filt = false;
@@ -2411,3 +2412,5 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);
+bool script_append_statement(ApplicationState* state, str_t statement);
+bool script_compile_source(ApplicationState* state, md_script_ir_t* ir, str_t source);

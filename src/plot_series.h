@@ -41,6 +41,7 @@
 // ImGui drag and drop payload types, both carrying a SeriesDragPayload
 #define TIMELINE_SERIES_DND     "TIMELINE_SERIES"
 #define DISTRIBUTION_SERIES_DND "DISTRIBUTION_SERIES"
+#define VOLUME_SERIES_DND       "VOLUME_SERIES"
 
 struct ApplicationState;
 struct md_attribute_t;
@@ -169,6 +170,7 @@ size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationSta
 enum : uint32_t {
     SeriesView_Timeline     = 1,    // over time: sampled along a frame axis the timeline can place
     SeriesView_Distribution = 2,    // binned over its frames, or a script distribution as evaluated
+    SeriesView_Volume       = 4,    // resident scalar script volume with reference-space metadata
 };
 
 // Which views can draw the attribute at key.path (the Values variant of it). When none can, why

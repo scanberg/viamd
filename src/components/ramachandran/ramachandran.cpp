@@ -19,11 +19,13 @@
 #include <core/md_bitfield.h>
 #include <md_system.h>
 #include <md_util.h>
+#include <md_filter.h>
 
 #include <viamd_event.h>
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <event.h>
+#include <components/analysis_density_shaders.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
 #include <image.h>
@@ -36,6 +38,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <cmath>
 
 // @TODO:
 // - Move Ramachandran indices FROM molecule.backbone into this, it is only relevant here
@@ -77,123 +80,9 @@ struct rama_isomap_t {
     uint32_t count;
 };
 
-constexpr str_t v_fs_quad_src = STR_LIT(R"(
-#version 150 core
-
-void main() {
-	uint idx = uint(gl_VertexID) % 3U;
-	gl_Position = vec4(
-		(float( idx     &1U)) * 4.0 - 1.0,
-		(float((idx>>1U)&1U)) * 4.0 - 1.0,
-		0, 1.0);
-}
-)");
-
-constexpr str_t f_shader_map_src = STR_LIT(R"(
-#version 330 core
-
-layout(location = 0) out vec4 out_frag0;
-layout(location = 1) out vec4 out_frag1;
-layout(location = 2) out vec4 out_frag2;
-layout(location = 3) out vec4 out_frag3;
-
-uniform sampler2D u_tex_den;
-
-uniform vec4 u_viewport;
-uniform vec2 u_inv_res;
-
-uniform vec4 u_map_colors[64];
-uniform uint u_map_offset[4];
-uniform uint u_map_length[4];
-uniform vec2 u_map_range[4];
-
-vec4 map_density(float val, uint map_idx) {
-    uint offset = u_map_offset[map_idx];
-    uint length = u_map_length[map_idx];
-    vec2 range  = u_map_range[map_idx];
-    
-    val = clamp((val - range.x) / (range.y - range.x), 0, 1);
-    float s = val * float(length);
-    float t = fract(s);
-    uint i0 = clamp(uint(s) + 0U, 0U, length - 1U);
-    uint i1 = clamp(uint(s) + 1U, 0U, length - 1U);
-    return mix(u_map_colors[offset + i0], u_map_colors[offset + i1], t);
-}
-
-void main() {
-    vec2 coords = vec2(gl_FragCoord.xy) * u_inv_res;
-    vec2 uv = u_viewport.xy + coords * u_viewport.zw;
-    vec4 d = texture(u_tex_den, uv);
-    out_frag0 = map_density(d.x, 0U);
-    out_frag1 = map_density(d.y, 1U);
-    out_frag2 = map_density(d.z, 2U);
-    out_frag3 = map_density(d.w, 3U);
-}
-)");
-
-constexpr str_t f_shader_iso_src = STR_LIT(R"(
-#version 330 core
-
-layout(location = 0) out vec4 out_frag0;
-layout(location = 1) out vec4 out_frag1;
-layout(location = 2) out vec4 out_frag2;
-layout(location = 3) out vec4 out_frag3;
-
-uniform sampler2D u_tex_den;
-uniform vec4 u_viewport;
-uniform vec2 u_inv_res;
-
-uniform float u_iso_values[32];
-uniform vec4  u_iso_level_colors[32];
-uniform vec4  u_iso_contour_colors[32];
-uniform uint  u_iso_offset[4];
-uniform uint  u_iso_length[4];
-uniform float u_iso_contour_line_scale;
-
-vec4 map_density(float val, uint idx) {
-    vec4 base = vec4(0,0,0,0);
-    vec4 contour = vec4(0,0,0,0);
-    uint offset = u_iso_offset[idx];
-    uint length = u_iso_length[idx];
-
-    uint i = offset;
-    for (; i < offset + length - 1U; ++i) {
-        if (u_iso_values[i] <= val && val < u_iso_values[i + 1U]) break;
-    }
-
-    uint i0 = i;
-    uint i1 = min(i + 1U, offset + length - 1U);
-
-    // We interpolate the colors between index i and i + 1
-    float v0 = u_iso_values[i0];
-    float v1 = u_iso_values[i1];
-
-    vec4 b0 = u_iso_level_colors[i0];
-    vec4 b1 = u_iso_level_colors[i1];
-
-    float dv = fwidth(val);
-    float band = dv * 2.0 * u_iso_contour_line_scale;
-    base = mix(b0, b1, smoothstep(v1 - band, v1 + band, val));
-
-    for (uint i = offset; i < offset + length; ++i) {
-        float  v = u_iso_values[i]; 
-        contour += u_iso_contour_colors[i] * smoothstep(v - band, v, val) * (1.0 - smoothstep(v, v + band, val));
-    }
-
-    return contour + base * (1.0 - contour.a);
-}
-
-void main() {
-    vec2 coords = vec2(gl_FragCoord.xy) * u_inv_res;
-    vec2 uv = u_viewport.xy + coords * u_viewport.zw;
-    vec4 d = texture(u_tex_den, uv);
-    
-    out_frag0 = map_density(d.x, 0U);
-    out_frag1 = map_density(d.y, 1U);
-    out_frag2 = map_density(d.z, 2U);
-    out_frag3 = map_density(d.w, 3U);
-}
-)");
+constexpr str_t v_fs_quad_src = analysis_density::vertex_shader;
+constexpr str_t f_shader_map_src = analysis_density::map_shader;
+constexpr str_t f_shader_iso_src = analysis_density::iso_shader;
 
 static inline double b3(double t) {
     double at = fabs(t);
@@ -460,6 +349,13 @@ struct Ramachandran : viamd::EventHandler {
 
     char input[256] = "all";
     char error[256] = "";
+    char property_name[64] = "rama";
+    md_bitfield_t residue_mask = {};
+    uint64_t filter_fingerprint = 0;
+    uint64_t density_generation = 1;
+    uint64_t full_generation = 0;
+    uint64_t filt_generation = 0;
+    size_t selected_residue_count = 0;
 
     bool evaluate = true;
     bool input_valid = false;
@@ -468,6 +364,8 @@ struct Ramachandran : viamd::EventHandler {
     uint64_t backbone_fingerprint = 0;
     uint64_t full_fingerprint = 0;
     uint64_t filt_fingerprint = 0;
+    uint64_t full_requested_fingerprint = 0;
+    uint64_t filt_requested_fingerprint = 0;
 
     struct {
         rama_rep_t ref  = {};
@@ -522,6 +420,10 @@ struct Ramachandran : viamd::EventHandler {
     // ## Workspace: how the layers are drawn
 
     void reset_workspace_settings() {
+        str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
+        filter_fingerprint = 0;
+        input_valid = false;
+        ++density_generation;
         blur_sigma = 5.0f;
         ref_alpha = full_alpha = filt_alpha = 0.85f;
         display_mode[0] = IsoLevels; display_mode[1] = IsoLines; display_mode[2] = IsoLines;
@@ -533,6 +435,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void serialize(viamd::serialization_state_t& state) {
         viamd::write_section_header(state, STR_LIT("Ramachandran"));
+        viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
         viamd::write_flt(state, STR_LIT("BlurSigma"), blur_sigma);
         const float alpha[3] = { ref_alpha, full_alpha, filt_alpha };
         viamd::write_flt_vec(state, STR_LIT("LayerAlpha"), alpha, 3);
@@ -553,7 +456,10 @@ struct Ramachandran : viamd::EventHandler {
     void deserialize(viamd::deserialization_state_t& state) {
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "BlurSigma")) {
+            if (str_eq_cstr(ident, "Filter")) {
+                str_t filter;
+                if (viamd::extract_str(filter, arg)) str_copy_to_char_buf(input, sizeof(input), filter);
+            } else if (str_eq_cstr(ident, "BlurSigma")) {
                 viamd::extract_flt(blur_sigma, arg);
             } else if (str_eq_cstr(ident, "LayerAlpha")) {
                 float a[3];
@@ -637,6 +543,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void initialize(ApplicationState& state) {
         arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
+        md_bitfield_init(&residue_mask, arena);
 
         if (!map.program) {
             GLuint v_shader = gl::compile_shader_from_source(v_fs_quad_src, GL_VERTEX_SHADER);
@@ -698,29 +605,27 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void shutdown() {
+        task_system::task_interrupt_and_wait_for(compute_density_full);
+        task_system::task_interrupt_and_wait_for(compute_density_filt);
+        ++density_generation;
         rama_rep_free(&rama_data.ref);
         rama_rep_free(&rama_data.full);
         rama_rep_free(&rama_data.filt);
 
         if (fbo) glDeleteFramebuffers(1, &fbo);
         if (vao) glDeleteVertexArrays(1, &vao);
+        md_arena_allocator_destroy(arena);
     }
 
     void on_topology_init(ApplicationState& state) {
-        if (task_system::task_is_running(compute_density_full)) {
-            task_system::task_interrupt(compute_density_full);
-        }
-        if (task_system::task_is_running(compute_density_filt)) {
-            task_system::task_interrupt(compute_density_filt);
-        }
-
-        if (!task_system::task_is_running(compute_density_full) &&
-            !task_system::task_is_running(compute_density_filt))
-        {
-            classify_segments(state);
-            full_fingerprint = 0;
-            filt_fingerprint = 0;
-        }
+        (void)state;
+        task_system::task_interrupt_and_wait_for(compute_density_full);
+        task_system::task_interrupt_and_wait_for(compute_density_filt);
+        ++density_generation;
+        filter_fingerprint = 0;
+        rama_topology_version = 0;
+        input_valid = false;
+        selected_residue_count = 0;
     }
 
     void classify_segments(const ApplicationState& state) {
@@ -729,19 +634,37 @@ struct Ramachandran : viamd::EventHandler {
         md_array_shrink(rama_type_indices[1], 0);
         md_array_shrink(rama_type_indices[2], 0);
         md_array_shrink(rama_type_indices[3], 0);
+        selected_residue_count = 0;
+        MEMSET(error, 0, sizeof(error));
+        bool dynamic = false;
+        input_valid = md_filter(&residue_mask, str_from_cstr(input), &sys, &state.mold.state,
+            state.script.ir, &dynamic, error, sizeof(error));
+        if (input_valid && dynamic) {
+            input_valid = false;
+            str_copy_to_char_buf(error, sizeof(error), STR_LIT("Use a frame-independent residue selection."));
+        }
 
         const size_t num_segments = sys.protein_backbone.segment.count;
-        if (num_segments > 0) {
+        if (input_valid && num_segments > 0) {
             md_temp_scope_t temp = md_temp_begin();
             md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
             md_util_backbone_ramachandran_classify(types, num_segments, &sys);
-            for (uint32_t i = 0; i < (uint32_t)num_segments; ++i) {
-                switch (types[i]) {
-                case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
-                case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
-                case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
-                case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(rama_type_indices[3], i, arena); break;
-                default: break;
+            const auto& bb = sys.protein_backbone;
+            for (size_t r = 0; r < bb.range.count; ++r) {
+                const uint32_t beg = bb.range.offset[r];
+                const uint32_t end = bb.range.offset[r + 1];
+                if (end - beg < 4) continue;
+                for (uint32_t i = beg + 1; i + 1 < end; ++i) {
+                    const md_urange_t atoms = md_component_atom_range(&sys.component, bb.segment.comp_idx[i]);
+                    if (!md_bitfield_scan(&residue_mask, atoms.beg, atoms.end)) continue;
+                    ++selected_residue_count;
+                    switch (types[i]) {
+                    case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
+                    case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
+                    case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
+                    case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(rama_type_indices[3], i, arena); break;
+                    default: break;
+                    }
                 }
             }
             md_temp_end(temp);
@@ -750,16 +673,18 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void update(ApplicationState& state) {
-        // The topology changed since the segments were classified (bonds edited, inferred again)
-        if (rama_topology_version != state.mold.sys.topology_version &&
-            !task_system::task_is_running(compute_density_full) && !task_system::task_is_running(compute_density_filt)) {
+        const uint64_t filter_hash = md_hash64_str(str_from_cstr(input),
+            state.mold.sys.topology_version ^ state.script.ir_fingerprint);
+        if (filter_fingerprint != filter_hash || rama_topology_version != state.mold.sys.topology_version) {
+            ++density_generation;
+            filter_fingerprint = filter_hash;
             classify_segments(state);
             full_fingerprint = 0;
             filt_fingerprint = 0;
         }
-        if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
+        if (show_window && input_valid && state.mold.sys.protein_backbone.segment.count > 0) {
             const size_t num_frames = run_num_frames(&state);
-            if (num_frames > 0) {
+            if (num_frames > 0 && state.trajectory_data.backbone_angles.data) {
                 // The density is derived from every frame of the run's 'backbone/angle', so it is
                 // rebuilt exactly when that attribute's version moves. Asking the table beats a
                 // stamp kept beside the data: there is one answer, and it cannot be forgotten by a
@@ -768,9 +693,12 @@ struct Ramachandran : viamd::EventHandler {
                 const uint64_t angle_version = md_attributes_version(&state.mold.sys.attributes,
                     md_attributes_id_from_path(run_attribute_path(angle_path, sizeof(angle_path), &state, STR_LIT("backbone/angle"))));
 
-                if (full_fingerprint != angle_version) {
+                const uint64_t full_hash = md_hash64(&angle_version, sizeof(angle_version), density_generation);
+                full_requested_fingerprint = full_hash;
+                if (full_fingerprint != full_hash) {
+                    full_generation = 0;
                     if (!task_system::task_is_running(compute_density_full)) {
-                        full_fingerprint = angle_version;
+                        full_fingerprint = full_hash;
 
                         const uint32_t frame_beg = 0;
                         const uint32_t frame_end = (uint32_t)num_frames;
@@ -782,9 +710,13 @@ struct Ramachandran : viamd::EventHandler {
                     }
                 }
 
-                if (filt_fingerprint != state.timeline.filter.fingerprint) {
+                const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint,
+                    sizeof(state.timeline.filter.fingerprint), full_hash);
+                filt_requested_fingerprint = filt_hash;
+                if (filt_fingerprint != filt_hash) {
+                    filt_generation = 0;
                     if (!task_system::task_is_running(compute_density_filt)) {
-                        filt_fingerprint = state.timeline.filter.fingerprint;
+                        filt_fingerprint = filt_hash;
 
                         const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
                         const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
@@ -859,6 +791,7 @@ struct Ramachandran : viamd::EventHandler {
                     }
                     ImGui::Separator();
                     if (ImGui::SliderFloat("Density Blur Sigma", &blur_sigma, 0.1f, 10.0f)) {
+                        ++density_generation;
                         full_fingerprint = 0;
                         filt_fingerprint = 0;
                     }
@@ -873,6 +806,35 @@ struct Ramachandran : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
+            }
+
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid)) input_valid = false;
+            if (ImGui::IsItemHovered()) {
+                if (input_valid) md_bitfield_copy(&state.selection.highlight_mask, &residue_mask);
+                else if (error[0]) ImGui::SetTooltip("%s", error);
+            }
+            if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
+            if (input_valid && selected_residue_count == 0) {
+                ImGui::TextWrapped("No protein residues with complete angle pairs match this selection.");
+            }
+            ImGui::TextDisabled("%zu residues", selected_residue_count);
+            ImGui::SameLine();
+            if (ImGui::Button("Create Property")) ImGui::OpenPopup("Create Ramachandran Property");
+            if (ImGui::BeginPopup("Create Ramachandran Property")) {
+                ImGui::InputText("Name", property_name, sizeof(property_name));
+                const bool name_valid = md_script_identifier_name_valid(str_from_cstr(property_name));
+                if (!name_valid) ImGui::TextWrapped("Enter a script identifier (letters, digits and underscores).");
+                ImGui::TextDisabled("Creates phi and psi properties for this residue subset.");
+                ImGui::BeginDisabled(!name_valid || !input_valid || selected_residue_count == 0);
+                if (ImGui::Button("Create")) {
+                    const str_t statement = str_printf(state.allocator.frame,
+                        "{%s_phi, %s_psi} = transpose(ramachandran(%s));",
+                        property_name, property_name, input);
+                    if (script_append_statement(&state, statement)) ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndDisabled();
+                ImGui::EndPopup();
             }
 
             const auto& sys = state.mold.sys;
@@ -929,9 +891,9 @@ struct Ramachandran : viamd::EventHandler {
                         //bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
                         //bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
                         const bool show_ref  = show_layer[0];
-                        const bool show_full = show_layer[1];
-                        const bool show_filt = show_layer[2];
-                        const bool show_curr = show_layer[3];
+                        const bool show_full = show_layer[1] && input_valid && full_generation == density_generation && rama_data.full.den_sum[plot_idx] > 0;
+                        const bool show_filt = show_layer[2] && input_valid && state.timeline.filter.enabled && filt_generation == density_generation && rama_data.filt.den_sum[plot_idx] > 0;
+                        const bool show_curr = show_layer[3] && input_valid;
 
                         ImVec2 plot_min = ImPlot::PlotToPixels(viewrect.Min());
                         ImVec2 plot_max = ImPlot::PlotToPixels(viewrect.Max());
@@ -1399,6 +1361,10 @@ struct Ramachandran : viamd::EventHandler {
             float sigma;
             md_allocator_i* alloc;
             uint32_t complete;
+            float density_sum[4];
+            uint64_t generation;
+            uint64_t fingerprint;
+            Ramachandran* owner;
         };
 
         md_allocator_i* alloc = md_get_heap_allocator();
@@ -1413,16 +1379,22 @@ struct Ramachandran : viamd::EventHandler {
         user_data->density_tex = density_tex;
         user_data->rep = rep;
         user_data->angles = angles;
-        user_data->type_indices[0] = rama_type_indices[0];
-        user_data->type_indices[1] = rama_type_indices[1];
-        user_data->type_indices[2] = rama_type_indices[2];
-        user_data->type_indices[3] = rama_type_indices[3];
+        // The worker owns its selection snapshot; editing a filter must not mutate arrays it reads.
+        for (int i = 0; i < 4; ++i) {
+            user_data->type_indices[i] = md_array_create(uint32_t, md_array_size(rama_type_indices[i]), alloc);
+            if (md_array_size(rama_type_indices[i])) {
+                MEMCPY((void*)user_data->type_indices[i], rama_type_indices[i], md_array_bytes(rama_type_indices[i]));
+            }
+        }
         user_data->frame_beg = frame_beg;
         user_data->frame_end = frame_end;
         user_data->frame_stride = frame_stride;
         user_data->sigma = blur_sigma;
         user_data->alloc = alloc;
         user_data->complete = 0;
+        user_data->generation = density_generation;
+        user_data->fingerprint = rep == &rama_data.full ? full_fingerprint : filt_fingerprint;
+        user_data->owner = this;
 
         task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [data = user_data]() {
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
@@ -1443,7 +1415,8 @@ struct Ramachandran : viamd::EventHandler {
                     val.elem[c] = 1.0f;
                     if (num_indices) {
                         for (uint32_t i = 0; i < num_indices; ++i) {
-                            uint32_t idx = f * frame_stride + indices[i];
+                            const size_t idx = (size_t)f * frame_stride + indices[i];
+                            if (!std::isfinite(angles[idx].phi) || !std::isfinite(angles[idx].psi)) continue;
                             if ((angles[idx].phi == 0 && angles[idx].psi == 0)) continue;
                             float u = angles[idx].phi * angle_to_coord_scale + angle_to_coord_offset;
                             float v = angles[idx].psi * angle_to_coord_scale + angle_to_coord_offset;
@@ -1460,18 +1433,22 @@ struct Ramachandran : viamd::EventHandler {
 
             blur_density_gaussian(data->density_tex, density_tex_dim, data->sigma);
 
-            data->rep->den_sum[0] = (float)sum[0];
-            data->rep->den_sum[1] = (float)sum[1];
-            data->rep->den_sum[2] = (float)sum[2];
-            data->rep->den_sum[3] = (float)sum[3];
-
+            for (int i = 0; i < 4; ++i) data->density_sum[i] = (float)sum[i];
             data->complete = 1;
         });
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
-            if (data->complete) {
+            const uint64_t fingerprint = data->rep == &data->owner->rama_data.full
+                ? data->owner->full_requested_fingerprint : data->owner->filt_requested_fingerprint;
+            if (data->complete && data->generation == data->owner->density_generation && data->fingerprint == fingerprint) {
+                for (int i = 0; i < 4; ++i) {
+                    data->rep->den_sum[i] = data->density_sum[i];
+                }
                 gl::set_texture_2D_data(data->rep->den_tex, 0, data->density_tex, GL_RGBA32F);
+                if (data->rep == &data->owner->rama_data.full) data->owner->full_generation = data->generation;
+                else data->owner->filt_generation = data->generation;
             }
+            for (int i = 0; i < 4; ++i) md_array_free(data->type_indices[i], data->alloc);
             md_free(data->alloc, data, data->alloc_size);
         });
 
