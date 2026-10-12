@@ -499,6 +499,11 @@ struct Shapespace : viamd::EventHandler {
                         plot_series_style_popup(app_state, s, resolved[j] ? (int)views[j].count : 1, views[j].script_ident, views[j].vis_payload, &hovered_pop_idx);
                         ImPlot::EndLegendPopup();
                     }
+
+                    if (ImPlot::BeginDragDropSourceItem(id)) {
+                        series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color);
+                        ImPlot::EndDragDropSource();
+                    }
                 }
 
                 if (ImPlot::IsPlotHovered()) {
@@ -551,6 +556,16 @@ struct Shapespace : viamd::EventHandler {
 
             if (remove_idx != -1) {
                 plot_remove_series(sp, remove_idx);
+            }
+
+            // A series dragged out of the plot and dropped where nothing takes it is removed
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+                if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+                    const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_series(sp, dnd->key) : -1;
+                    if (idx != -1) plot_remove_series(sp, idx);
+                }
             }
         }
         ImGui::End();
