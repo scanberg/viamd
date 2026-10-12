@@ -939,6 +939,7 @@ struct Ramachandran : viamd::EventHandler {
             for (int j = 0; j < sp.count; ++j) {
                 resolved[j] = series_resolve_vector(&views[j], &state, sp.series[j].key, 2);
                 series_label(views[j].label, sizeof(views[j].label), &state, sp.series[j].key);
+                series_label_number(views[j].label, sizeof(views[j].label), plot_copy_index(sp, j));
                 snprintf(plot_ids[j], sizeof(plot_ids[j]), "%s##%u", views[j].label, sp.series[j].uid);
                 if (resolved[j]) states[j] = find_state(sp.series[j].uid);
             }

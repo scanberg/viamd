@@ -4189,6 +4189,7 @@ static void draw_timeline_window(ApplicationState* data) {
                 for (int j = 0; j < sp.count; ++j) {
                     resolved[j] = series_resolve_temporal(&views[j], data, sp.series[j].key);
                     // Two entries of the same series are two items of the plot
+                    series_label_number(views[j].label, sizeof(views[j].label), plot_copy_index(sp, j));
                     snprintf(views[j].plot_id, sizeof(views[j].plot_id), "%s##%u", views[j].label, sp.series[j].uid);
                 }
 
@@ -4671,6 +4672,7 @@ static void draw_distribution_window(ApplicationState* data) {
                 bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
                 for (int j = 0; j < sp.count; ++j) {
                     resolved[j] = series_resolve_histogram(&views[j], data, sp.series[j].key, sp.series[j].num_bins);
+                    series_label_number(views[j].label, sizeof(views[j].label), plot_copy_index(sp, j));
                     snprintf(views[j].plot_id, sizeof(views[j].plot_id), "%s##%u", views[j].label, sp.series[j].uid);
                 }
 

@@ -147,6 +147,14 @@ struct DensityVolume : viamd::EventHandler {
         return -1;
     }
 
+    int layer_copy_index(int index) const {
+        int copy = 0;
+        for (int j = 0; j < index; ++j) {
+            if (series_key_equal(layers[j].volume_key, layers[index].volume_key)) copy += 1;
+        }
+        return copy;
+    }
+
     int find_uid(uint32_t uid) const {
         for (size_t i = 0; i < layers.size(); ++i) {
             if (layers[i].uid == uid) return (int)i;
@@ -728,6 +736,7 @@ struct DensityVolume : viamd::EventHandler {
             const bool resolved = series_resolve_volume(&view, state, item.volume_key);
             char label[96];
             series_label(label, sizeof(label), state, item.volume_key);
+            series_label_number(label, sizeof(label), layer_copy_index(i));
 
             const float text_w = ImGui::CalcTextSize(label).x;
             if (i > 0) {
@@ -851,6 +860,7 @@ struct DensityVolume : viamd::EventHandler {
                     for (auto& item : layers) {
                         char label[96];
                         series_label(label, sizeof(label), state, item.volume_key);
+                        series_label_number(label, sizeof(label), layer_copy_index((int)(&item - layers.data())));
                         ImGui::PushID((int)item.uid);
                         ImPlot::ItemIcon(layer_color(item));
                         ImGui::SameLine();

@@ -168,6 +168,9 @@ void plot_move_series(const ApplicationState* app, PlotSubplot& src, PlotSubplot
 void plot_clear(PlotSubplot* subplots, int count);
 // The first series of the first subplot which has one, NULL when there is none
 const SeriesKey* plot_first_series_key(const PlotSubplot* subplots, int count);
+// A series shown twice is told apart by a number: the index of the entry among those of the same key, appended from the second on
+int  plot_copy_index(const PlotSubplot& sp, int index);
+void series_label_number(char* label, size_t cap, int copy);
 // What every window with series says where it has none
 void series_empty_hint();
 

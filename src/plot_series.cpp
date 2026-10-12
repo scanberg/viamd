@@ -974,6 +974,7 @@ void series_vector_layers_menu(ApplicationState* app, PlotSubplot& sp, uint32_t 
         PlotSeries& s = sp.series[j];
         char label[96];
         series_label(label, sizeof(label), app, s.key);
+        series_label_number(label, sizeof(label), plot_copy_index(sp, j));
         ImGui::PushID((int)s.uid);
         ImPlot::ItemIcon(s.color);
         ImGui::SameLine();
@@ -1063,6 +1064,7 @@ void series_vector_bar(ApplicationState* app, PlotSubplot& sp, uint32_t componen
         const bool resolved = series_resolve_vector(&v, app, s.key, components);
         char label[96];
         series_label(label, sizeof(label), app, s.key);
+        series_label_number(label, sizeof(label), plot_copy_index(sp, j));
 
         const float text_w = ImGui::CalcTextSize(label).x;
         if (j > 0) {
@@ -1205,6 +1207,20 @@ const SeriesKey* plot_first_series_key(const PlotSubplot* subplots, int count) {
         if (subplots[i].count > 0) return &subplots[i].series[0].key;
     }
     return nullptr;
+}
+
+int plot_copy_index(const PlotSubplot& sp, int index) {
+    int copy = 0;
+    for (int j = 0; j < index && j < sp.count; ++j) {
+        if (series_key_equal(sp.series[j].key, sp.series[index].key)) copy += 1;
+    }
+    return copy;
+}
+
+void series_label_number(char* label, size_t cap, int copy) {
+    if (copy <= 0) return;
+    const size_t len = strlen(label);
+    if (len + 1 < cap) snprintf(label + len, cap - len, " (%d)", copy + 1);
 }
 
 void series_empty_hint() {

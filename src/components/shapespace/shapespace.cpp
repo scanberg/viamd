@@ -318,6 +318,7 @@ struct Shapespace : viamd::EventHandler {
                 const PlotSeries& s = sp.series[j];
                 resolved[j] = series_resolve_vector(&views[j], app_state, s.key, 3);
                 series_label(views[j].label, sizeof(views[j].label), app_state, s.key);
+                series_label_number(views[j].label, sizeof(views[j].label), plot_copy_index(sp, j));
                 snprintf(plot_id[j], sizeof(plot_id[j]), "%s##%u", views[j].label, s.uid);
                 if (!resolved[j]) continue;
 
