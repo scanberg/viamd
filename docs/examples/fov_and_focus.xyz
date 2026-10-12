@@ -1,0 +1,63 @@
+5
+Synthetic optics demo, frame 0: centre carbon at z=0; coordinates in angstroms
+O -7 -2 8
+O -5 2 8
+C 0 0 0
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 1: centre carbon approaches foreground
+O -7 -2 8
+O -5 2 8
+C 0 0 4
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 2: centre carbon at foreground depth
+O -7 -2 8
+O -5 2 8
+C 0 0 8
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 3: centre carbon recedes
+O -7 -2 8
+O -5 2 8
+C 0 0 4
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 4: centre carbon at z=0
+O -7 -2 8
+O -5 2 8
+C 0 0 0
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 5: centre carbon approaches background
+O -7 -2 8
+O -5 2 8
+C 0 0 -4
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 6: centre carbon at background depth
+O -7 -2 8
+O -5 2 8
+C 0 0 -8
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 7: centre carbon returns
+O -7 -2 8
+O -5 2 8
+C 0 0 -4
+N 5 -2 -8
+N 7 2 -8
+5
+Synthetic optics demo, frame 8: centre carbon at z=0
+O -7 -2 8
+O -5 2 8
+C 0 0 0
+N 5 -2 -8
+N 7 2 -8

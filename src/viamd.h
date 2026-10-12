@@ -26,6 +26,9 @@
 #include <gfx/immediate_draw_utils.h>
 
 #include <task_system.h>
+#include <frame_sink.h>
+#include <movie_keys.h>
+#include <movie_overlay.h>
 #include <surface_field.h>
 #include <loader.h>
 #include <event.h>
@@ -78,6 +81,7 @@ inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 428729131
 constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
 constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
+constexpr ImGuiKey KEY_ADD_MOVIE_KEYFRAME       = ImGuiKey_K;
 constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F2;
@@ -363,6 +367,47 @@ inline const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
     "Ultra HD 4K (3840x2160)",
     "Ultra HD 8K (7680x4320)",
     "Custom",
+};
+
+// Movie recording captures the trajectory playing, one image per output frame. The frames are handed
+// to a frame_sink that writes them in the background, either as a numbered PNG sequence or piped
+// into ffmpeg to give a video file directly.
+enum class MovieRecordingState {
+    Idle,
+    Recording,
+};
+
+// The numbers are saved in workspaces: never renumber, add at the end
+enum class MovieOutput {
+    Mp4,          // H.264, piped into ffmpeg
+    PngSequence,
+    Mp4H265,      // H.265, piped into ffmpeg
+    WebmVp9,      // VP9 in a webm, piped into ffmpeg
+    Count,
+};
+
+inline bool movie_output_is_video(MovieOutput o) { return o != MovieOutput::PngSequence; }
+
+// Finished movie frames waiting to be read back from the GPU
+constexpr int MOVIE_RING_SIZE = 3;
+
+// The look parameters that can be keyed are numbered 0 .. MOVIE_MAX_PARAMS - 1, see the table in main.cpp
+constexpr int MOVIE_MAX_PARAMS = 16;
+
+inline const char* movie_output_str[(int)MovieOutput::Count] = {
+    "MP4 video, H.264 (ffmpeg)",
+    "PNG sequence",
+    "MP4 video, H.265 (ffmpeg)",
+    "WebM video, VP9 (ffmpeg)",
+};
+
+// What depth of field keeps sharp
+enum class DofFocusMode : int {
+    LookAt,    // What the camera looks at (the orbit pivot)
+    Distance,  // Reserved legacy workspace value; migrated to Auto.
+    Target,    // Reserved legacy workspace value; migrated to Auto.
+    FocusTarget, // Reserved legacy workspace value; migrated to Auto.
+    Count,
 };
 
 enum class BondColorMode {
@@ -858,6 +903,8 @@ struct DipoleRepresentation {
 };
 
 struct Representation {
+    uint32_t id = 0;                  // Never changes and is not reused, unlike the place in the list
+    float presence = 1.0f;            // How much of it is drawn while a movie shows or hides it: scales its sizes
     char name[64] = "rep";
     char filt[256] = "all";
     char filt_error[256] = "";
@@ -987,6 +1034,20 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
+// What a selection expression of a movie's atom set selects: evaluated again when the script, the system or (for an expression
+// that depends on it) the frame changes
+struct MovieSetEval {
+    uint32_t id = 0;
+    std::string expr;
+    uint64_t ir_fingerprint = 0;
+    size_t num_atoms = 0;
+    double frame = 0.0;
+    bool dynamic = false;
+    bool valid = false;
+    std::vector<uint32_t> atoms;
+    std::string error;
+};
+
 // Edge length of the device evaluation scratch (ApplicationState::gpu_volume), in voxels: the largest
 // grid any evaluation on the device can write, which is the largest compute_dim makes.
 inline constexpr uint32_t GPU_VOLUME_DIM = 512;
@@ -1071,6 +1132,232 @@ struct ApplicationState {
         int   sample_target = 0;
         str_t path_to_file = {};
     } screenshot;
+
+    // --- MOVIE RECORDING ---
+    struct {
+        bool  show_window = false;
+        bool  editor_timeline = true;
+        bool  editor_controls = true;
+        float editor_keyframe_fraction = 0.30f;
+        bool  editor_select_overlays = false;
+        int   overlay_selected = 0;
+        bool  timeline_tracks[3] = {true, true, true};
+        bool  timeline_param_lane = true;     // The lane of a keyed look parameter
+        bool  timeline_rep_overview = true;   // When each representation is shown, as bars, grouped by name
+        bool  timeline_rep_lane = false;      // The lane of a keyed property of a representation, below the look parameter's
+        bool  timeline_ruler = true;          // The time ruler above the lanes: frames, notes, click to scrub
+        bool  timeline_camera_lane = true;    // The camera keys, what they follow and where they spin, on one lane above the curves
+        float timeline_row_ratios[9] = {1, 1, 1, 1, 1, 0.6f, 0.8f, 0.6f, 0.45f};
+        float timeline_lane_height = 150.0f;  // The height of a lane at ratio 1, in pixels, when the window scrolls instead of fitting them
+        bool  timeline_fit_window = true;     // The lanes share the height of the window instead, however small
+        bool  timeline_rep_equal_rows = true; // Every system has a band of one row's height, its overlapping blocks share it
+        float timeline_rep_block_height = 1.0f; // Height of the blocks in the representations lane, times the usual
+        bool  timeline_rep_separate = false;  // Every representation has a line of its own, grouped by system (before the above)
+        bool  timeline_overlay_lane = false;  // The overlays as bars, below the lane of the representation
+        double timeline_view_begin = 0.0;
+        double timeline_view_end = 0.0;
+        float timeline_view_duration = 0.0f;
+        bool  show_path   = true;    // Draw the camera path and keyframes in Scene view
+        int   path_options = MOVIE_PATH_OPTIONS_DEFAULT; // 1 time ticks, 2 sight lines, 4 cameras, 8 spin rings, 16 path in Movie preview
+        bool  path_hot = false;      // The mouse is over a key's handle or the path (with Ctrl): the viewport leaves its own interaction alone
+        int   path_hover_key = -1;   // The key whose handle is hovered in the viewport, and the one hovered in the camera lane
+        int   lane_hover_key = -1;
+        struct PathDrag {
+            bool   active = false;
+            int    key = -1;
+            int    kind = 0;         // 0 the eye, 1 what it looks at
+            bool   moved = false;
+            float  start_x = 0.0f, start_y = 0.0f;
+            vec3_t grab = {};        // Where on the drag plane the handle was taken, relative to the handle
+            vec3_t plane_point = {};
+            vec3_t plane_normal = {};
+            CameraKeyframe start = {};
+        } path_drag;
+
+        // Keys picked in the lanes of the Movie Timeline, which move together (not saved)
+        KeySelection sel;
+        KeyClip      key_clip;            // What Ctrl+C took from the selection
+        KeyShift     sel_lane;            // The lane the last pick was in: the quantity the up and down arrow keys change
+        struct KeyDrag {
+            bool        active = false;
+            bool        moved = false;
+            MovieKeys   start;            // The keys when the drag began: every frame of it is made from these
+            KeySelection start_sel;
+            double      x0 = 0.0, y0 = 0.0;   // Where the key that is dragged was
+            double      dt = 0.0, dy = 0.0;   // What the drag has done so far
+            bool        collapse = false;     // A click on a key of the selection: it alone is selected if the mouse is released without a drag
+            KeyId       collapse_to;
+        } key_drag;
+        struct KeyBox {
+            bool   active = false;
+            bool   moved = false;
+            bool   add = false;
+            int    lane = -1;
+            double x0 = 0.0, y0 = 0.0;
+            float  px = 0.0f, py = 0.0f;
+        } key_box;
+        float sel_scale = 100.0f;         // The stretch of the picked items, in percent, while it is dragged
+        int   sel_anchor = 0;             // What it stretches about: 0 the first picked item, 1 the preview time
+        struct KeyScale {
+            bool         active = false;
+            MovieKeys    start;
+            KeySelection start_sel;
+            double       anchor = 0.0;
+        } key_scale;
+        // The viewport has its own pose in each of the two modes (Scene view: the editor's camera, Movie preview: the movie's), kept while the other is shown
+        struct ViewPose {
+            bool          valid = false;
+            ViewTransform target;
+            ViewTransform camera;
+            float         fov_y = 0.7853982f;
+        };
+        ViewPose pose_scene, pose_movie;
+        bool   peek_active = false;       // Tab is held to look at the other mode for a moment
+        double peek_t0 = 0.0;
+        // Preview: the windows are hidden and the movie plays in the viewport, with a small bar to control it (not saved)
+        bool   play_mode = false;
+        bool   play_mode_scene = false;   // Scene view was shown before, to go back to
+        double play_mode_moved_t = 0.0;   // When the mouse last moved, to hide the bar while it is still
+        bool   play_mode_scrub_resume = false;
+        // A small live preview of the movie camera in the Movie window while Scene view is shown (not saved)
+        bool     pip_enabled = true;
+        int      pip_size = 1;            // 0 small, 1 medium, 2 large, 3 extra large
+        float    window_rect[4] = {};     // Where the Movie window was last drawn (x0, y0, x1, y1), to keep the frame clear of it
+        int      window_rect_frame = -10;
+        int      pip_target_w = 0;        // Width in pixels for the size and the Movie window's width now (0: not known yet)
+        bool     pip_pass = false;        // The scene is being rendered for it
+        bool     pip_valid = false;
+        uint32_t pip_fbo = 0, pip_tex = 0;
+        int      pip_w = 0, pip_h = 0;
+        uint64_t pip_hash = 0;
+        double   pip_time = -1.0;
+        int      pip_requested_frame = -100;   // The last frame in which the Movie window was open to show it
+        int shortcut_frame = -1;          // The frame in which the timeline took a shortcut (the others leave it alone)
+
+        MovieRecordingState state = MovieRecordingState::Idle;
+
+        ScreenshotResolution resolution = ScreenshotResolution::Window;
+        int    res_x = 1920;
+        int    res_y = 1080;
+
+        MovieOutput output = MovieOutput::Mp4;
+        int    crf = 18;                         // x264 quality for the mp4, lower is better
+        char   ffmpeg_path[512] = "ffmpeg";      // Found on PATH unless it is a path
+
+        float  fps         = 24.0f;  // Output frames per second
+
+        // What and how much is rendered, for quick tests and for redoing a part of a movie
+        bool   range_enabled = false;   // Render only the frames from range_begin to range_end (s on the movie's timeline)
+        float  range_begin   = 0.0f;
+        float  range_end     = 0.0f;
+        int    res_scale     = 100;     // Percent of the size of the frames, a small one is a fast preview of the render
+        int    aa_samples    = 0;       // Samples accumulated per frame with temporal AA, 0 for the jitter sequence's length
+        bool   save_copy     = true;    // Save a workspace next to the movie with everything it was made from
+        bool   paused        = false;   // The recording waits, resumes where it was
+        double rec_active_s  = 0.0;     // Seconds spent recording, not counting a pause
+        int    rec_first     = 0;       // The frames of the movie that the recording makes, first to last
+        int    rec_last      = 0;
+        double start_frame = 0.0;    // Trajectory frame shown at the start of the trajectory's part of the movie
+        double end_frame   = 0.0;    // Trajectory frame shown at the end of it
+
+        // The movie runs on its own timeline in seconds, of the length set by the user. The trajectory goes
+        // through two anchors, start_frame at traj_begin and end_frame at traj_end, and through the keyframes
+        // that have a frame, which bend its speed; it is held before the first and after the last. Changing
+        // the length scales every time on the timeline, so the movie keeps its shape.
+        bool   duration_init = false;           // The length has been set up for the loaded trajectory
+        float  duration      = 5.0f;
+        float  traj_begin    = 0.0f;
+        float  traj_end      = 5.0f;
+        float  playhead      = 0.0f; // Time previewed in the viewport and used for new keyframes
+        bool editor_focus_active = false;
+        float editor_focus_distance = 10.0f;
+        float editor_saved_aperture = 0.0f;
+
+        double cur_time    = 0.0;    // Movie time currently being captured
+        int    frame_index = 0;      // The output frame being captured, numbers the file and sets cur_time
+        int    samples_done  = 0;    // Samples of it rendered so far, they are accumulated by temporal AA
+        int    sample_target = 1;
+        bool   can_capture   = true; // False while the readback ring is full, the sample is then not counted
+        int    rec_w = 0;            // The size of the frames, fixed when the recording starts
+        int    rec_h = 0;
+        MovieOutput rec_output = MovieOutput::Mp4;
+        char   rec_result[1024] = "";  // Where the movie ends up, for the message once it is written
+
+        // The finished frames are read back through pixel buffers so that the GPU is not waited for.
+        // Each slot holds the frame it was filled with until its pixels have been copied to the sink.
+        GLuint pbo[MOVIE_RING_SIZE]       = {};
+        GLsync fence[MOVIE_RING_SIZE]     = {};
+        int    pbo_frame[MOVIE_RING_SIZE] = {};
+        int    pbo_head  = 0;        // Oldest slot in use
+        int    pbo_count = 0;
+        size_t pbo_bytes = 0;
+
+        frame_sink::Sink* sink = nullptr;  // Lives on after the recording ends until it has written everything
+
+        str_t  output_dir = {};
+        char   filename_prefix[64] = "frame";
+
+        // Kept sorted by time. While recording or previewing the movie, the camera follows
+        // these (smoothly, through every one of them) instead of staying where the user left it.
+        md_array(CameraKeyframe) keyframes = 0;
+        std::vector<MovieAtomSet> atom_sets;     // The atoms that keys look at or focus on, by id
+        mutable bool invalid_target_reported = false;
+        mutable std::vector<MovieSetEval> set_eval;   // What the selection expressions of the atom sets select now
+        bool loop = false;                    // The camera path is cyclic: the last key is in the pose of the first
+        bool keep_upright = true;             // The camera stays level about up_axis, tilted only by the keys' roll
+        int  up_axis = 1;                     // The world axis that is up for keep_upright: +X, +Y, +Z, -X, -Y, -Z
+        // The camera can look at the middle of these atoms rather than a fixed point (keys with 'follow')
+        md_bitfield_t follow_mask = {};
+        bool   follow_pending = false;        // The camera waits for the system state of follow_time
+        double follow_time    = 0.0;
+        std::vector<CameraKeyframe> follow_keys;
+
+        // Look parameters (background, depth of field, clipping ...) keyed over time
+        std::vector<ParamKey> param_keys;
+        bool animate_params = true;
+        int  param_selected = 4;              // Depth of field blur in movie_param_table; what 'Key Now' keys
+        // What a parameter was before the keys took hold of it, put back when they let go
+        float param_saved[MOVIE_MAX_PARAMS][3] = {};
+        bool  param_saved_valid[MOVIE_MAX_PARAMS] = {};
+
+        // Properties of representations keyed over time (shown or hidden, scale, tint), by the id of the representation
+        struct RepSaved { uint32_t rep; int prop; float value[3]; };
+        std::vector<RepKey> rep_keys;
+        std::vector<RepSaved> rep_saved;      // What they were before the keys took hold of them, put back when they let go
+        int rep_selected = 0;                 // Index in representation.reps, what 'Key Now' keys
+        int rep_prop_selected = 0;            // A RepProp
+        float rep_transition = 2.0f;          // Seconds a representation takes to grow in or shrink away at a Visible key
+
+        MovieHistory history;
+
+        // Text, a time stamp and a scale bar on the frames, and in the viewport while the movie is not recording
+        std::vector<MovieOverlay> overlays = { movie_overlay_default_logo() };
+        bool show_overlay_preview = true;
+        bool  vis_highlight = false;          // The highlight of the atoms was set by a property overlay last frame, and is taken away when none is shown
+        float vis_fade = 1.0f;                // How visible the property visualization of an overlay is this frame (0..1)
+        bool show_frame = true;               // The frame of the movie in the viewport, while the movie is edited (not saved)
+        std::vector<MovieMarker> markers;     // Notes on the movie's timeline, shown on the timelines of figures
+
+        // Preview of the movie in the viewport, at the speed it will have
+        bool preview_playing = false;
+        bool preview_loop    = false;
+
+        // What 'Add Keyframe' and 'Add Orbit' make
+        bool     key_includes_frame = true;
+        bool     snap_frames        = true;   // Times dragged on the timeline land on frames of the movie
+        CameraKeyframe key_clipboard = {};    // Copied with 'Copy' in the keyframe table, put in with 'Paste'
+        bool     has_key_clipboard  = false;
+        int      look_pick_key      = -1;   // The keyframe waiting for an atom to be clicked to look at, or -1
+        int      focus_pick_key     = -1;   // ... to focus on
+        int      orbit_turns        = 1;
+        float    orbit_duration     = 6.0f;
+        SpinAxis orbit_axis         = SpinAxis::ViewUp;
+
+        PlaybackMode prev_playback_mode = PlaybackMode::Stopped;  // Restored once recording finishes
+        bool camera_was_animated        = false;                  // Whether prev_view_target must be restored
+        ViewTransform prev_view_target  = {};
+        float prev_fov_y                = 0.0f;
+    } movie;
 
     struct {
         md_gl_shaders_t shaders = {};
@@ -1310,8 +1597,12 @@ struct ApplicationState {
 
         struct {
             bool enabled = false;
-            float focus_depth = 10.0f;
+            // What is in focus. The depth is derived from the mode every frame, see dof_focus_depth
+            DofFocusMode focus_mode = DofFocusMode::LookAt;
+            float focus_distance = 10.0f;   // DofFocusMode::Distance: from the camera, along the view direction
+            float focus_depth = 10.0f;      // What was used last: the result of the mode
             float aperture = 1.0f;      // percent of the view height (CoC of an object at infinity)
+            md_bitfield_t target_mask = {};
         } dof;
 
         struct {
@@ -1349,6 +1640,7 @@ struct ApplicationState {
     // --- REPRESENTATIONS ---
     struct {
         md_array(Representation) reps = 0;
+        uint32_t next_id = 1;                 // For the next representation: ids are never reused, so keys can refer to them
         md_bitfield_t visibility_mask = {0};
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
@@ -1843,6 +2135,12 @@ bool save_workspace(ApplicationState* app, str_t file);
 // Call once, at initialization; show has to outlive the application.
 void workspace_register_window(const char* name, bool* show);
 
+// The keys on the movie timeline as one value, for undo and redo
+MovieKeys movie_keys_snapshot(const ApplicationState* app);
+void movie_keys_restore(ApplicationState* app, const MovieKeys& keys);
+// Starts the undo history over from the keys as they are now, e.g. after a workspace was loaded
+void movie_history_reset(ApplicationState* app);
+
 // Selections
 Selection* create_selection(ApplicationState* app, str_t name, md_bitfield_t* bf = 0);
 void remove_selection(ApplicationState* app, size_t idx);
@@ -2323,6 +2621,10 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
+    // The wheel zooms towards the point under the mouse instead of the middle of the picture
+    bool zoom_to_cursor = false;
+    // Where the middle of the picture is, from the middle of the surface, in pixels (x right, y down)
+    vec2_t center_offset = {0, 0};
 };
 
 struct InteractionSurfaceViewTransformResult {

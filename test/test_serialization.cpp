@@ -103,6 +103,25 @@ UTEST(viamd_serialization, scalar_round_trip) {
     EXPECT_TRUE(str_eq(s, STR_LIT("a simple label")));
 }
 
+UTEST(viamd_serialization, vector_with_wrong_length_is_rejected) {
+    // A decimal comma splits one number into two tokens; that must not parse as a shorter vector
+    float v[3] = {7, 8, 9};
+    EXPECT_FALSE(viamd::extract_flt_vec(v, 3, STR_LIT("1,5,2,5,3,5")));
+    EXPECT_FALSE(viamd::extract_flt_vec(v, 3, STR_LIT("1,2")));
+    EXPECT_EQ(7.0f, v[0]);
+    EXPECT_TRUE(viamd::extract_flt_vec(v, 3, STR_LIT("1.5, 2.5, 3.5")));
+    EXPECT_EQ(3.5f, v[2]);
+}
+
+UTEST(viamd_serialization, long_vector_parses) {
+    // Keyframes are written as 20 values
+    float out[20] = {};
+    EXPECT_TRUE(viamd::extract_flt_vec(out, 20, STR_LIT("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20")));
+    EXPECT_EQ(1.0f, out[0]);
+    EXPECT_EQ(20.0f, out[19]);
+    EXPECT_FALSE(viamd::extract_flt_vec(out, 16, STR_LIT("1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20")));
+}
+
 UTEST(viamd_serialization, sections_are_walked_in_order) {
     md_allocator_i* alloc = md_get_heap_allocator();
     writer_t w(alloc);

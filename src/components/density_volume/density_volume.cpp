@@ -441,7 +441,8 @@ struct DensityVolume : viamd::EventHandler {
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             const ImVec2 button_size = {160, 0};
 
-            if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
+            // With the Movie window up, Space plays the movie instead
+            if (ImGui::IsWindowFocused() && !state->movie.show_window && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
                 state->animation.mode = state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
             }
 

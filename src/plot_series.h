@@ -131,10 +131,29 @@ struct PlotSeries {
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
 };
 
+// A number that no subplot has had in this run, so that something that refers to a subplot (a movie figure) still finds
+// it after others are added, renamed or moved
+inline uint32_t plot_new_subplot_id() {
+    static uint32_t next = 1;
+    return next++;
+}
+// Makes sure ids that are read from a workspace are not handed out again
+inline void plot_note_subplot_id(uint32_t id) {
+    uint32_t probe = plot_new_subplot_id();
+    while (probe <= id) probe = plot_new_subplot_id();
+}
+
 struct PlotSubplot {
     PlotSeries series[PLOT_MAX_SERIES_PER_SUBPLOT];
     int count = 0;
+    uint32_t id = plot_new_subplot_id();    // Never 0, never reused; saved in the workspace
+    char name[32] = "";                     // Chosen by the user, empty for "Subplot <position>"
 };
+
+// The position of the subplot with that id among the first 'num_subplots' (the ones that are shown), -1 if there is none
+int  plot_find_subplot(const PlotSubplot* subplots, int num_subplots, uint32_t id);
+// Its name, or "Subplot <position + 1>" while it has none
+void plot_subplot_label(char* buf, size_t cap, const PlotSubplot& sp, int position);
 
 int  plot_find_series(const PlotSubplot& sp, const SeriesKey& key);
 // Adds the series with its default style and returns its index; the index it already has if it
@@ -147,9 +166,9 @@ void plot_clear(PlotSubplot* subplots, int count);
 
 // Workspace: the subplot count and every entry with its style, as one section plus one section
 // per entry. The layout is cleared by the caller before a workspace is read.
-void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, str_t series_section, const PlotSubplot* subplots, int num_subplots);
+void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, str_t series_section, str_t subplot_section, const PlotSubplot* subplots, int num_subplots);
 // Reads the section the state is at if it is one of the two. False otherwise.
-bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t section, str_t series_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots);
+bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t section, str_t series_section, str_t subplot_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots);
 
 // ## Series loaded along the run
 //

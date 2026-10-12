@@ -1301,6 +1301,10 @@ void free_system_data(ApplicationState* data) {
 
     md_bitfield_clear(&data->selection.selection_mask);
     md_bitfield_clear(&data->selection.highlight_mask);
+    if (!md_bitfield_empty(&data->visuals.dof.target_mask)) {
+        VIAMD_LOG_INFO("Focus target cleared because the system is being replaced");
+        md_bitfield_clear(&data->visuals.dof.target_mask);
+    }
     md_script_ir_t* ir = data->script.ir;
     md_script_ir_t* eval_ir = data->script.eval_ir;
     data->script.ir = nullptr;
@@ -1532,6 +1536,11 @@ struct WorkspacePending {
     bool has_recenter_target;
     md_bitfield_t recenter_target;
 
+    bool has_follow_target;
+    md_bitfield_t follow_target;
+    bool has_focus_target;
+    md_bitfield_t focus_target;
+
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in
     bool   has_filter_range;
     double filter_beg_frame;
@@ -1554,7 +1563,56 @@ static str_t workspace_file_path(str_t folder, str_t arg, md_allocator_i* alloc)
     return md_path_make_canonical(path, alloc);
 }
 
+MovieKeys movie_keys_snapshot(const ApplicationState* app) {
+    MovieKeys k;
+    const CameraKeyframe* keys = app->movie.keyframes;
+    k.camera.assign(keys, keys + md_array_size(app->movie.keyframes));
+    k.params = app->movie.param_keys;
+    k.sets = app->movie.atom_sets;
+    k.reps = app->movie.rep_keys;
+    k.overlays = app->movie.overlays;
+    k.markers = app->movie.markers;
+    k.loop = app->movie.loop;
+    k.keep_upright = app->movie.keep_upright;
+    k.up_axis = app->movie.up_axis;
+    k.duration = app->movie.duration;
+    k.traj_begin = app->movie.traj_begin;
+    k.traj_end = app->movie.traj_end;
+    k.start_frame = app->movie.start_frame;
+    k.end_frame = app->movie.end_frame;
+    return k;
+}
+
+void movie_keys_restore(ApplicationState* app, const MovieKeys& keys) {
+    auto& m = app->movie;
+    md_array_shrink(m.keyframes, 0);
+    for (const CameraKeyframe& k : keys.camera) {
+        md_array_push(m.keyframes, k, app->allocator.persistent);
+    }
+    m.param_keys = keys.params;
+    m.atom_sets = keys.sets;
+    m.invalid_target_reported = false;
+    m.rep_keys = keys.reps;
+    m.overlays = keys.overlays;
+    m.markers = keys.markers;
+    m.loop = keys.loop;
+    m.keep_upright = keys.keep_upright;
+    m.up_axis = keys.up_axis;
+    m.duration = keys.duration;
+    m.traj_begin = keys.traj_begin;
+    m.traj_end = keys.traj_end;
+    m.start_frame = keys.start_frame;
+    m.end_frame = keys.end_frame;
+}
+
+void movie_history_reset(ApplicationState* app) {
+    app->movie.history.clear(movie_keys_snapshot(app));
+}
+
 static void workspace_reset(ApplicationState* data) {
+    data->movie.overlay_selected = 0;
+    data->movie.editor_select_overlays = false;
+    data->movie.timeline_view_duration = 0.0f;
     remove_all_selections(data);
     remove_all_representations(data);
     data->editor.SetText("");
@@ -1569,16 +1627,77 @@ static void workspace_reset(ApplicationState* data) {
 
     plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
+    for (int i = 0; i < PLOT_MAX_SUBPLOTS; ++i) {
+        data->timeline.subplots[i].name[0] = '\0';
+        data->distributions.subplots[i].name[0] = '\0';
+    }
     data->timeline.num_subplots = 1;
     data->distributions.num_subplots = 1;
     data->timeline.filter.enabled = false;
     data->timeline.filter.temporal_window.enabled = false;
     data->timeline.filter.temporal_window.extent_in_frames = 10;
 
+    md_bitfield_t focus_target = data->visuals.dof.target_mask;
+    md_bitfield_clear(&focus_target);
     data->visuals = {};
+    data->visuals.dof.target_mask = focus_target;
     data->simulation_box = {};
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
+
+    {
+        // The settings and keyframes, not the output folder or a recording under way
+        auto& m = data->movie;
+        m.resolution = ScreenshotResolution::Window;
+        m.res_x = 1920;
+        m.res_y = 1080;
+        m.fps = 24.0f;
+        m.start_frame = 0.0;
+        m.end_frame = 0.0;
+        m.duration_init = false;
+        m.duration = 60.0f;
+        m.traj_begin = 0.0f;
+        m.traj_end = 60.0f;
+        m.playhead = 0.0f;
+        m.editor_focus_active = false;
+        m.editor_keyframe_fraction = 0.30f;
+        m.timeline_tracks[0] = m.timeline_tracks[1] = m.timeline_tracks[2] = true;
+        m.timeline_ruler = m.timeline_camera_lane = m.timeline_rep_overview = m.timeline_param_lane = true;
+        m.timeline_rep_lane = m.timeline_overlay_lane = false;
+        m.timeline_fit_window = true;
+        m.key_includes_frame = true;
+        m.param_selected = 4;
+        snprintf(m.filename_prefix, sizeof(m.filename_prefix), "frame");
+        m.preview_playing = false;
+        m.show_path = true;
+        m.path_options = MOVIE_PATH_OPTIONS_DEFAULT;
+        m.output = MovieOutput::Mp4;
+        m.crf = 18;
+        m.res_scale = 100;
+        m.aa_samples = 0;
+        m.save_copy = true;
+        m.rep_transition = 2.0f;
+        m.snap_frames = true;
+        m.has_key_clipboard = false;
+        m.range_enabled = false;
+        m.range_begin = 0.0f;
+        m.range_end = 0.0f;
+        md_array_shrink(m.keyframes, 0);
+        m.loop = false;
+        m.keep_upright = true;
+        m.up_axis = 1;
+        m.animate_params = true;
+        m.param_keys.clear();
+        m.atom_sets.clear();
+        m.invalid_target_reported = false;
+        m.rep_keys.clear();
+        m.rep_saved.clear();
+        m.overlays = { movie_overlay_default_logo() };
+        m.markers.clear();
+        md_bitfield_clear(&m.follow_mask);
+        m.follow_pending = false;
+        for (int i = 0; i < MOVIE_MAX_PARAMS; ++i) m.param_saved_valid[i] = false;
+    }
 
     data->selection.granularity = SelectionGranularity::Atom;
     md_bitfield_clear(&data->selection.selection_mask);
@@ -1593,6 +1712,7 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.recenter_query.query[0] = '\0';
     recenter_mark_query_dirty(data);
     md_bitfield_clear(&data->operations.selection_mask);
+    movie_history_reset(data);
 }
 
 static void deserialize_files(viamd::deserialization_state_t& state, WorkspacePending& pending, str_t folder, md_allocator_i* alloc) {
@@ -1619,6 +1739,9 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
     while (viamd::next_entry(ident, arg, state)) {
         if (str_eq(ident, STR_LIT("Name"))) {
             viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
+        } else if (str_eq(ident, STR_LIT("Id"))) {
+            int id;
+            if (viamd::extract_int(id, arg) && id > 0) rep->id = (uint32_t)id;
         } else if (str_eq(ident, STR_LIT("Filter"))) {
             viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
         } else if (str_eq(ident, STR_LIT("Enabled"))) {
@@ -1804,6 +1927,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     const md_attributes_t* attributes = &app_state->mold.sys.attributes;
 
     viamd::write_section_header(state, STR_LIT("Representation"));
+    viamd::write_int(state,  STR_LIT("Id"), (int)rep.id);
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
     viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
     viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
@@ -1930,6 +2054,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
     WorkspacePending pending = {};
     md_bitfield_init(&pending.selection_mask, temp_alloc);
     md_bitfield_init(&pending.recenter_target, temp_alloc);
+    md_bitfield_init(&pending.follow_target, temp_alloc);
+    md_bitfield_init(&pending.focus_target, temp_alloc);
 
     str_t folder = {};
     extract_folder_path(&folder, filename);
@@ -1991,6 +2117,15 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
+                else if (str_eq(ident, STR_LIT("DofFocusMode"))) {
+                    if (viamd::extract_enum(v.dof.focus_mode, arg, (int)DofFocusMode::Count) &&
+                        v.dof.focus_mode != DofFocusMode::LookAt) {
+                        v.dof.focus_mode = DofFocusMode::LookAt;
+                        VIAMD_LOG_INFO("Workspace: global fixed/target focus replaced by Auto. Movie focus keys are preserved.");
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("DofFocusDistance")))     viamd::extract_flt(v.dof.focus_distance, arg);
+                else if (str_eq(ident, STR_LIT("DofFocusTarget")))       pending.has_focus_target = deserialize_mask(&pending.focus_target, arg);
                 else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
                 else if (str_eq(ident, STR_LIT("FxaaEnabled")))          viamd::extract_bool(v.fxaa.enabled, arg);
                 else if (str_eq(ident, STR_LIT("TaaEnabled")))           viamd::extract_bool(v.temporal_aa.enabled, arg);
@@ -2022,6 +2157,403 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 }
             }
             pending.has_camera = has_position && has_orientation && has_distance;
+        } else if (str_eq(section, STR_LIT("Movie"))) {
+            auto& m = data->movie;
+            // Workspaces from before the timeline had a set length may have had it follow the trajectory
+            // (DurationAuto), and their keys with a frame alone decided how the trajectory played
+            bool legacy_auto = false;
+            int  timeline_version = 1;
+            // The separate look-at and focus tracks of the previous version are put on the camera keys when the movie is read
+            std::vector<MovieLegacyTarget> legacy_look, legacy_focus;
+            bool legacy_atoms_allowed[2] = {};
+            uint32_t atom_set_id = 0;   // The set that AtomSetAtoms is for
+            // Movies from before the camera could be kept upright went through their keys' tilts
+            m.keep_upright = false;
+            while (viamd::next_entry(ident, arg, state)) {
+                if      (str_eq(ident, STR_LIT("Resolution")))     viamd::extract_enum(m.resolution, arg, (int)ScreenshotResolution::Count);
+                else if (str_eq(ident, STR_LIT("ResX")))           viamd::extract_int(m.res_x, arg);
+                else if (str_eq(ident, STR_LIT("ResY")))           viamd::extract_int(m.res_y, arg);
+                else if (str_eq(ident, STR_LIT("Fps")))            viamd::extract_flt(m.fps, arg);
+                else if (str_eq(ident, STR_LIT("StartFrame")))     viamd::extract_dbl(m.start_frame, arg);
+                else if (str_eq(ident, STR_LIT("EndFrame")))       viamd::extract_dbl(m.end_frame, arg);
+                else if (str_eq(ident, STR_LIT("DurationAuto")))   viamd::extract_bool(legacy_auto, arg);
+                else if (str_eq(ident, STR_LIT("Timeline")))       viamd::extract_int(timeline_version, arg);
+                else if (str_eq(ident, STR_LIT("Duration")))       viamd::extract_flt(m.duration, arg);
+                else if (str_eq(ident, STR_LIT("TrajectoryBegin"))) viamd::extract_flt(m.traj_begin, arg);
+                else if (str_eq(ident, STR_LIT("TrajectoryEnd")))  viamd::extract_flt(m.traj_end, arg);
+                else if (str_eq(ident, STR_LIT("Playhead")))       viamd::extract_flt(m.playhead, arg);
+                else if (str_eq(ident, STR_LIT("FilenamePrefix"))) viamd::extract_to_char_buf(m.filename_prefix, sizeof(m.filename_prefix), arg);
+                else if (str_eq(ident, STR_LIT("AnimateCamera")))  {} // Older workspaces: the camera always follows the keys now
+                else if (str_eq(ident, STR_LIT("ShowPath")))       viamd::extract_bool(m.show_path, arg);
+                else if (str_eq(ident, STR_LIT("PathOptions"))) {
+                    int bits = 0;
+                    if (viamd::extract_int(bits, arg)) m.path_options = bits & 31;
+                }
+                else if (str_eq(ident, STR_LIT("Output")))         viamd::extract_enum(m.output, arg, (int)MovieOutput::Count);
+                else if (str_eq(ident, STR_LIT("Crf")))            viamd::extract_int(m.crf, arg);
+                else if (str_eq(ident, STR_LIT("ResScale")))       viamd::extract_int(m.res_scale, arg);
+                else if (str_eq(ident, STR_LIT("AaSamples")))      viamd::extract_int(m.aa_samples, arg);
+                else if (str_eq(ident, STR_LIT("SaveCopy")))       viamd::extract_bool(m.save_copy, arg);
+                else if (str_eq(ident, STR_LIT("RepTransition")))  viamd::extract_flt(m.rep_transition, arg);
+                else if (str_eq(ident, STR_LIT("SnapFrames")))     viamd::extract_bool(m.snap_frames, arg);
+                else if (str_eq(ident, STR_LIT("Lanes"))) {
+                    int bits = 0;
+                    if (viamd::extract_int(bits, arg)) {
+                        const auto tracks = movie_timeline_tracks_from_mask(bits);
+                        for (int t = 0; t < 3; ++t) m.timeline_tracks[t] = tracks[t];
+                        m.timeline_param_lane   = (bits & 8) != 0;
+                        m.timeline_rep_lane     = (bits & 16) != 0;
+                        m.timeline_overlay_lane = (bits & 32) != 0;
+                        m.timeline_rep_overview = (bits & 64) != 0 || !(bits & 128);   // Saved without it: the lane is new
+                        m.timeline_camera_lane  = (bits & 256) != 0 || !(bits & 512);
+                        m.timeline_ruler        = (bits & 1024) != 0 || !(bits & 2048);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("LaneHeight"))) {
+                    float h = 0.0f;
+                    if (viamd::extract_flt(h, arg)) m.timeline_lane_height = CLAMP(h, 60.0f, 400.0f);
+                }
+                else if (str_eq(ident, STR_LIT("FitLanes")))       viamd::extract_bool(m.timeline_fit_window, arg);
+                else if (str_eq(ident, STR_LIT("KeyframePane"))) {
+                    float fraction;
+                    if (viamd::extract_flt(fraction, arg)) m.editor_keyframe_fraction = CLAMP(fraction, 0.15f, 0.65f);
+                }
+                else if (str_eq(ident, STR_LIT("RepEqualRows")))   viamd::extract_bool(m.timeline_rep_equal_rows, arg);
+                else if (str_eq(ident, STR_LIT("RepSeparateRows"))) viamd::extract_bool(m.timeline_rep_separate, arg);
+                else if (str_eq(ident, STR_LIT("RepBlockHeight"))) {
+                    float h = 1.0f;
+                    if (viamd::extract_flt(h, arg)) m.timeline_rep_block_height = CLAMP(h, 0.5f, 2.5f);
+                }
+                else if (str_eq(ident, STR_LIT("Overlays")))       m.overlays.clear();   // The overlays that follow are all of them
+                else if (str_eq(ident, STR_LIT("RenderRange"))) {
+                    float r[3];
+                    if (viamd::extract_flt_vec(r, 3, arg)) {
+                        m.range_enabled = r[0] != 0.0f;
+                        m.range_begin = r[1];
+                        m.range_end = r[2];
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("Keyframe")) || str_eq(ident, STR_LIT("KeyframeV2")) || str_eq(ident, STR_LIT("KeyframeV3"))) {
+                    // time, fov_y, distance, position (3), orientation (4). Keyframe is what was written before there
+                    // was more to a key: then use_frame, frame, spin_turns, spin_axis, spin_constant_speed and, in the
+                    // latest, the ease. KeyframeV2 with one less is what was written before that.
+                    const bool v3 = str_eq(ident, STR_LIT("KeyframeV3"));
+                    const bool v2 = v3 || str_eq(ident, STR_LIT("KeyframeV2"));
+                    float v[21] = {};
+                    bool has_ease = false, has_follow = false;
+                    bool ok = false;
+                    if (v3) {
+                        has_follow = viamd::extract_flt_vec(v, 21, arg);
+                        has_ease = has_follow;
+                        ok = has_follow;
+                    } else if (v2) {
+                        has_follow = viamd::extract_flt_vec(v, 20, arg);
+                        has_ease = has_follow || viamd::extract_flt_vec(v, 16, arg);
+                        ok = has_ease || viamd::extract_flt_vec(v, 15, arg);
+                    } else {
+                        ok = viamd::extract_flt_vec(v, 10, arg);
+                    }
+                    if (ok) {
+                        CameraKeyframe key = {};
+                        key.time = v[0];
+                        key.fov_y = v[1];
+                        key.transform.distance = v[2];
+                        key.transform.position = vec3_set(v[3], v[4], v[5]);
+                        key.transform.orientation = quat_normalize(quat_t{v[6], v[7], v[8], v[9]});
+                        if (v2) {
+                            key.use_frame = v[10] != 0.0f;
+                            key.frame = v[11];
+                            key.spin_turns = CLAMP((int)lroundf(v[12]), -16, 16);
+                            key.spin_axis = (SpinAxis)CLAMP((int)lroundf(v[13]), 0, (int)SpinAxis::Count - 1);
+                            key.spin_constant_speed = v[14] != 0.0f;
+                        }
+                        if (has_ease) {
+                            key.ease = (KeyEase)CLAMP((int)lroundf(v[15]), 0, (int)KeyEase::Count - 1);
+                        }
+                        if (has_follow) {
+                            key.follow = v[16] != 0.0f;
+                            key.follow_center = vec3_set(v[17], v[18], v[19]);
+                            if (v3) key.follow_atom = (int32_t)lroundf(v[20]);
+                        }
+                        md_array_push(m.keyframes, key, data->allocator.persistent);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("KeyframeRoll"))) {
+                    // The roll of the key that was just read, in degrees
+                    float deg = 0.0f;
+                    if (md_array_size(m.keyframes) > 0 && viamd::extract_flt(deg, arg)) {
+                        m.keyframes[md_array_size(m.keyframes) - 1].roll = CLAMP(deg, -180.0f, 180.0f) * (3.14159265358979f / 180.0f);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("KeepUpright")))    viamd::extract_bool(m.keep_upright, arg);
+                else if (str_eq(ident, STR_LIT("UpAxis"))) {
+                    int axis = 1;
+                    if (viamd::extract_int(axis, arg)) m.up_axis = CLAMP(axis, 0, 5);
+                }
+                else if (str_eq(ident, STR_LIT("KeyframeName"))) {
+                    // The name of the key that was just read
+                    if (md_array_size(m.keyframes) > 0) {
+                        viamd::extract_to_char_buf(m.keyframes[md_array_size(m.keyframes) - 1].name, sizeof(CameraKeyframe::name), arg);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("Loop")))          viamd::extract_bool(m.loop, arg);
+                else if (str_eq(ident, STR_LIT("FollowTarget")))  pending.has_follow_target = deserialize_mask(&pending.follow_target, arg);
+                else if (str_eq(ident, STR_LIT("AnimateParams"))) viamd::extract_bool(m.animate_params, arg);
+                else if (str_eq(ident, STR_LIT("IndependentTracks"))) {}   // Gone: a key has its own look-at and focus now
+                else if (str_eq(ident, STR_LIT("LookKey")) || str_eq(ident, STR_LIT("FocusKey"))) {
+                    float v[10] = {};
+                    MovieLegacyTarget key;
+                    const int track = str_eq(ident, STR_LIT("FocusKey")) ? 1 : 0;
+                    legacy_atoms_allowed[track] = false;
+                    if (viamd::extract_flt_vec(v, 10, arg) && movie_legacy_target_decode(&key, v, track == 1)) {
+                        (track == 0 ? legacy_look : legacy_focus).push_back(key);
+                        legacy_atoms_allowed[track] = key.target == FocusTarget::Selection;
+                    } else VIAMD_LOG_ERROR("Invalid movie target key in workspace");
+                }
+                else if (str_eq(ident, STR_LIT("LookAtoms")) || str_eq(ident, STR_LIT("FocusAtoms"))) {
+                    md_bitfield_t mask = {};
+                    md_bitfield_init(&mask, temp_alloc);
+                    const int track = str_eq(ident, STR_LIT("FocusAtoms")) ? 1 : 0;
+                    auto& keys = track == 0 ? legacy_look : legacy_focus;
+                    if (legacy_atoms_allowed[track] && !keys.empty() && deserialize_mask(&mask, arg)) {
+                        md_bitfield_iter_t it = md_bitfield_iter_create(&mask);
+                        while (md_bitfield_iter_next(&it)) keys.back().atoms.push_back((uint32_t)md_bitfield_iter_idx(&it));
+                    } else VIAMD_LOG_ERROR("Invalid movie target selection in workspace");
+                    legacy_atoms_allowed[track] = false;
+                }
+                else if (str_eq(ident, STR_LIT("AtomSet"))) {
+                    int id = 0;
+                    atom_set_id = 0;
+                    if (viamd::extract_int(id, arg) && id > 0 && !movie_atoms_find(m.atom_sets, (uint32_t)id)) {
+                        atom_set_id = (uint32_t)id;
+                        m.atom_sets.push_back({atom_set_id, {}, {}});
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("AtomSetExpr"))) {
+                    char expr[256] = "";
+                    if (atom_set_id != 0 && viamd::extract_to_char_buf(expr, sizeof(expr), arg) && expr[0] != '\0') m.atom_sets.back().expr = expr;
+                    else VIAMD_LOG_ERROR("Invalid selection expression of a movie key in workspace");
+                    atom_set_id = 0;
+                }
+                else if (str_eq(ident, STR_LIT("AtomSetAtoms"))) {
+                    md_bitfield_t mask = {};
+                    md_bitfield_init(&mask, temp_alloc);
+                    if (atom_set_id != 0 && deserialize_mask(&mask, arg)) {
+                        auto& atoms = m.atom_sets.back().atoms;
+                        md_bitfield_iter_t it = md_bitfield_iter_create(&mask);
+                        while (md_bitfield_iter_next(&it)) atoms.push_back((uint32_t)md_bitfield_iter_idx(&it));
+                    } else VIAMD_LOG_ERROR("Invalid set of atoms in workspace");
+                    atom_set_id = 0;
+                }
+                else if (str_eq(ident, STR_LIT("KeyframeLook"))) {
+                    // The set of atoms that the key that was just read looks at
+                    int id = 0;
+                    if (md_array_size(m.keyframes) > 0 && viamd::extract_int(id, arg) && id > 0) {
+                        m.keyframes[md_array_size(m.keyframes) - 1].look_set = (uint32_t)id;
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("KeyframeFocus"))) {
+                    // What is sharp from the key that was just read on
+                    float v[9] = {};
+                    if (md_array_size(m.keyframes) > 0 && viamd::extract_flt_vec(v, 9, arg) && movie_focus_decode(&m.keyframes[md_array_size(m.keyframes) - 1], v)) {}
+                    else VIAMD_LOG_ERROR("Invalid focus of a movie key in workspace");
+                }
+                else if (str_eq(ident, STR_LIT("RepKey"))) {
+                    // representation id, property, time, value, ease, then the other two numbers of a colour
+                    float v[7] = {};
+                    if (viamd::extract_flt_vec(v, 7, arg) || viamd::extract_flt_vec(v, 5, arg)) {
+                        RepKey key;
+                        key.rep = (uint32_t)MAX(lroundf(v[0]), 0L);
+                        key.prop = (int)lroundf(v[1]);
+                        key.time = v[2];
+                        key.value[0] = v[3];
+                        key.value[1] = v[5];
+                        key.value[2] = v[6];
+                        key.ease = (KeyEase)CLAMP((int)lroundf(v[4]), 0, (int)KeyEase::Count - 1);
+                        if (key.rep > 0 && 0 <= key.prop && key.prop < (int)RepProp::Count) m.rep_keys.push_back(key);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("ParamKey"))) {
+                    // parameter, time, value (3), ease
+                    float v[6];
+                    if (viamd::extract_flt_vec(v, 6, arg)) {
+                        ParamKey key;
+                        key.param = (int)lroundf(v[0]);
+                        key.time = v[1];
+                        key.value[0] = v[2];
+                        key.value[1] = v[3];
+                        key.value[2] = v[4];
+                        key.ease = (KeyEase)CLAMP((int)lroundf(v[5]), 0, (int)KeyEase::Count - 1);
+                        if (0 <= key.param && key.param < MOVIE_MAX_PARAMS) {
+                            if (key.param == 3 || key.param == 5) {
+                                VIAMD_LOG_INFO("Workspace: legacy occlusion radius / depth-of-field blur key retained but inactive with the new renderer; re-key blur strength using aperture");
+                            } else if (key.param == 8) {
+                                VIAMD_LOG_INFO("Workspace: legacy global focus-distance key retained but inactive. Set Movie > Focus on > Distance instead.");
+                            }
+                            m.param_keys.push_back(key);
+                        }
+                    }
+                }
+            }
+            m.res_x = CLAMP(m.res_x, 640, 16384);
+            m.res_y = CLAMP(m.res_y, 480, 16384);
+            m.fps = CLAMP(m.fps, 1.0f, 240.0f);
+            std::stable_sort(m.keyframes, m.keyframes + md_array_size(m.keyframes),
+                [](const CameraKeyframe& a, const CameraKeyframe& b) { return a.time < b.time; });
+            if ((!legacy_look.empty() || !legacy_focus.empty()) && md_array_size(m.keyframes) > 0) {
+                static const vec3_t up_axes[6] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}, {0, -1, 0}, {0, 0, -1}};
+                std::vector<CameraKeyframe> keys(m.keyframes, m.keyframes + md_array_size(m.keyframes));
+                movie_keys_from_tracks(&keys, &m.atom_sets, legacy_look, legacy_focus, m.keep_upright ? &up_axes[m.up_axis] : nullptr, up_axes[m.up_axis]);
+                md_array_shrink(m.keyframes, 0);
+                for (const CameraKeyframe& k : keys) md_array_push(m.keyframes, k, data->allocator.persistent);
+                VIAMD_LOG_INFO("Workspace: the look-at and focus tracks were put on camera keys, so that every key has its own look-at and focus");
+            }
+            {
+                // The blur of the focus keys of earlier versions is a look parameter now
+                std::vector<ParamKey> blur = movie_blur_keys_from_focus(m.keyframes, md_array_size(m.keyframes));
+                if (!blur.empty()) {
+                    m.param_keys.erase(std::remove_if(m.param_keys.begin(), m.param_keys.end(), [](const ParamKey& k) { return k.param == MOVIE_PARAM_DOF_APERTURE; }), m.param_keys.end());
+                    m.param_keys.insert(m.param_keys.end(), blur.begin(), blur.end());
+                    m.animate_params = true;
+                    VIAMD_LOG_INFO("Workspace: the blur of the focus keys is now the keys of Depth of field blur in the Looks tab");
+                }
+            }
+            if (timeline_version < 2) {
+                if (legacy_auto) {
+                    const double fps = fabs((double)data->animation.fps);
+                    const double len = fps > 0.0 ? fabs(m.end_frame - m.start_frame) / fps : 0.0;
+                    if (len > 0.0) m.duration = (float)len;
+                    m.traj_begin = 0.0f;
+                    m.traj_end = m.duration;
+                }
+                // The keys with a frame were all there was to it: the anchors go to the first and the last of them
+                int first = -1, last = -1;
+                for (int i = 0; i < (int)md_array_size(m.keyframes); ++i) {
+                    if (!m.keyframes[i].use_frame) continue;
+                    if (first < 0) first = i;
+                    last = i;
+                }
+                if (first >= 0) {
+                    m.traj_begin = (float)m.keyframes[first].time;
+                    m.start_frame = m.keyframes[first].frame;
+                    m.traj_end = (float)m.keyframes[last].time;
+                    m.end_frame = m.keyframes[last].frame;
+                }
+            }
+            m.duration = CLAMP(m.duration, 0.01f, 3600.0f);
+            m.traj_begin = CLAMP(m.traj_begin, 0.0f, m.duration);
+            m.traj_end = CLAMP(m.traj_end, m.traj_begin, m.duration);
+            m.duration_init = true;
+            m.crf = CLAMP(m.crf, 0, 51);
+            m.res_scale = CLAMP(m.res_scale, 10, 100);
+            m.rep_transition = CLAMP(m.rep_transition, 0.0f, 60.0f);
+            m.aa_samples = CLAMP(m.aa_samples, 0, 256);
+            movie_history_reset(data);
+        } else if (str_eq(section, STR_LIT("MovieOverlay"))) {
+            MovieOverlay o;
+            while (viamd::next_entry(ident, arg, state)) {
+                if      (str_eq(ident, STR_LIT("Type")))    viamd::extract_enum(o.type, arg, (int)MovieOverlayType::Count);
+                else if (str_eq(ident, STR_LIT("Enabled"))) viamd::extract_bool(o.enabled, arg);
+                else if (str_eq(ident, STR_LIT("Range"))) {
+                    float r[4];
+                    if (viamd::extract_flt_vec(r, 4, arg)) {
+                        o.begin = r[0];
+                        o.end = r[1];
+                        o.fade_in = r[2];
+                        o.fade_out = r[3];
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("Anchor"))) viamd::extract_enum(o.anchor, arg, (int)MovieOverlayAnchor::Count);
+                else if (str_eq(ident, STR_LIT("Size")))   viamd::extract_flt(o.size, arg);
+                else if (str_eq(ident, STR_LIT("SizeUnit"))) viamd::extract_enum(o.size_unit, arg, (int)MovieOverlaySizeUnit::Count);
+                else if (str_eq(ident, STR_LIT("Color")))  viamd::extract_flt_vec(o.color, 4, arg);
+                else if (str_eq(ident, STR_LIT("Background"))) viamd::extract_flt_vec(o.background, 4, arg);
+                else if (str_eq(ident, STR_LIT("Length"))) viamd::extract_flt(o.length, arg);
+                else if (str_eq(ident, STR_LIT("Width")))  viamd::extract_flt(o.width, arg);
+                else if (str_eq(ident, STR_LIT("NumBins"))) {
+                    int bins = 0;
+                    if (viamd::extract_int(bins, arg)) {
+                        o.num_bins = bins == 0 ? 0 : CLAMP(bins, MOVIE_DISTRIBUTION_MIN_BINS, MOVIE_DISTRIBUTION_MAX_BINS);
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("Subplot"))) {   // Older workspaces: one subplot
+                    int v = 0;
+                    if (viamd::extract_int(v, arg)) o.legacy_subplot_mask = 1 << CLAMP(v, 0, PLOT_MAX_SUBPLOTS - 1);
+                }
+                else if (str_eq(ident, STR_LIT("Subplots"))) {
+                    int v = 0;
+                    if (viamd::extract_int(v, arg)) o.legacy_subplot_mask = v & ((1 << PLOT_MAX_SUBPLOTS) - 1);
+                }
+                else if (str_eq(ident, STR_LIT("Panel"))) {
+                    int v[2];
+                    if (viamd::extract_int_vec(v, 2, arg) && 0 <= v[0] && v[0] < (int)MoviePlotView::Count && v[1] > 0) {
+                        o.panels.push_back({(MoviePlotView)v[0], (uint32_t)v[1]});
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("PanelTime"))) {
+                    float v[2];
+                    if (!o.panels.empty() && viamd::extract_flt_vec(v, 2, arg)) {
+                        o.panels.back().begin = (double)v[0];
+                        o.panels.back().end = (double)v[1];
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("PanelTitle"))) {
+                    if (!o.panels.empty()) viamd::extract_to_char_buf(o.panels.back().title, sizeof(o.panels.back().title), arg);
+                }
+                else if (str_eq(ident, STR_LIT("FontPoints"))) viamd::extract_flt(o.font_points, arg);
+                else if (str_eq(ident, STR_LIT("LinePoints"))) viamd::extract_flt(o.line_points, arg);
+                else if (str_eq(ident, STR_LIT("Palette"))) {
+                    int v = 0;
+                    if (viamd::extract_int(v, arg)) o.palette = CLAMP(v, 0, MOVIE_PLOT_PALETTE_COUNT - 1);
+                }
+                else if (str_eq(ident, STR_LIT("PlotAxis"))) viamd::extract_enum(o.plot_axis, arg, (int)MoviePlotAxis::Count);
+                else if (str_eq(ident, STR_LIT("PlotFlags"))) {
+                    int bits = 0;
+                    if (viamd::extract_int(bits, arg)) {
+                        o.reveal = (bits & 1) != 0;
+                        o.show_value = (bits & 2) != 0;
+                        o.show_markers = (bits & 4) != 0;
+                        o.show_titles = (bits & 8) != 0;
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("TimeBarLabels"))) {
+                    int bits = 0;
+                    if (viamd::extract_int(bits, arg)) {
+                        o.show_elapsed = (bits & 1) != 0;
+                        o.show_speed = (bits & 2) != 0;
+                    }
+                }
+                else if (str_eq(ident, STR_LIT("Path"))) {
+                    const str_t file = workspace_file_path(folder, arg, temp_alloc);
+                    str_copy_to_char_buf(o.path, sizeof(o.path), file);
+                }
+                else if (str_eq(ident, STR_LIT("Text")))   viamd::extract_to_char_buf(o.text, sizeof(o.text), arg);
+            }
+            {
+                float lo, hi;
+                movie_overlay_size_range(o.size_unit, &lo, &hi);
+                o.size = CLAMP(o.size, lo, hi);
+            }
+            data->movie.overlays.push_back(o);
+            movie_history_reset(data);
+        } else if (str_eq(section, STR_LIT("MovieMarker"))) {
+            MovieMarker k;
+            float t = 0.0f;
+            while (viamd::next_entry(ident, arg, state)) {
+                if (str_eq(ident, STR_LIT("Time"))) viamd::extract_flt(t, arg);
+                else if (str_eq(ident, STR_LIT("Label"))) viamd::extract_to_char_buf(k.label, sizeof(k.label), arg);
+                else if (str_eq(ident, STR_LIT("Subplot"))) {
+                    int subplot = 0;
+                    if (viamd::extract_int(subplot, arg)) k.subplot = (uint32_t)MAX(subplot, 0);
+                }
+                else if (str_eq(ident, STR_LIT("Color"))) {
+                    vec4_t c = {};
+                    if (viamd::extract_vec4(c, arg)) for (int i = 0; i < 4; ++i) k.color[i] = CLAMP(c.elem[i], 0.0f, 1.0f);
+                }
+            }
+            k.time = (double)t;
+            data->movie.markers.push_back(k);
+            movie_history_reset(data);
         } else if (str_eq(section, STR_LIT("Operations"))) {
             auto& op = data->operations;
             while (viamd::next_entry(ident, arg, state)) {
@@ -2091,8 +2623,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     }
                 }
             }
-        } else if (plot_layout_deserialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), data, data->timeline.subplots, &data->timeline.num_subplots)) {
-        } else if (plot_layout_deserialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), data, data->distributions.subplots, &data->distributions.num_subplots)) {
+        } else if (plot_layout_deserialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), STR_LIT("TimelineSubplot"), data, data->timeline.subplots, &data->timeline.num_subplots)) {
+        } else if (plot_layout_deserialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), STR_LIT("DistributionSubplot"), data, data->distributions.subplots, &data->distributions.num_subplots)) {
         } else {
             const char* before = state.text.ptr;
             viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
@@ -2103,7 +2635,28 @@ void load_workspace(ApplicationState* data, str_t filename) {
         }
     }
 
+    // Overlays from before figures hold positions of subplots, which become the ids those subplots have
+    {
+        uint32_t timeline_ids[PLOT_MAX_SUBPLOTS], distribution_ids[PLOT_MAX_SUBPLOTS];
+        for (int i = 0; i < PLOT_MAX_SUBPLOTS; ++i) {
+            timeline_ids[i] = data->timeline.subplots[i].id;
+            distribution_ids[i] = data->distributions.subplots[i].id;
+        }
+        movie_overlays_migrate(&data->movie.overlays, timeline_ids, data->timeline.num_subplots, distribution_ids, data->distributions.num_subplots);
+        movie_history_reset(data);
+    }
+
     // ## 3. Load the files, then apply what refers to them
+    {
+        // Representations from before they had ids get one, and no two share one
+        auto& reps = data->representation;
+        for (size_t i = 0; i < md_array_size(reps.reps); ++i) reps.next_id = MAX(reps.next_id, reps.reps[i].id + 1);
+        for (size_t i = 0; i < md_array_size(reps.reps); ++i) {
+            bool taken = reps.reps[i].id == 0;
+            for (size_t j = 0; j < i && !taken; ++j) taken = reps.reps[j].id == reps.reps[i].id;
+            if (taken) reps.reps[i].id = reps.next_id++;
+        }
+    }
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     data->files.coarse_grained = pending.coarse_grained;
 
@@ -2168,6 +2721,31 @@ void load_workspace(ApplicationState* data, str_t filename) {
     };
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
         md_bitfield_copy(&data->selection.selection_mask, &pending.selection_mask);
+    }
+    if (pending.has_follow_target && mask_fits(&pending.follow_target)) {
+        md_bitfield_copy(&data->movie.follow_mask, &pending.follow_target);
+    }
+    {
+        // Keys that followed the movie's follow target, or an atom, look at the centre of those atoms
+        auto& m = data->movie;
+        bool any = false;
+        for (size_t i = 0; i < md_array_size(m.keyframes); ++i) any |= m.keyframes[i].follow;
+        if (any) {
+            std::vector<uint32_t> atoms;
+            md_bitfield_iter_t it = md_bitfield_iter_create(&data->movie.follow_mask);
+            while (md_bitfield_iter_next(&it)) atoms.push_back((uint32_t)md_bitfield_iter_idx(&it));
+            std::vector<CameraKeyframe> keys(m.keyframes, m.keyframes + md_array_size(m.keyframes));
+            movie_keys_from_follow(&keys, &m.atom_sets, atoms);
+            for (size_t i = 0; i < keys.size(); ++i) m.keyframes[i] = keys[i];
+            movie_history_reset(data);
+        }
+    }
+    if (pending.has_focus_target) {
+        if (mask_fits(&pending.focus_target)) {
+            md_bitfield_copy(&data->visuals.dof.target_mask, &pending.focus_target);
+        } else {
+            VIAMD_LOG_ERROR("Workspace focus target does not match the loaded system; select a new focus target");
+        }
     }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitfield_copy(&data->operations.selection_mask, &pending.recenter_target);
@@ -2272,8 +2850,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_flt(state, STR_LIT("Tension"), app_state->animation.tension);
     viamd::write_int(state, STR_LIT("Interpolation"), (int)app_state->animation.interpolation);
 
-    plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
-    plot_layout_serialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), app_state->distributions.subplots, app_state->distributions.num_subplots);
+    plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), STR_LIT("TimelineSubplot"), app_state->timeline.subplots, app_state->timeline.num_subplots);
+    plot_layout_serialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), STR_LIT("DistributionSubplot"), app_state->distributions.subplots, app_state->distributions.num_subplots);
 
     {
         // In frames: a time is in whatever unit it happens to be shown in
@@ -2307,6 +2885,11 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
+        viamd::write_int(state,  STR_LIT("DofFocusMode"), (int)DofFocusMode::LookAt);
+        viamd::write_flt(state,  STR_LIT("DofFocusDistance"), v.dof.focus_distance);
+        if (!md_bitfield_empty(&v.dof.target_mask)) {
+            viamd::write_bitfield(state, STR_LIT("DofFocusTarget"), &v.dof.target_mask);
+        }
         viamd::write_flt(state,  STR_LIT("DofAperture"), v.dof.aperture);
         viamd::write_bool(state, STR_LIT("FxaaEnabled"), v.fxaa.enabled);
         viamd::write_bool(state, STR_LIT("TaaEnabled"), v.temporal_aa.enabled);
@@ -2329,6 +2912,142 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.target.distance);
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
     viamd::write_flt(state,  STR_LIT("FovY"), app_state->view.camera.fov_y);
+
+    {
+        const auto& m = app_state->movie;
+        viamd::write_section_header(state, STR_LIT("Movie"));
+        viamd::write_int (state, STR_LIT("Resolution"), (int)m.resolution);
+        viamd::write_int (state, STR_LIT("ResX"), m.res_x);
+        viamd::write_int (state, STR_LIT("ResY"), m.res_y);
+        viamd::write_flt (state, STR_LIT("Fps"), m.fps);
+        viamd::write_dbl (state, STR_LIT("StartFrame"), m.start_frame);
+        viamd::write_dbl (state, STR_LIT("EndFrame"), m.end_frame);
+        viamd::write_int (state, STR_LIT("Timeline"), 2);
+        viamd::write_flt (state, STR_LIT("Duration"), m.duration);
+        viamd::write_flt (state, STR_LIT("TrajectoryBegin"), m.traj_begin);
+        viamd::write_flt (state, STR_LIT("TrajectoryEnd"), m.traj_end);
+        viamd::write_flt (state, STR_LIT("Playhead"), m.playhead);
+        viamd::write_str (state, STR_LIT("FilenamePrefix"), str_from_cstr(m.filename_prefix));
+        viamd::write_bool(state, STR_LIT("ShowPath"), m.show_path);
+        viamd::write_int (state, STR_LIT("PathOptions"), m.path_options);
+        viamd::write_int (state, STR_LIT("Output"), (int)m.output);
+        viamd::write_int (state, STR_LIT("Crf"), m.crf);
+        viamd::write_int (state, STR_LIT("ResScale"), m.res_scale);
+        viamd::write_int (state, STR_LIT("AaSamples"), m.aa_samples);
+        viamd::write_bool(state, STR_LIT("SaveCopy"), m.save_copy);
+        viamd::write_flt (state, STR_LIT("RepTransition"), m.rep_transition);
+        viamd::write_bool(state, STR_LIT("SnapFrames"), m.snap_frames);
+        const bool lens = m.timeline_tracks[1] || m.timeline_tracks[2];
+        viamd::write_int (state, STR_LIT("Lanes"), (m.timeline_tracks[0] ? 1 : 0) | (lens ? 6 : 0) |
+            (m.timeline_param_lane ? 8 : 0) | (m.timeline_rep_lane ? 16 : 0) | (m.timeline_overlay_lane ? 32 : 0) |
+            (m.timeline_rep_overview ? 64 : 0) | 128 | (m.timeline_camera_lane ? 256 : 0) | 512 | (m.timeline_ruler ? 1024 : 0) | 2048);
+        viamd::write_flt (state, STR_LIT("LaneHeight"), m.timeline_lane_height);
+        viamd::write_bool(state, STR_LIT("FitLanes"), m.timeline_fit_window);
+        viamd::write_flt(state, STR_LIT("KeyframePane"), m.editor_keyframe_fraction);
+        viamd::write_bool(state, STR_LIT("RepEqualRows"), m.timeline_rep_equal_rows);
+        viamd::write_bool(state, STR_LIT("RepSeparateRows"), m.timeline_rep_separate);
+        viamd::write_flt (state, STR_LIT("RepBlockHeight"), m.timeline_rep_block_height);
+        viamd::write_bool(state, STR_LIT("Overlays"), true);
+        const float render_range[3] = { m.range_enabled ? 1.0f : 0.0f, m.range_begin, m.range_end };
+        viamd::write_flt_vec(state, STR_LIT("RenderRange"), render_range, 3);
+        viamd::write_bool(state, STR_LIT("Loop"), m.loop);
+        viamd::write_bool(state, STR_LIT("KeepUpright"), m.keep_upright);
+        viamd::write_int (state, STR_LIT("UpAxis"), m.up_axis);
+        viamd::write_bool(state, STR_LIT("AnimateParams"), m.animate_params);
+        {
+            // What the keys look at and focus on: the atoms, by id
+            std::vector<MovieAtomSet> sets = m.atom_sets;
+            movie_atoms_prune(&sets, m.keyframes, md_array_size(m.keyframes));
+            for (const MovieAtomSet& set : sets) {
+                if (!set.expr.empty()) {
+                    viamd::write_int(state, STR_LIT("AtomSet"), (int)set.id);
+                    viamd::write_str(state, STR_LIT("AtomSetExpr"), str_from_cstr(set.expr.c_str()));
+                    continue;
+                }
+                if (set.atoms.empty()) continue;
+                viamd::write_int(state, STR_LIT("AtomSet"), (int)set.id);
+                md_bitfield_t mask = {};
+                md_bitfield_init(&mask, temp_alloc);
+                for (uint32_t atom : set.atoms) md_bitfield_set_bit(&mask, atom);
+                viamd::write_bitfield(state, STR_LIT("AtomSetAtoms"), &mask);
+            }
+        }
+        for (size_t i = 0; i < md_array_size(m.keyframes); ++i) {
+            const CameraKeyframe& k = m.keyframes[i];
+            const float v[21] = {
+                (float)k.time, k.fov_y, k.transform.distance,
+                k.transform.position.x, k.transform.position.y, k.transform.position.z,
+                k.transform.orientation.x, k.transform.orientation.y, k.transform.orientation.z, k.transform.orientation.w,
+                k.use_frame ? 1.0f : 0.0f, (float)k.frame, (float)k.spin_turns, (float)(int)k.spin_axis, k.spin_constant_speed ? 1.0f : 0.0f,
+                (float)(int)k.ease,
+                k.follow ? 1.0f : 0.0f, k.follow_center.x, k.follow_center.y, k.follow_center.z,
+                (float)k.follow_atom,
+            };
+            viamd::write_flt_vec(state, STR_LIT("KeyframeV3"), v, 21);
+            if (k.name[0] != '\0') viamd::write_str(state, STR_LIT("KeyframeName"), str_from_cstr(k.name));
+            if (k.roll != 0.0f) viamd::write_flt(state, STR_LIT("KeyframeRoll"), k.roll * (180.0f / 3.14159265358979f));
+            if (k.look_set != 0) viamd::write_int(state, STR_LIT("KeyframeLook"), (int)k.look_set);
+            if (k.focus_on) {
+                const auto f = movie_focus_encode(k);
+                viamd::write_flt_vec(state, STR_LIT("KeyframeFocus"), f.data(), f.size());
+            }
+        }
+        if (!md_bitfield_empty(&m.follow_mask)) {
+            viamd::write_bitfield(state, STR_LIT("FollowTarget"), &m.follow_mask);
+        }
+        for (const ParamKey& k : m.param_keys) {
+            const float v[6] = { (float)k.param, (float)k.time, k.value[0], k.value[1], k.value[2], (float)(int)k.ease };
+            viamd::write_flt_vec(state, STR_LIT("ParamKey"), v, 6);
+        }
+        for (const RepKey& k : m.rep_keys) {
+            const float v[7] = { (float)k.rep, (float)k.prop, (float)k.time, k.value[0], (float)(int)k.ease, k.value[1], k.value[2] };
+            viamd::write_flt_vec(state, STR_LIT("RepKey"), v, 7);
+        }
+        for (const MovieOverlay& o : m.overlays) {
+            viamd::write_section_header(state, STR_LIT("MovieOverlay"));
+            viamd::write_int (state, STR_LIT("Type"), (int)o.type);
+            viamd::write_bool(state, STR_LIT("Enabled"), o.enabled);
+            const float range[4] = { (float)o.begin, (float)o.end, o.fade_in, o.fade_out };
+            viamd::write_flt_vec(state, STR_LIT("Range"), range, 4);
+            viamd::write_int (state, STR_LIT("Anchor"), (int)o.anchor);
+            viamd::write_flt (state, STR_LIT("Size"), o.size);
+            viamd::write_int (state, STR_LIT("SizeUnit"), (int)o.size_unit);
+            viamd::write_flt_vec(state, STR_LIT("Color"), o.color, 4);
+            viamd::write_flt_vec(state, STR_LIT("Background"), o.background, 4);
+            viamd::write_flt (state, STR_LIT("Length"), o.length);
+            viamd::write_str (state, STR_LIT("Text"), str_from_cstr(o.text));
+            if (o.type == MovieOverlayType::Timeline || o.type == MovieOverlayType::Distribution) {
+                viamd::write_flt(state, STR_LIT("Width"), o.width);
+                viamd::write_int(state, STR_LIT("PlotAxis"), (int)o.plot_axis);
+                viamd::write_int(state, STR_LIT("PlotFlags"), (o.reveal ? 1 : 0) | (o.show_value ? 2 : 0) | (o.show_markers ? 4 : 0) | (o.show_titles ? 8 : 0));
+                viamd::write_flt(state, STR_LIT("FontPoints"), o.font_points);
+                viamd::write_flt(state, STR_LIT("LinePoints"), o.line_points);
+                viamd::write_int(state, STR_LIT("Palette"), o.palette);
+                if (o.type == MovieOverlayType::Distribution) viamd::write_int(state, STR_LIT("NumBins"), o.num_bins);
+                for (const MoviePlotPanel& p : o.panels) {
+                    const int v[2] = {(int)p.view, (int)p.subplot};
+                    viamd::write_int_vec(state, STR_LIT("Panel"), v, 2);
+                    if (p.title[0] != '\0') viamd::write_str(state, STR_LIT("PanelTitle"), str_from_cstr(p.title));
+                    if (p.begin != 0.0 || p.end != 0.0) {
+                        const float t[2] = {(float)p.begin, (float)p.end};
+                        viamd::write_flt_vec(state, STR_LIT("PanelTime"), t, 2);
+                    }
+                }
+            }
+            if (o.type == MovieOverlayType::TimeBar) {
+                viamd::write_flt(state, STR_LIT("Width"), o.width);
+                viamd::write_int(state, STR_LIT("TimeBarLabels"), (o.show_elapsed ? 1 : 0) | (o.show_speed ? 2 : 0));
+            }
+            if (o.type == MovieOverlayType::Image) viamd::write_str(state, STR_LIT("Path"), workspace_relative_path(str_from_cstr(o.path)));
+        }
+        for (const MovieMarker& k : m.markers) {
+            viamd::write_section_header(state, STR_LIT("MovieMarker"));
+            viamd::write_flt(state, STR_LIT("Time"), (float)k.time);
+            viamd::write_str(state, STR_LIT("Label"), str_from_cstr(k.label));
+            viamd::write_int(state, STR_LIT("Subplot"), (int)k.subplot);
+            if (k.color[3] > 0.0f) viamd::write_vec4(state, STR_LIT("Color"), vec4_set(k.color[0], k.color[1], k.color[2], k.color[3]));
+        }
+    }
 
     {
         const auto& op = app_state->operations;
@@ -2468,6 +3187,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     ASSERT(state);
     md_array_push(state->representation.reps, Representation(), state->allocator.persistent);
     Representation* rep = md_array_last(state->representation.reps);
+    rep->id = state->representation.next_id++;
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
@@ -2486,6 +3206,7 @@ Representation* clone_representation(ApplicationState* state, const Representati
     ASSERT(state);
     md_array_push(state->representation.reps, rep, state->allocator.persistent);
     Representation* clone = md_array_last(state->representation.reps);
+    clone->id = state->representation.next_id++;
     clone->md_rep = {0};
     clone->atom_mask = {0};
     // The volumes' textures and buffers are the original's: the clone evaluates its own, and must
@@ -2501,6 +3222,12 @@ void remove_representation(ApplicationState* state, size_t idx) {
     ASSERT(state);
     ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];
+    // Keys of a representation that is gone would refer to nothing
+    {
+        auto& rk = state->movie.rep_keys;
+        const uint32_t id = rep.id;
+        rk.erase(std::remove_if(rk.begin(), rk.end(), [id](const RepKey& k) { return k.rep == id; }), rk.end());
+    }
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
@@ -5684,7 +6411,22 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
                 flags |= TrackballFlags_DollyEnabled;
             }
 
+            const ViewTransform before = *target;
             camera_controller_trackball(target, input, args.trackball_param, flags);
+
+            // Zooming towards the mouse: the point under it, on the plane through the look-at point, stays under it
+            if (args.zoom_to_cursor && scroll_delta != 0.0f && !input.rotate_button && !input.pan_button && !input.dolly_button &&
+                state.surface_size.y > 0.0f && target->distance != before.distance) {
+                const float half_h = 0.5f * state.surface_size.y;
+                const float tan_half = tanf(args.camera.fov_y * 0.5f);
+                const float px = (coord.x - 0.5f * state.surface_size.x - args.center_offset.x) / half_h;
+                const float py = (0.5f * state.surface_size.y + args.center_offset.y - coord.y) / half_h;
+                const vec3_t right = quat_mul_vec3(before.orientation, vec3_set(1, 0, 0));
+                const vec3_t up    = quat_mul_vec3(before.orientation, vec3_set(0, 1, 0));
+                const vec3_t offset = (right * px + up * py) * tan_half;
+                const vec3_t look = camera_get_look_at(before) + offset * (before.distance - target->distance);
+                target->position = camera_position_from_look_at(look, target->orientation, target->distance);
+            }
 
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 result.reset_requested = true;

@@ -30,6 +30,7 @@
 # Settings file
 *.ini
 CMakeSettings.json
+CMakeUserPresets.json
 
 # Misc
 .DS_Store

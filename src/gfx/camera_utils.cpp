@@ -6,6 +6,9 @@
 #include <math.h>
 #include <stdlib.h>
 
+#include <algorithm>
+#include <vector>
+
 static vec4_t projection_extents(float fov_y, int width, int height, float texel_offset_x, float texel_offset_y) {
     const float aspect_ratio = (float)width / (float)height;
     const float half_h = tanf(fov_y * 0.5f);
@@ -135,8 +138,77 @@ vec3_t camera_get_look_at(const ViewTransform& transform) {
     return transform.position - transform.orientation * vec3_t{0, 0, transform.distance};
 }
 
+float camera_depth_of_point(const ViewTransform& transform, vec3_t point) {
+    const vec3_t forward = transform.orientation * vec3_t{0, 0, -1};
+    return vec3_dot(point - transform.position, forward);
+}
+
+bool camera_aim_at(ViewTransform* transform, vec3_t point) {
+    const vec3_t d = point - transform->position;
+    const float len = vec3_length(d);
+    if (len < 1.0e-4f) return false;
+    const vec3_t f = d / len;
+    const vec3_t old_up    = transform->orientation * vec3_t{0, 1, 0};
+    const vec3_t old_right = transform->orientation * vec3_t{1, 0, 0};
+    vec3_t r = vec3_cross(f, old_up);
+    // Looking straight along the old up axis leaves the roll undefined, so keep the old right axis instead
+    if (vec3_length_squared(r) < 1.0e-6f) r = old_right;
+    r = vec3_normalize(r);
+    const vec3_t u = vec3_cross(r, f);
+    mat3_t M;
+    M.col[0] = r;
+    M.col[1] = u;
+    M.col[2] = -f;
+    // quat_from_mat3 reads the matrix transposed relative to the column layout used here, so take the inverse
+    quat_t q = quat_from_mat3(M);
+    q.x = -q.x; q.y = -q.y; q.z = -q.z;
+    transform->orientation = quat_normalize(q);
+    transform->distance = len;
+    return true;
+}
+
 vec3_t camera_position_from_look_at(const vec3_t& look_at, const quat_t& orientation, float distance) {
     return look_at + orientation * vec3_t{0, 0, distance};
+}
+
+// The orientation whose right, up and backward axes are r, u and b (orthonormal)
+static quat_t quat_from_camera_axes(vec3_t r, vec3_t u, vec3_t b) {
+    mat3_t M;
+    M.col[0] = r;
+    M.col[1] = u;
+    M.col[2] = b;
+    // quat_from_mat3 reads the matrix transposed relative to the column layout used here, so take the inverse
+    quat_t q = quat_from_mat3(M);
+    q.x = -q.x; q.y = -q.y; q.z = -q.z;
+    return quat_normalize(q);
+}
+
+// The orientation looking where 'transform' looks with its up as close to 'up' as it can be
+static quat_t camera_level_orientation(const ViewTransform& transform, vec3_t up) {
+    const vec3_t f = vec3_normalize(transform.orientation * vec3_t{0, 0, -1});
+    vec3_t r = vec3_length_squared(up) > 0.0f ? vec3_cross(f, vec3_normalize(up)) : vec3_t{0, 0, 0};
+    if (vec3_length_squared(r) < 1.0e-6f) r = transform.orientation * vec3_t{1, 0, 0};
+    r = vec3_normalize(r);
+    const vec3_t u = vec3_cross(r, f);
+    return quat_from_camera_axes(r, u, -f);
+}
+
+void camera_level(ViewTransform* transform, vec3_t up, float roll) {
+    ASSERT(transform);
+    const vec3_t look = camera_get_look_at(*transform);
+    quat_t q = camera_level_orientation(*transform, up);
+    if (roll != 0.0f) q = quat_normalize(q * quat_axis_angle(vec3_t{0, 0, 1}, roll));
+    transform->orientation = q;
+    transform->position = camera_position_from_look_at(look, q, transform->distance);
+}
+
+float camera_roll(const ViewTransform& transform, vec3_t up) {
+    const quat_t level = camera_level_orientation(transform, up);
+    const vec3_t r0 = level * vec3_t{1, 0, 0};
+    const vec3_t u0 = level * vec3_t{0, 1, 0};
+    const vec3_t u = transform.orientation * vec3_t{0, 1, 0};
+    // Rolled by a, the up is cos(a) u0 - sin(a) r0
+    return atan2f(-vec3_dot(u, r0), vec3_dot(u, u0));
 }
 
 // high precision version
@@ -153,6 +225,282 @@ static inline vec3_t highp_quat_vec3_mul(const quat_t& q, const vec3_t& v) {
         v.z + t[2] * u[3] + (u[0] * t[1] - t[0] * u[1]),
     };
     return vec3_set((float)res[0], (float)res[1], (float)res[2]);
+}
+
+struct dvec3 { double x, y, z; };
+
+// ---- Keyframe path -------------------------------------------------------------------------------
+
+static inline double hermite(double p0, double p1, double m0, double m1, double h, double u) {
+    const double u2 = u * u, u3 = u2 * u;
+    return (2*u3 - 3*u2 + 1) * p0 + (u3 - 2*u2 + u) * h * m0 + (-2*u3 + 3*u2) * p1 + (u3 - u2) * h * m1;
+}
+
+// Slope at a key from the secant slopes d0 (before) and d1 (after) over intervals h0 and h1.
+// Monotone: zero at a local extreme, so the curve never leaves the range of its keys.
+static inline double monotone_slope(double d0, double d1, double h0, double h1) {
+    if (d0 * d1 <= 0.0) return 0.0;
+    return 3.0 * (h0 + h1) / ((2.0 * h1 + h0) / d0 + (h1 + 2.0 * h0) / d1);
+}
+
+// Non-uniform Catmull-Rom slope
+static inline double catmull_slope(double d0, double d1, double h0, double h1) {
+    return (h1 * d0 + h0 * d1) / (h0 + h1);
+}
+
+static inline quat_t quat_align(quat_t ref, quat_t q) {
+    return quat_dot(ref, q) < 0.0f ? quat_t{-q.x, -q.y, -q.z, -q.w} : q;
+}
+
+static inline quat_t quat_exp_rot(vec3_t r) {
+    const double a = sqrt((double)r.x*r.x + (double)r.y*r.y + (double)r.z*r.z);
+    if (a < 1.0e-9) return quat_normalize(quat_t{r.x * 0.5f, r.y * 0.5f, r.z * 0.5f, 1.0f});
+    const double s = sin(a * 0.5) / a;
+    return quat_t{(float)(r.x * s), (float)(r.y * s), (float)(r.z * s), (float)cos(a * 0.5)};
+}
+
+// Rotation vector (axis * angle) taking a to b, in the frame of a, along the shortest arc.
+static inline dvec3 quat_rel_log(quat_t a, quat_t b) {
+    quat_t d = quat_align(quat_t{0, 0, 0, 1}, quat_normalize(quat_conj(a) * b));
+    const double vn = sqrt((double)d.x*d.x + (double)d.y*d.y + (double)d.z*d.z);
+    if (vn < 1.0e-9) return {0, 0, 0};
+    const double k = 2.0 * atan2(vn, (double)d.w) / vn;
+    return {d.x * k, d.y * k, d.z * k};
+}
+
+// Angular velocity (rotation vector per unit time, in the frame of cur) of a Catmull-Rom path through
+// prev, cur and next. A missing neighbour gives zero, i.e. the path eases at its ends.
+static dvec3 quat_path_tangent(const quat_t* prev, quat_t cur, const quat_t* next, double h0, double h1) {
+    if (!prev || !next) return {0, 0, 0};
+    const dvec3 a = quat_rel_log(cur, *prev);
+    const dvec3 b = quat_rel_log(cur, *next);
+    const dvec3 d0 = {-a.x / h0, -a.y / h0, -a.z / h0};
+    const dvec3 d1 = { b.x / h1,  b.y / h1,  b.z / h1};
+    return {catmull_slope(d0.x, d1.x, h0, h1), catmull_slope(d0.y, d1.y, h0, h1), catmull_slope(d0.z, d1.z, h0, h1)};
+}
+
+void camera_keyframes_evaluate(ViewTransform* out_transform, float* out_fov_y, const CameraKeyframe* keys, size_t count, double time, bool loop, const vec3_t* follow_now, const vec3_t* key_follow_now, const vec3_t* upright, quat_t* out_spin) {
+    ASSERT(count > 0);
+    if (out_spin) *out_spin = quat_t{0, 0, 0, 1};
+    // A key that tracks an atom of its own is moved by that atom, the others by follow_now
+    auto now_of = [&](size_t k) -> const vec3_t* {
+        if (keys[k].follow_atom >= 0) return key_follow_now ? &key_follow_now[k] : nullptr;
+        return follow_now;
+    };
+    auto has_now = [&](const CameraKeyframe& k) { return k.follow_atom >= 0 ? key_follow_now != nullptr : follow_now != nullptr; };
+
+    if (count == 1) {
+        *out_transform = keys[0].transform;
+        *out_fov_y = keys[0].fov_y;
+        if (now_of(0) && keys[0].follow) out_transform->position = out_transform->position + (*now_of(0) - keys[0].follow_center);
+        if (upright) camera_level(out_transform, *upright, keys[0].roll);
+        return;
+    }
+
+    size_t i = 0;
+    double u = 0.0;
+    if (time <= keys[0].time) {
+        i = 0; u = 0.0;
+    } else if (time >= keys[count - 1].time) {
+        i = count - 2; u = 1.0;
+    } else {
+        while (i + 2 < count && time >= keys[i + 1].time) ++i;
+        u = (time - keys[i].time) / (keys[i + 1].time - keys[i].time);
+    }
+    const size_t j = i + 1;
+
+    // The keys on either side of the segment. Around a loop the ends meet: the key before the first is the
+    // one before the last (the last being the first again), and the key after the last is the second.
+    const double period = keys[count - 1].time - keys[0].time;
+    const bool wrap = loop && count >= 3 && period > 0.0;
+    CameraKeyframe kp, kn;
+    bool has_p = false, has_n = false;
+    if (i > 0)          { kp = keys[i - 1];     has_p = true; }
+    else if (wrap)      { kp = keys[count - 2]; kp.time -= period; has_p = true; }
+    if (j + 1 < count)  { kn = keys[j + 1];     has_n = true; }
+    else if (wrap)      { kn = keys[1];         kn.time += period; has_n = true; }
+
+    // The easing of the segment is the one of the key it leads to
+    const KeyEase ease = keys[j].ease;
+    double ue = u;      // how far along the segment it is, as the easing sees it
+    if (ease == KeyEase::EaseInOut)  ue = u * u * (3.0 - 2.0 * u);
+    else if (ease == KeyEase::Hold)  ue = u >= 1.0 ? 1.0 : 0.0;
+    const bool linear = ease == KeyEase::Linear;
+
+    const double h  = MAX(keys[j].time - keys[i].time, 1.0e-9);
+    const double hp = has_p ? MAX(keys[i].time - kp.time, 1.0e-9) : 1.0;
+    const double hn = has_n ? MAX(kn.time - keys[j].time, 1.0e-9) : 1.0;
+
+    // Look-at point: Catmull-Rom. A following key is taken relative to its target, which is put back below.
+    auto key_look_at = [&](const CameraKeyframe& k) {
+        const vec3_t p = camera_get_look_at(k.transform);
+        return k.follow && has_now(k) ? p - k.follow_center : p;
+    };
+    const vec3_t la[4] = {
+        has_p ? key_look_at(kp) : vec3_t{0, 0, 0},
+        key_look_at(keys[i]),
+        key_look_at(keys[j]),
+        has_n ? key_look_at(kn) : vec3_t{0, 0, 0},
+    };
+    double look[3];
+    for (int c = 0; c < 3; ++c) {
+        const double d = ((double)la[2].elem[c] - la[1].elem[c]) / h;
+        double m0 = has_p ? catmull_slope(((double)la[1].elem[c] - la[0].elem[c]) / hp, d, hp, h) : 0.0;
+        double m1 = has_n ? catmull_slope(d, ((double)la[3].elem[c] - la[2].elem[c]) / hn, h, hn) : 0.0;
+        if (linear) m0 = m1 = d;
+        look[c] = hermite(la[1].elem[c], la[2].elem[c], m0, m1, h, ue);
+    }
+    {
+        const vec3_t* ni = now_of(i);
+        const vec3_t* nj = now_of(j);
+        const double wi = keys[i].follow && ni ? 1.0 - ue : 0.0;
+        const double wj = keys[j].follow && nj ? ue : 0.0;
+        for (int c = 0; c < 3; ++c) look[c] += (ni ? wi * (double)ni->elem[c] : 0.0) + (nj ? wj * (double)nj->elem[c] : 0.0);
+    }
+
+    // Distance and fov: monotone cubic
+    auto scalar = [&](auto get) {
+        const double v0 = get(keys[i]), v1 = get(keys[j]);
+        const double d = (v1 - v0) / h;
+        double m0 = has_p ? monotone_slope((v0 - get(kp)) / hp, d, hp, h) : 0.0;
+        double m1 = has_n ? monotone_slope(d, (get(kn) - v1) / hn, h, hn) : 0.0;
+        if (linear) m0 = m1 = d;
+        return hermite(v0, v1, m0, m1, h, ue);
+    };
+    const float dist = (float)scalar([](const CameraKeyframe& k) { return (double)k.transform.distance; });
+    const float fov  = (float)scalar([](const CameraKeyframe& k) { return (double)k.fov_y; });
+    const float roll = upright ? (float)scalar([](const CameraKeyframe& k) { return (double)k.roll; }) : 0.0f;
+
+    // Orientation: cubic Bezier on the sphere with control points derived from the angular velocity
+    const quat_t q1 = quat_normalize(keys[i].transform.orientation);
+    const quat_t q2 = quat_align(q1, quat_normalize(keys[j].transform.orientation));
+    quat_t q0 = {}, q3 = {};
+    if (has_p) q0 = quat_align(q1, quat_normalize(kp.transform.orientation));
+    if (has_n) q3 = quat_align(q2, quat_normalize(kn.transform.orientation));
+
+    const dvec3 w1 = quat_path_tangent(has_p ? &q0 : nullptr, q1, &q2, hp, h);
+    const dvec3 w2 = quat_path_tangent(&q1, q2, has_n ? &q3 : nullptr, h, hn);
+
+    const double k = h / 3.0;
+    const quat_t b0 = q1;
+    const quat_t b1 = quat_normalize(q1 * quat_exp_rot(vec3_t{(float)(w1.x * k), (float)(w1.y * k), (float)(w1.z * k)}));
+    const quat_t b2 = quat_normalize(q2 * quat_exp_rot(vec3_t{(float)(-w2.x * k), (float)(-w2.y * k), (float)(-w2.z * k)}));
+    const quat_t b3 = q2;
+
+    const float uf = (float)ue;
+    const quat_t a01 = quat_slerp(b0, quat_align(b0, b1), uf);
+    const quat_t a12 = quat_slerp(b1, quat_align(b1, b2), uf);
+    const quat_t a23 = quat_slerp(b2, quat_align(b2, b3), uf);
+    const quat_t a012 = quat_slerp(a01, quat_align(a01, a12), uf);
+    const quat_t a123 = quat_slerp(a12, quat_align(a12, a23), uf);
+    quat_t ori = linear ? quat_normalize(quat_slerp(q1, q2, uf))
+                        : quat_normalize(quat_slerp(a012, quat_align(a012, a123), uf));
+
+    // Whole turns turn the camera back to where it was at both ends of the segment, so the keys are still hit exactly.
+    // They follow the segment's easing only when that is a hold.
+    const double us = ease == KeyEase::Hold ? ue : u;
+    if (keys[j].spin_turns != 0 && us > 0.0 && us < 1.0) {
+        vec3_t axis = {0, 1, 0};
+        switch (keys[j].spin_axis) {
+        case SpinAxis::ViewUp: axis = upright ? *upright : q1 * vec3_t{0, 1, 0}; break;
+        case SpinAxis::WorldX: axis = {1, 0, 0}; break;
+        case SpinAxis::WorldZ: axis = {0, 0, 1}; break;
+        default: break;
+        }
+        const double s = keys[j].spin_constant_speed ? us : us * us * (3.0 - 2.0 * us);
+        const double angle = 6.283185307179586 * (double)keys[j].spin_turns * s;
+        const quat_t spin = quat_axis_angle(vec3_normalize(axis), (float)angle);
+        if (out_spin) *out_spin = spin;
+        ori = quat_normalize(spin * ori);
+    }
+
+    out_transform->orientation = ori;
+    out_transform->distance = dist;
+    out_transform->position = camera_position_from_look_at(vec3_t{(float)look[0], (float)look[1], (float)look[2]}, ori, dist);
+    *out_fov_y = fov;
+    if (upright) camera_level(out_transform, *upright, roll);
+}
+
+double keyed_curve_evaluate(const double* times, const double* values, const KeyEase* eases, size_t n, double time) {
+    if (n == 0) return 0.0;
+    if (n == 1 || time <= times[0]) return values[0];
+    if (time >= times[n - 1]) return values[n - 1];
+
+    size_t k = 0;
+    while (k + 2 < n && time >= times[k + 1]) ++k;
+
+    const double h = times[k + 1] - times[k];
+    const double u = (time - times[k]) / h;
+    const double v0 = values[k], v1 = values[k + 1];
+
+    switch (eases[k + 1]) {
+    case KeyEase::Hold:      return v0;
+    case KeyEase::Linear:    return v0 + (v1 - v0) * u;
+    case KeyEase::EaseInOut: return v0 + (v1 - v0) * (u * u * (3.0 - 2.0 * u));
+    default: break;
+    }
+
+    // The ends continue at the speed of their segment rather than easing, a single segment is constant speed
+    const double d = (v1 - v0) / h;
+    double m0 = d, m1 = d;
+    if (k > 0) {
+        const double hp = times[k] - times[k - 1];
+        m0 = monotone_slope((v0 - values[k - 1]) / hp, d, hp, h);
+    }
+    if (k + 2 < n) {
+        const double hn = times[k + 2] - times[k + 1];
+        m1 = monotone_slope(d, (values[k + 2] - v1) / hn, h, hn);
+    }
+    const double v = hermite(v0, v1, m0, m1, h, u);
+    return CLAMP(v, MIN(v0, v1), MAX(v0, v1));
+}
+
+bool camera_keyframes_evaluate_frame(double* out_frame, const CameraKeyframe* keys, size_t count, double time) {
+    struct Point { double t, f; KeyEase e; };
+    std::vector<Point> all;
+    for (size_t i = 0; i < count; ++i) {
+        if (keys[i].use_frame) all.push_back({keys[i].time, keys[i].frame, keys[i].ease});
+    }
+    if (all.empty()) return false;
+    std::stable_sort(all.begin(), all.end(), [](const Point& a, const Point& b) { return a.t < b.t; });
+
+    // Keys on the same time are one key
+    std::vector<double> times, frames;
+    std::vector<KeyEase> eases;
+    for (const Point& q : all) {
+        if (!times.empty() && q.t <= times.back()) continue;
+        times.push_back(q.t);
+        frames.push_back(q.f);
+        eases.push_back(q.e);
+    }
+
+    *out_frame = keyed_curve_evaluate(times.data(), frames.data(), eases.data(), times.size(), time);
+    return true;
+}
+
+double camera_keyframes_frame_with_anchors(const CameraKeyframe* keys, size_t count, double t_begin, double f_begin, double t_end, double f_end, double time) {
+    struct Point { double t, f; KeyEase e; };
+    std::vector<Point> pts;
+    for (size_t i = 0; i < count; ++i) {
+        if (keys[i].use_frame) pts.push_back({keys[i].time, keys[i].frame, keys[i].ease});
+    }
+    std::stable_sort(pts.begin(), pts.end(), [](const Point& a, const Point& b) { return a.t < b.t; });
+
+    const double eps = 1.0e-6;
+    if (t_end < t_begin) t_end = t_begin;
+    if (pts.empty() && t_end <= t_begin) return time < t_begin ? f_begin : f_end;
+    if (pts.empty() || t_begin < pts.front().t - eps) pts.insert(pts.begin(), {t_begin, f_begin, KeyEase::Smooth});
+    if (t_end > pts.back().t + eps) pts.push_back({t_end, f_end, KeyEase::Smooth});
+
+    std::vector<double> times, frames;
+    std::vector<KeyEase> eases;
+    for (const Point& q : pts) {
+        if (!times.empty() && q.t <= times.back() + eps) continue;
+        times.push_back(q.t);
+        frames.push_back(q.f);
+        eases.push_back(q.e);
+    }
+    return keyed_curve_evaluate(times.data(), frames.data(), eases.data(), times.size(), time);
 }
 
 // We want to interpolate along an arc which is formed by maintaining a distance to the look_at position and smoothly interpolating the orientation,

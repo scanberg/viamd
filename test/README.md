@@ -24,7 +24,11 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 | `src/task_system.cpp` | `test_task_system.cpp` — range partitioning, dependencies |
 | `src/color_utils.h` | `test_color_utils.cpp` — the colour space conversions, which are header only |
 | `src/loader.cpp` | `test_loader.cpp` — the format dispatch tables and what `init` makes of a path |
-| `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms, as inverse pairs |
+| `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms as inverse pairs, keyframe interpolation, follow, levelling and roll |
+| `src/movie_keys.cpp` | `test_movie_keys.cpp` — movie keys, key selection and group edits, undo snapshots, time scaling, render range |
+| `src/movie_overlay.cpp` | `test_movie_overlay.cpp` — overlay fades, sizes, time bar and plot overlay maths, migration of older overlays |
+| `src/frame_sink.cpp` | `test_frame_sink.cpp` — the asynchronous frame writer, with a fake script instead of ffmpeg |
+| `src/image.cpp` | `test_image.cpp` — in-memory image decoding for the logo and image overlays |
 
 **Adding a test file:** drop a `.cpp` in this folder. It is globbed, so there is nothing to edit.
 

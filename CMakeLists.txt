@@ -177,11 +177,14 @@ set(SRC_FILES
     src/display_units.cpp
     src/surface_field.cpp
     src/event.cpp
+    src/frame_sink.cpp
     src/image.cpp
     src/imgui_widgets.cpp
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/movie_keys.cpp
+    src/movie_overlay.cpp
     src/plot_series.cpp
     src/script_editor.cpp
     src/script_reference.cpp
@@ -195,10 +198,13 @@ set(SRC_FILES
     src/display_units.h
     src/surface_field.h
     src/event.h
+    src/frame_sink.h
     src/image.h
     src/imgui_widgets.h
     src/implot_widgets.h
     src/loader.h
+    src/movie_keys.h
+    src/movie_overlay.h
     src/plot_series.h
     src/script_editor.h
     src/script_reference.h
@@ -298,6 +304,10 @@ create_resources("${SHADER_FILES}" "gen/shaders.inl")
 set(SCRIPT_REFERENCE_MD "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/docs/script_reference.md")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SCRIPT_REFERENCE_MD}")
 create_resources("${SCRIPT_REFERENCE_MD}" "gen/script_reference.inl")
+
+# The logo that a movie can show on its frames
+create_resources("${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.png" "gen/viamd_icon.inl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.png")
 
 source_group("src" FILES ${SRC_FILES})
 source_group("src/app" FILES ${APP_FILES})

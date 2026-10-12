@@ -1,0 +1,225 @@
+# Self-contained optics tutorial. Open this file and press the green Preview button.
+# Synthetic scene, not a physical simulation. Companion XYZ supplies nine frames.
+# FOV is stored in radians here, but the Camera table shows degrees.
+# Camera stays at (0,0,40), looking along -Z at (0,0,8), for the whole movie.
+# Movie-local focus follows atom 3, then racks to the red oxygen, then turns blur off.
+
+[Files]
+MoleculeFile=./fov_and_focus.xyz
+TrajectoryFile=./fov_and_focus.xyz
+CoarseGrained=0
+
+[Animation]
+Frame=0
+Fps=1
+Interpolation=1
+
+[RenderSettings]
+BackgroundColor=0.06,0.07,0.09
+BackgroundIntensity=1
+SsaoEnabled=1
+SsaoStrength=1
+TonemapEnabled=1
+Tonemapper=3
+TonemapExposure=1
+TonemapGamma=2.2
+DofEnabled=0
+DofFocusMode=0
+DofAperture=0
+FxaaEnabled=1
+TaaEnabled=1
+TaaJitter=1
+TaaFeedbackMin=0.8
+TaaFeedbackMax=0.95
+MotionBlurEnabled=0
+SharpenEnabled=1
+SharpenWeight=1
+SimulationBoxEnabled=0
+
+[Camera]
+Position=0,0,40
+Orientation=0,0,0,1
+Distance=32
+Mode=0
+FovY=0.785398163
+
+[Movie]
+Resolution=1
+Fps=24
+StartFrame=0
+EndFrame=8
+Timeline=2
+Duration=36
+TrajectoryBegin=18
+TrajectoryEnd=36
+Playhead=0
+FilenamePrefix=fov_and_focus
+ShowPath=1
+Output=1
+Crf=18
+ResScale=100
+AaSamples=8
+SaveCopy=1
+SnapFrames=1
+Lanes=3850
+FitLanes=1
+Overlays=1
+Loop=0
+KeepUpright=1
+UpAxis=1
+AnimateParams=1
+IndependentTracks=1
+# time, mode (point=0, selection=1, look-at=2, distance=3), point xyz,
+# distance, blur percent, transition seconds, ease, version.
+LookKey=0,0,0,0,8,32,0,0,1,1
+FocusKey=0,2,0,0,8,32,0,0,1,1
+FocusKey=18,1,0,0,0,40,3.5,2,1,1
+FocusAtoms=###JQEAAAAEAOAwAAQAAAAAAA==###
+FocusKey=32,0,0,0,8,32,3.5,1,1,1
+FocusKey=34,2,0,0,8,32,0,1,1,1
+# time, FOV radians, distance, eye xyz, quaternion xyzw, pinned frame, frame,
+# spin turns/axis/constant speed, ease, follow, follow centre xyz, atom (-1).
+KeyframeV3=0,0.785398163,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=FOV 45 baseline
+KeyframeV3=3,0.785398163,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=Begin lens zoom
+KeyframeV3=7,0.349065850,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=FOV 20 tight
+KeyframeV3=9,0.349065850,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=Hold tight view
+KeyframeV3=13,1.221730476,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=FOV 70 wide
+KeyframeV3=15,1.221730476,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=Hold wide view
+KeyframeV3=18,0.785398163,32,0,0,40,0,0,0,1,1,0,0,0,0,1,0,0,0,0,-1
+KeyframeName=Focus demo begins
+KeyframeV3=36,0.785398163,32,0,0,40,0,0,0,1,1,8,0,0,0,2,0,0,0,0,-1
+KeyframeName=Focus demo ends
+
+[Representation]
+Id=1
+Name=Optics teaching scene
+Filter=all
+Enabled=1
+Type=0
+ColorMapping=1
+Saturation=1
+TintScale=0
+Param=1.3,1,1,1
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=0,18,0.2,0.2
+Anchor=1
+Size=0.032
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=PART 1 - FIELD OF VIEW (FOV): camera and atoms stay fixed
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=0,3,0.2,0.2
+Anchor=7
+Size=0.028
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=45 degrees: baseline view. Blur is off: all depths are sharp.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=3,9,0.2,0.2
+Anchor=7
+Size=0.028
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=45 -> 20 degrees: lens zoom. Objects grow; camera distance stays 32 A.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=9,15,0.2,0.2
+Anchor=7
+Size=0.028
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=20 -> 70 degrees: a wider view. Objects shrink; the camera has not moved.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=15,18,0.2,0.2
+Anchor=7
+Size=0.028
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=Return to 45 degrees. Next: change sharpness, not framing.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=18,36,0.2,0.2
+Anchor=1
+Size=0.032
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=PART 2 - DEPTH OF FIELD: focus tracks the centre carbon, not the camera aim
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=18,24,0.2,0.2
+Anchor=7
+Size=0.027
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=Blur turns on. Carbon moves toward red oxygen: foreground becomes sharp.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=24,32,0.2,0.2
+Anchor=7
+Size=0.027
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=Carbon moves toward blue nitrogen: background becomes sharp instead.
+
+[MovieOverlay]
+Type=0
+Enabled=1
+Range=32,36,0.2,0.2
+Anchor=7
+Size=0.027
+Color=1,1,1,1
+Background=0,0,0,0.65
+Text=32 s: rack focus to red oxygen. 34 s: fade blur off. Camera and aim stay fixed.
+
+[MovieMarker]
+Time=0
+Label=FOV: blur off
+
+[MovieMarker]
+Time=7
+Label=20 degrees
+
+[MovieMarker]
+Time=13
+Label=70 degrees
+
+[MovieMarker]
+Time=18
+Label=Independent focus
+
+[MovieMarker]
+Time=22.5
+Label=Foreground sharp
+
+[MovieMarker]
+Time=31.5
+Label=Background sharp
+
+[Windows]
+Movie=1

@@ -825,6 +825,18 @@ void plot_move_series(const ApplicationState* app, PlotSubplot& src, PlotSubplot
     plot_remove_series(src, src_idx);
 }
 
+int plot_find_subplot(const PlotSubplot* subplots, int num_subplots, uint32_t id) {
+    for (int i = 0; i < num_subplots && i < PLOT_MAX_SUBPLOTS; ++i) {
+        if (subplots[i].id == id) return i;
+    }
+    return -1;
+}
+
+void plot_subplot_label(char* buf, size_t cap, const PlotSubplot& sp, int position) {
+    if (sp.name[0] != '\0') snprintf(buf, cap, "%s", sp.name);
+    else snprintf(buf, cap, "Subplot %d", position + 1);
+}
+
 void plot_clear(PlotSubplot* subplots, int count) {
     for (int i = 0; i < count; ++i) {
         subplots[i].count = 0;
@@ -895,9 +907,16 @@ size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationSta
 
 // ## Workspace
 
-void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, str_t series_section, const PlotSubplot* subplots, int num_subplots) {
+void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, str_t series_section, str_t subplot_section, const PlotSubplot* subplots, int num_subplots) {
     viamd::write_section_header(state, section);
     viamd::write_int(state, STR_LIT("NumSubplots"), num_subplots);
+
+    for (int i = 0; i < PLOT_MAX_SUBPLOTS; ++i) {
+        viamd::write_section_header(state, subplot_section);
+        viamd::write_int(state, STR_LIT("Subplot"), i);
+        viamd::write_int(state, STR_LIT("Id"), (int)subplots[i].id);
+        viamd::write_str(state, STR_LIT("Name"), str_from_cstr(subplots[i].name));
+    }
 
     for (int i = 0; i < PLOT_MAX_SUBPLOTS; ++i) {
         const PlotSubplot& sp = subplots[i];
@@ -921,9 +940,32 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
     }
 }
 
-bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t section, str_t series_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots) {
+bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t section, str_t series_section, str_t subplot_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots) {
     const str_t cur = viamd::section_header(state);
     str_t ident, arg;
+
+    if (str_eq(cur, subplot_section)) {
+        int  index = -1;
+        int  id = 0;
+        char name[sizeof(subplots[0].name)] = "";
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "Subplot")) viamd::extract_int(index, arg);
+            else if (str_eq_cstr(ident, "Id")) viamd::extract_int(id, arg);
+            else if (str_eq_cstr(ident, "Name")) viamd::extract_to_char_buf(name, sizeof(name), arg);
+        }
+        if (0 <= index && index < PLOT_MAX_SUBPLOTS) {
+            if (id > 0) {
+                // Whichever subplot has this id now (one this session made up) gets another, so ids stay unique
+                for (int i = 0; i < PLOT_MAX_SUBPLOTS; ++i) {
+                    if (i != index && subplots[i].id == (uint32_t)id) subplots[i].id = plot_new_subplot_id();
+                }
+                subplots[index].id = (uint32_t)id;
+                plot_note_subplot_id((uint32_t)id);
+            }
+            memcpy(subplots[index].name, name, sizeof(name));
+        }
+        return true;
+    }
 
     if (str_eq(cur, section)) {
         while (viamd::next_entry(ident, arg, state)) {
