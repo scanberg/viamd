@@ -5,7 +5,9 @@
 #include <GL/glcorearb.h>
 #include <core/md_str.h>
 #include "../../src/gfx/volume_overlay_shader.inl"
+#include <algorithm>
 #include <cmath>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -132,6 +134,48 @@ int main() {
     glUniform1i(loc("u_tf[1]"),4);
     draw(after);
     for(int i=0;i<4;++i) check(std::fabs(before[i]-after[i])<1e-5,"Mixed DVR/isosurface depends on layer ordering");
+    // Shading: an isosurface of a sphere is lit, so its brightness follows its normal
+    {
+        const int size = 64;
+        std::vector<float> depths(size*size, 1.0f);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,textures[0]);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_R32F,size,size,0,GL_RED,GL_FLOAT,depths.data());
+        glActiveTexture(GL_TEXTURE0+13); glBindTexture(GL_TEXTURE_2D,output);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA32F,size,size,0,GL_RGBA,GL_FLOAT,nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,output,0);
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE,"Incomplete framebuffer after resize");
+        glViewport(0,0,size,size);
+        glUniform2f(loc("u_inv_res"),1.0f/size,1.0f/size);
+        // An orthographic view looking down -z: near 1, far 3
+        float clip_to_view[16]={1,0,0,0, 0,1,0,0, 0,0,-1,0, 0,0,-2,1};
+        glUniformMatrix4fv(loc("u_clip_to_view"),1,GL_FALSE,clip_to_view);
+        glUniform1i(loc("u_count"),1);
+        const int n=32;
+        std::vector<float> sphere(n*n*n);
+        for (int z=0;z<n;++z) for (int y=0;y<n;++y) for (int x=0;x<n;++x) {
+            const float dx=(x+.5f)/n-.5f, dy=(y+.5f)/n-.5f, dz=(z+.5f)/n-.5f;
+            sphere[(z*n+y)*n+x]=1.0f-2.0f*std::sqrt(dx*dx+dy*dy+dz*dz);
+        }
+        glActiveTexture(GL_TEXTURE0+1); glBindTexture(GL_TEXTURE_3D,textures[1]);
+        glTexImage3D(GL_TEXTURE_3D,0,GL_R32F,n,n,n,0,GL_RED,GL_FLOAT,sphere.data());
+        float white[4]={1,1,1,1};
+        glUniform1i(loc("u_dvr[0]"),0); glUniform1i(loc("u_iso_count[0]"),1);
+        glUniform1f(loc("u_values[0]"),.5f); glUniform4fv(loc("u_colors[0]"),1,white);
+        glClearColor(0,0,0,0); glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES,0,3);
+        check(glGetError()==GL_NO_ERROR,"GL error drawing the sphere");
+        std::vector<float> image(size*size*4);
+        glReadPixels(0,0,size,size,GL_RGBA,GL_FLOAT,image.data());
+        float lo=1e30f, hi=0; int covered=0;
+        for (int i=0;i<size*size;++i) {
+            if (image[i*4+3]<.5f) continue;
+            const float luma=(image[i*4]+image[i*4+1]+image[i*4+2])/3.0f;
+            lo=std::min(lo,luma); hi=std::max(hi,luma); ++covered;
+        }
+        std::printf("Sphere: %d pixels, luminance %.4f to %.4f\n",covered,lo,hi);
+        check(covered>100,"The sphere is not drawn");
+        check(hi>1.5f*lo+1e-3f,"The isosurface is not shaded: its brightness does not follow its normal");
+    }
     std::puts("Overlay shader: compilation, overlapping DVR, depth truncation, surface ordering and mixed rendering passed");
     glDeleteProgram(program); glDeleteShader(vs); glDeleteShader(fs);
     glDeleteTextures(13,textures); glDeleteTextures(1,&output);

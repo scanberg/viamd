@@ -1347,9 +1347,17 @@ bool render_overlays(const OverlayRenderDesc& desc) {
                 return loc(name);
             };
             const mat4_t clip_to_model = mat4_inverse(desc.proj * desc.view * layer.model);
-            const mat4_t normal_to_view = desc.view * mat4_transpose(mat4_inverse(layer.model));
+            // Gradients transform with the inverse transpose of the linear part. Taking the 3x3 of a
+            // 4x4 product would mix the translations into it, so the 3x3 blocks are multiplied directly.
+            const mat4_t model_inv = mat4_inverse(layer.model);
             float normal[9] = {};
-            for (int col = 0; col < 3; ++col) for (int row = 0; row < 3; ++row) normal[col*3+row] = normal_to_view.elem[col][row];
+            for (int col = 0; col < 3; ++col) {
+                for (int row = 0; row < 3; ++row) {
+                    float sum = 0.f;
+                    for (int k = 0; k < 3; ++k) sum += desc.view.elem[k][row] * model_inv.elem[k][col];
+                    normal[col*3+row] = sum;
+                }
+            }
             glUniformMatrix4fv(indexed("u_clip_to_model"), 1, GL_FALSE, &clip_to_model.elem[0][0]);
             glUniformMatrix3fv(indexed("u_normal_to_view"), 1, GL_FALSE, normal);
             glUniform3fv(indexed("u_min"), 1, layer.clip_min.elem);
