@@ -1,4 +1,5 @@
 #include <plot_series.h>
+#include <imgui_internal.h>
 
 #include <viamd.h>
 #include <display_units.h>
@@ -765,6 +766,91 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     out->attr = attr;
     out->version = attr->version;
     return true;
+}
+
+bool series_resolve_vector(SeriesVectorView* out, ApplicationState* app, const SeriesKey& key, uint32_t components) {
+    ASSERT(out && app);
+    *out = SeriesVectorView{};
+    series_label(out->label, sizeof(out->label), app, key);
+    if (key.source != SeriesSource_Script || key.variant != SeriesVariant_Values || !app->script.eval_ir ||
+        !md_script_ir_valid(app->script.eval_ir)) return false;
+    const md_script_eval_t* eval = series_eval(app, key.source);
+    if (!eval || md_script_eval_ir_fingerprint(eval) != md_script_ir_fingerprint(app->script.eval_ir)) return false;
+    const str_t ident = series_script_ident(key);
+    if (!(md_script_ir_property_flags(app->script.eval_ir, ident) & MD_SCRIPT_PROPERTY_FLAG_VECTOR)) return false;
+    str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
+    out->vis_payload = md_script_ir_property_vis_payload(app->script.eval_ir, ident);
+
+    const md_attributes_t* table = series_table(app, key.source);
+    const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
+    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F32 || attr->format.rank != 2 ||
+        attr->format.components != components || md_attribute_is_virtual(attr)) return false;
+    out->data       = (const float*)attr->data;
+    out->num_frames = attr->format.shape[0];
+    out->count      = attr->format.shape[1];
+    out->components = components;
+    out->version    = attr->version;
+    return true;
+}
+
+int series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out) {
+    int result = 0;
+    if (!ImGui::BeginMenu("Property")) return result;
+
+    if (ImGui::Selectable("Selection", current == nullptr)) {
+        result = 2;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+
+    int candidates = 0;
+    series_for_each_script_property(app, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
+        SeriesVectorView view;
+        if (!series_resolve_vector(&view, app, key, components)) return;
+        ++candidates;
+
+        ImGui::PushID(key.path);
+        ImPlot::ItemIcon(series_default_color(app, key));
+        ImGui::SameLine();
+        if (ImGui::Selectable(view.label, current && series_key_equal(*current, key))) {
+            *out = key;
+            result = 1;
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::BeginDragDropSource()) {
+            series_set_drag_payload(VECTOR_SERIES_DND, key, -1, view.label, series_default_color(app, key));
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::IsItemHovered()) {
+            script_visualize_payload(app, view.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+            script_set_hovered_property(app, str_from_cstr(view.script_ident));
+        }
+        ImGui::PopID();
+    });
+    if (candidates == 0) {
+        ImGui::TextDisabled("No properties with %u components.", components);
+    }
+    ImGui::EndMenu();
+    return result;
+}
+
+bool series_vector_drop(ApplicationState* app, uint32_t components, SeriesKey* out) {
+    bool dropped = false;
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (ImGui::BeginDragDropTargetCustom(window->InnerRect, ImGui::GetID("##vector-drop"))) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VECTOR_SERIES_DND)) {
+            if (payload->DataSize == sizeof(SeriesDragPayload)) {
+                SeriesVectorView view;
+                const SeriesKey& key = ((const SeriesDragPayload*)payload->Data)->key;
+                if (series_resolve_vector(&view, app, key, components)) {
+                    *out = key;
+                    dropped = true;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    return dropped;
 }
 
 // ## Script properties

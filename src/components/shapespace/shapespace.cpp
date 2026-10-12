@@ -67,6 +67,11 @@ struct Shapespace : viamd::EventHandler {
     float smoothing = 2.0f;
     float density_opacity = 0.8f;
     ImPlotColormap density_colormap = ImPlotColormap_Viridis;
+    // A script property (shapespace()) shown instead of the selection
+    bool use_source = false;
+    SeriesKey source_key = {};
+    uint64_t source_version = 0;
+
     char property_name[128] = "shape";
     char property_error[256] = "";
 
@@ -111,8 +116,12 @@ struct Shapespace : viamd::EventHandler {
     }
 
     uint64_t evaluation_hash() const {
-        return md_hash64(input, sizeof(input), app_state->script.ir_fingerprint ^
+        uint64_t hash = md_hash64(input, sizeof(input), app_state->script.ir_fingerprint ^
             (1ULL << (uint64_t)use_mass) ^ data_generation);
+        if (use_source) {
+            hash = md_hash64(&source_version, sizeof(source_version), md_hash64_str(str_from_cstr(source_key.path), hash) ^ 1ULL);
+        }
+        return hash;
     }
 
     void frame_range(size_t& beg, size_t& end) const {
@@ -127,19 +136,14 @@ struct Shapespace : viamd::EventHandler {
     void create_property() {
         property_error[0] = '\0';
         if (!md_script_identifier_name_valid(str_from_cstr(property_name))) {
-            snprintf(property_error, sizeof(property_error), "Enter a valid script identifier as the property base name.");
+            snprintf(property_error, sizeof(property_error), "Enter a valid script identifier as the property name.");
             return;
         }
-        // A grouped selection produces rows of three components. Transpose before
-        // destructuring so each property retains the selection's groups.
         char statement[1024];
-        snprintf(statement, sizeof(statement),
-            "{%s_linear, %s_planar, %s_isotropic} = %sshape_space(%s, %s)%s;",
-            property_name, property_name, property_name,
-            num_structures > 1 ? "transpose(" : "", input, use_mass ? "true" : "false",
-            num_structures > 1 ? ")" : "");
+        const bool whole_system = str_eq(str_trim(str_from_cstr(input)), STR_LIT("all"));
+        snprintf(statement, sizeof(statement), "%s = shapespace(%s);", property_name, whole_system ? "" : input);
         if (!script_append_statement(app_state, str_from_cstr(statement))) {
-            snprintf(property_error, sizeof(property_error), "Could not create properties: check the name and selection for script errors or duplicate identifiers.");
+            snprintf(property_error, sizeof(property_error), "Could not create the property: check the name and selection for script errors or a duplicate identifier.");
         }
     }
 
@@ -268,6 +272,11 @@ struct Shapespace : viamd::EventHandler {
             }
         }
 
+        if (use_source) {
+            SeriesVectorView view;
+            source_version = series_resolve_vector(&view, app_state, source_key, 3) ? view.version + 1 : 0;
+        }
+
         ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
         defer { ImGui::PopStyleVar(1); };
@@ -316,32 +325,55 @@ struct Shapespace : viamd::EventHandler {
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Probability density relative to a uniform triangle. Independent of sample count.");
                     }
                     ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
+                    ImGui::BeginDisabled(use_source);
                     ImGui::Checkbox("Use Mass", &use_mass);
+                    ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
+                SeriesKey chosen = {};
+                const int pick = series_vector_menu(app_state, 3, use_source ? &source_key : nullptr, &chosen);
+                if (pick == 1) { source_key = chosen; use_source = true; }
+                if (pick == 2) use_source = false;
                 ImGui::EndMenuBar();
             }
 
-            const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
-            ImGui::PushItemWidth(item_width);
-            ImGui::InputQuery("##input", input, sizeof(input), input_valid && eval_hash == evaluation_hash());
-            ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered()) {
-                if (input_valid && eval_hash == evaluation_hash()) {
-                    md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
-                } else if (error[0] != '\0') {
-                    ImGui::SetTooltip("%s", error);
+            SeriesKey dropped = {};
+            if (series_vector_drop(app_state, 3, &dropped)) {
+                source_key = dropped;
+                use_source = true;
+            }
+
+            if (use_source) {
+                char label[96];
+                series_label(label, sizeof(label), app_state, source_key);
+                ImGui::AlignTextToFramePadding();
+                ImPlot::ItemIcon(series_default_color(app_state, source_key));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Use selection")) use_source = false;
+            } else {
+                const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
+                ImGui::PushItemWidth(item_width);
+                ImGui::InputQuery("##input", input, sizeof(input), input_valid && eval_hash == evaluation_hash());
+                ImGui::PopItemWidth();
+                if (ImGui::IsItemHovered()) {
+                    if (input_valid && eval_hash == evaluation_hash()) {
+                        md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
+                    } else if (error[0] != '\0') {
+                        ImGui::SetTooltip("%s", error);
+                    }
                 }
             }
             ImGui::SetNextItemWidth(MAX(60.0f, ImGui::GetContentRegionAvail().x - 145.0f));
             ImGui::InputText("##Property Name", property_name, sizeof(property_name));
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Base name for the three shape properties.");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Name of the property.");
             ImGui::SameLine();
-            ImGui::BeginDisabled(!input_valid || evaluation_pending || !coords || eval_hash != evaluation_hash());
-            if (ImGui::Button("Create Properties")) create_property();
+            ImGui::BeginDisabled(use_source || !input_valid || evaluation_pending || !coords || eval_hash != evaluation_hash());
+            if (ImGui::Button("Create Property")) create_property();
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("Create named linear, planar and isotropic temporal properties from this selection.");
+                ImGui::SetTooltip("Add '%s = shapespace(...)' for this selection to the script.", property_name);
             }
             if (property_error[0]) ImGui::TextWrapped("%s", property_error);
             if (evaluation_pending) ImGui::TextUnformatted("Evaluating shape space...");
@@ -538,6 +570,32 @@ struct Shapespace : viamd::EventHandler {
                 eval_hash = hash;
 
                 MEMSET(error, 0, sizeof(error));
+                if (use_source) {
+                    SeriesVectorView view;
+                    if (!series_resolve_vector(&view, app_state, source_key, 3) || !view.num_frames || !view.count) {
+                        snprintf(error, sizeof(error), "The property has no values.");
+                        return;
+                    }
+                    // The values are frame major, the arrays here structure major
+                    num_frames = view.num_frames;
+                    num_structures = view.count;
+                    md_array_resize(weights, num_frames * num_structures, arena);
+                    md_array_resize(coords,  num_frames * num_structures, arena);
+                    const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
+                    for (size_t s = 0; s < num_structures; ++s) {
+                        for (size_t f = 0; f < num_frames; ++f) {
+                            const float* v = view.data + (f * num_structures + s) * 3;
+                            const size_t dst = num_frames * s + f;
+                            weights[dst] = vec3_t{v[0], v[1], v[2]};
+                            // A frame that has not been evaluated holds zeros, not a shape
+                            const bool evaluated = v[0] != 0.0f || v[1] != 0.0f || v[2] != 0.0f;
+                            coords[dst] = evaluated ? p[0] * v[0] + p[1] * v[1] + p[2] * v[2] : vec2_t{NAN, NAN};
+                        }
+                    }
+                    input_valid = true;
+                    density_smoothing = -1.0f;
+                    return;
+                }
                 if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, &app_state->mold.state, app_state->script.ir, NULL, error, sizeof(error), arena)) {
                     num_structures = md_array_size(bitfields);
                     if (!num_structures) {

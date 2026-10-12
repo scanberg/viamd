@@ -42,6 +42,7 @@
 #define TIMELINE_SERIES_DND     "TIMELINE_SERIES"
 #define DISTRIBUTION_SERIES_DND "DISTRIBUTION_SERIES"
 #define VOLUME_SERIES_DND       "VOLUME_SERIES"
+#define VECTOR_SERIES_DND       "VECTOR_SERIES"
 
 struct ApplicationState;
 struct md_attribute_t;
@@ -257,6 +258,30 @@ struct SeriesVolumeView {
     const md_script_vis_payload_o* vis_payload = nullptr;
 };
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key);
+
+// ## Vectors
+
+// A script property with a vector per member (ramachandran(), shapespace()): num_frames * count
+// vectors of 'components' floats, the frame first
+struct SeriesVectorView {
+    const float* data = nullptr;
+    uint32_t num_frames = 0;
+    uint32_t count = 0;         // members per frame
+    uint32_t components = 0;
+    uint64_t version = 0;
+    char  label[64] = "";
+    char  script_ident[64] = "";
+    const md_script_vis_payload_o* vis_payload = nullptr;
+};
+// False unless the key is a resident script property of that many components
+bool series_resolve_vector(SeriesVectorView* out, ApplicationState* app, const SeriesKey& key, uint32_t components);
+
+// The "Property" menu of a window that shows one: the vector properties of that many components,
+// each also a drag source. 'current' is the one shown, null for the window's own selection.
+// Returns 1 when a property was chosen (in *out), 2 when the window's own selection was.
+int  series_vector_menu(ApplicationState* app, uint32_t components, const SeriesKey* current, SeriesKey* out);
+// A drop target over the current window for VECTOR_SERIES_DND, true when a matching property is dropped
+bool series_vector_drop(ApplicationState* app, uint32_t components, SeriesKey* out);
 
 // ## Listing script properties
 

@@ -350,6 +350,15 @@ struct Ramachandran : viamd::EventHandler {
     char input[256] = "all";
     char error[256] = "";
     char property_name[64] = "rama";
+
+    // A script property (ramachandran()) shown instead of the selection: its rows are the residues, all
+    // drawn as general, as it carries no residue types
+    bool use_source = false;
+    SeriesKey source_key = {};
+    const md_backbone_angles_t* source_angles = nullptr;
+    uint32_t source_count = 0;
+    uint32_t source_frames = 0;
+    uint64_t source_version = 0;
     md_bitfield_t residue_mask = {};
     uint64_t filter_fingerprint = 0;
     uint64_t density_generation = 1;
@@ -628,6 +637,20 @@ struct Ramachandran : viamd::EventHandler {
         selected_residue_count = 0;
     }
 
+    void resolve_source(ApplicationState& state) {
+        source_angles = nullptr;
+        source_count = source_frames = 0;
+        source_version = 0;
+        if (!use_source) return;
+        SeriesVectorView view;
+        if (series_resolve_vector(&view, &state, source_key, 2) && view.count > 0 && view.num_frames > 0) {
+            source_angles  = (const md_backbone_angles_t*)view.data;
+            source_count   = view.count;
+            source_frames  = view.num_frames;
+            source_version = view.version + 1;
+        }
+    }
+
     void classify_segments(const ApplicationState& state) {
         const md_system_t& sys = state.mold.sys;
         md_array_shrink(rama_type_indices[0], 0);
@@ -636,6 +659,18 @@ struct Ramachandran : viamd::EventHandler {
         md_array_shrink(rama_type_indices[3], 0);
         selected_residue_count = 0;
         MEMSET(error, 0, sizeof(error));
+
+        if (use_source) {
+            input_valid = source_angles != nullptr;
+            if (input_valid) {
+                for (uint32_t i = 0; i < source_count; ++i) md_array_push(rama_type_indices[0], i, arena);
+                selected_residue_count = source_count;
+            } else {
+                str_copy_to_char_buf(error, sizeof(error), STR_LIT("The property has no values."));
+            }
+            rama_topology_version = sys.topology_version;
+            return;
+        }
         bool dynamic = false;
         input_valid = md_filter(&residue_mask, str_from_cstr(input), &sys, &state.mold.state,
             state.script.ir, &dynamic, error, sizeof(error));
@@ -673,8 +708,12 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void update(ApplicationState& state) {
-        const uint64_t filter_hash = md_hash64_str(str_from_cstr(input),
+        resolve_source(state);
+        uint64_t filter_hash = md_hash64_str(str_from_cstr(input),
             state.mold.sys.topology_version ^ state.script.ir_fingerprint);
+        if (use_source) {
+            filter_hash = md_hash64(&source_version, sizeof(source_version), md_hash64_str(str_from_cstr(source_key.path), 1));
+        }
         if (filter_fingerprint != filter_hash || rama_topology_version != state.mold.sys.topology_version) {
             ++density_generation;
             filter_fingerprint = filter_hash;
@@ -682,15 +721,17 @@ struct Ramachandran : viamd::EventHandler {
             full_fingerprint = 0;
             filt_fingerprint = 0;
         }
-        if (show_window && input_valid && state.mold.sys.protein_backbone.segment.count > 0) {
-            const size_t num_frames = run_num_frames(&state);
-            if (num_frames > 0 && state.trajectory_data.backbone_angles.data) {
+        const md_backbone_angles_t* angle_data = use_source ? source_angles : state.trajectory_data.backbone_angles.data;
+        const uint32_t angle_stride = use_source ? source_count : (uint32_t)state.trajectory_data.backbone_angles.stride;
+        if (show_window && input_valid && (use_source || state.mold.sys.protein_backbone.segment.count > 0)) {
+            const size_t num_frames = use_source ? source_frames : run_num_frames(&state);
+            if (num_frames > 0 && angle_data) {
                 // The density is derived from every frame of the run's 'backbone/angle', so it is
                 // rebuilt exactly when that attribute's version moves. Asking the table beats a
                 // stamp kept beside the data: there is one answer, and it cannot be forgotten by a
                 // producer that writes the array without updating the copy next to it.
                 char angle_path[256];
-                const uint64_t angle_version = md_attributes_version(&state.mold.sys.attributes,
+                const uint64_t angle_version = use_source ? source_version : md_attributes_version(&state.mold.sys.attributes,
                     md_attributes_id_from_path(run_attribute_path(angle_path, sizeof(angle_path), &state, STR_LIT("backbone/angle"))));
 
                 const uint64_t full_hash = md_hash64(&angle_version, sizeof(angle_version), density_generation);
@@ -702,9 +743,9 @@ struct Ramachandran : viamd::EventHandler {
 
                         const uint32_t frame_beg = 0;
                         const uint32_t frame_end = (uint32_t)num_frames;
-                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_stride = angle_stride;
 
-                        compute_density_full = rama_rep_compute_density(&rama_data.full, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                        compute_density_full = rama_rep_compute_density(&rama_data.full, angle_data, frame_beg, frame_end, frame_stride);
                     } else {
                         task_system::task_interrupt(compute_density_full);
                     }
@@ -720,9 +761,9 @@ struct Ramachandran : viamd::EventHandler {
 
                         const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
                         const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
-                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_stride = angle_stride;
 
-                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, angle_data, frame_beg, frame_end, frame_stride);
                     }
                     else {
                         task_system::task_interrupt(compute_density_filt);
@@ -805,14 +846,35 @@ struct Ramachandran : viamd::EventHandler {
                     if (ImGui::Selectable("Preproline",   layout_mode == 4)) layout_mode = 4;
                     ImGui::EndMenu();
                 }
+                SeriesKey chosen = {};
+                const int pick = series_vector_menu(&state, 2, use_source ? &source_key : nullptr, &chosen);
+                if (pick == 1) { source_key = chosen; use_source = true; }
+                if (pick == 2) use_source = false;
                 ImGui::EndMenuBar();
             }
 
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid)) input_valid = false;
-            if (ImGui::IsItemHovered()) {
-                if (input_valid) md_bitfield_copy(&state.selection.highlight_mask, &residue_mask);
-                else if (error[0]) ImGui::SetTooltip("%s", error);
+            SeriesKey dropped = {};
+            if (series_vector_drop(&state, 2, &dropped)) {
+                source_key = dropped;
+                use_source = true;
+            }
+
+            if (use_source) {
+                char label[96];
+                series_label(label, sizeof(label), &state, source_key);
+                ImGui::AlignTextToFramePadding();
+                ImPlot::ItemIcon(series_default_color(&state, source_key));
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Use selection")) use_source = false;
+            } else {
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid)) input_valid = false;
+                if (ImGui::IsItemHovered()) {
+                    if (input_valid) md_bitfield_copy(&state.selection.highlight_mask, &residue_mask);
+                    else if (error[0]) ImGui::SetTooltip("%s", error);
+                }
             }
             if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
             if (input_valid && selected_residue_count == 0) {
@@ -820,17 +882,19 @@ struct Ramachandran : viamd::EventHandler {
             }
             ImGui::TextDisabled("%zu residues", selected_residue_count);
             ImGui::SameLine();
+            ImGui::BeginDisabled(use_source);
             if (ImGui::Button("Create Property")) ImGui::OpenPopup("Create Ramachandran Property");
+            ImGui::EndDisabled();
             if (ImGui::BeginPopup("Create Ramachandran Property")) {
                 ImGui::InputText("Name", property_name, sizeof(property_name));
                 const bool name_valid = md_script_identifier_name_valid(str_from_cstr(property_name));
                 if (!name_valid) ImGui::TextWrapped("Enter a script identifier (letters, digits and underscores).");
-                ImGui::TextDisabled("Creates phi and psi properties for this residue subset.");
+                ImGui::TextDisabled("Adds a ramachandran property for this residue subset to the script.");
                 ImGui::BeginDisabled(!name_valid || !input_valid || selected_residue_count == 0);
                 if (ImGui::Button("Create")) {
+                    const bool whole_system = str_eq(str_trim(str_from_cstr(input)), STR_LIT("all"));
                     const str_t statement = str_printf(state.allocator.frame,
-                        "{%s_phi, %s_psi} = transpose(ramachandran(%s));",
-                        property_name, property_name, input);
+                        "%s = ramachandran(%s);", property_name, whole_system ? "" : input);
                     if (script_append_statement(&state, statement)) ImGui::CloseCurrentPopup();
                 }
                 ImGui::EndDisabled();
@@ -840,6 +904,10 @@ struct Ramachandran : viamd::EventHandler {
             const auto& sys = state.mold.sys;
             // The angles of the displayed state, which it carries in its attributes (NULL when it has none)
             const md_backbone_angles_t* curr_angles = md_util_state_backbone_angles(&state.mold.state, &sys);
+            if (use_source) {
+                const uint32_t frame = source_frames ? MIN((uint32_t)MAX(0.0, state.animation.frame + 0.5), source_frames - 1) : 0;
+                curr_angles = source_angles ? source_angles + (size_t)frame * source_count : nullptr;
+            }
             md_bitfield_t* selection_mask = &state.selection.selection_mask;
             md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
 
@@ -929,7 +997,7 @@ struct Ramachandran : viamd::EventHandler {
                             if (!shift) {
                                 is_selecting[plot_idx] = false;
                             }
-                        } else if (hovered && shift && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
+                        } else if (hovered && shift && !use_source && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
                             is_selecting[plot_idx] = true;
                             selection_rect = ImPlotRect(mouse_coord.x, mouse_coord.x, mouse_coord.y, mouse_coord.y);
                             //op = ImGui::IsMouseClicked(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
@@ -967,7 +1035,7 @@ struct Ramachandran : viamd::EventHandler {
                                 coord.x = deperiodize_ortho(coord.x, ref_x, 360.0);
                                 coord.y = deperiodize_ortho(coord.y, ref_y, 360.0);
 
-                                if (is_selecting[plot_idx]) {
+                                if (is_selecting[plot_idx] && !use_source) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
                                         md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
 										md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
@@ -976,7 +1044,7 @@ struct Ramachandran : viamd::EventHandler {
                                         }
                                     }
                                 }
-                                if (hovered) {
+                                if (hovered && !use_source) {
                                     double d2 = (coord.x - mouse_coord.x) * (coord.x - mouse_coord.x) + (coord.y - mouse_coord.y) * (coord.y - mouse_coord.y);
                                     if (d2 < cut_d2 && d2 < min_d2) {
                                         min_d2 = d2;
@@ -1010,6 +1078,7 @@ struct Ramachandran : viamd::EventHandler {
                                 uint32_t idx = indices[i];
 								md_backbone_angles_t bb_angles = curr_angles[idx];
                                 if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
+                                if (use_source) continue;
 
                                 int64_t atom_idx = sys.protein_backbone.segment.atoms[idx].ca;
                                 if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
