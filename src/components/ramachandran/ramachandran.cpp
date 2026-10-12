@@ -16,6 +16,7 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_array.h>
+#include <core/md_hash.h>
 #include <core/md_bitfield.h>
 #include <md_system.h>
 #include <md_util.h>
@@ -38,6 +39,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <memory>
+#include <vector>
 #include <cmath>
 
 // @TODO:
@@ -319,6 +322,31 @@ static void rama_rep_free(rama_rep_t* rep) {
     glDeleteTextures(4, rep->iso_tex);
 }
 
+// What is kept for one series of the plot: the rows of its property as residues of the backbone, and
+// the densities of its trajectory. Kept for as long as the application runs, as a task may still be on its
+// way to deliver into it when the series leaves the plot.
+struct RamaSeries {
+    char path[SERIES_PATH_CAP] = "";
+    rama_rep_t full = {};
+    rama_rep_t filt = {};
+    task_system::ID compute_full = 0;
+    task_system::ID compute_filt = 0;
+    uint64_t generation = 1;
+    uint64_t full_generation = 0;
+    uint64_t filt_generation = 0;
+    uint64_t full_fingerprint = 0;
+    uint64_t filt_fingerprint = 0;
+    uint64_t full_requested = 0;
+    uint64_t filt_requested = 0;
+    uint64_t map_hash = 0;
+    bool mapped = false;                // The rows are known to be residues of the backbone
+    bool used = false;
+    // The rows of each ramachandran type (general, glycine, proline, pre-proline)
+    md_array(uint32_t) type_indices[4] = {};
+    // The backbone segment of each row, when mapped
+    md_array(uint32_t) segments = 0;
+};
+
 struct Ramachandran : viamd::EventHandler {
     struct {
         GLuint program = 0;
@@ -347,45 +375,28 @@ struct Ramachandran : viamd::EventHandler {
     GLuint fbo = 0;
     GLuint vao = 0;
 
+    // The shortcut: a residue selection which becomes a ramachandran() property of the script
     char input[256] = "all";
     char error[256] = "";
     char property_name[64] = "rama";
-
-    // A script property (ramachandran()) shown instead of the selection: its rows are the residues, all
-    // drawn as general, as it carries no residue types
-    bool use_source = false;
-    SeriesKey source_key = {};
-    const md_backbone_angles_t* source_angles = nullptr;
-    uint32_t source_count = 0;
-    uint32_t source_frames = 0;
-    uint64_t source_version = 0;
+    char property_error[256] = "";
     md_bitfield_t residue_mask = {};
-    uint64_t filter_fingerprint = 0;
-    uint64_t density_generation = 1;
-    uint64_t full_generation = 0;
-    uint64_t filt_generation = 0;
-    size_t selected_residue_count = 0;
-
-    bool evaluate = true;
     bool input_valid = false;
+    uint64_t input_hash = 0;
+
+    // A property just created, added to the plot once the script has evaluated it
+    char pending_name[64] = "";
+    double pending_time = 0.0;
+
     bool show_window = false;
 
-    uint64_t backbone_fingerprint = 0;
-    uint64_t full_fingerprint = 0;
-    uint64_t filt_fingerprint = 0;
-    uint64_t full_requested_fingerprint = 0;
-    uint64_t filt_requested_fingerprint = 0;
+    // What the plot shows. Only the first subplot is used, the layout is the one of the timeline's
+    PlotSubplot plot[PLOT_MAX_SUBPLOTS];
+    std::vector<std::unique_ptr<RamaSeries>> series_states;
 
     struct {
         rama_rep_t ref  = {};
-        rama_rep_t full = {};
-        rama_rep_t filt = {};
     } rama_data;
-
-    // The backbone segments of each ramachandran type (general, glycine, proline, pre-proline). Derived from the
-    // topology, by this window only, so it lives here and is rebuilt when the topology version moves.
-    md_array(uint32_t) rama_type_indices[4] = {};
-    uint64_t rama_topology_version = 0;
 
     struct {
         ImVec4 base_outline         = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -394,7 +405,6 @@ struct Ramachandran : viamd::EventHandler {
         ImVec4 selection_fill       = {0.3f, 0.3f, 0.8f, 0.9f};
         ImVec4 highlight_outline    = {0.8f, 0.8f, 0.3f, 0.9f};
         ImVec4 highlight_fill       = {0.8f, 0.8f, 0.3f, 0.9f};
-        float base_size             = 3.0f;
         float interaction_size      = 5.0f; // Size of points that are subjected to selection and highlight
         float interaction_weight    = 2.0f;
     } style;
@@ -419,10 +429,7 @@ struct Ramachandran : viamd::EventHandler {
 
     ImPlotRect viewrect = ImPlotRect(-180, 180, -180, 180);
 
-    task_system::ID compute_density_full = 0;
-    task_system::ID compute_density_filt = 0;
-
-    md_allocator_i* arena = 0;
+    ApplicationState* app_state = 0;
 
     Ramachandran() { viamd::event_system_register_handler(*this); }
 
@@ -430,9 +437,12 @@ struct Ramachandran : viamd::EventHandler {
 
     void reset_workspace_settings() {
         str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
-        filter_fingerprint = 0;
+        str_copy_to_char_buf(property_name, sizeof(property_name), STR_LIT("rama"));
+        property_error[0] = '\0';
+        pending_name[0] = '\0';
+        input_hash = 0;
         input_valid = false;
-        ++density_generation;
+        plot_clear(plot, PLOT_MAX_SUBPLOTS);
         blur_sigma = 5.0f;
         ref_alpha = full_alpha = filt_alpha = 0.85f;
         display_mode[0] = IsoLevels; display_mode[1] = IsoLines; display_mode[2] = IsoLines;
@@ -440,11 +450,13 @@ struct Ramachandran : viamd::EventHandler {
         for (int i = 0; i < 3; ++i) isoline_colors[i] = {1,1,1,1};
         for (int i = 0; i < 4; ++i) show_layer[i] = true;
         layout_mode = 0;
+        invalidate_densities();
     }
 
     void serialize(viamd::serialization_state_t& state) {
         viamd::write_section_header(state, STR_LIT("Ramachandran"));
         viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
+        viamd::write_str(state, STR_LIT("PropertyName"), str_from_cstr(property_name));
         viamd::write_flt(state, STR_LIT("BlurSigma"), blur_sigma);
         const float alpha[3] = { ref_alpha, full_alpha, filt_alpha };
         viamd::write_flt_vec(state, STR_LIT("LayerAlpha"), alpha, 3);
@@ -460,6 +472,7 @@ struct Ramachandran : viamd::EventHandler {
         const int layers[4] = { show_layer[0], show_layer[1], show_layer[2], show_layer[3] };
         viamd::write_int_vec(state, STR_LIT("ShowLayer"), layers, 4);
         viamd::write_int(state, STR_LIT("LayoutMode"), layout_mode);
+        plot_layout_serialize(state, STR_LIT("RamachandranLayout"), STR_LIT("RamachandranSeries"), plot, 1);
     }
 
     void deserialize(viamd::deserialization_state_t& state) {
@@ -468,6 +481,8 @@ struct Ramachandran : viamd::EventHandler {
             if (str_eq_cstr(ident, "Filter")) {
                 str_t filter;
                 if (viamd::extract_str(filter, arg)) str_copy_to_char_buf(input, sizeof(input), filter);
+            } else if (str_eq_cstr(ident, "PropertyName")) {
+                viamd::extract_to_char_buf(property_name, sizeof(property_name), arg);
             } else if (str_eq_cstr(ident, "BlurSigma")) {
                 viamd::extract_flt(blur_sigma, arg);
             } else if (str_eq_cstr(ident, "LayerAlpha")) {
@@ -524,6 +539,9 @@ struct Ramachandran : viamd::EventHandler {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
                 if (str_eq(viamd::section_header(state), STR_LIT("Ramachandran"))) {
                     deserialize(state);
+                } else {
+                    int num_subplots = 1;
+                    plot_layout_deserialize(state, STR_LIT("RamachandranLayout"), STR_LIT("RamachandranSeries"), app_state, plot, &num_subplots);
                 }
                 break;
             }
@@ -551,8 +569,8 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void initialize(ApplicationState& state) {
-        arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
-        md_bitfield_init(&residue_mask, arena);
+        app_state = &state;
+        md_bitfield_init(&residue_mask, state.allocator.persistent);
 
         if (!map.program) {
             GLuint v_shader = gl::compile_shader_from_source(v_fs_quad_src, GL_VERTEX_SHADER);
@@ -580,7 +598,7 @@ struct Ramachandran : viamd::EventHandler {
             GLuint f_shader = gl::compile_shader_from_source(f_shader_iso_src, GL_FRAGMENT_SHADER);
             defer {
                 glDeleteShader(v_shader);
-            glDeleteShader(f_shader);
+                glDeleteShader(f_shader);
             };
 
             iso.program = glCreateProgram();
@@ -607,167 +625,210 @@ struct Ramachandran : viamd::EventHandler {
         }
 
         rama_rep_init(&rama_data.ref);
-        rama_rep_init(&rama_data.full);
-        rama_rep_init(&rama_data.filt);
-
         rama_init_ref(&rama_data.ref);
     }
 
     void shutdown() {
-        task_system::task_interrupt_and_wait_for(compute_density_full);
-        task_system::task_interrupt_and_wait_for(compute_density_filt);
-        ++density_generation;
+        for (auto& st : series_states) {
+            task_system::task_interrupt_and_wait_for(st->compute_full);
+            task_system::task_interrupt_and_wait_for(st->compute_filt);
+            ++st->generation;
+            rama_rep_free(&st->full);
+            rama_rep_free(&st->filt);
+            for (int i = 0; i < 4; ++i) md_array_free(st->type_indices[i], md_get_heap_allocator());
+            md_array_free(st->segments, md_get_heap_allocator());
+        }
+        series_states.clear();
         rama_rep_free(&rama_data.ref);
-        rama_rep_free(&rama_data.full);
-        rama_rep_free(&rama_data.filt);
 
         if (fbo) glDeleteFramebuffers(1, &fbo);
         if (vao) glDeleteVertexArrays(1, &vao);
-        md_arena_allocator_destroy(arena);
     }
 
     void on_topology_init(ApplicationState& state) {
         (void)state;
-        task_system::task_interrupt_and_wait_for(compute_density_full);
-        task_system::task_interrupt_and_wait_for(compute_density_filt);
-        ++density_generation;
-        filter_fingerprint = 0;
-        rama_topology_version = 0;
+        for (auto& st : series_states) {
+            task_system::task_interrupt_and_wait_for(st->compute_full);
+            task_system::task_interrupt_and_wait_for(st->compute_filt);
+            st->map_hash = 0;
+        }
+        invalidate_densities();
+        input_hash = 0;
         input_valid = false;
-        selected_residue_count = 0;
     }
 
-    void resolve_source(ApplicationState& state) {
-        source_angles = nullptr;
-        source_count = source_frames = 0;
-        source_version = 0;
-        if (!use_source) return;
-        SeriesVectorView view;
-        if (series_resolve_vector(&view, &state, source_key, 2) && view.count > 0 && view.num_frames > 0) {
-            source_angles  = (const md_backbone_angles_t*)view.data;
-            source_count   = view.count;
-            source_frames  = view.num_frames;
-            source_version = view.version + 1;
+    // The densities are rebuilt: a setting which enters them changed
+    void invalidate_densities() {
+        for (auto& st : series_states) {
+            ++st->generation;
+            st->full_fingerprint = 0;
+            st->filt_fingerprint = 0;
         }
     }
 
-    void classify_segments(const ApplicationState& state) {
+    RamaSeries& series_state(const char* path) {
+        for (auto& st : series_states) {
+            if (strcmp(st->path, path) == 0) return *st;
+        }
+        series_states.push_back(std::make_unique<RamaSeries>());
+        RamaSeries& st = *series_states.back();
+        str_copy_to_char_buf(st.path, sizeof(st.path), str_from_cstr(path));
+        rama_rep_init(&st.full);
+        rama_rep_init(&st.filt);
+        return st;
+    }
+
+    // The residues of the backbone which the rows of a property are, in the order of the system: what the
+    // script's ramachandran() lists for the atoms its visualization marks. Without them the rows are all drawn
+    // as general residues, and cannot be selected.
+    void map_series(ApplicationState& state, RamaSeries& st, const SeriesVectorView& v) {
         const md_system_t& sys = state.mold.sys;
-        md_array_shrink(rama_type_indices[0], 0);
-        md_array_shrink(rama_type_indices[1], 0);
-        md_array_shrink(rama_type_indices[2], 0);
-        md_array_shrink(rama_type_indices[3], 0);
-        selected_residue_count = 0;
-        MEMSET(error, 0, sizeof(error));
+        struct { uint64_t ir; uint64_t topology; uint32_t count; } key = { state.script.ir_fingerprint, sys.topology_version, v.count };
+        const uint64_t hash = md_hash64(&key, sizeof(key), 0) | 1;
+        if (st.map_hash == hash) return;
+        st.map_hash = hash;
+        st.mapped = false;
+        ++st.generation;
+        st.full_fingerprint = 0;
+        st.filt_fingerprint = 0;
 
-        if (use_source) {
-            input_valid = source_angles != nullptr;
-            if (input_valid) {
-                for (uint32_t i = 0; i < source_count; ++i) md_array_push(rama_type_indices[0], i, arena);
-                selected_residue_count = source_count;
-            } else {
-                str_copy_to_char_buf(error, sizeof(error), STR_LIT("The property has no values."));
+        md_allocator_i* alloc = md_get_heap_allocator();
+        for (int i = 0; i < 4; ++i) md_array_shrink(st.type_indices[i], 0);
+        md_array_shrink(st.segments, 0);
+
+        const md_protein_backbone_data_t& bb = sys.protein_backbone;
+        if (v.vis_payload && bb.segment.count > 0) {
+            md_bitfield_t mask = {};
+            md_bitfield_init(&mask, alloc);
+            md_script_vis_t vis = {};
+            md_script_vis_init(&vis, alloc);
+            const md_script_vis_ctx_t ctx = { state.script.eval_ir, &sys, &state.mold.state };
+            if (md_script_vis_eval_payload(&vis, v.vis_payload, -1, &ctx, MD_SCRIPT_VISUALIZE_ATOMS)) {
+                md_bitfield_copy(&mask, &vis.atom_mask);
+                for (size_t r = 0; r < bb.range.count; ++r) {
+                    const uint32_t beg = bb.range.offset[r];
+                    const uint32_t end = bb.range.offset[r + 1];
+                    for (uint32_t i = beg + 1; i + 1 < end; ++i) {
+                        const md_urange_t atoms = md_component_atom_range(&sys.component, bb.segment.comp_idx[i]);
+                        if (md_bitfield_scan(&mask, atoms.beg, atoms.end)) md_array_push(st.segments, i, alloc);
+                    }
+                }
             }
-            rama_topology_version = sys.topology_version;
-            return;
+            md_script_vis_free(&vis);
+            md_bitfield_free(&mask);
         }
+
+        if (md_array_size(st.segments) == v.count) {
+            st.mapped = true;
+            md_temp_scope_t temp = md_temp_begin();
+            md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, bb.segment.count);
+            md_util_backbone_ramachandran_classify(types, bb.segment.count, &sys);
+            for (uint32_t row = 0; row < v.count; ++row) {
+                switch (types[st.segments[row]]) {
+                case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(st.type_indices[1], row, alloc); break;
+                case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(st.type_indices[2], row, alloc); break;
+                case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(st.type_indices[3], row, alloc); break;
+                default:                           md_array_push(st.type_indices[0], row, alloc); break;
+                }
+            }
+            md_temp_end(temp);
+        } else {
+            md_array_shrink(st.segments, 0);
+            for (uint32_t row = 0; row < v.count; ++row) md_array_push(st.type_indices[0], row, alloc);
+        }
+    }
+
+    // The residue selection of the shortcut, evaluated when it changes
+    void update_input(const ApplicationState& state) {
+        const uint64_t hash = md_hash64_str(str_from_cstr(input), state.mold.sys.topology_version ^ state.script.ir_fingerprint) | 1;
+        if (hash == input_hash) return;
+        input_hash = hash;
+        MEMSET(error, 0, sizeof(error));
         bool dynamic = false;
-        input_valid = md_filter(&residue_mask, str_from_cstr(input), &sys, &state.mold.state,
-            state.script.ir, &dynamic, error, sizeof(error));
+        input_valid = md_filter(&residue_mask, str_from_cstr(input), &state.mold.sys, &state.mold.state, state.script.ir, &dynamic, error, sizeof(error));
         if (input_valid && dynamic) {
             input_valid = false;
             str_copy_to_char_buf(error, sizeof(error), STR_LIT("Use a frame-independent residue selection."));
         }
+    }
 
-        const size_t num_segments = sys.protein_backbone.segment.count;
-        if (input_valid && num_segments > 0) {
-            md_temp_scope_t temp = md_temp_begin();
-            md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
-            md_util_backbone_ramachandran_classify(types, num_segments, &sys);
-            const auto& bb = sys.protein_backbone;
-            for (size_t r = 0; r < bb.range.count; ++r) {
-                const uint32_t beg = bb.range.offset[r];
-                const uint32_t end = bb.range.offset[r + 1];
-                if (end - beg < 4) continue;
-                for (uint32_t i = beg + 1; i + 1 < end; ++i) {
-                    const md_urange_t atoms = md_component_atom_range(&sys.component, bb.segment.comp_idx[i]);
-                    if (!md_bitfield_scan(&residue_mask, atoms.beg, atoms.end)) continue;
-                    ++selected_residue_count;
-                    switch (types[i]) {
-                    case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
-                    case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
-                    case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
-                    case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(rama_type_indices[3], i, arena); break;
-                    default: break;
-                    }
-                }
-            }
-            md_temp_end(temp);
+    void create_property(ApplicationState& state) {
+        property_error[0] = '\0';
+        if (!md_script_identifier_name_valid(str_from_cstr(property_name))) {
+            snprintf(property_error, sizeof(property_error), "Enter a valid script identifier as the property name.");
+            return;
         }
-        rama_topology_version = sys.topology_version;
+        const bool whole_system = str_eq(str_trim(str_from_cstr(input)), STR_LIT("all"));
+        const str_t statement = str_printf(state.allocator.frame, "%s = ramachandran(%s);", property_name, whole_system ? "" : input);
+        if (!script_append_statement(&state, statement)) {
+            snprintf(property_error, sizeof(property_error), "Could not create the property: check the name and selection for script errors or a duplicate identifier.");
+            return;
+        }
+        snprintf(pending_name, sizeof(pending_name), "%s", property_name);
+        pending_time = ImGui::GetTime();
+    }
+
+    // Adds a property created from the shortcut once the script has evaluated it
+    void update_pending(ApplicationState& state) {
+        if (!pending_name[0]) return;
+        char path[SERIES_PATH_CAP];
+        snprintf(path, sizeof(path), "script/%s", pending_name);
+        const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
+        SeriesVectorView v;
+        if (series_resolve_vector(&v, &state, key, 2)) {
+            plot_add_series(&state, plot[0], key);
+            pending_name[0] = '\0';
+        } else if (ImGui::GetTime() - pending_time > 20.0) {
+            pending_name[0] = '\0';
+        }
     }
 
     void update(ApplicationState& state) {
-        resolve_source(state);
-        uint64_t filter_hash = md_hash64_str(str_from_cstr(input),
-            state.mold.sys.topology_version ^ state.script.ir_fingerprint);
-        if (use_source) {
-            filter_hash = md_hash64(&source_version, sizeof(source_version), md_hash64_str(str_from_cstr(source_key.path), 1));
-        }
-        if (filter_fingerprint != filter_hash || rama_topology_version != state.mold.sys.topology_version) {
-            ++density_generation;
-            filter_fingerprint = filter_hash;
-            classify_segments(state);
-            full_fingerprint = 0;
-            filt_fingerprint = 0;
-        }
-        const md_backbone_angles_t* angle_data = use_source ? source_angles : state.trajectory_data.backbone_angles.data;
-        const uint32_t angle_stride = use_source ? source_count : (uint32_t)state.trajectory_data.backbone_angles.stride;
-        if (show_window && input_valid && (use_source || state.mold.sys.protein_backbone.segment.count > 0)) {
-            const size_t num_frames = use_source ? source_frames : run_num_frames(&state);
-            if (num_frames > 0 && angle_data) {
-                // The density is derived from every frame of the run's 'backbone/angle', so it is
-                // rebuilt exactly when that attribute's version moves. Asking the table beats a
-                // stamp kept beside the data: there is one answer, and it cannot be forgotten by a
-                // producer that writes the array without updating the copy next to it.
-                char angle_path[256];
-                const uint64_t angle_version = use_source ? source_version : md_attributes_version(&state.mold.sys.attributes,
-                    md_attributes_id_from_path(run_attribute_path(angle_path, sizeof(angle_path), &state, STR_LIT("backbone/angle"))));
+        app_state = &state;
+        update_input(state);
+        update_pending(state);
 
-                const uint64_t full_hash = md_hash64(&angle_version, sizeof(angle_version), density_generation);
-                full_requested_fingerprint = full_hash;
-                if (full_fingerprint != full_hash) {
-                    full_generation = 0;
-                    if (!task_system::task_is_running(compute_density_full)) {
-                        full_fingerprint = full_hash;
+        for (auto& st : series_states) st->used = false;
 
-                        const uint32_t frame_beg = 0;
-                        const uint32_t frame_end = (uint32_t)num_frames;
-                        const uint32_t frame_stride = angle_stride;
+        const PlotSubplot& sp = plot[0];
+        for (int j = 0; j < sp.count; ++j) {
+            SeriesVectorView v;
+            if (!series_resolve_vector(&v, &state, sp.series[j].key, 2)) continue;
+            RamaSeries& st = series_state(sp.series[j].key.path);
+            st.used = true;
+            map_series(state, st, v);
 
-                        compute_density_full = rama_rep_compute_density(&rama_data.full, angle_data, frame_beg, frame_end, frame_stride);
-                    } else {
-                        task_system::task_interrupt(compute_density_full);
-                    }
+            const size_t num_frames = v.num_frames;
+            if (!show_window || num_frames == 0) continue;
+
+            // The density is derived from every frame of the property, so it is rebuilt exactly when
+            // the property's version moves.
+            const md_backbone_angles_t* angles = (const md_backbone_angles_t*)v.data;
+            const uint32_t stride = v.count;
+
+            const uint64_t full_hash = md_hash64(&v.version, sizeof(v.version), st.generation);
+            st.full_requested = full_hash;
+            if (st.full_fingerprint != full_hash) {
+                st.full_generation = 0;
+                if (!task_system::task_is_running(st.compute_full)) {
+                    st.full_fingerprint = full_hash;
+                    st.compute_full = rama_rep_compute_density(&st, true, angles, 0, (uint32_t)num_frames, stride);
+                } else {
+                    task_system::task_interrupt(st.compute_full);
                 }
+            }
 
-                const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint,
-                    sizeof(state.timeline.filter.fingerprint), full_hash);
-                filt_requested_fingerprint = filt_hash;
-                if (filt_fingerprint != filt_hash) {
-                    filt_generation = 0;
-                    if (!task_system::task_is_running(compute_density_filt)) {
-                        filt_fingerprint = filt_hash;
-
-                        const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
-                        const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
-                        const uint32_t frame_stride = angle_stride;
-
-                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, angle_data, frame_beg, frame_end, frame_stride);
-                    }
-                    else {
-                        task_system::task_interrupt(compute_density_filt);
-                    }
+            const uint64_t filt_hash = md_hash64(&state.timeline.filter.fingerprint, sizeof(state.timeline.filter.fingerprint), full_hash);
+            st.filt_requested = filt_hash;
+            if (st.filt_fingerprint != filt_hash) {
+                st.filt_generation = 0;
+                if (!task_system::task_is_running(st.compute_filt)) {
+                    st.filt_fingerprint = filt_hash;
+                    const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
+                    const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
+                    st.compute_filt = rama_rep_compute_density(&st, false, angles, frame_beg, frame_end, stride);
+                } else {
+                    task_system::task_interrupt(st.compute_filt);
                 }
             }
         }
@@ -800,11 +861,22 @@ struct Ramachandran : viamd::EventHandler {
                 viewrect.Y.Max = viewrect.Y.Min + 1;
             }
 
+            PlotSubplot& sp = plot[0];
+
             if (ImGui::BeginMenuBar()) {
-                SeriesKey chosen = {};
-                const int pick = series_vector_menu(&state, 2, use_source ? &source_key : nullptr, &chosen);
-                if (pick == 1) { source_key = chosen; use_source = true; }
-                if (pick == 2) use_source = false;
+                if (ImGui::BeginMenu("Properties")) {
+                    int num_listed = 0;
+                    series_for_each_script_property(&state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VECTOR, [&](const SeriesKey& key) {
+                        SeriesVectorView v;
+                        if (!series_resolve_vector(&v, &state, key, 2)) return;
+                        plot_series_list_item(&state, VECTOR_SERIES_DND, sp, key);
+                        num_listed += 1;
+                    });
+                    if (num_listed == 0) {
+                        ImGui::TextDisabled("No ramachandran properties, create one below or define ramachandran() in the script editor");
+                    }
+                    ImGui::EndMenu();
+                }
                 if (ImGui::BeginMenu("Layers")) {
 
                     ImGui::Separator();
@@ -829,16 +901,8 @@ struct Ramachandran : viamd::EventHandler {
                         ImGui::Separator();
                     }
                     ImGui::Checkbox("Current", &show_layer[3]);
-                    if (show_layer[3]) {
-                        ImGui::SliderFloat("Point Size", &style.base_size, 1.0f, 10.0f);
-                        ImGui::ColorEdit4Minimal("Point Outline", &style.base_outline.x);
-                        ImGui::ColorEdit4Minimal("Point Fill",    &style.base_fill.x);
-                    }
-                    ImGui::Separator();
                     if (ImGui::SliderFloat("Density Blur Sigma", &blur_sigma, 0.1f, 10.0f)) {
-                        ++density_generation;
-                        full_fingerprint = 0;
-                        filt_fingerprint = 0;
+                        invalidate_densities();
                     }
                     ImGui::EndMenu();
                 }
@@ -853,61 +917,82 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
+            // A property dropped on the window is added to the plot
             SeriesKey dropped = {};
             if (series_vector_drop(&state, 2, &dropped)) {
-                source_key = dropped;
-                use_source = true;
+                plot_add_series(&state, sp, dropped);
             }
 
-            if (use_source) {
-                char label[96];
-                series_label(label, sizeof(label), &state, source_key);
-                ImGui::AlignTextToFramePadding();
-                ImPlot::ItemIcon(series_default_color(&state, source_key));
-                ImGui::SameLine();
-                ImGui::TextUnformatted(label);
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Use selection")) use_source = false;
-            } else {
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid)) input_valid = false;
-                if (ImGui::IsItemHovered()) {
-                    if (input_valid) md_bitfield_copy(&state.selection.highlight_mask, &residue_mask);
-                    else if (error[0]) ImGui::SetTooltip("%s", error);
-                }
+            // The shortcut
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputQuery("##residue-filter", input, sizeof(input), input_valid);
+            if (ImGui::IsItemHovered()) {
+                if (input_valid) md_bitfield_copy(&state.selection.highlight_mask, &residue_mask);
+                else if (error[0]) ImGui::SetTooltip("%s", error);
             }
-            if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
-            if (input_valid && selected_residue_count == 0) {
-                ImGui::TextWrapped("No protein residues with complete angle pairs match this selection.");
-            }
-            ImGui::TextDisabled("%zu residues", selected_residue_count);
+            ImGui::SetNextItemWidth(MAX(60.0f, ImGui::GetContentRegionAvail().x - 145.0f));
+            ImGui::InputText("##Property Name", property_name, sizeof(property_name));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Name of the property.");
             ImGui::SameLine();
-            ImGui::BeginDisabled(use_source);
-            if (ImGui::Button("Create Property")) ImGui::OpenPopup("Create Ramachandran Property");
+            ImGui::BeginDisabled(!input_valid);
+            if (ImGui::Button("Create Property")) create_property(state);
             ImGui::EndDisabled();
-            if (ImGui::BeginPopup("Create Ramachandran Property")) {
-                ImGui::InputText("Name", property_name, sizeof(property_name));
-                const bool name_valid = md_script_identifier_name_valid(str_from_cstr(property_name));
-                if (!name_valid) ImGui::TextWrapped("Enter a script identifier (letters, digits and underscores).");
-                ImGui::TextDisabled("Adds a ramachandran property for this residue subset to the script.");
-                ImGui::BeginDisabled(!name_valid || !input_valid || selected_residue_count == 0);
-                if (ImGui::Button("Create")) {
-                    const bool whole_system = str_eq(str_trim(str_from_cstr(input)), STR_LIT("all"));
-                    const str_t statement = str_printf(state.allocator.frame,
-                        "%s = ramachandran(%s);", property_name, whole_system ? "" : input);
-                    if (script_append_statement(&state, statement)) ImGui::CloseCurrentPopup();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Add '%s = ramachandran(...)' for this selection to the script and show it here.", property_name);
+            }
+            if (property_error[0]) ImGui::TextWrapped("%s", property_error);
+            if (!input_valid && error[0]) ImGui::TextWrapped("%s", error);
+            if (pending_name[0]) ImGui::TextDisabled("Waiting for '%s' to be evaluated...", pending_name);
+
+            // The series: a click toggles its visibility in the plot, a right click edits it, and it is dragged out to remove it
+            SeriesVectorView views[PLOT_MAX_SERIES_PER_SUBPLOT];
+            bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+            RamaSeries* states[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+            int remove_idx = -1;
+            for (int j = 0; j < sp.count; ++j) {
+                PlotSeries& s = sp.series[j];
+                resolved[j] = series_resolve_vector(&views[j], &state, s.key, 2);
+                series_label(views[j].label, sizeof(views[j].label), &state, s.key);
+                if (resolved[j]) states[j] = &series_state(s.key.path);
+
+                ImGui::PushID(j);
+                ImGui::ColorButton("##color", s.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(ImGui::GetFontSize(), ImGui::GetFontSize()));
+                ImGui::SameLine();
+                ImGui::Selectable(views[j].label, false, ImGuiSelectableFlags_None, ImVec2(ImGui::CalcTextSize(views[j].label).x, 0));
+                if (ImGui::IsItemHovered() && resolved[j]) {
+                    script_visualize_payload(&state, views[j].vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                    script_set_hovered_property(&state, str_from_cstr(views[j].script_ident));
                 }
-                ImGui::EndDisabled();
-                ImGui::EndPopup();
+                if (ImGui::BeginDragDropSource()) {
+                    series_set_drag_payload(VECTOR_SERIES_DND, s.key, 0, views[j].label, s.color);
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginPopupContextItem("##series-style")) {
+                    if (ImGui::DeleteButton("Remove")) {
+                        remove_idx = j;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
+                        for (int m = 0; m < ImPlotMarker_COUNT; ++m) {
+                            if (ImGui::Selectable(ImPlot::GetMarkerName(m), s.marker == m)) s.marker = (ImPlotMarker)m;
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
+                    ImGui::ColorEdit4("Color", &s.color.x);
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+                if (j + 1 < sp.count) ImGui::SameLine();
+            }
+            if (remove_idx != -1) {
+                // The series of this frame are no longer the ones of the plot
+                plot_remove_series(sp, remove_idx);
+                ImGui::End();
+                return;
             }
 
             const auto& sys = state.mold.sys;
-            // The angles of the displayed state, which it carries in its attributes (NULL when it has none)
-            const md_backbone_angles_t* curr_angles = md_util_state_backbone_angles(&state.mold.state, &sys);
-            if (use_source) {
-                const uint32_t frame = source_frames ? MIN((uint32_t)MAX(0.0, state.animation.frame + 0.5), source_frames - 1) : 0;
-                curr_angles = source_angles ? source_angles + (size_t)frame * source_count : nullptr;
-            }
             md_bitfield_t* selection_mask = &state.selection.selection_mask;
             md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
 
@@ -947,38 +1032,32 @@ struct Ramachandran : viamd::EventHandler {
 
                         viewrect = ImPlot::GetPlotLimits();
 
-                        //ImPlot::PlotDummy("Reference");
-                        //ImPlot::PlotDummy("Full");
-                        //ImPlot::PlotDummy("Filtered");
-                        //ImPlot::PlotDummy("Current");
-
-                        //ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Color = 0xFFFFFFFF;
-
-                        //bool show_ref  = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(0)->Show;
-                        //bool show_full = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(1)->Show;
-                        //bool show_filt = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(2)->Show;
-                        //bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
-                        const bool show_ref  = show_layer[0];
-                        const bool show_full = show_layer[1] && input_valid && full_generation == density_generation && rama_data.full.den_sum[plot_idx] > 0;
-                        const bool show_filt = show_layer[2] && input_valid && state.timeline.filter.enabled && filt_generation == density_generation && rama_data.filt.den_sum[plot_idx] > 0;
-                        const bool show_curr = show_layer[3] && input_valid;
-
                         ImVec2 plot_min = ImPlot::PlotToPixels(viewrect.Min());
                         ImVec2 plot_max = ImPlot::PlotToPixels(viewrect.Max());
                         plot_size = { fabsf(plot_max.x - plot_min.x), fabsf(plot_max.y - plot_min.y) };
 
-                        if (show_ref || show_full || show_filt) {
+                        // The layers, below the points: the reference, then the densities of each series
+                        {
                             ImPlot::PushPlotClipRect();
                             ImDrawList* dl = ImPlot::GetPlotDrawList();
-
-                            const uint32_t ref_tex  = display_mode[0] == Colormap ? rama_data.ref.map_tex[plot_idx]  : rama_data.ref.iso_tex[plot_idx];
-                            const uint32_t full_tex = display_mode[1] == Colormap ? rama_data.full.map_tex[plot_idx] : rama_data.full.iso_tex[plot_idx];
-                            const uint32_t filt_tex = display_mode[2] == Colormap ? rama_data.filt.map_tex[plot_idx] : rama_data.filt.iso_tex[plot_idx];
-
-                            if (show_ref)  dl->AddImage((ImTextureID)(intptr_t)ref_tex,  plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, ref_alpha));
-                            if (show_full) dl->AddImage((ImTextureID)(intptr_t)full_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, full_alpha));
-                            if (show_filt) dl->AddImage((ImTextureID)(intptr_t)filt_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, filt_alpha));
-
+                            if (show_layer[0]) {
+                                const uint32_t ref_tex = display_mode[0] == Colormap ? rama_data.ref.map_tex[plot_idx] : rama_data.ref.iso_tex[plot_idx];
+                                dl->AddImage((ImTextureID)(intptr_t)ref_tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, ref_alpha));
+                            }
+                            for (int j = 0; j < sp.count; ++j) {
+                                if (!states[j]) continue;
+                                const RamaSeries& st = *states[j];
+                                const bool show_full = show_layer[1] && st.full_generation == st.generation && st.full.den_sum[plot_idx] > 0;
+                                const bool show_filt = show_layer[2] && state.timeline.filter.enabled && st.filt_generation == st.generation && st.filt.den_sum[plot_idx] > 0;
+                                if (show_full) {
+                                    const uint32_t tex = display_mode[1] == Colormap ? st.full.map_tex[plot_idx] : st.full.iso_tex[plot_idx];
+                                    dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, full_alpha));
+                                }
+                                if (show_filt) {
+                                    const uint32_t tex = display_mode[2] == Colormap ? st.filt.map_tex[plot_idx] : st.filt.iso_tex[plot_idx];
+                                    dl->AddImage((ImTextureID)(intptr_t)tex, plot_min, plot_max, {0,0}, {1,1}, ImColor(1.0f, 1.0f, 1.0f, filt_alpha));
+                                }
+                            }
                             ImPlot::PopPlotClipRect();
                         }
 
@@ -997,136 +1076,151 @@ struct Ramachandran : viamd::EventHandler {
                             if (!shift) {
                                 is_selecting[plot_idx] = false;
                             }
-                        } else if (hovered && shift && !use_source && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
+                        } else if (hovered && shift && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
                             is_selecting[plot_idx] = true;
                             selection_rect = ImPlotRect(mouse_coord.x, mouse_coord.x, mouse_coord.y, mouse_coord.y);
-                            //op = ImGui::IsMouseClicked(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
                         }
 
                         const double cut_d2 = fabs(ImPlot::PixelsToPlot(9,0).x - ImPlot::PixelsToPlot(0,0).x);
                         double min_d2 = DBL_MAX;
-                        int64_t mouse_hover_idx = -1;
+                        int hover_series = -1;
+                        int64_t hover_row = -1;
 
                         if (hovered) {
                             md_bitfield_clear(highlight_mask);
                         }
 
-                        if (show_curr && curr_angles) {
-                            const uint32_t* indices = rama_type_indices[plot_idx];
+                        double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
+                        double max_x = MAX(selection_rect.X.Min, selection_rect.X.Max);
+                        double min_y = MIN(selection_rect.Y.Min, selection_rect.Y.Max);
+                        double max_y = MAX(selection_rect.Y.Min, selection_rect.Y.Max);
 
-                            double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
-                            double max_x = MAX(selection_rect.X.Min, selection_rect.X.Max);
-                            double min_y = MIN(selection_rect.Y.Min, selection_rect.Y.Max);
-                            double max_y = MAX(selection_rect.Y.Min, selection_rect.Y.Max);
+                        double ref_x = (min_x + max_x) * 0.5;
+                        double ref_y = (min_y + max_y) * 0.5;
 
-                            double ref_x = (min_x + max_x) * 0.5;
-                            double ref_y = (min_y + max_y) * 0.5;
+                        mouse_coord.x = deperiodize_ortho(mouse_coord.x, ref_x, 360.0);
+                        mouse_coord.y = deperiodize_ortho(mouse_coord.y, ref_y, 360.0);
 
-                            mouse_coord.x = deperiodize_ortho(mouse_coord.x, ref_x, 360.0);
-                            mouse_coord.y = deperiodize_ortho(mouse_coord.y, ref_y, 360.0);
+                        // The points of the current frame, a series each
+                        const md_backbone_angles_t* curr_angles[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                        for (int j = 0; show_layer[3] && j < sp.count; ++j) {
+                            if (!states[j] || views[j].num_frames == 0) continue;
+                            const uint32_t frame = MIN((uint32_t)MAX(0.0, state.animation.frame + 0.5), views[j].num_frames - 1);
+                            curr_angles[j] = (const md_backbone_angles_t*)views[j].data + (size_t)frame * views[j].count;
+                            const RamaSeries& st = *states[j];
+                            const uint32_t* indices = st.type_indices[plot_idx];
 
                             for (size_t i = 0; i < md_array_size(indices); ++i) {
-                                uint32_t idx = indices[i];
+                                const uint32_t row = indices[i];
+                                const md_backbone_angles_t bb_angles = curr_angles[j][row];
+                                if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
 
-                                if (curr_angles[idx].phi == 0 && curr_angles[idx].psi == 0) continue;
-
-								md_backbone_angles_t bb_angles = curr_angles[idx];
                                 ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(bb_angles.phi), RAD_TO_DEG(bb_angles.psi));
                                 coord.x = deperiodize_ortho(coord.x, ref_x, 360.0);
                                 coord.y = deperiodize_ortho(coord.y, ref_y, 360.0);
 
-                                if (is_selecting[plot_idx] && !use_source) {
+                                if (is_selecting[plot_idx] && st.mapped) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
-										md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+                                        md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[st.segments[row]];
+                                        md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                         if (range.beg != range.end) {
                                             modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
                                     }
                                 }
-                                if (hovered && !use_source) {
+                                if (hovered) {
                                     double d2 = (coord.x - mouse_coord.x) * (coord.x - mouse_coord.x) + (coord.y - mouse_coord.y) * (coord.y - mouse_coord.y);
                                     if (d2 < cut_d2 && d2 < min_d2) {
                                         min_d2 = d2;
-                                        mouse_hover_idx = idx;
+                                        hover_series = j;
+                                        hover_row = row;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (is_selecting[plot_idx]) {
+                            grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
+                        }
+
+                        if (hover_series != -1) {
+                            const RamaSeries& st = *states[hover_series];
+                            if (st.mapped) {
+                                md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[st.segments[hover_row]];
+                                md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+                                if (range.beg != range.end) {
+                                    modify_field(highlight_mask, range, SelectionOperator::Or);
+                                    grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
+                                }
+                                str_t lbl = md_component_name(&sys.component, comp_idx);
+                                md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
+                                ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
+                            } else {
+                                ImGui::SetTooltip("%s [%d]", views[hover_series].label, (int)hover_row + 1);
+                            }
+                        }
+
+                        struct UserData {
+                            const vec2_t*   coords;
+                            const uint32_t* indices;
+                            ImPlotPoint     view_center; // We use this to deperiodize the coordinates
+                        };
+
+                        auto index_getter = [](int i, void* user_data) -> ImPlotPoint {
+                            const UserData* data = (UserData*)user_data;
+                            uint32_t idx = data->indices[i];
+
+                            if (data->coords[idx].x == 0 && data->coords[idx].y == 0) {
+                                return { INFINITY, INFINITY }; // Hide by INF!
+                            }
+
+                            double x = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].x), data->view_center.x, 360.0);
+                            double y = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].y), data->view_center.y, 360.0);
+                            return { x, y };
+                        };
+
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!curr_angles[j]) continue;
+                            const RamaSeries& st = *states[j];
+                            const PlotSeries& s = sp.series[j];
+                            const uint32_t* indices = st.type_indices[plot_idx];
+
+                            uint32_t* selection_indices = 0;
+                            uint32_t* highlight_indices = 0;
+                            if (st.mapped) {
+                                for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
+                                    const uint32_t row = indices[i];
+                                    const md_backbone_angles_t bb_angles = curr_angles[j][row];
+                                    if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
+
+                                    const int64_t atom_idx = sys.protein_backbone.segment.atoms[st.segments[row]].ca;
+                                    if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
+                                        md_array_push(highlight_indices, row, state.allocator.frame);
+                                    }
+                                    if (md_bitfield_test_bit(selection_mask, atom_idx)) {
+                                        md_array_push(selection_indices, row, state.allocator.frame);
                                     }
                                 }
                             }
 
-                            if (is_selecting[plot_idx]) {
-                                grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
-                            }
+                            char id[SERIES_PATH_CAP + 72];
+                            snprintf(id, sizeof(id), "%s##%s", views[j].label, s.key.path);
 
-                            if (mouse_hover_idx != -1) {
-                                if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
-                                    md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
-									md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
-                                    if (range.beg != range.end) {
-                                        modify_field(highlight_mask, range, SelectionOperator::Or);
-                                        grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
-									}
-									str_t lbl = md_component_name(&sys.component, comp_idx);
-									md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
-                                    ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
-                                }
-                            }
-
-                            uint32_t* selection_indices = 0;
-                            uint32_t* highlight_indices = 0;
-
-                            for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
-                                uint32_t idx = indices[i];
-								md_backbone_angles_t bb_angles = curr_angles[idx];
-                                if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
-                                if (use_source) continue;
-
-                                int64_t atom_idx = sys.protein_backbone.segment.atoms[idx].ca;
-                                if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
-                                    md_array_push(highlight_indices, idx, state.allocator.frame);
-                                }
-
-                                if (md_bitfield_test_bit(selection_mask, atom_idx)) {
-                                    md_array_push(selection_indices, idx, state.allocator.frame);
-                                }
-                            }
-
-                            struct UserData {
-                                const vec2_t*   coords;
-                                const uint32_t* indices;
-                                ImPlotPoint     view_center; // We use this to deperiodize the coordinates
-                            };
-
-                            auto index_getter = [](int i, void* user_data) -> ImPlotPoint {
-                                const UserData* data = (UserData*)user_data;
-                                uint32_t idx = data->indices[i];
-
-                                if (data->coords[idx].x == 0 && data->coords[idx].y == 0) {
-                                    return { INFINITY, INFINITY }; // Hide by INF!
-                                }
-
-                                double x = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].x), data->view_center.x, 360.0);
-                                double y = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].y), data->view_center.y, 360.0);
-                                return { x, y };
-                            };
-
-                            const ImPlotMarker marker = ImPlotMarker_Plus;
-
-                            ImPlot::SetNextMarkerStyle(marker, style.base_size, style.base_fill, 1.0f, style.base_outline);
-                            ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                             if (md_array_size(indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(curr_angles), indices, view_mid };
-                                ImPlot::PlotScatterG("##Current", index_getter, &user_data, (int)md_array_size(indices));
+                                UserData user_data = { (const vec2_t*)(curr_angles[j]), indices, view_mid };
+                                ImPlot::SetNextMarkerStyle(s.marker, s.marker_size * 3.0f, s.color, 1.0f, s.color);
+                                ImPlot::PlotScatterG(id, index_getter, &user_data, (int)md_array_size(indices));
                             }
 
                             if (md_array_size(selection_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(curr_angles), selection_indices, view_mid };
-                                ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.selection_fill, style.interaction_weight, style.selection_outline);
+                                UserData user_data = { (const vec2_t*)(curr_angles[j]), selection_indices, view_mid };
+                                ImPlot::SetNextMarkerStyle(s.marker, style.interaction_size, style.selection_fill, style.interaction_weight, style.selection_outline);
                                 ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
                             }
 
                             if (md_array_size(highlight_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(curr_angles), highlight_indices, view_mid };
-                                ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
+                                UserData user_data = { (const vec2_t*)(curr_angles[j]), highlight_indices, view_mid };
+                                ImPlot::SetNextMarkerStyle(s.marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
                             }
                         }
@@ -1137,7 +1231,7 @@ struct Ramachandran : viamd::EventHandler {
                                 is_selecting[plot_idx] = false;
                                 auto size = selection_rect.Size();
                                 if (size.x == 0 && size.y == 0) {
-                                    if (mouse_hover_idx != -1) {
+                                    if (hover_series != -1) {
                                         modify_field(selection_mask, highlight_mask, op);
                                     } else {
                                         if (ImGui::IsMouseReleased(1)) {
@@ -1207,10 +1301,6 @@ struct Ramachandran : viamd::EventHandler {
             vec4_t viewport = { (float)viewrect.X.Min / 180.0f, (float)viewrect.Y.Min / 180.0f, (float)viewrect.X.Max / 180.0f, (float)viewrect.Y.Max / 180.0f };
             viewport = viewport * 0.5f + 0.5f;
 
-            const float* ref_sum  = rama_data.ref.den_sum;
-            const float* full_sum = rama_data.full.den_sum;
-            const float* filt_sum = rama_data.filt.den_sum;
-
             const float ref_iso_values[4][3] = {
                 {0, 0.0005f, 0.02f},  // 99.95%, 98% for General
                 {0, 0.0020f, 0.02f},  // 99.80%, 98% for Others
@@ -1229,19 +1319,9 @@ struct Ramachandran : viamd::EventHandler {
 
             uint32_t max_dim = (uint32_t)MAX(plot_size.x, plot_size.y);
 
-            rama_rep_t* reps[3] = {
-                &rama_data.ref,
-                &rama_data.full,
-                &rama_data.filt
-            };
-
-            const float scl[3][4] = {
-                { 1.0f, 1.0f, 1.0f, 1.0f },
-                { full_sum[0] / ref_sum[0], full_sum[1] / ref_sum[1], full_sum[2] / ref_sum[2], full_sum[3] / ref_sum[3] },
-                { filt_sum[0] / ref_sum[0], filt_sum[1] / ref_sum[1], filt_sum[2] / ref_sum[2], filt_sum[3] / ref_sum[3] },
-            };
-
-            for (uint32_t i = 0; i < 3; ++i) {
+            // Renders the maps of one density into its representation. The sums relative to the reference scale the iso values.
+            auto render_layer = [&](rama_rep_t* rep, int layer, const float scl[4], ImVec4 line_color) {
+                const int i = layer;
                 if (display_mode[i] == IsoLevels || display_mode[i] == IsoLines) {
                     const uint32_t count = 3;
                     uint32_t colors[4][count] = {0};
@@ -1250,10 +1330,10 @@ struct Ramachandran : viamd::EventHandler {
 
                     MEMCPY(values, ref_iso_values, sizeof(ref_iso_values));
                     for (uint32_t j = 0; j < count; ++j) {
-                        values[0][j] *= MAX(scl[i][0], FLT_EPSILON);
-                        values[1][j] *= MAX(scl[i][1], FLT_EPSILON);
-                        values[2][j] *= MAX(scl[i][2], FLT_EPSILON);
-                        values[3][j] *= MAX(scl[i][3], FLT_EPSILON);
+                        values[0][j] *= MAX(scl[0], FLT_EPSILON);
+                        values[1][j] *= MAX(scl[1], FLT_EPSILON);
+                        values[2][j] *= MAX(scl[2], FLT_EPSILON);
+                        values[3][j] *= MAX(scl[3], FLT_EPSILON);
                     }
 
                     if (display_mode[i] == IsoLevels) {
@@ -1261,9 +1341,8 @@ struct Ramachandran : viamd::EventHandler {
                         MEMCPY(lines,  ref_iso_level_colors, sizeof(lines));
                     }
                     else {
-                        //
-                        ImVec4 rgba_base  = isoline_colors[i];
-                        ImVec4 rgba_light = isoline_colors[i];
+                        ImVec4 rgba_base  = line_color;
+                        ImVec4 rgba_light = line_color;
                         float h, s, v;
                         ImGui::ColorConvertRGBtoHSV(rgba_base.x, rgba_base.y, rgba_base.z, h, s, v);
                         ImGui::ColorConvertHSVtoRGB(h, s * 0.5f, v, rgba_light.x, rgba_light.y, rgba_light.z);
@@ -1281,34 +1360,14 @@ struct Ramachandran : viamd::EventHandler {
                     }
 
                     rama_isomap_t maps[4] = {
-                        {
-                            .values = values[0],
-                            .level_colors = colors[0],
-                            .contour_colors = lines[0],
-                            .count = count,
-                        },
-                        {
-                            .values = values[1],
-                            .level_colors = colors[1],
-                            .contour_colors = lines[1],
-                            .count = count,
-                        },
-                        {
-                            .values = values[2],
-                            .level_colors = colors[2],
-                            .contour_colors = lines[2],
-                            .count = count,
-                        },
-                        {
-                            .values = values[3],
-                            .level_colors = colors[3],
-                            .contour_colors = lines[3],
-                            .count = count,
-                        },
+                        { .values = values[0], .level_colors = colors[0], .contour_colors = lines[0], .count = count },
+                        { .values = values[1], .level_colors = colors[1], .contour_colors = lines[1], .count = count },
+                        { .values = values[2], .level_colors = colors[2], .contour_colors = lines[2], .count = count },
+                        { .values = values[3], .level_colors = colors[3], .contour_colors = lines[3], .count = count },
                     };
 
-                    rama_rep_render_iso(reps[i], viewport.elem, maps, max_dim);
-                } else if (display_mode[i] == Colormap){
+                    rama_rep_render_iso(rep, viewport.elem, maps, max_dim);
+                } else if (display_mode[i] == Colormap) {
                     // Fill in colors based on active color_map
                     uint32_t colors[32] = {0};
                     uint32_t num_colors = ImPlot::GetColormapSize(colormap[i]);
@@ -1319,38 +1378,49 @@ struct Ramachandran : viamd::EventHandler {
                     colors[0] = colors[0] & 0x00FFFFFFU;
 
                     rama_colormap_t maps[4] = {
-                        {
-                            .colors = colors,
-                            .count = num_colors,
-                            .min_value = 0,
-                            .max_value = 0.5f * scl[i][0],
-                        },
-                    {
-                        .colors = colors,
-                        .count = num_colors,
-                        .min_value = 0,
-                        .max_value = 0.5f * scl[i][1],
-                    },
-                    {
-                        .colors = colors,
-                        .count = num_colors,
-                        .min_value = 0,
-                        .max_value = 0.5f * scl[i][2],
-                    },
-                    {
-                        .colors = colors,
-                        .count = num_colors,
-                        .min_value = 0,
-                        .max_value = 0.5f * scl[i][3],
-                    },
+                        { .colors = colors, .count = num_colors, .min_value = 0, .max_value = 0.5f * scl[0] },
+                        { .colors = colors, .count = num_colors, .min_value = 0, .max_value = 0.5f * scl[1] },
+                        { .colors = colors, .count = num_colors, .min_value = 0, .max_value = 0.5f * scl[2] },
+                        { .colors = colors, .count = num_colors, .min_value = 0, .max_value = 0.5f * scl[3] },
                     };
-                    rama_rep_render_map(reps[i], viewport.elem, maps, max_dim);
+                    rama_rep_render_map(rep, viewport.elem, maps, max_dim);
+                }
+            };
+
+            const float ref_scl[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            if (show_layer[0]) render_layer(&rama_data.ref, 0, ref_scl, isoline_colors[0]);
+
+            const float* ref_sum = rama_data.ref.den_sum;
+            for (int j = 0; j < sp.count; ++j) {
+                if (!states[j]) continue;
+                RamaSeries& st = *states[j];
+                for (int layer = 1; layer <= 2; ++layer) {
+                    const bool is_full = layer == 1;
+                    const bool shown = show_layer[layer] && (is_full || state.timeline.filter.enabled) &&
+                        (is_full ? st.full_generation : st.filt_generation) == st.generation;
+                    if (!shown) continue;
+                    rama_rep_t* rep = is_full ? &st.full : &st.filt;
+                    const float scl[4] = {
+                        rep->den_sum[0] / ref_sum[0], rep->den_sum[1] / ref_sum[1], rep->den_sum[2] / ref_sum[2], rep->den_sum[3] / ref_sum[3],
+                    };
+                    // With several series the lines are told apart by the colour of the series
+                    render_layer(rep, layer, scl, sp.count > 1 ? sp.series[j].color : isoline_colors[layer]);
                 }
             }
 
             POP_GPU_SECTION();
 
             ImPlot::MapInputDefault();
+
+            // A series dragged out of the window and dropped where nothing takes it is removed
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+                if (payload && payload->IsDataType(VECTOR_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+                    const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+                    const int idx = dnd && dnd->src_subplot == 0 ? plot_find_series(sp, dnd->key) : -1;
+                    if (idx != -1) plot_remove_series(sp, idx);
+                }
+            }
         }
         ImGui::End();
     }
@@ -1417,12 +1487,15 @@ struct Ramachandran : viamd::EventHandler {
         return true;
     }
 
-    task_system::ID rama_rep_compute_density(rama_rep_t* rep, const md_backbone_angles_t* angles, uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride) {
+    task_system::ID rama_rep_compute_density(RamaSeries* st, bool full, const md_backbone_angles_t* angles, uint32_t frame_beg, uint32_t frame_end, uint32_t frame_stride) {
+        if (frame_end <= frame_beg || frame_stride == 0) return 0;
+
         struct UserData {
             uint64_t alloc_size;
             vec4_t* density_tex;
-            rama_rep_t* rep;
-            const md_backbone_angles_t* angles;
+            RamaSeries* st;
+            bool full;
+            const md_backbone_angles_t* angles;     // The frames [frame_beg, frame_end) of the property, copied: it outlives nothing
             const uint32_t* type_indices[4];
             uint32_t frame_beg;
             uint32_t frame_end;
@@ -1433,26 +1506,30 @@ struct Ramachandran : viamd::EventHandler {
             float density_sum[4];
             uint64_t generation;
             uint64_t fingerprint;
-            Ramachandran* owner;
         };
 
         md_allocator_i* alloc = md_get_heap_allocator();
 
-        uint64_t tex_size = sizeof(vec4_t) * density_tex_dim * density_tex_dim;
-        uint64_t alloc_size = sizeof(UserData) + tex_size + alignof(vec4_t);
+        const uint64_t tex_size = sizeof(vec4_t) * density_tex_dim * density_tex_dim;
+        const uint64_t angles_size = sizeof(md_backbone_angles_t) * (uint64_t)(frame_end - frame_beg) * frame_stride;
+        const uint64_t alloc_size = sizeof(UserData) + tex_size + angles_size + 2 * alignof(vec4_t);
         UserData* user_data = (UserData*)md_alloc(alloc, alloc_size);
         vec4_t* density_tex = (vec4_t*)NEXT_ALIGNED_ADDRESS(user_data + 1, alignof(vec4_t));
         memset(density_tex, 0, tex_size);
+        md_backbone_angles_t* angle_copy = (md_backbone_angles_t*)NEXT_ALIGNED_ADDRESS((char*)density_tex + tex_size, alignof(vec4_t));
+        // The property lives in the evaluation of the script, which a recompilation frees
+        memcpy(angle_copy, angles + (size_t)frame_beg * frame_stride, angles_size);
 
         user_data->alloc_size = alloc_size;
         user_data->density_tex = density_tex;
-        user_data->rep = rep;
-        user_data->angles = angles;
-        // The worker owns its selection snapshot; editing a filter must not mutate arrays it reads.
+        user_data->st = st;
+        user_data->full = full;
+        user_data->angles = angle_copy;
+        // The worker owns its snapshot of the rows of each type
         for (int i = 0; i < 4; ++i) {
-            user_data->type_indices[i] = md_array_create(uint32_t, md_array_size(rama_type_indices[i]), alloc);
-            if (md_array_size(rama_type_indices[i])) {
-                MEMCPY((void*)user_data->type_indices[i], rama_type_indices[i], md_array_bytes(rama_type_indices[i]));
+            user_data->type_indices[i] = md_array_create(uint32_t, md_array_size(st->type_indices[i]), alloc);
+            if (md_array_size(st->type_indices[i])) {
+                MEMCPY((void*)user_data->type_indices[i], st->type_indices[i], md_array_bytes(st->type_indices[i]));
             }
         }
         user_data->frame_beg = frame_beg;
@@ -1461,22 +1538,20 @@ struct Ramachandran : viamd::EventHandler {
         user_data->sigma = blur_sigma;
         user_data->alloc = alloc;
         user_data->complete = 0;
-        user_data->generation = density_generation;
-        user_data->fingerprint = rep == &rama_data.full ? full_fingerprint : filt_fingerprint;
-        user_data->owner = this;
+        user_data->generation = st->generation;
+        user_data->fingerprint = full ? st->full_fingerprint : st->filt_fingerprint;
 
         task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [data = user_data]() {
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
             const float angle_to_coord_offset = 0.5f;
 
-            const uint32_t frame_beg = data->frame_beg;
-            const uint32_t frame_end = data->frame_end;
+            const uint32_t num_frames = data->frame_end - data->frame_beg;
             const uint32_t frame_stride = data->frame_stride;
             const md_backbone_angles_t* angles = data->angles;
 
             double sum[4] = {0,0,0,0};
 
-            for (uint32_t f = frame_beg; f < frame_end; ++f) {
+            for (uint32_t f = 0; f < num_frames; ++f) {
                 for (uint32_t c = 0; c < 4; ++c) {
                     const uint32_t* indices = data->type_indices[c];
                     const uint32_t num_indices = (uint32_t)md_array_size(data->type_indices[c]);
@@ -1507,15 +1582,16 @@ struct Ramachandran : viamd::EventHandler {
         });
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
-            const uint64_t fingerprint = data->rep == &data->owner->rama_data.full
-                ? data->owner->full_requested_fingerprint : data->owner->filt_requested_fingerprint;
-            if (data->complete && data->generation == data->owner->density_generation && data->fingerprint == fingerprint) {
+            RamaSeries* st = data->st;
+            const uint64_t fingerprint = data->full ? st->full_requested : st->filt_requested;
+            if (data->complete && data->generation == st->generation && data->fingerprint == fingerprint) {
+                rama_rep_t* rep = data->full ? &st->full : &st->filt;
                 for (int i = 0; i < 4; ++i) {
-                    data->rep->den_sum[i] = data->density_sum[i];
+                    rep->den_sum[i] = data->density_sum[i];
                 }
-                gl::set_texture_2D_data(data->rep->den_tex, 0, data->density_tex, GL_RGBA32F);
-                if (data->rep == &data->owner->rama_data.full) data->owner->full_generation = data->generation;
-                else data->owner->filt_generation = data->generation;
+                gl::set_texture_2D_data(rep->den_tex, 0, data->density_tex, GL_RGBA32F);
+                if (data->full) st->full_generation = data->generation;
+                else            st->filt_generation = data->generation;
             }
             for (int i = 0; i < 4; ++i) md_array_free(data->type_indices[i], data->alloc);
             md_free(data->alloc, data, data->alloc_size);
