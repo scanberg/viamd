@@ -1,15 +1,18 @@
 # Density Volume overlays
 
-Open **Windows → Density Volume**. Select properties in its **Property** menu to
-add layers, or drag them from that menu or from the cube-marked rows in
+Open **Windows → Density Volume**. Toggle properties in its **Properties** menu to
+add or remove layers, or drag them from that menu or from the cube-marked rows in
 **Attributes** onto the 3D canvas. Plotting drag payloads remain separate: timeline
 and distribution rows still go into their respective subplots.
 
-Up to six full/filtered scalar volume properties share one camera. Adding an
-existing property selects and shows its layer rather than duplicating it. Select a
-layer row to edit that property's **Render**, **Clip planes**, and **Show** settings.
-The row checkbox hides it, **X** removes it, and **Up / Dn** rearrange the list.
-Reordering is organizational: it does not change depth or transparency ordering.
+Up to six full/filtered scalar volume properties share one camera. Each layer is a chip
+under the menu bar, like the series of the Ramachandran and Shape space windows: click
+it to show or hide the layer, right-click it to remove or duplicate it and to edit its
+style (isosurfaces or direct volume rendering, clip planes, bounding box, reference
+structures), or drag it out of the window to remove it. A property dropped again, or a
+layer duplicated, is shown a second time with a style of its own. The **Layers** menu
+holds the same settings for every layer. New layers are drawn as one isosurface, in a
+color of their own.
 Reference structures, their atom picking, and camera interaction remain available
 for each visible, valid layer. The first added volume fits the camera; subsequent
 layers do not reset it.

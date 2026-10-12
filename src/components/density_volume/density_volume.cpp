@@ -27,6 +27,7 @@ enum LegendColorMapMode_ {
 };
 
 struct DensityVolumeLayer {
+    uint32_t uid = 0;           // Names the layer while it lives: the same volume can be there twice
     bool visible = true;
     bool valid = false;
     uint64_t data_version = 0;
@@ -81,7 +82,6 @@ struct DensityVolumeLayer {
     bool show_reference_structures = true;
     bool show_reference_ensemble = false;
     bool show_density_volume = false;
-    bool show_coordinate_system_widget = true;
 
     bool dirty_rep = false;
     bool dirty_vol = false;
@@ -112,7 +112,9 @@ struct DensityVolume : viamd::EventHandler {
     bool show_window = false;
     md_allocator_i* arena = nullptr;
     std::vector<DensityVolumeLayer> layers;
-    int active_layer = -1;
+    int active_layer = -1;      // The layer the camera resets to and the legend is drawn for
+    uint32_t next_uid = 1;
+    bool show_coordinate_system_widget = true;
     char notice[160] = "";
     bool fit_new_layer = false;
     GBuffer gbuf = {};
@@ -145,13 +147,21 @@ struct DensityVolume : viamd::EventHandler {
         return -1;
     }
 
-    void add_layer(ApplicationState* state, const SeriesKey& key) {
+    int find_uid(uint32_t uid) const {
+        for (size_t i = 0; i < layers.size(); ++i) {
+            if (layers[i].uid == uid) return (int)i;
+        }
+        return -1;
+    }
+
+    // The same volume again when allow_duplicate, to show it with another style
+    void add_layer(ApplicationState* state, const SeriesKey& key, bool allow_duplicate = false) {
         if (key.path[SERIES_PATH_CAP - 1] != '\0' || key.source >= SeriesSource_Count ||
             !(series_views(state, key) & SeriesView_Volume) || key.variant != SeriesVariant_Values) {
             snprintf(notice, sizeof(notice), "Only resident scalar volume properties can be added.");
             return;
         }
-        int idx = find_layer(key);
+        int idx = allow_duplicate ? -1 : find_layer(key);
         if (idx == -1) {
             if (layers.size() >= volume::MAX_OVERLAY_LAYERS) {
                 snprintf(notice, sizeof(notice), "At most %d layers: remove one before adding another.", volume::MAX_OVERLAY_LAYERS);
@@ -160,6 +170,7 @@ struct DensityVolume : viamd::EventHandler {
             fit_new_layer = layers.empty();
             layers.emplace_back();
             idx = (int)layers.size() - 1;
+            layers[idx].uid = next_uid++;
             layers[idx].volume_key = key;
             // Distinct default colors keep several isosurfaces apart
             static const vec4_t palette[] = {
@@ -178,8 +189,17 @@ struct DensityVolume : viamd::EventHandler {
         for (auto& layer : layers) free_layer(layer);
         layers.clear();
         active_layer = -1;
+        show_coordinate_system_widget = true;
         fit_new_layer = true;
         notice[0] = '\0';
+    }
+
+    void remove_layer(int index) {
+        if (index < 0 || index >= (int)layers.size()) return;
+        free_layer(layers[index]);
+        layers.erase(layers.begin() + index);
+        if (active_layer > index) --active_layer;
+        active_layer = layers.empty() ? -1 : CLAMP(active_layer, 0, (int)layers.size() - 1);
     }
 
     void serialize_layer(viamd::serialization_state_t& state, DensityVolumeLayer& layer) {
@@ -195,7 +215,6 @@ struct DensityVolume : viamd::EventHandler {
         auto& show_bounding_box = layer.show_bounding_box;
         auto& show_reference_structures = layer.show_reference_structures;
         auto& show_reference_ensemble = layer.show_reference_ensemble;
-        auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
         viamd::write_section_header(state, STR_LIT("DensityVolumeLayer"));
         viamd::write_bool(state, STR_LIT("Visible"), layer.visible);
         if (volume_key.path[0] != '\0') {
@@ -227,7 +246,6 @@ struct DensityVolume : viamd::EventHandler {
         viamd::write_bool(state, STR_LIT("ShowBoundingBox"), show_bounding_box);
         viamd::write_bool(state, STR_LIT("ShowReferenceStructures"), show_reference_structures);
         viamd::write_bool(state, STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
-        viamd::write_bool(state, STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
         viamd::write_int (state, STR_LIT("RepType"), (int)rep.type);
         viamd::write_int (state, STR_LIT("RepColorMapping"), (int)rep.colormap);
         viamd::write_flt_vec(state, STR_LIT("RepParam"), rep.param, 4);
@@ -238,6 +256,7 @@ struct DensityVolume : viamd::EventHandler {
         viamd::write_section_header(state, STR_LIT("DensityVolume"));
         viamd::write_int(state, STR_LIT("LayerCount"), (int64_t)layers.size());
         viamd::write_int(state, STR_LIT("ActiveLayer"), active_layer);
+        viamd::write_bool(state, STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
         for (auto& layer : layers) serialize_layer(state, layer);
     }
 
@@ -255,7 +274,6 @@ struct DensityVolume : viamd::EventHandler {
         auto& show_bounding_box = layer.show_bounding_box;
         auto& show_reference_structures = layer.show_reference_structures;
         auto& show_reference_ensemble = layer.show_reference_ensemble;
-        auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
         SeriesSource source = SeriesSource_Script;
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
@@ -349,7 +367,8 @@ struct DensityVolume : viamd::EventHandler {
             clip_volume.max.elem[axis] = CLAMP(clip_volume.max.elem[axis], clip_volume.min.elem[axis], 1.f);
         }
         legend.colormap_mode = CLAMP(legend.colormap_mode, 0, 2);
-        if (volume_key.path[0] && layers.size() < volume::MAX_OVERLAY_LAYERS && find_layer(volume_key) == -1) {
+        if (volume_key.path[0] && layers.size() < volume::MAX_OVERLAY_LAYERS) {
+            layer.uid = next_uid++;
             layers.push_back(layer);
             if (legacy || active_layer < 0) active_layer = 0;
         }
@@ -533,6 +552,242 @@ struct DensityVolume : viamd::EventHandler {
         }
     }
 
+    ImVec4 layer_color(const DensityVolumeLayer& layer) const {
+        if (layer.dvr.enabled) {
+            ImVec4 c = ImPlot::SampleColormap(0.8f, layer.dvr.tf.colormap);
+            return c;
+        }
+        if (layer.iso.enabled && layer.iso.count) {
+            const vec4_t c = layer.iso.colors[0];
+            return ImVec4(c.x, c.y, c.z, 1.0f);
+        }
+        return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    }
+
+    // The style of one layer: how the volume is rendered, its clip planes and the structures shown with it
+    void layer_style(DensityVolumeLayer& layer) {
+        const ImVec2 button_size = {160, 0};
+        auto& dvr = layer.dvr;
+        auto& iso = layer.iso;
+        auto& clip_volume = layer.clip_volume;
+        auto& legend = layer.legend;
+        auto& rep = layer.rep;
+        auto& dirty_rep = layer.dirty_rep;
+
+        ImGui::Checkbox("Visible", &layer.visible);
+
+        ImGui::SeparatorText("Volume");
+        // One or the other (or neither): the two are separate renderers and never mixed
+        if (ImGui::RadioButton("Isosurfaces", iso.enabled)) {
+            iso.enabled = true;
+            dvr.enabled = false;
+        }
+        if (iso.enabled) {
+            ImGui::Indent();
+            for (int i = 0; i < (int)iso.count; ++i) {
+                ImGui::PushID(i);
+                ImGui::SliderFloat("##Isovalue", &iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                ImGui::SameLine();
+                ImGui::ColorEdit4Minimal("##Color", iso.colors[i].elem);
+                ImGui::SameLine();
+                if (ImGui::DeleteButton(ICON_FA_XMARK)) {
+                    for (int j = i; j < (int)iso.count - 1; ++j) {
+                        iso.colors[j] = iso.colors[j+1];
+                        iso.values[j] = iso.values[j+1];
+                    }
+                    iso.count -= 1;
+                }
+                ImGui::PopID();
+            }
+            if ((iso.count < ARRAY_SIZE(iso.values)) && ImGui::Button("Add", button_size)) {
+                size_t idx = iso.count++;
+                iso.values[idx] = 0.1f;
+                iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear", button_size)) {
+                iso.count = 0;
+            }
+            ImGui::Unindent();
+        }
+        if (ImGui::RadioButton("Direct Volume Rendering", dvr.enabled)) {
+            dvr.enabled = true;
+            iso.enabled = false;
+        }
+        if (dvr.enabled) {
+            ImGui::Indent();
+            if (ImPlot::ColormapButton(ImPlot::GetColormapName(dvr.tf.colormap), button_size, dvr.tf.colormap)) {
+                ImGui::OpenPopup("Colormap Selector");
+            }
+            if (ImGui::BeginPopup("Colormap Selector")) {
+                for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                        dvr.tf.colormap = map;
+                        dvr.tf.dirty = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+                ImGui::EndPopup();
+            }
+            if (ImGui::SliderFloat("TF Alpha Scaling", &dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+                dvr.tf.dirty = true;
+            }
+            const float tf_min = 0.0f;
+            const float tf_max = 1000.0f;
+            ImGui::SliderFloat("TF Min Value", &dvr.tf.min_val, tf_min, dvr.tf.max_val, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("TF Max Value", &dvr.tf.max_val, dvr.tf.min_val, tf_max, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::Checkbox("Legend", &legend.enabled);
+            if (legend.enabled) {
+                ImGui::Indent();
+                const char* colormap_modes[] = {"Opaque", "Transparent", "Split"};
+                if (ImGui::BeginCombo("Colormap", colormap_modes[legend.colormap_mode])) {
+                    for (int i = 0; i < IM_ARRAYSIZE(colormap_modes); ++i) {
+                        if (ImGui::Selectable(colormap_modes[i])) {
+                            legend.colormap_mode = i;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::Checkbox("Use Checkerboard", &legend.checkerboard);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Use a checkerboard background for transparent parts in the legend.");
+                }
+                ImGui::Unindent();
+            }
+            ImGui::Unindent();
+        }
+        if (ImGui::RadioButton("Off", !dvr.enabled && !iso.enabled)) {
+            dvr.enabled = false;
+            iso.enabled = false;
+        }
+
+        ImGui::SeparatorText("Clip planes");
+        ImGui::RangeSliderFloat("x", &clip_volume.min.x, &clip_volume.max.x, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("y", &clip_volume.min.y, &clip_volume.max.y, 0.0f, 1.0f);
+        ImGui::RangeSliderFloat("z", &clip_volume.min.z, &clip_volume.max.z, 0.0f, 1.0f);
+
+        ImGui::SeparatorText("Show");
+        ImGui::Checkbox("Bounding Box", &layer.show_bounding_box);
+        if (layer.show_bounding_box) {
+            ImGui::Indent();
+            ImGui::ColorEdit4("Color", layer.bounding_box_color.elem);
+            ImGui::Unindent();
+        }
+        ImGui::Checkbox("Reference Structure", &layer.show_reference_structures);
+        if (layer.show_reference_structures) {
+            ImGui::Indent();
+            ImGui::Checkbox("Show Superimposed Structures", &layer.show_reference_ensemble);
+
+            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
+                for (int i = 0; i <= (int)RepresentationType::Cartoon; ++i) {
+                    if (ImGui::Selectable(representation_type_str[i], (int)rep.type == i)) {
+                        rep.type = (RepresentationType)i;
+                        dirty_rep = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
+                for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
+                    if (ImGui::Selectable(color_mapping_str[i], (int)rep.colormap == i)) {
+                        rep.colormap = (ColorMapping)i;
+                        dirty_rep = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            if (rep.colormap == ColorMapping::Uniform) {
+                dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
+            }
+
+            if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
+                dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
+            }
+            if (rep.type == RepresentationType::Ribbons) {
+                dirty_rep |= ImGui::SliderFloat("width", &rep.param[0], 0.1f, 2.f);
+                dirty_rep |= ImGui::SliderFloat("thickness", &rep.param[1], 0.1f, 2.f);
+            }
+            if (rep.type == RepresentationType::Cartoon) {
+                dirty_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
+                dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[1], 0.1f, 3.f);
+                dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[2], 0.1f, 3.f);
+            }
+            ImGui::Unindent();
+        }
+    }
+
+    // A chip for each layer: a click shows or hides it, right click edits it, dragging it out of the window removes it
+    void layer_bar(ApplicationState* state, uint32_t* remove_uid, uint32_t* duplicate_uid) {
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float icon = ImGui::GetFontSize();
+        for (int i = 0; i < (int)layers.size(); ++i) {
+            DensityVolumeLayer& item = layers[i];
+            SeriesVolumeView view;
+            const bool resolved = series_resolve_volume(&view, state, item.volume_key);
+            char label[96];
+            series_label(label, sizeof(label), state, item.volume_key);
+
+            const float text_w = ImGui::CalcTextSize(label).x;
+            if (i > 0) {
+                const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+                if (ImGui::GetItemRectMax().x + spacing + icon + spacing + text_w < right) ImGui::SameLine();
+            }
+
+            ImGui::PushID((int)item.uid);
+            ImVec4 color = layer_color(item);
+            if (!item.visible) color.w = 0.3f;
+            ImGui::ColorButton("##color", color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop, ImVec2(icon, icon));
+            ImGui::SameLine();
+            const bool dim = !item.visible || !resolved || !item.valid;
+            if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            if (ImGui::Selectable(label, i == active_layer, ImGuiSelectableFlags_None, ImVec2(text_w, 0))) {
+                item.visible = !item.visible;
+                active_layer = i;
+            }
+            if (dim) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                if (resolved) {
+                    script_visualize_payload(state, view.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                    script_set_hovered_property(state, str_from_cstr(view.script_ident));
+                }
+                if (!resolved || !item.valid) {
+                    ImGui::SetTooltip("%s (%s)\nMissing or invalid data: not rendered", item.volume_key.path, series_source_name(item.volume_key.source));
+                }
+            }
+            if (ImGui::BeginDragDropSource()) {
+                series_set_drag_payload(VOLUME_SERIES_DND, item.volume_key, 0, label, layer_color(item), item.uid);
+                ImGui::EndDragDropSource();
+            }
+            if (ImGui::BeginPopupContextItem("##layer-style")) {
+                active_layer = i;
+                if (ImGui::DeleteButton("Remove")) {
+                    *remove_uid = item.uid;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Duplicate")) {
+                    *duplicate_uid = item.uid;
+                    ImGui::CloseCurrentPopup();
+                }
+                layer_style(item);
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+    }
+
+    // Removes the layer dragged out of the window and dropped where nothing takes it
+    void layer_drag_out() {
+        if (!ImGui::IsMouseReleased(ImGuiMouseButton_Left)) return;
+        const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+        if (payload && payload->IsDataType(VOLUME_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+            const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+            if (dnd && dnd->src_subplot == 0) remove_layer(find_uid(dnd->src_uid));
+        }
+    }
+
     void draw(ApplicationState* state) {
         if (!show_window) return;
 
@@ -542,31 +797,18 @@ struct DensityVolume : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
-            const ImVec2 button_size = {160, 0};
-            SeriesKey add_key = {};
-            // A scratch settings object keeps the menus usable when the layer list is empty.
-            DensityVolumeLayer empty;
+            SeriesKey toggle_key = {};
+            uint32_t remove_uid = 0;
+            uint32_t duplicate_uid = 0;
             active_layer = layers.empty() ? -1 : CLAMP(active_layer, 0, (int)layers.size() - 1);
-            auto& layer = active_layer >= 0 ? layers[active_layer] : empty;
-            auto& dvr = layer.dvr;
-            auto& iso = layer.iso;
-            auto& clip_volume = layer.clip_volume;
-            auto& legend = layer.legend;
-            auto& rep = layer.rep;
-            auto& dirty_rep = layer.dirty_rep;
-            auto& show_bounding_box = layer.show_bounding_box;
-            auto& bounding_box_color = layer.bounding_box_color;
-            auto& show_reference_structures = layer.show_reference_structures;
-            auto& show_reference_ensemble = layer.show_reference_ensemble;
-            auto& show_coordinate_system_widget = layer.show_coordinate_system_widget;
-            if (active_layer >= 0) default_view = layer.default_view;
+            if (active_layer >= 0) default_view = layers[active_layer].default_view;
 
             if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
                 state->animation.mode = state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
             }
 
             if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("Property")) {
+                if (ImGui::BeginMenu("Properties")) {
                     int candidate_count = 0;
                     auto list = [&](SeriesSource source) {
                         series_for_each_script_property(state, source, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& key) {
@@ -576,9 +818,8 @@ struct DensityVolume : viamd::EventHandler {
                             ImGui::PushID(key.source);
                             ImGui::PushID(key.path);
                             ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
-                            if (ImGui::Selectable(label, is_selected)) {
-                                add_key = key;
-                                ImGui::CloseCurrentPopup();
+                            if (ImGui::Selectable(label, is_selected, ImGuiSelectableFlags_DontClosePopups)) {
+                                toggle_key = key;
                             }
                             if (ImGui::BeginDragDropSource()) {
                                 series_set_drag_payload(VOLUME_SERIES_DND, key, -1, label, series_default_color(state, key));
@@ -601,158 +842,26 @@ struct DensityVolume : viamd::EventHandler {
                     }
 
                     if (candidate_count == 0) {
-                        ImGui::Text("No volume properties available.");
+                        ImGui::TextDisabled("No volume properties available.");
                     }
                     ImGui::EndMenu();
                 }
-                if (ImGui::BeginMenu("Render", active_layer >= 0)) {
-                    // One or the other (or neither): the two are separate renderers and never mixed
-                    if (ImGui::RadioButton("Off", !dvr.enabled && !iso.enabled)) {
-                        dvr.enabled = false;
-                        iso.enabled = false;
-                    }
-                    if (ImGui::RadioButton("Direct Volume Rendering", dvr.enabled)) {
-                        dvr.enabled = true;
-                        iso.enabled = false;
-                    }
-                    if (dvr.enabled) {
-                        ImGui::Indent();
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(dvr.tf.colormap), button_size, dvr.tf.colormap)) {
-                            ImGui::OpenPopup("Colormap Selector");
+                if (ImGui::BeginMenu("Layers", !layers.empty())) {
+                    for (auto& item : layers) {
+                        char label[96];
+                        series_label(label, sizeof(label), state, item.volume_key);
+                        ImGui::PushID((int)item.uid);
+                        ImPlot::ItemIcon(layer_color(item));
+                        ImGui::SameLine();
+                        if (ImGui::TreeNode(label)) {
+                            layer_style(item);
+                            ImGui::TreePop();
                         }
-                        if (ImGui::BeginPopup("Colormap Selector")) {
-                            for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
-                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                    dvr.tf.colormap = map;
-                                    dvr.tf.dirty = true;
-                                    ImGui::CloseCurrentPopup();
-                                }
-                            }
-                            ImGui::EndPopup();
-                        }
-                        if (ImGui::SliderFloat("TF Alpha Scaling", &dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
-                            dvr.tf.dirty = true;
-                        }
-                        const float tf_min = 0.0f;
-                        const float tf_max = 1000.0f;
-                        ImGui::SliderFloat("TF Min Value", &dvr.tf.min_val, tf_min, dvr.tf.max_val, "%.3f", ImGuiSliderFlags_Logarithmic);
-                        ImGui::SliderFloat("TF Max Value", &dvr.tf.max_val, dvr.tf.min_val, tf_max, "%.3f", ImGuiSliderFlags_Logarithmic);
-
-                        ImGui::Unindent();
-                    }
-                    if (ImGui::RadioButton("Iso Surfaces", iso.enabled)) {
-                        iso.enabled = true;
-                        dvr.enabled = false;
-                    }
-                    if (iso.enabled) {
-                        ImGui::Indent();
-                        for (int i = 0; i < (int)iso.count; ++i) {
-                            ImGui::PushID(i);
-                            ImGui::SliderFloat("##Isovalue", &iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                                // @TODO(Robin): Sort?
-                            }
-                            ImGui::SameLine();
-                            ImGui::ColorEdit4Minimal("##Color", iso.colors[i].elem);
-                            ImGui::SameLine();
-                            if (ImGui::DeleteButton(ICON_FA_XMARK)) {
-                                for (int j = i; j < (int)iso.count - 1; ++j) {
-                                    iso.colors[j] = iso.colors[j+1];
-                                    iso.values[j] = iso.values[j+1];
-                                }
-                                iso.count -= 1;
-                            }
-                            ImGui::PopID();
-                        }
-                        if ((iso.count < ARRAY_SIZE(iso.values)) && ImGui::Button("Add", button_size)) {
-                            size_t idx = iso.count++;
-                            iso.values[idx] = 0.1f;
-                            iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
-                            // @TODO(Robin): Sort?
-                        }
-                            ImGui::SameLine();
-                        if (ImGui::Button("Clear", button_size)) {
-                            iso.count = 0;
-                        }
-                        ImGui::Unindent();
+                        ImGui::PopID();
                     }
                     ImGui::EndMenu();
                 }
-
-                if (ImGui::BeginMenu("Clip planes", active_layer >= 0)) {
-                    ImGui::RangeSliderFloat("x", &clip_volume.min.x, &clip_volume.max.x, 0.0f, 1.0f);
-                    ImGui::RangeSliderFloat("y", &clip_volume.min.y, &clip_volume.max.y, 0.0f, 1.0f);
-                    ImGui::RangeSliderFloat("z", &clip_volume.min.z, &clip_volume.max.z, 0.0f, 1.0f);
-                    ImGui::EndMenu();
-                }
-                if (ImGui::BeginMenu("Show", active_layer >= 0)) {
-                    ImGui::Checkbox("Bounding Box", &show_bounding_box);
-                    if (show_bounding_box) {
-                        ImGui::Indent();
-                        ImGui::ColorEdit4("Color", bounding_box_color.elem);
-                        ImGui::Unindent();
-                    }
-                    ImGui::Checkbox("Reference Structure", &show_reference_structures);
-                    if (show_reference_structures) {
-                        ImGui::Indent();
-                        ImGui::Checkbox("Show Superimposed Structures", &show_reference_ensemble);
-
-                        if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
-                            for (int i = 0; i <= (int)RepresentationType::Cartoon; ++i) {
-                                if (ImGui::Selectable(representation_type_str[i], (int)rep.type == i)) {
-                                    rep.type = (RepresentationType)i;
-                                    dirty_rep = true;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
-                            for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
-                                if (ImGui::Selectable(color_mapping_str[i], (int)rep.colormap == i)) {
-                                    rep.colormap = (ColorMapping)i;
-                                    dirty_rep = true;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        if (rep.colormap == ColorMapping::Uniform) {
-                            dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
-                        }
-
-                        if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                            dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
-                        }
-                        if (rep.type == RepresentationType::Ribbons) {
-                            dirty_rep |= ImGui::SliderFloat("width", &rep.param[0], 0.1f, 2.f);
-                            dirty_rep |= ImGui::SliderFloat("thickness", &rep.param[1], 0.1f, 2.f);
-                        }
-                        if (rep.type == RepresentationType::Cartoon) {
-                            dirty_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
-                            dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[1], 0.1f, 3.f);
-                            dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[2], 0.1f, 3.f);
-                        }
-                        ImGui::Unindent();
-                    }
-                    ImGui::Checkbox("Legend", &legend.enabled);
-                    if (legend.enabled) {
-                        ImGui::Indent();
-                        const char* colormap_modes[] = {"Opaque", "Transparent", "Split"};
-                        if (ImGui::BeginCombo("Colormap", colormap_modes[legend.colormap_mode])) {
-                            for (int i = 0; i < IM_ARRAYSIZE(colormap_modes); ++i) {
-                                if (ImGui::Selectable(colormap_modes[i])) {
-                                    legend.colormap_mode = i;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-                        ImGui::Checkbox("Use Checkerboard", &legend.checkerboard);
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("Use a checkerboard background for transparent parts in the legend.");
-                        }
-                        ImGui::Unindent();
-                    }
+                if (ImGui::BeginMenu("View")) {
                     ImGui::Checkbox("Coordinate System Widget", &show_coordinate_system_widget);
                     ImGui::EndMenu();
                 }
@@ -760,31 +869,10 @@ struct DensityVolume : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            ImGui::TextDisabled("Layers (%zu/%d): select a row to edit its Render / Clip / Show settings", layers.size(), volume::MAX_OVERLAY_LAYERS);
-            int remove = -1;
-            int move = 0;
-            int move_index = -1;
-            for (int i = 0; i < (int)layers.size(); ++i) {
-                ImGui::PushID(i);
-                auto& item = layers[i];
-                ImGui::Checkbox("##visible", &item.visible);
-                ImGui::SameLine();
-                char label[128];
-                series_label(label, sizeof(label), state, item.volume_key);
-                if (ImGui::Selectable(label, active_layer == i, 0, ImVec2(ImMax(80.f, ImGui::GetContentRegionAvail().x - 105.f), 0))) active_layer = i;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (%s)%s", item.volume_key.path, series_source_name(item.volume_key.source), item.valid ? "" : "\nMissing or invalid data: not rendered");
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Up") && i > 0) { move_index = i; move = -1; }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Dn") && i + 1 < (int)layers.size()) { move_index = i; move = 1; }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("X")) remove = i;
-                ImGui::PopID();
-            }
-            if (layers.empty()) ImGui::TextDisabled("Add from Property or drag a volume row from Attributes.");
+            layer_bar(state, &remove_uid, &duplicate_uid);
+            if (layers.empty()) ImGui::TextDisabled("Add from Properties or drag a volume row from Attributes.");
             if (notice[0]) ImGui::TextWrapped("%s", notice);
-            if (layers.size() > 1) ImGui::TextDisabled("Overlays: shared depth-sorted ray sampling (fast surfaces).");
-            // Apply structural edits after rendering: menu references point into the layer list.
+            // The menus above hold references into the layer list: layers are added and removed at the end
             for (auto& item : layers) update(state, item);
 
             // Animate camera towards targets
@@ -820,8 +908,12 @@ struct DensityVolume : viamd::EventHandler {
             if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect, ImGui::GetID("##volume-drop"))) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VOLUME_SERIES_DND)) {
                     if (payload->DataSize == sizeof(SeriesDragPayload)) {
-                        dropped_key = ((const SeriesDragPayload*)payload->Data)->key;
-                        dropped = true;
+                        const SeriesDragPayload* dnd = (const SeriesDragPayload*)payload->Data;
+                        // One dragged from a layer is already in the window
+                        if (dnd->src_subplot < 0) {
+                            dropped_key = dnd->key;
+                            dropped = true;
+                        }
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -898,7 +990,16 @@ struct DensityVolume : viamd::EventHandler {
             draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
-            if (layer.visible && layer.valid && dvr.enabled && legend.enabled) {
+            DensityVolumeLayer* legend_layer = nullptr;
+            auto wants_legend = [](const DensityVolumeLayer& l) { return l.visible && l.valid && l.dvr.enabled && l.legend.enabled; };
+            if (active_layer >= 0 && wants_legend(layers[active_layer])) {
+                legend_layer = &layers[active_layer];
+            } else {
+                for (auto& item : layers) if (wants_legend(item)) { legend_layer = &item; break; }
+            }
+            if (legend_layer) {
+                auto& dvr = legend_layer->dvr;
+                auto& legend = legend_layer->legend;
                 ImVec2 canvas_ext = canvas_p1 - canvas_p0;
                 ImVec2 cmap_ext = {MIN(canvas_ext.x * 0.5f, 250.0f), MIN(canvas_ext.y * 0.25f, 30.0f)};
                 ImVec2 cmap_pad = {10, 10};
@@ -1203,18 +1304,47 @@ struct DensityVolume : viamd::EventHandler {
             glDrawBuffer(GL_BACK);
 
             POP_GPU_SECTION();
-            if (remove >= 0) {
-                free_layer(layers[remove]);
-                layers.erase(layers.begin() + remove);
-                if (active_layer > remove) --active_layer;
-                active_layer = layers.empty() ? -1 : CLAMP(active_layer, 0, (int)layers.size() - 1);
-            } else if (move_index >= 0) {
-                std::swap(layers[move_index], layers[move_index + move]);
-                if (active_layer == move_index) active_layer += move;
-                else if (active_layer == move_index + move) active_layer -= move;
+            layer_drag_out();
+            if (remove_uid) remove_layer(find_uid(remove_uid));
+            if (duplicate_uid) {
+                const int idx = find_uid(duplicate_uid);
+                if (idx >= 0) {
+                    const SeriesKey key = layers[idx].volume_key;
+                    const size_t before = layers.size();
+                    add_layer(state, key, true);
+                    if (layers.size() > before) {
+                        // The copy starts as the layer it came from
+                        DensityVolumeLayer& copy = layers.back();
+                        const DensityVolumeLayer& src = layers[idx];
+                        copy.visible = src.visible;
+                        copy.dvr.enabled = src.dvr.enabled;
+                        copy.dvr.tf.alpha_scale = src.dvr.tf.alpha_scale;
+                        copy.dvr.tf.colormap = src.dvr.tf.colormap;
+                        copy.dvr.tf.min_val = src.dvr.tf.min_val;
+                        copy.dvr.tf.max_val = src.dvr.tf.max_val;
+                        copy.iso.enabled = src.iso.enabled;
+                        copy.iso.count = src.iso.count;
+                        MEMCPY(copy.iso.values, src.iso.values, sizeof(copy.iso.values));
+                        MEMCPY(copy.iso.colors, src.iso.colors, sizeof(copy.iso.colors));
+                        copy.clip_volume = src.clip_volume;
+                        copy.legend = src.legend;
+                        copy.rep = src.rep;
+                        copy.bounding_box_color = src.bounding_box_color;
+                        copy.show_bounding_box = src.show_bounding_box;
+                        copy.show_reference_structures = src.show_reference_structures;
+                        copy.show_reference_ensemble = src.show_reference_ensemble;
+                        copy.dvr.tf.dirty = true;
+                    }
+                }
             }
-            if (dropped) add_layer(state, dropped_key);
-            if (add_key.path[0]) add_layer(state, add_key);
+            if (toggle_key.path[0]) {
+                bool removed = false;
+                for (int i = (int)layers.size() - 1; i >= 0; --i) {
+                    if (series_key_equal(layers[i].volume_key, toggle_key)) { remove_layer(i); removed = true; }
+                }
+                if (!removed) add_layer(state, toggle_key);
+            }
+            if (dropped) add_layer(state, dropped_key, true);
         }
 
         ImGui::End();
