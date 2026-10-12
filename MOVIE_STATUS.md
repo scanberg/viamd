@@ -55,7 +55,7 @@ Numbers that are saved and must never be renumbered, only added to: parameter id
 
 ## Left for later
 
-- Retake the screenshots in `docs/images/movie`; they show the earlier two-window layout (`overview.png`, `movie_window.png`, `timing_and_keyframes.png`, `look_at_pick.png`, `looks_and_overlays.png`, `movie_timeline.png`).
+- Capture new screenshots of the current editor: combined window with the bottom keyframe table, timeline presets, Output, Timing, Look at / Focus on, and Looks / Overlays. The old screenshots are no longer embedded in the documentation; do not reuse them.
 - Text overlays with live values (`{time}`, `{frame}`, a script property) and entrance/exit animations.
 - Saved overlay templates.
 - Editing representations during a recording, and a transparent background.

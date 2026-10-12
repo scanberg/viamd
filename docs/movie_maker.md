@@ -2,10 +2,6 @@
 
 VIAMD records a movie of a trajectory. You choose how long it is, place camera keyframes, key look settings (exposure, background, depth-of-field blur and so on) and the properties of representations (show or hide one, change its size or color), and add overlays (text, a time stamp, a scale bar, a time bar, images, plots of trajectory properties, the visualization of a script property, the VIAMD logo). The result is an MP4 (H.264 or H.265) or WebM file encoded by ffmpeg, or a numbered PNG sequence.
 
-![The movie tools with the camera path in the viewport](images/movie/overview.png)
-
-*Some screenshots show an earlier layout of the editor; the settings they show are the same.*
-
 Contents: [The editor](#the-editor) · [Shortcuts](#shortcuts) · [Quick start](#quick-start) · [The timeline](#the-timeline) · [Output](#output) · [Timing](#timing) · [Camera](#camera) · [Looks](#looks) · [Representations](#representations) · [Overlays](#overlays) · [Saving](#saving) · [Example workspaces](#example-workspaces) · [Tips](#tips) · [Known limits](#known-limits)
 
 ## The editor
@@ -83,8 +79,6 @@ When the recording ends, your own view, the animation playback and the screensho
 
 ## The timeline
 
-![The Movie timeline](images/movie/movie_timeline.png)
-
 The lanes share the time axis; the yellow line is the playhead. Above them, **Lanes** is a row of toggles, one per lane (lit when shown): **Ruler**, **Camera**, **Trajectory**, **Lens**, **Representations**, **Overlays**, **Rep keys** and **Look**, in the order the lanes are drawn. When **Rep keys** or **Look** is on, a second row picks what they show. Numbers on the lanes' axes and in the mouse readout have at most two decimals.
 
 The presets on the line below set the lanes for a kind of work:
@@ -128,8 +122,6 @@ Camera keys, trajectory, lens (distance and FOV), look-parameter and representat
 
 ## Output
 
-![The Movie window](images/movie/movie_window.png)
-
 | Setting | What it does |
 |---|---|
 | **Select Output Folder...** | Where the movie is written. Recording is disabled until one is chosen. |
@@ -148,8 +140,6 @@ Camera keys, trajectory, lens (distance and FOV), look-parameter and representat
 While recording, **Pause** and **Resume** stop and carry on. The progress bar shows frames done and, after a few frames, the time left. The **Representations** window is locked while recording.
 
 ## Timing
-
-![Timing and camera keyframes](images/movie/timing_and_keyframes.png)
 
 - **Trajectory Frames:** the first and last frame used. Start after end plays backwards.
 - **Movie length (s):** applied on Enter. **Everything on the timeline scales with it** (camera keys, look and representation keys, overlays and fades, the trajectory start and end), so the movie keeps its shape and only gets faster or slower. Frame numbers and spin counts are unchanged.
@@ -179,8 +169,6 @@ In Movie preview, previewing and recording always follow the keys; in Scene view
 - Path drawing options: time ticks, sight lines, cameras, spin rings (see [The camera path in the viewport](#the-camera-path-in-the-viewport)).
 
 ### The keyframe table
-
-![Keyframe table, key 2 waiting for an atom to be clicked](images/movie/look_at_pick.png)
 
 The table fills the bottom of the Movie window. Columns resize by dragging their borders; the table scrolls sideways when wider than the window.
 
@@ -260,8 +248,6 @@ Open **Focus on** of the keys at 18, 32 and 34 s: the first tracks the carbon, t
 **In short:** FOV changes how much you see and how big things look; depth of field changes what is sharp. A narrow FOV does not blur by itself, and more blur does not zoom.
 
 ## Looks
-
-![Look parameters and overlays](images/movie/looks_and_overlays.png)
 
 Background color and intensity, ambient occlusion, exposure, depth-of-field blur and the near and far clipping planes can change during the movie.
 
@@ -363,7 +349,7 @@ Workspaces from earlier versions load and are converted:
 
 The plots are the short-range Lennard-Jones and Coulomb terms from the `.edr` between aspirin and the protein, the Ca2+ ion and the water, and the geometry (distances to the pocket and to the ion, the number of waters around aspirin, the torsion of the carboxylate), each coming in at the time it matters, with four markers. The energies are read from the `.edr` with `attr("edr/...")` in the workspace's script.
 
-The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md) (a case study; its screenshots and scripts may lag behind the current editor).
+The reasoning behind its choices (the physics of the energy terms, the placement of aspirin and of the camera, the dolly zoom, the bullet time, the representation hand-overs) is written up in [`aspirin_binding_movie_article.md`](aspirin_binding_movie_article.md). Its figures describe the trajectory and movie sequence, not the editor layout; its generation scripts may lag behind the current editor.
 
 Both refer to `aspirin-phospholipase.gro`, `.xtc` and `.edr` in their own folder, which are not in the repository. Put your copies next to the workspace and use **File > Open Workspace**.
 

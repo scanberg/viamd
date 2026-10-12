@@ -8,8 +8,6 @@ Everything is in one **Windows > Movie** editor: a timeline with draggable lanes
 
 The manual is [`docs/movie_maker.md`](docs/movie_maker.md). [`docs/examples/aspirin_phospholipase_movie.via`](docs/examples/aspirin_phospholipase_movie.via) is a finished 80 s movie using most features, and [`docs/examples/aspirin_binding_movie.via`](docs/examples/aspirin_binding_movie.via) a 60 s one with a dolly zoom, a bullet-time orbit, representation hand-overs and energy plots (their trajectory files are not in the repository).
 
-![Movie maker](docs/images/movie/overview.png)
-
 ### Features
 
 **Recording**
@@ -75,7 +73,7 @@ The manual is [`docs/movie_maker.md`](docs/movie_maker.md). [`docs/examples/aspi
 New suites: `test_camera_utils`, `test_movie_keys`, `test_frame_sink`, `test_movie_overlay`, `test_image`, `test_serialization`. All 268 tests pass in a Release build on Linux (`./build/bin/viamd_test`).
 
 ### Testing done and not done
-- PNG sequences and H.264 MP4s were recorded on Linux; the manual's screenshots come from a real run (some show an earlier layout).
+- PNG sequences and H.264 MP4s were recorded on Linux.
 - The editor was checked by hand on Linux. [`MOVIE_STATUS.md`](MOVIE_STATUS.md) has developer notes and what is left out.
 - Merged with `scanberg/viamd` master through `ac191f75`.
 - Not tested on Windows or macOS (the ffmpeg pipe uses `_popen` / `popen`).
