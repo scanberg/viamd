@@ -14,6 +14,12 @@ struct md_system_state_t;
 struct md_bitfield_t;
 struct md_allocator_i;
 
+// Legacy distance/FOV visibility bits now control one combined Lens lane.
+std::array<bool, 3> movie_timeline_tracks_from_mask(int mask);
+
+constexpr int MOVIE_PATH_OPTIONS_DEFAULT = 15;
+bool movie_path_visible(bool scene_view, bool scene_path, int path_options);
+
 // Centre of a selected atom/group, made whole across periodic boundaries and transformed to camera space.
 // Returns false for an empty selection or indices outside the current system. alloc must be a VM arena.
 bool movie_target_center(vec3_t* out, const md_system_t& system, const md_system_state_t& state,

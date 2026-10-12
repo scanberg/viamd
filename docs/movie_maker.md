@@ -35,7 +35,7 @@ The large button at the top right, or **Tab**, switches the viewport between two
 
 Each mode remembers its own view. The first time you enter Scene view it frames the whole camera path, seen from where you were looking; **Fit path** does that again. Both modes show the same recording frame, the same size and in the same place: in the part of the viewport the Movie window leaves free (beside, above or below it), with the movie camera's view centred in it as in the recording. Move the window and the frame moves along; when the window floats in the middle, or outside the main window, the frame is centred in the whole viewport. What is in the frame is what a key added from the view records, so keys are aimed the same way in both modes. The view turns around the middle of the frame, and in Scene view the mouse wheel zooms towards the point under the mouse.
 
-**Show path** has a setting of its own in each mode: in Scene view it draws the path, in Movie preview it adds the path over the movie camera's view.
+**Show path** defaults to **on in Scene view** and **off in Movie preview**. The switches are independent: changing one does not change the other. Both choices are saved with the workspace; workspaces without saved path settings use these defaults. The bundled examples use the same defaults. Path overlays are never included in recorded frames.
 
 **Live picture** (Scene view) shows a small live picture of the movie camera, with overlays, at the lower right of the upper panels, so you can drag the path in the viewport and watch the shot at the same time. Right-click it for its size (**Small** to **Extra large**, limited to about 65 % of the upper area's height) or to hide it. It costs one extra render when the picture changes (at most about 20 times a second), so switch it off on very large systems. It has no temporal anti-aliasing or sharpening, and no property visualization.
 
@@ -386,6 +386,7 @@ Workspaces from earlier versions load and are converted:
 - Focus keys on a fixed point or at a fixed distance keep working and are shown read-only; choose **Look-at** or **Track selection** to replace them.
 - A global Fixed or target focus mode becomes **Auto**, with a notification.
 - Keys of the old **Focus distance**, **Occlusion radius** and depth-of-field blur parameters (from before the renderer update) are kept but inactive, with a message: their units cannot be converted. Key **Depth of field blur** again.
+- Separate distance and FOV lane visibility settings become one **Lens** setting: if either old curve was enabled, both curves are shown; if both were disabled, Lens stays hidden.
 
 ## Example workspaces
 

@@ -16,6 +16,30 @@
 #include <fstream>
 #include <iterator>
 
+UTEST(viamd_movie_keys, path_visibility_defaults_and_modes_are_independent) {
+    EXPECT_TRUE(movie_path_visible(true, true, MOVIE_PATH_OPTIONS_DEFAULT));
+    EXPECT_FALSE(movie_path_visible(false, true, MOVIE_PATH_OPTIONS_DEFAULT));
+    EXPECT_FALSE(movie_path_visible(true, false, MOVIE_PATH_OPTIONS_DEFAULT | 16));
+    EXPECT_TRUE(movie_path_visible(false, false, MOVIE_PATH_OPTIONS_DEFAULT | 16));
+    EXPECT_TRUE(movie_path_visible(true, true, MOVIE_PATH_OPTIONS_DEFAULT | 16));
+    EXPECT_FALSE(movie_path_visible(false, false, MOVIE_PATH_OPTIONS_DEFAULT));
+}
+
+UTEST(viamd_movie_keys, legacy_lens_visibility_enables_both_curves) {
+    for (int mask = 0; mask < 8; ++mask) {
+        const auto tracks = movie_timeline_tracks_from_mask(mask);
+        EXPECT_EQ((mask & 1) != 0, tracks[0]);
+        EXPECT_EQ((mask & 6) != 0, tracks[1]);
+        EXPECT_EQ(tracks[1], tracks[2]);
+    }
+    const auto phospholipase = movie_timeline_tracks_from_mask(995);
+    const auto binding = movie_timeline_tracks_from_mask(4071);
+    for (int t = 0; t < 3; ++t) {
+        EXPECT_TRUE(phospholipase[t]);
+        EXPECT_TRUE(binding[t]);
+    }
+}
+
 UTEST(viamd_movie_keys, independent_position_does_not_depend_on_legacy_aim) {
     CameraKeyframe keys[2];
     keys[0].time = 0; keys[1].time = 10;

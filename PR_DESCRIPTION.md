@@ -33,6 +33,7 @@ The manual is [`docs/movie_maker.md`](docs/movie_maker.md). [`docs/examples/aspi
 - **Keep upright** with a roll per key, so loops and spins never tilt the camera.
 - The movie owns focus while its editor is open; the ordinary viewport always focuses at its look-at point (Auto), and its blur is restored when the editor closes.
 - The camera path is drawn in the viewport (ticks at round times, chevrons, sight lines, cameras, spin rings, the green camera at the preview time) with handles on the eye and the look-at point of each key: click to go there, drag to edit (Ctrl moves both), Ctrl + click on the path adds a key.
+- Path visibility defaults to on in Scene view and off in Movie preview, with independent saved switches. Recorded frames never include the camera path.
 
 **Looks and representations**
 - Keyable look parameters: background, ambient occlusion, exposure, depth-of-field blur, clipping.
@@ -74,7 +75,7 @@ The manual is [`docs/movie_maker.md`](docs/movie_maker.md). [`docs/examples/aspi
 - Most of the UI is in `src/main.cpp`; state and workspace I/O in `viamd.{h,cpp}`.
 
 ### Tests
-New suites: `test_camera_utils`, `test_movie_keys`, `test_frame_sink`, `test_movie_overlay`, `test_image`, `test_serialization`. All 268 tests pass in a Release build on Linux (`./build/bin/viamd_test`).
+New suites: `test_camera_utils`, `test_movie_keys`, `test_frame_sink`, `test_movie_overlay`, `test_image`, `test_serialization`. The previous full Release run on Linux passed 268 tests. After adding Lens visibility migration and independent path-visibility regressions, the application and test binary rebuilt successfully and all 111 movie-key tests passed (270 tests total).
 
 ### Testing done and not done
 - PNG sequences and H.264 MP4s were recorded on Linux.

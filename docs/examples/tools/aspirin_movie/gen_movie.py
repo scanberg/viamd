@@ -68,7 +68,7 @@ out.append('[Camera]\nPosition=%s\nOrientation=%s\nDistance=%s\nMode=0\nFovY=%s\
 EASE_HOLD = 3
 lanes = 1 | 2 | 4 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048
 m = ['[Movie]', 'Resolution=1', 'ResX=1920', 'ResY=1080', 'Fps=24', 'StartFrame=600', 'EndFrame=0', 'Timeline=2', 'Duration=%d' % DUR,
-     'TrajectoryBegin=0', 'TrajectoryEnd=%d' % DUR, 'Playhead=0', 'FilenamePrefix=aspirin_binding', 'AnimateCamera=1', 'ShowPath=0',
+     'TrajectoryBegin=0', 'TrajectoryEnd=%d' % DUR, 'Playhead=0', 'FilenamePrefix=aspirin_binding', 'AnimateCamera=1', 'ShowPath=1',
      'PathOptions=15', 'Output=1', 'Crf=18', 'ResScale=100', 'AaSamples=0', 'SaveCopy=1', 'RepTransition=2.5', 'SnapFrames=1',
      'Lanes=%d' % lanes, 'LaneHeight=200', 'FitLanes=1', 'RepEqualRows=1', 'Overlays=1', 'RenderRange=0,0,%d' % DUR, 'Loop=0',
      'KeepUpright=1', 'UpAxis=2', 'AnimateParams=1']

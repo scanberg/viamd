@@ -8942,7 +8942,7 @@ static void movie_draw_camera_path(ApplicationState* state, ImDrawList* dl) {
     m.path_hot = false;
     m.path_hover_key = -1;
     const size_t n = md_array_size(m.keyframes);
-    const bool shown = m.show_path && n > 0 && m.show_window && (movie_scene_view(state) || (m.path_options & 16)) && m.state != MovieRecordingState::Recording && str_empty(state->screenshot.path_to_file);
+    const bool shown = movie_path_visible(movie_scene_view(state), m.show_path, m.path_options) && n > 0 && m.show_window && m.state != MovieRecordingState::Recording && str_empty(state->screenshot.path_to_file);
     if (!shown) {
         d.active = false;
         m.lane_hover_key = -1;
@@ -9966,8 +9966,8 @@ static void draw_movie_strip(ApplicationState* data, float movie_len, bool locke
         int num_curves = 0;
         if (lane_i == 0) curves[num_curves++] = 0;
         else {
-            if (m.timeline_tracks[2]) curves[num_curves++] = 2;
-            if (m.timeline_tracks[1]) curves[num_curves++] = 1;
+            curves[num_curves++] = 2;
+            curves[num_curves++] = 1;
         }
         const bool lens = lane_i == 1;
         if (!ImPlot::BeginPlot(lens ? "Camera lens" : titles[0], ImVec2(-1, -1), lens && num_curves > 1 ? ImPlotFlags_NoBoxSelect : plot_flags)) continue;
@@ -11202,7 +11202,7 @@ static void draw_movie_timeline_options(ApplicationState* data) {
         if (on) ImGui::PopStyleColor(2);
         ImGui::SetItemTooltip("%s", c.tip);
     }
-    if (lens != (m.timeline_tracks[1] || m.timeline_tracks[2])) m.timeline_tracks[1] = m.timeline_tracks[2] = lens;
+    m.timeline_tracks[1] = m.timeline_tracks[2] = lens;
 
     auto preset = [&](bool ruler, bool camera, bool traj, bool lens_on, bool look, bool rep, bool overview, bool overlays) {
         m.timeline_ruler = ruler; m.timeline_camera_lane = camera; m.timeline_tracks[0] = traj;
@@ -12806,7 +12806,7 @@ static void draw_movie_settings_panel(ApplicationState* data) {
             ImGui::SetItemTooltip("The path of the camera (blue) and of what it looks at (yellow), with the camera at each keyframe.\nThe green camera is where the preview time is, with the line it looks along.\n"
                 "Each key has a handle on the eye (numbered) and one on what it looks at: click one to go to the key, drag it to edit the key\n"
                 "(Ctrl + drag moves both, Esc cancels). Ctrl + click on the path adds a key there.");
-            ImGui::BeginDisabled(!m.show_path);
+            ImGui::BeginDisabled(!movie_path_visible(!m.show_frame, m.show_path, m.path_options));
             ImGui::Indent();
             if (ImGui::Checkbox("Time ticks", &ticks)) m.path_options = (m.path_options & ~1) | (ticks ? 1 : 0);
             ImGui::SetItemTooltip("Dots at round times along the path, with chevrons for the direction. Dots close together are where the camera is slow.");
@@ -12943,12 +12943,10 @@ static void draw_movie_window(ApplicationState* data) {
             ImGui::SameLine();
         }
         {
-            // In Scene view the path is drawn whenever it is on; in Movie preview, where you look through the movie camera, only if asked too
-            bool shown = m.show_path && (!m.show_frame || (m.path_options & 16));
+            bool shown = movie_path_visible(!m.show_frame, m.show_path, m.path_options);
             if (ImGui::Checkbox("Show path", &shown)) {
                 if (!m.show_frame) m.show_path = shown;
                 else {
-                    if (shown) m.show_path = true;
                     m.path_options = (m.path_options & ~16) | (shown ? 16 : 0);
                 }
             }

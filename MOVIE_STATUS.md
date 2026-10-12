@@ -15,8 +15,9 @@ The user manual is [`docs/movie_maker.md`](docs/movie_maker.md); this file is fo
 
 ## Build and test
 
-- `cmake --build build --target viamd viamd_test -j8` (run `cmake -S . -B build` after adding files), then `./build/bin/viamd_test` (268 tests; `--filter=viamd_movie_keys.*` for the 109 movie-key ones).
+- Build the `viamd` and `viamd_test` targets, then run `./build/bin/viamd_test` (270 tests; `--filter=viamd_movie_keys.*` for the 111 movie-key ones).
 - The tests cover logic only: key evaluation (eye, aim and focus separately, transitions, spin, easing), conversion of older workspaces, group edits, undo, time scaling, overlay maths and the frame sink (with a fake script, so no ffmpeg is needed).
+- The Lens compatibility and independent path-visibility fixes were rebuilt on Linux and all 111 movie-key tests passed, including legacy lane masks and independent Scene/Movie path switches. The previous full-suite run passed 268 tests, before these two regression tests were added.
 
 ## Documentation and example verification
 
@@ -41,6 +42,10 @@ The user manual is [`docs/movie_maker.md`](docs/movie_maker.md); this file is fo
 | Camera path evaluation, levelling, roll | `src/gfx/camera_utils.{h,cpp}` |
 
 Numbers that are saved and must never be renumbered, only added to: parameter ids in `movie_param_table` (main.cpp), `RepProp` (movie_keys.h), `MovieOverlayType` (movie_overlay.h; 6 and 7 are timeline and distribution, 9 is the old one-figure version split on read), the `Lanes` bits (1, 2, 4 tracks; 8 parameter; 16 representation lane; 32 overlay; 64 overview; 256 camera; 1024 ruler; 128, 512, 2048 are the "set" flags of the last three) and the `PathOptions` bits (mask 31, default 15; bit 16 shows the path in Movie preview).
+
+Distance/FOV visibility bits 2 and 4 now represent one Lens lane: loading either enables both, saving emits both together, and the lane always draws FOV on the left and distance on the right.
+
+Path visibility defaults to on in Scene view (`ShowPath=1`) and off in Movie preview (bit 16 clear in `PathOptions`). These switches are independent; workspace reset restores both defaults before reading saved settings. Bundled examples and the binding generator use the same defaults.
 
 ## Behaviour that must stay
 

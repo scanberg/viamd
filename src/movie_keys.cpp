@@ -11,6 +11,15 @@
 #include <cmath>
 #include <cstring>
 
+std::array<bool, 3> movie_timeline_tracks_from_mask(int mask) {
+    const bool lens = (mask & (2 | 4)) != 0;
+    return {(mask & 1) != 0, lens, lens};
+}
+
+bool movie_path_visible(bool scene_view, bool scene_path, int path_options) {
+    return scene_view ? scene_path : (path_options & 16) != 0;
+}
+
 bool movie_target_center(vec3_t* out, const md_system_t& system, const md_system_state_t& state,
                          const md_bitfield_t& mask, const mat4_t& world_transform, md_allocator_i* alloc) {
     const size_t count = md_bitfield_popcount(&mask);

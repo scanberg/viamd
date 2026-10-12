@@ -1670,6 +1670,7 @@ static void workspace_reset(ApplicationState* data) {
         snprintf(m.filename_prefix, sizeof(m.filename_prefix), "frame");
         m.preview_playing = false;
         m.show_path = true;
+        m.path_options = MOVIE_PATH_OPTIONS_DEFAULT;
         m.output = MovieOutput::Mp4;
         m.crf = 18;
         m.res_scale = 100;
@@ -2198,7 +2199,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("Lanes"))) {
                     int bits = 0;
                     if (viamd::extract_int(bits, arg)) {
-                        for (int t = 0; t < 3; ++t) m.timeline_tracks[t] = (bits >> t) & 1;
+                        const auto tracks = movie_timeline_tracks_from_mask(bits);
+                        for (int t = 0; t < 3; ++t) m.timeline_tracks[t] = tracks[t];
                         m.timeline_param_lane   = (bits & 8) != 0;
                         m.timeline_rep_lane     = (bits & 16) != 0;
                         m.timeline_overlay_lane = (bits & 32) != 0;
@@ -2935,7 +2937,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("SaveCopy"), m.save_copy);
         viamd::write_flt (state, STR_LIT("RepTransition"), m.rep_transition);
         viamd::write_bool(state, STR_LIT("SnapFrames"), m.snap_frames);
-        viamd::write_int (state, STR_LIT("Lanes"), (m.timeline_tracks[0] ? 1 : 0) | (m.timeline_tracks[1] ? 2 : 0) | (m.timeline_tracks[2] ? 4 : 0) |
+        const bool lens = m.timeline_tracks[1] || m.timeline_tracks[2];
+        viamd::write_int (state, STR_LIT("Lanes"), (m.timeline_tracks[0] ? 1 : 0) | (lens ? 6 : 0) |
             (m.timeline_param_lane ? 8 : 0) | (m.timeline_rep_lane ? 16 : 0) | (m.timeline_overlay_lane ? 32 : 0) |
             (m.timeline_rep_overview ? 64 : 0) | 128 | (m.timeline_camera_lane ? 256 : 0) | 512 | (m.timeline_ruler ? 1024 : 0) | 2048);
         viamd::write_flt (state, STR_LIT("LaneHeight"), m.timeline_lane_height);
