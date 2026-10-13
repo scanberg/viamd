@@ -4408,7 +4408,13 @@ void create_default_representations(ApplicationState* state) {
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
     // element to, should not take the protein, ligand and water representations from the rest.
     if (2 * num_coarse_grained > state->mold.sys.atom.count) {
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
+        // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon, the rest as beads
+        const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
+        if (protein_trace) {
+            Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
+            snprintf(prot->name, sizeof(prot->name), "protein");
+        }
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, protein_trace ? STR_LIT("not protein") : STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
