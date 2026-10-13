@@ -63,6 +63,7 @@
 #include <string>
 
 #include <viamd.h>
+#include <timeline_ranges_ui.h>
 #include <script_reference.h>
 #include <viamd_event.h>
 #include <event.h>
@@ -714,11 +715,15 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (state.timeline.filter.temporal_window.enabled) {
-            // The script's filter frame set follows (see the evaluation below)
-            const double half_window_ext = state.timeline.filter.temporal_window.extent_in_frames * 0.5;
-            state.timeline.filter.beg_frame = CLAMP(round(state.animation.frame - half_window_ext), 0.0, max_frame);
-            state.timeline.filter.end_frame = CLAMP(round(state.animation.frame + half_window_ext), 0.0, max_frame);
+        {
+            // The filter is the range marked as the filter, with the current frame where it is now. The
+            // script's filter frame set follows (see the evaluation below).
+            int beg = 0, end = 0;
+            state.timeline.filter.enabled = timeline_ranges_filter_frames(&beg, &end, &state.timeline.ranges, state.animation.frame, (int)num_frames);
+            if (state.timeline.filter.enabled) {
+                state.timeline.filter.beg_frame = beg;
+                state.timeline.filter.end_frame = end;
+            }
         }
 
         if (state.timeline.filter.enabled) {
@@ -4235,16 +4240,8 @@ static void draw_timeline_window(ApplicationState* data) {
                 draw_timeline_properties_menu(data);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Filter")) {
-                ImGui::Checkbox("Enabled", &data->timeline.filter.enabled);
-                if (data->timeline.filter.enabled) {
-                    ImGui::Checkbox("Temporal Window", &data->timeline.filter.temporal_window.enabled);
-                    if (data->timeline.filter.temporal_window.enabled) {
-                        const double extent_min = 1.0;
-                        const double extent_max = num_x_values / 2.0;
-                        ImGui::SliderScalar("Extent (frames)", ImGuiDataType_Double, &data->timeline.filter.temporal_window.extent_in_frames, &extent_min, &extent_max, "%1.0f");
-                    }
-                }
+            if (ImGui::BeginMenu("Ranges")) {
+                timeline_ranges_menu(&data->timeline.ranges, data->animation.frame, num_x_values);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
@@ -4268,30 +4265,19 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
             static bool is_dragging  = false;
-            static bool is_selecting = false;
 
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 is_dragging = false;
-                is_selecting = false;
             }
             if (!ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                 is_dragging = false;
             }
-            if (!ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                is_selecting = false;
+
+            // Shift-drag marks a range and ctrl-drag moves the current frame: neither may pan the plots
+            // meanwhile, and nor may a range being dragged in the lane
+            if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl || timeline_ranges_dragging()) {
+                ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
             }
-
-            // Create a temporary 'time' representation of the filters min and max value
-            // The visualization uses time units while we store 'frame' units
-            double filter_beg = frame_to_time(data->timeline.filter.beg_frame, *data);
-            double filter_end = frame_to_time(data->timeline.filter.end_frame, *data);
-            double time = frame_to_time(data->animation.frame, *data);
-
-            ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
-
-            const ImPlotFlags plot_flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch;
-            const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_Opposite | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
 
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
@@ -4300,6 +4286,24 @@ static void draw_timeline_window(ApplicationState* data) {
                 md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
+
+            // The ranges, above the plots and on their time axis
+            TimelineRangeAxis range_axis;
+            range_axis.frame_times = x_values;
+            range_axis.num_frames  = num_x_values;
+            range_axis.view_beg    = &data->timeline.view_range.beg_x;
+            range_axis.view_end    = &data->timeline.view_range.end_x;
+            range_axis.time_unit   = x_unit_str;
+            timeline_ranges_lane(&data->timeline.ranges, range_axis, &data->animation.frame);
+
+            // After the lane, which ctrl-drag in it may have moved
+            double time = frame_to_time(data->animation.frame, *data);
+
+            ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
+
+            const ImPlotFlags plot_flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
+            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch;
+            const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_Opposite | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
 
             for (int i = 0; i < num_subplots; ++i) {
                 PlotSubplot& sp = data->timeline.subplots[i];
@@ -4343,16 +4347,8 @@ static void draw_timeline_window(ApplicationState* data) {
                     ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
                     ImPlot::SetupFinish();
 
-                    if (data->timeline.filter.enabled) {
-                        bool disabled = data->timeline.filter.temporal_window.enabled;
-                        ImPlotDragRangeFlags flags = ImPlotDragToolFlags_NoFit;
-                        if (i < num_subplots - 1) {
-                            flags |= ImPlotDragRangeFlags_NoBar;
-                        }
-                        if (disabled) ImGui::PushDisabled();
-                        ImPlot::DragRangeX("Time Filter", &filter_beg, &filter_end, min_x_value, max_x_value, flags);
-                        if (disabled) ImGui::PopDisabled();
-                    }
+                    // The ranges shaded below the series, and shift-press marking a new one
+                    timeline_ranges_plot(&data->timeline.ranges, range_axis, data->animation.frame);
 
                     // The entry, and the member of its population, under the mouse
                     int  hovered_idx      = -1;
@@ -4482,16 +4478,8 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     if (is_dragging) {
                         time = ImPlot::GetPlotMousePos().x;
-                    } else if (is_selecting) {
-                        filter_end = MAX(ImPlot::GetPlotMousePos().x, filter_beg);
-                        filter_beg = MIN(filter_beg, filter_end);
-                    } else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
-                            is_dragging = true;
-                        } else if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                            filter_beg = ImPlot::GetPlotMousePos().x;
-                            is_selecting = true;
-                        }
+                    } else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                        is_dragging = true;
                     }
 
                     for (int j = 0; j < sp.count; ++j) {
@@ -4624,7 +4612,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImPlot::EndDragDropTarget();
                     }
 
-                    if (print_timeline_tooltip) {
+                    // A range being marked or dragged has a tooltip of its own
+                    if (print_timeline_tooltip && !timeline_ranges_dragging()) {
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
@@ -4652,13 +4641,8 @@ static void draw_timeline_window(ApplicationState* data) {
 
             ImPlot::EndSubplots();
 
-            time       = CLAMP(time, (double)min_x_value, (double)max_x_value);
-            filter_beg = CLAMP(filter_beg, min_x_value, max_x_value);
-            filter_end = CLAMP(filter_end, min_x_value, max_x_value);
-
+            time = CLAMP(time, (double)min_x_value, (double)max_x_value);
             data->animation.frame = time_to_frame(time, data->timeline.x_values);
-            data->timeline.filter.beg_frame = time_to_frame(filter_beg, data->timeline.x_values);
-            data->timeline.filter.end_frame = time_to_frame(filter_end, data->timeline.x_values);
 
             ImPlot::GetInputMap() = old_map;
         }

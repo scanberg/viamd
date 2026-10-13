@@ -30,6 +30,7 @@
 #include <loader.h>
 #include <event.h>
 #include <plot_series.h>
+#include <timeline_ranges.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -1258,18 +1259,19 @@ struct ApplicationState {
 
     // --- TIMELINE---
     struct {
+        // What the filter is, each frame: the frames of the range marked as the filter (see
+        // TimelineRanges::filter_id), and disabled while none is. Read by everything that is
+        // evaluated or shown over the filter.
         struct {
             bool enabled = false;
             double beg_frame = 0;
             double end_frame = 1;
 
-            struct {
-                bool enabled = false;
-                double extent_in_frames = 10;
-            } temporal_window;
-
             uint64_t fingerprint = 0;
         } filter;
+
+        // The named ranges and markers along the timeline (see timeline_ranges.h)
+        TimelineRanges ranges;
 
         struct {
             double beg_x = 0;

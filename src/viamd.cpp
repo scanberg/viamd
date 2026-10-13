@@ -1523,10 +1523,15 @@ struct WorkspacePending {
     bool has_recenter_target;
     md_bitset_t recenter_target;
 
-    // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in
+    // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
+    // filter is how a workspace from before the timeline's ranges held it, and becomes one of them.
+    bool   filter_enabled;
     bool   has_filter_range;
     double filter_beg_frame;
     double filter_end_frame;
+    bool   temporal_window_enabled;
+    double temporal_window_extent;
+    bool   has_ranges;
     bool   has_view_range;
     double view_beg_frame;
     double view_end_frame;
@@ -1563,8 +1568,7 @@ static void workspace_reset(ApplicationState* data) {
     data->timeline.num_subplots = 1;
     data->distributions.num_subplots = 1;
     data->timeline.filter.enabled = false;
-    data->timeline.filter.temporal_window.enabled = false;
-    data->timeline.filter.temporal_window.extent_in_frames = 10;
+    data->timeline.ranges = TimelineRanges{};
 
     data->visuals = {};
     data->simulation_box = {};
@@ -1948,7 +1952,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
         } else if (str_eq(section, STR_LIT("TimelineView"))) {
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("FilterEnabled"))) {
-                    viamd::extract_bool(data->timeline.filter.enabled, arg);
+                    viamd::extract_bool(pending.filter_enabled, arg);
                 } else if (str_eq(ident, STR_LIT("FilterFrames"))) {
                     float r[2];
                     if (viamd::extract_flt_vec(r, 2, arg)) {
@@ -1957,9 +1961,13 @@ void load_workspace(ApplicationState* data, str_t filename) {
                         pending.filter_end_frame = r[1];
                     }
                 } else if (str_eq(ident, STR_LIT("TemporalWindowEnabled"))) {
-                    viamd::extract_bool(data->timeline.filter.temporal_window.enabled, arg);
+                    viamd::extract_bool(pending.temporal_window_enabled, arg);
                 } else if (str_eq(ident, STR_LIT("TemporalWindowExtent"))) {
-                    viamd::extract_dbl(data->timeline.filter.temporal_window.extent_in_frames, arg);
+                    viamd::extract_dbl(pending.temporal_window_extent, arg);
+                } else if (str_eq(ident, STR_LIT("RangeLayout"))) {
+                    viamd::extract_enum(data->timeline.ranges.layout, arg, (int)TimelineRangeLayout_Count);
+                } else if (str_eq(ident, STR_LIT("RangeShadeAll"))) {
+                    viamd::extract_bool(data->timeline.ranges.shade_all, arg);
                 } else if (str_eq(ident, STR_LIT("ViewFrames"))) {
                     float r[2];
                     if (viamd::extract_flt_vec(r, 2, arg)) {
@@ -1968,6 +1976,11 @@ void load_workspace(ApplicationState* data, str_t filename) {
                         pending.view_end_frame = r[1];
                     }
                 }
+            }
+        } else if (str_eq(section, STR_LIT("TimelineRange"))) {
+            pending.has_ranges = true;
+            if (!timeline_ranges_deserialize_range(state, &data->timeline.ranges)) {
+                VIAMD_LOG_ERROR("Workspace: more than %d timeline ranges, the rest are left out", TIMELINE_MAX_RANGES);
             }
         } else if (str_eq(section, STR_LIT("RenderSettings"))) {
             auto& v = data->visuals;
@@ -2140,12 +2153,22 @@ void load_workspace(ApplicationState* data, str_t filename) {
         data->animation.frame = CLAMP(pending.frame, 0.0, (double)(num_frames - 1));
     }
 
-    // Loading a trajectory sets the filter and the view to all of it; the workspace's come after
+    // Loading a trajectory sets the view to all of it; the workspace's comes after
     if (num_frames > 0) {
         const double last = (double)(num_frames - 1);
-        if (pending.has_filter_range) {
-            data->timeline.filter.beg_frame = CLAMP(pending.filter_beg_frame, 0.0, last);
-            data->timeline.filter.end_frame = CLAMP(pending.filter_end_frame, data->timeline.filter.beg_frame, last);
+        // A workspace from before the ranges: its filter becomes the range the filter follows
+        if (!pending.has_ranges && pending.filter_enabled) {
+            TimelineRange* r = nullptr;
+            if (pending.temporal_window_enabled) {
+                const double  extent = pending.temporal_window_extent > 0.0 ? pending.temporal_window_extent : 10.0;
+                const int32_t half = (int32_t)round(extent * 0.5);
+                r = timeline_ranges_add(&data->timeline.ranges, "Filter", -half, half, true);
+            } else {
+                const double beg = pending.has_filter_range ? CLAMP(pending.filter_beg_frame, 0.0, last) : 0.0;
+                const double end = pending.has_filter_range ? CLAMP(pending.filter_end_frame, beg, last) : last;
+                r = timeline_ranges_add(&data->timeline.ranges, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
+            }
+            if (r) data->timeline.ranges.filter_id = r->id;
         }
         if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
             data->timeline.view_range.beg_x = workspace_frame_to_time(data, CLAMP(pending.view_beg_frame, 0.0, last));
@@ -2270,11 +2293,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         // In frames: a time is in whatever unit it happens to be shown in
         const auto& tl = app_state->timeline;
         viamd::write_section_header(state, STR_LIT("TimelineView"));
-        viamd::write_bool(state, STR_LIT("FilterEnabled"), tl.filter.enabled);
-        const float filter[2] = { (float)tl.filter.beg_frame, (float)tl.filter.end_frame };
-        viamd::write_flt_vec(state, STR_LIT("FilterFrames"), filter, 2);
-        viamd::write_bool(state, STR_LIT("TemporalWindowEnabled"), tl.filter.temporal_window.enabled);
-        viamd::write_dbl(state, STR_LIT("TemporalWindowExtent"), tl.filter.temporal_window.extent_in_frames);
+        viamd::write_int(state, STR_LIT("RangeLayout"), (int)tl.ranges.layout);
+        viamd::write_bool(state, STR_LIT("RangeShadeAll"), tl.ranges.shade_all);
         if (md_array_size(tl.x_values) > 0) {
             const float view[2] = {
                 (float)workspace_time_to_frame(app_state, tl.view_range.beg_x),
@@ -2282,6 +2302,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
             };
             viamd::write_flt_vec(state, STR_LIT("ViewFrames"), view, 2);
         }
+        timeline_ranges_serialize(state, &tl.ranges);
     }
 
     {

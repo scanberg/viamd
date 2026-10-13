@@ -187,6 +187,8 @@ set(SRC_FILES
     src/script_reference.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
+    src/timeline_ranges.cpp
+    src/timeline_ranges_ui.cpp
     src/viamd.cpp
 
     src/app_settings.h
@@ -204,6 +206,8 @@ set(SRC_FILES
     src/script_reference.h
     src/serialization_utils.h
     src/task_system.h
+    src/timeline_ranges.h
+    src/timeline_ranges_ui.h
     src/viamd.h
     src/viamd_event.h
 )
