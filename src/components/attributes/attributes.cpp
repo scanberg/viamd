@@ -83,6 +83,16 @@ static bool contains_ignore_case(str_t haystack, str_t needle) {
     return false;
 }
 
+// An attribute of a distribution or a volume of the script ("script/<ident>", "script/<ident>/weight")
+static bool script_aggregate_path(const ApplicationState& state, str_t path) {
+    const str_t prefix = STR_LIT("script/");
+    if (!state.script.eval_ir || !str_begins_with(path, prefix)) return false;
+    str_t ident = str_substr(path, prefix.len);
+    size_t loc;
+    if (str_find_char(&loc, ident, '/')) ident = str_substr(ident, 0, loc);
+    return md_script_ir_property_flags(state.script.eval_ir, ident) & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME);
+}
+
 // Every whitespace separated word of the filter occurs in the path, the label or the source
 static bool matches_filter(str_t filter, str_t path, str_t label, const char* source) {
     const str_t src = str_from_cstr(source);
@@ -170,8 +180,9 @@ struct Attributes : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* alloc = md_temp_allocator(temp);
 
-        // The tables there are right now. The filtered evaluation only while the timeline has a filter,
-        // otherwise it repeats the full one row for row.
+        // The tables there are right now. The filtered source only while the timeline has a filter, and only with
+        // what it has of its own: the distributions and volumes, over the filter's frames. Everything else in the
+        // table is the full evaluation's.
         const SeriesSource sources[] = { SeriesSource_System, SeriesSource_Script, SeriesSource_ScriptFiltered };
         md_array(Row) rows = 0;
         size_t total = 0;
@@ -183,6 +194,7 @@ struct Attributes : viamd::EventHandler {
             total += md_attributes_count(table);
             for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
                 const md_attribute_t& attr = *it.attr;
+                if (source == SeriesSource_ScriptFiltered && !script_aggregate_path(state, attr.path)) continue;
                 if (!matches_filter(filter_str, attr.path, attr.label, source_name(source))) continue;
                 Row row = { source, table, it.attr, 0, nullptr };
                 const SeriesKey key = series_key(source, attr.path);

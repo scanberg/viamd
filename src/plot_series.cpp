@@ -93,33 +93,32 @@ static bool is_script(SeriesSource source) {
     return source == SeriesSource_Script || source == SeriesSource_ScriptFiltered;
 }
 
-// Both script sources are the one evaluation, over different frame sets
-static size_t series_frame_set(SeriesSource source) {
-    return source == SeriesSource_ScriptFiltered ? SCRIPT_FRAME_SET_FILTER : SCRIPT_FRAME_SET_ALL;
-}
-
+// Both script sources are the one evaluation's table. The filtered source takes a temporal property over the
+// filter's frames, and a distribution or a volume from its slot over them (series_slot).
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source) {
     ASSERT(app);
     if (source == SeriesSource_System) {
         return &app->mold.sys.attributes;
     }
     const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
-    return eval ? md_script_eval_frame_set_attributes(eval, series_frame_set(source)) : nullptr;
+    return eval ? md_script_eval_attributes(eval) : nullptr;
 }
 
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path) {
-    const md_attributes_t* table = series_table(app, source);
-    if (source == SeriesSource_ScriptFiltered && table && !md_attributes_find(table, path)) {
-        return series_table(app, SeriesSource_Script);
-    }
-    return table;
+    (void)path;
+    return series_table(app, source);
 }
 
 bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, md_allocator_i* alloc) {
     ASSERT(out);
     const md_script_eval_t* eval = is_script(key.source) ? app->script.eval : nullptr;
     if (!eval) return false;
-    *out = md_script_eval_property_frames(eval, series_frame_set(key.source), series_script_ident(key), alloc);
+    md_bitset_t held = md_script_eval_property_frames(eval, series_script_ident(key), alloc);
+    if (key.source == SeriesSource_ScriptFiltered) {
+        const ScriptFilterFrames& filter = app->script.filter_frames;
+        held = md_bitset_and(held, filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set(), alloc);
+    }
+    *out = held;
     return true;
 }
 
@@ -245,8 +244,20 @@ struct HistogramEntry {
     int                    last_used = 0;
 };
 
+// What the slot of a distribution or volume over the timeline filter holds, copied out of it whenever it holds
+// something new (md_script_eval_slot_extract)
+struct SlotEntry {
+    char            ident[64] = "";
+    uint64_t        version = 0;
+    md_script_eval_slot_info_t info = {};
+    md_array(float) values = nullptr;
+    md_array(float) weights = nullptr;
+    int             last_used = 0;
+};
+
 static md_array(ConvertEntry)   convert_cache = nullptr;
 static md_array(HistogramEntry) histogram_cache = nullptr;
+static md_array(SlotEntry)      slot_cache = nullptr;
 
 // A converted copy of the whole attribute as floats in dst_unit (as stored for md_unit_none())
 static const float* cache_convert(ApplicationState* app, const md_attributes_t* table, const md_attribute_t* attr, md_unit_t dst_unit, size_t* out_count) {
@@ -297,6 +308,39 @@ static const float* attribute_floats(ApplicationState* app, const md_attributes_
     return (data && count == md_attribute_element_count(&attr->format)) ? data : nullptr;
 }
 
+// The slot of the script property over the timeline filter (SCRIPT_SLOT_FILTER), as it is now. NULL while there is
+// none: no filter, or not a distribution or a volume. The values stay put until the slot is next read.
+static const SlotEntry* series_slot(ApplicationState* app, str_t ident) {
+    const md_script_eval_t* eval = app->script.eval;
+    md_script_eval_slot_info_t info;
+    if (!eval || str_empty(ident) || !md_script_eval_slot_info(&info, eval, SCRIPT_SLOT_FILTER, ident)) return nullptr;
+
+    SlotEntry* entry = nullptr;
+    for (size_t i = 0; i < md_array_size(slot_cache); ++i) {
+        if (str_eq(str_from_cstr(slot_cache[i].ident), ident)) {
+            entry = &slot_cache[i];
+            break;
+        }
+    }
+    if (!entry) {
+        md_array_push(slot_cache, SlotEntry{}, app->allocator.persistent);
+        entry = &slot_cache[md_array_size(slot_cache) - 1];
+        str_copy_to_char_buf(entry->ident, sizeof(entry->ident), ident);
+    }
+    entry->last_used = ImGui::GetFrameCount();
+
+    if (entry->version != info.version || md_array_size(entry->values) != info.num_values) {
+        md_array_resize(entry->values,  info.num_values, app->allocator.persistent);
+        md_array_resize(entry->weights, info.num_values, app->allocator.persistent);
+        if (!md_script_eval_slot_extract(&entry->info, entry->values, entry->weights, info.num_values, eval, SCRIPT_SLOT_FILTER, ident)) {
+            entry->version = 0;
+            return nullptr;
+        }
+        entry->version = entry->info.version;
+    }
+    return entry;
+}
+
 void series_cache_gc(ApplicationState* app) {
     // Several seconds unused: nothing draws it any more
     const int frame = ImGui::GetFrameCount();
@@ -316,6 +360,15 @@ void series_cache_gc(ApplicationState* app) {
             ++i;
         }
     }
+    for (size_t i = 0; i < md_array_size(slot_cache);) {
+        if (frame - slot_cache[i].last_used > 600) {
+            md_array_free(slot_cache[i].values,  app->allocator.persistent);
+            md_array_free(slot_cache[i].weights, app->allocator.persistent);
+            md_array_swap_back_and_pop(slot_cache, i);
+        } else {
+            ++i;
+        }
+    }
 }
 
 void series_cache_free(ApplicationState* app) {
@@ -330,6 +383,13 @@ void series_cache_free(ApplicationState* app) {
     }
     md_array_free(histogram_cache, app->allocator.persistent);
     histogram_cache = nullptr;
+
+    for (size_t i = 0; i < md_array_size(slot_cache); ++i) {
+        md_array_free(slot_cache[i].values,  app->allocator.persistent);
+        md_array_free(slot_cache[i].weights, app->allocator.persistent);
+    }
+    md_array_free(slot_cache, app->allocator.persistent);
+    slot_cache = nullptr;
 }
 
 // ## What a series can be shown as
@@ -650,10 +710,22 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         while (n % (size_t)num_bins) --num_bins;
     }
 
+    // What is binned: a temporal attribute over the frames that count (the frames the evaluation holds, of the filter's
+    // for the filtered source), a distribution as published, or over the filter's frames as its slot holds it.
+    md_bitset_t frames = md_bitset_empty_set();
+    const md_bitset_t* mask = temporal && series_frame_mask(&frames, app, key, app->allocator.frame) ? &frames : nullptr;
+    const SlotEntry* slot = nullptr;
+    if (distribution && key.source == SeriesSource_ScriptFiltered) {
+        slot = series_slot(app, series_script_ident(key));
+        if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
+    }
+
     // ### Cached bins
     uint64_t hkey = md_hash64_str(path, (uint64_t)key.source * 31 + key.variant);
     hkey = md_hash64(&num_bins, sizeof(num_bins), hkey);
-    const uint64_t version = attr->version + (weight ? weight->version << 1 : 0);
+    // Of what is binned: the values and weights, and which frames count
+    uint64_t version = slot ? slot->version : attr->version + (weight ? weight->version << 1 : 0);
+    if (mask) version = md_bitset_hash64(*mask, version);
 
     const int frame = ImGui::GetFrameCount();
     HistogramEntry* entry = nullptr;
@@ -679,13 +751,11 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         entry->dim = dim;
         md_array_resize(entry->bins, (size_t)num_bins * dim, app->allocator.persistent);
 
-        const float* values = attribute_floats(app, table, attr);
+        const float* values = slot ? slot->values : attribute_floats(app, table, attr);
         if (values) {
             double range[2] = {0, 0};
             const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
             if (temporal) {
-                md_bitset_t frames = md_bitset_empty_set();
-                const md_bitset_t* mask = series_frame_mask(&frames, app, key, app->allocator.frame) ? &frames : nullptr;
                 if (!has_range) {
                     // The range the values cover, over the frames that count
                     double lo = DBL_MAX, hi = -DBL_MAX;
@@ -701,7 +771,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
                 bin_temporal(entry->bins, num_bins, dim, range[0], range[1], values, n, stride, mask);
                 entry->valid = true;
             } else if (has_range) {
-                const float* w = weight ? attribute_floats(app, table, weight) : nullptr;
+                const float* w = slot ? slot->weights : weight ? attribute_floats(app, table, weight) : nullptr;
                 downsample_bins(entry->bins, num_bins, values, w, (int)n);
                 entry->valid = true;
             }
@@ -763,9 +833,21 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
 
     const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
-    if (!attr || !attr->data || attr->format.rank != 3) return false;
-    out->attr = attr;
-    out->version = attr->version;
+    if (!attr || !attr->data || attr->format.rank != 3 || attr->format.type != MD_ATTRIBUTE_TYPE_F32) return false;
+    for (int i = 0; i < 3; ++i) {
+        out->dim[i] = attr->format.shape[i];
+    }
+
+    if (key.source == SeriesSource_ScriptFiltered) {
+        // Over the filter's frames: as its slot holds it
+        const SlotEntry* slot = series_slot(app, ident);
+        if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
+        out->data = slot->values;
+        out->version = slot->version;
+    } else {
+        out->data = (const float*)attr->data;
+        out->version = attr->version;
+    }
     return true;
 }
 

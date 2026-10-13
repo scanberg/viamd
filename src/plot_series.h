@@ -83,12 +83,11 @@ const char* series_source_name(SeriesSource source);
 bool        series_source_from_name(SeriesSource* out, str_t name);
 SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values);
 
-// The table a source reads from, NULL when it has none right now
-// The table a source publishes. The filtered source's holds what is aggregated over the timeline filter's
-// frames (distributions, volumes) only.
+// The table a source reads from, NULL when it has none right now. Both script sources read the one evaluation's:
+// the filtered source takes a temporal property over the timeline filter's frames (series_frame_mask), and reads a
+// distribution or a volume from the evaluation's slot of it over them, not from the table.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source);
-// The table which holds path for source. For the filtered source a temporal property is the full evaluation's,
-// kept once for every frame, and taken over the filter's frames by series_frame_mask.
+// The table which holds path for source
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path);
 // The frames the temporal script property of key is taken over: those it has evaluated, of the filter's for the
 // filtered source, written to out, allocated with alloc. Its own: a property taken over from a previous evaluation
@@ -258,8 +257,9 @@ static inline double series_histogram_index_at(const SeriesHistogramView& v, dou
 
 // A script property evaluated as a volume (rank 3), for the density volume and the export
 struct SeriesVolumeView {
-    const md_attribute_t* attr = nullptr;
-    uint64_t version = 0;
+    const float* data = nullptr;    // dim[0] * dim[1] * dim[2] values, as the script publishes them. Valid this frame.
+    uint32_t dim[3] = {};
+    uint64_t version = 0;           // of the data: changes whenever it does
     char  label[64] = "";
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};

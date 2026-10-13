@@ -989,14 +989,11 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
-// The frame sets of the script evaluation (md_script_eval_desc_t): every frame, and the timeline filter's
-enum {
-    SCRIPT_FRAME_SET_ALL = 0,
-    SCRIPT_FRAME_SET_FILTER,
-    SCRIPT_FRAME_SET_COUNT,
-};
+// The key of the script evaluation's slots over the timeline filter's frames (md_script_eval_slot_request): one for
+// each distribution and volume while there is a filter
+#define SCRIPT_SLOT_FILTER ((uint64_t)1)
 
-// The timeline filter as applied to SCRIPT_FRAME_SET_FILTER: frames [beg, end[, none while not enabled
+// The timeline filter as applied to the SCRIPT_SLOT_FILTER slots: frames [beg, end[, none while not enabled
 struct ScriptFilterFrames {
     bool     enabled = false;
     uint32_t beg = 0;
@@ -1497,10 +1494,10 @@ struct ApplicationState {
         // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
         md_array(md_script_ir_t*) all_irs = nullptr;
 
-        // One evaluation, over the frame sets SCRIPT_FRAME_SET_*: temporal properties once for every frame,
-        // distributions and volumes over each set's own frames
+        // One evaluation: every property over every frame, and the distributions and volumes over the timeline
+        // filter's frames in slots (SCRIPT_SLOT_FILTER)
         md_script_eval_t* eval = nullptr;
-        ScriptFilterFrames filter_frames = {};      // as applied to SCRIPT_FRAME_SET_FILTER
+        ScriptFilterFrames filter_frames = {};      // as applied to the SCRIPT_SLOT_FILTER slots
         md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
         // The visualization: the target is set anew every frame, the job computes it off the main thread, and
         // what is shown is the last result while it is still for the target (see script_vis_update)

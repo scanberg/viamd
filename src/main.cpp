@@ -125,7 +125,7 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 )");
 
 
-// The timeline filter as the evaluation's filter frame set: frames [beg, end[, none while there is no filter
+// The timeline filter as the evaluation's slots take it: frames [beg, end[, none while there is no filter
 static ScriptFilterFrames script_filter_frames(const ApplicationState& state, size_t num_frames) {
     ScriptFilterFrames filter = {};
     if (state.timeline.filter.enabled && num_frames > 0) {
@@ -135,6 +135,24 @@ static ScriptFilterFrames script_filter_frames(const ApplicationState& state, si
         filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
     }
     return filter;
+}
+
+// Every distribution and volume over the filter's frames, in a slot of its own (SCRIPT_SLOT_FILTER), while there is a
+// filter. Moved with the filter, a slot keeps what it has in common with its new frames.
+static void script_filter_slots_apply(ApplicationState& state, const ScriptFilterFrames& filter) {
+    md_script_eval_t* eval = state.script.eval;
+    const md_script_ir_t* ir = state.script.eval_ir;
+    const md_bitset_t frames = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
+    const str_t* names = md_script_ir_property_names(ir);
+    for (size_t i = 0; i < md_script_ir_property_count(ir); ++i) {
+        if (!(md_script_ir_property_flags(ir, names[i]) & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME))) continue;
+        if (filter.enabled) {
+            md_script_eval_slot_request(eval, SCRIPT_SLOT_FILTER, names[i], &frames);
+        } else {
+            md_script_eval_slot_release(eval, SCRIPT_SLOT_FILTER, names[i]);
+        }
+    }
+    state.script.filter_frames = filter;
 }
 
 static double frame_to_time(double frame, const ApplicationState& data) {
@@ -893,14 +911,12 @@ int main(int argc, char** argv) {
 
                     if (md_script_ir_valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
-                        // Every frame, and the timeline filter's as it is now, so that what is aggregated over it is
-                        // taken over too
-                        const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
-                        const md_bitset_t filter_set = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
-                        const md_bitset_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &filter_set };
-                        const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = SCRIPT_FRAME_SET_COUNT, .frame_sets = sets };
+                        // The slots over the filter come along, and what they hold where their property is taken over
+                        const md_script_eval_desc_t desc = { .num_frames = num_frames };
                         state.script.eval = md_script_eval_create_from(prev, state.script.eval_ir, &desc, state.allocator.persistent);
-                        state.script.filter_frames = filter;
+                        if (state.script.eval) {
+                            script_filter_slots_apply(state, script_filter_frames(state, num_frames));
+                        }
                     }
 
                     if (prev) {
@@ -919,34 +935,38 @@ int main(int argc, char** argv) {
             if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
                 md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
             {
-                // The filter frame set follows the timeline filter, and is empty while there is none
+                // The filter's slots follow the timeline filter, and are let go while there is none
                 const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
                 const ScriptFilterFrames& applied = state.script.filter_frames;
                 const bool filter_changed = filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end;
 
                 if (state.script.evaluate || filter_changed) {
                     if (task_system::task_is_running(state.tasks.evaluate)) {
-                        // Started again once it has stopped. Nothing it has done is lost: only the frames
-                        // the sets have not added yet are evaluated.
+                        // Started again once it has stopped, over the frames which remain then. Nothing it has
+                        // done is lost.
                         md_script_eval_interrupt(state.script.eval);
                     } else {
                         state.script.evaluate = false;
                         if (filter_changed) {
-                            const md_bitset_t frames = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
-                            md_script_eval_set_frame_set(state.script.eval, SCRIPT_FRAME_SET_FILTER, &frames);
-                            state.script.filter_frames = filter;
+                            script_filter_slots_apply(state, filter);
                         }
                         md_script_eval_reset_interrupt(state.script.eval);
 
-                        // What is left to do, over the union of the sets
+                        // What is left to do, for the properties and the slots. The filter's frames first: what is
+                        // shown over them is there sooner.
                         const md_bitset_t pending = md_script_eval_pending_frames(state.script.eval, frame_alloc);
                         const size_t count = md_bitset_count(pending);
                         if (count > 0) {
                             md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
                             size_t n = 0;
-                            md_bitset_iter_t it = md_bitset_iter(pending);
-                            while (md_bitset_iter_next(&it) && n < count) {
-                                state.script.eval_frames[n++] = (uint32_t)it.idx;
+                            for (int in_filter = 1; in_filter >= 0; --in_filter) {
+                                md_bitset_iter_t it = md_bitset_iter(pending);
+                                while (md_bitset_iter_next(&it) && n < count) {
+                                    const bool inside = filter.enabled && filter.beg <= it.idx && it.idx < filter.end;
+                                    if (inside == (bool)in_filter) {
+                                        state.script.eval_frames[n++] = (uint32_t)it.idx;
+                                    }
+                                }
                             }
 
                             // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
@@ -5435,11 +5455,12 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, md_script_vis_ref_t vis_ref, str_t filename) {
+static bool export_cube(const ApplicationState& data, const SeriesVolumeView& volume, str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
-    const float* volume_values = (const float*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F32, 1, 3);
+    const float* volume_values = volume.data;
+    const md_script_vis_ref_t vis_ref = volume.vis_ref;
     if (!volume_values) {
         VIAMD_LOG_ERROR("Export Cube: The property to be exported did not exist");
         return false;
@@ -5490,7 +5511,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             mat4_t M = vis.sdf.matrices[0];
             const md_bitset_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitset_count(*bf);
-            const int vol_dim[3] = {(int)attr->format.shape[0], (int)attr->format.shape[1], (int)attr->format.shape[2]};
+            const int vol_dim[3] = {(int)volume.dim[0], (int)volume.dim[1], (int)volume.dim[2]};
             const float* values = volume_values;
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
             const double voxel_ext[3] = {
@@ -5703,7 +5724,7 @@ static void draw_property_export_window(ApplicationState* data) {
                 SeriesVolumeView view;
                 if (!series_resolve_volume(&view, data, selected)) {
                     VIAMD_LOG_ERROR("'%s' has no volume to export", label);
-                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_ref, path)) {
+                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view, path)) {
                     VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
                 }
             } else {

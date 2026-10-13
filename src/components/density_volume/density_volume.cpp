@@ -278,7 +278,8 @@ struct DensityVolume : viamd::EventHandler {
         SeriesVolumeView vol_view = {};
         const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key);
 
-        const md_attribute_t* prop_attr = resolved ? vol_view.attr : NULL;
+        const float* vol_data = resolved ? vol_view.data : NULL;
+        const uint32_t* vol_dim = vol_view.dim;
         const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
@@ -316,7 +317,7 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_rep) {
-            if (prop_attr && !md_script_vis_ref_empty(vis_ref)) {
+            if (vol_data && !md_script_vis_ref_empty(vis_ref)) {
                 dirty_rep = false;
                 size_t num_reps = 0;
                 bool result = false;
@@ -338,8 +339,7 @@ struct DensityVolume : viamd::EventHandler {
                         vec3_t min_aabb = vec3_set1(-s);
                         vec3_t max_aabb = vec3_set1( s);
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                        const uint32_t* dim = prop_attr->format.shape;
-                        voxel_spacing = vec3_t{2*s / dim[0], 2*s / dim[1], 2*s / dim[2]};
+                        voxel_spacing = vec3_t{2*s / vol_dim[0], 2*s / vol_dim[1], 2*s / vol_dim[2]};
                         default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
                         if (reset_view) {
                             target = default_view;
@@ -417,14 +417,14 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_vol) {
-            if (prop_attr) {
+            if (vol_data) {
                 dirty_vol = false;
                 if (!volume_texture.id) {
-                    int dim[3] = { (int)prop_attr->format.shape[0], (int)prop_attr->format.shape[1], (int)prop_attr->format.shape[2] };
+                    int dim[3] = { (int)vol_dim[0], (int)vol_dim[1], (int)vol_dim[2] };
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
-                gl::set_texture_3D_data(volume_texture.id, 0, prop_attr->data, GL_R32F);
+                gl::set_texture_3D_data(volume_texture.id, 0, vol_data, GL_R32F);
                 volume::notify_data_changed(volume_texture.id);
             }
         }
