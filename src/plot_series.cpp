@@ -130,6 +130,88 @@ str_t series_script_ident(const SeriesKey& key) {
     return {};
 }
 
+SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
+    SeriesState st;
+    const md_script_eval_t* eval = is_script(key.source) ? app->script.eval : nullptr;
+    if (!eval) return st;
+    const str_t ident = series_script_ident(key);
+
+    // Against the script in the editor, when it compiles and is not the one evaluated: computed from the same thing,
+    // or not (md_script_ir_property_fingerprint). A property neither has is nothing to speak of: nothing is shown.
+    const md_script_ir_t* ir = md_script_ir_valid(app->script.ir) ? app->script.ir : app->script.eval_ir;
+    const uint64_t evaluated = md_script_eval_property_fingerprint(eval, ident);
+    const uint64_t now = ir ? md_script_ir_property_fingerprint(ir, ident) : evaluated;
+    if (!evaluated && !now) return st;
+    if (evaluated && !now) {
+        st.status = SeriesStatus_Removed;
+        return st;
+    }
+    if (evaluated && now != evaluated) {
+        st.status = SeriesStatus_Outdated;
+        return st;
+    }
+
+    // How far it has come: over every frame, or over the filter's
+    const ScriptFilterFrames& filter = app->script.filter_frames;
+    const bool filtered = key.source == SeriesSource_ScriptFiltered;
+    const uint32_t frames = (uint32_t)md_script_eval_frame_count(eval);
+    st.num_wanted = filtered ? (filter.enabled ? filter.end - filter.beg : 0) : frames;
+    const uint32_t kinds = (uint32_t)md_script_ir_property_flags(app->script.eval_ir, ident);
+    if (filtered && (kinds & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME))) {
+        // Its slot over the filter's frames. What it has yet to do is the frames it wants and does not hold, and those
+        // it holds and does not want: of what it holds, (wanted + held - pending) / 2 are wanted.
+        md_script_eval_slot_info_t info;
+        if (md_script_eval_slot_info(&info, eval, SCRIPT_SLOT_FILTER, ident)) {
+            const uint32_t both = (st.num_wanted + info.num_frames - MIN(info.num_pending, st.num_wanted + info.num_frames)) / 2;
+            st.num_frames = MIN(both, st.num_wanted);
+            st.num_extra  = info.num_frames - MIN(both, info.num_frames);
+            if (info.num_pending > 0) st.status = SeriesStatus_Partial;
+        }
+        return st;
+    }
+    md_bitset_t held = md_script_eval_property_frames(eval, ident, app->allocator.frame);
+    if (filtered) {
+        held = md_bitset_and(held, filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set(), app->allocator.frame);
+    }
+    st.num_frames = (uint32_t)md_bitset_count(held);
+    if (st.num_frames < st.num_wanted) st.status = SeriesStatus_Partial;
+    return st;
+}
+
+void series_state_suffix(char* buf, size_t cap, const SeriesState& state) {
+    switch (state.status) {
+    case SeriesStatus_Partial:
+        if (state.num_frames < state.num_wanted) snprintf(buf, cap, " \xC2\xB7 %u/%u", state.num_frames, state.num_wanted);
+        else snprintf(buf, cap, " \xC2\xB7 %u to take out", state.num_extra);
+        break;
+    case SeriesStatus_Outdated: snprintf(buf, cap, " \xC2\xB7 outdated"); break;
+    case SeriesStatus_Removed:  snprintf(buf, cap, " \xC2\xB7 removed"); break;
+    default: if (cap) buf[0] = '\0'; break;
+    }
+}
+
+void series_state_describe(char* buf, size_t cap, const SeriesState& state) {
+    switch (state.status) {
+    case SeriesStatus_Partial:
+        if (state.num_extra > 0) {
+            snprintf(buf, cap, "Holds %u of its %u frames so far, and %u frames it no longer covers,\nwhich are taken out as they are evaluated: Evaluate to finish it.",
+                     state.num_frames, state.num_wanted, state.num_extra);
+        } else {
+            snprintf(buf, cap, "Evaluated over %u of its %u frames so far", state.num_frames, state.num_wanted);
+        }
+        break;
+    case SeriesStatus_Outdated:
+        snprintf(buf, cap, "Shown as evaluated from an earlier version of the script.\nWhat it is computed from has changed: Evaluate to update it.");
+        break;
+    case SeriesStatus_Removed:
+        snprintf(buf, cap, "Shown as last evaluated: it is no longer in the script.");
+        break;
+    default:
+        if (cap) buf[0] = '\0';
+        break;
+    }
+}
+
 static str_t path_leaf(str_t path) {
     size_t loc;
     if (str_rfind_char(&loc, path, '/')) {
@@ -206,8 +288,12 @@ static md_script_property_flags_t script_property_kind(const ApplicationState* a
 // Labels and script identity, which a view has whether or not the series resolves
 template <typename View>
 static void fill_names(View* out, const ApplicationState* app, const SeriesKey& key) {
-    series_label(out->label, sizeof(out->label), app, key);
-    snprintf(out->plot_id, sizeof(out->plot_id), "%s##%d:%d:%s", out->label, (int)key.source, (int)key.variant, key.path);
+    char base[64], suffix[32];
+    series_label(base, sizeof(base), app, key);
+    out->state = series_state(app, key);
+    series_state_suffix(suffix, sizeof(suffix), out->state);
+    snprintf(out->label, sizeof(out->label), "%s%s", base, suffix);
+    snprintf(out->plot_id, sizeof(out->plot_id), "%s###%d:%d:%s", out->label, (int)key.source, (int)key.variant, key.path);
     if (is_script(key.source)) {
         const str_t ident = series_script_ident(key);
         str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
@@ -830,6 +916,7 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     const str_t ident = series_script_ident(key);
     str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
     out->vis_ref = md_script_ir_property_vis_ref(app->script.eval_ir, ident);
+    out->state = series_state(app, key);
 
     const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;

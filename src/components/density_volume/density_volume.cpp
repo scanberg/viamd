@@ -84,6 +84,10 @@ struct DensityVolume : viamd::EventHandler {
     bool dirty_rep = false;
     bool dirty_vol = false;
 
+    // How the volume shown stands against the script (series_state), and what it is called, as of the last update
+    SeriesState volume_state = {};
+    char volume_label[64] = "";
+
     struct {
         RepresentationType type = RepresentationType::BallAndStick;
         ColorMapping colormap = ColorMapping::Type;
@@ -280,6 +284,8 @@ struct DensityVolume : viamd::EventHandler {
 
         const float* vol_data = resolved ? vol_view.data : NULL;
         const uint32_t* vol_dim = vol_view.dim;
+        volume_state = resolved ? vol_view.state : SeriesState{};
+        str_copy_to_char_buf(volume_label, sizeof(volume_label), str_from_cstr(vol_view.label));
         const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
@@ -734,6 +740,23 @@ struct DensityVolume : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
+
+            if (volume_state.status != SeriesStatus_Current) {
+                // What is shown is not all of what the script says: how it stands, in the corner
+                char suffix[32], text[128], tip[160];
+                series_state_suffix(suffix, sizeof(suffix), volume_state);
+                snprintf(text, sizeof(text), "%s%s", volume_label, suffix);
+                const ImVec2 pad = ImGui::GetStyle().FramePadding;
+                const ImVec2 p0 = canvas_p0 + pad;
+                const ImVec2 p1 = p0 + ImGui::CalcTextSize(text) + pad * 2.0f;
+                const bool outdated = volume_state.status >= SeriesStatus_Outdated;
+                draw_list->AddRectFilled(p0, p1, outdated ? IM_COL32(120, 80, 20, 220) : IM_COL32(40, 40, 40, 200), ImGui::GetStyle().FrameRounding);
+                draw_list->AddText(p0 + pad, IM_COL32(255, 255, 255, 255), text);
+                if (ImGui::IsMouseHoveringRect(p0, p1)) {
+                    series_state_describe(tip, sizeof(tip), volume_state);
+                    ImGui::SetTooltip("%s", tip);
+                }
+            }
 
             if (dvr.enabled && legend.enabled) {
                 ImVec2 canvas_ext = canvas_p1 - canvas_p0;

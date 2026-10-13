@@ -102,6 +102,28 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key);
 // "script/<ident>" -> "<ident>" for a script series, empty otherwise
 str_t series_script_ident(const SeriesKey& key);
 
+// How what a script series shows stands against the script as it is now in the editor, and how far its evaluation has
+// come. Anything else is always current.
+enum SeriesStatus : uint8_t {
+    SeriesStatus_Current = 0,   // what the script says, over every frame it is shown over
+    SeriesStatus_Partial,       // what the script says, over some of those frames so far
+    SeriesStatus_Outdated,      // as evaluated from an earlier version of the script: what it is computed from changed
+    SeriesStatus_Removed,       // as evaluated, but no longer in the script
+};
+
+struct SeriesState {
+    SeriesStatus status = SeriesStatus_Current;
+    uint32_t num_frames = 0;    // the frames it holds of those it is shown over
+    uint32_t num_wanted = 0;    // the frames it is shown over
+    uint32_t num_extra = 0;     // frames it still holds and is no longer shown over: a slot moved, still taking them out
+};
+
+SeriesState series_state(const ApplicationState* app, const SeriesKey& key);
+// " · outdated", " · 380/500": what is appended to the label of a series in its state, empty when it is current
+void series_state_suffix(char* buf, size_t cap, const SeriesState& state);
+// A sentence on it for a tooltip, empty when it is current
+void series_state_describe(char* buf, size_t cap, const SeriesState& state);
+
 // Call between a BeginDragDropSource and its EndDragDropSource: sets the payload and draws the
 // preview. src_subplot is -1 unless the series is dragged out of a plot.
 struct SeriesDragPayload {
@@ -197,11 +219,12 @@ struct SeriesTemporalView {
     bool  band = false;             // drawn as an area between series_temporal_band's lo and hi
     float y_scale = 1.0f;           // stored unit -> display unit
 
-    char  label[64] = "";
-    char  plot_id[SERIES_PATH_CAP + 72] = "";   // label##identity, what ImPlot is handed
+    char  label[96] = "";                       // with the state appended (series_state_suffix)
+    char  plot_id[SERIES_PATH_CAP + 104] = "";  // label###identity, what ImPlot is handed: the label may change
     char  unit_str[32] = "";                    // the display unit of the values
     char  script_ident[64] = "";                // a script property's identifier, empty otherwise
     md_script_vis_ref_t vis_ref = {};
+    SeriesState state = {};
 };
 
 // False when nothing is published at the path (yet), or it cannot be placed on the timeline: not
@@ -228,12 +251,13 @@ struct SeriesHistogramView {
     double y_scale = 1.0;           // bins -> display unit
     double y_min = 0, y_max = 0;    // in the display unit
 
-    char  label[64] = "";
-    char  plot_id[SERIES_PATH_CAP + 72] = "";
+    char  label[96] = "";                       // with the state appended (series_state_suffix)
+    char  plot_id[SERIES_PATH_CAP + 104] = "";
     char  x_unit_str[32] = "";
     char  y_unit_str[32] = "";
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
+    SeriesState state = {};
 };
 
 // num_bins is what is asked for; a script distribution is evaluated at a resolution of its own and
@@ -263,6 +287,7 @@ struct SeriesVolumeView {
     char  label[64] = "";
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
+    SeriesState state = {};
 };
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key);
 

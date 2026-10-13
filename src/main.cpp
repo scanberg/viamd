@@ -155,6 +155,117 @@ static void script_filter_slots_apply(ApplicationState& state, const ScriptFilte
     state.script.filter_frames = filter;
 }
 
+// What Evaluate would do with the script as it is in the editor (md_script_eval_plan): how each of its properties
+// stands against what is evaluated, and so how what is shown stands against what the script now says
+struct ScriptPlan {
+    bool valid = false;         // the editor's script compiles, and there are frames to evaluate
+    bool running = false;       // an evaluation is running
+    bool same = false;          // the editor's script is the one evaluated
+    bool changes = false;       // Evaluate would change which properties there are, or what they are called
+    const md_script_eval_plan_t* props = nullptr;   // one per property of the editor's script
+    const str_t* names = nullptr;
+    size_t   num_props = 0;
+    uint32_t num_frames = 0;
+    uint32_t num_pending = 0;   // the frames Evaluate would evaluate
+};
+
+static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* alloc) {
+    ScriptPlan plan;
+    const md_script_ir_t* ir = state.script.ir;
+    plan.num_frames = (uint32_t)run_num_frames(&state);
+    plan.valid = md_script_ir_valid(ir) && plan.num_frames > 0;
+    plan.running = task_system::task_is_running(state.tasks.evaluate);
+    if (!plan.valid) return plan;
+
+    plan.same = state.script.eval && ir == state.script.eval_ir;
+    plan.num_props = md_script_ir_property_count(ir);
+    plan.names = md_script_ir_property_names(ir);
+    md_script_eval_plan_t* props = (md_script_eval_plan_t*)md_alloc(alloc, MAX(plan.num_props, 1) * sizeof(md_script_eval_plan_t));
+    md_bitset_t pending = md_bitset_empty_set();
+    if (!md_script_eval_plan(props, plan.num_props, &pending, state.script.eval, ir, plan.num_frames, alloc)) {
+        plan.valid = false;
+        return plan;
+    }
+    plan.props = props;
+    plan.num_pending = (uint32_t)md_bitset_count(pending);
+
+    // A property gone, or renamed, changes what is shown without anything to evaluate
+    const size_t num_evaluated = state.script.eval ? md_script_eval_property_count(state.script.eval) : 0;
+    plan.changes = num_evaluated != plan.num_props;
+    for (size_t i = 0; i < plan.num_props; ++i) {
+        plan.changes |= props[i].status != MD_SCRIPT_EVAL_STATUS_HELD || !str_eq(props[i].from, plan.names[i]);
+    }
+    return plan;
+}
+
+// How property i of the plan stands, as a line of text
+static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, size_t i) {
+    const md_script_eval_plan_t& p = plan.props[i];
+    const str_t name = plan.names[i];
+    switch (p.status) {
+    case MD_SCRIPT_EVAL_STATUS_NEW:
+        snprintf(buf, cap, STR_FMT ": not evaluated yet, %u frames to evaluate", STR_ARG(name), p.num_pending);
+        break;
+    case MD_SCRIPT_EVAL_STATUS_CHANGED:
+        snprintf(buf, cap, STR_FMT ": changed since it was evaluated, %u frames to evaluate", STR_ARG(name), p.num_pending);
+        break;
+    case MD_SCRIPT_EVAL_STATUS_HELD: {
+        char from[96] = "";
+        if (!str_eq(p.from, name)) snprintf(from, sizeof(from), ", computed as " STR_FMT " was", STR_ARG(p.from));
+        if (p.num_pending == 0) {
+            snprintf(buf, cap, STR_FMT ": up to date%s", STR_ARG(name), from);
+        } else if (p.num_frames < plan.num_frames) {
+            snprintf(buf, cap, STR_FMT ": %u of %u frames evaluated%s", STR_ARG(name), p.num_frames, plan.num_frames, from);
+        } else {
+            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over the filter%s", STR_ARG(name), p.num_pending, from);
+        }
+        break;
+    }
+    }
+}
+
+// A mark beside the line a property is named on: how it stands
+struct ScriptGutterMark {
+    int line;
+    md_script_eval_status_t status;
+    float done;                 // the fraction of what it needs which it holds
+    char text[160];
+};
+
+static void draw_script_gutter_mark(const TextEditor::Decorator& d, const ScriptGutterMark& m) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 c  = p0 + ImVec2(d.width * 0.5f, d.height * 0.5f);
+    const float  r  = d.glyphSize.y * 0.26f;
+    const ImU32 green = IM_COL32(90, 200, 110, 255);
+    const ImU32 amber = IM_COL32(240, 170, 60, 255);
+    const ImU32 gray  = IM_COL32(150, 150, 150, 255);
+    switch (m.status) {
+    case MD_SCRIPT_EVAL_STATUS_NEW:
+        dl->AddCircle(c, r, gray, 0, 1.5f);
+        break;
+    case MD_SCRIPT_EVAL_STATUS_CHANGED:
+        dl->AddCircleFilled(c, r, amber);
+        break;
+    case MD_SCRIPT_EVAL_STATUS_HELD:
+        if (m.done >= 1.0f) {
+            dl->AddCircleFilled(c, r, green);
+        } else {
+            // How much of it there is, as a slice
+            dl->AddCircle(c, r, green, 0, 1.5f);
+            if (m.done > 0.0f) {
+                dl->PathLineTo(c);
+                dl->PathArcTo(c, r, -IM_PI * 0.5f, -IM_PI * 0.5f + 2.0f * IM_PI * m.done);
+                dl->PathFillConvex(green);
+            }
+        }
+        break;
+    }
+    if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p0, p0 + ImVec2(d.width, d.height))) {
+        ImGui::SetTooltip("%s", m.text);
+    }
+}
+
 static double frame_to_time(double frame, const ApplicationState& data) {
     const int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
@@ -935,21 +1046,22 @@ int main(int argc, char** argv) {
             if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
                 md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
             {
-                // The filter's slots follow the timeline filter, and are let go while there is none
+                // The filter's slots follow the timeline filter at once, also while evaluating, and are let go while
+                // there is none. Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only
+                // starts when asked to. A distribution needs none, it is kept per frame.
                 const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
                 const ScriptFilterFrames& applied = state.script.filter_frames;
-                const bool filter_changed = filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end;
+                if (filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end) {
+                    script_filter_slots_apply(state, filter);
+                }
 
-                if (state.script.evaluate || filter_changed) {
+                if (state.script.evaluate) {
                     if (task_system::task_is_running(state.tasks.evaluate)) {
                         // Started again once it has stopped, over the frames which remain then. Nothing it has
                         // done is lost.
                         md_script_eval_interrupt(state.script.eval);
                     } else {
                         state.script.evaluate = false;
-                        if (filter_changed) {
-                            script_filter_slots_apply(state, filter);
-                        }
                         md_script_eval_reset_interrupt(state.script.eval);
 
                         // What is left to do, for the properties and the slots. The filter's frames first: what is
@@ -4526,6 +4638,10 @@ static void draw_timeline_window(ApplicationState* data) {
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to plot at '%s' right now", s.key.path);
+                            } else if (v.state.status != SeriesStatus_Current) {
+                                char text[160];
+                                series_state_describe(text, sizeof(text), v.state);
+                                ImGui::SetTooltip("%s", text);
                             }
                             hovered_idx = j;
                             hovered_pop_idx = -1;
@@ -4573,6 +4689,10 @@ static void draw_timeline_window(ApplicationState* data) {
                             const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
                                 ImVec4 color = plot_series_member_color(s, k, population_size);
+                                if (v.state.status >= SeriesStatus_Outdated) {
+                                    // Not what the script says any more: shown, faintly, until it is evaluated
+                                    color.w *= 0.35f;
+                                }
                                 ImVec4 marker_line_color = {};
                                 float  marker_line_weight = 0;
                                 float  fill_alpha = 1.0f;
@@ -4946,6 +5066,10 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to show for '%s' right now", s.key.path);
+                            } else if (v.state.status != SeriesStatus_Current) {
+                                char text[160];
+                                series_state_describe(text, sizeof(text), v.state);
+                                ImGui::SetTooltip("%s", text);
                             }
                             hovered_idx = j;
                             hovered_pop_idx = -1;
@@ -4997,6 +5121,10 @@ static void draw_distribution_window(ApplicationState* data) {
                             const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
                                 ImVec4 color = plot_series_member_color(s, k, population_size);
+                                if (v.state.status >= SeriesStatus_Outdated) {
+                                    // Not what the script says any more: shown, faintly, until it is evaluated
+                                    color.w *= 0.35f;
+                                }
                                 float  fill_alpha = 1.0f;
                                 float  weight = 1.0f;
                                 if (hovered_idx == j) {
@@ -5256,9 +5384,58 @@ static void draw_script_editor_window(ApplicationState* state) {
             ImGui::EndMenuBar();
         }
 
+        // What Evaluate would do. It says so, and does nothing when there is nothing to do.
+        const ScriptPlan plan = script_plan(*state, frame_alloc);
+        char btn_text[96];
+        bool can_eval = false;
+        if (!plan.valid) {
+            snprintf(btn_text, sizeof(btn_text), "Evaluate###evaluate");
+        } else if (plan.running && plan.same) {
+            snprintf(btn_text, sizeof(btn_text), "Evaluating, %u frames left###evaluate", plan.num_pending);
+        } else if (plan.num_pending > 0) {
+            snprintf(btn_text, sizeof(btn_text), "Evaluate %u frames###evaluate", plan.num_pending);
+            can_eval = true;
+        } else if (plan.changes) {
+            snprintf(btn_text, sizeof(btn_text), "Evaluate###evaluate");
+            can_eval = true;
+        } else {
+            snprintf(btn_text, sizeof(btn_text), "Up to date###evaluate");
+        }
+
+        // How each property stands, beside the line it is named on
+        md_array(ScriptGutterMark) marks = nullptr;
+        if (plan.valid) {
+            const uint32_t* line_offsets = state->editor_markers.line_offsets;
+            const size_t num_lines = md_array_size(line_offsets);
+            for (size_t i = 0; i < plan.num_props; ++i) {
+                const md_script_range_marker_t range = md_script_ir_property_range(state->script.ir, plan.names[i]);
+                if (range.end <= range.beg || num_lines == 0) continue;
+                // The last line which begins at or before it
+                size_t lo = 0, hi = num_lines;
+                while (hi - lo > 1) {
+                    const size_t mid = (lo + hi) / 2;
+                    if (line_offsets[mid] <= (uint32_t)range.beg) lo = mid; else hi = mid;
+                }
+                const md_script_eval_plan_t& p = plan.props[i];
+                ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "" };
+                const uint32_t needed = p.num_frames + p.num_pending;
+                mark.done = p.num_pending == 0 ? 1.0f : needed ? (float)p.num_frames / (float)needed : 0.0f;
+                script_plan_describe(mark.text, sizeof(mark.text), plan, i);
+                md_array_push(marks, mark, frame_alloc);
+            }
+        }
+        const size_t num_marks = md_array_size(marks);
+        state->editor.SetLineDecorator(1, [marks, num_marks](TextEditor::Decorator& d) {
+            for (size_t i = 0; i < num_marks; ++i) {
+                if ((size_t)marks[i].line == d.line) {
+                    draw_script_gutter_mark(d, marks[i]);
+                    break;
+                }
+            }
+        });
+
         const ImVec2 content_size = ImGui::GetContentRegionAvail();
-        const char* btn_text = "Evaluate";
-        const ImVec2 label_size = ImGui::CalcTextSize(btn_text, NULL, true) * ImVec2(1.4, 1.0);
+        const ImVec2 label_size = ImGui::CalcTextSize(btn_text, NULL, true) * ImVec2(1.2, 1.0);
         const ImVec2 btn_size = ImGui::CalcItemSize(ImVec2(0,0), label_size.x + ImGui::GetStyle().FramePadding.x * 2.0f, label_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
         const ImVec2 text_size(content_size - ImVec2(0, btn_size.y + ImGui::GetStyle().ItemSpacing.y));
 
@@ -5301,15 +5478,40 @@ static void draw_script_editor_window(ApplicationState* state) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(state->script.ir) && run_num_frames(state) > 0;  
-        if (!valid) ImGui::PushDisabled();
+        if (!can_eval) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
             eval = true;
         }
-        if (!valid) ImGui::PopDisabled();
+        if (!can_eval) ImGui::PopDisabled();
+        if (plan.valid && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) {
+            ImGui::BeginTooltip();
+            char line[160];
+            for (size_t i = 0; i < plan.num_props; ++i) {
+                script_plan_describe(line, sizeof(line), plan, i);
+                ImGui::TextUnformatted(line);
+            }
+            // What is shown which the script no longer has
+            if (state->script.eval_ir && !plan.same) {
+                const str_t* evaluated = md_script_ir_property_names(state->script.eval_ir);
+                for (size_t j = 0; j < md_script_ir_property_count(state->script.eval_ir); ++j) {
+                    bool kept = false;
+                    for (size_t i = 0; i < plan.num_props && !kept; ++i) {
+                        kept = str_eq(plan.names[i], evaluated[j]) || (plan.props[i].status == MD_SCRIPT_EVAL_STATUS_HELD && str_eq(plan.props[i].from, evaluated[j]));
+                    }
+                    if (!kept) ImGui::TextDisabled(STR_FMT ": no longer in the script", STR_ARG(evaluated[j]));
+                }
+            }
+            ImGui::EndTooltip();
+        }
 
-        if (eval && valid) {
-            state->script.eval_init = true;
+        if (eval && can_eval) {
+            // The script as it was evaluated: what remains of it. Otherwise a new evaluation, which takes over what
+            // it can from this one.
+            if (plan.same) {
+                state->script.evaluate = true;
+            } else {
+                state->script.eval_init = true;
+            }
         }
 
         if (editor_hovered) {
