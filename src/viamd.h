@@ -989,18 +989,10 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
-// The key of the script evaluation's slots over the timeline filter's frames (md_script_eval_slot_request): one for
-// each distribution and volume while there is a filter
-#define SCRIPT_SLOT_FILTER ((uint64_t)1)
-// The key of a slot over a timeline range, by its id: asked for by what is shown over the range (series_resolve_histogram)
+// The key of the script evaluation's slot of a distribution or a volume over a timeline range, by its id
+// (md_script_eval_slot_request): asked for by what is shown over the range (series_resolve_histogram,
+// series_resolve_volume)
 #define SCRIPT_SLOT_RANGE(id) (((uint64_t)1 << 32) | (uint64_t)(id))
-
-// The timeline filter as applied to the SCRIPT_SLOT_FILTER slots: frames [beg, end[, none while not enabled
-struct ScriptFilterFrames {
-    bool     enabled = false;
-    uint32_t beg = 0;
-    uint32_t end = 0;
-};
 
 // What the script visualization is to show this frame (script_visualize_ref, script_visualize_str)
 struct ScriptVisTarget {
@@ -1258,17 +1250,6 @@ struct ApplicationState {
 
     // --- TIMELINE---
     struct {
-        // What the filter is, each frame: the frames of the range marked as the filter (see
-        // TimelineRanges::filter_id), and disabled while none is. Read by everything that is
-        // evaluated or shown over the filter.
-        struct {
-            bool enabled = false;
-            double beg_frame = 0;
-            double end_frame = 1;
-
-            uint64_t fingerprint = 0;
-        } filter;
-
         // The named ranges and markers along the timeline (see timeline_ranges.h)
         TimelineRanges ranges;
 
@@ -1298,10 +1279,6 @@ struct ApplicationState {
 
     // --- DISTRIBUTIONS ---
     struct {
-        struct {
-            bool enabled = false;
-        } filter;
-
         // What each subplot draws, by attribute path (see plot_series.h)
         PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
         int num_subplots = 1;
@@ -1496,10 +1473,9 @@ struct ApplicationState {
         // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
         md_array(md_script_ir_t*) all_irs = nullptr;
 
-        // One evaluation: every property over every frame, and the distributions and volumes over the timeline
-        // filter's frames in slots (SCRIPT_SLOT_FILTER)
+        // One evaluation: every property over every frame, and the distributions and volumes shown over timeline
+        // ranges in slots over their frames (SCRIPT_SLOT_RANGE)
         md_script_eval_t* eval = nullptr;
-        ScriptFilterFrames filter_frames = {};      // as applied to the SCRIPT_SLOT_FILTER slots
         md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
         // The visualization: the target is set anew every frame, the job computes it off the main thread, and
         // what is shown is the last result while it is still for the target (see script_vis_update)
@@ -1522,7 +1498,8 @@ struct ApplicationState {
     struct {
         bool show_window = false;
         int selected_atom_filter = 0;
-        int selected_traj_filter = 0;
+        int selected_traj_filter = 0;       // all frames, the current frame, or the frames of selected_traj_range
+        uint32_t selected_traj_range = 0;   // a timeline range, by id
         int selected_file_format = 0;
         struct {
             char buf[256] = "";

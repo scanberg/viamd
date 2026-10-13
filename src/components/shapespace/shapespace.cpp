@@ -19,6 +19,7 @@
 #include <event.h>
 
 #include <serialization_utils.h>
+#include <timeline_ranges_ui.h>
 #include <imgui_widgets.h>
 #include <implot_internal.h>
 
@@ -70,6 +71,7 @@ struct Shapespace : viamd::EventHandler {
     ColorMode mode = ColorMode_Colormap;
     ImPlotColormap colormap = 0;
     ImVec4 color = {0.5f,1.0f,0.5f,1.0f};
+    uint32_t frames_range = 0;  // the timeline range whose frames are shown, by id, 0 for every frame
 
     task_system::ID evaluate_task = 0;
 
@@ -93,6 +95,11 @@ struct Shapespace : viamd::EventHandler {
                 str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
                 marker_size = 1.5f;
                 use_mass = true;
+                frames_range = 0;
+                break;
+            case viamd::EventType_ViamdDeserializeEnd:
+                // Over the timeline filter, from before there were periods: over the range it followed
+                if (frames_range == 0) frames_range = app_state->timeline.ranges.legacy_filter_id;
                 break;
             case viamd::EventType_ViamdShutdown:
                 task_system::task_interrupt_and_wait_for(evaluate_task);
@@ -117,6 +124,9 @@ struct Shapespace : viamd::EventHandler {
                             viamd::extract_flt(marker_size, arg);
                         } else if (str_eq(ident, STR_LIT("UseMass"))) {
                             viamd::extract_bool(use_mass, arg);
+                        } else if (str_eq(ident, STR_LIT("Range"))) {
+                            int id = 0;
+                            if (viamd::extract_int(id, arg)) frames_range = (uint32_t)MAX(id, 0);
                         }
                     }
                 }
@@ -128,6 +138,9 @@ struct Shapespace : viamd::EventHandler {
                 viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
                 viamd::write_flt(state, STR_LIT("MarkerSize"), marker_size);
                 viamd::write_bool(state, STR_LIT("UseMass"), use_mass);
+                if (frames_range != 0) {
+                    viamd::write_int(state, STR_LIT("Range"), (int)frames_range);
+                }
                 break;
             }
             default:
@@ -174,6 +187,20 @@ struct Shapespace : viamd::EventHandler {
 #endif
                     ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
                     ImGui::Checkbox("Use Mass", &use_mass);
+
+                    // Every frame, or those of a timeline range
+                    const TimelineRanges& rs = app_state->timeline.ranges;
+                    const TimelineRange* cur = timeline_ranges_find(&rs, frames_range);
+                    if (ImGui::BeginCombo("Frames", cur ? cur->name : "All frames")) {
+                        if (ImGui::Selectable("All frames", cur == nullptr)) frames_range = 0;
+                        for (int r = 0; r < rs.count; ++r) {
+                            char label[TIMELINE_RANGE_NAME_CAP + 16];
+                            snprintf(label, sizeof(label), "%s###range%u", rs.items[r].name, rs.items[r].id);
+                            if (ImGui::Selectable(label, rs.items[r].id == frames_range)) frames_range = rs.items[r].id;
+                            if (ImGui::IsItemHovered()) timeline_ranges_highlight(rs.items[r].id);
+                        }
+                        ImGui::EndCombo();
+                    }
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -261,15 +288,24 @@ struct Shapespace : viamd::EventHandler {
                 const float scl = (float)lim.X.Max - (float)lim.X.Min;
                 const float MAX_D2 = 0.0001f * scl * scl;
 
+                // The frames shown: every frame, or those of the range where it is now
+                int frame_beg = 0;
+                int frame_count = (int)num_frames;
+                if (const TimelineRange* r = timeline_ranges_find(&app_state->timeline.ranges, frames_range)) {
+                    int beg, end;
+                    if (timeline_range_frames(&beg, &end, *r, app_state->animation.frame, (int)num_frames)) {
+                        frame_beg = beg;
+                        frame_count = end - beg + 1;
+                    } else {
+                        frame_count = 0;
+                    }
+                }
+
                 ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size);
                 ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
                 for (int i = 0; i < (int)num_structures; ++i) {
-                    int offset = (int)num_frames * i;
-                    int count  = (int)num_frames;
-                    if (app_state->timeline.filter.enabled) {
-                        offset += (int)app_state->timeline.filter.beg_frame;
-                        count = (int)MAX(app_state->timeline.filter.end_frame - app_state->timeline.filter.beg_frame, 0);
-                    }
+                    const int offset = (int)num_frames * i + frame_beg;
+                    const int count  = frame_count;
                     vec2_t* coordinates = coords + offset;
                     char buf[32] = "";
                     if (num_structures == 1) {
@@ -308,12 +344,8 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size * 1.1f);
                 ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
                 if (hovered_structure_idx != -1) {
-                    int offset = (int)num_frames * hovered_structure_idx;
-                    int count  = (int)num_frames;
-                    if (app_state->timeline.filter.enabled) {
-                        offset += (int)app_state->timeline.filter.beg_frame;
-                        count   = MAX((int)(app_state->timeline.filter.end_frame - app_state->timeline.filter.beg_frame), 0);
-                    }
+                    const int offset = (int)num_frames * hovered_structure_idx + frame_beg;
+                    const int count  = frame_count;
                     vec2_t* coordinates = coords + offset;
                     ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                     if (hovered_structure_idx < (int)md_array_size(bitfields)) {

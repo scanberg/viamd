@@ -3,9 +3,9 @@
 // What the plotting windows (Timelines, Distributions), the property export and the density
 // volume show: series of values, named by the PATH of an attribute.
 //
-// A series is a script property ("script/<ident>" in the full or the filtered evaluation's table)
-// or a quantity loaded along the run ("<run>/edr/potential", "<run>/xvg/<file>/<column>") in the
-// system's table. It is held by path, never by pointer or index: both tables are rebuilt under it -
+// A series is a script property ("script/<ident>" in the evaluation's table), over every frame or
+// over the frames of a timeline range, or a quantity loaded along the run ("<run>/edr/potential",
+// "<run>/xvg/<file>/<column>") in the system's table. It is held by path, never by pointer or index: both tables are rebuilt under it -
 // a script recompiles, an energy file is loaded again - and a path survives that where a pointer
 // does not. So the views own paths, resolve them when they draw, and a path with nothing behind it
 // is shown as an empty legend entry that can still be removed.
@@ -55,8 +55,7 @@ struct deserialization_state_t;
 
 enum SeriesSource : uint8_t {
     SeriesSource_System = 0,        // mold.sys.attributes: loaded along the run
-    SeriesSource_Script,            // the full script evaluation
-    SeriesSource_ScriptFiltered,    // the script evaluated over the timeline filter's frames
+    SeriesSource_Script,            // the script evaluation
     SeriesSource_Count
 };
 
@@ -71,32 +70,47 @@ enum SeriesVariant : uint8_t {
     SeriesVariant_Count
 };
 
+// What the timeline filter was shown over, in a workspace from before there were periods: the range the filter followed,
+// once the workspace is read (series_legacy_period)
+#define SERIES_PERIOD_LEGACY_FILTER UINT32_MAX
+
 struct SeriesKey {
     SeriesSource  source  = SeriesSource_System;
     SeriesVariant variant = SeriesVariant_Values;
     char path[SERIES_PATH_CAP] = "";
+    // The timeline range a script property is taken over, by id, 0 for every frame. A temporal property is binned over
+    // the range's frames, a distribution or a volume read from the evaluation's slot of it (SCRIPT_SLOT_RANGE).
+    uint32_t period = 0;
 };
 
 bool      series_key_equal(const SeriesKey& a, const SeriesKey& b);
 
-// The source's name in a workspace ("system", "script", "script_filtered"), and back
+// The source's name in a workspace ("system", "script"), and back. "script_filtered", of a workspace from before there
+// were periods, is the script over SERIES_PERIOD_LEGACY_FILTER, which is written to period when it is given.
 const char* series_source_name(SeriesSource source);
-bool        series_source_from_name(SeriesSource* out, str_t name);
-SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values);
+bool        series_source_from_name(SeriesSource* out, str_t name, uint32_t* period = nullptr);
+SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values, uint32_t period = 0);
 
-// The table a source reads from, NULL when it has none right now. Both script sources read the one evaluation's:
-// the filtered source takes a temporal property over the timeline filter's frames (series_frame_mask), and reads a
-// distribution or a volume from the evaluation's slot of it over them, not from the table.
+// The period a workspace's SERIES_PERIOD_LEGACY_FILTER stands for, once its ranges are read: the range the filter
+// followed, or every frame. Any other period as it is.
+uint32_t series_legacy_period(const ApplicationState* app, uint32_t period);
+
+// The table a source reads from, NULL when it has none right now. The script's is the evaluation's: over a period, a
+// temporal property is taken over the range's frames (series_frame_mask), and a distribution or a volume read from the
+// evaluation's slot of it over them, not from the table.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source);
 // The table which holds path for source
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path);
-// The frames the temporal script property of key is taken over: those it has evaluated, of the filter's for the
-// filtered source, written to out, allocated with alloc. Its own: a property taken over from a previous evaluation
-// holds its frames while one added since is still being evaluated. A copy taken under the evaluation's lock, so it
-// can be read while the evaluation runs. False for any other source, which is taken over every frame.
+// The frames the temporal script property of key is taken over: those it has evaluated, of its period's, written to
+// out, allocated with alloc. Its own: a property taken over from a previous evaluation holds its frames while one added
+// since is still being evaluated. A copy taken under the evaluation's lock, so it can be read while the evaluation
+// runs. False for any other source, which is taken over every frame.
 bool series_frame_mask(struct md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, struct md_allocator_i* alloc);
 
-// "d1", "d1 (mean)", "d1 (filtered)", "Potential"
+// The name of the range of a period, "missing range" when it is gone
+const char* series_period_name(const ApplicationState* app, uint32_t period);
+
+// "d1", "d1 (mean)", "r (Production)", "Potential"
 void   series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key);
 ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key);
 
@@ -163,13 +177,13 @@ struct PlotSeries {
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
 
     // Distributions: the periods it is shown over, one curve each, to compare the same property between them. A period
-    // is a timeline range, by id, or 0 for the frames of its source: every frame, or the timeline filter's. A script
-    // property only; anything else is shown over the frames of its source.
+    // is a timeline range, by id, or 0 for the frames of the key: every frame, or its period's. A script property only;
+    // anything else is shown over every frame.
     uint32_t periods[PLOT_MAX_PERIODS] = {0};
     int      num_periods = 1;
 };
 
-// Whether the series is shown over anything but the frames of its source
+// Whether the series is shown over anything but the frames of its key
 static inline bool plot_series_has_periods(const PlotSeries& s) {
     return s.num_periods > 1 || (s.num_periods == 1 && s.periods[0] != 0);
 }
@@ -192,6 +206,9 @@ void plot_remove_series(PlotSubplot& sp, int index);
 // Out of one subplot and into another, keeping its style
 void plot_move_series(const ApplicationState* app, PlotSubplot& src, PlotSubplot& dst, const SeriesKey& key);
 void plot_clear(PlotSubplot* subplots, int count);
+// What a workspace from before there were periods showed over the timeline filter (SERIES_PERIOD_LEGACY_FILTER) over
+// the range the filter followed, once its ranges are read. A series that then is one shown already is left out.
+void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subplots, int count);
 
 // Workspace: the subplot count and every entry with its style, as one section plus one section
 // per entry. The layout is cleared by the caller before a workspace is read.
@@ -262,7 +279,7 @@ int    series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalVi
 
 // One period of a series over periods (series_resolve_histogram_periods)
 struct SeriesPeriodInfo {
-    uint32_t id = 0;            // the timeline range, 0 for the frames of the series' source
+    uint32_t id = 0;            // the timeline range, 0 for the frames of the series' key
     bool     valid = false;     // there is something to show over it
     bool     own_color = false; // in the colour of its range; otherwise in the series' colour
     ImVec4   color = {};
@@ -294,7 +311,7 @@ struct SeriesHistogramView {
 
 // num_bins is what is asked for; a script distribution is evaluated at a resolution of its own and
 // gives at most that. False, with labels filled in, when there is nothing to bin.
-// period: a timeline range (see PlotSeries::periods), over whose frames it is binned, or 0 for the frames of its source.
+// period: a timeline range (see PlotSeries::periods), over whose frames it is binned, or 0 for the frames of the key.
 // A script distribution over a range is read from the evaluation's slot of it (SCRIPT_SLOT_RANGE), which is asked for
 // here: nothing is evaluated for it unless it is not kept per frame, and then only when Evaluate is pressed.
 bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period = 0);
@@ -304,7 +321,8 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
 bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
                                       const uint32_t* periods, int num_periods);
 
-// The frames of a period now, [beg, end[, its colour and name. False when it covers no frames, or the range is gone.
+// The frames of a period now, [beg, end[: of the range, or for 0 of the key's own period. False when it covers no
+// frames, or the range is gone.
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period);
 
 static inline double series_histogram_bin_width(const SeriesHistogramView& v) {
@@ -337,7 +355,8 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
 // ## Listing script properties
 
 // Calls fn(key) for each property of the compiled script whose kind matches any of the flags
-// (MD_SCRIPT_PROPERTY_FLAG_*) and that the source's evaluation has published, in script order.
+// (MD_SCRIPT_PROPERTY_FLAG_*) and that the source's evaluation has published, in script order. Over every frame: a
+// period is set on the key by whoever wants one.
 template <typename Fn>
 void series_for_each_script_property(const ApplicationState* app, SeriesSource source, uint32_t kind_flags, Fn fn);
 

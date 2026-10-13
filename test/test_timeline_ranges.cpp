@@ -76,10 +76,10 @@ UTEST(timeline_ranges, add_names_colours_and_remove) {
     EXPECT_FALSE(rs.items[0].color.x == rs.items[1].color.x && rs.items[0].color.y == rs.items[1].color.y && rs.items[0].color.z == rs.items[1].color.z);
 
     const uint32_t id_b = rs.items[1].id;
-    rs.filter_id = id_b;
+    rs.legacy_filter_id = id_b;
     timeline_ranges_remove(&rs, id_b);
     EXPECT_EQ(2, rs.count);
-    EXPECT_EQ(0u, rs.filter_id);
+    EXPECT_EQ(0u, rs.legacy_filter_id);
     EXPECT_EQ(-1, timeline_ranges_index(&rs, id_b));
     EXPECT_STREQ("Marker 1", rs.items[1].name);
 
@@ -94,15 +94,33 @@ UTEST(timeline_ranges, add_names_colours_and_remove) {
     EXPECT_TRUE(timeline_ranges_add(&rs, "one too many", 0, 1, false) == nullptr);
 }
 
-UTEST(timeline_ranges, filter_follows_the_marked_range) {
-    TimelineRanges rs = {};
-    int beg, end;
-    EXPECT_FALSE(timeline_ranges_filter_frames(&beg, &end, &rs, 0.0, 100));
+// A workspace from before there were periods marked one range as the timeline filter: what was shown over the filter
+// is then shown over it, which is all the mark is read for. It is not written again.
+UTEST(timeline_ranges, a_range_marked_as_the_filter_is_read_as_the_legacy_filter) {
+    const char* text =
+        "\n[TimelineRange]\nId=3\nName=Window\nFollow=1\nFrames=-5,5\n"
+        "\n[TimelineRange]\nId=7\nName=Production\nFollow=0\nFrames=200,900\nFilter=1\n";
+    viamd::deserialization_state_t r = {};
+    r.text = str_from_cstr(text);
 
-    TimelineRange* r = timeline_ranges_add(&rs, "Window", -5, 5, true);
-    rs.filter_id = r->id;
-    ASSERT_TRUE(timeline_ranges_filter_frames(&beg, &end, &rs, 50.0, 100));
-    EXPECT_EQ(45, beg); EXPECT_EQ(55, end);
+    TimelineRanges rs = {};
+    str_t section;
+    while (viamd::next_section_header(section, r)) {
+        ASSERT_TRUE(timeline_ranges_deserialize_range(r, &rs));
+    }
+    ASSERT_EQ(2, rs.count);
+    EXPECT_EQ(7u, rs.legacy_filter_id);
+    EXPECT_STREQ("Production", timeline_ranges_find(&rs, rs.legacy_filter_id)->name);
+
+    viamd::serialization_state_t w = {};
+    md_strb_init(&w.sb, md_get_heap_allocator());
+    timeline_ranges_serialize(w, &rs);
+    size_t loc;
+    EXPECT_FALSE(str_find_str(&loc, md_strb_to_str(w.sb), STR_LIT("Filter")));
+    md_strb_free(&w.sb);
+
+    timeline_ranges_clear(&rs);
+    EXPECT_EQ(0u, rs.legacy_filter_id);
 }
 
 UTEST(timeline_ranges, draw_order_puts_short_ranges_on_top) {
@@ -181,7 +199,6 @@ UTEST(timeline_ranges, workspace_round_trip) {
     strcpy(a->note, "The helix unwinds here.\nCompare with the second run.");
     TimelineRange* b = timeline_ranges_add(&rs, "Recent", -60, 0, true);
     b->color = vec4_set(0.25f, 0.5f, 0.75f, 1.0f);
-    rs.filter_id = b->id;
     timeline_ranges_add(&rs, nullptr, 12, 12, false);
 
     viamd::serialization_state_t w = {};
@@ -215,7 +232,7 @@ UTEST(timeline_ranges, workspace_round_trip) {
     EXPECT_EQ(0, out.items[1].end);
     EXPECT_NEAR(0.25f, out.items[1].color.x, 1e-6f);
     EXPECT_NEAR(0.75f, out.items[1].color.z, 1e-6f);
-    EXPECT_EQ(out.items[1].id, out.filter_id);
+    EXPECT_EQ(0u, out.legacy_filter_id);
 
     EXPECT_STREQ("Marker 1", out.items[2].name);
     EXPECT_TRUE(timeline_range_is_marker(out.items[2]));

@@ -146,10 +146,6 @@ TimelineRangePart lit_part(const TimelineRange& r) {
     return TimelineRangePart_None;
 }
 
-void label_of(char* buf, size_t cap, const TimelineRanges* rs, const TimelineRange& r) {
-    snprintf(buf, cap, "%s%s", rs->filter_id == r.id ? ICON_FA_FILTER " " : "", r.name);
-}
-
 void tooltip_frames(const TimelineRangeAxis& a, bool marker, int beg, int end) {
     if (marker) {
         if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg], a.time_unit);
@@ -160,19 +156,14 @@ void tooltip_frames(const TimelineRangeAxis& a, bool marker, int beg, int end) {
     }
 }
 
-void range_tooltip(const TimelineRanges* rs, const TimelineRange& r, const TimelineRangeAxis& a, double current_frame) {
+void range_tooltip(const TimelineRange& r, const TimelineRangeAxis& a, double current_frame) {
     int beg, end;
     if (!timeline_range_frames(&beg, &end, r, current_frame, a.num_frames)) return;
     ImGui::BeginTooltip();
-    char label[TIMELINE_RANGE_NAME_CAP + 8];
-    label_of(label, sizeof(label), rs, r);
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(r.name);
     tooltip_frames(a, timeline_range_is_marker(r), beg, end);
     if (r.follow) {
         ImGui::TextDisabled("Follows the current frame, %+d to %+d", MIN(r.beg, r.end), MAX(r.beg, r.end));
-    }
-    if (rs->filter_id == r.id) {
-        ImGui::TextDisabled("The timeline filter follows it");
     }
     if (r.note[0]) {
         ImGui::Separator();
@@ -487,8 +478,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         const TimelineRange& r = rs->items[i];
         const TimelineRangeBar& b = bars[i];
         const bool hot = is_hot(r.id);
-        char label[TIMELINE_RANGE_NAME_CAP + 8];
-        label_of(label, sizeof(label), rs, r);
+        const char* label = r.name;
         const float cy = (b.y0 + b.y1) * 0.5f;
 
         if (b.marker) {
@@ -607,9 +597,9 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         tooltip_frames(axis, beg == end, beg, end);
         ImGui::EndTooltip();
     } else if (ui.drag.kind == Drag_Move || ui.drag.kind == Drag_Resize) {
-        if (const TimelineRange* r = timeline_ranges_find(rs, ui.drag.id)) range_tooltip(rs, *r, axis, cur);
+        if (const TimelineRange* r = timeline_ranges_find(rs, ui.drag.id)) range_tooltip(*r, axis, cur);
     } else if (ui.drag.kind == Drag_None && ui.hover_id && !editing) {
-        if (const TimelineRange* r = timeline_ranges_find(rs, ui.hover_id)) range_tooltip(rs, *r, axis, cur);
+        if (const TimelineRange* r = timeline_ranges_find(rs, ui.hover_id)) range_tooltip(*r, axis, cur);
     }
 
     // Naming a new range, or renaming one: a field under the lane, at the range
@@ -686,12 +676,6 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
             } else {
                 ImGui::SetItemTooltip("The first and the last frame. Equal, it marks a single frame");
             }
-
-            bool is_filter = rs->filter_id == r->id;
-            if (ImGui::Checkbox(ICON_FA_FILTER " Use as filter", &is_filter)) {
-                rs->filter_id = is_filter ? r->id : 0;
-            }
-            ImGui::SetItemTooltip("The timeline filter follows this range: what is evaluated over the filter uses its frames");
             ImGui::PopItemWidth();
 
             ImGui::Separator();
@@ -738,9 +722,8 @@ void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     for (int k = 0; k < n; ++k) {
         const TimelineRange& r = rs->items[order[k]];
-        const bool hot    = is_hot(r.id);
-        const bool filter = rs->filter_id == r.id;
-        if (!(hot || filter || rs->shade_all)) continue;
+        const bool hot = is_hot(r.id);
+        if (!(hot || rs->shade_all)) continue;
         int beg, end;
         timeline_range_frames(&beg, &end, r, current_frame, nf);
         if (timeline_range_is_marker(r)) {
@@ -749,7 +732,7 @@ void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         } else {
             const float xa = px(beg);
             const float xb = MAX(px(end), xa + 1.0f);
-            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), range_color(r, hot ? 0.16f : (filter ? 0.10f : 0.07f)));
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), range_color(r, hot ? 0.16f : 0.07f));
             const ImU32 edge = range_color(r, hot ? 0.9f : 0.5f);
             dl->AddLine(ImVec2(xa, y0), ImVec2(xa, y1), edge);
             dl->AddLine(ImVec2(xb, y0), ImVec2(xb, y1), edge);
@@ -770,33 +753,13 @@ void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     }
 }
 
-void timeline_ranges_menu(TimelineRanges* rs, double current_frame, int num_frames) {
+void timeline_ranges_menu(TimelineRanges* rs) {
     ImGui::SeparatorText("Lanes");
     int layout = (int)rs->layout;
     ImGui::RadioButton("One lane", &layout, (int)TimelineRangeLayout_OneLane);
     ImGui::RadioButton("Lane per range", &layout, (int)TimelineRangeLayout_LanePerRange);
     rs->layout = (TimelineRangeLayout)layout;
     ImGui::Checkbox("Shade every range in the plots", &rs->shade_all);
-
-    ImGui::SeparatorText("Filter");
-    const TimelineRange* filter = timeline_ranges_find(rs, rs->filter_id);
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-    if (ImGui::BeginCombo("##filter", filter ? filter->name : "None")) {
-        if (ImGui::Selectable("None", filter == nullptr)) rs->filter_id = 0;
-        for (int i = 0; i < rs->count; ++i) {
-            const TimelineRange& r = rs->items[i];
-            int beg, end;
-            char label[TIMELINE_RANGE_NAME_CAP + 48];
-            if (timeline_range_frames(&beg, &end, r, current_frame, num_frames)) {
-                snprintf(label, sizeof(label), "%s (%d to %d)###%u", r.name, beg, end, r.id);
-            } else {
-                snprintf(label, sizeof(label), "%s###%u", r.name, r.id);
-            }
-            if (ImGui::Selectable(label, r.id == rs->filter_id)) rs->filter_id = r.id;
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SetItemTooltip("The range the timeline filter follows");
 
     ImGui::SeparatorText("Marking");
     if (ImGui::BeginTable("##marking", 2, ImGuiTableFlags_SizingFixedFit)) {
@@ -811,7 +774,7 @@ void timeline_ranges_menu(TimelineRanges* rs, double current_frame, int num_fram
         row("Shift-click",  "mark a frame");
         row("Drag",         "move, or resize by a handle");
         row("Double-click", "rename");
-        row("Right-click",  "annotate, follow the current frame, filter, delete");
+        row("Right-click",  "annotate, follow the current frame, delete");
         row("Delete",       "remove the range under the mouse");
         row("Pull out",     "drag a range out of the lane onto a distribution");
         ImGui::EndTable();

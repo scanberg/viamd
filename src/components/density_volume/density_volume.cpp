@@ -29,6 +29,7 @@ struct DensityVolume : viamd::EventHandler {
 
     // The volume property shown, by path; empty for none. One at a time.
     SeriesKey volume_key = {};
+    ApplicationState* app = nullptr;
 
     md_allocator_i* arena = nullptr;
 
@@ -156,6 +157,9 @@ struct DensityVolume : viamd::EventHandler {
         if (volume_key.path[0] != '\0') {
             viamd::write_str(state, STR_LIT("PropertySource"), str_from_cstr(series_source_name(volume_key.source)));
             viamd::write_str(state, STR_LIT("PropertyPath"), str_from_cstr(volume_key.path));
+            if (volume_key.period != 0) {
+                viamd::write_int(state, STR_LIT("PropertyPeriod"), (int)volume_key.period);
+            }
         }
         viamd::write_bool(state, STR_LIT("DvrEnabled"), dvr.enabled);
         viamd::write_int (state, STR_LIT("DvrColormap"), dvr.tf.colormap);
@@ -191,16 +195,19 @@ struct DensityVolume : viamd::EventHandler {
 
     void deserialize(viamd::deserialization_state_t& state) {
         SeriesSource source = SeriesSource_Script;
+        uint32_t period = 0;
+        str_t path = {};
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
             if (str_eq_cstr(ident, "PropertySource")) {
                 str_t name;
                 viamd::extract_str(name, arg);
-                series_source_from_name(&source, name);
+                series_source_from_name(&source, name, &period);
+            } else if (str_eq_cstr(ident, "PropertyPeriod")) {
+                int i = 0;
+                if (viamd::extract_int(i, arg)) period = (uint32_t)MAX(i, 0);
             } else if (str_eq_cstr(ident, "PropertyPath")) {
-                str_t path;
                 viamd::extract_str(path, arg);
-                volume_key = series_key(source, path);
             } else if (str_eq_cstr(ident, "DvrEnabled")) {
                 viamd::extract_bool(dvr.enabled, arg);
             } else if (str_eq_cstr(ident, "DvrColormap")) {
@@ -256,6 +263,9 @@ struct DensityVolume : viamd::EventHandler {
                     if (str_eq_cstr(ident, key)) { viamd::extract_vec4(iso.colors[i], arg); break; }
                 }
             }
+        }
+        if (!str_empty(path)) {
+            volume_key = series_key(source, path, SeriesVariant_Values, period);
         }
         // Workspaces from before the two were exclusive can have both on: DVR wins, as it did by default
         if (dvr.enabled && iso.enabled) {
@@ -455,12 +465,14 @@ struct DensityVolume : viamd::EventHandler {
                 if (ImGui::BeginMenu("Property")) {
                     // One volume at a time: picking one replaces the other, picking it again hides it
                     int candidate_count = 0;
-                    auto list = [&](SeriesSource source) {
-                        series_for_each_script_property(state, source, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& key) {
+                    auto list = [&](uint32_t period) {
+                        series_for_each_script_property(state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& over_all) {
+                            SeriesKey key = over_all;
+                            key.period = period;
                             char label[96];
                             series_label(label, sizeof(label), state, key);
                             const bool is_selected = series_key_equal(key, volume_key);
-                            ImGui::PushID(key.source);
+                            ImGui::PushID((int)period);
                             ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
                             if (ImGui::Selectable(label, is_selected)) {
                                 volume_key = is_selected ? SeriesKey{} : key;
@@ -474,9 +486,11 @@ struct DensityVolume : viamd::EventHandler {
                             candidate_count += 1;
                         });
                     };
-                    list(SeriesSource_Script);
-                    if (state->timeline.filter.enabled) {
-                        list(SeriesSource_ScriptFiltered);
+                    // Over every frame, and over each timeline range: "v (Production)"
+                    list(0);
+                    for (int i = 0; i < state->timeline.ranges.count && candidate_count > 0; ++i) {
+                        if (i == 0) ImGui::SeparatorText("Over a range");
+                        list(state->timeline.ranges.items[i].id);
                     }
 
                     if (candidate_count == 0) {
@@ -1041,6 +1055,7 @@ struct DensityVolume : viamd::EventHandler {
                 // Initialize component
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState* state = (ApplicationState*)e.payload;
+                app = state;
                 arena = md_arena_allocator_create(state->allocator.persistent, MEGABYTES(1));
                 picking_surface_init(&picking_surface, interaction_surface_density_vol);
                 workspace_register_window("DensityVolume", &show_window);
@@ -1059,6 +1074,10 @@ struct DensityVolume : viamd::EventHandler {
                 }
                 break;
             }
+            case viamd::EventType_ViamdDeserializeEnd:
+                // Over the timeline filter, from before there were periods: over the range it followed
+                if (app) volume_key.period = series_legacy_period(app, volume_key.period);
+                break;
             case viamd::EventType_ViamdShutdown: {
                 // Cleanup component
                 md_arena_allocator_destroy(arena);

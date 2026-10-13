@@ -125,36 +125,6 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 )");
 
 
-// The timeline filter as the evaluation's slots take it: frames [beg, end[, none while there is no filter
-static ScriptFilterFrames script_filter_frames(const ApplicationState& state, size_t num_frames) {
-    ScriptFilterFrames filter = {};
-    if (state.timeline.filter.enabled && num_frames > 0) {
-        const uint32_t frames = (uint32_t)num_frames;
-        filter.enabled = true;
-        filter.beg = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, frames - 1);
-        filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
-    }
-    return filter;
-}
-
-// Every distribution and volume over the filter's frames, in a slot of its own (SCRIPT_SLOT_FILTER), while there is a
-// filter. Moved with the filter, a slot keeps what it has in common with its new frames.
-static void script_filter_slots_apply(ApplicationState& state, const ScriptFilterFrames& filter) {
-    md_script_eval_t* eval = state.script.eval;
-    const md_script_ir_t* ir = state.script.eval_ir;
-    const md_bitset_t frames = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
-    const str_t* names = md_script_ir_property_names(ir);
-    for (size_t i = 0; i < md_script_ir_property_count(ir); ++i) {
-        if (!(md_script_ir_property_flags(ir, names[i]) & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME))) continue;
-        if (filter.enabled) {
-            md_script_eval_slot_request(eval, SCRIPT_SLOT_FILTER, names[i], &frames);
-        } else {
-            md_script_eval_slot_release(eval, SCRIPT_SLOT_FILTER, names[i]);
-        }
-    }
-    state.script.filter_frames = filter;
-}
-
 // What Evaluate would do with the script as it is in the editor (md_script_eval_plan): how each of its properties
 // stands against what is evaluated, and so how what is shown stands against what the script now says
 struct ScriptPlan {
@@ -217,7 +187,7 @@ static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, 
         } else if (p.num_frames < plan.num_frames) {
             snprintf(buf, cap, STR_FMT ": %u of %u frames evaluated%s", STR_ARG(name), p.num_frames, plan.num_frames, from);
         } else {
-            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over the filter%s", STR_ARG(name), p.num_pending, from);
+            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over ranges%s", STR_ARG(name), p.num_pending, from);
         }
         break;
     }
@@ -856,27 +826,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        {
-            // The filter is the range marked as the filter, with the current frame where it is now. The
-            // script's filter frame set follows (see the evaluation below).
-            int beg = 0, end = 0;
-            state.timeline.filter.enabled = timeline_ranges_filter_frames(&beg, &end, &state.timeline.ranges, state.animation.frame, (int)num_frames);
-            if (state.timeline.filter.enabled) {
-                state.timeline.filter.beg_frame = beg;
-                state.timeline.filter.end_frame = end;
-            }
-        }
-
-        if (state.timeline.filter.enabled) {
-            static auto prev_filter_beg = state.timeline.filter.beg_frame;
-            static auto prev_filter_end = state.timeline.filter.end_frame;
-            if (state.timeline.filter.beg_frame != prev_filter_beg || state.timeline.filter.end_frame != prev_filter_end) {
-                prev_filter_beg = state.timeline.filter.beg_frame;
-                prev_filter_end = state.timeline.filter.end_frame;
-                state.timeline.filter.fingerprint = generate_fingerprint();
-            }
-        }
-
         if (time_changed) {
             state.mold.interpolate_system_state = true;
             time_stopped = false;
@@ -1022,12 +971,9 @@ int main(int argc, char** argv) {
 
                     if (md_script_ir_valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
-                        // The slots over the filter come along, and what they hold where their property is taken over
+                        // The slots over ranges come along, and what they hold where their property is taken over
                         const md_script_eval_desc_t desc = { .num_frames = num_frames };
                         state.script.eval = md_script_eval_create_from(prev, state.script.eval_ir, &desc, state.allocator.persistent);
-                        if (state.script.eval) {
-                            script_filter_slots_apply(state, script_filter_frames(state, num_frames));
-                        }
                     }
 
                     if (prev) {
@@ -1046,15 +992,9 @@ int main(int argc, char** argv) {
             if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
                 md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
             {
-                // The filter's slots follow the timeline filter at once, also while evaluating, and are let go while
-                // there is none. Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only
-                // starts when asked to. A distribution needs none, it is kept per frame.
-                const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
-                const ScriptFilterFrames& applied = state.script.filter_frames;
-                if (filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end) {
-                    script_filter_slots_apply(state, filter);
-                }
-
+                // The slots over ranges follow their ranges at once, also while evaluating (series_resolve_histogram).
+                // Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only starts when
+                // asked to. A distribution needs none, it is kept per frame.
                 if (state.script.evaluate) {
                     if (task_system::task_is_running(state.tasks.evaluate)) {
                         // Started again once it has stopped, over the frames which remain then. Nothing it has
@@ -1064,21 +1004,15 @@ int main(int argc, char** argv) {
                         state.script.evaluate = false;
                         md_script_eval_reset_interrupt(state.script.eval);
 
-                        // What is left to do, for the properties and the slots. The filter's frames first: what is
-                        // shown over them is there sooner.
+                        // What is left to do, for the properties and the slots
                         const md_bitset_t pending = md_script_eval_pending_frames(state.script.eval, frame_alloc);
                         const size_t count = md_bitset_count(pending);
                         if (count > 0) {
                             md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
                             size_t n = 0;
-                            for (int in_filter = 1; in_filter >= 0; --in_filter) {
-                                md_bitset_iter_t it = md_bitset_iter(pending);
-                                while (md_bitset_iter_next(&it) && n < count) {
-                                    const bool inside = filter.enabled && filter.beg <= it.idx && it.idx < filter.end;
-                                    if (inside == (bool)in_filter) {
-                                        state.script.eval_frames[n++] = (uint32_t)it.idx;
-                                    }
-                                }
+                            md_bitset_iter_t it = md_bitset_iter(pending);
+                            while (md_bitset_iter_next(&it) && n < count) {
+                                state.script.eval_frames[n++] = (uint32_t)it.idx;
                             }
 
                             // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
@@ -4386,7 +4320,7 @@ static void draw_timeline_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Ranges")) {
-                timeline_ranges_menu(&data->timeline.ranges, data->animation.frame, num_x_values);
+                timeline_ranges_menu(&data->timeline.ranges);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
@@ -4916,19 +4850,28 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
             ImGui::SameLine();
             ImGui::TextDisabled("%s", frames);
         }
-        if (id != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(id);
+        const uint32_t range = id != 0 ? id : s.key.period;
+        if (range != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(range);
         ImGui::PopID();
     };
 
-    item(0, s.key.source == SeriesSource_ScriptFiltered ? "Filter" : "All frames", nullptr, "");
+    // The key's own frames first, in the series' colour: every frame, or its period's
     const int num_frames = (int)run_num_frames(data);
+    auto frames_of = [&](char* buf, size_t cap, const TimelineRange& r) {
+        int beg, end;
+        if (timeline_range_frames(&beg, &end, r, data->animation.frame, num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
+    };
+    {
+        char frames[48] = "";
+        const TimelineRange* own = timeline_ranges_find(&rs, s.key.period);
+        if (own) frames_of(frames, sizeof(frames), *own);
+        item(0, s.key.period != 0 ? series_period_name(data, s.key.period) : "All frames", nullptr, frames);
+    }
     for (int i = 0; i < rs.count; ++i) {
         const TimelineRange& r = rs.items[i];
+        if (r.id == s.key.period) continue;
         char frames[48] = "";
-        int beg, end;
-        if (timeline_range_frames(&beg, &end, r, data->animation.frame, num_frames)) {
-            snprintf(frames, sizeof(frames), "%d to %d", beg, end);
-        }
+        frames_of(frames, sizeof(frames), r);
         const ImVec4 color(r.color.x, r.color.y, r.color.z, 1.0f);
         item(r.id, r.name, &color, frames);
     }
@@ -4944,10 +4887,12 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     const uint32_t kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
 
     // A temporal property is binned over its frames, a distribution is shown as evaluated. Over the
-    // timeline filter's frames too, while there is a filter.
-    auto script_section = [&](SeriesSource source) -> int {
+    // frames of a timeline range too: "r (Production)".
+    auto script_section = [&](uint32_t period) -> int {
         int num_listed = 0;
-        series_for_each_script_property(data, source, kinds, [&](const SeriesKey& key) {
+        series_for_each_script_property(data, SeriesSource_Script, kinds, [&](const SeriesKey& over_all) {
+            SeriesKey key = over_all;
+            key.period = period;
             plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, key);
             num_listed += 1;
             const bool temporal = md_script_ir_property_flags(data->script.eval_ir, series_script_ident(key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
@@ -4963,12 +4908,22 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     };
 
     ImGui::SeparatorText("Script");
-    if (script_section(SeriesSource_Script) == 0) {
+    if (script_section(0) == 0) {
         ImGui::TextDisabled("No temporal or distribution properties, define and evaluate them in the script editor");
-    }
-    if (data->timeline.filter.enabled) {
-        ImGui::SeparatorText("Script, over the timeline filter");
-        script_section(SeriesSource_ScriptFiltered);
+    } else if (data->timeline.ranges.count > 0) {
+        ImGui::SeparatorText("Script, over a range");
+        const TimelineRanges& rs = data->timeline.ranges;
+        for (int i = 0; i < rs.count; ++i) {
+            const TimelineRange& r = rs.items[i];
+            char label[TIMELINE_RANGE_NAME_CAP + 16];
+            snprintf(label, sizeof(label), "%s###range%u", r.name, r.id);
+            const bool open = ImGui::BeginMenu(label);
+            if (ImGui::IsItemHovered()) timeline_ranges_highlight(r.id);
+            if (open) {
+                script_section(r.id);
+                ImGui::EndMenu();
+            }
+        }
     }
 
     ImGui::SeparatorText("Loaded along the run");
@@ -5991,8 +5946,10 @@ static void draw_property_export_window(ApplicationState* data) {
                 kind == ExportKind_Temporal     ? (uint32_t)MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
                 kind == ExportKind_Distribution ? (uint32_t)(MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) :
                                                   (uint32_t)MD_SCRIPT_PROPERTY_FLAG_VOLUME;
-            auto push_script = [&](SeriesSource source) {
-                series_for_each_script_property(data, source, script_kinds, [&](const SeriesKey& key) {
+            auto push_script = [&](uint32_t period) {
+                series_for_each_script_property(data, SeriesSource_Script, script_kinds, [&](const SeriesKey& over_all) {
+                    SeriesKey key = over_all;
+                    key.period = period;
                     md_array_push(candidates, key, alloc);
                     const bool temporal = md_script_ir_property_flags(data->script.eval_ir, series_script_ident(key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
                     if (kind == ExportKind_Distribution && temporal && script_property_population(data, key) > 1) {
@@ -6002,9 +5959,12 @@ static void draw_property_export_window(ApplicationState* data) {
                     }
                 });
             };
-            push_script(SeriesSource_Script);
-            if (data->timeline.filter.enabled && kind != ExportKind_Temporal) {
-                push_script(SeriesSource_ScriptFiltered);
+            // Over each range too, "r (Production)": what is over time is the same over a range
+            push_script(0);
+            if (kind != ExportKind_Temporal) {
+                for (int i = 0; i < data->timeline.ranges.count; ++i) {
+                    push_script(data->timeline.ranges.items[i].id);
+                }
             }
             if (kind != ExportKind_Volume) {
                 str_t groups[64];
@@ -6228,7 +6188,6 @@ void draw_structure_export_window(ApplicationState* data) {
         static const char* frame_mask_options[] = {
             "All Frames",
             "Current Frame",
-            "Active Frame Range"
         };
 
         static const char* file_formats[] = {
@@ -6278,9 +6237,30 @@ void draw_structure_export_window(ApplicationState* data) {
             }
         }
 
+        // Every frame, the current one, or those of a timeline range
+        const TimelineRange* traj_range = timeline_ranges_find(&data->timeline.ranges, struct_exp.selected_traj_range);
+        struct_exp.selected_traj_filter = CLAMP(struct_exp.selected_traj_filter, 0, 2);
+        if (struct_exp.selected_traj_filter == 2 && !traj_range) struct_exp.selected_traj_filter = 0;
         if (traj) {
-            struct_exp.selected_traj_filter = CLAMP(struct_exp.selected_traj_filter, 0, (int)ARRAY_SIZE(frame_mask_options) - 1);
-            ImGui::Combo("Frames to Export", &struct_exp.selected_traj_filter, frame_mask_options, (int)ARRAY_SIZE(frame_mask_options));
+            const char* preview = struct_exp.selected_traj_filter == 2 ? traj_range->name : frame_mask_options[struct_exp.selected_traj_filter];
+            if (ImGui::BeginCombo("Frames to Export", preview)) {
+                for (int i = 0; i < (int)ARRAY_SIZE(frame_mask_options); ++i) {
+                    if (ImGui::Selectable(frame_mask_options[i], struct_exp.selected_traj_filter == i)) struct_exp.selected_traj_filter = i;
+                }
+                const TimelineRanges& rs = data->timeline.ranges;
+                if (rs.count > 0) ImGui::SeparatorText("Range");
+                for (int i = 0; i < rs.count; ++i) {
+                    const TimelineRange& r = rs.items[i];
+                    char label[TIMELINE_RANGE_NAME_CAP + 16];
+                    snprintf(label, sizeof(label), "%s###range%u", r.name, r.id);
+                    if (ImGui::Selectable(label, struct_exp.selected_traj_filter == 2 && r.id == struct_exp.selected_traj_range)) {
+                        struct_exp.selected_traj_filter = 2;
+                        struct_exp.selected_traj_range = r.id;
+                    }
+                    if (ImGui::IsItemHovered()) timeline_ranges_highlight(r.id);
+                }
+                ImGui::EndCombo();
+            }
         }
 
         struct_exp.selected_file_format = CLAMP(struct_exp.selected_file_format, 0, (int)ARRAY_SIZE(file_formats) - 1);
@@ -6346,9 +6326,12 @@ void draw_structure_export_window(ApplicationState* data) {
                     int32_t current_frame = (int)(data->animation.frame + 0.5); // Round to nearest
                     md_array_push(frame_indices, current_frame, frame_alloc);
                 } break;
-                case 2: { // Active Frame Range
-                    int beg = data->timeline.filter.beg_frame;
-                    int end = data->timeline.filter.end_frame;
+                case 2: { // A timeline range
+                    int beg = 0, end = -1;
+                    if (!traj_range || !timeline_range_frames(&beg, &end, *traj_range, data->animation.frame, (int)run_num_frames(data))) {
+                        beg = 0;
+                        end = -1;
+                    }
                     for (int i = beg; i <= end; ++i) {
                         md_array_push(frame_indices, (int32_t)i, frame_alloc);
                     }

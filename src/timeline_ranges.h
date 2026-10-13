@@ -2,8 +2,8 @@
 
 // Named spans of frames on the timeline, which the user marks out, names and annotates: a range
 // covers frames [beg, end], a marker is a range of a single frame. The timeline owns them and they
-// are saved with the workspace. One of them can be marked as the timeline filter, which then
-// follows it (see timeline_ranges_filter_frames).
+// are saved with the workspace. What is shown over a range refers to it by id: a script property
+// over its frames ("r (Production)"), a period of a distribution.
 //
 // A range is either fixed, its ends are frames, or it follows the current frame, its ends are
 // offsets from it: -60..0 is the last 60 frames, -25..25 is centered on the current frame. The two
@@ -46,7 +46,9 @@ struct TimelineRanges {
     TimelineRange items[TIMELINE_MAX_RANGES];
     int      count = 0;
     uint32_t next_id = 1;
-    uint32_t filter_id = 0;             // The range the timeline filter follows, 0 for none
+    // The range a workspace from before there were periods marked as the timeline filter, while it is read: what was
+    // shown over the filter is shown over it. 0 for none. Not saved.
+    uint32_t legacy_filter_id = 0;
 
     TimelineRangeLayout layout = TimelineRangeLayout_OneLane;
     bool     shade_all = false;         // Shade every range in the plots, not only the one under the mouse
@@ -76,9 +78,6 @@ const TimelineRange* timeline_ranges_find(const TimelineRanges* rs, uint32_t id)
 
 // "Range 1", "Marker 1": the lowest number no range is named with yet
 void timeline_ranges_default_name(char* buf, size_t cap, const TimelineRanges* rs, bool marker);
-
-// The frames of the range the filter follows. False when no range is the filter, or it covers no frames.
-bool timeline_ranges_filter_frames(int* out_beg, int* out_end, const TimelineRanges* rs, double current_frame, int num_frames);
 
 // ## Lanes
 //
@@ -123,5 +122,6 @@ TimelineRangeHit timeline_ranges_hit_test(const TimelineRangeBar* bars, const in
 // One [TimelineRange] section per range, in the order of the list. A range keeps its id across a save and a load, so
 // what refers to it by id (a plotted series) finds it again.
 void timeline_ranges_serialize(viamd::serialization_state_t& state, const TimelineRanges* rs);
-// Reads the section the state is at as one more range. False when there is no room for it.
+// Reads the section the state is at as one more range. False when there is no room for it. A range a workspace marked
+// as the timeline filter becomes the legacy_filter_id.
 bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, TimelineRanges* rs);

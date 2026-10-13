@@ -1055,8 +1055,6 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
         double max_time = frame_times[num_frames - 1] * time_scl;
 
         data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.beg_frame = (double)min_frame;
-        data->timeline.filter.end_frame = (double)max_frame;
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
@@ -1532,7 +1530,8 @@ struct WorkspacePending {
     md_bitset_t recenter_target;
 
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
-    // filter is how a workspace from before the timeline's ranges held it, and becomes one of them.
+    // filter is how a workspace from before the timeline's ranges held it, and becomes one of them:
+    // what was shown over the filter is shown over that range.
     bool   filter_enabled;
     bool   has_filter_range;
     double filter_beg_frame;
@@ -1575,7 +1574,6 @@ static void workspace_reset(ApplicationState* data) {
     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
     data->timeline.num_subplots = 1;
     data->distributions.num_subplots = 1;
-    data->timeline.filter.enabled = false;
     data->timeline.ranges = TimelineRanges{};
 
     data->visuals = {};
@@ -2164,7 +2162,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
     // Loading a trajectory sets the view to all of it; the workspace's comes after
     if (num_frames > 0) {
         const double last = (double)(num_frames - 1);
-        // A workspace from before the ranges: its filter becomes the range the filter follows
+        // A workspace from before the ranges: its filter becomes a range, over which what was shown over the
+        // filter is shown
         if (!pending.has_ranges && pending.filter_enabled) {
             TimelineRange* r = nullptr;
             if (pending.temporal_window_enabled) {
@@ -2176,7 +2175,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 const double end = pending.has_filter_range ? CLAMP(pending.filter_end_frame, beg, last) : last;
                 r = timeline_ranges_add(&data->timeline.ranges, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
             }
-            if (r) data->timeline.ranges.filter_id = r->id;
+            if (r) data->timeline.ranges.legacy_filter_id = r->id;
         }
         if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
             data->timeline.view_range.beg_x = workspace_frame_to_time(data, CLAMP(pending.view_beg_frame, 0.0, last));
@@ -2213,7 +2212,13 @@ void load_workspace(ApplicationState* data, str_t filename) {
     reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
+    // What was shown over the timeline filter, before there were periods, is shown over the range the filter followed.
+    // The components take theirs on the end of the load, after which there is no filter to speak of.
+    plot_resolve_legacy_periods(data, data->timeline.subplots, PLOT_MAX_SUBPLOTS);
+    plot_resolve_legacy_periods(data, data->distributions.subplots, PLOT_MAX_SUBPLOTS);
+
     viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserializeEnd, viamd::EventPayloadType_DeserializationState, &state);
+    data->timeline.ranges.legacy_filter_id = 0;
 }
 
 bool save_workspace(ApplicationState* app_state, str_t filename) {

@@ -7,7 +7,7 @@
 //   shift-drag     marks a new range, in the lane or in any plot; shift-click marks a single frame
 //   drag           a handle resizes a range, the bar moves it; an end dragged past the other keeps going
 //   double-click   renames
-//   right-click    the annotation, the colour, whether it follows the current frame, the filter, delete
+//   right-click    the annotation, the colour, whether it follows the current frame, delete
 //   delete         removes the range under the mouse
 //   pulled out     a range dragged well out of the lane is taken elsewhere (TIMELINE_RANGE_DND), and stays put:
 //                  dropped on a distribution, it is shown over the range too
@@ -32,8 +32,8 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
 // a new range on shift-press. The first plot each frame tells the lane where the plots' area is.
 void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, double current_frame);
 
-// The contents of the timeline's Ranges menu: the layout of the lanes, the shading, the filter
-void timeline_ranges_menu(TimelineRanges* rs, double current_frame, int num_frames);
+// The contents of the timeline's Ranges menu: the layout of the lanes, the shading
+void timeline_ranges_menu(TimelineRanges* rs);
 
 // While a range is created, moved or resized, or the lane pans: the plots should not pan meanwhile
 bool timeline_ranges_dragging();

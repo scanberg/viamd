@@ -11,6 +11,7 @@
 #include <viamd.h>
 #include <event.h>
 #include <plot_series.h>
+#include <timeline_ranges_ui.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -49,12 +50,13 @@ static const char* storage_name(const md_attribute_t& attr) {
     return "resident";
 }
 
-static const char* source_name(SeriesSource source) {
-    switch (source) {
-    case SeriesSource_System:         return "System";
-    case SeriesSource_Script:         return "Script";
-    case SeriesSource_ScriptFiltered: return "Script (filtered)";
-    default: return "?";
+// "System", "Script", "Script (Production)": the script over a timeline range
+static void source_label(char* buf, size_t cap, const ApplicationState& state, SeriesSource source, uint32_t period) {
+    const char* name = source == SeriesSource_System ? "System" : source == SeriesSource_Script ? "Script" : "?";
+    if (period != 0) {
+        snprintf(buf, cap, "%s (%s)", name, series_period_name(&state, period));
+    } else {
+        snprintf(buf, cap, "%s", name);
     }
 }
 
@@ -114,6 +116,7 @@ static bool matches_filter(str_t filter, str_t path, str_t label, const char* so
 
 struct Row {
     SeriesSource source;
+    uint32_t period;        // a timeline range the script is taken over, 0 for every frame
     const md_attributes_t* table;
     const md_attribute_t* attr;  // valid for the frame: nothing publishes while the window draws
     uint32_t views;         // SeriesView_*
@@ -180,24 +183,38 @@ struct Attributes : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* alloc = md_temp_allocator(temp);
 
-        // The tables there are right now. The filtered source only while the timeline has a filter, and only with
-        // what it has of its own: the distributions and volumes, over the filter's frames. Everything else in the
-        // table is the full evaluation's.
-        const SeriesSource sources[] = { SeriesSource_System, SeriesSource_Script, SeriesSource_ScriptFiltered };
+        // The tables there are right now, and the script's over each timeline range, with only what it has of its
+        // own over a range: the distributions and volumes, over the range's frames. Everything else in the table is
+        // the same over every frame.
+        struct Source {
+            SeriesSource source;
+            uint32_t period;
+        };
+        Source sources[2 + TIMELINE_MAX_RANGES];
+        int num_sources = 0;
+        sources[num_sources++] = { SeriesSource_System, 0 };
+        sources[num_sources++] = { SeriesSource_Script, 0 };
+        for (int i = 0; i < state.timeline.ranges.count; ++i) {
+            sources[num_sources++] = { SeriesSource_Script, state.timeline.ranges.items[i].id };
+        }
         md_array(Row) rows = 0;
         size_t total = 0;
         const str_t filter_str = str_from_cstr(filter);
-        for (SeriesSource source : sources) {
-            if (source == SeriesSource_ScriptFiltered && !state.timeline.filter.enabled) continue;
+        for (int si = 0; si < num_sources; ++si) {
+            const SeriesSource source = sources[si].source;
+            const uint32_t period = sources[si].period;
             const md_attributes_t* table = series_table(&state, source);
             if (!table) continue;
-            total += md_attributes_count(table);
+            if (period == 0) total += md_attributes_count(table);
+            char src_label[96];
+            source_label(src_label, sizeof(src_label), state, source, period);
             for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
                 const md_attribute_t& attr = *it.attr;
-                if (source == SeriesSource_ScriptFiltered && !script_aggregate_path(state, attr.path)) continue;
-                if (!matches_filter(filter_str, attr.path, attr.label, source_name(source))) continue;
-                Row row = { source, table, it.attr, 0, nullptr };
-                const SeriesKey key = series_key(source, attr.path);
+                if (period != 0 && !script_aggregate_path(state, attr.path)) continue;
+                if (period != 0) total += 1;
+                if (!matches_filter(filter_str, attr.path, attr.label, src_label)) continue;
+                Row row = { source, period, table, it.attr, 0, nullptr };
+                const SeriesKey key = series_key(source, attr.path, SeriesVariant_Values, period);
                 row.views = series_views(&state, key, &row.reason);
                 if (plottable_only && !row.views) continue;
                 md_array_push(rows, row, alloc);
@@ -213,12 +230,12 @@ struct Attributes : viamd::EventHandler {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn(ICON_FA_CHART_LINE,   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
             ImGui::TableSetupColumn(ICON_FA_CHART_COLUMN, ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
-            ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch, 4.0f);
-            ImGui::TableSetupColumn("Label",   ImGuiTableColumnFlags_WidthStretch, 2.0f);
-            ImGui::TableSetupColumn("Format",  ImGuiTableColumnFlags_WidthStretch, 1.6f);
-            ImGui::TableSetupColumn("Unit",    ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableSetupColumn("Label",   ImGuiTableColumnFlags_WidthStretch, 1.6f);
+            ImGui::TableSetupColumn("Format",  ImGuiTableColumnFlags_WidthStretch, 1.5f);
+            ImGui::TableSetupColumn("Unit",    ImGuiTableColumnFlags_WidthStretch, 0.9f);
             ImGui::TableSetupColumn("Storage", ImGuiTableColumnFlags_WidthStretch, 0.9f);
-            ImGui::TableSetupColumn("Source",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Source",  ImGuiTableColumnFlags_WidthStretch, 2.6f);
 
             // Header, with what the two marks mean
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
@@ -238,7 +255,7 @@ struct Attributes : viamd::EventHandler {
                 for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                     const Row& row = rows[r];
                     const md_attribute_t& attr = *row.attr;
-                    const SeriesKey key = series_key(row.source, attr.path);
+                    const SeriesKey key = series_key(row.source, attr.path, SeriesVariant_Values, row.period);
                     const bool timeline = row.views & SeriesView_Timeline;
                     const bool distribution = row.views & SeriesView_Distribution;
 
@@ -307,11 +324,19 @@ struct Attributes : viamd::EventHandler {
                     ImGui::TextUnformatted(storage_name(attr));
 
                     ImGui::TableSetColumnIndex(7);
-                    ImGui::TextUnformatted(source_name(row.source));
+                    {
+                        char buf[96];
+                        source_label(buf, sizeof(buf), state, row.source, row.period);
+                        ImGui::TextUnformatted(buf);
+                        if (row.period != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(row.period);
+                    }
 
                     if (hovered) {
                         ImGui::BeginTooltip();
                         ImGui::TextUnformatted(attr.path.ptr, attr.path.ptr + attr.path.len);
+                        if (row.period != 0) {
+                            ImGui::TextDisabled("Over the frames of %s", series_period_name(&state, row.period));
+                        }
                         if (!str_empty(attr.description)) {
                             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
                             ImGui::TextDisabled(STR_FMT, STR_ARG(attr.description));

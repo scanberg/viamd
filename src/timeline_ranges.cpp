@@ -137,17 +137,12 @@ void timeline_ranges_remove(TimelineRanges* rs, uint32_t id) {
         rs->items[j] = rs->items[j + 1];
     }
     rs->count -= 1;
-    if (rs->filter_id == id) rs->filter_id = 0;
+    if (rs->legacy_filter_id == id) rs->legacy_filter_id = 0;
 }
 
 void timeline_ranges_clear(TimelineRanges* rs) {
     rs->count = 0;
-    rs->filter_id = 0;
-}
-
-bool timeline_ranges_filter_frames(int* out_beg, int* out_end, const TimelineRanges* rs, double current_frame, int num_frames) {
-    const TimelineRange* r = timeline_ranges_find(rs, rs->filter_id);
-    return r && timeline_range_frames(out_beg, out_end, *r, current_frame, num_frames);
+    rs->legacy_filter_id = 0;
 }
 
 int timeline_ranges_draw_order(int* out, const TimelineRanges* rs, double current_frame, int num_frames) {
@@ -252,9 +247,6 @@ void timeline_ranges_serialize(viamd::serialization_state_t& state, const Timeli
         viamd::write_bool(state, STR_LIT("Follow"), r.follow);
         const int frames[2] = { r.beg, r.end };
         viamd::write_int_vec(state, STR_LIT("Frames"), frames, 2);
-        if (rs->filter_id == r.id) {
-            viamd::write_bool(state, STR_LIT("Filter"), true);
-        }
     }
 }
 
@@ -282,6 +274,7 @@ bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, Ti
                 r.end = frames[1];
             }
         } else if (str_eq(ident, STR_LIT("Filter"))) {
+            // Marked as the timeline filter, before there were periods
             viamd::extract_bool(is_filter, arg);
         }
     }
@@ -295,6 +288,6 @@ bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, Ti
     }
     str_copy_to_char_buf(dst->note, sizeof(dst->note), str_from_cstr(r.note));
     if (has_color) dst->color = r.color;
-    if (is_filter) rs->filter_id = dst->id;
+    if (is_filter) rs->legacy_filter_id = dst->id;
     return true;
 }
