@@ -14,7 +14,6 @@ enum LoaderFlag_ {
     LoaderFlag_System = 2,
     LoaderFlag_Trajectory = 4,
     LoaderFlag_DisableCacheWrite = 8,
-    LoaderFlag_CoarseGrained = 16,
     LoaderFlag_MM = 32, // Molecular Mechanics data
     LoaderFlag_QM = 64, // Quantum Mechanics data
     LoaderFlag_Supplemental = 128, // May contain supplemental data to existing system

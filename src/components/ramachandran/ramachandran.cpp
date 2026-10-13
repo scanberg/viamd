@@ -734,6 +734,8 @@ struct Ramachandran : viamd::EventHandler {
         if (num_segments > 0) {
             md_temp_scope_t temp = md_temp_begin();
             md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
+            // The segments of traces (coarse grained beads, one per residue) have no phi and psi, and come back
+            // UNKNOWN: they are in none of the plots
             md_util_backbone_ramachandran_classify(types, num_segments, &sys);
             for (uint32_t i = 0; i < (uint32_t)num_segments; ++i) {
                 switch (types[i]) {

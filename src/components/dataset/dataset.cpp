@@ -925,7 +925,7 @@ struct Dataset : viamd::EventHandler {
 
         if (has_structure) {
             FileRow row = { "Structure", str_from_cstr(data.files.molecule), "" };
-            snprintf(row.details, sizeof(row.details), "%zu atoms%s", data.mold.sys.atom.count, data.files.coarse_grained ? ", coarse grained" : "");
+            snprintf(row.details, sizeof(row.details), "%zu atoms%s", data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "");
             file_row(row);
         }
 

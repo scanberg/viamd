@@ -296,7 +296,6 @@ struct LoadDatasetWindowState {
     bool path_changed = false;
     bool load_topology = false;
     bool load_trajectory = false;
-    bool coarse_grained = false;
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
@@ -308,7 +307,6 @@ struct LoadDatasetWindowState {
 enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
-    FileFlags_CoarseGrained = 2,
     FileFlags_DisableCacheWrite = 4,
 };
 
@@ -1067,8 +1065,6 @@ struct ApplicationState {
         char molecule[1024]   = {0};
         char trajectory[1024] = {0};
         char workspace[1024]  = {0};
-
-        bool coarse_grained = false;
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application

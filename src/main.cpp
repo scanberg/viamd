@@ -1905,14 +1905,6 @@ void draw_load_dataset_window(ApplicationState* data) {
         LoaderFlags flags = loader::type_flags(type);
 
         // Draw Options
-        bool show_cg = state.path_is_valid && (flags & LoaderFlag_System);
-        if (show_cg) {
-            ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Enable if the data should be interpreted as coarse grained particles");
-            }
-        }
-
         bool show_lammps_atom_format = state.path_is_valid && (type == LoaderType_LAMMPSDATA);
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
@@ -1984,7 +1976,6 @@ void draw_load_dataset_window(ApplicationState* data) {
             loader::LoaderState load_state = {};
             load_state.type = type;
             load_state.flags = flags;
-            load_state.flags |= state.coarse_grained ? LoaderFlag_CoarseGrained : 0;
             if (type == LoaderType_LAMMPSDATA) {
                 load_state.arg = state.atom_format_buf;
             }

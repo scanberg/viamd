@@ -517,7 +517,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
             const uint32_t beg = bb.range.offset[i];
             const uint32_t end = bb.range.offset[i + 1];
             if (seg_idx < beg || end <= seg_idx) continue;
-            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end) {
+            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end && !md_protein_backbone_range_is_trace(&bb, i)) {
                 // phi, psi and the degree sign in UTF-8 escapes
                 tooltip_row(req, STR_LIT("\xCF\x86, \xCF\x88"), "%.1f\xC2\xB0, %.1f\xC2\xB0", RAD_TO_DEG(angles[seg_idx].phi), RAD_TO_DEG(angles[seg_idx].psi));
             }
@@ -1375,9 +1375,9 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             str_copy_to_char_buf(state->files.molecule, sizeof(state->files.molecule), path_to_file);
-            state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
-            // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_infer_flags_t flags = state->files.coarse_grained ? MD_UTIL_INFER_NONE : MD_UTIL_INFER_ALL;
+            // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
+            // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
+            md_infer_flags_t flags = MD_UTIL_INFER_ALL;
             if ((load_state.flags & LoaderFlag_Topology) && state->mold.sys.bond.count > 0) {
                 // The file's bonds are the force field's; inferring would replace them with a guess.
                 // Structures and rings are still derived, from those bonds. A topology format that
@@ -1386,7 +1386,9 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
                 flags &= ~MD_UTIL_INFER_BOND_BIT;
                 flags |= MD_UTIL_INFER_STRUCTURE_BIT;
             }
-            md_util_system_infer(&state->mold.sys, &state->mold.state, flags);
+            if (!md_util_system_infer(&state->mold.sys, &state->mold.state, flags)) {
+                VIAMD_LOG_ERROR("Nothing could be inferred for the data in '" STR_FMT "'; it is shown as loaded", STR_ARG(path_to_file));
+            }
             init_system_data(state);
 
             // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run.
@@ -1505,7 +1507,6 @@ struct WorkspacePending {
     str_t trajectory_file;
     str_t energy_file;
     md_array(str_t) series_files;
-    bool  coarse_grained;
 
     bool   has_frame;
     double frame;
@@ -1598,9 +1599,8 @@ static void deserialize_files(viamd::deserialization_state_t& state, WorkspacePe
         } else if (str_eq(ident, STR_LIT("SeriesFile"))) {
             const str_t path = workspace_file_path(folder, arg, alloc);
             if (!str_empty(path)) md_array_push(pending.series_files, path, alloc);
-        } else if (str_eq(ident, STR_LIT("CoarseGrained"))) {
-            viamd::extract_bool(pending.coarse_grained, arg);
         }
+        // CoarseGrained, which older workspaces have, is not read: what is coarse grained is inferred
     }
 }
 
@@ -2097,14 +2097,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // ## 3. Load the files, then apply what refers to them
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
-    data->files.coarse_grained = pending.coarse_grained;
 
     loader::LoaderState loader_state = {};
     if (!str_empty(pending.molecule_file)) {
         loader::init(&loader_state, pending.molecule_file);
-        if (pending.coarse_grained) {
-            loader_state.flags |= LoaderFlag_CoarseGrained;
-        }
         if (load_data_from_file(data, pending.molecule_file, loader_state)) {
             str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), pending.molecule_file);
         } else {
@@ -2255,7 +2251,6 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
             }
         }
     }
-    viamd::write_bool(state, STR_LIT("CoarseGrained"), app_state->files.coarse_grained);
 
     viamd::write_section_header(state, STR_LIT("Animation"));
     viamd::write_dbl(state, STR_LIT("Frame"), app_state->animation.frame);
@@ -5840,10 +5835,8 @@ void file_queue_process(ApplicationState* state) {
                 str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
                 state->load_dataset.path_changed = true;
                 state->load_dataset.show_window = true;
-                state->load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
             } else {
                 loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                loader_state.flags |= (e.flags & FileFlags_CoarseGrained) ? LoaderFlag_CoarseGrained : 0;
                 if (load_data_from_file(state, e.path, loader_state)) {
                     state->animation = {};
                     // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
