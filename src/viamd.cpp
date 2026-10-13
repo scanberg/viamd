@@ -980,6 +980,14 @@ void free_trajectory_data(ApplicationState* state) {
     // on only mean something within one table, and the next one may be allocated where this was.
     series_cache_free(state);
 
+    // The evaluation is of this run. Another run may have as many frames, and taking over from an evaluation of
+    // this one (md_script_eval_create_from) would carry its values over to the other: the next one starts afresh.
+    // The tasks which use it were stopped by the caller.
+    if (state->script.eval) {
+        md_script_eval_free(state->script.eval);
+        state->script.eval = nullptr;
+    }
+
     // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
     // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
     // table owns them and releases them with the system; dropping the views is all that is owed.

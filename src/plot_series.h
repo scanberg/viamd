@@ -90,10 +90,11 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
 // The table which holds path for source. For the filtered source a temporal property is the full evaluation's,
 // kept once for every frame, and taken over the filter's frames by series_frame_mask.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path);
-// The frames a temporal script property is taken over for source: those evaluated, of the filter's for the
-// filtered source, written to out, allocated with alloc. A copy taken under the evaluation's lock, so it can be
-// read while the evaluation runs. False for any other source, which is taken over every frame.
-bool series_frame_mask(struct md_bitset_t* out, const ApplicationState* app, SeriesSource source, struct md_allocator_i* alloc);
+// The frames the temporal script property of key is taken over: those it has evaluated, of the filter's for the
+// filtered source, written to out, allocated with alloc. Its own: a property taken over from a previous evaluation
+// holds its frames while one added since is still being evaluated. A copy taken under the evaluation's lock, so it
+// can be read while the evaluation runs. False for any other source, which is taken over every frame.
+bool series_frame_mask(struct md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, struct md_allocator_i* alloc);
 
 // "d1", "d1 (mean)", "d1 (filtered)", "Potential"
 void   series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key);

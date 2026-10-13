@@ -125,6 +125,18 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 )");
 
 
+// The timeline filter as the evaluation's filter frame set: frames [beg, end[, none while there is no filter
+static ScriptFilterFrames script_filter_frames(const ApplicationState& state, size_t num_frames) {
+    ScriptFilterFrames filter = {};
+    if (state.timeline.filter.enabled && num_frames > 0) {
+        const uint32_t frames = (uint32_t)num_frames;
+        filter.enabled = true;
+        filter.beg = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, frames - 1);
+        filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
+    }
+    return filter;
+}
+
 static double frame_to_time(double frame, const ApplicationState& data) {
     const int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
@@ -873,25 +885,32 @@ int main(int argc, char** argv) {
                 } else {
                     state.script.eval_init = false;
 
-                    // Not remade below if the last compilation failed (in the same frame as the request)
-                    if (state.script.eval) {
-                        md_script_eval_free(state.script.eval);
-                        state.script.eval = nullptr;
-                    }
+                    // The new evaluation takes over from the previous one: every property computed from the
+                    // same thing keeps its values and is not evaluated again (md_script_eval_create_from).
+                    // Not remade if the last compilation failed (in the same frame as the request).
+                    md_script_eval_t* prev = state.script.eval;
+                    state.script.eval = nullptr;
 
                     if (md_script_ir_valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
-                        // Every frame, and the timeline filter's: none yet, it is applied below
-                        md_bitset_t none = md_bitset_empty_set();
-                        const md_bitset_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &none };
+                        // Every frame, and the timeline filter's as it is now, so that what is aggregated over it is
+                        // taken over too
+                        const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
+                        const md_bitset_t filter_set = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
+                        const md_bitset_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &filter_set };
                         const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = SCRIPT_FRAME_SET_COUNT, .frame_sets = sets };
-                        state.script.eval = md_script_eval_create_desc(state.script.eval_ir, &desc, state.allocator.persistent);
-                        state.script.filter_frames = {};
+                        state.script.eval = md_script_eval_create_from(prev, state.script.eval_ir, &desc, state.allocator.persistent);
+                        state.script.filter_frames = filter;
                     }
 
-                    // The evaluation's tables were freed and new ones allocated, possibly in the
-                    // same place: nothing derived from the old ones may be taken for the new.
-                    series_cache_free(&state);
+                    if (prev) {
+                        // The versions of the new evaluation carry on from the previous one's, so nothing derived
+                        // from those can be taken for these: the caches stay
+                        md_script_eval_free(prev);
+                    } else {
+                        // Its versions start over, in tables possibly allocated where earlier ones were
+                        series_cache_free(&state);
+                    }
 
                     state.script.evaluate = true;
                 }
@@ -901,13 +920,7 @@ int main(int argc, char** argv) {
                 md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
             {
                 // The filter frame set follows the timeline filter, and is empty while there is none
-                ScriptFilterFrames filter = {};
-                if (state.timeline.filter.enabled) {
-                    const uint32_t frames = (uint32_t)num_frames;
-                    filter.enabled = true;
-                    filter.beg = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, frames - 1);
-                    filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
-                }
+                const ScriptFilterFrames filter = script_filter_frames(state, num_frames);
                 const ScriptFilterFrames& applied = state.script.filter_frames;
                 const bool filter_changed = filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end;
 

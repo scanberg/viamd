@@ -115,11 +115,11 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
     return table;
 }
 
-bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, SeriesSource source, md_allocator_i* alloc) {
+bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, md_allocator_i* alloc) {
     ASSERT(out);
-    const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
+    const md_script_eval_t* eval = is_script(key.source) ? app->script.eval : nullptr;
     if (!eval) return false;
-    *out = source == SeriesSource_ScriptFiltered ? md_script_eval_frame_set_completed(eval, SCRIPT_FRAME_SET_FILTER, alloc) : md_script_eval_frame_mask(eval, alloc);
+    *out = md_script_eval_property_frames(eval, series_frame_set(key.source), series_script_ident(key), alloc);
     return true;
 }
 
@@ -685,7 +685,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
             const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
             if (temporal) {
                 md_bitset_t frames = md_bitset_empty_set();
-                const md_bitset_t* mask = series_frame_mask(&frames, app, key.source, app->allocator.frame) ? &frames : nullptr;
+                const md_bitset_t* mask = series_frame_mask(&frames, app, key, app->allocator.frame) ? &frames : nullptr;
                 if (!has_range) {
                     // The range the values cover, over the frames that count
                     double lo = DBL_MAX, hi = -DBL_MAX;
