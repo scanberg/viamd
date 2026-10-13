@@ -2190,7 +2190,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     viamd::serialization_state_t state {
         .filename = filename,
-        .sb = md_str_writer_create(temp_alloc),
+        .sw = md_str_writer_create(temp_alloc),
     };
 
     constexpr str_t header_snippet = STR_LIT(
@@ -2214,8 +2214,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         )");
 
     // Write big ass header
-    state.sb += header_snippet;
-    state.sb += '\n';
+    state.sw += header_snippet;
+    state.sw += '\n';
 
     // Files are stored relative to the workspace so that a dataset can be moved as a whole.
     // If no relative path exists (a separate volume on windows) we fall back to the absolute
@@ -2380,7 +2380,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSerialize, viamd::EventPayloadType_SerializationState, &state);
 
     // Only now, with all of it in hand, is the file touched
-    const str_t text = md_str_writer_to_str(&state.sb);
+    const str_t text = md_str_writer_to_str(&state.sw);
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         VIAMD_LOG_ERROR("Could not open workspace file for writing: '" STR_FMT "'", STR_ARG(filename));

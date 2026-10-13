@@ -34,7 +34,7 @@ struct deserialization_state_t {
 
 struct serialization_state_t {
 	str_t filename;
-	md_str_writer_t sb;
+	md_str_writer_t sw;
 };
 
 // Advances to the next section header, skipping whatever the current section's reader left unread.

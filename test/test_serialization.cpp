@@ -5,7 +5,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_bitset.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 
 // The workspace file format: sections in brackets, then ident=value lines under them. These tests
 // go through the writer and back through the reader, because that is the pairing that has to hold.
@@ -17,14 +17,14 @@ struct writer_t {
 
     writer_t(md_allocator_i* alloc) {
         state.filename = STR_LIT("test.viamd");
-        md_strb_init(&state.sb, alloc);
+        md_str_writer_init(&state.sw, alloc);
     }
-    ~writer_t() { md_strb_free(&state.sb); }
+    ~writer_t() { md_str_writer_free(&state.sw); }
 
     viamd::deserialization_state_t reader() {
         viamd::deserialization_state_t d = {};
         d.filename = STR_LIT("test.viamd");
-        d.text = md_strb_to_str(state.sb);
+        d.text = md_str_writer_to_str(&state.sw);
         return d;
     }
 };
