@@ -19,7 +19,7 @@
 #include <event.h>
 
 #include <serialization_utils.h>
-#include <timeline_ranges_ui.h>
+#include <timeline_periods_ui.h>
 #include <imgui_widgets.h>
 #include <implot_internal.h>
 
@@ -71,7 +71,7 @@ struct Shapespace : viamd::EventHandler {
     ColorMode mode = ColorMode_Colormap;
     ImPlotColormap colormap = 0;
     ImVec4 color = {0.5f,1.0f,0.5f,1.0f};
-    uint32_t frames_range = 0;  // the timeline range whose frames are shown, by id, 0 for every frame
+    uint32_t frames_period = 0;  // the timeline period whose frames are shown, by id, 0 for every frame
 
     task_system::ID evaluate_task = 0;
 
@@ -95,11 +95,11 @@ struct Shapespace : viamd::EventHandler {
                 str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
                 marker_size = 1.5f;
                 use_mass = true;
-                frames_range = 0;
+                frames_period = 0;
                 break;
             case viamd::EventType_ViamdDeserializeEnd:
-                // Over the timeline filter, from before there were periods: over the range it followed
-                if (frames_range == 0) frames_range = app_state->timeline.ranges.legacy_filter_id;
+                // Over the timeline filter, from before there were periods: over the period it followed
+                if (frames_period == 0) frames_period = app_state->timeline.periods.legacy_filter_id;
                 break;
             case viamd::EventType_ViamdShutdown:
                 task_system::task_interrupt_and_wait_for(evaluate_task);
@@ -124,9 +124,9 @@ struct Shapespace : viamd::EventHandler {
                             viamd::extract_flt(marker_size, arg);
                         } else if (str_eq(ident, STR_LIT("UseMass"))) {
                             viamd::extract_bool(use_mass, arg);
-                        } else if (str_eq(ident, STR_LIT("Range"))) {
+                        } else if (str_eq(ident, STR_LIT("Period"))) {
                             int id = 0;
-                            if (viamd::extract_int(id, arg)) frames_range = (uint32_t)MAX(id, 0);
+                            if (viamd::extract_int(id, arg)) frames_period = (uint32_t)MAX(id, 0);
                         }
                     }
                 }
@@ -138,8 +138,8 @@ struct Shapespace : viamd::EventHandler {
                 viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
                 viamd::write_flt(state, STR_LIT("MarkerSize"), marker_size);
                 viamd::write_bool(state, STR_LIT("UseMass"), use_mass);
-                if (frames_range != 0) {
-                    viamd::write_int(state, STR_LIT("Range"), (int)frames_range);
+                if (frames_period != 0) {
+                    viamd::write_int(state, STR_LIT("Period"), (int)frames_period);
                 }
                 break;
             }
@@ -188,16 +188,16 @@ struct Shapespace : viamd::EventHandler {
                     ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
                     ImGui::Checkbox("Use Mass", &use_mass);
 
-                    // Every frame, or those of a timeline range
-                    const TimelineRanges& rs = app_state->timeline.ranges;
-                    const TimelineRange* cur = timeline_ranges_find(&rs, frames_range);
+                    // Every frame, or those of a timeline period
+                    const TimelinePeriods& rs = app_state->timeline.periods;
+                    const TimelinePeriod* cur = timeline_periods_find(&rs, frames_period);
                     if (ImGui::BeginCombo("Frames", cur ? cur->name : "All frames")) {
-                        if (ImGui::Selectable("All frames", cur == nullptr)) frames_range = 0;
+                        if (ImGui::Selectable("All frames", cur == nullptr)) frames_period = 0;
                         for (int r = 0; r < rs.count; ++r) {
-                            char label[TIMELINE_RANGE_NAME_CAP + 16];
-                            snprintf(label, sizeof(label), "%s###range%u", rs.items[r].name, rs.items[r].id);
-                            if (ImGui::Selectable(label, rs.items[r].id == frames_range)) frames_range = rs.items[r].id;
-                            if (ImGui::IsItemHovered()) timeline_ranges_highlight(rs.items[r].id);
+                            char label[TIMELINE_PERIOD_NAME_CAP + 16];
+                            snprintf(label, sizeof(label), "%s###period%u", rs.items[r].name, rs.items[r].id);
+                            if (ImGui::Selectable(label, rs.items[r].id == frames_period)) frames_period = rs.items[r].id;
+                            if (ImGui::IsItemHovered()) timeline_periods_highlight(rs.items[r].id);
                         }
                         ImGui::EndCombo();
                     }
@@ -288,12 +288,12 @@ struct Shapespace : viamd::EventHandler {
                 const float scl = (float)lim.X.Max - (float)lim.X.Min;
                 const float MAX_D2 = 0.0001f * scl * scl;
 
-                // The frames shown: every frame, or those of the range where it is now
+                // The frames shown: every frame, or those of the period where it is now
                 int frame_beg = 0;
                 int frame_count = (int)num_frames;
-                if (const TimelineRange* r = timeline_ranges_find(&app_state->timeline.ranges, frames_range)) {
+                if (const TimelinePeriod* r = timeline_periods_find(&app_state->timeline.periods, frames_period)) {
                     int beg, end;
-                    if (timeline_range_frames(&beg, &end, *r, app_state->animation.frame, (int)num_frames)) {
+                    if (timeline_period_frames(&beg, &end, *r, app_state->animation.frame, (int)num_frames)) {
                         frame_beg = beg;
                         frame_count = end - beg + 1;
                     } else {

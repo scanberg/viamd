@@ -11,7 +11,7 @@
 #include <viamd.h>
 #include <event.h>
 #include <plot_series.h>
-#include <timeline_ranges_ui.h>
+#include <timeline_periods_ui.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -50,7 +50,7 @@ static const char* storage_name(const md_attribute_t& attr) {
     return "resident";
 }
 
-// "System", "Script", "Script (Production)": the script over a timeline range
+// "System", "Script", "Script (Production)": the script over a timeline period
 static void source_label(char* buf, size_t cap, const ApplicationState& state, SeriesSource source, uint32_t period) {
     const char* name = source == SeriesSource_System ? "System" : source == SeriesSource_Script ? "Script" : "?";
     if (period != 0) {
@@ -116,7 +116,7 @@ static bool matches_filter(str_t filter, str_t path, str_t label, const char* so
 
 struct Row {
     SeriesSource source;
-    uint32_t period;        // a timeline range the script is taken over, 0 for every frame
+    uint32_t period;        // a timeline period the script is taken over, 0 for every frame
     const md_attributes_t* table;
     const md_attribute_t* attr;  // valid for the frame: nothing publishes while the window draws
     uint32_t views;         // SeriesView_*
@@ -183,19 +183,19 @@ struct Attributes : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* alloc = md_temp_allocator(temp);
 
-        // The tables there are right now, and the script's over each timeline range, with only what it has of its
-        // own over a range: the distributions and volumes, over the range's frames. Everything else in the table is
+        // The tables there are right now, and the script's over each timeline period, with only what it has of its
+        // own over a period: the distributions and volumes, over the period's frames. Everything else in the table is
         // the same over every frame.
         struct Source {
             SeriesSource source;
             uint32_t period;
         };
-        Source sources[2 + TIMELINE_MAX_RANGES];
+        Source sources[2 + TIMELINE_MAX_PERIODS];
         int num_sources = 0;
         sources[num_sources++] = { SeriesSource_System, 0 };
         sources[num_sources++] = { SeriesSource_Script, 0 };
-        for (int i = 0; i < state.timeline.ranges.count; ++i) {
-            sources[num_sources++] = { SeriesSource_Script, state.timeline.ranges.items[i].id };
+        for (int i = 0; i < state.timeline.periods.count; ++i) {
+            sources[num_sources++] = { SeriesSource_Script, state.timeline.periods.items[i].id };
         }
         md_array(Row) rows = 0;
         size_t total = 0;
@@ -328,7 +328,7 @@ struct Attributes : viamd::EventHandler {
                         char buf[96];
                         source_label(buf, sizeof(buf), state, row.source, row.period);
                         ImGui::TextUnformatted(buf);
-                        if (row.period != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(row.period);
+                        if (row.period != 0 && ImGui::IsItemHovered()) timeline_periods_highlight(row.period);
                     }
 
                     if (hovered) {

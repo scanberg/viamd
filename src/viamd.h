@@ -30,7 +30,7 @@
 #include <loader.h>
 #include <event.h>
 #include <plot_series.h>
-#include <timeline_ranges.h>
+#include <timeline_periods.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -989,10 +989,10 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
-// The key of the script evaluation's slot of a distribution or a volume over a timeline range, by its id
-// (md_script_eval_slot_request): asked for by what is shown over the range (series_resolve_histogram,
+// The key of the script evaluation's slot of a distribution or a volume over a timeline period, by its id
+// (md_script_eval_slot_request): asked for by what is shown over the period (series_resolve_histogram,
 // series_resolve_volume)
-#define SCRIPT_SLOT_RANGE(id) (((uint64_t)1 << 32) | (uint64_t)(id))
+#define SCRIPT_SLOT_PERIOD(id) (((uint64_t)1 << 32) | (uint64_t)(id))
 
 // What the script visualization is to show this frame (script_visualize_ref, script_visualize_str)
 struct ScriptVisTarget {
@@ -1250,8 +1250,8 @@ struct ApplicationState {
 
     // --- TIMELINE---
     struct {
-        // The named ranges and markers along the timeline (see timeline_ranges.h)
-        TimelineRanges ranges;
+        // The named periods and markers along the timeline (see timeline_periods.h)
+        TimelinePeriods periods;
 
         struct {
             double beg_x = 0;
@@ -1474,7 +1474,7 @@ struct ApplicationState {
         md_array(md_script_ir_t*) all_irs = nullptr;
 
         // One evaluation: every property over every frame, and the distributions and volumes shown over timeline
-        // ranges in slots over their frames (SCRIPT_SLOT_RANGE)
+        // periods in slots over their frames (SCRIPT_SLOT_PERIOD)
         md_script_eval_t* eval = nullptr;
         md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
         // The visualization: the target is set anew every frame, the job computes it off the main thread, and
@@ -1498,8 +1498,8 @@ struct ApplicationState {
     struct {
         bool show_window = false;
         int selected_atom_filter = 0;
-        int selected_traj_filter = 0;       // all frames, the current frame, or the frames of selected_traj_range
-        uint32_t selected_traj_range = 0;   // a timeline range, by id
+        int selected_traj_filter = 0;       // all frames, the current frame, or the frames of selected_traj_period
+        uint32_t selected_traj_period = 0;   // a timeline period, by id
         int selected_file_format = 0;
         struct {
             char buf[256] = "";

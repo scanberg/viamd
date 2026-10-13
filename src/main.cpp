@@ -63,7 +63,7 @@
 #include <string>
 
 #include <viamd.h>
-#include <timeline_ranges_ui.h>
+#include <timeline_periods_ui.h>
 #include <script_reference.h>
 #include <viamd_event.h>
 #include <event.h>
@@ -187,7 +187,7 @@ static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, 
         } else if (p.num_frames < plan.num_frames) {
             snprintf(buf, cap, STR_FMT ": %u of %u frames evaluated%s", STR_ARG(name), p.num_frames, plan.num_frames, from);
         } else {
-            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over ranges%s", STR_ARG(name), p.num_pending, from);
+            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over periods%s", STR_ARG(name), p.num_pending, from);
         }
         break;
     }
@@ -971,7 +971,7 @@ int main(int argc, char** argv) {
 
                     if (md_script_ir_valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
-                        // The slots over ranges come along, and what they hold where their property is taken over
+                        // The slots over periods come along, and what they hold where their property is taken over
                         const md_script_eval_desc_t desc = { .num_frames = num_frames };
                         state.script.eval = md_script_eval_create_from(prev, state.script.eval_ir, &desc, state.allocator.persistent);
                     }
@@ -992,7 +992,7 @@ int main(int argc, char** argv) {
             if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
                 md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
             {
-                // The slots over ranges follow their ranges at once, also while evaluating (series_resolve_histogram).
+                // The slots over periods follow their periods at once, also while evaluating (series_resolve_histogram).
                 // Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only starts when
                 // asked to. A distribution needs none, it is kept per frame.
                 if (state.script.evaluate) {
@@ -4319,8 +4319,8 @@ static void draw_timeline_window(ApplicationState* data) {
                 draw_timeline_properties_menu(data);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Ranges")) {
-                timeline_ranges_menu(&data->timeline.ranges);
+            if (ImGui::BeginMenu("Periods")) {
+                timeline_periods_menu(&data->timeline.periods);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
@@ -4352,9 +4352,9 @@ static void draw_timeline_window(ApplicationState* data) {
                 is_dragging = false;
             }
 
-            // Shift-drag marks a range and ctrl-drag moves the current frame: neither may pan the plots
-            // meanwhile, and nor may a range being dragged in the lane
-            if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl || timeline_ranges_dragging()) {
+            // Shift-drag marks a period and ctrl-drag moves the current frame: neither may pan the plots
+            // meanwhile, and nor may a period being dragged in the lane
+            if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl || timeline_periods_dragging()) {
                 ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
             }
 
@@ -4366,14 +4366,14 @@ static void draw_timeline_window(ApplicationState* data) {
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
 
-            // The ranges, above the plots and on their time axis
-            TimelineRangeAxis range_axis;
+            // The periods, above the plots and on their time axis
+            TimelinePeriodAxis range_axis;
             range_axis.frame_times = x_values;
             range_axis.num_frames  = num_x_values;
             range_axis.view_beg    = &data->timeline.view_range.beg_x;
             range_axis.view_end    = &data->timeline.view_range.end_x;
             range_axis.time_unit   = x_unit_str;
-            timeline_ranges_lane(&data->timeline.ranges, range_axis, &data->animation.frame);
+            timeline_periods_lane(&data->timeline.periods, range_axis, &data->animation.frame);
 
             // After the lane, which ctrl-drag in it may have moved
             double time = frame_to_time(data->animation.frame, *data);
@@ -4426,8 +4426,8 @@ static void draw_timeline_window(ApplicationState* data) {
                     ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
                     ImPlot::SetupFinish();
 
-                    // The ranges shaded below the series, and shift-press marking a new one
-                    timeline_ranges_plot(&data->timeline.ranges, range_axis, data->animation.frame);
+                    // The periods shaded below the series, and shift-press marking a new one
+                    timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.frame);
 
                     // The entry, and the member of its population, under the mouse
                     int  hovered_idx      = -1;
@@ -4699,8 +4699,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImPlot::EndDragDropTarget();
                     }
 
-                    // A range being marked or dragged has a tooltip of its own
-                    if (print_timeline_tooltip && !timeline_ranges_dragging()) {
+                    // A period being marked or dragged has a tooltip of its own
+                    if (print_timeline_tooltip && !timeline_periods_dragging()) {
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
@@ -4826,7 +4826,7 @@ static void plot_periods_tooltip(const SeriesHistogramView& v, const PlotSeries&
 // The part of a script series' legend popup which says over which periods it is shown, one curve each
 static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refit) {
     ImGui::SeparatorText("Periods");
-    const TimelineRanges& rs = data->timeline.ranges;
+    const TimelinePeriods& rs = data->timeline.periods;
     auto item = [&](uint32_t id, const char* name, const ImVec4* color, const char* frames) {
         bool on = plot_series_has_period(s, id);
         const bool last = on && s.num_periods == 1;
@@ -4850,25 +4850,25 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
             ImGui::SameLine();
             ImGui::TextDisabled("%s", frames);
         }
-        const uint32_t range = id != 0 ? id : s.key.period;
-        if (range != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(range);
+        const uint32_t period = id != 0 ? id : s.key.period;
+        if (period != 0 && ImGui::IsItemHovered()) timeline_periods_highlight(period);
         ImGui::PopID();
     };
 
     // The key's own frames first, in the series' colour: every frame, or its period's
     const int num_frames = (int)run_num_frames(data);
-    auto frames_of = [&](char* buf, size_t cap, const TimelineRange& r) {
+    auto frames_of = [&](char* buf, size_t cap, const TimelinePeriod& r) {
         int beg, end;
-        if (timeline_range_frames(&beg, &end, r, data->animation.frame, num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
+        if (timeline_period_frames(&beg, &end, r, data->animation.frame, num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
     };
     {
         char frames[48] = "";
-        const TimelineRange* own = timeline_ranges_find(&rs, s.key.period);
+        const TimelinePeriod* own = timeline_periods_find(&rs, s.key.period);
         if (own) frames_of(frames, sizeof(frames), *own);
         item(0, s.key.period != 0 ? series_period_name(data, s.key.period) : "All frames", nullptr, frames);
     }
     for (int i = 0; i < rs.count; ++i) {
-        const TimelineRange& r = rs.items[i];
+        const TimelinePeriod& r = rs.items[i];
         if (r.id == s.key.period) continue;
         char frames[48] = "";
         frames_of(frames, sizeof(frames), r);
@@ -4876,9 +4876,9 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
         item(r.id, r.name, &color, frames);
     }
     if (rs.count == 0) {
-        ImGui::TextDisabled("Mark ranges in the timeline to compare it over them");
+        ImGui::TextDisabled("Mark periods in the timeline to compare it over them");
     } else {
-        ImGui::TextDisabled("Or pull a range out of the timeline onto the plot");
+        ImGui::TextDisabled("Or pull a period out of the timeline onto the plot");
     }
 }
 
@@ -4887,7 +4887,7 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     const uint32_t kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
 
     // A temporal property is binned over its frames, a distribution is shown as evaluated. Over the
-    // frames of a timeline range too: "r (Production)".
+    // frames of a timeline period too: "r (Production)".
     auto script_section = [&](uint32_t period) -> int {
         int num_listed = 0;
         series_for_each_script_property(data, SeriesSource_Script, kinds, [&](const SeriesKey& over_all) {
@@ -4910,15 +4910,15 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     ImGui::SeparatorText("Script");
     if (script_section(0) == 0) {
         ImGui::TextDisabled("No temporal or distribution properties, define and evaluate them in the script editor");
-    } else if (data->timeline.ranges.count > 0) {
-        ImGui::SeparatorText("Script, over a range");
-        const TimelineRanges& rs = data->timeline.ranges;
+    } else if (data->timeline.periods.count > 0) {
+        ImGui::SeparatorText("Script, over a period");
+        const TimelinePeriods& rs = data->timeline.periods;
         for (int i = 0; i < rs.count; ++i) {
-            const TimelineRange& r = rs.items[i];
-            char label[TIMELINE_RANGE_NAME_CAP + 16];
-            snprintf(label, sizeof(label), "%s###range%u", r.name, r.id);
+            const TimelinePeriod& r = rs.items[i];
+            char label[TIMELINE_PERIOD_NAME_CAP + 16];
+            snprintf(label, sizeof(label), "%s###period%u", r.name, r.id);
             const bool open = ImGui::BeginMenu(label);
-            if (ImGui::IsItemHovered()) timeline_ranges_highlight(r.id);
+            if (ImGui::IsItemHovered()) timeline_periods_highlight(r.id);
             if (open) {
                 script_section(r.id);
                 ImGui::EndMenu();
@@ -4970,9 +4970,9 @@ static void draw_distribution_window(ApplicationState* data) {
                 bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
                 for (int j = 0; j < sp.count; ++j) {
                     PlotSeries& s = sp.series[j];
-                    // A range removed takes its curve along
+                    // A period removed takes its curve along
                     for (int p = s.num_periods - 1; p >= 0; --p) {
-                        if (s.periods[p] != 0 && !timeline_ranges_find(&data->timeline.ranges, s.periods[p])) {
+                        if (s.periods[p] != 0 && !timeline_periods_find(&data->timeline.periods, s.periods[p])) {
                             if (s.num_periods > 1) plot_series_remove_period(s, s.periods[p]);
                             else s.periods[0] = 0;
                         }
@@ -4988,9 +4988,9 @@ static void draw_distribution_window(ApplicationState* data) {
                 if (resolved_now > num_resolved[i]) fit_subplot[i] = true;
                 num_resolved[i] = resolved_now;
 
-                // A range under the pointer in the timeline: each series over it too, as a preview
-                const uint32_t preview_id = timeline_ranges_hovered();
-                const TimelineRange* preview_range = timeline_ranges_find(&data->timeline.ranges, preview_id);
+                // A period under the pointer in the timeline: each series over it too, as a preview
+                const uint32_t preview_id = timeline_periods_hovered();
+                const TimelinePeriod* preview_range = timeline_periods_find(&data->timeline.periods, preview_id);
 
                 int remove_idx = -1;
 
@@ -5129,7 +5129,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (v.num_periods > 0 && hovered_bin >= 0) {
                                 if (hovered_pop_idx >= 0 && v.periods[hovered_pop_idx].id != 0) {
-                                    timeline_ranges_highlight(v.periods[hovered_pop_idx].id);
+                                    timeline_periods_highlight(v.periods[hovered_pop_idx].id);
                                 }
                                 plot_periods_tooltip(v, sp.series[hovered_idx], hovered_bin, hovered_pop_idx);
                             } else if (hovered_label[0] != '\0') {
@@ -5216,7 +5216,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         } else {
                             const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
-                                // A period in the colour of its range, so that it reads with the timeline
+                                // A period in its own colour, so that it reads with the timeline
                                 ImVec4 color = v.num_periods > 0 && v.periods[k].own_color ? v.periods[k].color : plot_series_member_color(s, k, population_size);
                                 if (v.state.status >= SeriesStatus_Outdated) {
                                     // Not what the script says any more: shown, faintly, until it is evaluated
@@ -5261,7 +5261,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                         }
 
-                        // The range under the pointer in the timeline, dashed, unless the series is shown over it already
+                        // The period under the pointer in the timeline, dashed, unless the series is shown over it already
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
                             if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1) && pv.num_bins > 0 && pv.periods[0].valid) {
@@ -5276,9 +5276,9 @@ static void draw_distribution_window(ApplicationState* data) {
                         }
                     }
 
-                    // A range pulled out of the timeline, dropped on a legend entry: that series over it too
+                    // A period pulled out of the timeline, dropped on a legend entry: that series over it too
                     if (ImPlot::BeginDragDropTargetLegend()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_RANGE_DND)) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
                             ASSERT(payload->DataSize == sizeof(uint32_t));
                             const uint32_t id = *(const uint32_t*)payload->Data;
                             for (int j = 0; j < sp.count; ++j) {
@@ -5300,8 +5300,8 @@ static void draw_distribution_window(ApplicationState* data) {
                                 plot_add_series(data, sp, dnd->key);
                             }
                             fit_subplot[i] = true;
-                        } else if (const ImGuiPayload* range_payload = ImGui::AcceptDragDropPayload(TIMELINE_RANGE_DND)) {
-                            // A range pulled out of the timeline: every script series here over it too
+                        } else if (const ImGuiPayload* range_payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
+                            // A period pulled out of the timeline: every script series here over it too
                             ASSERT(range_payload->DataSize == sizeof(uint32_t));
                             const uint32_t id = *(const uint32_t*)range_payload->Data;
                             for (int j = 0; j < sp.count; ++j) {
@@ -5959,11 +5959,11 @@ static void draw_property_export_window(ApplicationState* data) {
                     }
                 });
             };
-            // Over each range too, "r (Production)": what is over time is the same over a range
+            // Over each period too, "r (Production)": what is over time is the same over a period
             push_script(0);
             if (kind != ExportKind_Temporal) {
-                for (int i = 0; i < data->timeline.ranges.count; ++i) {
-                    push_script(data->timeline.ranges.items[i].id);
+                for (int i = 0; i < data->timeline.periods.count; ++i) {
+                    push_script(data->timeline.periods.items[i].id);
                 }
             }
             if (kind != ExportKind_Volume) {
@@ -6237,27 +6237,27 @@ void draw_structure_export_window(ApplicationState* data) {
             }
         }
 
-        // Every frame, the current one, or those of a timeline range
-        const TimelineRange* traj_range = timeline_ranges_find(&data->timeline.ranges, struct_exp.selected_traj_range);
+        // Every frame, the current one, or those of a timeline period
+        const TimelinePeriod* traj_period = timeline_periods_find(&data->timeline.periods, struct_exp.selected_traj_period);
         struct_exp.selected_traj_filter = CLAMP(struct_exp.selected_traj_filter, 0, 2);
-        if (struct_exp.selected_traj_filter == 2 && !traj_range) struct_exp.selected_traj_filter = 0;
+        if (struct_exp.selected_traj_filter == 2 && !traj_period) struct_exp.selected_traj_filter = 0;
         if (traj) {
-            const char* preview = struct_exp.selected_traj_filter == 2 ? traj_range->name : frame_mask_options[struct_exp.selected_traj_filter];
+            const char* preview = struct_exp.selected_traj_filter == 2 ? traj_period->name : frame_mask_options[struct_exp.selected_traj_filter];
             if (ImGui::BeginCombo("Frames to Export", preview)) {
                 for (int i = 0; i < (int)ARRAY_SIZE(frame_mask_options); ++i) {
                     if (ImGui::Selectable(frame_mask_options[i], struct_exp.selected_traj_filter == i)) struct_exp.selected_traj_filter = i;
                 }
-                const TimelineRanges& rs = data->timeline.ranges;
-                if (rs.count > 0) ImGui::SeparatorText("Range");
+                const TimelinePeriods& rs = data->timeline.periods;
+                if (rs.count > 0) ImGui::SeparatorText("Period");
                 for (int i = 0; i < rs.count; ++i) {
-                    const TimelineRange& r = rs.items[i];
-                    char label[TIMELINE_RANGE_NAME_CAP + 16];
-                    snprintf(label, sizeof(label), "%s###range%u", r.name, r.id);
-                    if (ImGui::Selectable(label, struct_exp.selected_traj_filter == 2 && r.id == struct_exp.selected_traj_range)) {
+                    const TimelinePeriod& r = rs.items[i];
+                    char label[TIMELINE_PERIOD_NAME_CAP + 16];
+                    snprintf(label, sizeof(label), "%s###period%u", r.name, r.id);
+                    if (ImGui::Selectable(label, struct_exp.selected_traj_filter == 2 && r.id == struct_exp.selected_traj_period)) {
                         struct_exp.selected_traj_filter = 2;
-                        struct_exp.selected_traj_range = r.id;
+                        struct_exp.selected_traj_period = r.id;
                     }
-                    if (ImGui::IsItemHovered()) timeline_ranges_highlight(r.id);
+                    if (ImGui::IsItemHovered()) timeline_periods_highlight(r.id);
                 }
                 ImGui::EndCombo();
             }
@@ -6326,9 +6326,9 @@ void draw_structure_export_window(ApplicationState* data) {
                     int32_t current_frame = (int)(data->animation.frame + 0.5); // Round to nearest
                     md_array_push(frame_indices, current_frame, frame_alloc);
                 } break;
-                case 2: { // A timeline range
+                case 2: { // A timeline period
                     int beg = 0, end = -1;
-                    if (!traj_range || !timeline_range_frames(&beg, &end, *traj_range, data->animation.frame, (int)run_num_frames(data))) {
+                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, data->animation.frame, (int)run_num_frames(data))) {
                         beg = 0;
                         end = -1;
                     }

@@ -1,5 +1,5 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
-#include <timeline_ranges_ui.h>
+#include <timeline_periods_ui.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -18,12 +18,12 @@ namespace {
 
 enum DragKind {
     Drag_None = 0,
-    Drag_Create,    // A new range, from where it was pressed to the pointer
+    Drag_Create,    // A new period, from where it was pressed to the pointer
     Drag_Move,
     Drag_Resize,
     Drag_Pan,       // Empty lane space, which pans the timeline
     Drag_Scrub,     // Ctrl-drag, which moves the current frame
-    Drag_Out,       // A range pulled out of the lane, taken elsewhere as a drag and drop payload
+    Drag_Out,       // A period pulled out of the lane, taken elsewhere as a drag and drop payload
 };
 
 struct Drag {
@@ -42,32 +42,32 @@ struct Drag {
 // One timeline, so one of these. Nothing here is saved: it is what the pointer is doing.
 struct State {
     Drag drag;
-    TimelineRangeHit hover;
+    TimelinePeriodHit hover;
     uint32_t hover_id = 0;
 
-    uint32_t edit_id = 0;               // The range whose popup is open
-    uint32_t rename_id = 0;             // The range being named
+    uint32_t edit_id = 0;               // The period whose popup is open
+    uint32_t rename_id = 0;             // The period being named
     bool     rename_request = false;    // Open the name field when the lane is drawn next
     bool     rename_focus = false;
-    char     rename_prev[TIMELINE_RANGE_NAME_CAP] = "";
+    char     rename_prev[TIMELINE_PERIOD_NAME_CAP] = "";
 
     // Where the plots' area was: the lane is drawn above the plots and aligned with them
     float plot_x0 = 0;
     float plot_x1 = 0;
     int   plot_frame = -1;
 
-    // Where the lane was last drawn: a range dragged far enough from it is pulled out
+    // Where the lane was last drawn: a period dragged far enough from it is pulled out
     float lane_y0 = 0;
     float lane_y1 = 0;
 
-    // Lit up for another view (timeline_ranges_highlight), as of a frame
+    // Lit up for another view (timeline_periods_highlight), as of a frame
     uint32_t highlight_id = 0;
     int      highlight_frame = -1;
 };
 
 State ui;
 
-ImU32 range_color(const TimelineRange& r, float alpha) {
+ImU32 period_color(const TimelinePeriod& r, float alpha) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(r.color.x, r.color.y, r.color.z, r.color.w * alpha));
 }
 
@@ -81,7 +81,7 @@ bool is_hot(uint32_t id) {
     return id != 0 && (ui.hover_id == id || ui.edit_id == id || ui.rename_id == id || is_held(id) || lit);
 }
 
-double frame_time(const TimelineRangeAxis& a, double frame) {
+double frame_time(const TimelinePeriodAxis& a, double frame) {
     const int last = a.num_frames - 1;
     const double f = CLAMP(frame, 0.0, (double)last);
     const int f0 = (int)f;
@@ -90,7 +90,7 @@ double frame_time(const TimelineRangeAxis& a, double frame) {
     return a.frame_times[f0] * (1.0 - t) + a.frame_times[f1] * t;
 }
 
-int nearest_frame(const TimelineRangeAxis& a, double time) {
+int nearest_frame(const TimelinePeriodAxis& a, double time) {
     const float* ft = a.frame_times;
     int lo = 0;
     int hi = a.num_frames - 1;
@@ -106,16 +106,16 @@ int nearest_frame(const TimelineRangeAxis& a, double time) {
 
 float plot_width() { return MAX(ui.plot_x1 - ui.plot_x0, 1.0f); }
 
-double x_to_time(const TimelineRangeAxis& a, float x) {
+double x_to_time(const TimelinePeriodAxis& a, float x) {
     return *a.view_beg + (double)(x - ui.plot_x0) / plot_width() * (*a.view_end - *a.view_beg);
 }
 
-float time_to_x(const TimelineRangeAxis& a, double t) {
+float time_to_x(const TimelinePeriodAxis& a, double t) {
     const double span = *a.view_end - *a.view_beg;
     return span > 0 ? ui.plot_x0 + (float)((t - *a.view_beg) / span) * plot_width() : ui.plot_x0;
 }
 
-float frame_x(const TimelineRangeAxis& a, double frame) { return time_to_x(a, frame_time(a, frame)); }
+float frame_x(const TimelinePeriodAxis& a, double frame) { return time_to_x(a, frame_time(a, frame)); }
 
 void add_dashed_rect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
     const float dash = 4.0f;
@@ -135,18 +135,18 @@ void add_dashed_rect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
     line(ImVec2(a.x, b.y), a);
 }
 
-// The end of a range which is lit: the one under the pointer, or the one held, wherever it has been dragged to
-TimelineRangePart lit_part(const TimelineRange& r) {
+// The end of a period which is lit: the one under the pointer, or the one held, wherever it has been dragged to
+TimelinePeriodPart lit_part(const TimelinePeriod& r) {
     if (ui.drag.kind == Drag_Resize && ui.drag.id == r.id) {
         const int32_t held  = ui.drag.hold_beg ? r.beg : r.end;
         const int32_t other = ui.drag.hold_beg ? r.end : r.beg;
-        return held <= other ? TimelineRangePart_Beg : TimelineRangePart_End;
+        return held <= other ? TimelinePeriodPart_Beg : TimelinePeriodPart_End;
     }
     if (ui.hover_id == r.id) return ui.hover.part;
-    return TimelineRangePart_None;
+    return TimelinePeriodPart_None;
 }
 
-void tooltip_frames(const TimelineRangeAxis& a, bool marker, int beg, int end) {
+void tooltip_frames(const TimelinePeriodAxis& a, bool marker, int beg, int end) {
     if (marker) {
         if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg], a.time_unit);
         else                ImGui::Text("Frame %d", beg);
@@ -156,12 +156,12 @@ void tooltip_frames(const TimelineRangeAxis& a, bool marker, int beg, int end) {
     }
 }
 
-void range_tooltip(const TimelineRange& r, const TimelineRangeAxis& a, double current_frame) {
+void period_tooltip(const TimelinePeriod& r, const TimelinePeriodAxis& a, double current_frame) {
     int beg, end;
-    if (!timeline_range_frames(&beg, &end, r, current_frame, a.num_frames)) return;
+    if (!timeline_period_frames(&beg, &end, r, current_frame, a.num_frames)) return;
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(r.name);
-    tooltip_frames(a, timeline_range_is_marker(r), beg, end);
+    tooltip_frames(a, timeline_period_is_marker(r), beg, end);
     if (r.follow) {
         ImGui::TextDisabled("Follows the current frame, %+d to %+d", MIN(r.beg, r.end), MAX(r.beg, r.end));
     }
@@ -174,13 +174,13 @@ void range_tooltip(const TimelineRange& r, const TimelineRangeAxis& a, double cu
     ImGui::EndTooltip();
 }
 
-void request_rename(const TimelineRange& r) {
+void request_rename(const TimelinePeriod& r) {
     ui.rename_id = r.id;
     ui.rename_request = true;
     str_copy_to_char_buf(ui.rename_prev, sizeof(ui.rename_prev), str_from_cstr(r.name));
 }
 
-void end_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, bool commit) {
+void end_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, bool commit) {
     const Drag d = ui.drag;
     ui.drag = {};
     switch (d.kind) {
@@ -191,19 +191,19 @@ void end_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, bool commit) {
             const bool click = fabsf(io.MousePos.x - d.press_x) < io.MouseDragThreshold;
             const int beg = click ? d.anchor : MIN(d.anchor, d.current);
             const int end = click ? d.anchor : MAX(d.anchor, d.current);
-            if (TimelineRange* r = timeline_ranges_add(rs, nullptr, beg, end, false)) {
+            if (TimelinePeriod* r = timeline_periods_add(rs, nullptr, beg, end, false)) {
                 request_rename(*r);
             }
         }
         break;
     case Drag_Move:
     case Drag_Resize:
-        if (TimelineRange* r = timeline_ranges_find(rs, d.id)) {
+        if (TimelinePeriod* r = timeline_periods_find(rs, d.id)) {
             if (!commit) {
                 r->beg = d.orig_beg;
                 r->end = d.orig_end;
             }
-            timeline_range_normalize(r);
+            timeline_period_normalize(r);
         }
         break;
     case Drag_Pan:
@@ -218,7 +218,7 @@ void end_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, bool commit) {
 }
 
 // Follows the pointer with whatever is held, wherever the pointer is: it may leave the lane while it drags
-void update_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, double* current_frame) {
+void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_frame) {
     Drag& d = ui.drag;
     if (d.kind == Drag_None) return;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -235,7 +235,7 @@ void update_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, double* curr
         d.current = f;
         break;
     case Drag_Move:
-        if (TimelineRange* r = timeline_ranges_find(rs, d.id)) {
+        if (TimelinePeriod* r = timeline_periods_find(rs, d.id)) {
             // Pulled well out of the lane, up or down: taken elsewhere, and put back where it was
             const float my = ImGui::GetIO().MousePos.y;
             const float reach = ImGui::GetFontSize() * 4.0f;
@@ -247,7 +247,7 @@ void update_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, double* curr
             }
             int delta = f - d.anchor;
             if (!r->follow) {
-                // A fixed range stops at the ends of the trajectory, as a whole
+                // A fixed period stops at the ends of the trajectory, as a whole
                 const int lo = MIN(d.orig_beg, d.orig_end);
                 const int hi = MAX(d.orig_beg, d.orig_end);
                 delta = CLAMP(delta, MIN(-lo, 0), MAX(last - hi, 0));
@@ -257,7 +257,7 @@ void update_drag(TimelineRanges* rs, const TimelineRangeAxis& axis, double* curr
         }
         break;
     case Drag_Resize:
-        if (TimelineRange* r = timeline_ranges_find(rs, d.id)) {
+        if (TimelinePeriod* r = timeline_periods_find(rs, d.id)) {
             const int32_t v = r->follow ? f - (int32_t)llround(*current_frame) : f;
             if (d.hold_beg) r->beg = v;
             else            r->end = v;
@@ -291,21 +291,21 @@ void start_create(int frame) {
 
 }  // namespace
 
-bool timeline_ranges_dragging() {
+bool timeline_periods_dragging() {
     return ui.drag.kind != Drag_None;
 }
 
-uint32_t timeline_ranges_hovered() {
+uint32_t timeline_periods_hovered() {
     if (ui.drag.kind == Drag_Move || ui.drag.kind == Drag_Resize || ui.drag.kind == Drag_Out) return ui.drag.id;
     return ui.drag.kind == Drag_None ? ui.hover_id : 0;
 }
 
-void timeline_ranges_highlight(uint32_t id) {
+void timeline_periods_highlight(uint32_t id) {
     ui.highlight_id = id;
     ui.highlight_frame = ImGui::GetFrameCount();
 }
 
-void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, double* current_frame) {
+void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_frame) {
     if (axis.num_frames <= 0 || !axis.frame_times) return;
 
     // First, so that the bars are drawn where the pointer has taken them
@@ -316,7 +316,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     const int    nf   = axis.num_frames;
     const float  font = ImGui::GetFontSize();
 
-    const bool  one_lane = rs->layout != TimelineRangeLayout_LanePerRange;
+    const bool  one_lane = rs->layout != TimelinePeriodLayout_LanePerPeriod;
     const float row_h    = ImGui::GetTextLineHeight() + 4.0f;
     const float row_gap  = 2.0f;
     const int   rows     = one_lane ? 1 : MAX(rs->count, 1);
@@ -330,18 +330,18 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         ui.plot_x1 = pos.x + width;
     }
 
-    ImGui::InvisibleButton("##timeline_ranges", ImVec2(width, height), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    ImGui::InvisibleButton("##timeline_periods", ImVec2(width, height), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
     ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
     ui.lane_y0 = pos.y;
     ui.lane_y1 = pos.y + height;
 
-    // A range pulled out of the lane: carried along as long as the button is held
+    // A period pulled out of the lane: carried along as long as the button is held
     if (ui.drag.kind == Drag_Out) {
-        const TimelineRange* r = timeline_ranges_find(rs, ui.drag.id);
+        const TimelinePeriod* r = timeline_periods_find(rs, ui.drag.id);
         if (r && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoDisableHover)) {
             const uint32_t id = r->id;
-            ImGui::SetDragDropPayload(TIMELINE_RANGE_DND, &id, sizeof(id));
+            ImGui::SetDragDropPayload(TIMELINE_PERIOD_DND, &id, sizeof(id));
             ImGui::ColorButton("##color", ImVec4(r->color.x, r->color.y, r->color.z, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder,
                 ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()));
             ImGui::SameLine();
@@ -356,21 +356,21 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     const float y0 = pos.y;
     const float y1 = pos.y + height;
 
-    // Where each range is
-    int order[TIMELINE_MAX_RANGES];
-    int depth[TIMELINE_MAX_RANGES];
-    int top_first[TIMELINE_MAX_RANGES];
-    TimelineRangeBar bars[TIMELINE_MAX_RANGES];
-    const int n = timeline_ranges_draw_order(order, rs, cur, nf);
-    timeline_ranges_nesting(depth, order, n, rs, cur, nf);
+    // Where each period is
+    int order[TIMELINE_MAX_PERIODS];
+    int depth[TIMELINE_MAX_PERIODS];
+    int top_first[TIMELINE_MAX_PERIODS];
+    TimelinePeriodBar bars[TIMELINE_MAX_PERIODS];
+    const int n = timeline_periods_draw_order(order, rs, cur, nf);
+    timeline_periods_nesting(depth, order, n, rs, cur, nf);
     for (int k = 0; k < n; ++k) {
         const int i = order[k];
-        const TimelineRange& r = rs->items[i];
+        const TimelinePeriod& r = rs->items[i];
         int beg, end;
-        timeline_range_frames(&beg, &end, r, cur, nf);
-        TimelineRangeBar& b = bars[i];
+        timeline_period_frames(&beg, &end, r, cur, nf);
+        TimelinePeriodBar& b = bars[i];
         b.visible = true;
-        b.marker  = timeline_range_is_marker(r);
+        b.marker  = timeline_period_is_marker(r);
         b.x0 = frame_x(axis, beg);
         b.x1 = frame_x(axis, end);
         if (!b.marker && b.x1 - b.x0 < 4.0f) {
@@ -379,7 +379,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
             b.x1 = mid + 2.0f;
         }
         if (one_lane) {
-            // Nested ranges are drawn a little thinner than the ones they lie on, so that both can be seen
+            // Nested periods are drawn a little thinner than the ones they lie on, so that both can be seen
             const float inset = b.marker ? 0.0f : MIN(depth[k], 2) * 3.0f;
             b.y0 = y0 + inset;
             b.y1 = y1 - inset;
@@ -395,8 +395,8 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     ui.hover_id = 0;
     uint32_t remove_id = 0;
     if (hovered && ui.drag.kind == Drag_None) {
-        ui.hover = timeline_ranges_hit_test(bars, top_first, n, io.MousePos.x, io.MousePos.y, font * 0.5f, font * 0.45f);
-        const TimelineRange* hit = ui.hover.index != -1 ? &rs->items[ui.hover.index] : nullptr;
+        ui.hover = timeline_periods_hit_test(bars, top_first, n, io.MousePos.x, io.MousePos.y, font * 0.5f, font * 0.45f);
+        const TimelinePeriod* hit = ui.hover.index != -1 ? &rs->items[ui.hover.index] : nullptr;
         ui.hover_id = hit ? hit->id : 0;
 
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -413,13 +413,13 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
                 d.orig_end = hit->end;
                 d.anchor   = f;
                 d.press_x  = io.MousePos.x;
-                if (ui.hover.part == TimelineRangePart_Body) {
+                if (ui.hover.part == TimelinePeriodPart_Body) {
                     d.kind = Drag_Move;
                 } else {
                     // The handle at the lower end holds whichever of beg and end is the lower one
                     d.kind = Drag_Resize;
                     const bool beg_is_lower = hit->beg <= hit->end;
-                    d.hold_beg = (ui.hover.part == TimelineRangePart_Beg) == beg_is_lower;
+                    d.hold_beg = (ui.hover.part == TimelinePeriodPart_Beg) == beg_is_lower;
                 }
                 ui.drag = d;
             } else {
@@ -435,7 +435,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         }
         if (hit && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             ui.edit_id = hit->id;
-            ImGui::OpenPopup("##timeline_range_edit");
+            ImGui::OpenPopup("##timeline_period_edit");
         }
         if (hit && !io.WantTextInput && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
             remove_id = hit->id;
@@ -450,15 +450,15 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
 
     if (hovered || ui.drag.kind != Drag_None) {
         const DragKind k = ui.drag.kind;
-        const TimelineRangePart part = ui.hover.part;
-        if (k == Drag_Resize || k == Drag_Create || (k == Drag_None && (part == TimelineRangePart_Beg || part == TimelineRangePart_End))) {
+        const TimelinePeriodPart part = ui.hover.part;
+        if (k == Drag_Resize || k == Drag_Create || (k == Drag_None && (part == TimelinePeriodPart_Beg || part == TimelinePeriodPart_End))) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-        } else if (k == Drag_Move || (k == Drag_None && part == TimelineRangePart_Body)) {
+        } else if (k == Drag_Move || (k == Drag_None && part == TimelinePeriodPart_Body)) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
     }
 
-    // Drawing: the track, the ranges bottom first, the range being created, the current frame
+    // Drawing: the track, the periods bottom first, the period being created, the current frame
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(ImVec2(x0, y0 - 1.0f), ImVec2(x1, y1 + 1.0f), true);
 
@@ -475,8 +475,8 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
 
     for (int k = 0; k < n; ++k) {
         const int i = order[k];
-        const TimelineRange& r = rs->items[i];
-        const TimelineRangeBar& b = bars[i];
+        const TimelinePeriod& r = rs->items[i];
+        const TimelinePeriodBar& b = bars[i];
         const bool hot = is_hot(r.id);
         const char* label = r.name;
         const float cy = (b.y0 + b.y1) * 0.5f;
@@ -484,13 +484,13 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         if (b.marker) {
             const float h = (b.y1 - b.y0) * 0.42f;
             const ImVec2 p0(b.x0, cy - h), p1(b.x0 + h, cy), p2(b.x0, cy + h), p3(b.x0 - h, cy);
-            dl->AddQuadFilled(p0, p1, p2, p3, range_color(r, hot ? 1.0f : 0.85f));
+            dl->AddQuadFilled(p0, p1, p2, p3, period_color(r, hot ? 1.0f : 0.85f));
             if (hot) dl->AddQuad(p0, p1, p2, p3, text_col, 1.5f);
 
             // The name to the right, as far as the next marker in the same lane
             float limit = x1;
             for (int j = 0; j < rs->count; ++j) {
-                const TimelineRangeBar& o = bars[j];
+                const TimelinePeriodBar& o = bars[j];
                 if (j == i || !o.visible || !o.marker || o.y0 != b.y0 || o.x0 <= b.x0) continue;
                 limit = MIN(limit, o.x0 - h - 2.0f);
             }
@@ -501,8 +501,8 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
                 dl->PopClipRect();
             }
         } else {
-            dl->AddRectFilled(ImVec2(b.x0, b.y0), ImVec2(b.x1, b.y1), range_color(r, hot ? 0.5f : 0.28f));
-            const ImU32 edge = range_color(r, hot ? 1.0f : 0.75f);
+            dl->AddRectFilled(ImVec2(b.x0, b.y0), ImVec2(b.x1, b.y1), period_color(r, hot ? 0.5f : 0.28f));
+            const ImU32 edge = period_color(r, hot ? 1.0f : 0.75f);
             if (r.follow) {
                 // Dashed: it moves with the current frame
                 add_dashed_rect(dl, ImVec2(b.x0 + 0.5f, b.y0 + 0.5f), ImVec2(b.x1 - 0.5f, b.y1 - 0.5f), edge);
@@ -511,22 +511,22 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
             }
 
             if (b.x1 - b.x0 > 10.0f) {
-                const TimelineRangePart lit = lit_part(r);
+                const TimelinePeriodPart lit = lit_part(r);
                 const float gh = MAX(b.y1 - b.y0 - 8.0f, 4.0f);
                 const float gy = b.y0 + (b.y1 - b.y0 - gh) * 0.5f;
-                dl->AddRectFilled(ImVec2(b.x0 + 2.0f, gy), ImVec2(b.x0 + 4.0f, gy + gh), lit == TimelineRangePart_Beg ? text_col : range_color(r, 0.95f));
-                dl->AddRectFilled(ImVec2(b.x1 - 4.0f, gy), ImVec2(b.x1 - 2.0f, gy + gh), lit == TimelineRangePart_End ? text_col : range_color(r, 0.95f));
+                dl->AddRectFilled(ImVec2(b.x0 + 2.0f, gy), ImVec2(b.x0 + 4.0f, gy + gh), lit == TimelinePeriodPart_Beg ? text_col : period_color(r, 0.95f));
+                dl->AddRectFilled(ImVec2(b.x1 - 4.0f, gy), ImVec2(b.x1 - 2.0f, gy + gh), lit == TimelinePeriodPart_End ? text_col : period_color(r, 0.95f));
             }
 
             float lx0 = MAX(b.x0, x0) + 7.0f;
             float lx1 = MIN(b.x1, x1) - 7.0f;
             if (one_lane) {
-                // The stretches the ranges drawn on top of it leave free: its name goes in the first wide enough for
+                // The stretches the periods drawn on top of it leave free: its name goes in the first wide enough for
                 // all of it, or else the widest
-                float cover[TIMELINE_MAX_RANGES][2];
+                float cover[TIMELINE_MAX_PERIODS][2];
                 int num_cover = 0;
                 for (int kk = k + 1; kk < n; ++kk) {
-                    const TimelineRangeBar& o = bars[order[kk]];
+                    const TimelinePeriodBar& o = bars[order[kk]];
                     const float h = o.marker ? (o.y1 - o.y0) * 0.42f : 0.0f;
                     const float c0 = o.x0 - h - 4.0f;
                     const float c1 = (o.marker ? o.x0 + h : o.x1) + 7.0f;
@@ -582,7 +582,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     if (rs->count == 0 && ui.drag.kind != Drag_Create) {
         const float h = one_lane ? height : row_h;
         dl->AddText(ImVec2(x0 + 6.0f, y0 + (h - font) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
-            "Shift-drag to mark a range, shift-click to mark a frame");
+            "Shift-drag to mark a period, shift-click to mark a frame");
     }
 
     dl->PopClipRect();
@@ -593,31 +593,31 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         const int beg = MIN(ui.drag.anchor, ui.drag.current);
         const int end = MAX(ui.drag.anchor, ui.drag.current);
         ImGui::BeginTooltip();
-        ImGui::TextUnformatted(beg == end ? "New marker" : "New range");
+        ImGui::TextUnformatted(beg == end ? "New marker" : "New period");
         tooltip_frames(axis, beg == end, beg, end);
         ImGui::EndTooltip();
     } else if (ui.drag.kind == Drag_Move || ui.drag.kind == Drag_Resize) {
-        if (const TimelineRange* r = timeline_ranges_find(rs, ui.drag.id)) range_tooltip(*r, axis, cur);
+        if (const TimelinePeriod* r = timeline_periods_find(rs, ui.drag.id)) period_tooltip(*r, axis, cur);
     } else if (ui.drag.kind == Drag_None && ui.hover_id && !editing) {
-        if (const TimelineRange* r = timeline_ranges_find(rs, ui.hover_id)) range_tooltip(*r, axis, cur);
+        if (const TimelinePeriod* r = timeline_periods_find(rs, ui.hover_id)) period_tooltip(*r, axis, cur);
     }
 
-    // Naming a new range, or renaming one: a field under the lane, at the range
+    // Naming a new period, or renaming one: a field under the lane, at the period
     if (ui.rename_request) {
         ui.rename_request = false;
-        if (const TimelineRange* r = timeline_ranges_find(rs, ui.rename_id)) {
+        if (const TimelinePeriod* r = timeline_periods_find(rs, ui.rename_id)) {
             int beg = 0, end = 0;
             float x = x0;
-            if (timeline_range_frames(&beg, &end, *r, cur, nf)) x = CLAMP(frame_x(axis, beg), x0, MAX(x0, x1 - font * 16.0f));
+            if (timeline_period_frames(&beg, &end, *r, cur, nf)) x = CLAMP(frame_x(axis, beg), x0, MAX(x0, x1 - font * 16.0f));
             ImGui::SetNextWindowPos(ImVec2(x, y1 + 2.0f));
-            ImGui::OpenPopup("##timeline_range_name");
+            ImGui::OpenPopup("##timeline_period_name");
             ui.rename_focus = true;
         } else {
             ui.rename_id = 0;
         }
     }
-    if (ImGui::BeginPopup("##timeline_range_name")) {
-        TimelineRange* r = timeline_ranges_find(rs, ui.rename_id);
+    if (ImGui::BeginPopup("##timeline_period_name")) {
+        TimelinePeriod* r = timeline_periods_find(rs, ui.rename_id);
         if (!r) {
             ImGui::CloseCurrentPopup();
         } else {
@@ -638,29 +638,29 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
         ImGui::EndPopup();
     } else if (ui.rename_id) {
         // Closed, by Enter or a click elsewhere: a name is never left empty
-        if (TimelineRange* r = timeline_ranges_find(rs, ui.rename_id)) {
+        if (TimelinePeriod* r = timeline_periods_find(rs, ui.rename_id)) {
             if (!r->name[0]) str_copy_to_char_buf(r->name, sizeof(r->name), str_from_cstr(ui.rename_prev));
         }
         ui.rename_id = 0;
     }
 
-    // Everything about one range, on right-click
-    if (ImGui::BeginPopup("##timeline_range_edit")) {
-        TimelineRange* r = timeline_ranges_find(rs, ui.edit_id);
+    // Everything about one period, on right-click
+    if (ImGui::BeginPopup("##timeline_period_edit")) {
+        TimelinePeriod* r = timeline_periods_find(rs, ui.edit_id);
         if (!r) {
             ImGui::CloseCurrentPopup();
         } else {
             ImGui::PushItemWidth(font * 14.0f);
             ImGui::InputText("Name", r->name, sizeof(r->name));
             ImGui::InputTextMultiline("Note", r->note, sizeof(r->note), ImVec2(font * 14.0f, ImGui::GetTextLineHeight() * 5.0f));
-            ImGui::SetItemTooltip("Shown when the range is hovered");
+            ImGui::SetItemTooltip("Shown when the period is hovered");
             ImGui::ColorEdit3("Color", r->color.elem, ImGuiColorEditFlags_NoInputs);
 
             int follow = r->follow ? 1 : 0;
             bool mode_changed = ImGui::RadioButton("Fixed", &follow, 0);
             ImGui::SameLine();
             mode_changed |= ImGui::RadioButton("Follows the current frame", &follow, 1);
-            if (mode_changed) timeline_range_set_follow(r, follow == 1, cur, nf);
+            if (mode_changed) timeline_period_set_follow(r, follow == 1, cur, nf);
 
             int ends[2] = { MIN(r->beg, r->end), MAX(r->beg, r->end) };
             if (ImGui::InputInt2(r->follow ? "Offsets" : "Frames", ends)) {
@@ -690,7 +690,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     }
 
     if (remove_id) {
-        timeline_ranges_remove(rs, remove_id);
+        timeline_periods_remove(rs, remove_id);
         if (ui.hover_id == remove_id) {
             ui.hover = {};
             ui.hover_id = 0;
@@ -698,7 +698,7 @@ void timeline_ranges_lane(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     }
 }
 
-void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, double current_frame) {
+void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double current_frame) {
     if (axis.num_frames <= 0 || !axis.frame_times) return;
 
     const ImVec2 plot_pos  = ImPlot::GetPlotPos();
@@ -715,25 +715,25 @@ void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     const float y1 = plot_pos.y + plot_size.y;
     auto px = [&](double f) { return ImPlot::PlotToPixels(frame_time(axis, f), 0.0).x; };
 
-    int order[TIMELINE_MAX_RANGES];
-    const int n = timeline_ranges_draw_order(order, rs, current_frame, nf);
+    int order[TIMELINE_MAX_PERIODS];
+    const int n = timeline_periods_draw_order(order, rs, current_frame, nf);
 
     ImPlot::PushPlotClipRect();
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     for (int k = 0; k < n; ++k) {
-        const TimelineRange& r = rs->items[order[k]];
+        const TimelinePeriod& r = rs->items[order[k]];
         const bool hot = is_hot(r.id);
         if (!(hot || rs->shade_all)) continue;
         int beg, end;
-        timeline_range_frames(&beg, &end, r, current_frame, nf);
-        if (timeline_range_is_marker(r)) {
+        timeline_period_frames(&beg, &end, r, current_frame, nf);
+        if (timeline_period_is_marker(r)) {
             const float x = px(beg);
-            dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), range_color(r, hot ? 1.0f : 0.6f), hot ? 2.0f : 1.0f);
+            dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), period_color(r, hot ? 1.0f : 0.6f), hot ? 2.0f : 1.0f);
         } else {
             const float xa = px(beg);
             const float xb = MAX(px(end), xa + 1.0f);
-            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), range_color(r, hot ? 0.16f : 0.07f));
-            const ImU32 edge = range_color(r, hot ? 0.9f : 0.5f);
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), period_color(r, hot ? 0.16f : 0.07f));
+            const ImU32 edge = period_color(r, hot ? 0.9f : 0.5f);
             dl->AddLine(ImVec2(xa, y0), ImVec2(xa, y1), edge);
             dl->AddLine(ImVec2(xb, y0), ImVec2(xb, y1), edge);
         }
@@ -747,19 +747,19 @@ void timeline_ranges_plot(TimelineRanges* rs, const TimelineRangeAxis& axis, dou
     }
     ImPlot::PopPlotClipRect();
 
-    // Shift-press in a plot starts a range there; the lane follows it from the next frame on
+    // Shift-press in a plot starts a period there; the lane follows it from the next frame on
     if (ui.drag.kind == Drag_None && ImPlot::IsPlotHovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         start_create(nearest_frame(axis, ImPlot::GetPlotMousePos().x));
     }
 }
 
-void timeline_ranges_menu(TimelineRanges* rs) {
+void timeline_periods_menu(TimelinePeriods* rs) {
     ImGui::SeparatorText("Lanes");
     int layout = (int)rs->layout;
-    ImGui::RadioButton("One lane", &layout, (int)TimelineRangeLayout_OneLane);
-    ImGui::RadioButton("Lane per range", &layout, (int)TimelineRangeLayout_LanePerRange);
-    rs->layout = (TimelineRangeLayout)layout;
-    ImGui::Checkbox("Shade every range in the plots", &rs->shade_all);
+    ImGui::RadioButton("One lane", &layout, (int)TimelinePeriodLayout_OneLane);
+    ImGui::RadioButton("Lane per period", &layout, (int)TimelinePeriodLayout_LanePerPeriod);
+    rs->layout = (TimelinePeriodLayout)layout;
+    ImGui::Checkbox("Shade every period in the plots", &rs->shade_all);
 
     ImGui::SeparatorText("Marking");
     if (ImGui::BeginTable("##marking", 2, ImGuiTableFlags_SizingFixedFit)) {
@@ -770,13 +770,13 @@ void timeline_ranges_menu(TimelineRanges* rs) {
             ImGui::TableNextColumn();
             ImGui::TextDisabled("%s", action);
         };
-        row("Shift-drag",   "mark a range");
+        row("Shift-drag",   "mark a period");
         row("Shift-click",  "mark a frame");
         row("Drag",         "move, or resize by a handle");
         row("Double-click", "rename");
         row("Right-click",  "annotate, follow the current frame, delete");
-        row("Delete",       "remove the range under the mouse");
-        row("Pull out",     "drag a range out of the lane onto a distribution");
+        row("Delete",       "remove the period under the mouse");
+        row("Pull out",     "drag a period out of the lane onto a distribution");
         ImGui::EndTable();
     }
 }

@@ -486,11 +486,11 @@ struct DensityVolume : viamd::EventHandler {
                             candidate_count += 1;
                         });
                     };
-                    // Over every frame, and over each timeline range: "v (Production)"
+                    // Over every frame, and over each timeline period: "v (Production)"
                     list(0);
-                    for (int i = 0; i < state->timeline.ranges.count && candidate_count > 0; ++i) {
-                        if (i == 0) ImGui::SeparatorText("Over a range");
-                        list(state->timeline.ranges.items[i].id);
+                    for (int i = 0; i < state->timeline.periods.count && candidate_count > 0; ++i) {
+                        if (i == 0) ImGui::SeparatorText("Over a period");
+                        list(state->timeline.periods.items[i].id);
                     }
 
                     if (candidate_count == 0) {
@@ -1075,7 +1075,7 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDeserializeEnd:
-                // Over the timeline filter, from before there were periods: over the range it followed
+                // Over the timeline filter, from before there were periods: over the period it followed
                 if (app) volume_key.period = series_legacy_period(app, volume_key.period);
                 break;
             case viamd::EventType_ViamdShutdown: {

@@ -24,7 +24,7 @@
 #include <viamd_event.h>
 #include <viamd.h>
 #include <serialization_utils.h>
-#include <timeline_ranges_ui.h>
+#include <timeline_periods_ui.h>
 #include <event.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -469,16 +469,16 @@ struct Ramachandran : viamd::EventHandler {
 
     uint64_t backbone_fingerprint = 0;
     uint64_t full_fingerprint = 0;
-    uint64_t filt_fingerprint = 0;  // of the frames of the range layer, and the angles over them
+    uint64_t filt_fingerprint = 0;  // of the frames of the period layer, and the angles over them
 
     struct {
         rama_rep_t ref  = {};
         rama_rep_t full = {};
-        rama_rep_t filt = {};   // over the frames of layer_range
+        rama_rep_t filt = {};   // over the frames of layer_period
     } rama_data;
 
-    // The timeline range the third layer is the density over, by id, 0 for none
-    uint32_t layer_range = 0;
+    // The timeline period the third layer is the density over, by id, 0 for none
+    uint32_t layer_period = 0;
     ApplicationState* app = nullptr;
 
     // The backbone segments of each ramachandran type (general, glycine, proline, pre-proline). Derived from the
@@ -535,7 +535,7 @@ struct Ramachandran : viamd::EventHandler {
         for (int i = 0; i < 3; ++i) isoline_colors[i] = {1,1,1,1};
         for (int i = 0; i < 4; ++i) show_layer[i] = true;
         layout_mode = 0;
-        layer_range = 0;
+        layer_period = 0;
     }
 
     void serialize(viamd::serialization_state_t& state) {
@@ -555,8 +555,8 @@ struct Ramachandran : viamd::EventHandler {
         const int layers[4] = { show_layer[0], show_layer[1], show_layer[2], show_layer[3] };
         viamd::write_int_vec(state, STR_LIT("ShowLayer"), layers, 4);
         viamd::write_int(state, STR_LIT("LayoutMode"), layout_mode);
-        if (layer_range != 0) {
-            viamd::write_int(state, STR_LIT("LayerRange"), (int)layer_range);
+        if (layer_period != 0) {
+            viamd::write_int(state, STR_LIT("LayerPeriod"), (int)layer_period);
         }
     }
 
@@ -585,9 +585,9 @@ struct Ramachandran : viamd::EventHandler {
                 }
             } else if (str_eq_cstr(ident, "LayoutMode")) {
                 viamd::extract_int(layout_mode, arg);
-            } else if (str_eq_cstr(ident, "LayerRange")) {
+            } else if (str_eq_cstr(ident, "LayerPeriod")) {
                 int id = 0;
-                if (viamd::extract_int(id, arg)) layer_range = (uint32_t)MAX(id, 0);
+                if (viamd::extract_int(id, arg)) layer_period = (uint32_t)MAX(id, 0);
             } else {
                 for (int i = 0; i < 3; ++i) {
                     char key[32];
@@ -627,8 +627,8 @@ struct Ramachandran : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDeserializeEnd:
-                // The layer over the timeline filter, from before there were periods: over the range it followed
-                if (app && layer_range == 0) layer_range = app->timeline.ranges.legacy_filter_id;
+                // The layer over the timeline filter, from before there were periods: over the period it followed
+                if (app && layer_period == 0) layer_period = app->timeline.periods.legacy_filter_id;
                 break;
             case viamd::EventType_ViamdShutdown:
                 shutdown();
@@ -800,21 +800,21 @@ struct Ramachandran : viamd::EventHandler {
                     }
                 }
 
-                // Over the frames of the range, where they are now: rebuilt as it moves
-                int range_beg = 0, range_end = 0;
-                const TimelineRange* range = timeline_ranges_find(&state.timeline.ranges, layer_range);
-                const bool has_range = range && timeline_range_frames(&range_beg, &range_end, *range, state.animation.frame, (int)num_frames);
-                uint64_t range_fingerprint = 0;
-                if (has_range) {
-                    const int frames[2] = { range_beg, range_end };
-                    range_fingerprint = md_hash64(frames, sizeof(frames), angle_version) | 1;
+                // Over the frames of the period, where they are now: rebuilt as it moves
+                int period_beg = 0, period_end = 0;
+                const TimelinePeriod* period = timeline_periods_find(&state.timeline.periods, layer_period);
+                const bool has_period = period && timeline_period_frames(&period_beg, &period_end, *period, state.animation.frame, (int)num_frames);
+                uint64_t period_fingerprint = 0;
+                if (has_period) {
+                    const int frames[2] = { period_beg, period_end };
+                    period_fingerprint = md_hash64(frames, sizeof(frames), angle_version) | 1;
                 }
-                if (has_range && filt_fingerprint != range_fingerprint) {
+                if (has_period && filt_fingerprint != period_fingerprint) {
                     if (!task_system::task_is_running(compute_density_filt)) {
-                        filt_fingerprint = range_fingerprint;
+                        filt_fingerprint = period_fingerprint;
 
-                        const uint32_t frame_beg = (uint32_t)range_beg;
-                        const uint32_t frame_end = (uint32_t)range_end + 1;
+                        const uint32_t frame_beg = (uint32_t)period_beg;
+                        const uint32_t frame_end = (uint32_t)period_end + 1;
                         const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
 
                         compute_density_filt = rama_rep_compute_density(&rama_data.filt, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
@@ -836,7 +836,7 @@ struct Ramachandran : viamd::EventHandler {
         ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Ramachandran", &show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_MenuBar)) {
             constexpr const char* plot_labels[4] = {"##General", "##Glycine", "##Proline", "##Pre-Proline"};
-            constexpr const char* layer_labels[3] = { "Reference", "Full Trajectory", "Range" };
+            constexpr const char* layer_labels[3] = { "Reference", "Full Trajectory", "Period" };
             constexpr const char* option_labels[3] = { "IsoLevels", "IsoLines", "Colormap" };
 
             constexpr const float min_ext = -180.0f;
@@ -864,20 +864,20 @@ struct Ramachandran : viamd::EventHandler {
                         if (show_layer[i]) {
                             ImGui::PushID(i);
                             if (i == 2) {
-                                // The density over the frames of a timeline range
-                                const TimelineRanges& rs = state.timeline.ranges;
-                                const TimelineRange* cur = timeline_ranges_find(&rs, layer_range);
+                                // The density over the frames of a timeline period
+                                const TimelinePeriods& rs = state.timeline.periods;
+                                const TimelinePeriod* cur = timeline_periods_find(&rs, layer_period);
                                 if (ImGui::BeginCombo("Over", cur ? cur->name : "None")) {
-                                    if (ImGui::Selectable("None", cur == nullptr)) layer_range = 0;
+                                    if (ImGui::Selectable("None", cur == nullptr)) layer_period = 0;
                                     for (int r = 0; r < rs.count; ++r) {
-                                        char label[TIMELINE_RANGE_NAME_CAP + 16];
-                                        snprintf(label, sizeof(label), "%s###range%u", rs.items[r].name, rs.items[r].id);
-                                        if (ImGui::Selectable(label, rs.items[r].id == layer_range)) layer_range = rs.items[r].id;
-                                        if (ImGui::IsItemHovered()) timeline_ranges_highlight(rs.items[r].id);
+                                        char label[TIMELINE_PERIOD_NAME_CAP + 16];
+                                        snprintf(label, sizeof(label), "%s###period%u", rs.items[r].name, rs.items[r].id);
+                                        if (ImGui::Selectable(label, rs.items[r].id == layer_period)) layer_period = rs.items[r].id;
+                                        if (ImGui::IsItemHovered()) timeline_periods_highlight(rs.items[r].id);
                                     }
                                     ImGui::EndCombo();
                                 }
-                                if (rs.count == 0) ImGui::SetItemTooltip("Mark ranges in the timeline to show the density over one");
+                                if (rs.count == 0) ImGui::SetItemTooltip("Mark periods in the timeline to show the density over one");
                             }
                             if (ImGui::BeginCombo(layer_labels[i], option_labels[display_mode[i]])) {
                                 if (ImGui::Selectable(option_labels[IsoLevels], display_mode[i] == IsoLevels)) display_mode[i] = IsoLevels;
@@ -973,7 +973,7 @@ struct Ramachandran : viamd::EventHandler {
                         //bool show_curr = ImPlot::GetCurrentContext()->CurrentSubplot->Items.GetLegendItem(3)->Show;
                         const bool show_ref  = show_layer[0];
                         const bool show_full = show_layer[1];
-                        const bool show_filt = show_layer[2] && timeline_ranges_find(&state.timeline.ranges, layer_range) != nullptr;
+                        const bool show_filt = show_layer[2] && timeline_periods_find(&state.timeline.periods, layer_period) != nullptr;
                         const bool show_curr = show_layer[3];
 
                         ImVec2 plot_min = ImPlot::PlotToPixels(viewrect.Min());

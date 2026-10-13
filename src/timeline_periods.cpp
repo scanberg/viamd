@@ -1,4 +1,4 @@
-#include <timeline_ranges.h>
+#include <timeline_periods.h>
 
 #include <serialization_utils.h>
 
@@ -29,7 +29,7 @@ static bool same_color(vec4_t a, vec4_t b) {
     return fabsf(a.x - b.x) < 1e-3f && fabsf(a.y - b.y) < 1e-3f && fabsf(a.z - b.z) < 1e-3f;
 }
 
-bool timeline_range_frames(int* out_beg, int* out_end, const TimelineRange& r, double current_frame, int num_frames) {
+bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_frame, int num_frames) {
     if (num_frames <= 0) return false;
     int64_t beg = MIN(r.beg, r.end);
     int64_t end = MAX(r.beg, r.end);
@@ -45,7 +45,7 @@ bool timeline_range_frames(int* out_beg, int* out_end, const TimelineRange& r, d
     return true;
 }
 
-void timeline_range_normalize(TimelineRange* r) {
+void timeline_period_normalize(TimelinePeriod* r) {
     if (r->beg > r->end) {
         const int32_t tmp = r->beg;
         r->beg = r->end;
@@ -53,10 +53,10 @@ void timeline_range_normalize(TimelineRange* r) {
     }
 }
 
-void timeline_range_set_follow(TimelineRange* r, bool follow, double current_frame, int num_frames) {
+void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_frame, int num_frames) {
     if (r->follow == follow) return;
     const int32_t cur = (int32_t)llround(current_frame);
-    timeline_range_normalize(r);
+    timeline_period_normalize(r);
     if (follow) {
         r->beg -= cur;
         r->end -= cur;
@@ -68,25 +68,25 @@ void timeline_range_set_follow(TimelineRange* r, bool follow, double current_fra
     r->follow = follow;
 }
 
-int timeline_ranges_index(const TimelineRanges* rs, uint32_t id) {
+int timeline_periods_index(const TimelinePeriods* rs, uint32_t id) {
     for (int i = 0; id != 0 && i < rs->count; ++i) {
         if (rs->items[i].id == id) return i;
     }
     return -1;
 }
 
-TimelineRange* timeline_ranges_find(TimelineRanges* rs, uint32_t id) {
-    const int i = timeline_ranges_index(rs, id);
+TimelinePeriod* timeline_periods_find(TimelinePeriods* rs, uint32_t id) {
+    const int i = timeline_periods_index(rs, id);
     return i != -1 ? &rs->items[i] : nullptr;
 }
 
-const TimelineRange* timeline_ranges_find(const TimelineRanges* rs, uint32_t id) {
-    const int i = timeline_ranges_index(rs, id);
+const TimelinePeriod* timeline_periods_find(const TimelinePeriods* rs, uint32_t id) {
+    const int i = timeline_periods_index(rs, id);
     return i != -1 ? &rs->items[i] : nullptr;
 }
 
-void timeline_ranges_default_name(char* buf, size_t cap, const TimelineRanges* rs, bool marker) {
-    const char* stem = marker ? "Marker" : "Range";
+void timeline_periods_default_name(char* buf, size_t cap, const TimelinePeriods* rs, bool marker) {
+    const char* stem = marker ? "Marker" : "Period";
     for (int k = 1; ; ++k) {
         snprintf(buf, cap, "%s %d", stem, k);
         bool taken = false;
@@ -97,10 +97,10 @@ void timeline_ranges_default_name(char* buf, size_t cap, const TimelineRanges* r
     }
 }
 
-TimelineRange* timeline_ranges_add(TimelineRanges* rs, const char* name, int32_t beg, int32_t end, bool follow) {
-    if (rs->count >= TIMELINE_MAX_RANGES) return nullptr;
+TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, int32_t beg, int32_t end, bool follow) {
+    if (rs->count >= TIMELINE_MAX_PERIODS) return nullptr;
 
-    // The colour of the palette the fewest ranges have, the first of those on a tie
+    // The colour of the palette the fewest periods have, the first of those on a tie
     int best = 0;
     int best_uses = INT32_MAX;
     for (int c = 0; c < 6; ++c) {
@@ -114,7 +114,7 @@ TimelineRange* timeline_ranges_add(TimelineRanges* rs, const char* name, int32_t
         }
     }
 
-    TimelineRange r = {};
+    TimelinePeriod r = {};
     r.id     = rs->next_id++;
     r.color  = palette_color(best);
     r.follow = follow;
@@ -123,15 +123,15 @@ TimelineRange* timeline_ranges_add(TimelineRanges* rs, const char* name, int32_t
     if (name && name[0]) {
         str_copy_to_char_buf(r.name, sizeof(r.name), str_from_cstr(name));
     } else {
-        timeline_ranges_default_name(r.name, sizeof(r.name), rs, r.beg == r.end);
+        timeline_periods_default_name(r.name, sizeof(r.name), rs, r.beg == r.end);
     }
 
     rs->items[rs->count] = r;
     return &rs->items[rs->count++];
 }
 
-void timeline_ranges_remove(TimelineRanges* rs, uint32_t id) {
-    const int i = timeline_ranges_index(rs, id);
+void timeline_periods_remove(TimelinePeriods* rs, uint32_t id) {
+    const int i = timeline_periods_index(rs, id);
     if (i == -1) return;
     for (int j = i; j + 1 < rs->count; ++j) {
         rs->items[j] = rs->items[j + 1];
@@ -140,17 +140,17 @@ void timeline_ranges_remove(TimelineRanges* rs, uint32_t id) {
     if (rs->legacy_filter_id == id) rs->legacy_filter_id = 0;
 }
 
-void timeline_ranges_clear(TimelineRanges* rs) {
+void timeline_periods_clear(TimelinePeriods* rs) {
     rs->count = 0;
     rs->legacy_filter_id = 0;
 }
 
-int timeline_ranges_draw_order(int* out, const TimelineRanges* rs, double current_frame, int num_frames) {
-    int len[TIMELINE_MAX_RANGES];
+int timeline_periods_draw_order(int* out, const TimelinePeriods* rs, double current_frame, int num_frames) {
+    int len[TIMELINE_MAX_PERIODS];
     int n = 0;
     for (int i = 0; i < rs->count; ++i) {
         int beg, end;
-        if (!timeline_range_frames(&beg, &end, rs->items[i], current_frame, num_frames)) continue;
+        if (!timeline_period_frames(&beg, &end, rs->items[i], current_frame, num_frames)) continue;
         len[i] = end - beg;
         out[n++] = i;
     }
@@ -167,55 +167,55 @@ int timeline_ranges_draw_order(int* out, const TimelineRanges* rs, double curren
     return n;
 }
 
-void timeline_ranges_nesting(int* out_depth, const int* order, int count, const TimelineRanges* rs, double current_frame, int num_frames) {
-    int beg[TIMELINE_MAX_RANGES], end[TIMELINE_MAX_RANGES];
+void timeline_periods_nesting(int* out_depth, const int* order, int count, const TimelinePeriods* rs, double current_frame, int num_frames) {
+    int beg[TIMELINE_MAX_PERIODS], end[TIMELINE_MAX_PERIODS];
     for (int k = 0; k < count; ++k) {
-        timeline_range_frames(&beg[k], &end[k], rs->items[order[k]], current_frame, num_frames);
+        timeline_period_frames(&beg[k], &end[k], rs->items[order[k]], current_frame, num_frames);
     }
     for (int k = 0; k < count; ++k) {
         int depth = 0;
         for (int j = 0; j < k; ++j) {
-            // Ranges which only touch, one ending where the next begins, are side by side and not nested
+            // Periods which only touch, one ending where the next begins, are side by side and not nested
             if (beg[j] < end[k] && end[j] > beg[k]) depth += 1;
         }
         out_depth[k] = depth;
     }
 }
 
-TimelineRangeHit timeline_ranges_hit_test(const TimelineRangeBar* bars, const int* top_first, int count, float px, float py, float handle_reach, float marker_reach) {
+TimelinePeriodHit timeline_periods_hit_test(const TimelinePeriodBar* bars, const int* top_first, int count, float px, float py, float handle_reach, float marker_reach) {
     const float slack_y = 2.0f;
-    auto within_y = [&](const TimelineRangeBar& b) { return b.visible && b.y0 - slack_y <= py && py <= b.y1 + slack_y; };
+    auto within_y = [&](const TimelinePeriodBar& b) { return b.visible && b.y0 - slack_y <= py && py <= b.y1 + slack_y; };
 
-    TimelineRangeHit hit;
+    TimelinePeriodHit hit;
 
     // Markers: the nearest one in reach
     float best_d = FLT_MAX;
     for (int k = 0; k < count; ++k) {
         const int i = top_first[k];
-        const TimelineRangeBar& b = bars[i];
+        const TimelinePeriodBar& b = bars[i];
         if (!b.marker || !within_y(b)) continue;
         const float d = fabsf(px - b.x0);
         if (d <= marker_reach && d < best_d) {
             best_d = d;
-            hit = { i, TimelineRangePart_Body };
+            hit = { i, TimelinePeriodPart_Body };
         }
     }
     if (hit.index != -1) return hit;
 
     // Handles. A handle reaches into its bar by at most a third of the bar, so that the middle of a
-    // narrow bar can still be grabbed to move it. Pointing at a handle from outside its range costs
+    // narrow bar can still be grabbed to move it. Pointing at a handle from outside its period costs
     // a full reach, which is what lets two handles at the same place be told apart by the side.
     float best_score = FLT_MAX;
     for (int k = 0; k < count; ++k) {
         const int i = top_first[k];
-        const TimelineRangeBar& b = bars[i];
+        const TimelinePeriodBar& b = bars[i];
         if (b.marker || !within_y(b)) continue;
         const float reach = CLAMP((b.x1 - b.x0) / 3.0f, 3.0f, handle_reach);
-        const struct { TimelineRangePart part; float x; } ends[2] = { { TimelineRangePart_Beg, b.x0 }, { TimelineRangePart_End, b.x1 } };
+        const struct { TimelinePeriodPart part; float x; } ends[2] = { { TimelinePeriodPart_Beg, b.x0 }, { TimelinePeriodPart_End, b.x1 } };
         for (const auto& e : ends) {
             const float d = fabsf(px - e.x);
             if (d > reach) continue;
-            const bool inside = e.part == TimelineRangePart_Beg ? px >= e.x : px <= e.x;
+            const bool inside = e.part == TimelinePeriodPart_Beg ? px >= e.x : px <= e.x;
             const float score = d + (inside ? 0.0f : reach) + (float)k * 0.01f;
             if (score < best_score) {
                 best_score = score;
@@ -227,17 +227,17 @@ TimelineRangeHit timeline_ranges_hit_test(const TimelineRangeBar* bars, const in
 
     for (int k = 0; k < count; ++k) {
         const int i = top_first[k];
-        const TimelineRangeBar& b = bars[i];
+        const TimelinePeriodBar& b = bars[i];
         if (b.marker || !within_y(b)) continue;
-        if (b.x0 <= px && px <= b.x1) return { i, TimelineRangePart_Body };
+        if (b.x0 <= px && px <= b.x1) return { i, TimelinePeriodPart_Body };
     }
     return hit;
 }
 
-void timeline_ranges_serialize(viamd::serialization_state_t& state, const TimelineRanges* rs) {
+void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs) {
     for (int i = 0; i < rs->count; ++i) {
-        const TimelineRange& r = rs->items[i];
-        viamd::write_section_header(state, STR_LIT("TimelineRange"));
+        const TimelinePeriod& r = rs->items[i];
+        viamd::write_section_header(state, STR_LIT("TimelinePeriod"));
         viamd::write_int(state, STR_LIT("Id"), r.id);
         viamd::write_str(state, STR_LIT("Name"), str_from_cstr(r.name));
         if (r.note[0]) {
@@ -250,9 +250,8 @@ void timeline_ranges_serialize(viamd::serialization_state_t& state, const Timeli
     }
 }
 
-bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, TimelineRanges* rs) {
-    TimelineRange r = {};
-    bool is_filter = false;
+bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs) {
+    TimelinePeriod r = {};
     bool has_color = false;
     str_t ident, arg;
     int id = 0;
@@ -273,21 +272,17 @@ bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, Ti
                 r.beg = frames[0];
                 r.end = frames[1];
             }
-        } else if (str_eq(ident, STR_LIT("Filter"))) {
-            // Marked as the timeline filter, before there were periods
-            viamd::extract_bool(is_filter, arg);
         }
     }
 
-    TimelineRange* dst = timeline_ranges_add(rs, r.name, r.beg, r.end, r.follow);
+    TimelinePeriod* dst = timeline_periods_add(rs, r.name, r.beg, r.end, r.follow);
     if (!dst) return false;
-    // The id it was saved with, which what refers to it was saved with too, unless another range has it already
-    if (id > 0 && timeline_ranges_index(rs, (uint32_t)id) == -1) {
+    // The id it was saved with, which what refers to it was saved with too, unless another period has it already
+    if (id > 0 && timeline_periods_index(rs, (uint32_t)id) == -1) {
         dst->id = (uint32_t)id;
         rs->next_id = MAX(rs->next_id, (uint32_t)id + 1);
     }
     str_copy_to_char_buf(dst->note, sizeof(dst->note), str_from_cstr(r.note));
     if (has_color) dst->color = r.color;
-    if (is_filter) rs->legacy_filter_id = dst->id;
     return true;
 }
