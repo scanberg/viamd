@@ -992,6 +992,8 @@ struct PickingReadbackRequest {
 // The key of the script evaluation's slots over the timeline filter's frames (md_script_eval_slot_request): one for
 // each distribution and volume while there is a filter
 #define SCRIPT_SLOT_FILTER ((uint64_t)1)
+// The key of a slot over a timeline range, by its id: asked for by what is shown over the range (series_resolve_histogram)
+#define SCRIPT_SLOT_RANGE(id) (((uint64_t)1 << 32) | (uint64_t)(id))
 
 // The timeline filter as applied to the SCRIPT_SLOT_FILTER slots: frames [beg, end[, none while not enabled
 struct ScriptFilterFrames {

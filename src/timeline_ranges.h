@@ -120,7 +120,8 @@ TimelineRangeHit timeline_ranges_hit_test(const TimelineRangeBar* bars, const in
 
 // ## Workspace
 //
-// One [TimelineRange] section per range, in the order of the list.
+// One [TimelineRange] section per range, in the order of the list. A range keeps its id across a save and a load, so
+// what refers to it by id (a plotted series) finds it again.
 void timeline_ranges_serialize(viamd::serialization_state_t& state, const TimelineRanges* rs);
 // Reads the section the state is at as one more range. False when there is no room for it.
 bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, TimelineRanges* rs);

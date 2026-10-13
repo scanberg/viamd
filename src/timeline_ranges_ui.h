@@ -9,6 +9,8 @@
 //   double-click   renames
 //   right-click    the annotation, the colour, whether it follows the current frame, the filter, delete
 //   delete         removes the range under the mouse
+//   pulled out     a range dragged well out of the lane is taken elsewhere (TIMELINE_RANGE_DND), and stays put:
+//                  dropped on a distribution, it is shown over the range too
 //
 // Empty lane space pans and zooms the timeline like the plots do.
 
@@ -35,3 +37,14 @@ void timeline_ranges_menu(TimelineRanges* rs, double current_frame, int num_fram
 
 // While a range is created, moved or resized, or the lane pans: the plots should not pan meanwhile
 bool timeline_ranges_dragging();
+
+// ImGui drag and drop payload of a range pulled out of the lane: its id, a uint32_t
+#define TIMELINE_RANGE_DND "TIMELINE_RANGE"
+
+// The range the pointer is on in the lane, or holds (moving it, resizing it, or taking it elsewhere): what other views
+// may show a preview of. 0 for none.
+uint32_t timeline_ranges_hovered();
+
+// Lights the range up in the lane and the plots, as if it were hovered, for this frame and the next: a view showing
+// something over it says which range it is
+void timeline_ranges_highlight(uint32_t id);

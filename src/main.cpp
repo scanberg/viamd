@@ -4833,6 +4833,112 @@ static ImPlotPoint histogram_getter_zero(int i, void* payload) {
     return ImPlotPoint(series_histogram_point(*p->view, i, p->k).x, 0.0);
 }
 
+// A histogram member drawn dashed, over the plot: a preview, not a curve of the plot's own
+static void plot_dashed_histogram(const SeriesHistogramView& v, int k, ImVec4 color) {
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
+    const float dash = 6.0f, gap = 4.0f;
+    float phase = 0.0f;     // along the polyline, so the dashes run on across its corners
+    ImVec2 prev = ImPlot::PlotToPixels(series_histogram_point(v, 0, k));
+    for (int i = 1; i < v.num_bins; ++i) {
+        const ImVec2 next = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
+        const ImVec2 d = next - prev;
+        const float len = sqrtf(d.x * d.x + d.y * d.y);
+        if (len > 0.0f) {
+            const ImVec2 u = d / len;
+            float t = 0.0f;
+            while (t < len) {
+                const float in_cycle = fmodf(phase + t, dash + gap);
+                const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
+                if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
+                t += MAX(step, 0.01f);
+            }
+            phase = fmodf(phase + len, dash + gap);
+        }
+        prev = next;
+    }
+    ImPlot::PopPlotClipRect();
+}
+
+// Over periods: every period's value at the bin, beside its frames, the hovered one first among equals
+static void plot_periods_tooltip(const SeriesHistogramView& v, const PlotSeries& s, int bin, int hovered) {
+    ImGui::BeginTooltip();
+    const ImPlotPoint at = series_histogram_point(v, bin, 0);
+    ImGui::Text("%s at %.4g %s", v.label, at.x, v.x_unit_str);
+    if (ImGui::BeginTable("##periods", 3, ImGuiTableFlags_SizingFixedFit)) {
+        for (int k = 0; k < v.num_periods; ++k) {
+            const SeriesPeriodInfo& p = v.periods[k];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            const ImVec4 color = p.own_color ? p.color : s.color;
+            ImGui::ColorButton("##c", ImVec4(color.x, color.y, color.z, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder,
+                ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()));
+            ImGui::SameLine();
+            if (k == hovered) ImGui::TextUnformatted(p.name);
+            else              ImGui::TextDisabled("%s", p.name);
+            ImGui::TableNextColumn();
+            if (p.valid) ImGui::Text("%.4g", series_histogram_point(v, bin, k).y);
+            else         ImGui::TextDisabled("-");
+            ImGui::TableNextColumn();
+            if (p.num_frames < p.num_wanted) ImGui::TextDisabled("%u of %u frames", p.num_frames, p.num_wanted);
+            else                             ImGui::TextDisabled("%u frames", p.num_frames);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndTooltip();
+}
+
+// The part of a script series' legend popup which says over which periods it is shown, one curve each
+static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refit) {
+    ImGui::SeparatorText("Periods");
+    const TimelineRanges& rs = data->timeline.ranges;
+    auto item = [&](uint32_t id, const char* name, const ImVec4* color, const char* frames) {
+        bool on = plot_series_has_period(s, id);
+        const bool last = on && s.num_periods == 1;
+        const bool full = !on && s.num_periods >= PLOT_MAX_PERIODS;
+        ImGui::PushID((int)id);
+        if (last || full) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("##on", &on)) {
+            if (on) plot_series_add_period(s, id);
+            else    plot_series_remove_period(s, id);
+            *refit = true;
+        }
+        if (last || full) ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (color) {
+            ImGui::ColorButton("##c", *color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder,
+                ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()));
+            ImGui::SameLine();
+        }
+        ImGui::TextUnformatted(name);
+        if (frames[0]) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", frames);
+        }
+        if (id != 0 && ImGui::IsItemHovered()) timeline_ranges_highlight(id);
+        ImGui::PopID();
+    };
+
+    item(0, s.key.source == SeriesSource_ScriptFiltered ? "Filter" : "All frames", nullptr, "");
+    const int num_frames = (int)run_num_frames(data);
+    for (int i = 0; i < rs.count; ++i) {
+        const TimelineRange& r = rs.items[i];
+        char frames[48] = "";
+        int beg, end;
+        if (timeline_range_frames(&beg, &end, r, data->animation.frame, num_frames)) {
+            snprintf(frames, sizeof(frames), "%d to %d", beg, end);
+        }
+        const ImVec4 color(r.color.x, r.color.y, r.color.z, 1.0f);
+        item(r.id, r.name, &color, frames);
+    }
+    if (rs.count == 0) {
+        ImGui::TextDisabled("Mark ranges in the timeline to compare it over them");
+    } else {
+        ImGui::TextDisabled("Or pull a range out of the timeline onto the plot");
+    }
+}
+
 static void draw_distribution_properties_menu(ApplicationState* data) {
     PlotSubplot& first = data->distributions.subplots[0];
     const uint32_t kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
@@ -4908,8 +5014,28 @@ static void draw_distribution_window(ApplicationState* data) {
                 SeriesHistogramView views[PLOT_MAX_SERIES_PER_SUBPLOT];
                 bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
                 for (int j = 0; j < sp.count; ++j) {
-                    resolved[j] = series_resolve_histogram(&views[j], data, sp.series[j].key, sp.series[j].num_bins);
+                    PlotSeries& s = sp.series[j];
+                    // A range removed takes its curve along
+                    for (int p = s.num_periods - 1; p >= 0; --p) {
+                        if (s.periods[p] != 0 && !timeline_ranges_find(&data->timeline.ranges, s.periods[p])) {
+                            if (s.num_periods > 1) plot_series_remove_period(s, s.periods[p]);
+                            else s.periods[0] = 0;
+                        }
+                    }
+                    resolved[j] = series_resolve_histogram_periods(&views[j], data, s.key, s.num_bins, s.periods, s.num_periods);
                 }
+
+                // More to show than before (a workspace loaded before anything was evaluated, an evaluation which
+                // came through): fitted to it
+                static int num_resolved[PLOT_MAX_SUBPLOTS] = {};
+                int resolved_now = 0;
+                for (int j = 0; j < sp.count; ++j) resolved_now += resolved[j] ? 1 : 0;
+                if (resolved_now > num_resolved[i]) fit_subplot[i] = true;
+                num_resolved[i] = resolved_now;
+
+                // A range under the pointer in the timeline: each series over it too, as a preview
+                const uint32_t preview_id = timeline_ranges_hovered();
+                const TimelineRange* preview_range = timeline_ranges_find(&data->timeline.ranges, preview_id);
 
                 int remove_idx = -1;
 
@@ -4940,6 +5066,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                     int  hovered_idx       = -1;
                     int  hovered_pop_idx   = -1;
+                    int  hovered_bin       = -1;
                     char hovered_label[128] = "";
 
                     if (ImPlot::IsPlotHovered()) {
@@ -4973,7 +5100,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                             const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             for (int k = 0; k < dim; ++k) {
-                                if (dim > 1 && !s.population_mask.test(k)) continue;
+                                if (v.num_periods > 0 ? !v.periods[k].valid : (dim > 1 && !s.population_mask.test(k))) continue;
                                 HistogramGetterPayload payload = { &v, k };
                                 // Later entries lie on top: prefer them a little when two are equally near
                                 const double layer = j + k / (double)(PLOT_MAX_POPULATION - 1);
@@ -5024,8 +5151,11 @@ static void draw_distribution_window(ApplicationState* data) {
                                     min_dist = d;
                                     const ImPlotPoint pt = histogram_getter(xn, &payload);
                                     hovered_idx = j;
-                                    hovered_pop_idx = dim > 1 ? k : -1;
-                                    if (dim > 1) {
+                                    hovered_pop_idx = (dim > 1 || v.num_periods > 0) ? k : -1;
+                                    hovered_bin = xn;
+                                    if (v.num_periods > 0) {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s, %s: %.4g at %.4g %s", v.label, v.periods[k].name, pt.y, pt.x, v.x_unit_str);
+                                    } else if (dim > 1) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %.4g at %.4g %s", v.label, k + 1, pt.y, pt.x, v.x_unit_str);
                                     } else {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s: %.4g at %.4g %s", v.label, pt.y, pt.x, v.x_unit_str);
@@ -5036,11 +5166,18 @@ static void draw_distribution_window(ApplicationState* data) {
 
                         if (hovered_idx != -1) {
                             const SeriesHistogramView& v = views[hovered_idx];
+                            // A period is not a member of a population: the property as a whole is what is shown
+                            const int member = v.num_periods > 0 ? -1 : hovered_pop_idx;
                             if (v.script_ident[0] != '\0') {
-                                script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
-                                script_visualize_ref(data, v.vis_ref, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_set_hovered_property(data, str_from_cstr(v.script_ident), member);
+                                script_visualize_ref(data, v.vis_ref, member, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
-                            if (hovered_label[0] != '\0') {
+                            if (v.num_periods > 0 && hovered_bin >= 0) {
+                                if (hovered_pop_idx >= 0 && v.periods[hovered_pop_idx].id != 0) {
+                                    timeline_ranges_highlight(v.periods[hovered_pop_idx].id);
+                                }
+                                plot_periods_tooltip(v, sp.series[hovered_idx], hovered_bin, hovered_pop_idx);
+                            } else if (hovered_label[0] != '\0') {
                                 ImGui::SetTooltip("%s", hovered_label);
                             }
                         }
@@ -5049,7 +5186,8 @@ static void draw_distribution_window(ApplicationState* data) {
                             if (!resolved[j]) continue;
                             if (strcmp(data->hovered_property_label, views[j].script_ident) == 0) {
                                 hovered_idx = j;
-                                hovered_pop_idx = data->hovered_property_pop_idx;
+                                // A member of a population elsewhere is not a period here
+                                hovered_pop_idx = views[j].num_periods > 0 ? -1 : data->hovered_property_pop_idx;
                                 break;
                             }
                         }
@@ -5107,10 +5245,13 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
 
                             int popup_hovered_pop = -1;
-                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
+                            plot_series_style_popup(data, s, resolved[j] && v.num_periods == 0 ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
                                 hovered_idx = j;
                                 hovered_pop_idx = popup_hovered_pop;
+                            }
+                            if (v.script_ident[0] != '\0') {
+                                plot_periods_popup(data, s, &fit_subplot[i]);
                             }
                             ImPlot::EndLegendPopup();
                         }
@@ -5120,7 +5261,8 @@ static void draw_distribution_window(ApplicationState* data) {
                         } else {
                             const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
-                                ImVec4 color = plot_series_member_color(s, k, population_size);
+                                // A period in the colour of its range, so that it reads with the timeline
+                                ImVec4 color = v.num_periods > 0 && v.periods[k].own_color ? v.periods[k].color : plot_series_member_color(s, k, population_size);
                                 if (v.state.status >= SeriesStatus_Outdated) {
                                     // Not what the script says any more: shown, faintly, until it is evaluated
                                     color.w *= 0.35f;
@@ -5155,7 +5297,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             };
 
                             for (int k = 0; k < population_size; ++k) {
-                                if (population_size > 1 && !s.population_mask.test(k)) continue;
+                                if (v.num_periods > 0 ? !v.periods[k].valid : (population_size > 1 && !s.population_mask.test(k))) continue;
                                 if (hovered_idx == j && hovered_pop_idx == k) continue;
                                 plot(k);
                             }
@@ -5164,10 +5306,33 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                         }
 
+                        // The range under the pointer in the timeline, dashed, unless the series is shown over it already
+                        if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
+                            SeriesHistogramView pv;
+                            if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1) && pv.num_bins > 0 && pv.periods[0].valid) {
+                                const vec4_t rc = preview_range->color;
+                                plot_dashed_histogram(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f));
+                            }
+                        }
+
                         if (ImPlot::BeginDragDropSourceItem(v.plot_id)) {
                             series_set_drag_payload(DISTRIBUTION_SERIES_DND, s.key, i, v.label, s.color);
                             ImPlot::EndDragDropSource();
                         }
+                    }
+
+                    // A range pulled out of the timeline, dropped on a legend entry: that series over it too
+                    if (ImPlot::BeginDragDropTargetLegend()) {
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_RANGE_DND)) {
+                            ASSERT(payload->DataSize == sizeof(uint32_t));
+                            const uint32_t id = *(const uint32_t*)payload->Data;
+                            for (int j = 0; j < sp.count; ++j) {
+                                if (ImPlot::IsLegendEntryHovered(views[j].plot_id) && views[j].script_ident[0] != '\0') {
+                                    plot_series_add_period(sp.series[j], id);
+                                }
+                            }
+                        }
+                        ImPlot::EndDragDropTarget();
                     }
 
                     if (ImPlot::BeginDragDropTargetPlot()) {
@@ -5180,6 +5345,15 @@ static void draw_distribution_window(ApplicationState* data) {
                                 plot_add_series(data, sp, dnd->key);
                             }
                             fit_subplot[i] = true;
+                        } else if (const ImGuiPayload* range_payload = ImGui::AcceptDragDropPayload(TIMELINE_RANGE_DND)) {
+                            // A range pulled out of the timeline: every script series here over it too
+                            ASSERT(range_payload->DataSize == sizeof(uint32_t));
+                            const uint32_t id = *(const uint32_t*)range_payload->Data;
+                            for (int j = 0; j < sp.count; ++j) {
+                                if (views[j].script_ident[0] != '\0') {
+                                    plot_series_add_period(sp.series[j], id);
+                                }
+                            }
                         } else if (const ImGuiPayload* tl_payload = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
                             // Something plotted over time, dropped here: the distribution of its
                             // values, whichever view of them (a mean, a spread) was dragged

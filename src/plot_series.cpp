@@ -330,9 +330,10 @@ struct HistogramEntry {
     int                    last_used = 0;
 };
 
-// What the slot of a distribution or volume over the timeline filter holds, copied out of it whenever it holds
-// something new (md_script_eval_slot_extract)
+// What the slot of a distribution or volume holds, copied out of it whenever it holds something new
+// (md_script_eval_slot_extract): over the timeline filter (SCRIPT_SLOT_FILTER), or a range (SCRIPT_SLOT_RANGE)
 struct SlotEntry {
+    uint64_t        key = 0;
     char            ident[64] = "";
     uint64_t        version = 0;
     md_script_eval_slot_info_t info = {};
@@ -394,16 +395,17 @@ static const float* attribute_floats(ApplicationState* app, const md_attributes_
     return (data && count == md_attribute_element_count(&attr->format)) ? data : nullptr;
 }
 
-// The slot of the script property over the timeline filter (SCRIPT_SLOT_FILTER), as it is now. NULL while there is
-// none: no filter, or not a distribution or a volume. The values stay put until the slot is next read.
-static const SlotEntry* series_slot(ApplicationState* app, str_t ident) {
+// The slot of the script property under key, as it is now. NULL while there is none: not asked for, or not a
+// distribution or a volume. The values stay put until the slot is next read. A range's slot is asked for by what shows
+// it, and let go when nothing has read it for a while (series_cache_gc).
+static const SlotEntry* series_slot(ApplicationState* app, uint64_t key, str_t ident) {
     const md_script_eval_t* eval = app->script.eval;
     md_script_eval_slot_info_t info;
-    if (!eval || str_empty(ident) || !md_script_eval_slot_info(&info, eval, SCRIPT_SLOT_FILTER, ident)) return nullptr;
+    if (!eval || str_empty(ident) || !md_script_eval_slot_info(&info, eval, key, ident)) return nullptr;
 
     SlotEntry* entry = nullptr;
     for (size_t i = 0; i < md_array_size(slot_cache); ++i) {
-        if (str_eq(str_from_cstr(slot_cache[i].ident), ident)) {
+        if (slot_cache[i].key == key && str_eq(str_from_cstr(slot_cache[i].ident), ident)) {
             entry = &slot_cache[i];
             break;
         }
@@ -411,6 +413,7 @@ static const SlotEntry* series_slot(ApplicationState* app, str_t ident) {
     if (!entry) {
         md_array_push(slot_cache, SlotEntry{}, app->allocator.persistent);
         entry = &slot_cache[md_array_size(slot_cache) - 1];
+        entry->key = key;
         str_copy_to_char_buf(entry->ident, sizeof(entry->ident), ident);
     }
     entry->last_used = ImGui::GetFrameCount();
@@ -418,7 +421,7 @@ static const SlotEntry* series_slot(ApplicationState* app, str_t ident) {
     if (entry->version != info.version || md_array_size(entry->values) != info.num_values) {
         md_array_resize(entry->values,  info.num_values, app->allocator.persistent);
         md_array_resize(entry->weights, info.num_values, app->allocator.persistent);
-        if (!md_script_eval_slot_extract(&entry->info, entry->values, entry->weights, info.num_values, eval, SCRIPT_SLOT_FILTER, ident)) {
+        if (!md_script_eval_slot_extract(&entry->info, entry->values, entry->weights, info.num_values, eval, key, ident)) {
             entry->version = 0;
             return nullptr;
         }
@@ -448,6 +451,10 @@ void series_cache_gc(ApplicationState* app) {
     }
     for (size_t i = 0; i < md_array_size(slot_cache);) {
         if (frame - slot_cache[i].last_used > 600) {
+            if (slot_cache[i].key != SCRIPT_SLOT_FILTER && app->script.eval) {
+                // Nothing shows it any more. The filter's are the main loop's to let go.
+                md_script_eval_slot_release(app->script.eval, slot_cache[i].key, str_from_cstr(slot_cache[i].ident));
+            }
             md_array_free(slot_cache[i].values,  app->allocator.persistent);
             md_array_free(slot_cache[i].weights, app->allocator.persistent);
             md_array_swap_back_and_pop(slot_cache, i);
@@ -758,13 +765,41 @@ static bool read_range(double out[2], const md_attribute_t* range) {
     return md_attribute_extract_f64(out, 2, range, md_attribute_slice_all(), md_unit_none()) == 2 && out[1] > out[0];
 }
 
-bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins) {
+bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
+    const uint32_t num_frames = app->script.eval ? (uint32_t)md_script_eval_frame_count(app->script.eval) : (uint32_t)run_num_frames(app);
+    if (num_frames == 0) return false;
+    if (period == 0) {
+        // The frames of its source: every frame, or the filter's
+        if (key.source == SeriesSource_ScriptFiltered) {
+            const ScriptFilterFrames& filter = app->script.filter_frames;
+            if (!filter.enabled) return false;
+            *beg = filter.beg;
+            *end = filter.end;
+        } else {
+            *beg = 0;
+            *end = num_frames;
+        }
+        return true;
+    }
+    const TimelineRange* r = timeline_ranges_find(&app->timeline.ranges, period);
+    int b = 0, e = 0;
+    if (!r || !timeline_range_frames(&b, &e, *r, app->animation.frame, (int)num_frames)) return false;
+    *beg = (uint32_t)b;
+    *end = (uint32_t)e + 1;
+    return true;
+}
+
+bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period) {
     ASSERT(out && app);
     *out = SeriesHistogramView{};
     fill_names(out, app, key);
 
     if (key.path[0] == '\0') return false;
     if (key.variant != SeriesVariant_Values && key.variant != SeriesVariant_Aggregate) return false;
+    // Over a range: a script property's frames, which are the trajectory's
+    if (period != 0 && !is_script(key.source)) return false;
+    uint32_t period_beg = 0, period_end = 0;
+    if (period != 0 && !series_period_frames(&period_beg, &period_end, app, key, period)) return false;
 
     const str_t path = str_from_cstr(key.path);
     const md_attributes_t* table = series_table(app, key.source, path);
@@ -797,18 +832,36 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     }
 
     // What is binned: a temporal attribute over the frames that count (the frames the evaluation holds, of the filter's
-    // for the filtered source), a distribution as published, or over the filter's frames as its slot holds it.
+    // for the filtered source, or of the range), a distribution as published, or over the filter's frames or the
+    // range's as its slot holds it. A range's slot is asked for here, for the frames the range covers now: moved, the
+    // range takes its slot along.
     md_bitset_t frames = md_bitset_empty_set();
-    const md_bitset_t* mask = temporal && series_frame_mask(&frames, app, key, app->allocator.frame) ? &frames : nullptr;
+    const md_bitset_t* mask = nullptr;
+    if (temporal && series_frame_mask(&frames, app, key, app->allocator.frame)) {
+        if (period != 0) {
+            const SeriesKey all = series_key(SeriesSource_Script, path, key.variant);
+            series_frame_mask(&frames, app, all, app->allocator.frame);
+            frames = md_bitset_and(frames, md_bitset_range(period_beg, period_end), app->allocator.frame);
+        }
+        mask = &frames;
+    }
     const SlotEntry* slot = nullptr;
-    if (distribution && key.source == SeriesSource_ScriptFiltered) {
-        slot = series_slot(app, series_script_ident(key));
+    if (distribution && (key.source == SeriesSource_ScriptFiltered || period != 0)) {
+        const str_t ident = series_script_ident(key);
+        uint64_t slot_key = SCRIPT_SLOT_FILTER;
+        if (period != 0) {
+            slot_key = SCRIPT_SLOT_RANGE(period);
+            const md_bitset_t range = md_bitset_range(period_beg, period_end);
+            if (!app->script.eval || !md_script_eval_slot_request(app->script.eval, slot_key, ident, &range)) return false;
+        }
+        slot = series_slot(app, slot_key, ident);
         if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
     }
 
     // ### Cached bins
     uint64_t hkey = md_hash64_str(path, (uint64_t)key.source * 31 + key.variant);
     hkey = md_hash64(&num_bins, sizeof(num_bins), hkey);
+    hkey = md_hash64(&period, sizeof(period), hkey);
     // Of what is binned: the values and weights, and which frames count
     uint64_t version = slot ? slot->version : attr->version + (weight ? weight->version << 1 : 0);
     if (mask) version = md_bitset_hash64(*mask, version);
@@ -906,6 +959,99 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     return true;
 }
 
+bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
+                                      const uint32_t* periods, int num_periods) {
+    ASSERT(out && app);
+    const bool over_periods = is_script(key.source) && (num_periods > 1 || (num_periods == 1 && periods[0] != 0));
+    if (!over_periods) {
+        return series_resolve_histogram(out, app, key, num_bins);
+    }
+
+    // A population is pooled: one curve per period, not one per member and period
+    SeriesKey k = key;
+    {
+        SeriesHistogramView probe;
+        if (series_resolve_histogram(&probe, app, key, num_bins) && probe.dim > 1) {
+            k.variant = SeriesVariant_Aggregate;
+        }
+    }
+
+    num_periods = MIN(num_periods, PLOT_MAX_PERIODS);
+    SeriesHistogramView views[PLOT_MAX_PERIODS];
+    bool any = false;
+    int first = -1;
+    for (int p = 0; p < num_periods; ++p) {
+        const bool ok = series_resolve_histogram(&views[p], app, k, num_bins, periods[p]);
+        any |= ok;
+        if (ok && first < 0) first = p;
+    }
+
+    // Named as the series is, whichever resolved
+    *out = views[first >= 0 ? first : 0];
+    out->num_periods = num_periods;
+    out->dim = num_periods;
+    if (!any) {
+        out->bins = nullptr;
+        out->num_bins = 0;
+    }
+
+    // Every period binned alike: the bins of each, one after the other
+    const SeriesHistogramView& ref = views[first >= 0 ? first : 0];
+    float* bins = any ? (float*)md_alloc(app->allocator.frame, (size_t)ref.num_bins * num_periods * sizeof(float)) : nullptr;
+    double y_min = DBL_MAX, y_max = -DBL_MAX;
+    const md_script_eval_t* eval = app->script.eval;
+    const str_t ident = series_script_ident(key);
+    const bool distribution = script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
+    for (int p = 0; p < num_periods; ++p) {
+        SeriesPeriodInfo& info = out->periods[p];
+        info = SeriesPeriodInfo{};
+        info.id = periods[p];
+        const SeriesHistogramView& v = views[p];
+        info.valid = any && v.bins && v.num_bins == ref.num_bins && v.x_min == ref.x_min && v.x_max == ref.x_max;
+        if (bins) {
+            float* dst = bins + (size_t)p * ref.num_bins;
+            if (info.valid) {
+                MEMCPY(dst, v.bins, (size_t)ref.num_bins * sizeof(float));
+                y_min = MIN(y_min, v.y_min);
+                y_max = MAX(y_max, v.y_max);
+            } else {
+                MEMSET(dst, 0, (size_t)ref.num_bins * sizeof(float));
+            }
+        }
+
+        // What it is called and coloured, and how much of it there is
+        if (periods[p] == 0) {
+            snprintf(info.name, sizeof(info.name), "%s", key.source == SeriesSource_ScriptFiltered ? "Filter" : "All frames");
+        } else if (const TimelineRange* r = timeline_ranges_find(&app->timeline.ranges, periods[p])) {
+            snprintf(info.name, sizeof(info.name), "%s", r->name);
+            info.color = ImVec4(r->color.x, r->color.y, r->color.z, r->color.w);
+            info.own_color = true;
+        }
+        uint32_t beg = 0, end = 0;
+        if (eval && series_period_frames(&beg, &end, app, key, periods[p])) {
+            info.num_wanted = end - beg;
+            if (distribution && (periods[p] != 0 || key.source == SeriesSource_ScriptFiltered)) {
+                const uint64_t slot_key = periods[p] != 0 ? SCRIPT_SLOT_RANGE(periods[p]) : SCRIPT_SLOT_FILTER;
+                md_script_eval_slot_info_t si;
+                if (md_script_eval_slot_info(&si, eval, slot_key, ident)) {
+                    // Of what it holds, what it wants (see series_state)
+                    const uint32_t both = (info.num_wanted + si.num_frames - MIN(si.num_pending, info.num_wanted + si.num_frames)) / 2;
+                    info.num_frames = MIN(both, info.num_wanted);
+                }
+            } else {
+                const md_bitset_t held = md_script_eval_property_frames(eval, ident, app->allocator.frame);
+                info.num_frames = (uint32_t)md_bitset_count(md_bitset_and(held, md_bitset_range(beg, end), app->allocator.frame));
+            }
+        }
+    }
+    out->bins = bins;
+    if (any) {
+        out->y_min = y_min;
+        out->y_max = y_max;
+    }
+    return any;
+}
+
 // ## Volumes
 
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key) {
@@ -927,7 +1073,7 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
 
     if (key.source == SeriesSource_ScriptFiltered) {
         // Over the filter's frames: as its slot holds it
-        const SlotEntry* slot = series_slot(app, ident);
+        const SlotEntry* slot = series_slot(app, SCRIPT_SLOT_FILTER, ident);
         if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
         out->data = slot->values;
         out->version = slot->version;
@@ -963,6 +1109,29 @@ bool series_script_property(SeriesKey* out, const ApplicationState* app, SeriesS
 }
 
 // ## Subplots
+
+bool plot_series_has_period(const PlotSeries& s, uint32_t id) {
+    for (int i = 0; i < s.num_periods; ++i) {
+        if (s.periods[i] == id) return true;
+    }
+    return false;
+}
+
+bool plot_series_add_period(PlotSeries& s, uint32_t id) {
+    if (plot_series_has_period(s, id) || s.num_periods >= PLOT_MAX_PERIODS) return false;
+    s.periods[s.num_periods++] = id;
+    return true;
+}
+
+void plot_series_remove_period(PlotSeries& s, uint32_t id) {
+    if (s.num_periods <= 1) return;
+    for (int i = 0; i < s.num_periods; ++i) {
+        if (s.periods[i] != id) continue;
+        for (int j = i + 1; j < s.num_periods; ++j) s.periods[j - 1] = s.periods[j];
+        s.periods[--s.num_periods] = 0;
+        return;
+    }
+}
 
 int plot_find_series(const PlotSubplot& sp, const SeriesKey& key) {
     for (int i = 0; i < sp.count; ++i) {
@@ -1101,6 +1270,11 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_bool(state, STR_LIT("UseColormap"), s.use_colormap);
             viamd::write_int (state, STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, STR_LIT("ColormapAlpha"), s.colormap_alpha);
+            if (plot_series_has_periods(s)) {
+                int periods[PLOT_MAX_PERIODS];
+                for (int k = 0; k < s.num_periods; ++k) periods[k] = (int)s.periods[k];
+                viamd::write_int_vec(state, STR_LIT("Periods"), periods, s.num_periods);
+            }
         }
     }
 }
@@ -1164,6 +1338,23 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 s.colormap = (ImPlotColormap)i;
             } else if (str_eq_cstr(ident, "ColormapAlpha")) {
                 viamd::extract_flt(s.colormap_alpha, arg);
+            } else if (str_eq_cstr(ident, "Periods")) {
+                // Range ids, as many as there are, separated by commas
+                int num = 0;
+                uint32_t value = 0;
+                bool digits = false;
+                for (size_t c = 0; c <= arg.len; ++c) {
+                    const char ch = c < arg.len ? arg.ptr[c] : ',';
+                    if (ch >= '0' && ch <= '9') {
+                        value = value * 10 + (uint32_t)(ch - '0');
+                        digits = true;
+                    } else if (ch == ',') {
+                        if (digits && num < PLOT_MAX_PERIODS) s.periods[num++] = value;
+                        value = 0;
+                        digits = false;
+                    }
+                }
+                if (num > 0) s.num_periods = num;
             }
         }
 

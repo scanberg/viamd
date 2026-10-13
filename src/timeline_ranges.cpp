@@ -243,6 +243,7 @@ void timeline_ranges_serialize(viamd::serialization_state_t& state, const Timeli
     for (int i = 0; i < rs->count; ++i) {
         const TimelineRange& r = rs->items[i];
         viamd::write_section_header(state, STR_LIT("TimelineRange"));
+        viamd::write_int(state, STR_LIT("Id"), r.id);
         viamd::write_str(state, STR_LIT("Name"), str_from_cstr(r.name));
         if (r.note[0]) {
             viamd::write_str(state, STR_LIT("Note"), str_from_cstr(r.note));
@@ -262,8 +263,11 @@ bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, Ti
     bool is_filter = false;
     bool has_color = false;
     str_t ident, arg;
+    int id = 0;
     while (viamd::next_entry(ident, arg, state)) {
-        if (str_eq(ident, STR_LIT("Name"))) {
+        if (str_eq(ident, STR_LIT("Id"))) {
+            viamd::extract_int(id, arg);
+        } else if (str_eq(ident, STR_LIT("Name"))) {
             viamd::extract_to_char_buf(r.name, sizeof(r.name), arg);
         } else if (str_eq(ident, STR_LIT("Note"))) {
             viamd::extract_to_char_buf(r.note, sizeof(r.note), arg);
@@ -284,6 +288,11 @@ bool timeline_ranges_deserialize_range(viamd::deserialization_state_t& state, Ti
 
     TimelineRange* dst = timeline_ranges_add(rs, r.name, r.beg, r.end, r.follow);
     if (!dst) return false;
+    // The id it was saved with, which what refers to it was saved with too, unless another range has it already
+    if (id > 0 && timeline_ranges_index(rs, (uint32_t)id) == -1) {
+        dst->id = (uint32_t)id;
+        rs->next_id = MAX(rs->next_id, (uint32_t)id + 1);
+    }
     str_copy_to_char_buf(dst->note, sizeof(dst->note), str_from_cstr(r.note));
     if (has_color) dst->color = r.color;
     if (is_filter) rs->filter_id = dst->id;

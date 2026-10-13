@@ -37,6 +37,7 @@
 #define PLOT_MAX_SUBPLOTS            10
 #define PLOT_MAX_SERIES_PER_SUBPLOT  32
 #define PLOT_MAX_POPULATION          256
+#define PLOT_MAX_PERIODS             8
 #define SERIES_PATH_CAP              192
 
 // ImGui drag and drop payload types, both carrying a SeriesDragPayload
@@ -160,7 +161,23 @@ struct PlotSeries {
 
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
+
+    // Distributions: the periods it is shown over, one curve each, to compare the same property between them. A period
+    // is a timeline range, by id, or 0 for the frames of its source: every frame, or the timeline filter's. A script
+    // property only; anything else is shown over the frames of its source.
+    uint32_t periods[PLOT_MAX_PERIODS] = {0};
+    int      num_periods = 1;
 };
+
+// Whether the series is shown over anything but the frames of its source
+static inline bool plot_series_has_periods(const PlotSeries& s) {
+    return s.num_periods > 1 || (s.num_periods == 1 && s.periods[0] != 0);
+}
+bool plot_series_has_period(const PlotSeries& s, uint32_t id);
+// False when it has it already, or has no room for another
+bool plot_series_add_period(PlotSeries& s, uint32_t id);
+// One is always left: the last is not removed
+void plot_series_remove_period(PlotSeries& s, uint32_t id);
 
 struct PlotSubplot {
     PlotSeries series[PLOT_MAX_SERIES_PER_SUBPLOT];
@@ -243,6 +260,17 @@ int    series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalVi
 
 // ## As a distribution
 
+// One period of a series over periods (series_resolve_histogram_periods)
+struct SeriesPeriodInfo {
+    uint32_t id = 0;            // the timeline range, 0 for the frames of the series' source
+    bool     valid = false;     // there is something to show over it
+    bool     own_color = false; // in the colour of its range; otherwise in the series' colour
+    ImVec4   color = {};
+    char     name[64] = "";
+    uint32_t num_frames = 0;    // the frames it holds so far, of
+    uint32_t num_wanted = 0;    // the frames it covers
+};
+
 struct SeriesHistogramView {
     const float* bins = nullptr;    // dim * num_bins, member k's bins at k * num_bins, stored units
     int    num_bins = 0;
@@ -258,11 +286,26 @@ struct SeriesHistogramView {
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
     SeriesState state = {};
+
+    // Over periods: member k is period k. 0 when the members are those of a population.
+    int num_periods = 0;
+    SeriesPeriodInfo periods[PLOT_MAX_PERIODS];
 };
 
 // num_bins is what is asked for; a script distribution is evaluated at a resolution of its own and
 // gives at most that. False, with labels filled in, when there is nothing to bin.
-bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins);
+// period: a timeline range (see PlotSeries::periods), over whose frames it is binned, or 0 for the frames of its source.
+// A script distribution over a range is read from the evaluation's slot of it (SCRIPT_SLOT_RANGE), which is asked for
+// here: nothing is evaluated for it unless it is not kept per frame, and then only when Evaluate is pressed.
+bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period = 0);
+
+// Over several periods, one member each, in their order: all binned alike, so that they compare. A population is
+// pooled (the aggregate) over periods. Without periods, the same as series_resolve_histogram.
+bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
+                                      const uint32_t* periods, int num_periods);
+
+// The frames of a period now, [beg, end[, its colour and name. False when it covers no frames, or the range is gone.
+bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period);
 
 static inline double series_histogram_bin_width(const SeriesHistogramView& v) {
     return v.num_bins > 0 ? (v.x_max - v.x_min) / v.num_bins : 0.0;

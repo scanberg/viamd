@@ -219,4 +219,54 @@ UTEST(timeline_ranges, workspace_round_trip) {
 
     EXPECT_STREQ("Marker 1", out.items[2].name);
     EXPECT_TRUE(timeline_range_is_marker(out.items[2]));
+
+    // Each keeps its id, which what refers to it was saved with
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(rs.items[i].id, out.items[i].id);
+    }
+}
+
+UTEST(timeline_ranges, ids_survive_a_save_and_a_load) {
+    // Ids with a gap, as after a range was removed
+    TimelineRanges rs = {};
+    timeline_ranges_add(&rs, "A", 0, 10, false);
+    const uint32_t gone = timeline_ranges_add(&rs, "B", 10, 20, false)->id;
+    const uint32_t c = timeline_ranges_add(&rs, "C", 20, 30, false)->id;
+    timeline_ranges_remove(&rs, gone);
+
+    viamd::serialization_state_t w = {};
+    md_strb_init(&w.sb, md_get_heap_allocator());
+    timeline_ranges_serialize(w, &rs);
+
+    // Read into ranges which already have one, of C's id: C gets another, and new ones never take a saved one
+    TimelineRanges out = {};
+    TimelineRange* holder = timeline_ranges_add(&out, "Already there", 0, 1, false);
+    holder->id = c;
+    out.next_id = c + 1;
+    const int before = out.count;
+
+    viamd::deserialization_state_t r = {};
+    r.text = md_strb_to_str(w.sb);
+    str_t section;
+    while (viamd::next_section_header(section, r)) {
+        ASSERT_TRUE(timeline_ranges_deserialize_range(r, &out));
+    }
+    md_strb_free(&w.sb);
+
+    ASSERT_EQ(before + 2, out.count);
+    const TimelineRange& a = out.items[before];
+    const TimelineRange& cc = out.items[before + 1];
+    EXPECT_EQ(rs.items[0].id, a.id);            // free: kept
+    EXPECT_NE(c, cc.id);                        // taken: another
+    EXPECT_STREQ("C", cc.name);
+    for (int i = 0; i < out.count; ++i) {
+        for (int j = i + 1; j < out.count; ++j) {
+            EXPECT_NE(out.items[i].id, out.items[j].id);
+        }
+    }
+    TimelineRange* next = timeline_ranges_add(&out, "Next", 0, 1, false);
+    ASSERT_TRUE(next != nullptr);
+    for (int i = 0; i < out.count - 1; ++i) {
+        EXPECT_NE(out.items[i].id, next->id);
+    }
 }
