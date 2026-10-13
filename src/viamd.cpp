@@ -7,7 +7,7 @@
 #include <md_filter.h>
 
 #include <core/md_log.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_arena_allocator.h>
 
 #include <viamd.h>
@@ -173,14 +173,14 @@ void tooltip_row(PickingTooltipTextRequest* req, str_t key, const char* format, 
 }
 
 // A row of a list built in sb, left out when the list is empty
-static void tooltip_row_list(PickingTooltipTextRequest* req, str_t key, const md_strb_t& sb) {
-    if (!md_strb_empty(sb)) {
-        tooltip_row(req, key, "%s", md_strb_to_cstr(sb));
+static void tooltip_row_list(PickingTooltipTextRequest* req, str_t key, const md_str_writer_t& sb) {
+    if (!md_str_writer_empty(&sb)) {
+        tooltip_row(req, key, "%s", md_str_writer_to_cstr(&sb));
     }
 }
 
-static void tooltip_list_add(md_strb_t* sb, const char* item) {
-    if (!md_strb_empty(*sb)) *sb += ", ";
+static void tooltip_list_add(md_str_writer_t* sb, const char* item) {
+    if (!md_str_writer_empty(sb)) *sb += ", ";
     *sb += item;
 }
 
@@ -217,33 +217,33 @@ static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_id
 }
 
 // "ALA 42", or the component's index when it has no name
-static void tooltip_append_residue(md_strb_t* sb, const md_system_t& sys, int comp_idx) {
+static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, int comp_idx) {
     const str_t name = md_component_name(&sys.component, comp_idx);
     if (!str_empty(name)) {
-        md_strb_fmt(sb, STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
+        md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
     } else {
-        md_strb_fmt(sb, "component %d", comp_idx + 1);
+        md_str_writer_fmt(sb, "component %d", comp_idx + 1);
     }
 }
 
 // "chain A", with the author's id where it differs ("chain C (auth A)"), or the instance's index when it has no id
-static void tooltip_append_chain(md_strb_t* sb, const md_system_t& sys, int inst_idx) {
+static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, int inst_idx) {
     const str_t id   = md_instance_id(&sys.instance, inst_idx);
     const str_t auth = md_instance_auth_id(&sys.instance, inst_idx);
     if (!str_empty(id)) {
-        md_strb_fmt(sb, "chain " STR_FMT, STR_ARG(id));
+        md_str_writer_fmt(sb, "chain " STR_FMT, STR_ARG(id));
     } else {
-        md_strb_fmt(sb, "instance %d", inst_idx + 1);
+        md_str_writer_fmt(sb, "instance %d", inst_idx + 1);
     }
     if (!str_empty(auth) && !str_eq(auth, id)) {
-        md_strb_fmt(sb, " (auth " STR_FMT ")", STR_ARG(auth));
+        md_str_writer_fmt(sb, " (auth " STR_FMT ")", STR_ARG(auth));
     }
 }
 
 // The rest of a title: " · ALA 42 · chain A" for one place, and for the two ends of a bond that crosses over
 // " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B"
-static void tooltip_append_place(md_strb_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
-    auto sep = [sb]() { if (!md_strb_empty(*sb)) *sb += TOOLTIP_SEP; };
+static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
+    auto sep = [sb]() { if (!md_str_writer_empty(sb)) *sb += TOOLTIP_SEP; };
     const bool two_insts = b && b->inst_idx != a.inst_idx;
     const bool two_comps = b && b->comp_idx != a.comp_idx;
 
@@ -272,13 +272,13 @@ static void tooltip_append_place(md_strb_t* sb, const md_system_t& sys, const To
 }
 
 // "component(56) instance(1)", after whatever sb holds
-static void tooltip_append_index(md_strb_t* sb, const TooltipPlace& place) {
-    if (place.comp_idx != -1) md_strb_fmt(sb, "%scomponent(%d)", md_strb_empty(*sb) ? "" : " ", place.comp_idx + 1);
-    if (place.inst_idx != -1) md_strb_fmt(sb, "%sinstance(%d)",  md_strb_empty(*sb) ? "" : " ", place.inst_idx + 1);
+static void tooltip_append_index(md_str_writer_t* sb, const TooltipPlace& place) {
+    if (place.comp_idx != -1) md_str_writer_fmt(sb, "%scomponent(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
+    if (place.inst_idx != -1) md_str_writer_fmt(sb, "%sinstance(%d)",  md_str_writer_empty(sb) ? "" : " ", place.inst_idx + 1);
 }
 
 // The atom's name, else its element's symbol, else its index
-static void tooltip_append_atom_name(md_strb_t* sb, const md_system_t& sys, size_t atom_idx) {
+static void tooltip_append_atom_name(md_str_writer_t* sb, const md_system_t& sys, size_t atom_idx) {
     str_t name = md_atom_name(&sys.atom, atom_idx);
     if (str_empty(name)) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom_idx);
@@ -287,7 +287,7 @@ static void tooltip_append_atom_name(md_strb_t* sb, const md_system_t& sys, size
     if (!str_empty(name)) {
         *sb += name;
     } else {
-        md_strb_fmt(sb, "atom %zu", atom_idx + 1);
+        md_str_writer_fmt(sb, "atom %zu", atom_idx + 1);
     }
 }
 
@@ -354,10 +354,10 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_system_t& sys = state.mold.sys;
     const TooltipPlace place = tooltip_place_of_atom(sys, atom_idx);
 
-    md_strb_t title = md_strb_create(req->alloc);
+    md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_atom_name(&title, sys, atom_idx);
     tooltip_append_place(&title, sys, place);
-    tooltip_title(req, "%s", md_strb_to_cstr(title));
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     const md_atomic_number_t z        = md_atom_atomic_number(&sys.atom, atom_idx);
     const md_particle_kind_t particle = md_atom_particle_kind(&sys.atom, atom_idx);
@@ -384,7 +384,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     }
 
     // Its part in the residue. A nucleoside is the sugar and the base: what of it is not the base is the sugar.
-    md_strb_t role = md_strb_create(req->alloc);
+    md_str_writer_t role = md_str_writer_create(req->alloc);
     if (flags & MD_ATOM_FLAG_BACKBONE)   tooltip_list_add(&role, "backbone");
     if (flags & MD_ATOM_FLAG_SIDE_CHAIN) tooltip_list_add(&role, "side chain");
     if (flags & MD_ATOM_FLAG_NUCLEOBASE) {
@@ -397,12 +397,12 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, STR_LIT("role"), role);
 
     // Its chemistry
-    md_strb_t chem = md_strb_create(req->alloc);
+    md_str_writer_t chem = md_str_writer_create(req->alloc);
     const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
     if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
     if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
     const int num_h = md_atom_hydrogen_count(&sys.atom, atom_idx);
-    if (num_h > 0) md_strb_fmt(&chem, "%s%d H", md_strb_empty(chem) ? "" : ", ", num_h);
+    if (num_h > 0) md_str_writer_fmt(&chem, "%s%d H", md_str_writer_empty(&chem) ? "" : ", ", num_h);
     tooltip_row_list(req, STR_LIT("chemistry"), chem);
 
     const int formal_charge = md_atom_formal_charge(&sys.atom, atom_idx);
@@ -418,8 +418,8 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const vec3_t pos = md_state_coord(&state.mold.state, atom_idx);
     tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
 
-    md_strb_t index = md_strb_create(req->alloc);
-    md_strb_fmt(&index, "atom(%u)", atom_idx + 1);
+    md_str_writer_t index = md_str_writer_create(req->alloc);
+    md_str_writer_fmt(&index, "atom(%u)", atom_idx + 1);
     tooltip_append_index(&index, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
@@ -442,16 +442,16 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_place_of_atom(sys, pair.idx[1]),
     };
 
-    md_strb_t title = md_strb_create(req->alloc);
+    md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_atom_name(&title, sys, pair.idx[0]);
     title += symbol;
     tooltip_append_atom_name(&title, sys, pair.idx[1]);
     tooltip_append_place(&title, sys, place[0], &place[1]);
-    tooltip_title(req, "%s", md_strb_to_cstr(title));
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     // What it is: an aromatic or delocalized bond is that before it is of an order
     static const char* order_names[] = {"", "single", "double", "triple", "quadruple"};
-    md_strb_t kind = md_strb_create(req->alloc);
+    md_str_writer_t kind = md_str_writer_create(req->alloc);
     if (flags & MD_BOND_FLAG_AROMATIC) {
         tooltip_list_add(&kind, "aromatic");
     } else if (flags & MD_BOND_FLAG_DELOCALIZED) {
@@ -467,7 +467,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
     tooltip_row(req, STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, vec3_length(d));
 
-    md_strb_t source = md_strb_create(req->alloc);
+    md_str_writer_t source = md_str_writer_create(req->alloc);
     tooltip_list_add(&source, md_bond_origin_name(md_bond_origin(flags)));
     if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&source, "order perceived");
     tooltip_row_list(req, STR_LIT("source"), source);
@@ -492,15 +492,15 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
     };
 
-    md_strb_t title = md_strb_create(req->alloc);
+    md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_place(&title, sys, place);
-    tooltip_title(req, "%s", md_strb_to_cstr(title));
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     const md_component_kind_t  kind  = md_component_kind(&sys.component, comp_idx);
     const md_component_flags_t flags = md_system_component_flags(&sys, comp_idx);
     const bool nucleotide = kind == MD_COMPONENT_KIND_NUCLEOTIDE;
 
-    md_strb_t kind_list = md_strb_create(req->alloc);
+    md_str_writer_t kind_list = md_str_writer_create(req->alloc);
     if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
     if ((kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
     if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
@@ -543,7 +543,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         }
     }
 
-    md_strb_t index = md_strb_create(req->alloc);
+    md_str_writer_t index = md_str_writer_create(req->alloc);
     tooltip_append_index(&index, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
@@ -1537,7 +1537,7 @@ static str_t workspace_file_path(str_t folder, str_t arg, md_allocator_i* alloc)
     str_t file;
     viamd::extract_str(file, arg);
     if (str_empty(file)) return {};
-    md_strb_t path = md_strb_create(alloc);
+    md_str_writer_t path = md_str_writer_create(alloc);
     if (!md_path_is_absolute(file)) {
         path += folder;
     }
@@ -2190,7 +2190,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     viamd::serialization_state_t state {
         .filename = filename,
-        .sb = md_strb_create(temp_alloc),
+        .sb = md_str_writer_create(temp_alloc),
     };
 
     constexpr str_t header_snippet = STR_LIT(
@@ -2380,7 +2380,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSerialize, viamd::EventPayloadType_SerializationState, &state);
 
     // Only now, with all of it in hand, is the file touched
-    const str_t text = md_strb_to_str(state.sb);
+    const str_t text = md_str_writer_to_str(&state.sb);
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         VIAMD_LOG_ERROR("Could not open workspace file for writing: '" STR_FMT "'", STR_ARG(filename));

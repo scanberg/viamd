@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_vec_math.h>
 
 struct md_bitset_t;
@@ -34,7 +34,7 @@ struct deserialization_state_t {
 
 struct serialization_state_t {
 	str_t filename;
-	md_strb_t sb;
+	md_str_writer_t sb;
 };
 
 // Advances to the next section header, skipping whatever the current section's reader left unread.

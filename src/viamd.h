@@ -4,7 +4,7 @@
 #include <core/md_os.h>
 #include <core/md_lru_cache.inl>
 #include <core/md_hash.h>
-#include <core/md_str_builder.h>
+#include <core/md_array.h>
 
 #include <md_system.h>
 #include <md_gto.h>

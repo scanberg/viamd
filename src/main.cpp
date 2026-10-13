@@ -31,7 +31,7 @@
 #include <core/md_simd.h>
 #include <core/md_os.h>
 #include <core/md_unit.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_parse.h>
 #include <core/md_hash.h>
 
@@ -473,7 +473,7 @@ int main(int argc, char** argv) {
     {
 #ifdef VIAMD_DEFAULT_DATASET
         {
-            md_strb_t sb = md_strb_create(frame_alloc);
+            md_str_writer_t sb = md_str_writer_create(frame_alloc);
             str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
@@ -2080,10 +2080,10 @@ void apply_atom_elem_mappings(ApplicationState* data) {
 
 // Create a textual script describing a selection from a bitfield with respect to some reference index
 // @TODO(Robin): Clean this up, it is a mess. Just provide complete suggestions based on bitfield and molecule input.
-static void write_script_range(md_strb_t& sb, const int* indices, size_t num_indices, int ref_idx = 0) {
+static void write_script_range(md_str_writer_t& sb, const int* indices, size_t num_indices, int ref_idx = 0) {
     if (num_indices == 0) return;
     if (num_indices == 1) {
-        md_strb_fmt(&sb, "%i", indices[0] - ref_idx + 1);
+        md_str_writer_fmt(&sb, "%i", indices[0] - ref_idx + 1);
         return;
     }
     
@@ -2125,10 +2125,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     for (int64_t i = 0; i < num_items; ++i) {
         md_irange_t item = items[i];
         if (item.beg == item.end) {
-            md_strb_fmt(&sb, "%i", item.beg);
+            md_str_writer_fmt(&sb, "%i", item.beg);
         }
         else {
-            md_strb_fmt(&sb, "%i:%i", item.beg, item.end);
+            md_str_writer_fmt(&sb, "%i:%i", item.beg, item.end);
         }
         if (i < num_items - 1) {
             sb += ',';
@@ -2173,10 +2173,10 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     
     const size_t popcount = md_bitset_count(*bf);
     
-    md_strb_t sb = md_strb_create(frame_alloc);
-    defer { md_strb_free(&sb); };
+    md_str_writer_t sb = md_str_writer_create(frame_alloc);
+    defer { md_str_writer_free(&sb); };
 
-    auto write_atom_remainder = [](md_strb_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
+    auto write_atom_remainder = [](md_str_writer_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
         // Add any remainder
         const uint64_t remainder = md_bitset_count(*bf);
         if (remainder) {
@@ -2193,16 +2193,16 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     if (comp_idx != -1 && within_same_comp) {
         const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
         if (popcount != range.end - range.beg) {
-            md_strb_reset(&sb);
+            md_str_writer_reset(&sb);
             sb += ident;
             sb += " = ";
 
             // Subset of residue is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(sb) < 512) {
+            if (md_str_writer_len(&sb) < 512) {
                 str_t resname = md_component_name(&sys->component, comp_idx);
-                md_strb_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+                md_str_writer_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
+                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
             }
         }
     }
@@ -2210,16 +2210,16 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     else if (inst_idx != -1 && within_same_inst) {
         const md_urange_t range = md_system_instance_atom_range(sys, inst_idx);
         if (popcount != range.end - range.beg) {
-            md_strb_reset(&sb);
+            md_str_writer_reset(&sb);
             sb += ident;
             sb += " = ";
 
             // Subset of chain is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(sb) < 512) {
+            if (md_str_writer_len(&sb) < 512) {
 				str_t inst_id = md_instance_id(&sys->instance, inst_idx);
-				md_strb_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+				md_str_writer_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
+                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
             }
         }
     }
@@ -2258,7 +2258,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     const md_bitset_t tmp_bf = md_bitmask_view(&remainder);
     
     if (complete_chains) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = chain(";
         write_script_range(sb, complete_chains, md_array_size(complete_chains));
@@ -2275,22 +2275,22 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
         
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = residue(";
         for (size_t i = 0; i < md_array_size(complete_chains); ++i) {
             md_urange_t range = md_instance_component_range(&sys->instance, complete_chains[i]);
-            md_strb_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
+            md_str_writer_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
         }
         if (complete_residues) {
             write_script_range(sb, complete_residues, md_array_size(complete_residues));
         } else {
-            md_strb_pop(&sb, 1);
+            md_str_writer_pop(&sb, 1);
         }
         sb += ")";
 
@@ -2299,14 +2299,14 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
 
     if (complete_residues) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = residue(";
         write_script_range(sb, complete_residues, md_array_size(complete_residues));
@@ -2317,20 +2317,20 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
 
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
 
     if (popcount) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = ";
         write_atom_remainder(sb, bf);
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
     
