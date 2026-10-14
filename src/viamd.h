@@ -4,7 +4,7 @@
 #include <core/md_os.h>
 #include <core/md_lru_cache.inl>
 #include <core/md_hash.h>
-#include <core/md_str_builder.h>
+#include <core/md_array.h>
 
 #include <md_system.h>
 #include <md_gto.h>
@@ -28,6 +28,7 @@
 #include <task_system.h>
 #include <surface_field.h>
 #include <loader.h>
+#include <file_list.h>
 #include <event.h>
 #include <plot_series.h>
 #include <timeline_periods.h>
@@ -98,6 +99,15 @@ constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain 
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
 // drawn per segment, not per atom, so a hit names the segment and resolves to the component it stems from.
 constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("picking domain backbone segment");
+// A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
+// bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
+constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
+
+// The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
+// to the selection
+static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
+    return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring;
+}
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
@@ -106,7 +116,7 @@ enum class SelectionGranularity { Atom, Component, Instance, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
-enum class InterpolationMode { Nearest, Linear, CubicSpline, Count };
+enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
 
 enum class ColorMapping {
     Uniform,
@@ -200,6 +210,7 @@ inline const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
     "Nearest",
     "Linear",
     "Cubic Spline",
+    "B-Spline",
 };
 
 inline const char* representation_type_str[(int)RepresentationType::Count] = {
@@ -297,7 +308,6 @@ struct LoadDatasetWindowState {
     bool path_changed = false;
     bool load_topology = false;
     bool load_trajectory = false;
-    bool coarse_grained = false;
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
@@ -309,7 +319,6 @@ struct LoadDatasetWindowState {
 enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
-    FileFlags_CoarseGrained = 2,
     FileFlags_DisableCacheWrite = 4,
 };
 
@@ -1054,13 +1063,12 @@ struct ApplicationState {
     LoadDatasetWindowState load_dataset;
 
     // --- FILES ---
-    // for keeping track of open files
     struct {
-        char molecule[1024]   = {0};
-        char trajectory[1024] = {0};
-        char workspace[1024]  = {0};
-
-        bool coarse_grained = false;
+        // The files the loaded system is built from, in the order they were loaded (see file_list.h).
+        // Kept by load_data_from_file, and by what frees the data they loaded (free_system_data,
+        // free_trajectory_data). A workspace stores this list and loads it again in the same order.
+        FileList list;
+        char workspace[1024] = {0};
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
@@ -1143,6 +1151,10 @@ struct ApplicationState {
         // The (fractional) frame last interpolated, negative when there is none. A jump away from it
         // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
         double              last_interpolated_frame = -1.0;
+        // The stride of the frames the displayed state was last interpolated between (playback_stride).
+        // Starting or stopping playback changes it without changing the time, so it is compared
+        // against to know when the displayed state has to be made again.
+        int                 last_interpolated_stride = 1;
         uint32_t            dirty_gpu_buffers = 0;
         uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
 
@@ -1234,6 +1246,7 @@ struct ApplicationState {
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
+    PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -1242,6 +1255,10 @@ struct ApplicationState {
         double frame = 0.0;  // double precision for long trajectories
         float fps = 10.f;
         float tension = 0.0f;
+        // While playing, the displayed state is interpolated between every stride:th frame only (0, stride,
+        // 2*stride, ... and the last), which smooths the motion out at the cost of fidelity to the frames
+        // skipped. A stopped animation always shows the trajectory itself. See playback_stride.
+        int stride = 1;
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
 
@@ -1718,6 +1735,21 @@ static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mas
     mask_set_atom_by_selection_granularity(mask, range.beg, granularity, sys);
 }
 
+// Sets the bits of the atoms of a ring (md_system_t::ring), each grown by the granularity, for a hit on the circle of an
+// aromatic ring: at Atom granularity the ring itself, at coarser ones what its atoms are in
+static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, size_t ring_idx, SelectionGranularity granularity, const md_system_t& sys) {
+    ASSERT(mask);
+    if (ring_idx >= md_index_data_num_ranges(&sys.ring)) return;
+
+    const int32_t* beg = md_index_range_beg(&sys.ring, ring_idx);
+    const int32_t* end = md_index_range_end(&sys.ring, ring_idx);
+    for (const int32_t* it = beg; it != end; ++it) {
+        if (*it >= 0 && (size_t)*it < sys.atom.count) {
+            mask_set_atom_by_selection_granularity(mask, (size_t)*it, granularity, sys);
+        }
+    }
+}
+
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     ASSERT(seq);
     MEMSET(seq->idx, -1, sizeof(seq->idx));
@@ -1793,12 +1825,28 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
-bool load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
+
+// What load_data_from_file made of a file
+enum LoadResult {
+    LoadResult_Failed = 0,
+    LoadResult_System,      // A new system, with its run when the file holds several frames
+    LoadResult_Trajectory,  // A new run for the loaded system
+    LoadResult_Supplement,  // Added to the loaded system, or along its run: the system and the run are as they were
+};
+
+// Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
+// the run, a supplement adds to the system and a series to the run. opens_own_run: a system file of several
+// frames opens them as the run too. A file that loads is recorded in files.list.
+LoadResult load_data(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
+
+// Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
+// give it (file_role), and a system file opens its own frames as the run.
+LoadResult load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
 void init_system_data(ApplicationState* app);
-// Publishes the trajectory as the loaded run and sets up everything that follows it. The trajectory
-// is files.trajectory, or the structure file itself when that holds several frames. traj_flags
+// Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
+// run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
-void init_trajectory_data(ApplicationState* app, uint32_t traj_flags = 0);
+void init_trajectory_data(ApplicationState* app, str_t run_file, uint32_t traj_flags = 0);
 
 // The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
 // unit, which is none when the file does not know time and the values are frame ordinals. NULL,
@@ -1833,6 +1881,10 @@ void clear_system_frame_cache(ApplicationState* app);
 
 // Interpolate state
 void interpolate_system_state(ApplicationState* app);
+
+// The stride of the frames the displayed state is interpolated between: animation.stride while playing,
+// every frame otherwise.
+int playback_stride(const ApplicationState* app);
 
 // Workspace
 // See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
@@ -2269,6 +2321,7 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
         .atom_base     = state.picking_range_atom.beg,
         .bond_base     = state.picking_range_bond.beg,
         .backbone_base = state.picking_range_backbone.beg,
+        .ring_base     = state.picking_range_ring.beg,
     };
 }
 

@@ -75,43 +75,43 @@ bool next_entry(str_t& ident, str_t& arg, deserialization_state_t& state) {
 }
 
 void write_section_header(serialization_state_t& state, str_t section) {
-	md_strb_fmt(&state.sb, "\n[" STR_FMT "]\n", STR_ARG(section));
+	md_str_writer_fmt(&state.sw, "\n[" STR_FMT "]\n", STR_ARG(section));
 }
 
 void write_int(serialization_state_t& state, str_t ident, int64_t val) {
-	md_strb_fmt(&state.sb, STR_FMT "=%lld\n", STR_ARG(ident), (long long)val);
+	md_str_writer_fmt(&state.sw, STR_FMT "=%lld\n", STR_ARG(ident), (long long)val);
 }
 
 void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, size_t len) {
-	md_strb_fmt(&state.sb, STR_FMT "=", STR_ARG(ident));
+	md_str_writer_fmt(&state.sw, STR_FMT "=", STR_ARG(ident));
 	for (size_t i = 0; i < len; ++i) {
-		md_strb_fmt(&state.sb, "%i", elem[i]);
+		md_str_writer_fmt(&state.sw, "%i", elem[i]);
 		if (i < len - 1) {
-			md_strb_push_char(&state.sb, ',');
+			md_str_writer_push_char(&state.sw, ',');
 		}
 	}
-	md_strb_push_char(&state.sb, '\n');
+	md_str_writer_push_char(&state.sw, '\n');
 }
 
 // Shortest round trip is not on offer from printf; these digit counts are the ones that always
 // read back the same value (FLT_DECIMAL_DIG and DBL_DECIMAL_DIG). %f would print 1e-7 as 0.000000.
 void write_flt(serialization_state_t& state, str_t ident, float val) {
-	md_strb_fmt(&state.sb, STR_FMT "=%.9g\n", STR_ARG(ident), (double)val);
+	md_str_writer_fmt(&state.sw, STR_FMT "=%.9g\n", STR_ARG(ident), (double)val);
 }
 
 void write_dbl(serialization_state_t& state, str_t ident, double val) {
-	md_strb_fmt(&state.sb, STR_FMT "=%.17g\n", STR_ARG(ident), val);
+	md_str_writer_fmt(&state.sw, STR_FMT "=%.17g\n", STR_ARG(ident), val);
 }
 
 void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem, size_t len) {
-	md_strb_fmt(&state.sb, STR_FMT "=", STR_ARG(ident));
+	md_str_writer_fmt(&state.sw, STR_FMT "=", STR_ARG(ident));
 	for (size_t i = 0; i < len; ++i) {
-		md_strb_fmt(&state.sb, "%.9g", (double)elem[i]);
+		md_str_writer_fmt(&state.sw, "%.9g", (double)elem[i]);
 		if (i < len - 1) {
-			md_strb_push_char(&state.sb, ',');
+			md_str_writer_push_char(&state.sw, ',');
 		}
 	}
-	md_strb_push_char(&state.sb, '\n');
+	md_str_writer_push_char(&state.sw, '\n');
 }
 
 void write_str(serialization_state_t& state, str_t ident, str_t str) {
@@ -124,9 +124,9 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 		if (str_find_str(NULL, str, esc)) {
 			MD_LOG_ERROR("Workspace: the value of '" STR_FMT "' contains \"\"\" and cannot be stored as it is", STR_ARG(ident));
 		}
-		md_strb_fmt(&state.sb, STR_FMT "=" STR_FMT STR_FMT STR_FMT "\n", STR_ARG(ident), STR_ARG(esc), STR_ARG(str), STR_ARG(esc));
+		md_str_writer_fmt(&state.sw, STR_FMT "=" STR_FMT STR_FMT STR_FMT "\n", STR_ARG(ident), STR_ARG(esc), STR_ARG(str), STR_ARG(esc));
 	} else {
-		md_strb_fmt(&state.sb, STR_FMT "=" STR_FMT "\n", STR_ARG(ident), STR_ARG(str));
+		md_str_writer_fmt(&state.sw, STR_FMT "=" STR_FMT "\n", STR_ARG(ident), STR_ARG(str));
 	}
 }
 
@@ -151,7 +151,7 @@ void write_bitset(serialization_state_t& state, str_t ident, const md_bitset_t* 
 			// next_entry() splits a line at its first '='. Without it the following entry is glued
 			// onto the end of this one and silently swallowed - which is how every group label
 			// after the first went missing from a saved workspace.
-			md_strb_fmt(&state.sb, STR_FMT "=###" STR_FMT "###\n", STR_ARG(ident), STR_ARG(base64));
+			md_str_writer_fmt(&state.sw, STR_FMT "=###" STR_FMT "###\n", STR_ARG(ident), STR_ARG(base64));
 		}
 	}
 }

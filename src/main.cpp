@@ -31,7 +31,7 @@
 #include <core/md_simd.h>
 #include <core/md_os.h>
 #include <core/md_unit.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_parse.h>
 #include <core/md_hash.h>
 
@@ -585,7 +585,7 @@ int main(int argc, char** argv) {
     {
 #ifdef VIAMD_DEFAULT_DATASET
         {
-            md_strb_t sb = md_strb_create(frame_alloc);
+            md_str_writer_t sb = md_str_writer_create(frame_alloc);
             str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
@@ -845,6 +845,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The stride only applies while playing: starting or stopping playback, like changing the stride, changes
+        // the frames the displayed state is made from without changing the time. Stopped, it is the trajectory's own.
+        if (playback_stride(&state) != state.mold.last_interpolated_stride) {
+            state.mold.interpolate_system_state = true;
+            state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        }
+
         if (state.mold.interpolate_system_state) {
 			state.mold.interpolate_system_state = false;
             if (run_num_frames(&state) > 0) {
@@ -896,10 +903,9 @@ int main(int argc, char** argv) {
                     str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
                         extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
-                    } else if (state.files.trajectory[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.trajectory));
-                    } else if (state.files.molecule[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.molecule));
+                    } else if (const FileEntry* run_file = file_list_run_file(&state.files.list)) {
+                        // The trajectory's folder, else the structure's
+                        extract_folder_path(&cwd, str_from_cstr(run_file->path));
                     }
                     if (!str_empty(cwd)) {
                         md_path_set_cwd(cwd);
@@ -1989,14 +1995,6 @@ void draw_load_dataset_window(ApplicationState* data) {
         LoaderFlags flags = loader::type_flags(type);
 
         // Draw Options
-        bool show_cg = state.path_is_valid && (flags & LoaderFlag_System);
-        if (show_cg) {
-            ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Enable if the data should be interpreted as coarse grained particles");
-            }
-        }
-
         bool show_lammps_atom_format = state.path_is_valid && (type == LoaderType_LAMMPSDATA);
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
@@ -2068,13 +2066,19 @@ void draw_load_dataset_window(ApplicationState* data) {
             loader::LoaderState load_state = {};
             load_state.type = type;
             load_state.flags = flags;
-            load_state.flags |= state.coarse_grained ? LoaderFlag_CoarseGrained : 0;
             if (type == LoaderType_LAMMPSDATA) {
                 load_state.arg = state.atom_format_buf;
             }
+            // A loader other than the extension would pick has to be stored with the file in a workspace
+            str_t ext = {};
+            extract_ext(&ext, path);
+            if (type != loader::type_from_ext(ext)) {
+                load_state.flags |= LoaderFlag_ExplicitType;
+            }
 
-            if (load_data_from_file(data, path, load_state)) {
-                if ((flags & LoaderFlag_System) && !data->settings.keep_representations) {
+            const LoadResult result = load_data_from_file(data, path, load_state);
+            if (result == LoadResult_System || result == LoadResult_Trajectory) {
+                if (result == LoadResult_System && !data->settings.keep_representations) {
                     remove_all_representations(data);
                     create_default_representations(data);
                 }
@@ -2164,10 +2168,10 @@ void apply_atom_elem_mappings(ApplicationState* data) {
 
 // Create a textual script describing a selection from a bitfield with respect to some reference index
 // @TODO(Robin): Clean this up, it is a mess. Just provide complete suggestions based on bitfield and molecule input.
-static void write_script_range(md_strb_t& sb, const int* indices, size_t num_indices, int ref_idx = 0) {
+static void write_script_range(md_str_writer_t& sb, const int* indices, size_t num_indices, int ref_idx = 0) {
     if (num_indices == 0) return;
     if (num_indices == 1) {
-        md_strb_fmt(&sb, "%i", indices[0] - ref_idx + 1);
+        md_str_writer_fmt(&sb, "%i", indices[0] - ref_idx + 1);
         return;
     }
     
@@ -2209,10 +2213,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     for (int64_t i = 0; i < num_items; ++i) {
         md_irange_t item = items[i];
         if (item.beg == item.end) {
-            md_strb_fmt(&sb, "%i", item.beg);
+            md_str_writer_fmt(&sb, "%i", item.beg);
         }
         else {
-            md_strb_fmt(&sb, "%i:%i", item.beg, item.end);
+            md_str_writer_fmt(&sb, "%i:%i", item.beg, item.end);
         }
         if (i < num_items - 1) {
             sb += ',';
@@ -2257,10 +2261,10 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     
     const size_t popcount = md_bitset_count(*bf);
     
-    md_strb_t sb = md_strb_create(frame_alloc);
-    defer { md_strb_free(&sb); };
+    md_str_writer_t sb = md_str_writer_create(frame_alloc);
+    defer { md_str_writer_free(&sb); };
 
-    auto write_atom_remainder = [](md_strb_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
+    auto write_atom_remainder = [](md_str_writer_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
         // Add any remainder
         const uint64_t remainder = md_bitset_count(*bf);
         if (remainder) {
@@ -2277,16 +2281,16 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     if (comp_idx != -1 && within_same_comp) {
         const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
         if (popcount != range.end - range.beg) {
-            md_strb_reset(&sb);
+            md_str_writer_reset(&sb);
             sb += ident;
             sb += " = ";
 
             // Subset of residue is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(sb) < 512) {
+            if (md_str_writer_len(&sb) < 512) {
                 str_t resname = md_component_name(&sys->component, comp_idx);
-                md_strb_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+                md_str_writer_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
+                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
             }
         }
     }
@@ -2294,16 +2298,16 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     else if (inst_idx != -1 && within_same_inst) {
         const md_urange_t range = md_system_instance_atom_range(sys, inst_idx);
         if (popcount != range.end - range.beg) {
-            md_strb_reset(&sb);
+            md_str_writer_reset(&sb);
             sb += ident;
             sb += " = ";
 
             // Subset of chain is selected
             write_atom_remainder(sb, bf, range.beg);
-            if (md_strb_len(sb) < 512) {
+            if (md_str_writer_len(&sb) < 512) {
 				str_t inst_id = md_instance_id(&sys->instance, inst_idx);
-				md_strb_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
-                md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+				md_str_writer_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
+                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
             }
         }
     }
@@ -2342,7 +2346,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
     const md_bitset_t tmp_bf = md_bitmask_view(&remainder);
     
     if (complete_chains) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = chain(";
         write_script_range(sb, complete_chains, md_array_size(complete_chains));
@@ -2359,22 +2363,22 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
         
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = residue(";
         for (size_t i = 0; i < md_array_size(complete_chains); ++i) {
             md_urange_t range = md_instance_component_range(&sys->instance, complete_chains[i]);
-            md_strb_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
+            md_str_writer_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
         }
         if (complete_residues) {
             write_script_range(sb, complete_residues, md_array_size(complete_residues));
         } else {
-            md_strb_pop(&sb, 1);
+            md_str_writer_pop(&sb, 1);
         }
         sb += ")";
 
@@ -2383,14 +2387,14 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
         
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
 
     if (complete_residues) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = residue(";
         write_script_range(sb, complete_residues, md_array_size(complete_residues));
@@ -2401,20 +2405,20 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bit
             write_atom_remainder(sb, &tmp_bf);
         }
 
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
 
     if (popcount) {
-        md_strb_reset(&sb);
+        md_str_writer_reset(&sb);
         sb += ident;
         sb += " = ";
         write_atom_remainder(sb, bf);
-        if (md_strb_len(sb) < 512) {
-            md_strb_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
+        if (md_str_writer_len(&sb) < 512) {
+            md_str_writer_push_char(&sb, ';');
+            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
         }
     }
     
@@ -2906,12 +2910,21 @@ static void draw_animation_window(ApplicationState* data) {
         const float item_width = MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
         if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
+            static const char* mode_tooltip[(int)InterpolationMode::Count] = {
+                "The nearest frame, as it is",
+                "Straight from frame to frame, through each of them",
+                "Smooth (C1) from frame to frame, through each of them",
+                "Smoother (C2), and damps the jitter from frame to frame,\n"
+                "but passes through none of the frames but the first and the last:\n"
+                "the coordinates shown are never a frame's own, not even when stopped on one",
+            };
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
 					data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
+                ImGui::SetItemTooltip("%s", mode_tooltip[i]);
             }
             ImGui::EndCombo();
         }
@@ -2924,6 +2937,21 @@ static void draw_animation_window(ApplicationState* data) {
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");
+        }
+        {
+            // animation.stride, named for what is seen: the frames kept are the keys, the motion between them is interpolated.
+            // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
+            // typed in (Ctrl+click): only the lower bound is enforced.
+            const int max_stride = (int)CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
+            const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
+            ImGui::SliderInt("Keyframes", &data->animation.stride, 1, max_stride, fmt);
+            data->animation.stride = MAX(1, data->animation.stride);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
+                                  "at the expense of the frames in between (and the usual interpolation artifacts).\n"
+                                  "The speed is unchanged. A stopped animation shows the trajectory's own frames.\n"
+                                  "Ctrl+click to type a value beyond the slider's range.");
+            }
         }
         if (data->animation.interpolation == InterpolationMode::CubicSpline) {
             ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");
