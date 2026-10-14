@@ -871,6 +871,7 @@ struct Dataset : viamd::EventHandler {
         const char* role;
         str_t path;
         char details[128];
+        bool missing = false;
     };
 
     static void file_row(const FileRow& row) {
@@ -899,19 +900,32 @@ struct Dataset : viamd::EventHandler {
         }
 
         ImGui::TableSetColumnIndex(2);
-        ImGui::TextDisabled("%s", row.details);
+        if (row.missing) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " Not loaded");
+            ImGui::SetItemTooltip("The workspace names this file, but it could not be loaded.\nIt is kept in the workspace when it is saved: put the file back and load the workspace again.");
+        } else {
+            ImGui::TextDisabled("%s", row.details);
+        }
         ImGui::PopID();
     }
 
-    // The files the system was built from, in the order they compose it: the structure, the
-    // trajectory it moves along, and what was loaded along that trajectory
+    static const char* file_role_label(const FileEntry& e, FileRole role) {
+        switch (role) {
+        case FileRole_System:     return "Structure";
+        case FileRole_Trajectory: return "Trajectory";
+        case FileRole_Supplement: return e.type == LoaderType_ITP ? "Topology" : "Supplement";
+        case FileRole_Series:     return e.type == LoaderType_EDR ? "Energies" : "Series";
+        default:                  return "";
+        }
+    }
+
+    // The files the system was built from, in the order they were loaded: its own, which build and fill it
+    // in, and those of its run. Loading them again in their places builds it again, which is what a workspace does.
     void draw_files(ApplicationState& data) {
         if (!ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-        const bool has_structure = data.files.molecule[0] != '\0';
-        str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
-        if (!has_structure && num_groups == 0) {
+        const FileList* list = &data.files.list;
+        if (file_list_count(list) == 0) {
             ImGui::TextDisabled("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
             return;
         }
@@ -923,38 +937,50 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableSetupColumn("Holds", ImGuiTableColumnFlags_WidthStretch, 2.5f);
         ImGui::TableHeadersRow();
 
-        if (has_structure) {
-            FileRow row = { "Structure", str_from_cstr(data.files.molecule), "" };
-            snprintf(row.details, sizeof(row.details), "%zu atoms%s", data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "");
-            file_row(row);
-        }
+        str_t groups[64];
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
 
-        if (data.files.trajectory[0] != '\0') {
-            FileRow row = { "Trajectory", str_from_cstr(data.files.trajectory), "" };
-            const size_t num_frames = run_num_frames(&data);
-            const double* times = run_frame_times(&data);
-            if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(&data))) {
-                char unit_buf[32];
-                const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(&data));
-                snprintf(row.details, sizeof(row.details), "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
-            } else {
-                snprintf(row.details, sizeof(row.details), "%zu frames", num_frames);
-            }
-            file_row(row);
-        }
+        for (size_t i = 0; i < file_list_count(list); ++i) {
+            const FileEntry& e = *file_list_get(list, i);
+            const FileRole role = file_list_role(list, i);
+            FileRow row = { file_role_label(e, role), str_from_cstr(e.path), "" };
+            row.missing = e.missing;
 
-        // Loaded along the trajectory: named by what they hold, which the group says
-        const str_t run = str_from_cstr(data.mold.run);
-        for (size_t g = 0; g < num_groups; ++g) {
-            const str_t source = system_series_group_source(&data, groups[g]);
-            if (str_empty(source)) continue;
-            str_t rel = groups[g];
-            if (!str_empty(run) && str_begins_with(rel, run) && rel.len > run.len + 1) {
-                rel = str_substr(rel, run.len + 1);
+            if (!e.missing) {
+                char* d = row.details;
+                const size_t cap = sizeof(row.details);
+                switch (role) {
+                case FileRole_System:
+                    snprintf(d, cap, "%zu atoms%s", data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "");
+                    break;
+                case FileRole_Trajectory: {
+                    const size_t num_frames = run_num_frames(&data);
+                    const double* times = run_frame_times(&data);
+                    if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(&data))) {
+                        char unit_buf[32];
+                        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(&data));
+                        snprintf(d, cap, "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
+                    } else {
+                        snprintf(d, cap, "%zu frames", num_frames);
+                    }
+                    break;
+                }
+                case FileRole_Series:
+                    // The group the file published, which names its source
+                    for (size_t g = 0; g < num_groups; ++g) {
+                        if (str_eq(system_series_group_source(&data, groups[g]), row.path)) {
+                            snprintf(d, cap, "%zu series", system_series_members(nullptr, 0, &data, groups[g]));
+                            break;
+                        }
+                    }
+                    break;
+                case FileRole_Supplement:
+                    snprintf(d, cap, STR_FMT, STR_ARG(loader::type_name(e.type)));
+                    break;
+                default:
+                    break;
+                }
             }
-            const char* role = str_begins_with(rel, STR_LIT("edr")) ? "Energies" : "Series";
-            FileRow row = { role, source, "" };
-            snprintf(row.details, sizeof(row.details), "%zu series", system_series_members(nullptr, 0, &data, groups[g]));
             file_row(row);
         }
 

@@ -1071,7 +1071,8 @@ void free_trajectory_data(ApplicationState* state) {
     // Before anything they read goes: the contexts hold the run's files open.
     end_frame_extracts(state);
 
-    state->files.trajectory[0] = '\0';
+    // The run, and with it the files it was opened from and the series loaded along it
+    file_list_drop_runs(&state->files.list);
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
@@ -1107,17 +1108,16 @@ void free_trajectory_data(ApplicationState* state) {
     free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
 }
 
-void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
+void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_flags) {
     // The trajectory is a RUN in the attribute table: "<run>/time" is its frame axis, and everything
     // sampled along it lives below the same prefix - the positions streamed from the file, the per
     // frame backbone data below, an energy file loaded later - so that freeing the trajectory is
     // removing the prefix. A trajectory that came inside the structure file (a multi model PDB) is
     // named after that; a structure of one frame publishes nothing and has no run.
     {
-        const char* traj_file = data->files.trajectory[0] ? data->files.trajectory : data->files.molecule;
-        run_path_from_file(data->mold.run, sizeof(data->mold.run), str_from_cstr(traj_file));
+        run_path_from_file(data->mold.run, sizeof(data->mold.run), run_file);
         const str_t run = str_from_cstr(data->mold.run);
-        if (!loader::publish_run(&data->mold.sys, str_from_cstr(traj_file), run, traj_flags)) {
+        if (!loader::publish_run(&data->mold.sys, run_file, run, traj_flags)) {
             md_attributes_remove_prefix(&data->mold.sys.attributes, run);
             data->mold.run[0] = '\0';
         }
@@ -1386,11 +1386,15 @@ void free_system_data(ApplicationState* data) {
     data->operations.initial_frame.valid = false;
 
     md_gl_mol_destroy(data->mold.gl_mol);
+    // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
+    // representations, a frame after a load that failed) sees no molecule rather than a stale one
+    data->mold.gl_mol = {};
 
     // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
     system_gpu_data_free(data);
 
-    MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
+    // Everything loaded was loaded onto the system
+    file_list_clear(&data->files.list);
 
 
     MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
@@ -1413,23 +1417,60 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
+// The entry a loaded file takes in files.list
+static FileEntry file_entry(str_t path, const loader::LoaderState& load_state) {
+    FileEntry e = {};
+    str_copy_to_char_buf(e.path, sizeof(e.path), path);
+    e.type = load_state.type;
+    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
+    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
+    return e;
+}
+
+// Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
+// False when the file holds no frames to make a run of, which is not an error for a structure file.
+static bool open_run(ApplicationState* state, str_t path, const loader::LoaderState& load_state) {
+    interrupt_async_tasks(state);
+    free_trajectory_data(state);
+    state->animation.frame = 0;
+
+    // Publishing the run IS opening the trajectory: the run is named after the file, and its
+    // positions are read from it frame by frame from here on.
+    init_trajectory_data(state, path, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
+    const size_t num_frames = run_num_frames(state);
+    if (num_frames == 0) {
+        return false;
+    }
+    file_list_record(&state->files.list, file_entry(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    md_array_last(state->files.list.runs)->frame_count = num_frames;
+    return true;
+}
+
+LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
+    // On its own the role follows from the loader flags, and a structure file opens its own frames as the run:
+    // a multi model PDB or an XYZ trajectory is a system and a run in one file
+    const FileRole role = file_role(load_state.flags);
+    return load_data(state, filepath, load_state, role, role == FileRole_System);
+}
+
+LoadResult load_data(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
     ASSERT(state);
 
-    bool success = false;
+    LoadResult result = LoadResult_Failed;
     str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
-        if (load_state.flags & LoaderFlag_Supplemental) {
+        if (role == FileRole_Supplement || role == FileRole_Series) {
             // Neither the system nor the trajectory is touched - this file only adds to what is
             // already loaded, and the loader merges it into the system's attribute table. A
             // component picks it up from there, off the ViamdLoadData event below.
-            //
-            // 'success' stays false on purpose: it is what tells the caller a system was loaded,
-            // and it resets the camera and the animation when it is true.
             const str_t run = str_from_cstr(state->mold.run);
-            if ((load_state.flags & LoaderFlag_Temporal) && str_empty(run)) {
+            if (role == FileRole_Supplement && state->mold.sys.atom.count == 0) {
+                VIAMD_LOG_ERROR("'" STR_FMT "' adds to a system; load the system first", STR_ARG(path_to_file));
+                return LoadResult_Failed;
+            }
+            if (role == FileRole_Series && str_empty(run)) {
                 VIAMD_LOG_ERROR("'" STR_FMT "' holds data along a trajectory; load the trajectory first", STR_ARG(path_to_file));
-                return false;
+                return LoadResult_Failed;
             }
 
             // The table is about to be written to, and worker threads read it: script evaluation
@@ -1441,12 +1482,24 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             if (state->script.eval) md_script_eval_interrupt(state->script.eval);
             task_system::pool_wait_for_completion();
 
+            const size_t num_atoms = state->mold.sys.atom.count;
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
+                // The contract of a supplement: it adds to the atoms, and never changes how many there are.
+                // What is kept by atom index (selections, user bonds, atom type edits, and all of it in a
+                // workspace) would silently apply to other atoms. The loaders check their file against the
+                // system before they change it; this is where one that does not would show.
+                ASSERT(state->mold.sys.atom.count == num_atoms);
+                if (state->mold.sys.atom.count != num_atoms) {
+                    VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
+                }
+                result = LoadResult_Supplement;
+                file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
-                if (load_state.flags & LoaderFlag_Temporal) {
+                if (role == FileRole_Series) {
                     const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
                                        (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
                     VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; plot it from System > Series, or read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
@@ -1456,7 +1509,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
-        } else if (load_state.flags & LoaderFlag_System) {
+        } else if (role == FileRole_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
             free_system_data(state);
@@ -1467,12 +1520,15 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             ASSERT(state->mold.sys.alloc && state->mold.state.alloc == state->mold.sys.alloc);
             if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
-                return false;
+                return LoadResult_Failed;
             }
-            success = true;
+            result = LoadResult_System;
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
-            str_copy_to_char_buf(state->files.molecule, sizeof(state->files.molecule), path_to_file);
+            // In the list before the system is initialized, so that what handles that sees what it was built from
+            file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+            state->files.list.atom_count = state->mold.sys.atom.count;
+
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
             // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
             md_infer_flags_t flags = MD_UTIL_INFER_ALL;
@@ -1489,28 +1545,25 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             }
             init_system_data(state);
 
-            // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run.
-            init_trajectory_data(state, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
-        } else if (load_state.flags & LoaderFlag_Trajectory) {
+            // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run as well. Here
+            // rather than by the caller, so that the run is there for what handles ViamdLoadData below.
+            if (opens_own_run) {
+                open_run(state, path_to_file, load_state);
+            }
+        } else if (role == FileRole_Trajectory) {
             if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
-                return false;
+                return LoadResult_Failed;
             }
-            interrupt_async_tasks(state);
-            free_trajectory_data(state);
-            state->animation.frame = 0;
-
-            // Publishing the run IS opening the trajectory: the run is named after the file, and its
-            // positions are read from it frame by frame from here on.
-            str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
-            init_trajectory_data(state, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
-            success = run_num_frames(state) > 0;
-            if (success) {
+            if (open_run(state, path_to_file, load_state)) {
+                result = LoadResult_Trajectory;
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             } else {
-                state->files.trajectory[0] = '\0';
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
+        } else {
+            VIAMD_LOG_ERROR("No loader for the file '" STR_FMT "'", STR_ARG(path_to_file));
+            return LoadResult_Failed;
         }
 #if MD_ENABLE_GPU
         // The dataset's uploaded GTO basis, built here rather than by whichever component happens to
@@ -1529,7 +1582,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
         viamd::event_system_broadcast_event(viamd::EventType_ViamdLoadData, viamd::EventPayloadType_LoadData, &data);
     }
 
-    return success;
+    return result;
 }
 
 // #workspace
@@ -1549,6 +1602,13 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
 //
 // SAVING builds the whole text first and only then touches the file, so a failure half way through
 // leaves the previous workspace where it was.
+//
+// The files are stored per system and run, with the ids every other section refers to them by (file_list.h).
+//
+// VERSION, in [Workspace]: 1 (no [Workspace] section) stored the files in slots ([Files] MoleculeFile,
+// TrajectoryFile, EnergyFile, SeriesFile); 2 stores systems, their runs and their files ([System], [Run],
+// [Input]). A version newer than the reader's is read for what the reader knows.
+static const int WORKSPACE_VERSION = 2;
 
 struct WorkspaceWindow {
     char  name[32];
@@ -1601,10 +1661,10 @@ static double workspace_time_to_frame(const ApplicationState* app, double time) 
 
 // What is read before the data it refers to is loaded, applied once it is
 struct WorkspacePending {
-    str_t molecule_file;
-    str_t trajectory_file;
-    str_t energy_file;
-    md_array(str_t) series_files;
+    // The systems, their runs and the files of each ([System], [Run], [Input], or a [Files] section of a
+    // workspace written before version 2)
+    WorkspaceFiles files;
+    int version;
 
     bool   has_frame;
     double frame;
@@ -1631,24 +1691,20 @@ struct WorkspacePending {
     double view_end_frame;
 };
 
-// A file named in the workspace: relative to it, unless no relative path existed when it was saved
-static str_t workspace_file_path(str_t folder, str_t arg, md_allocator_i* alloc) {
-    str_t file;
-    viamd::extract_str(file, arg);
-    if (str_empty(file)) return {};
-    md_str_writer_t path = md_str_writer_create(alloc);
-    if (!md_path_is_absolute(file)) {
-        path += folder;
-    }
-    path += file;
-    return md_path_make_canonical(path, alloc);
-}
-
 static void workspace_reset(ApplicationState* data) {
     remove_all_selections(data);
     remove_all_representations(data);
     data->editor.SetText("");
     data->files.workspace[0] = '\0';
+
+    // The workspace's files are loaded onto nothing, as they were when they were first loaded: what a file
+    // is to the system can depend on what is there (a VeloxChem file of the loaded atoms supplements them,
+    // and builds the system otherwise). A workspace that names no files leaves nothing loaded.
+    if (data->mold.sys.atom.count > 0 || file_list_count(&data->files.list) > 0) {
+        interrupt_async_tasks(data);
+        free_trajectory_data(data);
+        free_system_data(data);
+    }
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]
     data->animation.frame = 0.0;
@@ -1683,23 +1739,6 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.recenter_query.query[0] = '\0';
     recenter_mark_query_dirty(data);
     md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
-}
-
-static void deserialize_files(viamd::deserialization_state_t& state, WorkspacePending& pending, str_t folder, md_allocator_i* alloc) {
-    str_t ident, arg;
-    while (viamd::next_entry(ident, arg, state)) {
-        if (str_eq(ident, STR_LIT("MoleculeFile"))) {
-            pending.molecule_file = workspace_file_path(folder, arg, alloc);
-        } else if (str_eq(ident, STR_LIT("TrajectoryFile"))) {
-            pending.trajectory_file = workspace_file_path(folder, arg, alloc);
-        } else if (str_eq(ident, STR_LIT("EnergyFile"))) {
-            pending.energy_file = workspace_file_path(folder, arg, alloc);
-        } else if (str_eq(ident, STR_LIT("SeriesFile"))) {
-            const str_t path = workspace_file_path(folder, arg, alloc);
-            if (!str_empty(path)) md_array_push(pending.series_files, path, alloc);
-        }
-        // CoarseGrained, which older workspaces have, is not read: what is coarse grained is inferred
-    }
 }
 
 static void deserialize_representation(ApplicationState* data, viamd::deserialization_state_t& state) {
@@ -2029,8 +2068,17 @@ void load_workspace(ApplicationState* data, str_t filename) {
     str_t section;
     while (viamd::next_section_header(section, state)) {
         str_t ident, arg;
-        if (str_eq(section, STR_LIT("Files")) || str_eq(section, STR_LIT("File"))) {
-            deserialize_files(state, pending, folder, temp_alloc);
+        if (str_eq(section, STR_LIT("Workspace"))) {
+            while (viamd::next_entry(ident, arg, state)) {
+                if (str_eq(ident, STR_LIT("Version"))) {
+                    viamd::extract_int(pending.version, arg);
+                }
+            }
+            if (pending.version > WORKSPACE_VERSION) {
+                VIAMD_LOG_INFO("Workspace: written by a newer viamd (version %d, this one writes %d); what this one does not know is left out", pending.version, WORKSPACE_VERSION);
+            }
+        } else if (workspace_files_read(&pending.files, state, folder, temp_alloc)) {
+            // The systems and their files
         } else if (str_eq(section, STR_LIT("Animation"))) {
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Frame"))) {
@@ -2196,46 +2244,81 @@ void load_workspace(ApplicationState* data, str_t filename) {
     // ## 3. Load the files, then apply what refers to them
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
 
-    loader::LoaderState loader_state = {};
-    if (!str_empty(pending.molecule_file)) {
-        loader::init(&loader_state, pending.molecule_file);
-        if (load_data_from_file(data, pending.molecule_file, loader_state)) {
-            str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), pending.molecule_file);
+    // The system's own files in order, then those of its run: a run is opened on the complete system. This
+    // build loads one system with one run; what the workspace names beyond that is reported and left out.
+    SystemPlan plan;
+    workspace_files_plan(&plan, &pending.files, 1, temp_alloc);
+    if (plan.skipped_systems) VIAMD_LOG_ERROR("Workspace: names %zu systems; this build of viamd loads the first", plan.skipped_systems + 1);
+    if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of the system; this build of viamd loads the first", plan.skipped_runs + 1);
+    if (plan.skipped_inputs)  VIAMD_LOG_ERROR("Workspace: %zu files belong to no system or run it names, and are left out", plan.skipped_inputs);
+
+    for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
+        const SystemPlan::Input& in = plan.inputs[i];
+        const str_t path = str_from_cstr(in.entry.path);
+
+        // The role is the file's place; the loader is the one stored, or the one the file tells
+        loader::LoaderState loader_state = {};
+        if (in.entry.explicit_type) {
+            loader_state.type  = in.entry.type;
+            loader_state.flags = loader::type_flags(in.entry.type) | LoaderFlag_ExplicitType;
         } else {
-            data->files.molecule[0] = '\0';
+            loader::init(&loader_state, path, &data->mold.sys);
         }
-    } else {
-        data->files.molecule[0] = '\0';
+        if (in.entry.arg[0] != '\0') {
+            loader_state.arg = in.entry.arg;
+        }
+
+        LoadResult result = LoadResult_Failed;
+        if (!md_path_is_valid(path)) {
+            VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
+        } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
+            // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
+            VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
+        } else {
+            result = load_data(data, path, loader_state, in.role, in.opens_own_run);
+        }
+
+        if (result == LoadResult_Failed) {
+            // Kept in its place, so that saving the workspace does not drop it: a file that was moved is found
+            // again by putting it back, not by building the workspace again
+            FileEntry missing = in.entry;
+            missing.type    = loader_state.type;
+            missing.missing = true;
+            file_list_record(&data->files.list, missing, in.role, data->allocator.persistent);
+        }
     }
 
-    if (!str_empty(pending.trajectory_file)) {
-        loader::init(&loader_state, pending.trajectory_file);
-        if (load_data_from_file(data, pending.trajectory_file, loader_state)) {
-            str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), pending.trajectory_file);
-        }
-    } else {
-        data->files.trajectory[0] = '\0';
+    // What the workspace was saved with stays the reference while the files are missing, so that a save keeps it
+    FileList& list = data->files.list;
+    if (list.atom_count == 0) {
+        list.atom_count = plan.atom_count;
     }
-
-    // Joins the trajectory's run, so it can only go in once the trajectory is there
-    if (!str_empty(pending.energy_file)) {
-        loader::init(&loader_state, pending.energy_file, &data->mold.sys);
-        load_data_from_file(data, pending.energy_file, loader_state);
-    }
-    for (size_t i = 0; i < md_array_size(pending.series_files); ++i) {
-        loader::init(&loader_state, pending.series_files[i], &data->mold.sys);
-        load_data_from_file(data, pending.series_files[i], loader_state);
+    for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(plan.frame_counts); ++r) {
+        if (list.runs[r].frame_count == 0) list.runs[r].frame_count = plan.frame_counts[r];
     }
 
     const size_t num_atoms  = data->mold.sys.atom.count;
     const size_t num_frames = run_num_frames(data);
 
-    if (pending.has_frame && num_frames > 0) {
+    // The counts the workspace was saved with. When the files no longer have them, what it keeps by atom index
+    // or by frame would land on other atoms and other frames, and is left out instead.
+    const bool   atoms_as_saved  = plan.atom_count == 0 || plan.atom_count == num_atoms;
+    const size_t saved_frames    = md_array_size(plan.frame_counts) ? plan.frame_counts[0] : 0;
+    const bool   frames_as_saved = saved_frames == 0 || saved_frames == num_frames;
+    if (num_atoms > 0 && !atoms_as_saved) {
+        VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections and bonds are left out", num_atoms, plan.atom_count);
+        remove_all_selections(data);
+    }
+    if (num_frames > 0 && !frames_as_saved) {
+        VIAMD_LOG_ERROR("Workspace: the trajectory has %zu frames, but had %zu when the workspace was saved; its frame and timeline ranges are left out", num_frames, saved_frames);
+    }
+
+    if (pending.has_frame && num_frames > 0 && frames_as_saved) {
         data->animation.frame = CLAMP(pending.frame, 0.0, (double)(num_frames - 1));
     }
 
     // Loading a trajectory sets the filter and the view to all of it; the workspace's come after
-    if (num_frames > 0) {
+    if (num_frames > 0 && frames_as_saved) {
         const double last = (double)(num_frames - 1);
         if (pending.has_filter_range) {
             data->timeline.filter.beg_frame = CLAMP(pending.filter_beg_frame, 0.0, last);
@@ -2248,8 +2331,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
 
     // Masks of atoms that are not there are dropped rather than applied to whatever holds those indices now
-    auto mask_fits = [num_atoms](const md_bitset_t* mask) {
-        return num_atoms > 0 && (md_bitset_empty(*mask) || mask->end <= num_atoms);
+    auto mask_fits = [num_atoms, atoms_as_saved](const md_bitset_t* mask) {
+        return num_atoms > 0 && atoms_as_saved && (md_bitset_empty(*mask) || mask->end <= num_atoms);
     };
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
         md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
@@ -2259,7 +2342,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
         recenter_update_target_data(data);
     }
 
-    const size_t num_user_bonds = md_array_size(pending.user_bonds);
+    const size_t num_user_bonds = atoms_as_saved ? md_array_size(pending.user_bonds) : 0;
     if (num_user_bonds > 0) {
         for (size_t i = 0; i < num_user_bonds; ++i) {
             const md_atom_pair_t& pair = pending.user_bonds[i];
@@ -2311,43 +2394,13 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     state.sw += header_snippet;
     state.sw += '\n';
 
-    // Files are stored relative to the workspace so that a dataset can be moved as a whole.
-    // If no relative path exists (a separate volume on windows) we fall back to the absolute
-    // path, and a slot which holds no file is written as an empty string.
-    auto workspace_relative_path = [filename, temp_alloc](str_t path) -> str_t {
-        if (str_empty(path)) {
-            return {};
-        }
-        str_t rel = md_path_make_relative(filename, path, temp_alloc);
-        return str_empty(rel) ? md_path_make_canonical(path, temp_alloc) : rel;
-    };
+    viamd::write_section_header(state, STR_LIT("Workspace"));
+    viamd::write_int(state, STR_LIT("Version"), WORKSPACE_VERSION);
 
-    const md_attributes_t* attributes = &app_state->mold.sys.attributes;
-
-    viamd::write_section_header(state, STR_LIT("Files"));
-    viamd::write_str(state, STR_LIT("MoleculeFile"),   workspace_relative_path(str_from_cstr(app_state->files.molecule)));
-    viamd::write_str(state, STR_LIT("TrajectoryFile"), workspace_relative_path(str_from_cstr(app_state->files.trajectory)));
-
-    // An energy file is only in the session while its data is: the source path is published beside
-    // the energies and removed with them, so what is written here cannot name a file that was
-    // dropped with an earlier trajectory.
-    {
-        if (const md_attribute_t* src = run_attribute(app_state, STR_LIT("edr/source"))) {
-            viamd::write_str(state, STR_LIT("EnergyFile"), workspace_relative_path(md_attribute_str(attributes, src, 0)));
-        }
-
-        // Series loaded along the run (.xvg, .csv), the same way: "<run>/<kind>/<name>/source"
-        const str_t kinds[] = { STR_INIT("xvg"), STR_INIT("csv") };
-        for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
-            char group_buf[256];
-            const str_t group = run_attribute_path(group_buf, sizeof(group_buf), app_state, kinds[k]);
-            if (str_empty(group)) continue;
-            for (md_attribute_iter_t it = md_attributes_iter_children(attributes, group); md_attributes_next(&it);) {
-                if (const md_attribute_t* series_src = md_attributes_find_in(attributes, it.child_path, STR_LIT("source"))) {
-                    viamd::write_str(state, STR_LIT("SeriesFile"), workspace_relative_path(md_attribute_str(attributes, series_src, 0)));
-                }
-            }
-        }
+    // The system, its run and their files, missing ones too: what could not be loaded is still what the
+    // workspace is of. Its id is the one every section which refers to the system uses.
+    if (file_list_count(&app_state->files.list) > 0) {
+        file_list_serialize(state, &app_state->files.list, 0, 0);
     }
 
     viamd::write_section_header(state, STR_LIT("Animation"));
@@ -5941,11 +5994,11 @@ void file_queue_process(ApplicationState* state) {
                 state->load_dataset.show_window = true;
             } else {
                 loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                if (load_data_from_file(state, e.path, loader_state)) {
+                const LoadResult result = load_data_from_file(state, e.path, loader_state);
+                if (result == LoadResult_System || result == LoadResult_Trajectory) {
                     state->animation = {};
-                    // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
-                    // This should be instead captured and performed by the Event that signals when a new system is loaded.
-                    if (loader_state.flags & LoaderFlag_System) {
+                    // @TODO @FIX: This should be captured and performed by the Event that signals when a new system is loaded.
+                    if (result == LoadResult_System) {
                         md_bitmask_clear(&state->representation.visibility_mask);
 
                         if (!state->settings.keep_representations) {

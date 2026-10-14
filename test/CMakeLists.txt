@@ -15,6 +15,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/event.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_system.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/file_list.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/gfx/camera_utils.cpp
 )
 

@@ -19,6 +19,7 @@ enum LoaderFlag_ {
     LoaderFlag_Supplemental = 128, // May contain supplemental data to existing system
     LoaderFlag_Topology = 256, // The format supplies a complete topology: its bonds are not to be inferred
     LoaderFlag_Temporal = 512, // Supplemental data sampled along a trajectory: it joins the trajectory's run, so that has to be loaded first
+    LoaderFlag_ExplicitType = 1024, // The loader was chosen by the user rather than told from the file: a workspace has to store it
 };
 
 enum LoaderType_ {
@@ -56,11 +57,13 @@ typedef uint32_t LoaderType;
 
 namespace loader {
 
-    struct LoaderState {		
-		LoaderType  type  = LoaderType_Undefined;
-        const void* arg   = 0;
+    struct LoaderState {
+        LoaderType  type  = LoaderType_Undefined;
+        // An argument for the loader, as text so that a workspace can store it with the file: the
+        // LAMMPS atom format. Not owned: it has to outlive the load.
+        const char* arg   = 0;
         LoaderFlags flags = LoaderFlag_None;
-	};
+    };
 
     // The reason here why we don't directly provide prepackaged loaders based on extensions
     // Is to get a chance to glance into the file and see if we recognize it first.

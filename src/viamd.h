@@ -28,6 +28,7 @@
 #include <task_system.h>
 #include <surface_field.h>
 #include <loader.h>
+#include <file_list.h>
 #include <event.h>
 #include <plot_series.h>
 
@@ -1069,11 +1070,12 @@ struct ApplicationState {
     LoadDatasetWindowState load_dataset;
 
     // --- FILES ---
-    // for keeping track of open files
     struct {
-        char molecule[1024]   = {0};
-        char trajectory[1024] = {0};
-        char workspace[1024]  = {0};
+        // The files the loaded system is built from, in the order they were loaded (see file_list.h).
+        // Kept by load_data_from_file, and by what frees the data they loaded (free_system_data,
+        // free_trajectory_data). A workspace stores this list and loads it again in the same order.
+        FileList list;
+        char workspace[1024] = {0};
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
@@ -1836,12 +1838,28 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
-bool load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
+
+// What load_data_from_file made of a file
+enum LoadResult {
+    LoadResult_Failed = 0,
+    LoadResult_System,      // A new system, with its run when the file holds several frames
+    LoadResult_Trajectory,  // A new run for the loaded system
+    LoadResult_Supplement,  // Added to the loaded system, or along its run: the system and the run are as they were
+};
+
+// Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
+// the run, a supplement adds to the system and a series to the run. opens_own_run: a system file of several
+// frames opens them as the run too. A file that loads is recorded in files.list.
+LoadResult load_data(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
+
+// Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
+// give it (file_role), and a system file opens its own frames as the run.
+LoadResult load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
 void init_system_data(ApplicationState* app);
-// Publishes the trajectory as the loaded run and sets up everything that follows it. The trajectory
-// is files.trajectory, or the structure file itself when that holds several frames. traj_flags
+// Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
+// run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
-void init_trajectory_data(ApplicationState* app, uint32_t traj_flags = 0);
+void init_trajectory_data(ApplicationState* app, str_t run_file, uint32_t traj_flags = 0);
 
 // The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
 // unit, which is none when the file does not know time and the values are frame ordinals. NULL,

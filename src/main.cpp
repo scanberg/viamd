@@ -801,10 +801,9 @@ int main(int argc, char** argv) {
                     str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
                         extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
-                    } else if (state.files.trajectory[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.trajectory));
-                    } else if (state.files.molecule[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.molecule));
+                    } else if (const FileEntry* run_file = file_list_run_file(&state.files.list)) {
+                        // The trajectory's folder, else the structure's
+                        extract_folder_path(&cwd, str_from_cstr(run_file->path));
                     }
                     if (!str_empty(cwd)) {
                         md_path_set_cwd(cwd);
@@ -1979,9 +1978,16 @@ void draw_load_dataset_window(ApplicationState* data) {
             if (type == LoaderType_LAMMPSDATA) {
                 load_state.arg = state.atom_format_buf;
             }
+            // A loader other than the extension would pick has to be stored with the file in a workspace
+            str_t ext = {};
+            extract_ext(&ext, path);
+            if (type != loader::type_from_ext(ext)) {
+                load_state.flags |= LoaderFlag_ExplicitType;
+            }
 
-            if (load_data_from_file(data, path, load_state)) {
-                if ((flags & LoaderFlag_System) && !data->settings.keep_representations) {
+            const LoadResult result = load_data_from_file(data, path, load_state);
+            if (result == LoadResult_System || result == LoadResult_Trajectory) {
+                if (result == LoadResult_System && !data->settings.keep_representations) {
                     remove_all_representations(data);
                     create_default_representations(data);
                 }
