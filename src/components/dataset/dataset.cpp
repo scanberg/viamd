@@ -626,7 +626,11 @@ struct Dataset : viamd::EventHandler {
                 DatasetItem& item = atom_types[i];
                 if (item.load.z != ovr.load_z) continue;
                 if (!str_eq(md_atom_type_name(&type, i), name)) continue;
-                if (!str_eq(md_atom_type_ff_type(&type, i), ff_type)) continue;
+                // Not str_eq alone: it never matches a NULL str, and a type without a force field type holds
+                // one ({0} from md_atom_type_find_or_add), while the one parsed from the section is "".
+                // Every type of a loader without force field types (PDB, GRO, XYZ, ...) went unmatched.
+                const str_t type_ff = md_atom_type_ff_type(&type, i);
+                if (str_empty(ff_type) ? !str_empty(type_ff) : !str_eq(type_ff, ff_type)) continue;
 
                 if (ovr.has_z) {
                     type.z[i] = ovr.z;
