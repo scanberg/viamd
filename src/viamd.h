@@ -97,6 +97,15 @@ constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain 
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
 // drawn per segment, not per atom, so a hit names the segment and resolves to the component it stems from.
 constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("picking domain backbone segment");
+// A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
+// bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
+constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
+
+// The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
+// to the selection
+static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
+    return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring;
+}
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
@@ -1238,6 +1247,7 @@ struct ApplicationState {
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
+    PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -1734,6 +1744,21 @@ static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mas
     }
     // Any atom of the component finds the component, and its instance
     mask_set_atom_by_selection_granularity(mask, range.beg, granularity, sys);
+}
+
+// Sets the bits of the atoms of a ring (md_system_t::ring), each grown by the granularity, for a hit on the circle of an
+// aromatic ring: at Atom granularity the ring itself, at coarser ones what its atoms are in
+static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, size_t ring_idx, SelectionGranularity granularity, const md_system_t& sys) {
+    ASSERT(mask);
+    if (ring_idx >= md_index_data_num_ranges(&sys.ring)) return;
+
+    const int32_t* beg = md_index_range_beg(&sys.ring, ring_idx);
+    const int32_t* end = md_index_range_end(&sys.ring, ring_idx);
+    for (const int32_t* it = beg; it != end; ++it) {
+        if (*it >= 0 && (size_t)*it < sys.atom.count) {
+            mask_set_atom_by_selection_granularity(mask, (size_t)*it, granularity, sys);
+        }
+    }
 }
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
@@ -2287,6 +2312,7 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
         .atom_base     = state.picking_range_atom.beg,
         .bond_base     = state.picking_range_bond.beg,
         .backbone_base = state.picking_range_backbone.beg,
+        .ring_base     = state.picking_range_ring.beg,
     };
 }
 

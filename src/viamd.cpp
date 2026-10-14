@@ -549,6 +549,101 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
+// A ring (the circle of an aromatic ring): what it is, its atoms around it and their elements, and how flat it is in the
+// current frame, the RMS distance of its atoms from their plane (the plane the circle is drawn in, ring.vert)
+static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t ring_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const md_system_state_t& sys_state = state.mold.state;
+    const int32_t* atoms = md_index_range_beg(&sys.ring, ring_idx);
+    const size_t   count = md_index_range_size(&sys.ring, ring_idx);
+    if (count == 0) return;
+    for (size_t i = 0; i < count; ++i) {
+        if (atoms[i] < 0 || (size_t)atoms[i] >= sys.atom.count) return;
+    }
+    const md_ring_flags_t flags = md_system_ring_flags(&sys, ring_idx);
+
+    // Where it is: the place of its first atom, and of another where the ring reaches over (a ring is mostly in one)
+    const TooltipPlace place = tooltip_place_of_atom(sys, (size_t)atoms[0]);
+    TooltipPlace other = place;
+    for (size_t i = 1; i < count; ++i) {
+        const TooltipPlace p = tooltip_place_of_atom(sys, (size_t)atoms[i]);
+        if (p.comp_idx != place.comp_idx || p.inst_idx != place.inst_idx) {
+            other = p;
+            break;
+        }
+    }
+
+    md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += (flags & MD_RING_FLAG_AROMATIC) ? STR_LIT("aromatic ring") : STR_LIT("ring");
+    tooltip_append_place(&title, sys, place, &other);
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
+
+    md_str_writer_t kind = md_str_writer_create(req->alloc);
+    if (flags & MD_RING_FLAG_AROMATIC) tooltip_list_add(&kind, "aromatic");
+    if (flags & MD_RING_FLAG_HETERO)   tooltip_list_add(&kind, "hetero");
+    if (flags & MD_RING_FLAG_FUSED)    tooltip_list_add(&kind, "fused");
+    if (flags & MD_RING_FLAG_SUGAR)    tooltip_list_add(&kind, "sugar");
+    tooltip_row_list(req, STR_LIT("kind"), kind);
+
+    // The atoms in order around the ring, then its composition: C first, the other elements by atomic number
+    md_str_writer_t names = md_str_writer_create(req->alloc);
+    int element_count[128] = {0};
+    for (size_t i = 0; i < count; ++i) {
+        if (i > 0) names += ' ';
+        tooltip_append_atom_name(&names, sys, (size_t)atoms[i]);
+        const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, (size_t)atoms[i]);
+        if (0 < z && z < (int)ARRAY_SIZE(element_count)) element_count[z] += 1;
+    }
+    md_str_writer_t formula = md_str_writer_create(req->alloc);
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int z = 1; z < (int)ARRAY_SIZE(element_count); ++z) {
+            if (!element_count[z] || (pass == 0) != (z == 6)) continue;
+            formula += md_util_element_symbol((md_element_t)z);
+            if (element_count[z] > 1) md_str_writer_fmt(&formula, "%d", element_count[z]);
+        }
+    }
+    if (!md_str_writer_empty(&formula)) {
+        tooltip_row(req, STR_LIT("atoms"), "%s (%s)", md_str_writer_to_cstr(&names), md_str_writer_to_cstr(&formula));
+    } else {
+        tooltip_row(req, STR_LIT("atoms"), "%s", md_str_writer_to_cstr(&names));
+    }
+
+    // Planarity: the atoms the short way round from the first across a periodic boundary, the plane through their
+    // centroid with Newell's normal
+    vec3_t p[MD_RING_MAX_SIZE];
+    if (count <= ARRAY_SIZE(p)) {
+        const vec3_t p0 = md_state_coord(&sys_state, (size_t)atoms[0]);
+        vec3_t c = {0, 0, 0};
+        for (size_t i = 0; i < count; ++i) {
+            vec3_t d = vec3_sub(md_state_coord(&sys_state, (size_t)atoms[i]), p0);
+            md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+            p[i] = vec3_add(p0, d);
+            c = vec3_add(c, p[i]);
+        }
+        c = vec3_mul1(c, 1.0f / (float)count);
+        vec3_t n = {0, 0, 0};
+        for (size_t i = 0; i < count; ++i) {
+            n = vec3_add(n, vec3_cross(vec3_sub(p[i], c), vec3_sub(p[(i + 1) % count], c)));
+        }
+        const float len = vec3_length(n);
+        if (len > 0.0f) {
+            n = vec3_mul1(n, 1.0f / len);
+            float sum2 = 0.0f;
+            for (size_t i = 0; i < count; ++i) {
+                const float h = vec3_dot(vec3_sub(p[i], c), n);
+                sum2 += h * h;
+            }
+            tooltip_row(req, STR_LIT("planarity"), "%.3f " TOOLTIP_ANGSTROM " RMS", sqrtf(sum2 / (float)count));
+        }
+    }
+
+    // ring(k) of the script is ring k - 1 of the system, as the circle picks it
+    md_str_writer_t index = md_str_writer_create(req->alloc);
+    md_str_writer_fmt(&index, "ring(%u)", ring_idx + 1);
+    tooltip_append_index(&index, place);
+    tooltip_row_list(req, STR_LIT("index"), index);
+}
+
 // The hit names the group and the element outright - its range was reserved against that group's attribute - so there
 // is no list to rebuild and nothing to look the index up in.
 static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
@@ -583,6 +678,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if (hit.local_idx < sys.bond.count) tooltip_bond(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_BackboneSegment) {
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
+    } else if (hit.domain == PickingDomain_Ring) {
+        if (hit.local_idx < md_index_data_num_ranges(&sys.ring)) tooltip_ring(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
     }
@@ -5927,6 +6024,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
+            // One index per ring of the system, which the circle of an aromatic ring writes: only those are drawn
+            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring));
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -5971,6 +6070,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             // A cartoon segment stands for the component it stems from: at least that is hovered and selected
                             mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)bb.segment.comp_idx[seg_idx], state->selection.granularity, state->mold.sys);
                         }
+                    } else if (surf->hit.domain == PickingDomain_Ring) {
+                        // The circle of an aromatic ring stands for the atoms of the ring
+                        mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, surf->hit.local_idx, state->selection.granularity, state->mold.sys);
                     }
                     
                     // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
@@ -5991,7 +6093,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             }
                         }
 
-                        if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond || surf->hit.domain == PickingDomain_BackboneSegment) {
+                        if (picking_domain_resolves_to_atoms(surf->hit.domain)) {
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitmask_or(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
                             }
