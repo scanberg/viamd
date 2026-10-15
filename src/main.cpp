@@ -509,6 +509,7 @@ int main(int argc, char** argv) {
     // reads the file, so the bound values are current by the time the loop starts.
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
+    app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
     display_units::register_settings();
@@ -774,7 +775,7 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
         if (view_result.reset_requested) {
             // What is focused on is seen in the middle of what the windows leave in view, rather than behind them
-            state.view.region = main_view_uncovered_region(state, canvas_window);
+            state.view.region = state.settings.focus_in_free_space ? main_view_uncovered_region(state, canvas_window) : ViewRegion{};
             ViewTransform reset_transform = {};
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
@@ -1929,6 +1930,15 @@ static void draw_main_menu(ApplicationState* data) {
                 app_settings::mark_dirty();
             }
             ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
+
+            if (ImGui::Checkbox("Focus in Free Space", &data->settings.focus_in_free_space)) {
+                if (!data->settings.focus_in_free_space) {
+                    // Back to the middle of the whole view
+                    data->view.region = {};
+                }
+                app_settings::mark_dirty();
+            }
+            ImGui::SetItemTooltip("Double clicking the view frames what it focuses on in the largest part of the view\nthat no window covers, rather than in the middle of the whole view");
 
             // Font
             int font_size_idx = nearest_font_size_index(data->settings.font_size);

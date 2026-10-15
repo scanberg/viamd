@@ -1088,7 +1088,7 @@ struct ApplicationState {
 		ViewTransform target = {};
 
         // The part of the view that what the view is reset to is framed in: what the windows left uncovered when
-        // it was last focused with a double click, or all of it. The projection is shifted so that the camera's
+        // it was last focused with a double click (with settings.focus_in_free_space), or all of it. The projection is shifted so that the camera's
         // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
         ViewRegion region = {};
         vec2_t shift = {0, 0};
@@ -1440,6 +1440,7 @@ struct ApplicationState {
     struct {
         bool keep_representations = false;
         bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
+        bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;
 
