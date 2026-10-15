@@ -4,7 +4,7 @@
 #include <serialization_utils.h>
 
 #include <core/md_allocator.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 
 #include <string.h>
 
@@ -173,11 +173,11 @@ UTEST(timeline_periods, workspace_round_trip) {
     timeline_periods_add(&rs, nullptr, 12, 12, false);
 
     viamd::serialization_state_t w = {};
-    md_strb_init(&w.sb, md_get_heap_allocator());
+	md_str_writer_init(&w.sw, md_get_heap_allocator());
     timeline_periods_serialize(w, &rs);
 
     viamd::deserialization_state_t r = {};
-    r.text = md_strb_to_str(w.sb);
+    r.text = md_str_writer_to_str(&w.sw);
 
     TimelinePeriods out = {};
     str_t section;
@@ -187,7 +187,7 @@ UTEST(timeline_periods, workspace_round_trip) {
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
         sections += 1;
     }
-    md_strb_free(&w.sb);
+    md_str_writer_free(&w.sw);
 
     ASSERT_EQ(3, sections);
     ASSERT_EQ(3, out.count);
@@ -223,7 +223,7 @@ UTEST(timeline_periods, ids_survive_a_save_and_a_load) {
     timeline_periods_remove(&rs, gone);
 
     viamd::serialization_state_t w = {};
-    md_strb_init(&w.sb, md_get_heap_allocator());
+    md_str_writer_init(&w.sw, md_get_heap_allocator());
     timeline_periods_serialize(w, &rs);
 
     // Read into periods which already have one, of C's id: C gets another, and new ones never take a saved one
@@ -234,12 +234,12 @@ UTEST(timeline_periods, ids_survive_a_save_and_a_load) {
     const int before = out.count;
 
     viamd::deserialization_state_t r = {};
-    r.text = md_strb_to_str(w.sb);
+    r.text = md_str_writer_to_str(&w.sw);
     str_t section;
     while (viamd::next_section_header(section, r)) {
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
     }
-    md_strb_free(&w.sb);
+    md_str_writer_free(&w.sw);
 
     ASSERT_EQ(before + 2, out.count);
     const TimelinePeriod& a = out.items[before];
