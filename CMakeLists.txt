@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.26)
+﻿cmake_minimum_required(VERSION 3.27)
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
@@ -177,6 +177,7 @@ set(SRC_FILES
     src/display_units.cpp
     src/surface_field.cpp
     src/event.cpp
+    src/file_list.cpp
     src/image.cpp
     src/imgui_widgets.cpp
     src/implot_widgets.cpp
@@ -195,6 +196,7 @@ set(SRC_FILES
     src/display_units.h
     src/surface_field.h
     src/event.h
+    src/file_list.h
     src/image.h
     src/imgui_widgets.h
     src/implot_widgets.h
