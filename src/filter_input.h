@@ -10,8 +10,8 @@
 // a name or a string is typed, and Ctrl+Space asks for them; Tab or Enter takes the selected one, Up and Down move
 // through them, Escape closes them, and a click takes one.
 //
-// A filter that does not evaluate turns its input red, the part of the text the error is about is underlined, and
-// hovering it says why.
+// An empty filter picks every atom, and its input says so ("all", greyed). A filter that does not evaluate turns its
+// input red, the part of the text the error is about is underlined, and hovering it says why.
 
 #include <md_filter.h>
 #include <core/md_array.h>

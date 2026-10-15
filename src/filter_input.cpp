@@ -283,7 +283,7 @@ bool filter_input(const char* label, AtomFilter* filter, const md_filter_context
         ImGui::SetKeyboardFocusHere();
     }
 
-    // Red until it evaluates, but not while it is empty
+    // Red until it evaluates, but not while it is empty: that picks every atom, which the hint says
     const bool invalid = !filter->result.success && filter->text[0] != '\0';
     CallbackData data = {&ctx};
     const ImGuiInputTextFlags input_flags = (flags & ~ImGuiInputTextFlags_EnterReturnsTrue) |
@@ -291,7 +291,7 @@ bool filter_input(const char* label, AtomFilter* filter, const md_filter_context
         ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackEdit |
         ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackHistory;
     if (invalid) ImGui::PushInvalid();
-    const bool entered = ImGui::InputText(label, filter->text, sizeof(filter->text), input_flags, callback, &data);
+    const bool entered = ImGui::InputTextWithHint(label, "all", filter->text, sizeof(filter->text), input_flags, callback, &data);
     if (invalid) ImGui::PopInvalid();
     bool changed = ImGui::IsItemEdited();
     if (confirmed) {
