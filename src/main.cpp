@@ -3842,6 +3842,12 @@ static void draw_representations_window(ApplicationState* state) {
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
                             }
+                            if (state->mold.cartoon_glyphs.num_split_heads > 0) {
+                                update_rep |= ImGui::Checkbox("two head spheres", &rep.two_head_spheres);
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip("The head of a phospholipid as two spheres, split at its phosphate: the head group with the phosphate, and the backbone the tails hang off");
+                                }
+                            }
                         }
                         break;
                     default:

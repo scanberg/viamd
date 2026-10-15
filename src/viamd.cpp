@@ -662,7 +662,7 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     // Indexed by CartoonGlyphKind
-    static const char* parts[] = { "head", "tail", "sterol skeleton", "backbone", "base" };
+    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "base" };
     static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
     const md_component_kind_t kind = md_component_kind(&sys.component, comp_idx);
@@ -1824,6 +1824,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_vec4(rep->bond_base_color, arg);
         } else if (str_eq(ident, STR_LIT("BondOrders"))) {
             viamd::extract_bool(rep->bond_orders, arg);
+        } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
+            viamd::extract_bool(rep->two_head_spheres, arg);
         } else if (str_eq(ident, STR_LIT("Radius"))) {
             // DEPRECATED
             viamd::extract_flt(rep->scale.x, arg);
@@ -1996,6 +1998,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_flt(state,  STR_LIT("BondSharpness"), rep.bond_sharpness);
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
+    viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
 
     viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
     viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
@@ -4485,7 +4488,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
             rep->glyphs_shown = false;
             if (rep->type == RepresentationType::Cartoon) {
-                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms);
+                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
             }
 
 #if EXPERIMENTAL_GFX_API

@@ -18,11 +18,15 @@ struct md_allocator_i;
 // profile. Nucleic acids have a cheaper one for now, of spheres and capsules.
 //
 //   lipid      A sphere for each head, at the centre of its heavy atoms and sized by how many there are (a phosphatidyl
-//              choline is larger than the hydroxyl of a sterol, an inositol phosphate larger still). A tube for each tail
+//              choline is larger than the hydroxyl of a sterol, an inositol phosphate larger still). Or two, where a
+//              representation asks for them (CartoonGlyphVariant): the head of a phospholipid splits at its phosphate
+//              into the head group with the phosphate (a phosphocholine) and the backbone the tails hang off (a glycerol
+//              and its esters), a sphere for each, sized the same way (a cardiolipin has two backbones and one head
+//              group between them). A tube for each tail
 //              (md_lipid_data_t) from the centre of its head over the atom it hangs off and along its spine to its tip,
 //              or on to the head a spanning chain joins (a bolalipid). An atomistic spine gets a control point per two
 //              of its atoms, which is on the axis of a chain in its all trans zigzag and so smooths it away; a coarse
-//              grained one a control point per bead. The skeleton of a sterol is a thicker tube.
+//              grained one a control point per bead. The skeleton of a sterol is a thicker tube. The tubes have round ends.
 //   nucleic    A capsule from the C4' of each nucleotide of a backbone (md_nucleic_backbone_data_t) to the next, and a
 //              thinner stick from the C4' over the C1' to the edge of the base which pairs: N1 of a purine, N3 of a
 //              pyrimidine. A sphere at each of these points.
@@ -40,12 +44,20 @@ struct md_allocator_i;
 // What comes after: a spline with an oval profile for the backbones of nucleic acids.
 
 enum CartoonGlyphKind : uint8_t {
-    CartoonGlyph_LipidHead = 0,
+    CartoonGlyph_LipidHead = 0,     // A head, or the head group of a split head
+    CartoonGlyph_LipidBackbone,     // The backbone of a split head
     CartoonGlyph_LipidTail,
     CartoonGlyph_SterolSkeleton,
     CartoonGlyph_NucleicBackbone,
     CartoonGlyph_NucleicBase,
     CartoonGlyph_Count
+};
+
+// Which representations show a point: lipid heads are one sphere, or two where the head splits
+enum CartoonGlyphVariant : uint8_t {
+    CartoonGlyphVariant_Always = 0,
+    CartoonGlyphVariant_OneHeadSphere,      // The sphere of a head which splits
+    CartoonGlyphVariant_TwoHeadSpheres,     // The spheres of its parts
 };
 
 struct CartoonGlyphs {
@@ -55,6 +67,7 @@ struct CartoonGlyphs {
     uint32_t num_tube_points = 0;   // Control points of all tubes
     uint32_t num_segments = 0;
     uint32_t num_source_atoms = 0;  // Of the system the points are derived from
+    uint32_t num_split_heads = 0;   // Lipid heads which are two spheres (or more) in a representation which asks for that
 
     // A point is the mean of its atoms, point_atom[point_offset[i] .. point_offset[i + 1]), each atom taken at its
     // image nearest to point_ref[i]. The points of one lipid share their reference, so a lipid stays whole across the
@@ -66,6 +79,7 @@ struct CartoonGlyphs {
     md_array(int32_t)  point_comp = nullptr;         // [num_points] The component it stands for
     md_array(float)    point_radius = nullptr;       // [num_points] Of its sphere, Å, before the scale of the representation. 0 for none
     md_array(uint8_t)  point_kind = nullptr;         // [num_points] CartoonGlyphKind
+    md_array(uint8_t)  point_variant = nullptr;      // [num_points] CartoonGlyphVariant
 
     // Tube t goes through the points tube_point[tube_offset[t] .. tube_offset[t + 1])
     md_array(uint32_t) tube_offset = nullptr;        // [num_tubes + 1]
@@ -99,9 +113,9 @@ void cartoon_glyphs_update_flags(const CartoonGlyphs& glyphs, const uint8_t* ato
 // A representation of the glyphs, with their capsules, for a representation of the system. Destroy with md_gl_rep_destroy.
 md_gl_rep_t cartoon_glyphs_rep_create(const CartoonGlyphs& glyphs);
 
-// The colours of the points from those of the atoms of a representation (an alpha of 0 hides an atom). Whether any point
-// is shown.
-bool cartoon_glyphs_rep_set_colors(const CartoonGlyphs& glyphs, md_gl_rep_t rep, const uint32_t* atom_colors, size_t num_atoms);
+// The colours of the points from those of the atoms of a representation (an alpha of 0 hides an atom), and whether the
+// heads which split are two spheres or one. Whether any point is shown.
+bool cartoon_glyphs_rep_set_colors(const CartoonGlyphs& glyphs, md_gl_rep_t rep, const uint32_t* atom_colors, size_t num_atoms, bool two_head_spheres);
 
 // Picking: the spheres and capsules write the index of a point, the tubes num_points + the index of their control point
 // (md_gl_picking_offset_t: atom_base at the beginning of the range, backbone_base num_points after it)
