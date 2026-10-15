@@ -104,8 +104,9 @@ constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("pickin
 // A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
 // bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
 constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
-// A point of the cartoon of the lipids and nucleic acids (CartoonGlyphs): a head, a point along a tail or a backbone.
-// A hit names the point and resolves to the component it stands for.
+// A point of the cartoon of the lipids and nucleic acids (CartoonGlyphs): a head, a point along a tail or a backbone, or
+// the part of a tube around a control point. A hit names the point (cartoon_glyphs_picked_point) and resolves to the
+// component it stands for.
 constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking domain cartoon glyph");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
@@ -1128,8 +1129,8 @@ struct ApplicationState {
         // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
         // interpolate_system_state), never read back and kept nowhere else.
         md_gl_mol_t         gl_mol = {};
-        // The spheres and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol and
-        // placed every frame from the state (see cartoon_glyphs.h)
+        // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
+        // and derived from its atoms on the GPU (see cartoon_glyphs.h)
         CartoonGlyphs       cartoon_glyphs = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
@@ -2342,12 +2343,13 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
 }
 
 // The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
-// their own: their spheres and capsules write the index of a point
+// their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points
+// (cartoon_glyphs_picked_point)
 static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
     return {
         .atom_base     = state.picking_range_glyph.beg,
         .bond_base     = state.picking_range_glyph.beg,
-        .backbone_base = state.picking_range_glyph.beg,
+        .backbone_base = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points,
         .ring_base     = state.picking_range_glyph.beg,
     };
 }

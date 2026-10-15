@@ -87,6 +87,16 @@ struct GlyphBuilder {
         md_array_push(g->segment_point, b, alloc);
         md_array_push(g->segment_radius, radius, alloc);
     }
+
+    // The next control point of the current tube, which tube_end closes
+    void tube_point(uint32_t p, float radius) {
+        md_array_push(g->tube_point, p, alloc);
+        md_array_push(g->tube_radius, radius, alloc);
+    }
+
+    void tube_end() {
+        md_array_push(g->tube_offset, (uint32_t)md_array_size(g->tube_point), alloc);
+    }
 };
 
 static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
@@ -122,42 +132,37 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
             const int32_t comp = component_of_atom(sys, cr.beg, cr.end, spine[0]);
             const bool beads = atom_is_bead(sys, spine[0]);
 
+            // The control points of the tube are points without a sphere of their own (a radius of 0)
+
             // From the centre of the head over the atom it hangs off, unless that atom is all of the head (the hydroxyl
             // bead of a coarse grained sterol)
-            uint32_t prev = head_point[L.tail.head_beg[t] - h0];
+            b.tube_point(head_point[L.tail.head_beg[t] - h0], radius);
             const int32_t anchor_beg = L.tail.anchor_beg[t];
             if (md_index_range_size(&L.head.atoms, L.tail.head_beg[t]) > 1) {
-                const uint32_t p = b.point(&anchor_beg, 1, ref, spine[0], comp, radius, kind);
-                b.segment(prev, p, radius);
-                prev = p;
+                b.tube_point(b.point(&anchor_beg, 1, ref, spine[0], comp, 0.0f, kind), radius);
             }
 
-            // Along the spine: a point per bead, or per two atoms, and the tip
+            // Along the spine: a control point per bead, or per two atoms, and the tip
             size_t k = 0;
             if (!beads) {
                 for (; k + 1 < len; k += 2) {
-                    const uint32_t p = b.point(spine + k, 2, ref, spine[k], comp, radius, kind);
-                    b.segment(prev, p, radius);
-                    prev = p;
+                    b.tube_point(b.point(spine + k, 2, ref, spine[k], comp, 0.0f, kind), radius);
                 }
                 k = len - 1;
             }
             for (; k < len; ++k) {
-                const uint32_t p = b.point(spine + k, 1, ref, spine[k], comp, radius, kind);
-                b.segment(prev, p, radius);
-                prev = p;
+                b.tube_point(b.point(spine + k, 1, ref, spine[k], comp, 0.0f, kind), radius);
             }
 
             // A spanning chain goes on to its other head
             if (L.tail.anchor_end[t] != -1 && L.tail.head_end[t] != UINT32_MAX) {
                 const int32_t anchor_end = L.tail.anchor_end[t];
                 if (md_index_range_size(&L.head.atoms, L.tail.head_end[t]) > 1) {
-                    const uint32_t p = b.point(&anchor_end, 1, ref, spine[len - 1], comp, radius, kind);
-                    b.segment(prev, p, radius);
-                    prev = p;
+                    b.tube_point(b.point(&anchor_end, 1, ref, spine[len - 1], comp, 0.0f, kind), radius);
                 }
-                b.segment(prev, head_point[L.tail.head_end[t] - h0], radius);
+                b.tube_point(head_point[L.tail.head_end[t] - h0], radius);
             }
+            b.tube_end();
         }
     }
     md_temp_end(temp);
@@ -190,25 +195,44 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
     }
 }
 
-void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_allocator_i* alloc) {
+void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t gl_mol, md_allocator_i* alloc) {
     ASSERT(g);
     ASSERT(alloc);
     cartoon_glyphs_free(g);
     g->alloc = alloc;
     md_array_push(g->point_offset, 0, alloc);
+    md_array_push(g->tube_offset, 0, alloc);
 
     GlyphBuilder b = { .g = g, .alloc = alloc };
     build_lipids(b, sys);
     build_nucleic_acids(b, sys);
 
-    g->num_points   = (uint32_t)md_array_size(g->point_ref);
-    g->num_segments = (uint32_t)md_array_size(g->segment_radius);
-    if (g->num_points == 0) return;
+    g->num_points      = (uint32_t)md_array_size(g->point_ref);
+    g->num_tubes       = (uint32_t)md_array_size(g->tube_offset) - 1;
+    g->num_tube_points = (uint32_t)md_array_size(g->tube_point);
+    g->num_segments    = (uint32_t)md_array_size(g->segment_radius);
+    g->num_source_atoms = (uint32_t)sys.atom.count;
+    if (g->num_points == 0 || gl_mol.id == 0) return;
 
-    md_array_resize(g->xyz, g->num_points, alloc);
-    MEMSET(g->xyz, 0, md_array_bytes(g->xyz));
     g->gl_mol = md_gl_mol_create_particles(g->num_points);
     md_gl_mol_set_atom_radius(g->gl_mol, 0, g->num_points, g->point_radius, 0);
+
+    // Each point the mean of its atoms
+    md_temp_scope_t temp = md_temp_begin();
+    const size_t num_atoms = md_array_size(g->point_atom);
+    float* weight = (float*)md_temp_alloc(temp, MAX(num_atoms, 1) * sizeof(float));
+    for (uint32_t i = 0; i < g->num_points; ++i) {
+        const uint32_t beg = g->point_offset[i];
+        const uint32_t end = g->point_offset[i + 1];
+        for (uint32_t j = beg; j < end; ++j) weight[j] = 1.0f / (float)(end - beg);
+    }
+    static_assert(sizeof(int32_t) == sizeof(uint32_t), "The atom indices are passed as unsigned");
+    md_gl_mol_set_derived(g->gl_mol, gl_mol, g->point_offset, (const uint32_t*)g->point_atom, weight, (const uint32_t*)g->point_ref);
+    md_temp_end(temp);
+
+    if (g->num_tubes > 0) {
+        md_gl_mol_set_tubes(g->gl_mol, g->num_tubes, g->tube_offset, g->tube_point, g->tube_radius);
+    }
     g->positions_valid = false;
 }
 
@@ -223,47 +247,22 @@ void cartoon_glyphs_free(CartoonGlyphs* g) {
         md_array_free(g->point_comp, g->alloc);
         md_array_free(g->point_radius, g->alloc);
         md_array_free(g->point_kind, g->alloc);
+        md_array_free(g->tube_offset, g->alloc);
+        md_array_free(g->tube_point, g->alloc);
+        md_array_free(g->tube_radius, g->alloc);
         md_array_free(g->segment_point, g->alloc);
         md_array_free(g->segment_radius, g->alloc);
-        md_array_free(g->xyz, g->alloc);
     }
     *g = CartoonGlyphs{};
 }
 
-void cartoon_glyphs_update_positions(CartoonGlyphs* g, const md_system_state_t& state, bool velocity) {
+void cartoon_glyphs_update_positions(CartoonGlyphs* g, const md_system_state_t& state) {
     ASSERT(g);
-    if (!cartoon_glyphs_valid(*g) || state.num_atoms == 0) return;
+    if (!cartoon_glyphs_valid(*g)) return;
     const md_unitcell_t* cell = md_unitcell_flags(&state.unitcell) ? &state.unitcell : nullptr;
-
-    vec3_t dx[64];
-    for (uint32_t i = 0; i < g->num_points; ++i) {
-        const uint32_t beg = g->point_offset[i];
-        const uint32_t end = g->point_offset[i + 1];
-        const int32_t ref = g->point_ref[i];
-        if (end - beg == 1 && g->point_atom[beg] == ref) {
-            g->xyz[i] = state.xyz[ref];
-            continue;
-        }
-        // The mean of the atoms at their images nearest to the reference, in batches
-        const vec3_t r = state.xyz[ref];
-        vec3_t sum = {0, 0, 0};
-        for (uint32_t j = beg; j < end; j += (uint32_t)ARRAY_SIZE(dx)) {
-            const uint32_t n = MIN(end - j, (uint32_t)ARRAY_SIZE(dx));
-            for (uint32_t k = 0; k < n; ++k) dx[k] = vec3_sub(state.xyz[g->point_atom[j + k]], r);
-            md_util_min_image_vec3(dx, n, cell);
-            for (uint32_t k = 0; k < n; ++k) sum = vec3_add(sum, dx[k]);
-        }
-        g->xyz[i] = vec3_add(r, vec3_mul1(sum, 1.0f / (float)(end - beg)));
-    }
-
-    md_gl_mol_set_atom_position(g->gl_mol, 0, g->num_points, g->xyz);
-    if (velocity) {
-        vec3_t pbc_ext = {0, 0, 0};
-        md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
-        md_gl_mol_compute_velocity(g->gl_mol, pbc_ext.elem);
-    } else {
-        md_gl_mol_zero_velocity(g->gl_mol);
-    }
+    // The positions on the CPU only place the tubes for their culling, and must be those of every atom
+    const vec3_t* xyz = (state.xyz && state.num_atoms >= g->num_source_atoms) ? state.xyz : nullptr;
+    md_gl_mol_compute_derived(g->gl_mol, cell, xyz);
     g->positions_valid = true;
 }
 

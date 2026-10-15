@@ -710,7 +710,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
     } else if (hit.domain == PickingDomain_Ring) {
         if (hit.local_idx < md_index_data_num_ranges(&sys.ring)) tooltip_ring(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        if (hit.local_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, hit.local_idx);
+        const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
+        if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
     }
@@ -1349,7 +1350,7 @@ void init_system_data(ApplicationState* data) {
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         // Before the representations, which each make a representation of the glyphs
-        cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->allocator.persistent);
+        cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
 
         // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
         // frame (interpolate_system_state)
@@ -6236,8 +6237,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
             // One index per ring of the system, which the circle of an aromatic ring writes: only those are drawn
             picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring));
-            // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write
-            picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, state->mold.cartoon_glyphs.num_points);
+            // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
+            // one per control point of its tubes after them (cartoon_glyphs_picked_point)
+            picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -6287,7 +6289,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, surf->hit.local_idx, state->selection.granularity, state->mold.sys);
                     } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
                         // A point of the cartoon of a lipid or a nucleic acid stands for its component, as a cartoon segment does
-                        const int32_t comp_idx = cartoon_glyphs_point_component(state->mold.cartoon_glyphs, surf->hit.local_idx);
+                        const uint32_t point_idx = cartoon_glyphs_picked_point(state->mold.cartoon_glyphs, surf->hit.local_idx);
+                        const int32_t comp_idx = cartoon_glyphs_point_component(state->mold.cartoon_glyphs, point_idx);
                         if (comp_idx >= 0 && (size_t)comp_idx < state->mold.sys.component.count) {
                             mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
                         }

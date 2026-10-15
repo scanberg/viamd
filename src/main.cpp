@@ -6600,11 +6600,12 @@ static void update_md_buffers(ApplicationState* data) {
         data->mold.gpu_buffers_version += 1;
     }
 
-    if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
-        // Placed below, when a cartoon shows them. Their move is a velocity only if they were placed before it.
-        data->mold.cartoon_glyphs.velocity_valid  = data->mold.cartoon_glyphs.positions_valid;
+    if (data->mold.dirty_gpu_buffers & (MolBit_DirtyPosition | MolBit_ClearVelocity)) {
+        // Derived from the positions and velocities of the atoms below, when a cartoon shows them
         data->mold.cartoon_glyphs.positions_valid = false;
+    }
 
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
         vec3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
@@ -6623,6 +6624,9 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_gpu_buffers & MolBit_ResetBackboneHistory) {
         md_gl_mol_reset_backbone_history(data->mold.gl_mol);
+        if (cartoon_glyphs_valid(data->mold.cartoon_glyphs)) {
+            md_gl_mol_reset_backbone_history(data->mold.cartoon_glyphs.gl_mol);
+        }
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyRadius) {
@@ -6675,9 +6679,8 @@ static void update_md_buffers(ApplicationState* data) {
         md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
     }
 
-    // The glyphs of the cartoon of the lipids and nucleic acids are placed from the atoms on the CPU: only while a cartoon
-    // shows them. Placed in the frame the positions moved they move with them; placed later (a cartoon enabled while
-    // paused) they stand still.
+    // The glyphs of the cartoon of the lipids and nucleic acids are derived on the GPU from the positions and velocities
+    // of the atoms, set above: only while a cartoon shows them
     CartoonGlyphs& glyphs = data->mold.cartoon_glyphs;
     if (cartoon_glyphs_valid(glyphs) && !glyphs.positions_valid) {
         bool shown = false;
@@ -6686,8 +6689,7 @@ static void update_md_buffers(ApplicationState* data) {
             shown = rep.enabled && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
         }
         if (shown) {
-            const bool moved = (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) && !(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) && glyphs.velocity_valid;
-            cartoon_glyphs_update_positions(&glyphs, state, moved);
+            cartoon_glyphs_update_positions(&glyphs, state);
         }
     }
 
@@ -7177,8 +7179,8 @@ static void render(ApplicationState* state) {
     }
 }
 
-// The draws of the glyphs of a Cartoon (the lipids and nucleic acids, see cartoon_glyphs.h): their spheres and capsules,
-// thickened by the w of the scale of the representation
+// The draws of the glyphs of a Cartoon (the lipids and nucleic acids, see cartoon_glyphs.h): their spheres, tubes and
+// capsules, thickened by the w of the scale of the representation
 static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
     if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
     const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
@@ -7191,6 +7193,17 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     };
     spheres.args.space_fill.radius_scale = scale;
     md_array_push(*ops, spheres, alloc);
+
+    if (state.mold.cartoon_glyphs.num_tubes > 0) {
+        md_gl_draw_op_t tubes = {
+            .type = MD_GL_REP_TUBES,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .model_matrix = NULL,
+        };
+        tubes.args.tubes.radius_scale = scale;
+        md_array_push(*ops, tubes, alloc);
+    }
 
     if (state.mold.cartoon_glyphs.num_segments > 0) {
         md_gl_draw_op_t capsules = {
