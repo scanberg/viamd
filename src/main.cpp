@@ -750,6 +750,13 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The stride only applies while playing: starting or stopping playback, like changing the stride, changes
+        // the frames the displayed state is made from without changing the time. Stopped, it is the trajectory's own.
+        if (playback_stride(&state) != state.mold.last_interpolated_stride) {
+            state.mold.interpolate_system_state = true;
+            state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        }
+
         if (state.mold.interpolate_system_state) {
 			state.mold.interpolate_system_state = false;
             if (run_num_frames(&state) > 0) {
@@ -2819,12 +2826,21 @@ static void draw_animation_window(ApplicationState* data) {
         const float item_width = MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
         if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
+            static const char* mode_tooltip[(int)InterpolationMode::Count] = {
+                "The nearest frame, as it is",
+                "Straight from frame to frame, through each of them",
+                "Smooth (C1) from frame to frame, through each of them",
+                "Smoother (C2), and damps the jitter from frame to frame,\n"
+                "but passes through none of the frames but the first and the last:\n"
+                "the coordinates shown are never a frame's own, not even when stopped on one",
+            };
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
 					data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
+                ImGui::SetItemTooltip("%s", mode_tooltip[i]);
             }
             ImGui::EndCombo();
         }
@@ -2837,6 +2853,21 @@ static void draw_animation_window(ApplicationState* data) {
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");
+        }
+        {
+            // animation.stride, named for what is seen: the frames kept are the keys, the motion between them is interpolated.
+            // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
+            // typed in (Ctrl+click): only the lower bound is enforced.
+            const int max_stride = (int)CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
+            const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
+            ImGui::SliderInt("Keyframes", &data->animation.stride, 1, max_stride, fmt);
+            data->animation.stride = MAX(1, data->animation.stride);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
+                                  "at the expense of the frames in between (and the usual interpolation artifacts).\n"
+                                  "The speed is unchanged. A stopped animation shows the trajectory's own frames.\n"
+                                  "Ctrl+click to type a value beyond the slider's range.");
+            }
         }
         if (data->animation.interpolation == InterpolationMode::CubicSpline) {
             ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");

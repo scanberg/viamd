@@ -1710,6 +1710,7 @@ static void workspace_reset(ApplicationState* data) {
     data->animation.frame = 0.0;
     data->animation.fps = 10.0f;
     data->animation.tension = 0.0f;
+    data->animation.stride = 1;
     data->animation.interpolation = InterpolationMode::CubicSpline;
     data->animation.mode = PlaybackMode::Stopped;
 
@@ -2087,6 +2088,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_flt(data->animation.fps, arg);
                 } else if (str_eq(ident, STR_LIT("Tension"))) {
                     viamd::extract_flt(data->animation.tension, arg);
+                } else if (str_eq(ident, STR_LIT("Stride"))) {
+                    if (viamd::extract_int(data->animation.stride, arg)) {
+                        data->animation.stride = MAX(1, data->animation.stride);
+                    }
                 } else if (str_eq(ident, STR_LIT("Interpolation"))) {
                     viamd::extract_enum(data->animation.interpolation, arg, (int)InterpolationMode::Count);
                 }
@@ -2407,6 +2412,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_dbl(state, STR_LIT("Frame"), app_state->animation.frame);
     viamd::write_flt(state, STR_LIT("Fps"), app_state->animation.fps);
     viamd::write_flt(state, STR_LIT("Tension"), app_state->animation.tension);
+    viamd::write_int(state, STR_LIT("Stride"), app_state->animation.stride);
     viamd::write_int(state, STR_LIT("Interpolation"), (int)app_state->animation.interpolation);
 
     plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
@@ -4653,8 +4659,18 @@ done:
     recompute_atom_visibility_mask(state);
 }
 
+int playback_stride(const ApplicationState* app) {
+    ASSERT(app);
+    return (app->animation.mode == PlaybackMode::Playing) ? MAX(1, app->animation.stride) : 1;
+}
+
 void interpolate_system_state(ApplicationState* app) {
     ASSERT(app);
+
+    // Recorded before anything can return early, so that a change of stride is acted on once (see main)
+    const int64_t stride = playback_stride(app);
+    app->mold.last_interpolated_stride = (int)stride;
+
 	const auto& sys  = app->mold.sys;
 
 	size_t num_atoms = app->mold.state.num_atoms;
@@ -4665,9 +4681,27 @@ void interpolate_system_state(ApplicationState* app) {
     // This is not actually time, but the fractional frame representation
     const double time = CLAMP(app->animation.frame, 0.0, double(last_frame));
 
-    // Scaling factor for cubic spline
-    const int64_t frame = (int64_t)time;
-    const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
+    // The frames interpolated between, the keys: every stride:th frame counted from the first, and the last, which
+    // closes a shorter final interval when the stride does not divide the trajectory. With a stride of 1 every frame
+    // is a key. Counting from frame 0 rather than from where playback started keeps the path the same every time
+    // it is played.
+    const int64_t last_key = (last_frame + stride - 1) / stride;
+    auto key_frame = [stride, last_key, last_frame](int64_t k) {
+        return MIN(CLAMP(k, (int64_t)0, last_key) * stride, last_frame);
+    };
+    const int64_t key = MIN((int64_t)(time / (double)stride), last_key);
+
+    // This represents the frames that we would like to load into memory for interpolation (worst case).
+    const int64_t frames[4] = {
+        key_frame(key - 1),
+        key_frame(key),
+        key_frame(key + 1),
+        key_frame(key + 2),
+    };
+
+    // Where in the interval between the two middle keys the time is, and which of them is nearest
+    const double t = (frames[2] > frames[1]) ? (time - (double)frames[1]) / (double)(frames[2] - frames[1]) : 0.0;
+    const int64_t nearest_frame = (t < 0.5) ? frames[1] : frames[2];
 
     if (app->animation.interpolation == InterpolationMode::Nearest) {
         if (app->mold.last_interpolated_nearest_frame == nearest_frame) {
@@ -4689,14 +4723,6 @@ void interpolate_system_state(ApplicationState* app) {
         app->mold.last_interpolated_frame = time;
     }
 
-    // This represents the frames that we would like to load into memory for interpolation (worst case).
-    const int64_t frames[4] = {
-        MAX(0LL, frame - 1),
-        MAX(0LL, frame),
-        MIN(frame + 1, last_frame),
-        MIN(frame + 2, last_frame),
-    };
-
     const size_t num_threads = task_system::pool_num_threads();
 
     // The number of atoms to be processed per thread when divided into chunks
@@ -4708,8 +4734,8 @@ void interpolate_system_state(ApplicationState* app) {
 
     struct Payload {
         ApplicationState* app;
-        float s;
         float t;
+        float w[4];     // The weights of the four frames, for the cubic modes
         InterpolationMode mode;
 
         int64_t nearest_frame;
@@ -4733,10 +4759,7 @@ void interpolate_system_state(ApplicationState* app) {
 
     Payload payload = {
         .app = app,
-        // Tangent scale of the cardinal spline: (p2 - p0) * s. Tension 0 gives s = 0.5, i.e. Catmull-Rom, which plays
-        // uniform motion back uniformly; tension 1 eases in and out of every frame.
-        .s = 0.5f * (1.0f - CLAMP(app->animation.tension, 0.0f, 1.0f)),
-        .t = (float)fract(time),
+        .t = (float)t,
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
@@ -4744,6 +4767,23 @@ void interpolate_system_state(ApplicationState* app) {
         .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
         .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
+
+    // The cubic modes are a weighted sum of the four frames, the same for everything interpolated: coordinates, cell and
+    // backbone angles.
+    if (mode == InterpolationMode::CubicSpline) {
+        // Tangent scale of the cardinal spline: (p2 - p0) * s. Tension 0 gives s = 0.5, i.e. Catmull-Rom, which plays
+        // uniform motion back uniformly; tension 1 eases in and out of every frame.
+        const float s = 0.5f * (1.0f - CLAMP(app->animation.tension, 0.0f, 1.0f));
+        md_util_cubic_spline_weights(payload.w, payload.t, s);
+    } else if (mode == InterpolationMode::BSpline) {
+        md_util_cubic_bspline_weights(payload.w, payload.t);
+        // At the ends of the trajectory the missing neighbour is the reflection of the next frame through the end one
+        // (p[-1] = 2 p[0] - p[1]) rather than the end frame repeated: that is what makes the B-spline begin and end on
+        // the first and last frames, which repeating them would leave it short of. Within the trajectory it lands on none.
+        float* w = payload.w;
+        if (frames[0] == frames[1]) { w[1] += 2.0f * w[0]; w[2] -= w[0]; w[0] = 0.0f; }
+        if (frames[3] == frames[2]) { w[2] += 2.0f * w[3]; w[1] -= w[3]; w[3] = 0.0f; }
+    }
 
     // The backbone of the displayed state is the run's at the frames around it: the angles and the secondary structure
     // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
@@ -4778,6 +4818,7 @@ void interpolate_system_state(ApplicationState* app) {
             requested_frames[num_requested_frames++] = (int)frames[2];
             break;
         case InterpolationMode::CubicSpline:
+        case InterpolationMode::BSpline:
             requested_frames[num_requested_frames++] = (int)frames[0];
             requested_frames[num_requested_frames++] = (int)frames[1];
             requested_frames[num_requested_frames++] = (int)frames[2];
@@ -4873,14 +4914,17 @@ void interpolate_system_state(ApplicationState* app) {
 
             break;
         }
-        case InterpolationMode::CubicSpline: {
+        case InterpolationMode::CubicSpline:
+        case InterpolationMode::BSpline: {
             task_system::ID iterp_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unitcell"), [data = &payload]() {
-                double x  = cubic_spline(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->src_states[2]->unitcell.x,  data->src_states[3]->unitcell.x,  data->t, data->s);
-                double y  = cubic_spline(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->src_states[2]->unitcell.y,  data->src_states[3]->unitcell.y,  data->t, data->s);
-                double z  = cubic_spline(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->src_states[2]->unitcell.z,  data->src_states[3]->unitcell.z,  data->t, data->s);
-                double xy = cubic_spline(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->src_states[2]->unitcell.xy, data->src_states[3]->unitcell.xy, data->t, data->s);
-                double xz = cubic_spline(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->src_states[2]->unitcell.xz, data->src_states[3]->unitcell.xz, data->t, data->s);
-                double yz = cubic_spline(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->src_states[2]->unitcell.yz, data->src_states[3]->unitcell.yz, data->t, data->s);
+                const md_unitcell_t* c[4] = { &data->src_states[0]->unitcell, &data->src_states[1]->unitcell, &data->src_states[2]->unitcell, &data->src_states[3]->unitcell };
+                const float* w = data->w;
+                double x  = w[0] * c[0]->x  + w[1] * c[1]->x  + w[2] * c[2]->x  + w[3] * c[3]->x;
+                double y  = w[0] * c[0]->y  + w[1] * c[1]->y  + w[2] * c[2]->y  + w[3] * c[3]->y;
+                double z  = w[0] * c[0]->z  + w[1] * c[1]->z  + w[2] * c[2]->z  + w[3] * c[3]->z;
+                double xy = w[0] * c[0]->xy + w[1] * c[1]->xy + w[2] * c[2]->xy + w[3] * c[3]->xy;
+                double xz = w[0] * c[0]->xz + w[1] * c[1]->xz + w[2] * c[2]->xz + w[3] * c[3]->xz;
+                double yz = w[0] * c[0]->yz + w[1] * c[1]->yz + w[2] * c[2]->yz + w[3] * c[3]->yz;
                 data->dst_state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
             });
 
@@ -4890,7 +4934,7 @@ void interpolate_system_state(ApplicationState* app) {
                 vec3_t* dst = data->dst_state->xyz + range_beg;
                 const vec3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
 
-                md_util_interpolate_cubic_spline(dst, src, count, &data->dst_state->unitcell, data->t, data->s);
+                md_util_interpolate_cubic_weighted(dst, src, count, &data->dst_state->unitcell, data->w);
             }, grain_size);
 
             tasks[num_tasks++] = iterp_cell_task;
@@ -4962,7 +5006,8 @@ void interpolate_system_state(ApplicationState* app) {
                 tasks[num_tasks++] = angle_task;
                 break;
             }
-            case InterpolationMode::CubicSpline: {
+            case InterpolationMode::CubicSpline:
+            case InterpolationMode::BSpline: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[4] = {
@@ -4983,8 +5028,9 @@ void interpolate_system_state(ApplicationState* app) {
                         psi[2] = deperiodize_orthof(psi[2], psi[1], (float)TWO_PI);
                         psi[3] = deperiodize_orthof(psi[3], psi[2], (float)TWO_PI);
 
-                        float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
-                        float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
+                        const float* w = data->w;
+                        float final_phi = w[0] * phi[0] + w[1] * phi[1] + w[2] * phi[2] + w[3] * phi[3];
+                        float final_psi = w[0] * psi[0] + w[1] * psi[1] + w[2] * psi[2] + w[3] * psi[3];
                         data->dst_angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
@@ -5062,7 +5108,8 @@ void interpolate_system_state(ApplicationState* app) {
                 }
                 break;
             }
-            case InterpolationMode::CubicSpline: {
+            case InterpolationMode::CubicSpline:
+            case InterpolationMode::BSpline: {
                 
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };

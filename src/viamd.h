@@ -115,7 +115,7 @@ enum class SelectionGranularity { Atom, Component, Instance, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
-enum class InterpolationMode { Nearest, Linear, CubicSpline, Count };
+enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
 
 enum class ColorMapping {
     Uniform,
@@ -209,6 +209,7 @@ inline const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
     "Nearest",
     "Linear",
     "Cubic Spline",
+    "B-Spline",
 };
 
 inline const char* representation_type_str[(int)RepresentationType::Count] = {
@@ -1158,6 +1159,10 @@ struct ApplicationState {
         // The (fractional) frame last interpolated, negative when there is none. A jump away from it
         // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
         double              last_interpolated_frame = -1.0;
+        // The stride of the frames the displayed state was last interpolated between (playback_stride).
+        // Starting or stopping playback changes it without changing the time, so it is compared
+        // against to know when the displayed state has to be made again.
+        int                 last_interpolated_stride = 1;
         uint32_t            dirty_gpu_buffers = 0;
         uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
 
@@ -1258,6 +1263,10 @@ struct ApplicationState {
         double frame = 0.0;  // double precision for long trajectories
         float fps = 10.f;
         float tension = 0.0f;
+        // While playing, the displayed state is interpolated between every stride:th frame only (0, stride,
+        // 2*stride, ... and the last), which smooths the motion out at the cost of fidelity to the frames
+        // skipped. A stopped animation always shows the trajectory itself. See playback_stride.
+        int stride = 1;
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
 
@@ -1894,6 +1903,10 @@ void clear_system_frame_cache(ApplicationState* app);
 
 // Interpolate state
 void interpolate_system_state(ApplicationState* app);
+
+// The stride of the frames the displayed state is interpolated between: animation.stride while playing,
+// every frame otherwise.
+int playback_stride(const ApplicationState* app);
 
 // Workspace
 // See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
