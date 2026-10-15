@@ -172,6 +172,7 @@ endif()
 
 set(SRC_FILES
     src/app_settings.cpp
+    src/cartoon_glyphs.cpp
     src/color_scale.cpp
     src/color_utils.cpp
     src/display_units.cpp
@@ -194,6 +195,7 @@ set(SRC_FILES
     src/viamd.cpp
 
     src/app_settings.h
+    src/cartoon_glyphs.h
     src/color_scale.h
     src/color_utils.h
     src/display_units.h

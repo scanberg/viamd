@@ -27,6 +27,7 @@
 
 #include <task_system.h>
 #include <surface_field.h>
+#include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
 #include <event.h>
@@ -103,11 +104,15 @@ constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("pickin
 // A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
 // bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
 constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
+// A point of the cartoon of the lipids and nucleic acids (CartoonGlyphs): a head, a point along a tail or a backbone.
+// A hit names the point and resolves to the component it stands for.
+constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking domain cartoon glyph");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
 static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
-    return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring;
+    return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring ||
+           domain == PickingDomain_CartoonGlyph;
 }
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
@@ -876,6 +881,10 @@ struct Representation {
     ColorMapping color_mapping = ColorMapping::Type;
     md_bitset_t atom_mask = {};
     md_gl_rep_t md_rep = {};
+    // The representation of the cartoon of the lipids and nucleic acids (CartoonGlyphs), drawn by a Cartoon, and whether
+    // it shows any of them (a cartoon of proteins alone draws none)
+    md_gl_rep_t glyph_rep = {};
+    bool glyphs_shown = false;
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t gfx_rep = {};
 #endif
@@ -901,7 +910,8 @@ struct Representation {
     float tint_scale = 0.0f;
     float saturation = 1.0f;
 
-    // scaling parameter (radius, width, height, etc depending on type)
+    // scaling parameter (radius, width, height, etc depending on type). Cartoon: coil, sheet, helix, and the thickness of
+    // the lipids and nucleic acids (w)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
 	BondColorMode bond_color = BondColorMode::NearestAtom;
@@ -1118,6 +1128,9 @@ struct ApplicationState {
         // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
         // interpolate_system_state), never read back and kept nowhere else.
         md_gl_mol_t         gl_mol = {};
+        // The spheres and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol and
+        // placed every frame from the state (see cartoon_glyphs.h)
+        CartoonGlyphs       cartoon_glyphs = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
@@ -1249,6 +1262,7 @@ struct ApplicationState {
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
     PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
+    PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -2324,6 +2338,17 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
         .bond_base     = state.picking_range_bond.beg,
         .backbone_base = state.picking_range_backbone.beg,
         .ring_base     = state.picking_range_ring.beg,
+    };
+}
+
+// The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
+// their own: their spheres and capsules write the index of a point
+static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
+    return {
+        .atom_base     = state.picking_range_glyph.beg,
+        .bond_base     = state.picking_range_glyph.beg,
+        .backbone_base = state.picking_range_glyph.beg,
+        .ring_base     = state.picking_range_glyph.beg,
     };
 }
 

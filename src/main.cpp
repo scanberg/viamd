@@ -3837,6 +3837,12 @@ static void draw_representations_window(ApplicationState* state) {
                         update_rep |= ImGui::SliderFloat("coil",   &rep.scale[0], 0.1f, 3.f);
                         update_rep |= ImGui::SliderFloat("sheet",  &rep.scale[1], 0.1f, 3.f);
                         update_rep |= ImGui::SliderFloat("helix",  &rep.scale[2], 0.1f, 3.f);
+                        if (cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
+                            update_rep |= ImGui::SliderFloat("lipid, nucleic", &rep.scale[3], 0.1f, 3.f);
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
+                            }
+                        }
                         break;
                     default:
                         break;
@@ -6595,6 +6601,10 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
+        // Placed below, when a cartoon shows them. Their move is a velocity only if they were placed before it.
+        data->mold.cartoon_glyphs.velocity_valid  = data->mold.cartoon_glyphs.positions_valid;
+        data->mold.cartoon_glyphs.positions_valid = false;
+
         vec3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
@@ -6657,11 +6667,28 @@ static void update_md_buffers(ApplicationState* data) {
             }
         }
         md_gl_mol_set_atom_flags(data->mold.gl_mol, 0, (uint32_t)sys.atom.count, flags, 0);
+        cartoon_glyphs_update_flags(data->mold.cartoon_glyphs, flags, sys.atom.count);
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
         md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
         md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
+    }
+
+    // The glyphs of the cartoon of the lipids and nucleic acids are placed from the atoms on the CPU: only while a cartoon
+    // shows them. Placed in the frame the positions moved they move with them; placed later (a cartoon enabled while
+    // paused) they stand still.
+    CartoonGlyphs& glyphs = data->mold.cartoon_glyphs;
+    if (cartoon_glyphs_valid(glyphs) && !glyphs.positions_valid) {
+        bool shown = false;
+        for (size_t i = 0; i < md_array_size(data->representation.reps) && !shown; ++i) {
+            const Representation& rep = data->representation.reps[i];
+            shown = rep.enabled && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
+        }
+        if (shown) {
+            const bool moved = (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) && !(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) && glyphs.velocity_valid;
+            cartoon_glyphs_update_positions(&glyphs, state, moved);
+        }
     }
 
     data->mold.dirty_gpu_buffers = 0;
@@ -7150,6 +7177,39 @@ static void render(ApplicationState* state) {
     }
 }
 
+// The draws of the glyphs of a Cartoon (the lipids and nucleic acids, see cartoon_glyphs.h): their spheres and capsules,
+// thickened by the w of the scale of the representation
+static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
+    const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
+
+    md_gl_draw_op_t spheres = {
+        .type = MD_GL_REP_SPACE_FILL,
+        .args = {},
+        .rep = rep.glyph_rep,
+        .model_matrix = NULL,
+    };
+    spheres.args.space_fill.radius_scale = scale;
+    md_array_push(*ops, spheres, alloc);
+
+    if (state.mold.cartoon_glyphs.num_segments > 0) {
+        md_gl_draw_op_t capsules = {
+            .type = MD_GL_REP_WEAK_BONDS,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .model_matrix = NULL,
+        };
+        // One dash which fills the capsule: a solid cylinder, its ends within the spheres at the points
+        capsules.args.weak_bonds.radius = scale;
+        capsules.args.weak_bonds.dash_count = 1;
+        capsules.args.weak_bonds.dash_fill = 1.0f;
+        capsules.args.weak_bonds.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+        capsules.args.weak_bonds.sharpness = rep.bond_sharpness;
+        capsules.args.weak_bonds.uniform_color = convert_color(rep.bond_base_color);
+        md_array_push(*ops, capsules, alloc);
+    }
+}
+
 static void draw_representations_opaque(ApplicationState* state) {
     ASSERT(state);
 
@@ -7206,8 +7266,16 @@ static void draw_representations_opaque(ApplicationState* state) {
 		glEnable(GL_DEPTH_TEST);
 
         md_array(md_gl_draw_op_t) draw_ops = 0;
+        // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
+        md_array(md_gl_draw_op_t) glyph_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
+
+            if (rep.type == RepresentationType::Cartoon && rep.enabled && rep.type_is_valid) {
+                cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+                // The cartoon of the proteins needs a protein backbone to draw
+                if (state->mold.sys.protein_backbone.range.count == 0) continue;
+            }
 
             if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
                 if (rep.enabled && rep.type_is_valid) {
@@ -7328,6 +7396,12 @@ static void draw_representations_opaque(ApplicationState* state) {
         };
 
         md_gl_draw(&args);
+
+        if (md_array_size(glyph_ops) > 0) {
+            args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
+            args.picking_offset = gl_picking_offset_glyphs(*state);
+            md_gl_draw(&args);
+        }
 #if EXPERIMENTAL_GFX_API
     }
 #endif
@@ -7416,10 +7490,15 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
 static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
+    md_gl_draw_op_t* glyph_ops = 0;
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon) continue;
+        if (rep.type == RepresentationType::Cartoon && rep.enabled && rep.type_is_valid) {
+            cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
+            if (data->mold.sys.protein_backbone.range.count == 0) continue;
+        }
 
         if (rep.enabled && rep.type_is_valid) {
             md_gl_draw_op_t op = {
@@ -7472,4 +7551,10 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     };
 
     md_gl_draw(&args);
+
+    if (md_array_size(glyph_ops) > 0) {
+        args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
+        args.picking_offset = gl_picking_offset_glyphs(*data);
+        md_gl_draw(&args);
+    }
 }

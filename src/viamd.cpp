@@ -644,6 +644,35 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
+// A point of the cartoon of the lipids and nucleic acids stands for its component: the component, and what part of it
+// the point is
+static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t point_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const CartoonGlyphs& glyphs = state.mold.cartoon_glyphs;
+    const int32_t comp_idx = cartoon_glyphs_point_component(glyphs, point_idx);
+    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) return;
+    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const TooltipPlace place = {
+        .comp_idx = comp_idx,
+        .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
+    };
+
+    md_str_writer_t title = md_str_writer_create(req->alloc);
+    tooltip_append_place(&title, sys, place);
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
+
+    // Indexed by CartoonGlyphKind
+    static const char* parts[] = { "head", "tail", "sterol skeleton", "backbone", "base" };
+    static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
+    md_str_writer_t kind_list = md_str_writer_create(req->alloc);
+    const md_component_kind_t kind = md_component_kind(&sys.component, comp_idx);
+    if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
+    if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_list_add(&kind_list, parts[glyphs.point_kind[point_idx]]);
+    tooltip_row_list(req, STR_LIT("kind"), kind_list);
+
+    tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
+}
+
 // The hit names the group and the element outright - its range was reserved against that group's attribute - so there
 // is no list to rebuild and nothing to look the index up in.
 static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
@@ -680,6 +709,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
         if (hit.local_idx < md_index_data_num_ranges(&sys.ring)) tooltip_ring(req, state, hit.local_idx);
+    } else if (hit.domain == PickingDomain_CartoonGlyph) {
+        if (hit.local_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
     }
@@ -1317,6 +1348,8 @@ void init_system_data(ApplicationState* data) {
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
+        // Before the representations, which each make a representation of the glyphs
+        cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->allocator.persistent);
 
         // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
         // frame (interpolate_system_state)
@@ -1394,6 +1427,7 @@ void free_system_data(ApplicationState* data) {
     // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
     // representations, a frame after a load that failed) sees no molecule rather than a stale one
     data->mold.gl_mol = {};
+    cartoon_glyphs_free(&data->mold.cartoon_glyphs);
 
     // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
     system_gpu_data_free(data);
@@ -2620,6 +2654,9 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
 #endif
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
+    // Of the glyphs of the system loaded now: one of a system before it goes
+    md_gl_rep_destroy(rep->glyph_rep);
+    rep->glyph_rep = cartoon_glyphs_rep_create(state->mold.cartoon_glyphs);
     rep->atom_mask = md_bitset_empty_set();
 
     // Default to the first per atom field the system offers, if it offers any - unless the
@@ -2664,6 +2701,7 @@ Representation* clone_representation(ApplicationState* state, const Representati
     md_array_push(state->representation.reps, rep, state->allocator.persistent);
     Representation* clone = md_array_last(state->representation.reps);
     clone->md_rep = {0};
+    clone->glyph_rep = {};
     clone->atom_mask = {0};
     // The volumes' textures and buffers are the original's: the clone evaluates its own, and must
     // neither write into nor free those (each representation frees its own on removal)
@@ -2680,6 +2718,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     auto& rep = state->representation.reps[idx];
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
+    md_gl_rep_destroy(rep.glyph_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
     // exists, so let the queue run out first.
     gpu_volume_jobs_drain(state);
@@ -4388,8 +4427,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.atom.count > 0;
         break;
     case RepresentationType::Ribbons:
-    case RepresentationType::Cartoon:
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
+        break;
+    case RepresentationType::Cartoon:
+        // Proteins, and the lipids and nucleic acids of the glyphs
+        rep->type_is_valid = sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         break;
     case RepresentationType::ElectronicStructure: {
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
@@ -4440,6 +4482,10 @@ void update_representation(ApplicationState* state, Representation* rep) {
             filter_colors(colors, num_atoms, rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
+            rep->glyphs_shown = false;
+            if (rep->type == RepresentationType::Cartoon) {
+                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms);
+            }
 
 #if EXPERIMENTAL_GFX_API
             md_gfx_rep_attr_t attributes = {};
@@ -4558,6 +4604,9 @@ void remove_all_representations(ApplicationState* state) {
 void create_default_representations(ApplicationState* state) {
     bool amino_acid_present = false;
     bool nucleic_present = false;
+    bool lipid_present = false;
+    bool lipid_cartoon = false;     // The lipids as their cartoon (a sphere for each head, a tube for each tail)
+    size_t num_nucleotides = 0;
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
@@ -4585,14 +4634,34 @@ void create_default_representations(ApplicationState* state) {
     for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
         switch (md_component_kind(&state->mold.sys.component, i)) {
         case MD_COMPONENT_KIND_AMINO_ACID: amino_acid_present = true; break;
-        case MD_COMPONENT_KIND_NUCLEOTIDE: nucleic_present = true;    break;
+        case MD_COMPONENT_KIND_NUCLEOTIDE: nucleic_present = true; num_nucleotides += 1; break;
         case MD_COMPONENT_KIND_ION:        ion_present = true;        break;
         case MD_COMPONENT_KIND_WATER:      water_present = true;      break;
+        case MD_COMPONENT_KIND_LIPID:      lipid_present = true;      break;
         default:                           ligand_present = true;     break;
         }
     }
     for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
         num_coarse_grained += md_atom_particle_kind(&state->mold.sys.atom, i) == MD_PARTICLE_BEAD;
+    }
+
+    // Lipids are shown as their cartoon where their heads and tails are known (md_system_t::lipid, the atoms of
+    // 'headgroup or tail'), and those of them which are not as ligands
+    lipid_cartoon = lipid_present && state->mold.sys.lipid.count > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+    if (lipid_present) {
+        size_t num_lipid_comps = 0;
+        size_t num_known = 0;
+        for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
+            num_lipid_comps += md_component_kind(&state->mold.sys.component, i) == MD_COMPONENT_KIND_LIPID;
+        }
+        for (size_t i = 0; i < state->mold.sys.lipid.count; ++i) {
+            num_known += state->mold.sys.lipid.comp_range[i].end - state->mold.sys.lipid.comp_range[i].beg;
+        }
+        if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
+    }
+    if (lipid_cartoon) {
+        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompName, STR_LIT("lipid"));
+        snprintf(lip->name, sizeof(lip->name), "lipid");
     }
 
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
@@ -4604,7 +4673,9 @@ void create_default_representations(ApplicationState* state) {
             Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, protein_trace ? STR_LIT("not protein") : STR_LIT("all"));
+        const str_t rest = protein_trace ? (lipid_cartoon ? STR_LIT("not (protein or headgroup or tail)") : STR_LIT("not protein"))
+                                         : (lipid_cartoon ? STR_LIT("not (headgroup or tail)") : STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, rest);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -4632,7 +4703,14 @@ void create_default_representations(ApplicationState* state) {
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
+        // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
+        // shows nothing of a nucleotide off a backbone
+        size_t num_on_backbone = 0;
+        for (size_t i = 0; i < state->mold.sys.nucleic_backbone.segment.count; ++i) {
+            num_on_backbone += state->mold.sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
+        }
+        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompName : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
@@ -4640,7 +4718,7 @@ void create_default_representations(ApplicationState* state) {
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion or headgroup or tail)") : STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
@@ -4648,7 +4726,7 @@ void create_default_representations(ApplicationState* state) {
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
-        if (!amino_acid_present && !nucleic_present && !ligand_present) {
+        if (!amino_acid_present && !nucleic_present && !ligand_present && !lipid_present) {
             water->enabled = true;
         }
     }
@@ -6157,6 +6235,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
             // One index per ring of the system, which the circle of an aromatic ring writes: only those are drawn
             picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring));
+            // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write
+            picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, state->mold.cartoon_glyphs.num_points);
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -6204,6 +6284,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == PickingDomain_Ring) {
                         // The circle of an aromatic ring stands for the atoms of the ring
                         mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, surf->hit.local_idx, state->selection.granularity, state->mold.sys);
+                    } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
+                        // A point of the cartoon of a lipid or a nucleic acid stands for its component, as a cartoon segment does
+                        const int32_t comp_idx = cartoon_glyphs_point_component(state->mold.cartoon_glyphs, surf->hit.local_idx);
+                        if (comp_idx >= 0 && (size_t)comp_idx < state->mold.sys.component.count) {
+                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
+                        }
                     }
                     
                     // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
