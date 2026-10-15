@@ -312,6 +312,7 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 }
 
 static void update_view_param(ApplicationState* state);
+static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
 
 //static void update_density_volume_texture(ApplicationState* state);
 
@@ -702,6 +703,7 @@ int main(int argc, char** argv) {
         draw_color_legend_windows(state);
             
         ImGui::BeginCanvas("Main interaction window", true);
+        const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();
         InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
         ImGui::EndCanvas();
@@ -766,17 +768,20 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
+            .view_shift = state.view.shift,
         };
 
         InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
         if (view_result.reset_requested) {
+            // What is focused on is seen in the middle of what the windows leave in view, rather than behind them
+            state.view.region = main_view_uncovered_region(state, canvas_window);
             ViewTransform reset_transform = {};
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask);
+                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region);
             }
             state.view.target = reset_transform;
         }
@@ -784,6 +789,7 @@ int main(int argc, char** argv) {
         draw_context_popup(&state, hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
+        camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
         state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
@@ -1195,7 +1201,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.state);
+                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region);
             }
         }
 
@@ -1370,7 +1376,40 @@ static void update_view_param(ApplicationState* data) {
         param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
 
+    // What the view is focused on is seen where the windows leave it uncovered (see ViewRegion): the picture is moved
+    // over in clip space. Not in a screenshot without the windows, which shows it in the middle.
+    const bool windows_shown = str_empty(data->screenshot.path_to_file) || !data->screenshot.hide_gui;
+    const vec2_t shift = windows_shown ? data->view.shift : vec2_t{0, 0};
+    if (shift != vec2_t{0, 0}) {
+        const mat4_t to_shifted   = mat4_translate( shift.x,  shift.y, 0.0f);
+        const mat4_t from_shifted = mat4_translate(-shift.x, -shift.y, 0.0f);
+        param.matrix.curr.proj           = to_shifted * param.matrix.curr.proj;
+        param.matrix.curr.proj_no_jitter = to_shifted * param.matrix.curr.proj_no_jitter;
+        param.matrix.inv.proj            = param.matrix.inv.proj * from_shifted;
+    }
+
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
+}
+
+// The part of the main view that the windows leave in view, as a region of it: the main view is drawn over all of
+// the main viewport, behind the windows. All of it when they leave too little to show anything in.
+static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImRect bounds = ImRect(viewport->Pos, viewport->Pos + viewport->Size);
+    const ImRect rect = ImGui::LargestUncoveredRect(bounds, canvas);
+
+    ViewRegion region = {.aspect_ratio = (float)state.gbuffer.width / (float)state.gbuffer.height};
+
+    // Smallest side, relative to that of the viewport, that is still worth fitting into
+    const float MIN_SIDE = 0.25f;
+    if (ImMin(rect.GetWidth(), rect.GetHeight()) >= MIN_SIDE * ImMin(bounds.GetWidth(), bounds.GetHeight())) {
+        // Normalized device coordinates have y up
+        const ImVec2 p0 = (rect.Min - bounds.Min) / bounds.GetSize();
+        const ImVec2 p1 = (rect.Max - bounds.Min) / bounds.GetSize();
+        region.min = {p0.x * 2.0f - 1.0f, 1.0f - p1.y * 2.0f};
+        region.max = {p1.x * 2.0f - 1.0f, 1.0f - p0.y * 2.0f};
+    }
+    return region;
 }
 
 // ### DRAW WINDOWS ###
@@ -1429,7 +1468,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
             }
             ImGui::Separator();
             ImGui::Checkbox("VSync", &data->app.window.vsync);
@@ -2112,7 +2151,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
             }
             [[fallthrough]];
         }

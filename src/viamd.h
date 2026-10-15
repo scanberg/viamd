@@ -1086,6 +1086,12 @@ struct ApplicationState {
         } jitter;
 
 		ViewTransform target = {};
+
+        // The part of the view that what the view is reset to is framed in: what the windows left uncovered when
+        // it was last focused with a double click, or all of it. The projection is shifted so that the camera's
+        // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
+        ViewRegion region = {};
+        vec2_t shift = {0, 0};
     } view;
 
     struct {
@@ -2374,6 +2380,7 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
+    vec2_t view_shift = {0, 0};     // Where the projection is shifted to (see ViewRegion)
 };
 
 struct InteractionSurfaceViewTransformResult {
@@ -2457,10 +2464,12 @@ FileQueue::Entry file_queue_pop(FileQueue* queue);
 void file_queue_process(ApplicationState* state);
 
 // view
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr);
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask) {
+// A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
+// camera_compute_default_view). fov_y is that of the camera that looks through it.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {});
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members);
+    reset_view(transform, state, &members, fov_y, region);
 }
 
 // Script IR lifetime

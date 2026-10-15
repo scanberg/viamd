@@ -1339,7 +1339,7 @@ void init_system_data(ApplicationState* data) {
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
-        reset_view(&default_view, data->mold.state);
+        reset_view(&default_view, data->mold.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
@@ -2390,7 +2390,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // The camera flies in: from the whole system to where the workspace looked from. Without a
     // stored camera, both are the whole system.
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
@@ -5888,6 +5888,7 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
             input.screen_size = state.surface_size;
             input.dolly_delta = scroll_delta;
             input.fov_y = args.camera.fov_y;
+            input.ndc_center = args.view_shift;
 
             TrackballFlags flags = TrackballFlags_None;
             if (state.active) {
@@ -6086,7 +6087,7 @@ void file_queue_process(ApplicationState* state) {
                         recompute_atom_visibility_mask(state);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
+                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, state->view.region);
                     }
                 }
             }
@@ -6094,7 +6095,7 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region) {
     ASSERT(transform);
     if (!state.num_atoms) return;
 
@@ -6123,20 +6124,19 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     md_unitcell_A_extract(A.elem, &state.unitcell);
     const bool   has_cell    = (md_unitcell_flags(&state.unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) != 0;
     const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
-    const float  fov_y       = Camera().fov_y;
 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
         vec3_t aabb_min = {}, aabb_max = {};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, indices, count);
         const vec3_t center = (aabb_min + aabb_max) * 0.5f;
-        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y);
+        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
         transform->position = center + cell_offset + transform->orientation * vec3_set(0, 0, transform->distance);
         return;
     }
 
     // See camera_compute_default_view for what it considers a good view of what
-    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y);
+    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, region);
     transform->position = transform->position + cell_offset;
 }
 
