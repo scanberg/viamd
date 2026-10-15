@@ -34,10 +34,11 @@ bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, const md_filter_con
 // The same, one set for each structure it gives (see md_filter_sets)
 bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, const md_filter_context_t& ctx, md_allocator_i* alloc);
 
-// The input of a filter. ctx is what it is completed against: its system, and the script whose names it may use.
-// Returns true when the text changes. With confirmed given, it is set when Enter is pressed to confirm the filter (and
-// not to take a suggestion); ImGuiInputTextFlags_EnterReturnsTrue in flags is ignored either way.
-bool filter_input(const char* label, AtomFilter* filter, const md_filter_context_t& ctx, ImGuiInputTextFlags flags = 0, bool* confirmed = nullptr);
+// The input of a filter. ctx is what it is completed against: its system, the script whose names it may use, and the
+// atoms it is evaluated within, if any. Returns true when the text changes. With confirmed given, it is set when Enter
+// is pressed to confirm the filter (and not to take a suggestion); ImGuiInputTextFlags_EnterReturnsTrue in flags is
+// ignored either way. hint, if given, is shown while it is empty.
+bool filter_input(const char* label, AtomFilter* filter, const md_filter_context_t& ctx, ImGuiInputTextFlags flags = 0, bool* confirmed = nullptr, const char* hint = nullptr);
 
 // Whether the suggestions of a filter input are open: Enter and Escape are theirs then, not the window's
 bool filter_completions_open();

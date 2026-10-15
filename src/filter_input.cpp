@@ -248,7 +248,7 @@ bool filter_completions_open() {
     return comp.open && ImGui::GetActiveID() == comp.id;
 }
 
-bool filter_input(const char* label, AtomFilter* filter, const md_filter_context_t& ctx, ImGuiInputTextFlags flags, bool* confirmed) {
+bool filter_input(const char* label, AtomFilter* filter, const md_filter_context_t& ctx, ImGuiInputTextFlags flags, bool* confirmed, const char* hint) {
     const ImGuiID id = ImGui::GetID(label);
     const bool active = ImGui::GetActiveID() == id;
     if (active && comp.id != id) {
@@ -291,7 +291,8 @@ bool filter_input(const char* label, AtomFilter* filter, const md_filter_context
         ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackEdit |
         ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackHistory;
     if (invalid) ImGui::PushInvalid();
-    const bool entered = ImGui::InputText(label, filter->text, sizeof(filter->text), input_flags, callback, &data);
+    const bool entered = hint ? ImGui::InputTextWithHint(label, hint, filter->text, sizeof(filter->text), input_flags, callback, &data)
+                              : ImGui::InputText(label, filter->text, sizeof(filter->text), input_flags, callback, &data);
     if (invalid) ImGui::PopInvalid();
     bool changed = ImGui::IsItemEdited();
     if (confirmed) {

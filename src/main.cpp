@@ -63,6 +63,7 @@
 #include <string>
 
 #include <viamd.h>
+#include <representation.h>
 #include <timeline_periods_ui.h>
 #include <script_reference.h>
 #include <viamd_event.h>
@@ -328,7 +329,6 @@ static void draw_context_popup(ApplicationState* state, const PickingHit& hit);
 static void draw_selection_query_window(ApplicationState* state);
 static void draw_selection_grow_window(ApplicationState* state);
 static void draw_animation_window(ApplicationState* state);
-static void draw_representations_window(ApplicationState* state);
 static void draw_timeline_window(ApplicationState* state);
 static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
@@ -336,7 +336,6 @@ static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
 static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus = true);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
-static void draw_color_legend_windows(const ApplicationState& state);
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_property_export_window(ApplicationState* state);
@@ -701,7 +700,7 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
-        draw_color_legend_windows(state);
+        draw_representation_legends(state);
             
         ImGui::BeginCanvas("Main interaction window", true);
         const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
@@ -867,12 +866,7 @@ int main(int argc, char** argv) {
             time_stopped = false;
 
             PUSH_CPU_SECTION("Flag dynamic representations for update")
-            for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-                auto& rep = state.representation.reps[i];
-                if (rep.enabled && (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure)) {
-					flag_representation_as_dirty(&rep);
-                }
-            }
+            flag_dynamic_representations_as_dirty(&state);
             POP_CPU_SECTION()
         } else {
             if (!time_stopped) {
@@ -1221,7 +1215,7 @@ int main(int argc, char** argv) {
         uint64_t r_hash = md_array_size(state.representation.reps);
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
             const Representation& rep = state.representation.reps[i];
-            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)rep.enabled };
+            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)representation_shown(state, rep) };
             r_hash = md_hash64(kind, sizeof(kind), r_hash);
             const str_t filt = str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
             r_hash = md_hash64(filt.ptr, filt.len, r_hash);
@@ -3065,815 +3059,6 @@ static void draw_animation_window(ApplicationState* data) {
     }
     ImGui::End();
 }
-
-// How the isosurfaces of an electronic structure representation are coloured. The atoms' colours
-// are not offered for a density property; a field is offered whenever the dataset has what one is
-// made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool advanced, bool allow_atom_colors) {
-    bool update_rep = false;
-
-    bool any_field = false;
-    for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
-        any_field |= surface_field_available((SurfaceFieldKind)k, sys);
-    }
-
-    if (ImGui::BeginCombo("coloring", surface_coloring_str[(int)es.coloring])) {
-        for (int i = 0; i < (int)SurfaceColoring::Count; ++i) {
-            const SurfaceColoring c = (SurfaceColoring)i;
-            const bool enabled = (c == SurfaceColoring::AtomColors) ? allow_atom_colors :
-                                 (c == SurfaceColoring::Field)      ? any_field : true;
-            ImGui::BeginDisabled(!enabled);
-            if (ImGui::Selectable(surface_coloring_str[i], es.coloring == c)) {
-                es.coloring = c;
-                // A field this dataset can make, if the one the representation names is not
-                if (c == SurfaceColoring::Field && !surface_field_available(es.field_kind, sys)) {
-                    es.field_kind = surface_field_first_available(sys);
-                }
-                update_rep = true;
-            }
-            ImGui::EndDisabled();
-            if (!enabled && c == SurfaceColoring::Field) {
-                ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
-                                      "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
-                                      "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
-            }
-        }
-        ImGui::EndCombo();
-    }
-
-    if (es.coloring == SurfaceColoring::AtomColors && advanced) {
-        const double min_power = 2.0;
-        const double max_power = 20.0;
-        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &es.gaussian_splatting_power, &min_power, &max_power, "%.2f");
-    }
-
-    if (es.coloring != SurfaceColoring::Field) {
-        return update_rep;
-    }
-
-    if (ImGui::BeginCombo("field", surface_field_kind_str[(int)es.field_kind])) {
-        for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
-            const SurfaceFieldKind kind = (SurfaceFieldKind)k;
-            ImGui::BeginDisabled(!surface_field_available(kind, sys));
-            if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
-                es.field_kind = kind;
-                update_rep = true;
-            }
-            ImGui::EndDisabled();
-        }
-        ImGui::EndCombo();
-    }
-    if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the environment's classical multipoles on the surface: the charges,\n"
-                              "and the dipoles and quadrupoles where the potential has them.\n"
-                              "The QM region is left out, whatever charges a topology gives its atoms.\n"
-                              "For a polarizable embedding this is the potential of its PERMANENT multipoles:\n"
-                              "the induced dipoles are solved for during the calculation and not stored.");
-    } else if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the QM region on the surface: its nuclei and its ground state\n"
-                              "electron density, exact over the basis. Negative (red) where the electrons dominate - lone pairs,\n"
-                              "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
-                              "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
-                              "An embedding's environment is not part of it.");
-    }
-
-    // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
-    // nothing re-evaluated: it is not an update of the representation
-    const SurfaceFieldVolume& vol = es.field_vol;
-    color_scale_draw_controls(&es.field_map, surface_field_span(vol), surface_field_unit(es.field_kind),
-                              "on surface", "its 1st to 99th percentile on the surface");
-    if (advanced && vol.num_surface_samples > 0) {
-        ImGui::TextDisabled("%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
-                            vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
-    }
-
-    return update_rep;
-}
-
-static bool draw_representations_window_electronic_structure(ApplicationState* state, Representation& rep) {
-    ImGuiComboFlags flags = 0;
-    ElectronicStructureRepresentation& es = rep.electronic_structure;
-
-    // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
-    // with no label is named by its path's last segment already, which is the readable thing.
-    auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* prop) {
-        ASSERT(buf);
-        ASSERT(buf_cap > 0);
-        if (!prop || str_empty(prop->label)) {
-            snprintf(buf, buf_cap, "None");
-            return;
-        }
-        snprintf(buf, buf_cap, "%.*s", (int)prop->label.len, prop->label.ptr);
-    };
-
-    bool advanced = state->representation.advanced_mode;
-    bool update_rep = false;
-
-    const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
-
-    if (ImGui::BeginCombo("volume src", electronic_structure_source_str[(int)es.source], flags)) {
-        for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
-            ElectronicStructureSource source = (ElectronicStructureSource)n;
-            bool is_selected = (es.source == source);
-            bool disabled = !electronic_structure_source_supported(source_mask, source);
-
-            if (disabled) ImGui::PushDisabled();
-            if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
-                es.source = source;
-                electronic_structure_set_source_defaults(&es);
-                update_rep = true;
-            }
-            if (disabled) ImGui::PopDisabled();
-
-            if (is_selected) {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (advanced) {
-        if (ImGui::Combo("volume res", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
-            update_rep = true;
-        }
-    }
-
-    if (electronic_structure_is_density_property(es)) {
-        // Gathered here rather than kept in a list somewhere: it is a handful of entries borrowed
-        // from the attribute table, and a stored copy would be one more thing to invalidate on load.
-        DensityProperty density_props[64];
-        const int num_density_props = (int)MIN(density_properties_gather(density_props, ARRAY_SIZE(density_props), state->mold.sys), ARRAY_SIZE(density_props));
-        if (num_density_props > 0) {
-            // A key that names nothing in the current list - a fresh representation, or a workspace
-            // saved against a file whose properties differ - falls back to the first one rather
-            // than drawing nothing.
-            const DensityProperty* selected = nullptr;
-            for (int n = 0; n < num_density_props; ++n) {
-                if (density_props[n].key == es.density_property_key) {
-                    selected = &density_props[n];
-                    break;
-                }
-            }
-            if (!selected) {
-                selected = &density_props[0];
-                es.density_property_key = selected->key;
-                update_rep = true;
-            }
-
-            char preview[256];
-            density_property_combo_label(preview, sizeof(preview), selected);
-            if (ImGui::BeginCombo("property", preview)) {
-                for (int n = 0; n < num_density_props; ++n) {
-                    char label[256];
-                    density_property_combo_label(label, sizeof(label), &density_props[n]);
-                    const bool is_selected = (es.density_property_key == density_props[n].key);
-                    if (ImGui::Selectable(label, is_selected)) {
-                        if (es.density_property_key != density_props[n].key) {
-                            es.density_property_key = density_props[n].key;
-                            update_rep = true;
-                        }
-                    }
-
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-        } else {
-            ImGui::LabelText("property", "No density properties available");
-        }
-    }
-
-    const bool show_spin = electronic_structure_uses_spin(es);
-    if (show_spin) {
-        // Asked of the table: a second, DISTINCT set of coefficients. This used to be true for a
-        // restricted file too, because beta is published there as an alias of alpha and the fan-in
-        // only checked that the column existed - so the selector appeared and toggled between two
-        // names for one datum.
-        const bool has_beta = es_has_distinct_beta_orbitals(state->mold.sys);
-        if (es.source == ElectronicStructureSource::MolecularOrbital) {
-            if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
-                es.spin = ElectronicStructureSpin::Alpha;
-                update_rep = true;
-            }
-            if (has_beta) {
-                const char* spin_options[] = { "Alpha", "Beta" };
-                int spin_idx = es.spin == ElectronicStructureSpin::Beta ? 1 : 0;
-                if (ImGui::Combo("spin", &spin_idx, spin_options, IM_ARRAYSIZE(spin_options))) {
-                    es.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
-                    update_rep = true;
-                }
-            }
-        }
-        else if (es.source == ElectronicStructureSource::ElectronDensity) {
-            if (has_beta) {
-                const ElectronicStructureSpin spin_options[] = {
-                    ElectronicStructureSpin::Total,
-                    ElectronicStructureSpin::Alpha,
-                    ElectronicStructureSpin::Beta,
-                    ElectronicStructureSpin::Difference,
-                };
-                const char* spin_labels[] = { "Total", "Alpha", "Beta", "Difference" };
-                int spin_idx = 0;
-                for (int i = 0; i < (int)IM_ARRAYSIZE(spin_options); ++i) {
-                    if (es.spin == spin_options[i]) {
-                        spin_idx = i;
-                        break;
-                    }
-                }
-                if (es.spin != spin_options[spin_idx]) {
-                    es.spin = spin_options[spin_idx];
-                    update_rep = true;
-                }
-                if (ImGui::Combo("spin", &spin_idx, spin_labels, IM_ARRAYSIZE(spin_labels))) {
-                    es.spin = spin_options[spin_idx];
-                    if (es.spin != ElectronicStructureSpin::Difference) {
-                        es.use_magnitude = false;
-                    }
-                    update_rep = true;
-                }
-            } else if (es.spin != ElectronicStructureSpin::Total) {
-                es.spin = ElectronicStructureSpin::Total;
-                es.use_magnitude = false;
-                update_rep = true;
-            }
-        }
-    }
-
-    if (es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
-        if (ImGui::Combo("component", (int*)&es.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
-            update_rep = true;
-        }
-    }
-
-    if (es.source == ElectronicStructureSource::TransitionDensity) {
-        if (ImGui::Combo("component", (int*)&es.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
-            update_rep = true;
-        }
-    }
-
-    const bool show_molecular_orbitals = electronic_structure_uses_orbital_idx(es);
-    const bool show_exited_states = electronic_structure_uses_excited_state_idx(es);
-    const bool show_lambdas = electronic_structure_uses_nto_lambda_idx(es);
-
-    if (show_molecular_orbitals) {
-        // The (homo)/(lumo) markers sit at different indices for the two spins in an unrestricted
-        // calculation, and the rendered volume already follows es.spin - so the frontier has to
-        // follow it too, or the entry marked (homo) under spin=Beta is alpha's HOMO index.
-        //
-        // Formatted here rather than read out of a precomputed list: it is an index, an energy and
-        // two markers, and a copy of it would be one more thing to keep in step with the table.
-        const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
-
-        size_t num_orbitals = 0;
-        OrbitalFrontier frontier = {};
-        if (es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0) {
-            es_orbital_frontier(&frontier, state->mold.sys, use_beta ? es_path::beta_occupation : es_path::alpha_occupation);
-
-            // Energies alongside the index, so the list can be read as an orbital diagram. A column
-            // that does not span the orbital set is not one to index with, so it is dropped whole
-            // rather than bounds checked per row - the list then falls back to bare indices.
-            size_t num_energies = 0;
-            const double* energy = es_orbital_energies(&num_energies, state->mold.sys, use_beta ? es_path::beta_energy : es_path::alpha_energy);
-            if (num_energies != num_orbitals) energy = nullptr;
-
-            // The UI font is monospaced (Dejavu Sans Mono), so a fixed field width per column is all
-            // the alignment this needs: right aligned index, then a fixed number of decimals, which
-            // puts every decimal point of the list on one column. Widths are passed in rather than
-            // baked into the format so the preview - a single line, nothing to align against - can
-            // ask for the same text unpadded.
-            int idx_width = 1;
-            for (size_t m = num_orbitals; m >= 10; m /= 10) idx_width++;
-
-            auto orbital_label = [&](char* buf, size_t cap, int n, int idx_w, int ene_w) {
-                const char* mark = (n == frontier.homo_idx) ? " (homo)" : (n == frontier.lumo_idx) ? " (lumo)" : "";
-                if (energy) {
-                    snprintf(buf, cap, "%*i  %*.4f%s", idx_w, n + 1, ene_w, energy[n], mark);
-                } else {
-                    snprintf(buf, cap, "%*i%s", idx_w, n + 1, mark);
-                }
-            };
-
-            es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
-
-            char preview[48];
-            orbital_label(preview, sizeof(preview), es.orbital_idx, 0, 0);
-            if (ImGui::BeginCombo("orbital idx", preview)) {
-                // Highest index first, so the lowest lying orbital sits at the bottom - the
-                // conventional orbital diagram, and the same order the Molecular Orbitals table
-                // defaults to. Canonical MOs come out of the SCF in ascending energy, so descending
-                // index IS descending energy; sorting on the energies instead would only differ for
-                // a non-aufbau set, and would then disagree with that table.
-                for (int n = (int)num_orbitals - 1; n >= 0; n--) {
-                    bool is_selected = (es.orbital_idx == n);
-                    char label[48];
-                    orbital_label(label, sizeof(label), n, idx_width, 10);
-                    if (ImGui::Selectable(label, is_selected)) {
-                        if (es.orbital_idx != n) {
-                            update_rep = true;
-                        }
-                        es.orbital_idx = n;
-                    }
-
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-        }
-    }
-
-    if (show_exited_states) {
-        const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
-        if (num_excited_states > 0) {
-            es.excited_state_idx = CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
-            char preview[16];
-            snprintf(preview, sizeof(preview), "%i", es.excited_state_idx + 1);
-            if (ImGui::BeginCombo("state idx", preview)) {
-                for (int n = 0; n < num_excited_states; n++) {
-                    const bool is_selected = (es.excited_state_idx == n);
-                    char label[16];
-                    snprintf(label, sizeof(label), "%i", n + 1);
-                    if (ImGui::Selectable(label, is_selected)) {
-                        if (es.excited_state_idx != n) {
-                            update_rep = true;
-                        }
-                        es.excited_state_idx = n;
-                    }
-
-                    if (is_selected) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            if (show_lambdas) {
-                // The same 1e-3 the rest of the tree stops at, and the same place the zero padded
-                // tail of the ragged lambda axis stops it.
-                const double LAMBDA_CUTOFF = 1.0e-3;
-                double lambdas[32];
-                const int num_lambdas = (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
-                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF);
-                if (num_lambdas > 0) {
-                    es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
-
-                    auto lambda_label = [&lambdas](char* buf, size_t cap, int n) {
-                        // The bytes rather than a u8 literal: u8"" is const char8_t* in C++20 and
-                        // a format string has to be a plain char array. \xce\xbb is U+03BB, lambda.
-                        snprintf(buf, cap, "\xce\xbb[%i] (%.3f)", n + 1, lambdas[n]);
-                    };
-
-                    char preview[32];
-                    lambda_label(preview, sizeof(preview), es.nto_lambda_idx);
-                    if (ImGui::BeginCombo("lambda idx", preview)) {
-                        for (int n = 0; n < num_lambdas; n++) {
-                            const bool is_selected = (es.nto_lambda_idx == n);
-                            char label[32];
-                            lambda_label(label, sizeof(label), n);
-                            if (ImGui::Selectable(label, is_selected)) {
-                                if (es.nto_lambda_idx != n) {
-                                    update_rep = true;
-                                }
-                                es.nto_lambda_idx = n;
-                            }
-
-                            if (is_selected) {
-                                ImGui::SetItemDefaultFocus();
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                }
-            }
-        }
-    }
-    if (electronic_structure_uses_magnitude_toggle(es)) {
-        const char* magnitude_label = es.source == ElectronicStructureSource::ElectronDensity ? (const char*)u8"magnitude |ρ|" : (const char*)u8"magnitude |Ψ|";
-        if (ImGui::Checkbox(magnitude_label, &es.use_magnitude)) {
-            update_rep = true;
-        }
-    }
-    
-    const double min_tau = 0.0;
-    const double max_tau = 1.0;
-    
-    const double iso_min = 1.0e-2;
-    const double iso_max = 5.0;
-
-    if (electronic_structure_is_density_property(es)) {
-        int num_isos = CLAMP(es.density_property.num_isos, 1, (int)ARRAY_SIZE(es.density_property.values));
-        if (num_isos != es.density_property.num_isos) {
-            es.density_property.num_isos = num_isos;
-            update_rep = true;
-        }
-
-        if (ImGui::SliderInt("iso count", &num_isos, 1, (int)ARRAY_SIZE(es.density_property.values))) {
-            es.density_property.num_isos = num_isos;
-            update_rep = true;
-        }
-
-        for (int i = 0; i < es.density_property.num_isos; ++i) {
-            char value_label[32];
-            char color_label[32];
-            snprintf(value_label, sizeof(value_label), "iso %d value", i + 1);
-            snprintf(color_label, sizeof(color_label), "iso %d color", i + 1);
-            update_rep |= ImGui::DragScalar(value_label, ImGuiDataType_Double, &es.density_property.values[i], 0.001f, NULL, NULL, "%.8f");
-            update_rep |= ImGui::ColorEdit4(color_label, es.density_property.colors[i].elem);
-        }
-
-        if (advanced) {
-            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Optical density shared by all custom isosurfaces");
-        }
-
-        update_rep |= draw_surface_coloring(es, state->mold.sys, advanced, false);
-
-        return update_rep;
-    }
-    
-    const char* iso_label = electronic_structure_iso_value_label();
-    
-    if (electronic_structure_is_signed(es)) {
-        // The band a field is evaluated in follows the isovalue
-        update_rep |= ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic) && rep.electronic_structure.coloring == SurfaceColoring::Field;
-        ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
-        if (advanced) {
-            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Optical density of the isosurfaces");
-        }
-        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
-        if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
-            ImGui::ColorEdit4("tint positive", rep.electronic_structure.tint_psi_pos.elem);
-            ImGui::ColorEdit4("tint negative", rep.electronic_structure.tint_psi_neg.elem);
-        } else {
-            ImGui::ColorEdit4("color positive", rep.electronic_structure.col_psi_pos.elem);
-            ImGui::ColorEdit4("color negative", rep.electronic_structure.col_psi_neg.elem);
-        }
-    }
-    else {
-        // The band a field is evaluated in follows the isovalue
-        update_rep |= ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic) && rep.electronic_structure.coloring == SurfaceColoring::Field;
-        ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
-        if (advanced) {
-            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Optical density of the isosurfaces");
-        }
-        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
-        if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
-            if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
-                ImGui::ColorEdit4("tint attachment", rep.electronic_structure.tint_att.elem);
-            }
-            else if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
-                ImGui::ColorEdit4("tint detachment", rep.electronic_structure.tint_det.elem);
-            } else {
-                ImGui::ColorEdit4("tint density", rep.electronic_structure.tint_den.elem);
-            }
-        } else {
-            if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
-                ImGui::ColorEdit4("color attachment", rep.electronic_structure.col_att.elem);
-            }
-            else if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
-                ImGui::ColorEdit4("color detachment", rep.electronic_structure.col_det.elem);
-            } else {
-                ImGui::ColorEdit4("color density",  rep.electronic_structure.col_den.elem);
-            }
-        }
-    }
-
-    return update_rep;
-}
-
-static void draw_representations_window(ApplicationState* state) {
-    if (!state->representation.show_window) return;
-
-    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Representations", &state->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing);
-    if (ImGui::Button("create new")) {
-        create_representation(state);
-    }
-    ImGui::SameLine();
-    if (ImGui::DeleteButton("remove all")) {
-        remove_all_representations(state);
-    }
-    ImGui::SameLine();
-
-    const char* advanced_label = ICON_FA_SLIDERS;
-    const float checkbox_width =
-        ImGui::GetFrameHeight() +
-        ImGui::GetStyle().ItemInnerSpacing.x +
-        ImGui::CalcTextSize(advanced_label).x;
-    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - checkbox_width);
-    ImGui::Checkbox(advanced_label, &state->representation.advanced_mode);
-    ImGui::SetItemTooltip("Advanced mode (show all representation settings)");
-
-    bool advanced = state->representation.advanced_mode;
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
-        bool update_rep = false;
-        Representation& rep = state->representation.reps[rep_idx];
-
-        char label[128];
-        snprintf(label, sizeof(label), "%s###ID", rep.name);
-
-        ImGui::PushID(rep_idx);
-        
-        const float pad = 3.0f;
-        const float size = ImGui::GetFontSize() + pad * 2;
-        const float spacing = 2.f;
-        const float total_button_size = (size + 1) * 3;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, pad));
-        bool draw_content = ImGui::TreeNodeEx("##label", ImGuiTreeNodeFlags_FramePadding);
-        ImGui::PopStyleVar();
-
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - total_button_size);
-        ImGui::InputText("##name", rep.name, sizeof(rep.name));
-
-        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - total_button_size, spacing);
-        const char* eye_icon = rep.enabled ? ICON_FA_EYE : ICON_FA_EYE_SLASH;
-        
-        const ImVec2 btn_size = {size, size};
-        if (ImGui::Button(eye_icon, btn_size)) {
-            rep.enabled = !rep.enabled;
-            state->representation.atom_visibility_mask_dirty = true;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Show/Hide");
-        }
-        ImGui::SameLine(0, spacing);
-        if (ImGui::Button(ICON_FA_COPY, btn_size)) {
-            clone_representation(state, rep);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Duplicate");
-        }
-        ImGui::SameLine(0, spacing);
-        if (ImGui::DeleteButton(ICON_FA_XMARK, btn_size)) {
-            remove_representation(state, rep_idx);
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Remove");
-        }
-
-        if (draw_content) {
-            ImVec4 sub_group_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-            sub_group_color.w = 0.5f;
-
-            const float inner_item_width = MAX(ImGui::GetContentRegionAvail().x - ImGui::GetStyle().IndentSpacing - ImGui::CalcTextSize("helix scale").x, 100.f);
-            ImGui::PushItemWidth(inner_item_width);
-
-            // @TODO: Only display the representations which can be used for the current dataset
-            if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
-                for (int i = 0; i < (int)RepresentationType::Count; ++i) {
-                    if (i == (int)RepresentationType::ElectronicStructure) {
-                        // Enlisted when the system carries ANY electronic structure source - orbitals are
-                        // one, and a file without an SCF block can still carry density properties
-                        if (es_source_mask(state->mold.sys) == 0) continue;
-                    }
-                    if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
-                        rep.type = (RepresentationType)i;
-                        if (rep.type == RepresentationType::ElectronicStructure) {
-                            // The default source is orbitals, which this system may not have
-                            electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
-                        }
-                        update_rep = true;
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            if (!rep.type_is_valid) ImGui::PopInvalid();
-
-			const double dipole_min = 0.01;
-			const double dipole_max = 100.0;
-
-            switch (rep.type) {
-            case RepresentationType::ElectronicStructure:
-                update_rep |= draw_representations_window_electronic_structure(state, rep);
-                break;
-            case RepresentationType::DipoleMoment:
-            {
-                // The combo lists GROUPS, which is what the file publishes. A group holding one
-                // moment per excited state is then picked apart by the index widget below, rather
-                // than flattening every (group, element) pair into one list nobody can scan.
-                DipoleGroup groups[16];
-                const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
-
-                // Asked of the key the representation holds, not searched for in the list: a key
-                // that names nothing - a workspace pointed at a file without that group - simply
-                // leaves the preview empty and the index widget away.
-                DipoleGroup selected = {};
-                const bool has_selection = dipole_group_from_key(&selected, state->mold.sys, rep.dipole.dipole_key);
-
-                // A group can come back shorter than it was (fewer excited states), which would
-                // otherwise leave the representation pointing past its end.
-                if (has_selection && rep.dipole.dipole_index >= selected.count) {
-                    rep.dipole.dipole_index = 0;
-                    update_rep = true;
-                }
-
-                char preview[64] = "";
-                if (has_selection) dipole_label_pretty(preview, sizeof(preview), selected.label);
-
-                if (ImGui::BeginCombo("dipole", preview)) {
-                    for (size_t i = 0; i < num_groups; ++i) {
-                        char lbl[64];
-                        dipole_label_pretty(lbl, sizeof(lbl), groups[i].label);
-                        const bool is_selected = groups[i].key == rep.dipole.dipole_key;
-                        if (ImGui::Selectable(lbl, is_selected)) {
-                            if (!is_selected) {
-                                rep.dipole.dipole_key   = groups[i].key;
-                                rep.dipole.dipole_index = 0;   // a different group; the old element means nothing in it
-                                update_rep = true;
-                            }
-                        }
-                        if (is_selected) {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-
-                // Only an array of moments has an index to choose. One moment is addressed by the
-                // group alone, and a slider from 1 to 1 is a control that cannot do anything.
-                if (has_selection && selected.count > 1) {
-                    int index = (int)rep.dipole.dipole_index + 1;
-                    if (ImGui::SliderInt("index", &index, 1, (int)selected.count)) {
-                        rep.dipole.dipole_index = (uint32_t)CLAMP(index - 1, 0, (int)selected.count - 1);
-                        update_rep = true;
-                    }
-                }
-            }
-            ImGui::ColorEdit4("color", rep.dipole.color.elem);
-				ImGui::SliderScalar("scale", ImGuiDataType_Double, &rep.dipole.scale, &dipole_min, &dipole_max, "%.3f");
-				ImGui::SliderFloat("radius", &rep.dipole.radius, 0.01f, 0.5f);
-				ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
-                break;
-			default:
-                if (filter_input("filter", &rep.filter, filter_context(state))) {
-                    rep.filt_is_dirty = true;
-                    update_rep = true;
-                }
-                break;
-            }
-
-            if (representation_uses_atom_colors(rep)) {
-                if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
-                    update_rep = true;
-                }
-
-                if (rep.color_mapping == ColorMapping::Attribute) {
-                    // The list of per atom fields IS the system's attribute table under atom/.
-                    // Queried here rather than cached anywhere, so it cannot disagree with the data.
-                    md_attribute_id_t prop_ids[64];
-                    size_t num_props = MIN(atom_attribute_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
-
-                    const md_attributes_t& attributes = state->mold.sys.attributes;
-                    const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
-
-                    // A key the table no longer holds - a reload which dropped that field - falls
-                    // back to the first available rather than leaving the representation blank.
-                    if (!selected_prop && num_props > 0) {
-                        atom_attribute_select(&rep.atom_attribute, prop_ids[0], state->mold.sys);
-                        selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
-                        update_rep = true;
-                    }
-
-                    if (num_props > 0 && selected_prop) {
-                        if (ImGui::BeginCombo("attribute", atom_attribute_label(selected_prop).ptr)) {
-                            for (size_t i = 0; i < num_props; ++i) {
-                                const md_attribute_t* attr = md_attributes_get(&attributes, prop_ids[i]);
-                                if (!attr) continue;
-                                bool selected = prop_ids[i] == rep.atom_attribute.key;
-                                if (ImGui::Selectable(atom_attribute_label(attr).ptr, selected)) {
-                                    atom_attribute_select(&rep.atom_attribute, prop_ids[i], state->mold.sys);
-                                    update_rep = true;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        const int num_variants = atom_attribute_variant_count(selected_prop);
-                        if (num_variants > 1) {
-                            int idx = rep.atom_attribute.variant_idx + 1;
-                            const int min = 1;
-                            const int max = num_variants;
-                            if (ImGui::SliderInt("index", &idx, min, max)) {
-                                update_rep = true;
-                            }
-                            rep.atom_attribute.variant_idx = CLAMP(idx - 1, 0, num_variants - 1);
-                        }
-                        
-                        // The same scale an isosurface coloured by a field has. Its span is what
-                        // the colours were last made from, the atoms of this representation.
-                        const bool multiple = num_variants > 1;
-                        update_rep |= color_scale_draw_controls(&rep.atom_attribute.scale, rep.atom_attribute.span, selected_prop->unit, "shown atoms",
-                                                                multiple ? "the smallest to the largest value of the atoms shown, at every index"
-                                                                         : "the smallest to the largest value of the atoms shown");
-                    } else {
-                        ImGui::TextDisabled("no per atom attributes in this dataset");
-                    }
-                }
-                if (rep.filter.result.is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
-                    if (advanced) {
-                        update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
-                        if (!rep.dynamic_evaluation) {
-                            ImGui::SameLine();
-                            if (ImGui::Button("update")) {
-                                rep.filt_is_dirty = true;
-                                update_rep = true;
-                            }
-                        }
-                    }
-                } else {
-                    rep.dynamic_evaluation = false;
-                }
-
-                if (rep.color_mapping == ColorMapping::Uniform) {
-                    update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
-                }
-
-                if (advanced) {
-                    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-                        update_rep |= ImGui::Checkbox("bond orders", &rep.bond_orders);
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");
-                        }
-                        // Draw options for how bonds should be colored
-					    update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
-                        if (rep.bond_color == BondColorMode::SmoothAtom) {
-                            ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
-                        } else if (rep.bond_color == BondColorMode::Uniform) {
-                            ImGui::ColorEdit3("##bond_base_color", rep.bond_base_color.elem);
-					    }
-                    }
-                }
-            }
-
-            if (advanced && representation_uses_atom_colors(rep)) {
-                if (rep.type != RepresentationType::ElectronicStructure) {
-                    ImGui::Spacing();
-                    ImGui::TextColored(sub_group_color, "Geometric Scaling");
-                    switch (rep.type) {
-                    case RepresentationType::SpaceFill:
-                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.f);
-                        break;
-                    case RepresentationType::Licorice:
-                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.0f);
-                        break;
-                    case RepresentationType::BallAndStick:
-                        update_rep |= ImGui::SliderFloat("ball scale",   &rep.scale[0], 0.1f, 4.f);
-                        update_rep |= ImGui::SliderFloat("bond scale",   &rep.scale[1], 0.1f, 4.f);
-                        break;
-                    case RepresentationType::Ribbons:
-                        update_rep |= ImGui::SliderFloat("width",        &rep.scale[0], 0.1f, 3.f);
-                        update_rep |= ImGui::SliderFloat("thickness",    &rep.scale[1], 0.1f, 3.f);
-                        break;
-                    case RepresentationType::Cartoon:
-                        update_rep |= ImGui::SliderFloat("coil",   &rep.scale[0], 0.1f, 3.f);
-                        update_rep |= ImGui::SliderFloat("sheet",  &rep.scale[1], 0.1f, 3.f);
-                        update_rep |= ImGui::SliderFloat("helix",  &rep.scale[2], 0.1f, 3.f);
-                        break;
-                    default:
-                        break;
-                    }
-                }
-                if (rep.color_mapping == ColorMapping::SecondaryStructure) {
-                    ImGui::Spacing();
-                    ImGui::TextColored(sub_group_color, "Secondary Structure Color");
-                    update_rep |= ImGui::ColorEdit3("unknown", rep.secondary_structure.color_unknown.elem);
-                    update_rep |= ImGui::ColorEdit3("coil",    rep.secondary_structure.color_coil.elem);
-                    update_rep |= ImGui::ColorEdit3("helix",   rep.secondary_structure.color_helix.elem);
-                    update_rep |= ImGui::ColorEdit3("sheet",   rep.secondary_structure.color_sheet.elem);
-                }
-                ImGui::Spacing();
-
-                ImGui::TextColored(sub_group_color, "Post-Processing");
-                update_rep |= ImGui::ColorEdit3("tint color", rep.tint_color.elem, ImGuiColorEditFlags_PickerHueWheel);
-                update_rep |= ImGui::SliderFloat("tint scale", &rep.tint_scale, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            }
-
-            ImGui::PopItemWidth();
-            ImGui::Spacing();
-            ImGui::TreePop();
-        }
-
-        ImGui::PopID();
-
-        if (update_rep) {
-            flag_representation_as_dirty(&rep);
-        }
-    }
-
-    ImGui::End();
-}
-
-
 
 static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
@@ -6758,34 +5943,6 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     ImGui::End();
 }
 
-// The legends of the representations that colour by a value: the field of an isosurface, or the
-// attribute of its atoms. One per representation at most, since one representation colours by one
-// thing, and only while what it shows exists - a legend of nothing would mislead.
-static void draw_color_legend_windows(const ApplicationState& state) {
-    const size_t num_reps = md_array_size(state.representation.reps);
-    int slot = 0;
-    for (size_t i = 0; i < num_reps; ++i) {
-        const Representation& rep = state.representation.reps[i];
-        if (!rep.enabled) continue;
-
-        if (rep.type == RepresentationType::ElectronicStructure) {
-            const ElectronicStructureRepresentation& es = rep.electronic_structure;
-            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && es.field_vol.tex_id) {
-                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)i, slot++);
-                continue;
-            }
-        }
-
-        if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {
-            const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, rep.atom_attribute.key);
-            if (!attr) continue;
-            char label[128];
-            atom_attribute_legend_label(label, sizeof(label), attr, rep.atom_attribute.variant_idx);
-            color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)i, slot++);
-        }
-    }
-}
-
 static void render(ApplicationState* state) {
     bool do_screenshot = !str_empty(state->screenshot.path_to_file);
 
@@ -7179,7 +6336,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 
         md_gfx_draw_op_t* draw_ops = 0;
         for (int64_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-            if (state->representation.reps[i].enabled) {
+            if (representation_shown(*state, state->representation.reps[i])) {
                 md_gfx_draw_op_t op;
                 op.structure = state->mold.gfx_structure;
                 op.representation = state->representation.reps[i].gfx_rep;
@@ -7210,7 +6367,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             const Representation& rep = state->representation.reps[i];
 
             if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
-                if (rep.enabled && rep.type_is_valid) {
+                if (representation_shown(*state, rep) && rep.type_is_valid) {
                     md_gl_draw_op_t op = {
                         .type = (md_gl_rep_type_t)rep.type,
                         .args = {},
@@ -7257,7 +6414,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                     md_array_push(draw_ops, op, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
-                if (rep.enabled) {
+                if (representation_shown(*state, rep)) {
                     // immediate draw of dipole moment as arrow
                     vec3_t dipole_vec = { 0, 0, 0 };
                     vec3_t dipole_org = { 0, 0, 0 };
@@ -7344,7 +6501,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
-        if (!rep.enabled) continue;
+        if (!representation_shown(*state, rep)) continue;
         if (rep.type == RepresentationType::ElectronicStructure) {
             const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
@@ -7421,7 +6578,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 
         if (rep.type > RepresentationType::Cartoon) continue;
 
-        if (rep.enabled && rep.type_is_valid) {
+        if (representation_shown(*data, rep) && rep.type_is_valid) {
             md_gl_draw_op_t op = {
                 .type = (md_gl_rep_type_t)rep.type,
                 .args = {},

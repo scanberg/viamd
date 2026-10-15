@@ -185,6 +185,8 @@ set(SRC_FILES
     src/loader.cpp
     src/main.cpp
     src/plot_series.cpp
+    src/representation.cpp
+    src/representation_tree.cpp
     src/script_editor.cpp
     src/script_reference.cpp
     src/serialization_utils.cpp
@@ -206,6 +208,8 @@ set(SRC_FILES
     src/implot_widgets.h
     src/loader.h
     src/plot_series.h
+    src/representation.h
+    src/representation_tree.h
     src/script_editor.h
     src/script_reference.h
     src/serialization_utils.h

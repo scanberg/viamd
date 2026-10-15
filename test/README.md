@@ -26,6 +26,7 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 | `src/loader.cpp` | `test_loader.cpp` — the format dispatch tables and what `init` makes of a path |
 | `src/file_list.cpp` | `test_file_list.cpp` — the files of a system and its runs: the role a file takes from its place, and the workspace's `[System]`, `[Run]` and `[Input]` |
 | `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms, as inverse pairs |
+| `src/representation_tree.cpp` | `test_representation_tree.cpp` — the tree of the Representations window: sibling order, every placement a drag can ask for, and that a group never goes within itself |
 
 **Adding a test file:** drop a `.cpp` in this folder. It is globbed, so there is nothing to edit.
 

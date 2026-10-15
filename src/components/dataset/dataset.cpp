@@ -1,5 +1,6 @@
 #include <viamd_event.h>
 #include <viamd.h>
+#include <representation.h>
 #include <event.h>
 #include <serialization_utils.h>
 #include <display_units.h>

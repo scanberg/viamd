@@ -3,6 +3,7 @@
 #include <event.h>
 #include <viamd_event.h>
 #include <viamd.h>
+#include <representation.h>
 #include <task_system.h>
 #include <color_utils.h>
 

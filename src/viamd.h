@@ -33,6 +33,7 @@
 #include <plot_series.h>
 #include <timeline_periods.h>
 #include <filter_input.h>
+#include <representation_tree.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -868,8 +869,13 @@ struct DipoleRepresentation {
 	float radius = 0.05f;
 };
 
+// The representations, the groups they can be put in and everything done with them is in representation.h.
 struct Representation {
+    RepresentationNode node = {};   // where it is in the Representations window, see representation_tree.h
+
     char name[64] = "rep";
+    // Evaluated within the context of the groups it is in (see RepresentationGroup). Its result says whether what it
+    // picks depends on the frame, through that context too.
     AtomFilter filter = {"all"};
 
     RepresentationType type = RepresentationType::BallAndStick;
@@ -880,11 +886,11 @@ struct Representation {
     md_gfx_handle_t gfx_rep = {};
 #endif
 
-    bool enabled = true;
+    bool enabled = true;            // its own switch: it is shown when every group around it is too (representation_shown)
 	bool needs_update = true;
     bool type_is_valid = false;
     bool filt_is_dirty = true;
-    bool dynamic_evaluation = true;
+    bool dynamic_evaluation = true; // follow the frame when what the filter picks depends on it ("auto-update")
 
     // User defined base color used in uniform mode
     vec4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -912,6 +918,24 @@ struct Representation {
     ElectronicStructureRepresentation electronic_structure = {};
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
+};
+
+// A group of representations. What it holds is shown only while the group is, and its filter, when it has one, is the
+// context of everything within it: their filters are evaluated within the atoms it picks, as the left hand side of 'in'
+// is within its right in a script - residue(1) is the first residue of the group, all is the group. A group within a
+// group has its filter evaluated within the outer one's in turn. Without a filter a group only groups, and what is in
+// it sees whatever context the group itself is in.
+struct RepresentationGroup {
+    RepresentationNode node = {0, 0, 0, true};
+
+    char name[64] = "group";
+    // Empty for no context of its own. Its result says whether the context is valid and whether it depends on the
+    // frame, the context it is evaluated in included.
+    AtomFilter filter = {};
+
+    bool enabled = true;
+    bool filt_is_dirty = true;
+    md_bitset_t atom_mask = {};     // what the filter picks within its context, empty without a filter
 };
 
 struct FrameCache {
@@ -1374,12 +1398,16 @@ struct ApplicationState {
 
     // --- REPRESENTATIONS ---
     struct {
+        // Both in the order the window lists them. Where each one is in the tree of groups is on the
+        // representation or group itself (representation_tree.h).
         md_array(Representation) reps = 0;
-        md_bitmask_t visibility_mask = {};     // the union of the masks of the enabled representations
+        md_array(RepresentationGroup) groups = 0;
+        uint32_t next_rep_id = 1;
+        uint32_t next_group_id = 1;
+        md_bitmask_t visibility_mask = {};     // the union of the masks of the shown representations
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
-        bool needs_update = false;
         bool advanced_mode = false;
     } representation;
 
@@ -1905,20 +1933,7 @@ Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_
 void remove_selection(ApplicationState* app, size_t idx);
 void remove_all_selections(ApplicationState* app);
 
-// Representations
-Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
-Representation* clone_representation(ApplicationState* app, const Representation& rep);
-void remove_representation(ApplicationState* app, size_t idx);
-void update_representation(ApplicationState* app, Representation* rep);
-void update_all_representations(ApplicationState* app);
-bool representation_uses_atom_colors(const Representation& rep);
-
-void flag_representation_as_dirty(Representation* rep);
-void flag_all_representations_as_dirty(ApplicationState* app);
-
-void remove_all_representations(ApplicationState* app);
-void create_default_representations(ApplicationState* app);
-void recompute_atom_visibility_mask(ApplicationState* app);
+// Representations and their groups: representation.h
 
 // Enumerates the complete dipole GROUPS in the system's attribute table, in name order - a handful
 // of entries, and no values are read. Returns the total number found and writes at most cap, so
@@ -1956,6 +1971,11 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys);
 // until the representation's window has been drawn. Returns false when the system carries no
 // electronic structure at all, and leaves the representation untouched.
 bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys);
+
+// Brings what an electronic structure representation draws up to date: its volume, evaluated again only
+// when what it is evaluated from changed (the frame among it), and the colours of its surfaces - from
+// atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.
+void electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
