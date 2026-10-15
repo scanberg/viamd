@@ -1500,6 +1500,16 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Anti-Aliasing (FXAA)", &data->visuals.fxaa.enabled);
             ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
             {
+                int spline_mode = data->visuals.spline.raycast ? 1 : 0;
+                if (ImGui::Combo("Splines", &spline_mode, "Mesh\0Ray cast\0")) {
+                    data->visuals.spline.raycast = spline_mode == 1;
+                }
+                ImGui::SetItemTooltip("How the cartoon and the tubes of lipids and nucleic acids are drawn.\n"
+                                      "Mesh: triangles along the spline, with a level of detail.\n"
+                                      "Ray cast: each segment of the spline sphere traced within a quad, whose cost is in the\n"
+                                      "pixels it covers rather than in the length of the backbone.");
+            }
+            {
                 int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
                 if (ImGui::Combo("Isosurfaces", &iso_mode, "Fast\0Exact\0")) {
                     data->settings.exact_isosurfaces = iso_mode == 1;
@@ -7208,6 +7218,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .model_matrix = NULL,
         };
         tubes.args.tubes.radius_scale = scale;
+        tubes.args.tubes.raycast = state.visuals.spline.raycast;
         md_array_push(*ops, tubes, alloc);
     }
 
@@ -7350,6 +7361,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.cartoon.coil_scale = rep.scale.x;
                         op.args.cartoon.sheet_scale = rep.scale.y;
                         op.args.cartoon.helix_scale = rep.scale.z;
+                        op.args.cartoon.raycast = state->visuals.spline.raycast;
                         break;
                     default:
                         break;
@@ -7546,6 +7558,8 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
                 op.args.licorice.bond_orders = rep.bond_orders;
             } else if (rep.type == RepresentationType::BallAndStick) {
                 op.args.ball_and_stick.bond_orders = rep.bond_orders;
+            } else if (rep.type == RepresentationType::Cartoon) {
+                op.args.cartoon.raycast = data->visuals.spline.raycast;
             }
             md_array_push(draw_ops, op, frame_alloc);
         }

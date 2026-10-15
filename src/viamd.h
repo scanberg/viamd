@@ -1380,6 +1380,9 @@ struct ApplicationState {
         struct {
             bool draw_control_points = false;
             bool draw_spline = false;
+            // The splines of the cartoon and the tubes of the lipids and nucleic acids ray cast (sphere traced, a quad
+            // per segment), or drawn as meshes
+            bool raycast = true;
         } spline;
     } visuals;
 
