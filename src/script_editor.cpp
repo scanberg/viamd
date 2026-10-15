@@ -220,6 +220,22 @@ static int kind_order(md_script_completion_kind_t kind) {
     }
 }
 
+bool completion_match(std::string_view typed, const md_script_completion_t& item, int* score) {
+    return fuzzy_match(typed, std::string_view(item.label.ptr, item.label.len), score);
+}
+
+bool completion_before(const md_script_completion_t& a, int a_score, const md_script_completion_t& b, int b_score, std::string_view typed) {
+    const std::string_view a_label(a.label.ptr, a.label.len), b_label(b.label.ptr, b.label.len);
+    if (a.fits != b.fits) return a.fits;
+    const bool a_exact = a_label == typed, b_exact = b_label == typed;
+    if (a_exact != b_exact) return a_exact;
+    if (a_score != b_score) return a_score > b_score;
+    const int a_kind = kind_order(a.kind), b_kind = kind_order(b.kind);
+    if (a_kind != b_kind) return a_kind < b_kind;
+    if (!typed.empty() && a_label.size() != b_label.size()) return a_label.size() < b_label.size();
+    return a_label < b_label;
+}
+
 // What can be written at the cursor comes from mdlib (md_script_complete), which knows the language and the system.
 // What matches what has been typed, and in which order, is decided here.
 static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor::AutoCompleteState& state) {
@@ -260,25 +276,16 @@ static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor
         const std::string_view text(item.text.ptr, item.text.len);
         if (text.size() < lead.size() + tail.size() || text.substr(0, lead.size()) != lead || text.substr(text.size() - tail.size()) != tail) continue;
         int score;
-        if (fuzzy_match(typed, {item.label.ptr, item.label.len}, &score)) {
+        if (completion_match(typed, item, &score)) {
             matches.push_back({&item, text.substr(lead.size(), text.size() - lead.size() - tail.size()), score});
         }
     }
 
-    auto label = [](const Match& m) { return std::string_view(m.item->label.ptr, m.item->label.len); };
-
     // Nothing to offer if what has been typed is already complete
     if (!(matches.size() == 1 && matches[0].insert == word)) {
-        // Best score first. Among equals: an exact match, then by kind, then the shortest (the one needing the least
-        // typing to tell apart), then alphabetically. Without a term everything scores 0 and is listed by kind and name.
+        // Without a term everything scores 0, and what fits the argument comes first, then by kind and name
         std::sort(matches.begin(), matches.end(), [&](const Match& a, const Match& b) {
-            if (a.score != b.score) return a.score > b.score;
-            const bool a_exact = label(a) == typed, b_exact = label(b) == typed;
-            if (a_exact != b_exact) return a_exact;
-            const int a_kind = kind_order(a.item->kind), b_kind = kind_order(b.item->kind);
-            if (a_kind != b_kind) return a_kind < b_kind;
-            if (!typed.empty() && label(a).size() != label(b).size()) return label(a).size() < label(b).size();
-            return label(a) < label(b);
+            return completion_before(*a.item, a.score, *b.item, b.score, typed);
         });
 
         const size_t count = std::min(matches.size(), MAX_SUGGESTIONS);

@@ -32,6 +32,7 @@
 #include <event.h>
 #include <plot_series.h>
 #include <timeline_periods.h>
+#include <filter_input.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -869,8 +870,7 @@ struct DipoleRepresentation {
 
 struct Representation {
     char name[64] = "rep";
-    char filt[256] = "all";
-    char filt_error[256] = "";
+    AtomFilter filter = {"all"};
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
@@ -884,8 +884,6 @@ struct Representation {
 	bool needs_update = true;
     bool type_is_valid = false;
     bool filt_is_dirty = true;
-    bool filt_is_valid = false;
-    bool filt_is_dynamic = false;
     bool dynamic_evaluation = true;
 
     // User defined base color used in uniform mode
@@ -1088,6 +1086,12 @@ struct ApplicationState {
         } jitter;
 
 		ViewTransform target = {};
+
+        // The part of the view that what the view is reset to is framed in: what the windows left uncovered when
+        // it was last focused with a double click (with settings.focus_in_free_space), or all of it. The projection is shifted so that the camera's
+        // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
+        ViewRegion region = {};
+        vec2_t shift = {0, 0};
     } view;
 
     struct {
@@ -1214,10 +1218,8 @@ struct ApplicationState {
         } color;
 
         struct {
-            char buf[256] = "";
-            char error[256] = "";
+            AtomFilter filter;
             md_bitmask_t mask = {};
-            bool query_ok = false;
             bool query_invalid = true;
             bool show_window = false;
         } query;
@@ -1403,11 +1405,8 @@ struct ApplicationState {
         mat4_t state_rotation = MD_MAT4_IDENT_INIT;
 
         struct {
-            char query[256] = "";
-            char error[256] = "";
-            bool valid = false;
+            AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
             bool enabled = false;
-            bool dynamic = false; // represents whether the query needs to be re-evaluated per frame.
             uint64_t version = 1;
             uint64_t evaluated_version = 0;
             uint64_t ir_fingerprint = 0;
@@ -1441,6 +1440,7 @@ struct ApplicationState {
     struct {
         bool keep_representations = false;
         bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
+        bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;
 
@@ -1519,11 +1519,8 @@ struct ApplicationState {
         uint32_t selected_traj_period = 0;   // a timeline period, by id
         int selected_file_format = 0;
         struct {
-            char buf[256] = "";
-            char error[256] = "";
+            AtomFilter filter;
             md_bitset_t mask = {0};
-            bool is_valid = false;
-            bool is_dynamic = false;
             bool requires_evaluation = false;
         } query;
     } structure_export;
@@ -1898,6 +1895,11 @@ bool save_workspace(ApplicationState* app, str_t file);
 void workspace_register_window(const char* name, bool* show);
 
 // Selections
+// What filters are evaluated and completed against: the system as it is shown, and the names of the script in the editor
+static inline md_filter_context_t filter_context(const ApplicationState* app) {
+    return md_filter_context_t{&app->mold.sys, &app->mold.state, app->script.ir};
+}
+
 // The selection keeps its own copy of atom_mask
 Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_mask = {});
 void remove_selection(ApplicationState* app, size_t idx);
@@ -2379,6 +2381,7 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
+    vec2_t view_shift = {0, 0};     // Where the projection is shifted to (see ViewRegion)
 };
 
 struct InteractionSurfaceViewTransformResult {
@@ -2462,10 +2465,12 @@ FileQueue::Entry file_queue_pop(FileQueue* queue);
 void file_queue_process(ApplicationState* state);
 
 // view
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr);
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask) {
+// A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
+// camera_compute_default_view). fov_y is that of the camera that looks through it.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {});
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members);
+    reset_view(transform, state, &members, fov_y, region);
 }
 
 // Script IR lifetime

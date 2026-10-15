@@ -29,6 +29,7 @@ struct TrackballControllerInput {
     vec2_t mouse_coord_curr = {0, 0};
     vec2_t screen_size = {0, 0};
     float fov_y = 0.5f;
+    vec2_t ndc_center = {0, 0};     // Where in the view the look-at point is seen (see ViewRegion), which rotation is about
 };
 
 struct TrackballControllerParam {
@@ -115,15 +116,35 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
 
 ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext, const mat3_t& basis = mat3_ident(), float distance_scale = 3.0f);
 
+// A rectangle of a view, such as the part of it that windows leave uncovered: min and max in the view's
+// normalized device coordinates (x to the right, y up, -1 to 1 across the view), and the view's width over
+// its height. The default is all of a square view.
+//
+// What is framed in a region is seen at its center by shifting the projection there: the projection matrix
+// is premultiplied by mat4_translate(center.x, center.y, 0), which moves the picture over in clip space. The
+// camera still looks at what it frames, so it rotates about it and zooms towards it.
+struct ViewRegion {
+    vec2_t min = {-1, -1};
+    vec2_t max = { 1,  1};
+    float  aspect_ratio = 1.0f;
+};
+
+static inline vec2_t view_region_center(const ViewRegion& region) { return (region.min + region.max) * 0.5f; }
+
 // A good default view of a set of atoms: the whole system, or a structure within it. x, y, z hold all
 // num_atoms atoms, as drawn (no periodic treatment); the view frames those listed in indices, or all of them
 // when indices is null. cell_A is the unit cell basis (columns a, b, c), or null for none - it is only used
-// to judge whether the world axes mean anything. See the implementation for the choices this makes.
-ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y);
+// to judge whether the world axes mean anything. The atoms are framed to fit in region, when the projection
+// is shifted to its center (see ViewRegion). See the implementation for the choices this makes.
+ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y, const ViewRegion& region = {});
 
 // The camera distance at which all atoms (those in indices, or all count of them) fit in a view from
-// orientation, looking at look_at.
-float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y);
+// orientation, looking at look_at: in the largest square in the middle of region, with the projection
+// shifted to its center (see ViewRegion).
+float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y, const ViewRegion& region = {});
 
 // Lazy stupid procedure on top of interpolate_look_at
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor = 0.12f);
+
+// A shift of the projection (see ViewRegion) animated towards target, at the pace of camera_animate
+void camera_animate_shift(vec2_t* current, vec2_t target, double dt, double target_factor = 0.12f);

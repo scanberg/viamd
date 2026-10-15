@@ -194,15 +194,18 @@ static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, 
     }
 }
 
-// A mark beside the line a property is named on: how it stands
+// A mark beside the line a property is named on: how it stands. It is also a handle on the property, which is dragged
+// from it into the window which shows its kind.
 struct ScriptGutterMark {
     int line;
     md_script_eval_status_t status;
     float done;                 // the fraction of what it needs which it holds
     char text[160];
+    char ident[64];
+    uint32_t kinds;             // MD_SCRIPT_PROPERTY_FLAG_*
 };
 
-static void draw_script_gutter_mark(const TextEditor::Decorator& d, const ScriptGutterMark& m) {
+static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Decorator& d, const ScriptGutterMark& m) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const ImVec2 c  = p0 + ImVec2(d.width * 0.5f, d.height * 0.5f);
@@ -231,8 +234,32 @@ static void draw_script_gutter_mark(const TextEditor::Decorator& d, const Script
         }
         break;
     }
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p0, p0 + ImVec2(d.width, d.height))) {
-        ImGui::SetTooltip("%s", m.text);
+
+    // A temporal property goes to a timeline (which a distribution takes as well), a distribution to a distribution,
+    // a volume to the density volume
+    const char* dnd_type = nullptr;
+    const char* hint = "";
+    if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+        dnd_type = TIMELINE_SERIES_DND;
+        hint = "Drag into a Timelines or Distributions subplot";
+    } else if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+        dnd_type = DISTRIBUTION_SERIES_DND;
+        hint = "Drag into a Distributions subplot";
+    } else if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
+        dnd_type = VOLUME_SERIES_DND;
+        hint = "Drag into the Density Volume";
+    }
+    ImGui::InvisibleButton("##mark", ImVec2(d.width, d.height));
+    if (dnd_type && ImGui::BeginDragDropSource()) {
+        char path[SERIES_PATH_CAP];
+        snprintf(path, sizeof(path), "script/%s", m.ident);
+        const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
+        char label[96];
+        series_label(label, sizeof(label), app, key);
+        series_set_drag_payload(dnd_type, key, -1, label, series_default_color(app, key));
+        ImGui::EndDragDropSource();
+    } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s%s%s", m.text, hint[0] ? "\n" : "", hint);
     }
 }
 
@@ -285,6 +312,7 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 }
 
 static void update_view_param(ApplicationState* state);
+static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
 
 //static void update_density_volume_texture(ApplicationState* state);
 
@@ -481,6 +509,7 @@ int main(int argc, char** argv) {
     // reads the file, so the bound values are current by the time the loop starts.
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
+    app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
     display_units::register_settings();
@@ -580,6 +609,8 @@ int main(int argc, char** argv) {
     state.editor.SetLanguage(script_editor::language());
     state.editor.SetPalette(TextEditor::GetDarkPalette());
     state.editor.SetInsertSpacesOnTabs(true);
+    // The marks of how each property stands, left of the line numbers (see draw_script_gutter_mark)
+    state.editor.SetDecorationsBeforeLineNumbers(true);
     script_editor::enable_autocomplete(state.editor, &state.mold.sys);
 
     {
@@ -673,6 +704,7 @@ int main(int argc, char** argv) {
         draw_color_legend_windows(state);
             
         ImGui::BeginCanvas("Main interaction window", true);
+        const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();
         InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
         ImGui::EndCanvas();
@@ -737,17 +769,20 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
+            .view_shift = state.view.shift,
         };
 
         InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
         if (view_result.reset_requested) {
+            // What is focused on is seen in the middle of what the windows leave in view, rather than behind them
+            state.view.region = state.settings.focus_in_free_space ? main_view_uncovered_region(state, canvas_window) : ViewRegion{};
             ViewTransform reset_transform = {};
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask);
+                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region);
             }
             state.view.target = reset_transform;
         }
@@ -755,6 +790,7 @@ int main(int argc, char** argv) {
         draw_context_popup(&state, hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
+        camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
         state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
@@ -1166,7 +1202,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.state);
+                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region);
             }
         }
 
@@ -1187,7 +1223,7 @@ int main(int argc, char** argv) {
             const Representation& rep = state.representation.reps[i];
             const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)rep.enabled };
             r_hash = md_hash64(kind, sizeof(kind), r_hash);
-            const str_t filt = str_from_cstrn(rep.filt, sizeof(rep.filt));
+            const str_t filt = str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
             r_hash = md_hash64(filt.ptr, filt.len, r_hash);
             r_hash = md_bitset_hash64(rep.atom_mask, r_hash);
         }
@@ -1341,7 +1377,40 @@ static void update_view_param(ApplicationState* data) {
         param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
 
+    // What the view is focused on is seen where the windows leave it uncovered (see ViewRegion): the picture is moved
+    // over in clip space. Not in a screenshot without the windows, which shows it in the middle.
+    const bool windows_shown = str_empty(data->screenshot.path_to_file) || !data->screenshot.hide_gui;
+    const vec2_t shift = windows_shown ? data->view.shift : vec2_t{0, 0};
+    if (shift != vec2_t{0, 0}) {
+        const mat4_t to_shifted   = mat4_translate( shift.x,  shift.y, 0.0f);
+        const mat4_t from_shifted = mat4_translate(-shift.x, -shift.y, 0.0f);
+        param.matrix.curr.proj           = to_shifted * param.matrix.curr.proj;
+        param.matrix.curr.proj_no_jitter = to_shifted * param.matrix.curr.proj_no_jitter;
+        param.matrix.inv.proj            = param.matrix.inv.proj * from_shifted;
+    }
+
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
+}
+
+// The part of the main view that the windows leave in view, as a region of it: the main view is drawn over all of
+// the main viewport, behind the windows. All of it when they leave too little to show anything in.
+static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImRect bounds = ImRect(viewport->Pos, viewport->Pos + viewport->Size);
+    const ImRect rect = ImGui::LargestUncoveredRect(bounds, canvas);
+
+    ViewRegion region = {.aspect_ratio = (float)state.gbuffer.width / (float)state.gbuffer.height};
+
+    // Smallest side, relative to that of the viewport, that is still worth fitting into
+    const float MIN_SIDE = 0.25f;
+    if (ImMin(rect.GetWidth(), rect.GetHeight()) >= MIN_SIDE * ImMin(bounds.GetWidth(), bounds.GetHeight())) {
+        // Normalized device coordinates have y up
+        const ImVec2 p0 = (rect.Min - bounds.Min) / bounds.GetSize();
+        const ImVec2 p1 = (rect.Max - bounds.Min) / bounds.GetSize();
+        region.min = {p0.x * 2.0f - 1.0f, 1.0f - p1.y * 2.0f};
+        region.max = {p1.x * 2.0f - 1.0f, 1.0f - p0.y * 2.0f};
+    }
+    return region;
 }
 
 // ### DRAW WINDOWS ###
@@ -1400,7 +1469,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
             }
             ImGui::Separator();
             ImGui::Checkbox("VSync", &data->app.window.vsync);
@@ -1784,7 +1853,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (data->operations.recenter_query.enabled) {
                     auto& recenter_query = data->operations.recenter_query;
                     ImGui::SameLine();
-                    if (ImGui::InputQuery("##recenter-query", recenter_query.query, sizeof(recenter_query.query), recenter_query.valid, recenter_query.error)) {
+                    if (filter_input("##recenter-query", &recenter_query.filter, filter_context(data))) {
                         recenter_mark_query_dirty(data);
                     }
                 }
@@ -1861,6 +1930,15 @@ static void draw_main_menu(ApplicationState* data) {
                 app_settings::mark_dirty();
             }
             ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
+
+            if (ImGui::Checkbox("Focus in Free Space", &data->settings.focus_in_free_space)) {
+                if (!data->settings.focus_in_free_space) {
+                    // Back to the middle of the whole view
+                    data->view.region = {};
+                }
+                app_settings::mark_dirty();
+            }
+            ImGui::SetItemTooltip("Double clicking the view frames what it focuses on in the largest part of the view\nthat no window covers, rather than in the middle of the whole view");
 
             // Font
             int font_size_idx = nearest_font_size_index(data->settings.font_size);
@@ -2083,7 +2161,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
             }
             [[fallthrough]];
         }
@@ -2835,19 +2913,24 @@ static void draw_selection_query_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(300,100), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Selection Query", &data->selection.query.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
 
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-            data->selection.query.show_window = false;
-            return;
+        auto& query = data->selection.query;
+        // Escape closes the window, unless it closes the suggestions of the query
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !filter_completions_open()) {
+            query.show_window = false;
         }
 
         static double query_frame = 0.0;
 
         ImGui::PushItemWidth(-1);
-        bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.error, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+        bool apply = false;
+        if (filter_input("##query", &query.filter, filter_context(data), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
+            query.query_invalid = true;
+        }
         ImGui::PopItemWidth();
 
-        if (ImGui::IsItemEdited() || data->animation.frame != query_frame) {
-            data->selection.query.query_invalid = true;
+        // What depends on the coordinates is picked again in another frame
+        if (query.filter.result.is_dynamic && data->animation.frame != query_frame) {
+            query.query_invalid = true;
         }
         bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
 
@@ -2855,27 +2938,27 @@ static void draw_selection_query_window(ApplicationState* data) {
             ImGui::SetKeyboardFocusHere(-1);
         }
 
-        if (!data->selection.query.query_ok) ImGui::PushDisabled();
+        if (!query.filter.result.success) ImGui::PushDisabled();
         apply |= ImGui::Button("Apply");
-        if (!data->selection.query.query_ok) ImGui::PopDisabled();
+        if (!query.filter.result.success) ImGui::PopDisabled();
 
         preview |= ImGui::IsItemHovered();
 
-        if (data->selection.query.query_invalid) {
-            data->selection.query.query_invalid = false;
+        if (query.query_invalid) {
+            query.query_invalid = false;
             md_bitset_t result = md_bitset_empty_set();
-            data->selection.query.query_ok = md_filter(&result, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error), frame_alloc);
+            filter_evaluate(&query.filter, &result, filter_context(data), frame_alloc);
             query_frame = data->animation.frame;
 
-            md_bitmask_assign(&data->selection.query.mask, data->selection.query.query_ok ? result : md_bitset_empty_set());
-            grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
+            md_bitmask_assign(&query.mask, query.filter.result.success ? result : md_bitset_empty_set());
+            grow_mask_by_selection_granularity(&query.mask, data->selection.granularity, data->mold.sys);
         }
 
         if (preview) {
-            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.query.mask));
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&query.mask));
         }
 
-        if (apply && data->selection.query.query_ok) {
+        if (apply && query.filter.result.success) {
             md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
@@ -3631,7 +3714,7 @@ static void draw_representations_window(ApplicationState* state) {
 				ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
                 break;
 			default:
-                if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
+                if (filter_input("filter", &rep.filter, filter_context(state))) {
                     rep.filt_is_dirty = true;
                     update_rep = true;
                 }
@@ -3695,7 +3778,7 @@ static void draw_representations_window(ApplicationState* state) {
                         ImGui::TextDisabled("no per atom attributes in this dataset");
                     }
                 }
-                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
+                if (rep.filter.result.is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
                     if (advanced) {
                         update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                         if (!rep.dynamic_evaluation) {
@@ -4795,30 +4878,84 @@ static ImPlotPoint histogram_getter_zero(int i, void* payload) {
     return ImPlotPoint(series_histogram_point(*p->view, i, p->k).x, 0.0);
 }
 
-// A histogram member drawn dashed, over the plot: a preview, not a curve of the plot's own
-static void plot_dashed_histogram(const SeriesHistogramView& v, int k, ImVec4 color) {
+// A polyline drawn dashed, carrying the dashes on across its corners and from one call to the next through phase
+static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase) {
+    const float dash = 6.0f, gap = 4.0f;
+    for (int i = 1; i < count; ++i) {
+        const ImVec2 prev = pts[i - 1];
+        const ImVec2 d = pts[i] - prev;
+        const float len = sqrtf(d.x * d.x + d.y * d.y);
+        if (len <= 0.0f) continue;
+        const ImVec2 u = d / len;
+        float t = 0.0f;
+        while (t < len) {
+            const float in_cycle = fmodf(*phase + t, dash + gap);
+            const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
+            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
+            t += MAX(step, 0.01f);
+        }
+        *phase = fmodf(*phase + len, dash + gap);
+    }
+}
+
+// A histogram member over the plot as a preview, not a curve of the plot's own: drawn as the series is (a line, an area
+// or bars), with a dashed outline and, for an area or bars, a faint fill
+static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 color, const PlotSeries& s) {
+    if (v.num_bins <= 0) return;
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
-    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
-    const float dash = 6.0f, gap = 4.0f;
-    float phase = 0.0f;     // along the polyline, so the dashes run on across its corners
-    ImVec2 prev = ImPlot::PlotToPixels(series_histogram_point(v, 0, k));
-    for (int i = 1; i < v.num_bins; ++i) {
-        const ImVec2 next = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
-        const ImVec2 d = next - prev;
-        const float len = sqrtf(d.x * d.x + d.y * d.y);
-        if (len > 0.0f) {
-            const ImVec2 u = d / len;
-            float t = 0.0f;
-            while (t < len) {
-                const float in_cycle = fmodf(phase + t, dash + gap);
-                const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
-                if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
-                t += MAX(step, 0.01f);
+    const ImU32 line_col = ImGui::ColorConvertFloat4ToU32(color);
+    const ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, color.w * 0.25f));
+    // Fills which meet edge to edge, without the seams anti-aliasing would leave between them
+    const ImDrawListFlags flags = dl->Flags;
+    float phase = 0.0f;
+
+    if (s.plot_type == PlotType_Bars) {
+        const double half = series_histogram_bin_width(v) * s.bar_width * 0.5;
+        const bool joined = s.bar_width >= 0.999f;
+        md_temp_scope_t temp = md_temp_begin();
+        // Joined, the outline is one step along the tops of the bars; apart, each bar has its own
+        ImVec2* outline = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins * 2 + 2);
+        int n = 0;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        for (int i = 0; i < v.num_bins; ++i) {
+            const ImPlotPoint p = series_histogram_point(v, i, k);
+            const ImVec2 a = ImPlot::PlotToPixels(p.x - half, 0.0);
+            const ImVec2 b = ImPlot::PlotToPixels(p.x + half, p.y);
+            dl->AddRectFilled(ImVec2(MIN(a.x, b.x), MIN(a.y, b.y)), ImVec2(MAX(a.x, b.x), MAX(a.y, b.y)), fill_col);
+            if (joined) {
+                if (n == 0) outline[n++] = a;
+                outline[n++] = ImVec2(a.x, b.y);
+                outline[n++] = b;
+            } else {
+                const ImVec2 bar[4] = { a, ImVec2(a.x, b.y), b, ImVec2(b.x, a.y) };
+                dashed_polyline(dl, bar, 4, line_col, &phase);
             }
-            phase = fmodf(phase + len, dash + gap);
         }
-        prev = next;
+        dl->Flags = flags;
+        if (joined && n > 0) {
+            outline[n] = ImVec2(outline[n - 1].x, outline[0].y);
+            dashed_polyline(dl, outline, n + 1, line_col, &phase);
+        }
+        md_temp_end(temp);
+    } else {
+        md_temp_scope_t temp = md_temp_begin();
+        ImVec2* pts = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins);
+        for (int i = 0; i < v.num_bins; ++i) {
+            pts[i] = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
+        }
+        if (s.plot_type == PlotType_Area) {
+            // Down to zero, one quad per stretch between two bins
+            dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+            for (int i = 1; i < v.num_bins; ++i) {
+                const ImVec2 base0 = ImPlot::PlotToPixels(series_histogram_point(v, i - 1, k).x, 0.0);
+                const ImVec2 base1 = ImPlot::PlotToPixels(series_histogram_point(v, i, k).x, 0.0);
+                dl->AddQuadFilled(pts[i - 1], pts[i], base1, base0, fill_col);
+            }
+            dl->Flags = flags;
+        }
+        dashed_polyline(dl, pts, v.num_bins, line_col, &phase);
+        md_temp_end(temp);
     }
     ImPlot::PopPlotClipRect();
 }
@@ -5289,12 +5426,13 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                         }
 
-                        // The period under the pointer in the timeline, dashed, unless the series is shown over it already
+                        // The period under the pointer in the timeline, drawn as the series is but dashed, unless the series is
+                        // shown over it already
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
                             if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1) && pv.num_bins > 0 && pv.periods[0].valid) {
                                 const vec4_t rc = preview_range->color;
-                                plot_dashed_histogram(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f));
+                                plot_histogram_preview(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f), s);
                             }
                         }
 
@@ -5574,7 +5712,9 @@ static void draw_script_editor_window(ApplicationState* state) {
                     if (line_offsets[mid] <= (uint32_t)range.beg) lo = mid; else hi = mid;
                 }
                 const md_script_eval_plan_t& p = plan.props[i];
-                ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "" };
+                ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "", "", 0 };
+                str_copy_to_char_buf(mark.ident, sizeof(mark.ident), plan.names[i]);
+                mark.kinds = (uint32_t)md_script_ir_property_flags(state->script.ir, plan.names[i]);
                 const uint32_t needed = p.num_frames + p.num_pending;
                 mark.done = p.num_pending == 0 ? 1.0f : needed ? (float)p.num_frames / (float)needed : 0.0f;
                 script_plan_describe(mark.text, sizeof(mark.text), plan, i);
@@ -5582,10 +5722,10 @@ static void draw_script_editor_window(ApplicationState* state) {
             }
         }
         const size_t num_marks = md_array_size(marks);
-        state->editor.SetLineDecorator(1, [marks, num_marks](TextEditor::Decorator& d) {
+        state->editor.SetLineDecorator(1, [state, marks, num_marks](TextEditor::Decorator& d) {
             for (size_t i = 0; i < num_marks; ++i) {
                 if ((size_t)marks[i].line == d.line) {
-                    draw_script_gutter_mark(d, marks[i]);
+                    draw_script_gutter_mark(state, d, marks[i]);
                     break;
                 }
             }
@@ -6230,28 +6370,11 @@ void draw_structure_export_window(ApplicationState* data) {
 
         if (struct_exp.selected_atom_filter == 2) { // Query
             auto& query = struct_exp.query;
-            bool valid = query.is_valid;
-
-
-            if (!valid) ImGui::PushInvalid();
-            ImGui::InputQuery("Query", query.buf, sizeof(query.buf), query.is_valid, query.error);
-            if (!valid) ImGui::PopInvalid();
-            
-            query.requires_evaluation |= ImGui::IsItemEdited();
+            query.requires_evaluation |= filter_input("Query", &query.filter, filter_context(data));
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
-            
+
             if (query.requires_evaluation) {
-                md_bitset_free(&query.mask, persistent_alloc);
-                query.is_valid = md_filter(
-                    &query.mask,
-                    str_from_cstr(query.buf),
-                    &data->mold.sys,
-                    &data->mold.state,
-                    data->script.ir,
-                    &query.is_dynamic,
-                    query.error,
-                    sizeof(query.error), persistent_alloc
-                );
+                filter_evaluate(&query.filter, &query.mask, filter_context(data), persistent_alloc);
                 query.requires_evaluation = false;
             }
 
@@ -6260,7 +6383,7 @@ void draw_structure_export_window(ApplicationState* data) {
                 md_bitmask_clear(&data->selection.highlight_mask);
             }
 
-            if (query.is_valid && preview) {
+            if (query.filter.result.success && preview) {
                 md_bitmask_assign(&data->selection.highlight_mask, query.mask);
             }
         }
@@ -6305,26 +6428,19 @@ void draw_structure_export_window(ApplicationState* data) {
                     return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
                 } break;
                 case 2: { // Query
-                    if (data->structure_export.query.is_dynamic) {
-                        // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
-                        // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
-                        md_bitset_free(&data->structure_export.query.mask, persistent_alloc);
-                        data->structure_export.query.is_valid = md_filter(
-                            &data->structure_export.query.mask,
-                            str_from_cstr(data->structure_export.query.buf),
-                            &data->mold.sys,
-                            state,
-                            data->script.ir,
-                            &data->structure_export.query.is_dynamic,
-                            data->structure_export.query.error,
-                            sizeof(data->structure_export.query.error), persistent_alloc
-                        );
+                    auto& query = data->structure_export.query;
+                    if (query.filter.result.is_dynamic) {
+                        // What it picks depends on the coordinates: picked again in each frame exported (md_filter
+                        // replaces what the mask held, so nothing of the previous frame stays)
+                        md_filter_context_t ctx = filter_context(data);
+                        ctx.state = state;
+                        filter_evaluate(&query.filter, &query.mask, ctx, persistent_alloc);
                     }
-                    if (!data->structure_export.query.is_valid) {
-                        VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
+                    if (!query.filter.result.success) {
+                        VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: %s", query.filter.result.error);
                         return 0;
                     } else {
-                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(data->structure_export.query.mask));
+                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(query.mask));
                     }
                 } break;
                 case 3: { // All Atoms

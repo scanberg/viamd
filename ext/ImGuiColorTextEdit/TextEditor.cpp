@@ -103,7 +103,16 @@ bool TextEditor::render(const char* title, const ImVec2& size, ImGuiChildFlags c
 			lineNumberRightOffset += glyphSize.x;
 		}
 
-		if (decoratorWidth) {
+		if (decoratorWidth && config.decorationsBeforeLineNumbers) {
+			// decorations first, then the fold indicators and line numbers moved along to make room for them
+			auto shift = (decoratorWidth + config.decorationMargin) * glyphSize.x;
+			decorationOffset = config.leftMargin * glyphSize.x;
+			lineNumberLeftOffset += shift;
+			lineNumberRightOffset += shift;
+			if (config.lineFolding) { foldIndicatorOffset += shift; }
+			textLeftOffset = lineNumberRightOffset + config.textMargin * glyphSize.x;
+
+		} else if (decoratorWidth) {
 			decorationOffset = lineNumberRightOffset + config.decorationMargin * glyphSize.x;
 			textLeftOffset = decorationOffset + (decoratorWidth + config.textMargin) * glyphSize.x;
 

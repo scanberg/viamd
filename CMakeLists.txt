@@ -178,6 +178,7 @@ set(SRC_FILES
     src/surface_field.cpp
     src/event.cpp
     src/file_list.cpp
+    src/filter_input.cpp
     src/image.cpp
     src/imgui_widgets.cpp
     src/implot_widgets.cpp
@@ -199,6 +200,7 @@ set(SRC_FILES
     src/surface_field.h
     src/event.h
     src/file_list.h
+    src/filter_input.h
     src/image.h
     src/imgui_widgets.h
     src/implot_widgets.h

@@ -1309,8 +1309,7 @@ void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
         md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
-        data->operations.recenter_query.valid = false;
-        data->operations.recenter_query.dynamic = false;
+        data->operations.recenter_query.filter.result = {};
         data->operations.recenter_query.evaluated_version = 0;
         data->operations.recenter_query.ir_fingerprint = 0;
         data->operations.initial_frame.valid = false;
@@ -1340,7 +1339,7 @@ void init_system_data(ApplicationState* data) {
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
-        reset_view(&default_view, data->mold.state);
+        reset_view(&default_view, data->mold.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
@@ -1747,7 +1746,7 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.unwrap_structures = false;
     data->operations.recalc_bonds = false;
     data->operations.recenter_query.enabled = false;
-    data->operations.recenter_query.query[0] = '\0';
+    data->operations.recenter_query.filter.text[0] = '\0';
     recenter_mark_query_dirty(data);
     md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
 }
@@ -1759,7 +1758,7 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
         if (str_eq(ident, STR_LIT("Name"))) {
             viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
         } else if (str_eq(ident, STR_LIT("Filter"))) {
-            viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
+            viamd::extract_to_char_buf(rep->filter.text, sizeof(rep->filter.text), arg);
         } else if (str_eq(ident, STR_LIT("Enabled"))) {
             viamd::extract_bool(rep->enabled, arg);
         } else if (str_eq(ident, STR_LIT("Type"))) {
@@ -1946,7 +1945,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
 
     viamd::write_section_header(state, STR_LIT("Representation"));
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
-    viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
+    viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filter.text));
     viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
     viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
     viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
@@ -2196,7 +2195,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("RecalcBonds")))         viamd::extract_bool(op.recalc_bonds, arg);
                 else if (str_eq(ident, STR_LIT("RecenterQueryEnabled"))) viamd::extract_bool(op.recenter_query.enabled, arg);
                 else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
-                    viamd::extract_to_char_buf(op.recenter_query.query, sizeof(op.recenter_query.query), arg);
+                    viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
                     recenter_mark_query_dirty(data);
                 }
                 else if (str_eq(ident, STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
@@ -2391,7 +2390,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // The camera flies in: from the whole system to where the workspace looked from. Without a
     // stored camera, both are the whole system.
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
@@ -2516,7 +2515,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
         viamd::write_bool(state, STR_LIT("RecalcBonds"), op.recalc_bonds);
         viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
-        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.query));
+        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
         if (!md_bitset_empty(op.selection_mask)) {
             viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
         }
@@ -2649,7 +2648,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
-        str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
+        str_copy_to_char_buf(rep->filter.text, sizeof(rep->filter.text), filter);
     }
     // Opens on the HOMO, derived from the occupations rather than handed over by whoever loaded
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
@@ -4235,7 +4234,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             rep->filt_is_dirty = true;
         }
         if (rep->filt_is_dirty) {
-            rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error), state->allocator.persistent);
+            filter_evaluate(&rep->filter, &rep->atom_mask, filter_context(state), state->allocator.persistent);
             rep->filt_is_dirty = false;
         }
 
@@ -4293,7 +4292,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             if (num_extracted == num_atoms) {
                 // The span of the atoms shown, measured again only when the values or the atoms
                 // changed: it scans every variant of the attribute
-                const md_bitset_t* shown = rep->filt_is_valid ? &rep->atom_mask : nullptr;
+                const md_bitset_t* shown = rep->filter.result.success ? &rep->atom_mask : nullptr;
                 uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
                 const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
                 span_hash = md_hash64(&version, sizeof(version), span_hash);
@@ -4437,7 +4436,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
     }
 
     if (colors) {
-        if (rep->filt_is_valid) {
+        if (rep->filter.result.success) {
             filter_colors(colors, num_atoms, rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
@@ -5256,7 +5255,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    if (query.dynamic) {
+    if (query.filter.result.is_dynamic) {
         recenter_mark_query_dirty(state);
     }
 
@@ -5264,9 +5263,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    md_bitset_free(&query.mask, state->allocator.persistent);
-    query.dynamic = false;
-    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, &state->mold.state, state->script.ir, &query.dynamic, query.error, sizeof(query.error), state->allocator.persistent);
+    filter_evaluate(&query.filter, &query.mask, filter_context(state), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }
@@ -5891,6 +5888,7 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
             input.screen_size = state.surface_size;
             input.dolly_delta = scroll_delta;
             input.fov_y = args.camera.fov_y;
+            input.ndc_center = args.view_shift;
 
             TrackballFlags flags = TrackballFlags_None;
             if (state.active) {
@@ -6089,7 +6087,7 @@ void file_queue_process(ApplicationState* state) {
                         recompute_atom_visibility_mask(state);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
+                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, state->view.region);
                     }
                 }
             }
@@ -6097,7 +6095,7 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region) {
     ASSERT(transform);
     if (!state.num_atoms) return;
 
@@ -6126,20 +6124,19 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     md_unitcell_A_extract(A.elem, &state.unitcell);
     const bool   has_cell    = (md_unitcell_flags(&state.unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) != 0;
     const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
-    const float  fov_y       = Camera().fov_y;
 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
         vec3_t aabb_min = {}, aabb_max = {};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, indices, count);
         const vec3_t center = (aabb_min + aabb_max) * 0.5f;
-        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y);
+        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
         transform->position = center + cell_offset + transform->orientation * vec3_set(0, 0, transform->distance);
         return;
     }
 
     // See camera_compute_default_view for what it considers a good view of what
-    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y);
+    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, region);
     transform->position = transform->position + cell_offset;
 }
 

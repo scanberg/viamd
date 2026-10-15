@@ -40,9 +40,10 @@
 #define PLOT_MAX_PERIODS             8
 #define SERIES_PATH_CAP              192
 
-// ImGui drag and drop payload types, both carrying a SeriesDragPayload
+// ImGui drag and drop payload types, all carrying a SeriesDragPayload
 #define TIMELINE_SERIES_DND     "TIMELINE_SERIES"
 #define DISTRIBUTION_SERIES_DND "DISTRIBUTION_SERIES"
+#define VOLUME_SERIES_DND       "VOLUME_SERIES"     // a script volume, for the density volume
 
 struct ApplicationState;
 struct md_attribute_t;

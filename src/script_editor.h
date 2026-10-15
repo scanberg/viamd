@@ -2,8 +2,9 @@
 
 // viamd's side of the script editor.
 //
-// The editor widget (ext/ImGuiColorTextEdit, https://github.com/goossens/ImGuiColorTextEdit) is vendored unmodified so
-// that it can be updated by copying in a newer version. Everything viamd needs on top of it lives here: the mdscript
+// The editor widget (ext/ImGuiColorTextEdit, https://github.com/goossens/ImGuiColorTextEdit) is vendored so that it can
+// be updated by copying in a newer version, with one addition to carry over when that is done: line decorations can go
+// left of the line numbers (SetDecorationsBeforeLineNumbers), where the marks of the properties are. Everything viamd needs on top of it lives here: the mdscript
 // language definition, autocompletion, markers for compiler errors, warnings and visualization tokens, and a few helpers.
 //
 // Markers are kept here rather than in the editor. The editor is only asked two things: which glyph the mouse is over
@@ -17,6 +18,7 @@
 #include <md_script.h>
 
 #include <string>
+#include <string_view>
 
 struct md_allocator_i;
 
@@ -54,6 +56,15 @@ bool has_focus_after_render();
 // sys is where the values come from, it is read when suggestions are made and may be NULL. The editor keeps a
 // reference to itself in its configuration, so neither it nor sys may move while autocomplete is on.
 void enable_autocomplete(TextEditor& editor, const md_system_t* sys);
+
+// How completions (md_script_complete, md_filter_complete) are matched against what has been typed of them and ranked,
+// here and in the inputs of filters (filter_input.h). Whether the label of item matches typed, and how well: the
+// characters typed have to appear in it in order (ignoring case), the first one starting it or one of its parts.
+bool completion_match(std::string_view typed, const md_script_completion_t& item, int* score);
+// Whether a goes before b, both matching typed with those scores: what has the type expected at the cursor (fits)
+// first, then an exact match, the better match, by kind (values, parameters, variables, procedures, constants,
+// keywords), the shorter (the one needing the least typing to tell apart) and by name.
+bool completion_before(const md_script_completion_t& a, int a_score, const md_script_completion_t& b, int b_score, std::string_view typed);
 
 enum MarkerType {
     MarkerType_Error,
