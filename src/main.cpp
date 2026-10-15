@@ -612,8 +612,21 @@ int main(int argc, char** argv) {
     script_editor::enable_autocomplete(state.editor, &state.mold.sys);
 
     {
+        // Assume argv[1..] are files to load
+        // Currently we do not support any command line flags
+        // So anything here which is a file path is assumed to be a file to load
+        bool files_given = false;
+        for (int i = 1; i < argc; ++i) {
+            str_t path = str_from_cstr(argv[i]);
+            if (md_path_is_valid(path)) {
+                file_queue_push(&state.file_queue, path);
+                files_given = true;
+            }
+        }
 #ifdef VIAMD_DEFAULT_DATASET
-        {
+        // Only when no file is given: the queue loads a workspace before a system, so the dataset would be loaded
+        // over a workspace given here and replace its representations
+        if (!files_given) {
             md_str_writer_t sb = md_str_writer_create(frame_alloc);
             str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
@@ -624,17 +637,6 @@ int main(int argc, char** argv) {
             }
         }
 #endif
-        if (argc > 1) {
-            // Assume argv[1..] are files to load
-            // Currently we do not support any command line flags
-            // So anything here which is a file path is assumed to be a file to load
-            for (int i = 1; i < argc; ++i) {
-                str_t path = str_from_cstr(argv[i]);
-                if (md_path_is_valid(path)) {
-                    file_queue_push(&state.file_queue, path);
-                }
-            }
-        }
     }
 
 #if EXPERIMENTAL_SDF == 1
