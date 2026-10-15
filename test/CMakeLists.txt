@@ -1,6 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.15)
-
-project(viamd_test VERSION 0.1 LANGUAGES C CXX)
+﻿project(viamd_test VERSION 0.1 LANGUAGES C CXX)
 
 # viamd is one executable with no library to link against, so the translation units under test are
 # compiled into the test binary directly. Only units which are free of ImGui, OpenGL and

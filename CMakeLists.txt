@@ -327,12 +327,12 @@ if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     )
 endif()
 
+# What viamd finds relative to itself -- the basis sets and the default dataset -- is installed
+# beside it, in the same layout as the build tree's bin directory (see the copies below). The
+# install tree is the one to ship: unlike the build tree it holds no tests, benchmarks or debug
+# files. On Linux this puts data under bin/, which suits a self-contained install prefix but not
+# a system-wide one; that would need a share/ lookup in the code as well.
 install(TARGETS viamd DESTINATION bin)
-
-# The question is how this should be treated on Linux...
-# For now we simply don't copy the datasets
-# Install datasets
-#install(FILES datasets/1ALA-500.pdb DESTINATION datasets)
 
 if (UNIX AND NOT APPLE)
     # Linux metadata
@@ -367,6 +367,7 @@ if (VIAMD_ENABLE_QM)
     else()
         create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis" "${VIAMD_BIN_DIR}/basis")
         add_dependencies(viamd viamd_copy_basis)
+        install(DIRECTORY ext/mdlib/ext/veloxchem/basis/ DESTINATION bin/basis)
     endif()
 endif()
 
@@ -380,6 +381,7 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
     else()
         create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
         add_dependencies(viamd viamd_copy_datasets)
+        install(DIRECTORY datasets/ DESTINATION bin/datasets)
     endif()
     # The resource names itself completely: the folder and the file were split between this
     # file and main.cpp, so the identity of the default dataset lived in two places.
@@ -435,5 +437,16 @@ target_link_libraries(viamd
 
 if (VIAMD_UNITTEST)
     add_subdirectory(test)
+endif()
+
+# Every executable in the bin directory that reads VeloxChem files looks for the basis sets beside
+# itself (md_vlx.c), not only viamd. mdlib leaves the copy to us when embedded, so its tests and
+# benchmarks wait for this one too.
+if (TARGET viamd_copy_basis)
+    foreach(_exe viamd_test md_unittest md_benchmark)
+        if (TARGET ${_exe})
+            add_dependencies(${_exe} viamd_copy_basis)
+        endif()
+    endforeach()
 endif()
 
