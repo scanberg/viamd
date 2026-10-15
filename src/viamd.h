@@ -2344,14 +2344,14 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
 }
 
 // The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
-// their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points
-// (cartoon_glyphs_picked_point)
+// their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points,
+// their slabs their index after those (cartoon_glyphs_picked_point)
 static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
     return {
         .atom_base     = state.picking_range_glyph.beg,
         .bond_base     = state.picking_range_glyph.beg,
         .backbone_base = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points,
-        .ring_base     = state.picking_range_glyph.beg,
+        .ring_base     = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
     };
 }
 

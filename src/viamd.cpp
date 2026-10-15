@@ -662,7 +662,7 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     // Indexed by CartoonGlyphKind
-    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "base" };
+    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
     static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
     const md_component_kind_t kind = md_component_kind(&sys.component, comp_idx);

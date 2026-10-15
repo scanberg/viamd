@@ -27,21 +27,23 @@ struct md_allocator_i;
 //              or on to the head a spanning chain joins (a bolalipid). An atomistic spine gets a control point per two
 //              of its atoms, which is on the axis of a chain in its all trans zigzag and so smooths it away; a coarse
 //              grained one a control point per bead. The skeleton of a sterol is a thicker tube. The tubes have round ends.
-//   nucleic    A capsule from the C4' of each nucleotide of a backbone (md_nucleic_backbone_data_t) to the next, and a
-//              thinner stick from the C4' over the C1' to the edge of the base which pairs: N1 of a purine, N3 of a
-//              pyrimidine. A sphere at each of these points.
+//   nucleic    After Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a flat band along each
+//              backbone (md_nucleic_backbone_data_t) through the C4' of its nucleotides, its flat faces towards the bases;
+//              the sugar ring a slab; a stick from its C1' to the base; each ring of the base a slab of its own (a purine
+//              two side by side, rather than one plate over both). A slab is the ring flattened onto its plane and made
+//              solid by a sphere: capsules along its edges and a plate between them (md_gl_mol_set_slabs).
 //
 // The points (the centres of the spheres, the control points of the tubes, the ends of the capsules) are the particles of
 // a molecule of their own (md_gl_mol_create_particles). Each is the mean of the atoms it stands for, derived on the GPU
 // from the positions of the atoms of the system (md_gl_mol_set_derived, md_gl_mol_compute_derived), each atom in its
 // periodic image nearest to the first head atom of its lipid, so a lipid stays whole across the periodic boundary. The
-// spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a tube has no sphere: a radius of 0), the tubes as
-// the splines of md_gl through the control points (md_gl_mol_set_tubes, MD_GL_REP_TUBES) and the capsules as the weak
-// bonds of each representation (md_gl_rep_set_weak_bonds, MD_GL_REP_WEAK_BONDS, one dash which fills it). A point stands
-// for a component, which is what picking it resolves to, takes its colour from one of its atoms, and is shown when any
-// of its atoms is shown. A part of a tube is that of its control point.
-//
-// What comes after: a spline with an oval profile for the backbones of nucleic acids.
+// spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a tube or a corner of a slab has no sphere: a
+// radius of 0), the tubes as the splines of md_gl through the control points with a stadium profile, round or flat
+// (md_gl_mol_set_tubes, MD_GL_REP_TUBES), the slabs raycast through their corners (md_gl_mol_set_slabs,
+// MD_GL_REP_SLABS) and the capsules as the weak bonds of each representation (md_gl_rep_set_weak_bonds,
+// MD_GL_REP_WEAK_BONDS, one dash which fills it). A point stands for a component, which is what picking it resolves to,
+// takes its colour from one of its atoms, and is shown when any of its atoms is shown. A part of a tube is that of its
+// control point, a slab that of its first corner.
 
 enum CartoonGlyphKind : uint8_t {
     CartoonGlyph_LipidHead = 0,     // A head, or the head group of a split head
@@ -49,6 +51,7 @@ enum CartoonGlyphKind : uint8_t {
     CartoonGlyph_LipidTail,
     CartoonGlyph_SterolSkeleton,
     CartoonGlyph_NucleicBackbone,
+    CartoonGlyph_NucleicSugar,
     CartoonGlyph_NucleicBase,
     CartoonGlyph_Count
 };
@@ -66,6 +69,7 @@ struct CartoonGlyphs {
     uint32_t num_tubes = 0;
     uint32_t num_tube_points = 0;   // Control points of all tubes
     uint32_t num_segments = 0;
+    uint32_t num_slabs = 0;
     uint32_t num_source_atoms = 0;  // Of the system the points are derived from
     uint32_t num_split_heads = 0;   // Lipid heads which are two spheres (or more) in a representation which asks for that
 
@@ -85,6 +89,13 @@ struct CartoonGlyphs {
     md_array(uint32_t) tube_offset = nullptr;        // [num_tubes + 1]
     md_array(uint32_t) tube_point = nullptr;         // [num_tube_points]
     md_array(float)    tube_radius = nullptr;        // [num_tube_points] Å, before the scale of the representation
+    md_array(float)    tube_flat = nullptr;          // [num_tube_points] Half the length of the flat sides of the profile, Å: 0 is round
+    md_array(uint32_t) tube_face = nullptr;          // [num_tube_points] The point the flat sides face, UINT32_MAX for none
+    md_array(uint8_t)  tube_through = nullptr;       // [num_tubes] It passes through its control points rather than near them
+
+    // Slab s has the corners slab_point[slab_offset[s] .. slab_offset[s + 1]), points in order around the ring
+    md_array(uint32_t) slab_offset = nullptr;        // [num_slabs + 1]
+    md_array(uint32_t) slab_point = nullptr;
 
     md_array(uint32_t) segment_point = nullptr;      // [2 * num_segments] The points at the ends of each capsule
     md_array(float)    segment_radius = nullptr;     // [num_segments] Å, before the scale of the representation
@@ -117,16 +128,20 @@ md_gl_rep_t cartoon_glyphs_rep_create(const CartoonGlyphs& glyphs);
 // heads which split are two spheres or one. Whether any point is shown.
 bool cartoon_glyphs_rep_set_colors(const CartoonGlyphs& glyphs, md_gl_rep_t rep, const uint32_t* atom_colors, size_t num_atoms, bool two_head_spheres);
 
-// Picking: the spheres and capsules write the index of a point, the tubes num_points + the index of their control point
-// (md_gl_picking_offset_t: atom_base at the beginning of the range, backbone_base num_points after it)
+// Picking: the spheres and capsules write the index of a point, the tubes num_points + the index of their control
+// point, the slabs num_points + num_tube_points + their index (md_gl_picking_offset_t: atom_base at the beginning of the
+// range, backbone_base num_points after it, ring_base num_tube_points after that)
 static inline uint32_t cartoon_glyphs_picking_count(const CartoonGlyphs& glyphs) {
-    return glyphs.num_points + glyphs.num_tube_points;
+    return glyphs.num_points + glyphs.num_tube_points + glyphs.num_slabs;
 }
 
 // The point a picking index stands for, UINT32_MAX for none
 static inline uint32_t cartoon_glyphs_picked_point(const CartoonGlyphs& glyphs, uint32_t picking_idx) {
     if (picking_idx < glyphs.num_points) return picking_idx;
-    if (picking_idx - glyphs.num_points < glyphs.num_tube_points) return glyphs.tube_point[picking_idx - glyphs.num_points];
+    picking_idx -= glyphs.num_points;
+    if (picking_idx < glyphs.num_tube_points) return glyphs.tube_point[picking_idx];
+    picking_idx -= glyphs.num_tube_points;
+    if (picking_idx < glyphs.num_slabs) return glyphs.slab_point[glyphs.slab_offset[picking_idx]];
     return UINT32_MAX;
 }
 

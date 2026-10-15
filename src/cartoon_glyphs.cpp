@@ -18,8 +18,10 @@ static constexpr float HEAD_RADIUS_MAX          = 7.0f;
 static constexpr float HEAVY_ATOMS_PER_BEAD     = 4.0f;   // What a Martini bead stands for
 static constexpr float TAIL_RADIUS              = 1.1f;
 static constexpr float SKELETON_RADIUS          = 2.0f;
-static constexpr float NUCLEIC_BACKBONE_RADIUS  = 1.8f;
-static constexpr float NUCLEIC_BASE_RADIUS      = 1.0f;
+// The backbone of a nucleic acid: a flat band 2 (r + l) wide and 2 r thick, its faces towards the bases
+static constexpr float NUCLEIC_BACKBONE_RADIUS  = 0.7f;
+static constexpr float NUCLEIC_BACKBONE_FLAT    = 1.6f;
+static constexpr float NUCLEIC_STICK_RADIUS     = 0.4f;     // From the sugar to the base
 
 static inline bool atom_is_bead(const md_system_t& sys, size_t i) {
     return md_atom_particle_kind(&sys.atom, i) != MD_PARTICLE_ATOM && md_atom_atomic_number(&sys.atom, i) == 0;
@@ -180,19 +182,6 @@ static bool split_head(HeadSplit* out, const md_system_t& sys, const int32_t* at
     return ok;
 }
 
-// The atom of the base of a nucleotide at its edge which pairs: N1 of a purine (it has an N9), N3 of a pyrimidine
-static int32_t nucleic_base_tip(const md_system_t& sys, size_t comp_idx) {
-    const md_urange_t r = md_component_atom_range(&sys.component, comp_idx);
-    bool purine = false;
-    for (uint32_t i = r.beg; i < r.end; ++i) {
-        if (str_eq_cstr(md_atom_name(&sys.atom, i), "N9")) purine = true;
-    }
-    const char* tip = purine ? "N1" : "N3";
-    for (uint32_t i = r.beg; i < r.end; ++i) {
-        if (str_eq_cstr(md_atom_name(&sys.atom, i), tip)) return (int32_t)i;
-    }
-    return -1;
-}
 
 struct GlyphBuilder {
     CartoonGlyphs* g;
@@ -223,10 +212,27 @@ struct GlyphBuilder {
     void tube_point(uint32_t p, float radius) {
         md_array_push(g->tube_point, p, alloc);
         md_array_push(g->tube_radius, radius, alloc);
+        md_array_push(g->tube_flat, 0.0f, alloc);
+        md_array_push(g->tube_face, UINT32_MAX, alloc);
     }
 
-    void tube_end() {
+    // flat: half the length of the flat sides of the profile, face: the point they face (UINT32_MAX for none)
+    void tube_point(uint32_t p, float radius, float flat, uint32_t face) {
+        tube_point(p, radius);
+        g->tube_flat[md_array_size(g->tube_flat) - 1] = flat;
+        g->tube_face[md_array_size(g->tube_face) - 1] = face;
+    }
+
+    // through: the tube passes through its control points (a nucleic backbone through its C4', which its sugars hang
+    // off), rather than near them (a lipid tail, smoothed)
+    void tube_end(bool through = false) {
         md_array_push(g->tube_offset, (uint32_t)md_array_size(g->tube_point), alloc);
+        md_array_push(g->tube_through, (uint8_t)(through ? 1 : 0), alloc);
+    }
+
+    void slab(const uint32_t* corners, size_t n) {
+        md_array_push_array(g->slab_point, corners, n, alloc);
+        md_array_push(g->slab_offset, (uint32_t)md_array_size(g->slab_point), alloc);
     }
 };
 
@@ -359,31 +365,152 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
     md_temp_end(temp);
 }
 
+// The rings of each component which lie within it, as (component, ring) sorted by component
+struct CompRing {
+    int32_t  comp;
+    uint32_t ring;
+};
+
+static md_array(CompRing) rings_by_component(const md_system_t& sys, md_allocator_i* alloc) {
+    md_array(CompRing) out = nullptr;
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
+        const size_t n = md_index_range_size(&sys.ring, r);
+        if (n < 3) continue;
+        const md_component_idx_t comp = md_system_component_find_by_atom_idx(&sys, (size_t)atoms[0]);
+        if (comp < 0) continue;
+        const md_urange_t range = md_component_atom_range(&sys.component, (size_t)comp);
+        bool within = true;
+        for (size_t k = 0; k < n; ++k) {
+            within &= range.beg <= (uint32_t)atoms[k] && (uint32_t)atoms[k] < range.end;
+        }
+        if (within) md_array_push(out, (CompRing{comp, (uint32_t)r}), alloc);
+    }
+    // Rings come in the order of their atoms, which is nearly that of the components: sort to be sure
+    const size_t n = md_array_size(out);
+    for (size_t i = 1; i < n; ++i) {
+        const CompRing x = out[i];
+        size_t j = i;
+        while (j > 0 && out[j - 1].comp > x.comp) {
+            out[j] = out[j - 1];
+            --j;
+        }
+        out[j] = x;
+    }
+    return out;
+}
+
+static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
+    const int32_t* atoms = md_index_range_beg(&sys.ring, ring);
+    const size_t n = md_index_range_size(&sys.ring, ring);
+    for (size_t k = 0; k < n; ++k) {
+        if (atoms[k] == atom) return true;
+    }
+    return false;
+}
+
+// The cartoon of the nucleic acids, after Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a
+// flat band along each backbone through the C4' of its nucleotides, its faces towards the bases; the sugar ring as a
+// slab; a stick from its C1' to the base; and each ring of the base as a slab of its own (a purine is two, side by side).
+// The rings are those of the system (its ring perception) which lie within the nucleotide: the sugar is the one with
+// its C1', and the glycosidic nitrogen the atom of a base ring bonded to it. Each corner of a slab is a point of its own
+// atom, without a sphere; the points of a nucleotide are taken whole about its C4'.
 static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
+    if (bb.range.count == 0) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_array(CompRing) comp_rings = rings_by_component(sys, temp_alloc);
+    const size_t num_comp_rings = md_array_size(comp_rings);
+
+    // The point of each atom of the current nucleotide, and the corners of a slab
+    md_array(int32_t)  corner_atom = nullptr;
+    md_array(uint32_t) corner_point = nullptr;
+    md_array(uint32_t) corners = nullptr;
+
     for (size_t r = 0; r < bb.range.count; ++r) {
-        uint32_t prev = UINT32_MAX;
+        bool open = false;
         for (uint32_t s = bb.range.offset[r]; s < bb.range.offset[r + 1]; ++s) {
             const md_nucleic_acid_atoms_t& atoms = bb.segment.atoms[s];
             const int32_t comp = bb.segment.comp_idx[s];
             if (atoms.c4 < 0) {
-                prev = UINT32_MAX;
+                if (open) b.tube_end(true);
+                open = false;
                 continue;
             }
-            const uint32_t p = b.point(&atoms.c4, 1, atoms.c4, atoms.c4, comp, NUCLEIC_BACKBONE_RADIUS, CartoonGlyph_NucleicBackbone);
-            if (prev != UINT32_MAX) b.segment(prev, p, NUCLEIC_BACKBONE_RADIUS);
-            prev = p;
+            const int32_t ref = atoms.c4;
+            md_array_shrink(corner_atom, 0);
+            md_array_shrink(corner_point, 0);
+            auto point_of = [&](int32_t atom, CartoonGlyphKind kind) -> uint32_t {
+                for (size_t i = 0; i < md_array_size(corner_atom); ++i) {
+                    if (corner_atom[i] == atom) return corner_point[i];
+                }
+                const uint32_t p = b.point(&atom, 1, ref, atom, comp, 0.0f, kind);
+                md_array_push(corner_atom, atom, temp_alloc);
+                md_array_push(corner_point, p, temp_alloc);
+                return p;
+            };
 
-            // The base, over the C1' to its edge which pairs
-            const int32_t tip = nucleic_base_tip(sys, (size_t)comp);
-            if (atoms.c1 >= 0 && tip >= 0) {
-                const uint32_t c1 = b.point(&atoms.c1, 1, atoms.c1, tip, comp, NUCLEIC_BASE_RADIUS, CartoonGlyph_NucleicBase);
-                const uint32_t e  = b.point(&tip, 1, tip, tip, comp, NUCLEIC_BASE_RADIUS, CartoonGlyph_NucleicBase);
-                b.segment(p, c1, NUCLEIC_BASE_RADIUS);
-                b.segment(c1, e, NUCLEIC_BASE_RADIUS);
+            const uint32_t c4 = point_of(atoms.c4, CartoonGlyph_NucleicBackbone);
+
+            // The rings of the nucleotide: binary search for its first
+            size_t lo = 0, hi = num_comp_rings;
+            while (lo < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if (comp_rings[mid].comp < comp) lo = mid + 1;
+                else hi = mid;
             }
+            uint32_t sugar_c1 = UINT32_MAX;
+            uint32_t base_n   = UINT32_MAX;
+            for (size_t i = lo; i < num_comp_rings && comp_rings[i].comp == comp; ++i) {
+                const uint32_t ring = comp_rings[i].ring;
+                const int32_t* ring_atoms = md_index_range_beg(&sys.ring, ring);
+                const size_t n = md_index_range_size(&sys.ring, ring);
+                if (n > 7) continue;
+                const bool sugar = atoms.c1 >= 0 && ring_has_atom(sys, ring, atoms.c1);
+                const CartoonGlyphKind kind = sugar ? CartoonGlyph_NucleicSugar : CartoonGlyph_NucleicBase;
+
+                // The corners from a carbon (the C1' of the sugar), whose colour the slab takes
+                size_t first = 0;
+                for (size_t k = 0; k < n; ++k) {
+                    const bool pick = sugar ? ring_atoms[k] == atoms.c1 : md_atom_atomic_number(&sys.atom, ring_atoms[k]) == 6;
+                    if (pick) {
+                        first = k;
+                        break;
+                    }
+                }
+                md_array_shrink(corners, 0);
+                for (size_t k = 0; k < n; ++k) {
+                    md_array_push(corners, point_of(ring_atoms[(first + k) % n], kind), temp_alloc);
+                }
+                b.slab(corners, n);
+
+                if (sugar) {
+                    sugar_c1 = point_of(atoms.c1, kind);
+                } else if (atoms.c1 >= 0 && base_n == UINT32_MAX) {
+                    // The glycosidic nitrogen: the atom of the base bonded to the C1'
+                    for (size_t k = 0; k < n; ++k) {
+                        if (md_bond_find(&sys.bond, ring_atoms[k], atoms.c1) != -1) {
+                            base_n = point_of(ring_atoms[k], kind);
+                        }
+                    }
+                }
+            }
+            if (sugar_c1 != UINT32_MAX && base_n != UINT32_MAX) {
+                b.segment(sugar_c1, base_n, NUCLEIC_STICK_RADIUS);
+            }
+
+            // The band faces the base, or failing one the C1'
+            uint32_t face = base_n;
+            if (face == UINT32_MAX && atoms.c1 >= 0) face = point_of(atoms.c1, CartoonGlyph_NucleicSugar);
+            b.tube_point(c4, NUCLEIC_BACKBONE_RADIUS, NUCLEIC_BACKBONE_FLAT, face);
+            open = true;
         }
+        if (open) b.tube_end(true);
     }
+    md_temp_end(temp);
 }
 
 void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t gl_mol, md_allocator_i* alloc) {
@@ -393,6 +520,7 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     g->alloc = alloc;
     md_array_push(g->point_offset, 0, alloc);
     md_array_push(g->tube_offset, 0, alloc);
+    md_array_push(g->slab_offset, 0, alloc);
 
     GlyphBuilder b = { .g = g, .alloc = alloc };
     build_lipids(b, sys);
@@ -402,6 +530,7 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     g->num_tubes       = (uint32_t)md_array_size(g->tube_offset) - 1;
     g->num_tube_points = (uint32_t)md_array_size(g->tube_point);
     g->num_segments    = (uint32_t)md_array_size(g->segment_radius);
+    g->num_slabs       = (uint32_t)md_array_size(g->slab_offset) - 1;
     g->num_source_atoms = (uint32_t)sys.atom.count;
     if (g->num_points == 0 || gl_mol.id == 0) return;
 
@@ -422,7 +551,19 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     md_temp_end(temp);
 
     if (g->num_tubes > 0) {
-        md_gl_mol_set_tubes(g->gl_mol, g->num_tubes, g->tube_offset, g->tube_point, g->tube_radius);
+        const md_gl_tubes_t tubes = {
+            .count    = g->num_tubes,
+            .offset   = g->tube_offset,
+            .particle = g->tube_point,
+            .radius   = g->tube_radius,
+            .flat     = g->tube_flat,
+            .face     = g->tube_face,
+            .through  = g->tube_through,
+        };
+        md_gl_mol_set_tubes(g->gl_mol, &tubes);
+    }
+    if (g->num_slabs > 0) {
+        md_gl_mol_set_slabs(g->gl_mol, g->num_slabs, g->slab_offset, g->slab_point);
     }
     g->positions_valid = false;
 }
@@ -442,6 +583,11 @@ void cartoon_glyphs_free(CartoonGlyphs* g) {
         md_array_free(g->tube_offset, g->alloc);
         md_array_free(g->tube_point, g->alloc);
         md_array_free(g->tube_radius, g->alloc);
+        md_array_free(g->tube_flat, g->alloc);
+        md_array_free(g->tube_face, g->alloc);
+        md_array_free(g->tube_through, g->alloc);
+        md_array_free(g->slab_offset, g->alloc);
+        md_array_free(g->slab_point, g->alloc);
         md_array_free(g->segment_point, g->alloc);
         md_array_free(g->segment_radius, g->alloc);
     }

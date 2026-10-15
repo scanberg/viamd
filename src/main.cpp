@@ -7211,6 +7211,19 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         md_array_push(*ops, tubes, alloc);
     }
 
+    if (state.mold.cartoon_glyphs.num_slabs > 0) {
+        md_gl_draw_op_t slabs = {
+            .type = MD_GL_REP_SLABS,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .model_matrix = NULL,
+        };
+        // A rim of 0.5 Å, the plate within it recessed to 60% of its thickness
+        slabs.args.slabs.radius = 0.5f * scale;
+        slabs.args.slabs.plate  = 0.6f;
+        md_array_push(*ops, slabs, alloc);
+    }
+
     if (state.mold.cartoon_glyphs.num_segments > 0) {
         md_gl_draw_op_t capsules = {
             .type = MD_GL_REP_WEAK_BONDS,

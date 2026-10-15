@@ -6,6 +6,7 @@
 #include <md_util.h>
 #include <md_pdb.h>
 #include <md_tpr.h>
+#include <md_gro.h>
 #include <core/md_arena_allocator.h>
 
 /* The cartoon of the lipids is built on the CPU (the points, which atoms each stands for, the tubes through them) and
@@ -111,6 +112,59 @@ UTEST(cartoon_glyphs, martini_phospholipids_split_and_sterols_do_not) {
     }
     // The heads of the sterols are one sphere, whatever a representation asks
     EXPECT_EQ(16u, count_points(g, CartoonGlyph_LipidHead, CartoonGlyphVariant_Always, true));
+
+    cartoon_glyphs_free(&g);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
+    ASSERT_GT(bb.segment.count, (size_t)100);
+
+    // A sugar and a ring for a pyrimidine, two for a purine
+    uint32_t expected_slabs = 0;
+    uint32_t nucleotides = 0;
+    for (size_t s = 0; s < bb.segment.count; ++s) {
+        if (bb.segment.atoms[s].c4 < 0) continue;
+        const str_t name = md_component_name(&sys.component, bb.segment.comp_idx[s]);
+        const bool purine = str_eq_cstr(name, "DA") || str_eq_cstr(name, "DG");
+        expected_slabs += purine ? 3 : 2;
+        nucleotides += 1;
+    }
+
+    CartoonGlyphs g = {};
+    cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
+    EXPECT_EQ(expected_slabs, g.num_slabs);
+    // A stick from each sugar to its base
+    EXPECT_EQ(nucleotides, g.num_segments);
+    // A control point per nucleotide, which faces its base and which the band passes through
+    EXPECT_EQ(nucleotides, g.num_tube_points);
+    for (uint32_t t = 0; t < g.num_tubes; ++t) {
+        EXPECT_EQ(1, (int)g.tube_through[t]);
+    }
+    for (uint32_t i = 0; i < g.num_tube_points; ++i) {
+        EXPECT_GT(g.tube_flat[i], 0.0f);
+        ASSERT_LT(g.tube_face[i], g.num_points);
+        EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.tube_face[i]]);
+    }
+    for (uint32_t s = 0; s < g.num_slabs; ++s) {
+        const uint32_t n = g.slab_offset[s + 1] - g.slab_offset[s];
+        EXPECT_TRUE(n == 5 || n == 6);
+        // Corners without spheres
+        for (uint32_t k = g.slab_offset[s]; k < g.slab_offset[s + 1]; ++k) {
+            EXPECT_EQ(0.0f, g.point_radius[g.slab_point[k]]);
+        }
+    }
+
+    // A slab picks as its first corner, after the points and the control points
+    const uint32_t first_slab = g.num_points + g.num_tube_points;
+    EXPECT_EQ(g.slab_point[0], cartoon_glyphs_picked_point(g, first_slab));
+    EXPECT_EQ(UINT32_MAX, cartoon_glyphs_picked_point(g, first_slab + g.num_slabs));
 
     cartoon_glyphs_free(&g);
     md_arena_allocator_destroy(alloc);
