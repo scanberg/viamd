@@ -194,15 +194,18 @@ static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, 
     }
 }
 
-// A mark beside the line a property is named on: how it stands
+// A mark beside the line a property is named on: how it stands. It is also a handle on the property, which is dragged
+// from it into the window which shows its kind.
 struct ScriptGutterMark {
     int line;
     md_script_eval_status_t status;
     float done;                 // the fraction of what it needs which it holds
     char text[160];
+    char ident[64];
+    uint32_t kinds;             // MD_SCRIPT_PROPERTY_FLAG_*
 };
 
-static void draw_script_gutter_mark(const TextEditor::Decorator& d, const ScriptGutterMark& m) {
+static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Decorator& d, const ScriptGutterMark& m) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const ImVec2 c  = p0 + ImVec2(d.width * 0.5f, d.height * 0.5f);
@@ -231,8 +234,32 @@ static void draw_script_gutter_mark(const TextEditor::Decorator& d, const Script
         }
         break;
     }
-    if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p0, p0 + ImVec2(d.width, d.height))) {
-        ImGui::SetTooltip("%s", m.text);
+
+    // A temporal property goes to a timeline (which a distribution takes as well), a distribution to a distribution,
+    // a volume to the density volume
+    const char* dnd_type = nullptr;
+    const char* hint = "";
+    if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+        dnd_type = TIMELINE_SERIES_DND;
+        hint = "Drag into a Timelines or Distributions subplot";
+    } else if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+        dnd_type = DISTRIBUTION_SERIES_DND;
+        hint = "Drag into a Distributions subplot";
+    } else if (m.kinds & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
+        dnd_type = VOLUME_SERIES_DND;
+        hint = "Drag into the Density Volume";
+    }
+    ImGui::InvisibleButton("##mark", ImVec2(d.width, d.height));
+    if (dnd_type && ImGui::BeginDragDropSource()) {
+        char path[SERIES_PATH_CAP];
+        snprintf(path, sizeof(path), "script/%s", m.ident);
+        const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
+        char label[96];
+        series_label(label, sizeof(label), app, key);
+        series_set_drag_payload(dnd_type, key, -1, label, series_default_color(app, key));
+        ImGui::EndDragDropSource();
+    } else if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s%s%s", m.text, hint[0] ? "\n" : "", hint);
     }
 }
 
@@ -580,6 +607,8 @@ int main(int argc, char** argv) {
     state.editor.SetLanguage(script_editor::language());
     state.editor.SetPalette(TextEditor::GetDarkPalette());
     state.editor.SetInsertSpacesOnTabs(true);
+    // The marks of how each property stands, left of the line numbers (see draw_script_gutter_mark)
+    state.editor.SetDecorationsBeforeLineNumbers(true);
     script_editor::enable_autocomplete(state.editor, &state.mold.sys);
 
     {
@@ -4795,30 +4824,84 @@ static ImPlotPoint histogram_getter_zero(int i, void* payload) {
     return ImPlotPoint(series_histogram_point(*p->view, i, p->k).x, 0.0);
 }
 
-// A histogram member drawn dashed, over the plot: a preview, not a curve of the plot's own
-static void plot_dashed_histogram(const SeriesHistogramView& v, int k, ImVec4 color) {
+// A polyline drawn dashed, carrying the dashes on across its corners and from one call to the next through phase
+static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase) {
+    const float dash = 6.0f, gap = 4.0f;
+    for (int i = 1; i < count; ++i) {
+        const ImVec2 prev = pts[i - 1];
+        const ImVec2 d = pts[i] - prev;
+        const float len = sqrtf(d.x * d.x + d.y * d.y);
+        if (len <= 0.0f) continue;
+        const ImVec2 u = d / len;
+        float t = 0.0f;
+        while (t < len) {
+            const float in_cycle = fmodf(*phase + t, dash + gap);
+            const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
+            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
+            t += MAX(step, 0.01f);
+        }
+        *phase = fmodf(*phase + len, dash + gap);
+    }
+}
+
+// A histogram member over the plot as a preview, not a curve of the plot's own: drawn as the series is (a line, an area
+// or bars), with a dashed outline and, for an area or bars, a faint fill
+static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 color, const PlotSeries& s) {
+    if (v.num_bins <= 0) return;
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
-    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
-    const float dash = 6.0f, gap = 4.0f;
-    float phase = 0.0f;     // along the polyline, so the dashes run on across its corners
-    ImVec2 prev = ImPlot::PlotToPixels(series_histogram_point(v, 0, k));
-    for (int i = 1; i < v.num_bins; ++i) {
-        const ImVec2 next = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
-        const ImVec2 d = next - prev;
-        const float len = sqrtf(d.x * d.x + d.y * d.y);
-        if (len > 0.0f) {
-            const ImVec2 u = d / len;
-            float t = 0.0f;
-            while (t < len) {
-                const float in_cycle = fmodf(phase + t, dash + gap);
-                const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
-                if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
-                t += MAX(step, 0.01f);
+    const ImU32 line_col = ImGui::ColorConvertFloat4ToU32(color);
+    const ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, color.w * 0.25f));
+    // Fills which meet edge to edge, without the seams anti-aliasing would leave between them
+    const ImDrawListFlags flags = dl->Flags;
+    float phase = 0.0f;
+
+    if (s.plot_type == PlotType_Bars) {
+        const double half = series_histogram_bin_width(v) * s.bar_width * 0.5;
+        const bool joined = s.bar_width >= 0.999f;
+        md_temp_scope_t temp = md_temp_begin();
+        // Joined, the outline is one step along the tops of the bars; apart, each bar has its own
+        ImVec2* outline = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins * 2 + 2);
+        int n = 0;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        for (int i = 0; i < v.num_bins; ++i) {
+            const ImPlotPoint p = series_histogram_point(v, i, k);
+            const ImVec2 a = ImPlot::PlotToPixels(p.x - half, 0.0);
+            const ImVec2 b = ImPlot::PlotToPixels(p.x + half, p.y);
+            dl->AddRectFilled(ImVec2(MIN(a.x, b.x), MIN(a.y, b.y)), ImVec2(MAX(a.x, b.x), MAX(a.y, b.y)), fill_col);
+            if (joined) {
+                if (n == 0) outline[n++] = a;
+                outline[n++] = ImVec2(a.x, b.y);
+                outline[n++] = b;
+            } else {
+                const ImVec2 bar[4] = { a, ImVec2(a.x, b.y), b, ImVec2(b.x, a.y) };
+                dashed_polyline(dl, bar, 4, line_col, &phase);
             }
-            phase = fmodf(phase + len, dash + gap);
         }
-        prev = next;
+        dl->Flags = flags;
+        if (joined && n > 0) {
+            outline[n] = ImVec2(outline[n - 1].x, outline[0].y);
+            dashed_polyline(dl, outline, n + 1, line_col, &phase);
+        }
+        md_temp_end(temp);
+    } else {
+        md_temp_scope_t temp = md_temp_begin();
+        ImVec2* pts = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins);
+        for (int i = 0; i < v.num_bins; ++i) {
+            pts[i] = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
+        }
+        if (s.plot_type == PlotType_Area) {
+            // Down to zero, one quad per stretch between two bins
+            dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+            for (int i = 1; i < v.num_bins; ++i) {
+                const ImVec2 base0 = ImPlot::PlotToPixels(series_histogram_point(v, i - 1, k).x, 0.0);
+                const ImVec2 base1 = ImPlot::PlotToPixels(series_histogram_point(v, i, k).x, 0.0);
+                dl->AddQuadFilled(pts[i - 1], pts[i], base1, base0, fill_col);
+            }
+            dl->Flags = flags;
+        }
+        dashed_polyline(dl, pts, v.num_bins, line_col, &phase);
+        md_temp_end(temp);
     }
     ImPlot::PopPlotClipRect();
 }
@@ -5289,12 +5372,13 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                         }
 
-                        // The period under the pointer in the timeline, dashed, unless the series is shown over it already
+                        // The period under the pointer in the timeline, drawn as the series is but dashed, unless the series is
+                        // shown over it already
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
                             if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1) && pv.num_bins > 0 && pv.periods[0].valid) {
                                 const vec4_t rc = preview_range->color;
-                                plot_dashed_histogram(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f));
+                                plot_histogram_preview(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f), s);
                             }
                         }
 
@@ -5574,7 +5658,9 @@ static void draw_script_editor_window(ApplicationState* state) {
                     if (line_offsets[mid] <= (uint32_t)range.beg) lo = mid; else hi = mid;
                 }
                 const md_script_eval_plan_t& p = plan.props[i];
-                ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "" };
+                ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "", "", 0 };
+                str_copy_to_char_buf(mark.ident, sizeof(mark.ident), plan.names[i]);
+                mark.kinds = (uint32_t)md_script_ir_property_flags(state->script.ir, plan.names[i]);
                 const uint32_t needed = p.num_frames + p.num_pending;
                 mark.done = p.num_pending == 0 ? 1.0f : needed ? (float)p.num_frames / (float)needed : 0.0f;
                 script_plan_describe(mark.text, sizeof(mark.text), plan, i);
@@ -5582,10 +5668,10 @@ static void draw_script_editor_window(ApplicationState* state) {
             }
         }
         const size_t num_marks = md_array_size(marks);
-        state->editor.SetLineDecorator(1, [marks, num_marks](TextEditor::Decorator& d) {
+        state->editor.SetLineDecorator(1, [state, marks, num_marks](TextEditor::Decorator& d) {
             for (size_t i = 0; i < num_marks; ++i) {
                 if ((size_t)marks[i].line == d.line) {
-                    draw_script_gutter_mark(d, marks[i]);
+                    draw_script_gutter_mark(state, d, marks[i]);
                     break;
                 }
             }

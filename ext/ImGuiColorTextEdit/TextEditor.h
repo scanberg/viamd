@@ -140,6 +140,9 @@ public:
 	inline size_t GetDecorationLeftMargin() const { return config.decorationMargin; }
 	inline void SetTextLeftMargin(size_t value) { config.textMargin = value; }
 	inline size_t GetTextLeftMargin() const { return config.textMargin; }
+	// line decorations to the left of the line numbers instead of between them and the text
+	inline void SetDecorationsBeforeLineNumbers(bool value) { config.decorationsBeforeLineNumbers = value; }
+	inline bool AreDecorationsBeforeLineNumbers() const { return config.decorationsBeforeLineNumbers; }
 
 	// load new text into editor (see note below on cursor and scroll manipulation after setting new text)
 	//
@@ -997,6 +1000,7 @@ protected:
 		size_t leftMargin = 1; // margins are expressed in number of glyphs
 		size_t decorationMargin = 1;
 		size_t textMargin = 2;
+		bool decorationsBeforeLineNumbers = false;
 
 		// language support
 		const Language* language = nullptr;

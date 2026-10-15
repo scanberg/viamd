@@ -688,6 +688,14 @@ struct DensityVolume : viamd::EventHandler {
             const ImRect canvas_rect = ImRect(canvas_p0, canvas_p1);
             PickingHit hit = {};
 
+            // A volume dragged here (from its mark in the script editor) is the one shown
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VOLUME_SERIES_DND)) {
+                    volume_key = ((const SeriesDragPayload*)payload->Data)->key;
+                }
+                ImGui::EndDragDropTarget();
+            }
+
             if (surface_state.hovered) {
                 InteractionSurfaceHitArgs args = {
                     .picking_surface = &picking_surface,
