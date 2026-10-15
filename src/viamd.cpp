@@ -1309,8 +1309,7 @@ void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
         md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
-        data->operations.recenter_query.valid = false;
-        data->operations.recenter_query.dynamic = false;
+        data->operations.recenter_query.filter.result = {};
         data->operations.recenter_query.evaluated_version = 0;
         data->operations.recenter_query.ir_fingerprint = 0;
         data->operations.initial_frame.valid = false;
@@ -1747,7 +1746,7 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.unwrap_structures = false;
     data->operations.recalc_bonds = false;
     data->operations.recenter_query.enabled = false;
-    data->operations.recenter_query.query[0] = '\0';
+    data->operations.recenter_query.filter.text[0] = '\0';
     recenter_mark_query_dirty(data);
     md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
 }
@@ -1759,7 +1758,7 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
         if (str_eq(ident, STR_LIT("Name"))) {
             viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
         } else if (str_eq(ident, STR_LIT("Filter"))) {
-            viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
+            viamd::extract_to_char_buf(rep->filter.text, sizeof(rep->filter.text), arg);
         } else if (str_eq(ident, STR_LIT("Enabled"))) {
             viamd::extract_bool(rep->enabled, arg);
         } else if (str_eq(ident, STR_LIT("Type"))) {
@@ -1946,7 +1945,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
 
     viamd::write_section_header(state, STR_LIT("Representation"));
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
-    viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
+    viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filter.text));
     viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
     viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
     viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
@@ -2196,7 +2195,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("RecalcBonds")))         viamd::extract_bool(op.recalc_bonds, arg);
                 else if (str_eq(ident, STR_LIT("RecenterQueryEnabled"))) viamd::extract_bool(op.recenter_query.enabled, arg);
                 else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
-                    viamd::extract_to_char_buf(op.recenter_query.query, sizeof(op.recenter_query.query), arg);
+                    viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
                     recenter_mark_query_dirty(data);
                 }
                 else if (str_eq(ident, STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
@@ -2516,7 +2515,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
         viamd::write_bool(state, STR_LIT("RecalcBonds"), op.recalc_bonds);
         viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
-        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.query));
+        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
         if (!md_bitset_empty(op.selection_mask)) {
             viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
         }
@@ -2649,7 +2648,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
-        str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
+        str_copy_to_char_buf(rep->filter.text, sizeof(rep->filter.text), filter);
     }
     // Opens on the HOMO, derived from the occupations rather than handed over by whoever loaded
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
@@ -4235,7 +4234,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             rep->filt_is_dirty = true;
         }
         if (rep->filt_is_dirty) {
-            rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error), state->allocator.persistent);
+            filter_evaluate(&rep->filter, &rep->atom_mask, filter_context(state), state->allocator.persistent);
             rep->filt_is_dirty = false;
         }
 
@@ -4293,7 +4292,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             if (num_extracted == num_atoms) {
                 // The span of the atoms shown, measured again only when the values or the atoms
                 // changed: it scans every variant of the attribute
-                const md_bitset_t* shown = rep->filt_is_valid ? &rep->atom_mask : nullptr;
+                const md_bitset_t* shown = rep->filter.result.success ? &rep->atom_mask : nullptr;
                 uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
                 const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
                 span_hash = md_hash64(&version, sizeof(version), span_hash);
@@ -4437,7 +4436,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
     }
 
     if (colors) {
-        if (rep->filt_is_valid) {
+        if (rep->filter.result.success) {
             filter_colors(colors, num_atoms, rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
@@ -5256,7 +5255,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    if (query.dynamic) {
+    if (query.filter.result.is_dynamic) {
         recenter_mark_query_dirty(state);
     }
 
@@ -5264,9 +5263,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    md_bitset_free(&query.mask, state->allocator.persistent);
-    query.dynamic = false;
-    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, &state->mold.state, state->script.ir, &query.dynamic, query.error, sizeof(query.error), state->allocator.persistent);
+    filter_evaluate(&query.filter, &query.mask, filter_context(state), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }

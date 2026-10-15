@@ -32,6 +32,7 @@
 #include <event.h>
 #include <plot_series.h>
 #include <timeline_periods.h>
+#include <filter_input.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -869,8 +870,7 @@ struct DipoleRepresentation {
 
 struct Representation {
     char name[64] = "rep";
-    char filt[256] = "all";
-    char filt_error[256] = "";
+    AtomFilter filter = {"all"};
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
@@ -884,8 +884,6 @@ struct Representation {
 	bool needs_update = true;
     bool type_is_valid = false;
     bool filt_is_dirty = true;
-    bool filt_is_valid = false;
-    bool filt_is_dynamic = false;
     bool dynamic_evaluation = true;
 
     // User defined base color used in uniform mode
@@ -1214,10 +1212,8 @@ struct ApplicationState {
         } color;
 
         struct {
-            char buf[256] = "";
-            char error[256] = "";
+            AtomFilter filter;
             md_bitmask_t mask = {};
-            bool query_ok = false;
             bool query_invalid = true;
             bool show_window = false;
         } query;
@@ -1403,11 +1399,8 @@ struct ApplicationState {
         mat4_t state_rotation = MD_MAT4_IDENT_INIT;
 
         struct {
-            char query[256] = "";
-            char error[256] = "";
-            bool valid = false;
+            AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
             bool enabled = false;
-            bool dynamic = false; // represents whether the query needs to be re-evaluated per frame.
             uint64_t version = 1;
             uint64_t evaluated_version = 0;
             uint64_t ir_fingerprint = 0;
@@ -1519,11 +1512,8 @@ struct ApplicationState {
         uint32_t selected_traj_period = 0;   // a timeline period, by id
         int selected_file_format = 0;
         struct {
-            char buf[256] = "";
-            char error[256] = "";
+            AtomFilter filter;
             md_bitset_t mask = {0};
-            bool is_valid = false;
-            bool is_dynamic = false;
             bool requires_evaluation = false;
         } query;
     } structure_export;
@@ -1898,6 +1888,11 @@ bool save_workspace(ApplicationState* app, str_t file);
 void workspace_register_window(const char* name, bool* show);
 
 // Selections
+// What filters are evaluated and completed against: the system as it is shown, and the names of the script in the editor
+static inline md_filter_context_t filter_context(const ApplicationState* app) {
+    return md_filter_context_t{&app->mold.sys, &app->mold.state, app->script.ir};
+}
+
 // The selection keeps its own copy of atom_mask
 Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_mask = {});
 void remove_selection(ApplicationState* app, size_t idx);

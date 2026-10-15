@@ -1216,7 +1216,7 @@ int main(int argc, char** argv) {
             const Representation& rep = state.representation.reps[i];
             const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)rep.enabled };
             r_hash = md_hash64(kind, sizeof(kind), r_hash);
-            const str_t filt = str_from_cstrn(rep.filt, sizeof(rep.filt));
+            const str_t filt = str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
             r_hash = md_hash64(filt.ptr, filt.len, r_hash);
             r_hash = md_bitset_hash64(rep.atom_mask, r_hash);
         }
@@ -1813,7 +1813,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (data->operations.recenter_query.enabled) {
                     auto& recenter_query = data->operations.recenter_query;
                     ImGui::SameLine();
-                    if (ImGui::InputQuery("##recenter-query", recenter_query.query, sizeof(recenter_query.query), recenter_query.valid, recenter_query.error)) {
+                    if (filter_input("##recenter-query", &recenter_query.filter, filter_context(data))) {
                         recenter_mark_query_dirty(data);
                     }
                 }
@@ -2864,19 +2864,24 @@ static void draw_selection_query_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(300,100), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Selection Query", &data->selection.query.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
 
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-            data->selection.query.show_window = false;
-            return;
+        auto& query = data->selection.query;
+        // Escape closes the window, unless it closes the suggestions of the query
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !filter_completions_open()) {
+            query.show_window = false;
         }
 
         static double query_frame = 0.0;
 
         ImGui::PushItemWidth(-1);
-        bool apply = ImGui::InputQuery("##query", data->selection.query.buf, sizeof(data->selection.query.buf), data->selection.query.query_ok, data->selection.query.error, ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+        bool apply = false;
+        if (filter_input("##query", &query.filter, filter_context(data), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
+            query.query_invalid = true;
+        }
         ImGui::PopItemWidth();
 
-        if (ImGui::IsItemEdited() || data->animation.frame != query_frame) {
-            data->selection.query.query_invalid = true;
+        // What depends on the coordinates is picked again in another frame
+        if (query.filter.result.is_dynamic && data->animation.frame != query_frame) {
+            query.query_invalid = true;
         }
         bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
 
@@ -2884,27 +2889,27 @@ static void draw_selection_query_window(ApplicationState* data) {
             ImGui::SetKeyboardFocusHere(-1);
         }
 
-        if (!data->selection.query.query_ok) ImGui::PushDisabled();
+        if (!query.filter.result.success) ImGui::PushDisabled();
         apply |= ImGui::Button("Apply");
-        if (!data->selection.query.query_ok) ImGui::PopDisabled();
+        if (!query.filter.result.success) ImGui::PopDisabled();
 
         preview |= ImGui::IsItemHovered();
 
-        if (data->selection.query.query_invalid) {
-            data->selection.query.query_invalid = false;
+        if (query.query_invalid) {
+            query.query_invalid = false;
             md_bitset_t result = md_bitset_empty_set();
-            data->selection.query.query_ok = md_filter(&result, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error), frame_alloc);
+            filter_evaluate(&query.filter, &result, filter_context(data), frame_alloc);
             query_frame = data->animation.frame;
 
-            md_bitmask_assign(&data->selection.query.mask, data->selection.query.query_ok ? result : md_bitset_empty_set());
-            grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
+            md_bitmask_assign(&query.mask, query.filter.result.success ? result : md_bitset_empty_set());
+            grow_mask_by_selection_granularity(&query.mask, data->selection.granularity, data->mold.sys);
         }
 
         if (preview) {
-            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.query.mask));
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&query.mask));
         }
 
-        if (apply && data->selection.query.query_ok) {
+        if (apply && query.filter.result.success) {
             md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
@@ -3660,7 +3665,7 @@ static void draw_representations_window(ApplicationState* state) {
 				ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
                 break;
 			default:
-                if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
+                if (filter_input("filter", &rep.filter, filter_context(state))) {
                     rep.filt_is_dirty = true;
                     update_rep = true;
                 }
@@ -3724,7 +3729,7 @@ static void draw_representations_window(ApplicationState* state) {
                         ImGui::TextDisabled("no per atom attributes in this dataset");
                     }
                 }
-                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
+                if (rep.filter.result.is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
                     if (advanced) {
                         update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                         if (!rep.dynamic_evaluation) {
@@ -6316,28 +6321,11 @@ void draw_structure_export_window(ApplicationState* data) {
 
         if (struct_exp.selected_atom_filter == 2) { // Query
             auto& query = struct_exp.query;
-            bool valid = query.is_valid;
-
-
-            if (!valid) ImGui::PushInvalid();
-            ImGui::InputQuery("Query", query.buf, sizeof(query.buf), query.is_valid, query.error);
-            if (!valid) ImGui::PopInvalid();
-            
-            query.requires_evaluation |= ImGui::IsItemEdited();
+            query.requires_evaluation |= filter_input("Query", &query.filter, filter_context(data));
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
-            
+
             if (query.requires_evaluation) {
-                md_bitset_free(&query.mask, persistent_alloc);
-                query.is_valid = md_filter(
-                    &query.mask,
-                    str_from_cstr(query.buf),
-                    &data->mold.sys,
-                    &data->mold.state,
-                    data->script.ir,
-                    &query.is_dynamic,
-                    query.error,
-                    sizeof(query.error), persistent_alloc
-                );
+                filter_evaluate(&query.filter, &query.mask, filter_context(data), persistent_alloc);
                 query.requires_evaluation = false;
             }
 
@@ -6346,7 +6334,7 @@ void draw_structure_export_window(ApplicationState* data) {
                 md_bitmask_clear(&data->selection.highlight_mask);
             }
 
-            if (query.is_valid && preview) {
+            if (query.filter.result.success && preview) {
                 md_bitmask_assign(&data->selection.highlight_mask, query.mask);
             }
         }
@@ -6391,26 +6379,19 @@ void draw_structure_export_window(ApplicationState* data) {
                     return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
                 } break;
                 case 2: { // Query
-                    if (data->structure_export.query.is_dynamic) {
-                        // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
-                        // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
-                        md_bitset_free(&data->structure_export.query.mask, persistent_alloc);
-                        data->structure_export.query.is_valid = md_filter(
-                            &data->structure_export.query.mask,
-                            str_from_cstr(data->structure_export.query.buf),
-                            &data->mold.sys,
-                            state,
-                            data->script.ir,
-                            &data->structure_export.query.is_dynamic,
-                            data->structure_export.query.error,
-                            sizeof(data->structure_export.query.error), persistent_alloc
-                        );
+                    auto& query = data->structure_export.query;
+                    if (query.filter.result.is_dynamic) {
+                        // What it picks depends on the coordinates: picked again in each frame exported (md_filter
+                        // replaces what the mask held, so nothing of the previous frame stays)
+                        md_filter_context_t ctx = filter_context(data);
+                        ctx.state = state;
+                        filter_evaluate(&query.filter, &query.mask, ctx, persistent_alloc);
                     }
-                    if (!data->structure_export.query.is_valid) {
-                        VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
+                    if (!query.filter.result.success) {
+                        VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: %s", query.filter.result.error);
                         return 0;
                     } else {
-                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(data->structure_export.query.mask));
+                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(query.mask));
                     }
                 } break;
                 case 3: { // All Atoms

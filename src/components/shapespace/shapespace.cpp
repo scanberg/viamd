@@ -44,10 +44,9 @@ static const char* colormode_lbl[] = {
 */
 
 struct Shapespace : viamd::EventHandler {
-    char input[256] = "all";
-    char error[256] = "";
+    // The structures: one for each set the filter gives
+    AtomFilter filter = {"all"};
 
-    bool input_valid = false;
     bool show_window = false;
 
     //md_system_state_t app_state = {0};
@@ -92,7 +91,7 @@ struct Shapespace : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDeserializeBegin:
-                str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
+                str_copy_to_char_buf(filter.text, sizeof(filter.text), STR_LIT("all"));
                 marker_size = 1.5f;
                 use_mass = true;
                 frames_period = 0;
@@ -117,9 +116,9 @@ struct Shapespace : viamd::EventHandler {
                     str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
                         if (str_eq(ident, STR_LIT("Filter"))) {
-                            str_t filter;
-                            viamd::extract_str(filter, arg);
-                            str_copy_to_char_buf(input, sizeof(input), filter);
+                            str_t text;
+                            viamd::extract_str(text, arg);
+                            str_copy_to_char_buf(filter.text, sizeof(filter.text), text);
                         } else if (str_eq(ident, STR_LIT("MarkerSize"))) {
                             viamd::extract_flt(marker_size, arg);
                         } else if (str_eq(ident, STR_LIT("UseMass"))) {
@@ -135,7 +134,7 @@ struct Shapespace : viamd::EventHandler {
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, STR_LIT("ShapeSpace"));
-                viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(input));
+                viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(filter.text));
                 viamd::write_flt(state, STR_LIT("MarkerSize"), marker_size);
                 viamd::write_bool(state, STR_LIT("UseMass"), use_mass);
                 if (frames_period != 0) {
@@ -208,14 +207,10 @@ struct Shapespace : viamd::EventHandler {
 
             const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
             ImGui::PushItemWidth(item_width);
-            ImGui::InputQuery("##input", input, sizeof(input), input_valid);
+            filter_input("##input", &filter, filter_context(app_state));
             ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered()) {
-                if (input_valid) {
-                    md_bitmask_assign(&app_state->selection.highlight_mask, joined_bitfield);
-                } else if (error[0] != '\0') {
-                    ImGui::SetTooltip("%s", error);
-                }
+            if (ImGui::IsItemHovered() && filter.result.success) {
+                md_bitmask_assign(&app_state->selection.highlight_mask, joined_bitfield);
             }
 
             ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
@@ -383,7 +378,7 @@ struct Shapespace : viamd::EventHandler {
         ImGui::End();
 
         // Create a hash from everything which dictates the app_state of an evaluation to compare against
-        uint64_t hash = md_hash64(input, sizeof(input), app_state->script.ir_fingerprint ^ (1ULL << (uint64_t)use_mass));
+        uint64_t hash = md_hash64(filter.text, sizeof(filter.text), app_state->script.ir_fingerprint ^ (1ULL << (uint64_t)use_mass));
         if (hash != eval_hash) {
             if (task_system::task_is_running(evaluate_task)) {
                 task_system::task_interrupt (evaluate_task);
@@ -396,12 +391,9 @@ struct Shapespace : viamd::EventHandler {
                 md_arena_allocator_reset(arena);
                 joined_bitfield = md_bitset_empty_set();
 
-                input_valid = false;
-                MEMSET(error, 0, sizeof(error));
-                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, &app_state->mold.state, app_state->script.ir, NULL, error, sizeof(error), arena)) {
-                    eval_hash = hash;
-
-                    input_valid = true;                    
+                // Not again until something changes, whether it picked atoms or not
+                eval_hash = hash;
+                if (filter_evaluate_sets(&filter, &bitfields, filter_context(app_state), arena)) {
                     num_structures = md_array_size(bitfields);
                     if (!num_structures) {
                         MD_LOG_ERROR("No structures present when attempting to populate shape space");
