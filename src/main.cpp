@@ -3852,6 +3852,18 @@ static void draw_representations_window(ApplicationState* state) {
                             if (ImGui::IsItemHovered()) {
                                 ImGui::SetTooltip("Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
                             }
+                            if (state->mold.sys.nucleic_backbone.range.count > 0) {
+                                update_rep |= ImGui::SliderFloat("nucleic backbone", &rep.nucleic_band_radius, 0.1f, 1.5f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip("Radius of the band along the backbone of the nucleic acids: half its thickness, its width stays (Å, times the lipid, nucleic scale)");
+                                }
+                            }
+                            if (state->mold.cartoon_glyphs.num_slabs > 0) {
+                                update_rep |= ImGui::SliderFloat("nucleic rings", &rep.nucleic_ring_radius, 0.1f, 1.0f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip("Radius of the rims of the sugar and base rings, and of the stick from each sugar to its base (Å, times the lipid, nucleic scale)");
+                                }
+                            }
                             if (state->mold.cartoon_glyphs.num_split_heads > 0) {
                                 update_rep |= ImGui::Checkbox("two head spheres", &rep.two_head_spheres);
                                 if (ImGui::IsItemHovered()) {
@@ -7218,6 +7230,8 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .model_matrix = NULL,
         };
         tubes.args.tubes.radius_scale = scale;
+        // The bands of the nucleic acids are made with the default radius, a representation has its own
+        tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
         tubes.args.tubes.raycast = state.visuals.spline.raycast;
         md_array_push(*ops, tubes, alloc);
     }
@@ -7229,27 +7243,11 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .rep = rep.glyph_rep,
             .model_matrix = NULL,
         };
-        // A rim of 0.5 Å, the plate within it recessed to 60% of its thickness
-        slabs.args.slabs.radius = 0.5f * scale;
+        // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
+        // recessed to 60% of its thickness
+        slabs.args.slabs.radius = MAX(rep.nucleic_ring_radius, 0.01f) * scale;
         slabs.args.slabs.plate  = 0.6f;
         md_array_push(*ops, slabs, alloc);
-    }
-
-    if (state.mold.cartoon_glyphs.num_segments > 0) {
-        md_gl_draw_op_t capsules = {
-            .type = MD_GL_REP_WEAK_BONDS,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .model_matrix = NULL,
-        };
-        // One dash which fills the capsule: a solid cylinder, its ends within the spheres at the points
-        capsules.args.weak_bonds.radius = scale;
-        capsules.args.weak_bonds.dash_count = 1;
-        capsules.args.weak_bonds.dash_fill = 1.0f;
-        capsules.args.weak_bonds.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-        capsules.args.weak_bonds.sharpness = rep.bond_sharpness;
-        capsules.args.weak_bonds.uniform_color = convert_color(rep.bond_base_color);
-        md_array_push(*ops, capsules, alloc);
     }
 }
 

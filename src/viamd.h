@@ -920,6 +920,10 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
+    // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
+    // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
+    float  nucleic_band_radius = CARTOON_NUCLEIC_BAND_RADIUS;
+    float  nucleic_ring_radius = CARTOON_NUCLEIC_RING_RADIUS;
 
     ElectronicStructureRepresentation electronic_structure = {};
     AtomAttributeColoring atom_attribute = {};

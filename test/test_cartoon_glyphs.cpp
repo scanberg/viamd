@@ -126,22 +126,20 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
     ASSERT_GT(bb.segment.count, (size_t)100);
 
-    // A sugar and a ring for a pyrimidine, two for a purine
+    // A sugar and a ring for a pyrimidine, two for a purine, and the stick between the sugar and the base
     uint32_t expected_slabs = 0;
     uint32_t nucleotides = 0;
     for (size_t s = 0; s < bb.segment.count; ++s) {
         if (bb.segment.atoms[s].c4 < 0) continue;
         const str_t name = md_component_name(&sys.component, bb.segment.comp_idx[s]);
         const bool purine = str_eq_cstr(name, "DA") || str_eq_cstr(name, "DG");
-        expected_slabs += purine ? 3 : 2;
+        expected_slabs += purine ? 4 : 3;
         nucleotides += 1;
     }
 
     CartoonGlyphs g = {};
     cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
     EXPECT_EQ(expected_slabs, g.num_slabs);
-    // A stick from each sugar to its base
-    EXPECT_EQ(nucleotides, g.num_segments);
     // A control point per nucleotide, which faces its base and which the band passes through
     EXPECT_EQ(nucleotides, g.num_tube_points);
     for (uint32_t t = 0; t < g.num_tubes; ++t) {
@@ -152,14 +150,26 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
         ASSERT_LT(g.tube_face[i], g.num_points);
         EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.tube_face[i]]);
     }
+    uint32_t sticks = 0;
     for (uint32_t s = 0; s < g.num_slabs; ++s) {
         const uint32_t n = g.slab_offset[s + 1] - g.slab_offset[s];
-        EXPECT_TRUE(n == 5 || n == 6);
+        EXPECT_TRUE(n == 2 || n == 5 || n == 6);
         // Corners without spheres
         for (uint32_t k = g.slab_offset[s]; k < g.slab_offset[s + 1]; ++k) {
             EXPECT_EQ(0.0f, g.point_radius[g.slab_point[k]]);
         }
+        if (n == 2) {
+            // A stick: a capsule from the C1' of the sugar to the glycosidic N of the base, each a corner of its ring
+            const uint32_t c1 = g.slab_point[g.slab_offset[s] + 0];
+            const uint32_t n9 = g.slab_point[g.slab_offset[s] + 1];
+            EXPECT_EQ((uint8_t)CartoonGlyph_NucleicSugar, g.point_kind[c1]);
+            EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase,  g.point_kind[n9]);
+            EXPECT_TRUE(point_has_atom_named(g, sys, c1, "C1'"));
+            EXPECT_TRUE(point_has_element(g, sys, n9, 7));
+            sticks += 1;
+        }
     }
+    EXPECT_EQ(nucleotides, sticks);
 
     // A slab picks as its first corner, after the points and the control points
     const uint32_t first_slab = g.num_points + g.num_tube_points;

@@ -15,7 +15,7 @@ struct md_allocator_i;
 //
 // The cartoon of a protein is a spline through its backbone, extruded with a profile its secondary structure drives
 // (md_gl). That of a lipid is made the same way: a sphere for each head and a spline for each tail, a tube of round
-// profile. Nucleic acids have a cheaper one for now, of spheres and capsules.
+// profile. That of a nucleic acid is a flat band along its backbone, with the rings of its sugars and bases as slabs.
 //
 //   lipid      A sphere for each head, at the centre of its heavy atoms and sized by how many there are (a phosphatidyl
 //              choline is larger than the hydroxyl of a sterol, an inositol phosphate larger still). Or two, where a
@@ -31,7 +31,10 @@ struct md_allocator_i;
 //              backbone (md_nucleic_backbone_data_t) through the C4' of its nucleotides, its flat faces towards the bases;
 //              the sugar ring a slab; a stick from its C1' to the base; each ring of the base a slab of its own (a purine
 //              two side by side, rather than one plate over both). A slab is the ring flattened onto its plane and made
-//              solid by a sphere: capsules along its edges and a plate between them (md_gl_mol_set_slabs).
+//              solid by a sphere: capsules along its edges and a plate between them (md_gl_mol_set_slabs). The stick is a
+//              slab of two corners, the C1' and the glycosidic N: one capsule, as thick as the rims of the rings it joins
+//              and as round where it meets them. A representation sets the radius of the band (half its thickness, the
+//              width stays) and that of the rims (CARTOON_NUCLEIC_BAND_RADIUS, CARTOON_NUCLEIC_RING_RADIUS).
 //
 // The points (the centres of the spheres, the control points of the tubes, the ends of the capsules) are the particles of
 // a molecule of their own (md_gl_mol_create_particles). Each is the mean of the atoms it stands for, derived on the GPU
@@ -39,11 +42,16 @@ struct md_allocator_i;
 // periodic image nearest to the first head atom of its lipid, so a lipid stays whole across the periodic boundary. The
 // spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a tube or a corner of a slab has no sphere: a
 // radius of 0), the tubes as the splines of md_gl through the control points with a stadium profile, round or flat
-// (md_gl_mol_set_tubes, MD_GL_REP_TUBES), the slabs raycast through their corners (md_gl_mol_set_slabs,
-// MD_GL_REP_SLABS) and the capsules as the weak bonds of each representation (md_gl_rep_set_weak_bonds,
-// MD_GL_REP_WEAK_BONDS, one dash which fills it). A point stands for a component, which is what picking it resolves to,
-// takes its colour from one of its atoms, and is shown when any of its atoms is shown. A part of a tube is that of its
-// control point, a slab that of its first corner.
+// (md_gl_mol_set_tubes, MD_GL_REP_TUBES) and the slabs raycast through their corners (md_gl_mol_set_slabs,
+// MD_GL_REP_SLABS). A point stands for a component, which is what picking it resolves to, takes its colour from one of
+// its atoms, and is shown when any of its atoms is shown. A part of a tube is that of its control point, a slab that of
+// its first corner.
+
+// The radii of the cartoon of a nucleic acid, Å, by default (Representation): of the band of its backbone, which its
+// tubes are made with (a representation scales them to its own, md_gl_draw_op_t args.tubes.band_scale), and of the rims
+// of its slabs and the stick from each sugar to its base
+static constexpr float CARTOON_NUCLEIC_BAND_RADIUS = 0.4f;
+static constexpr float CARTOON_NUCLEIC_RING_RADIUS = 0.3f;
 
 enum CartoonGlyphKind : uint8_t {
     CartoonGlyph_LipidHead = 0,     // A head, or the head group of a split head
@@ -68,7 +76,6 @@ struct CartoonGlyphs {
     uint32_t num_points = 0;
     uint32_t num_tubes = 0;
     uint32_t num_tube_points = 0;   // Control points of all tubes
-    uint32_t num_segments = 0;
     uint32_t num_slabs = 0;
     uint32_t num_source_atoms = 0;  // Of the system the points are derived from
     uint32_t num_split_heads = 0;   // Lipid heads which are two spheres (or more) in a representation which asks for that
@@ -93,12 +100,10 @@ struct CartoonGlyphs {
     md_array(uint32_t) tube_face = nullptr;          // [num_tube_points] The point the flat sides face, UINT32_MAX for none
     md_array(uint8_t)  tube_through = nullptr;       // [num_tubes] It passes through its control points rather than near them
 
-    // Slab s has the corners slab_point[slab_offset[s] .. slab_offset[s + 1]), points in order around the ring
+    // Slab s has the corners slab_point[slab_offset[s] .. slab_offset[s + 1]), points in order around the ring, or the
+    // two ends of a stick
     md_array(uint32_t) slab_offset = nullptr;        // [num_slabs + 1]
     md_array(uint32_t) slab_point = nullptr;
-
-    md_array(uint32_t) segment_point = nullptr;      // [2 * num_segments] The points at the ends of each capsule
-    md_array(float)    segment_radius = nullptr;     // [num_segments] Å, before the scale of the representation
 
     bool positions_valid = false;                    // The points are derived from the current positions and velocities of the atoms
 
@@ -121,14 +126,14 @@ void cartoon_glyphs_update_positions(CartoonGlyphs* glyphs, const md_system_stat
 // The flags of the points (highlighted, selected, visible, see AtomBit_): those of any of their atoms
 void cartoon_glyphs_update_flags(const CartoonGlyphs& glyphs, const uint8_t* atom_flags, size_t num_atoms);
 
-// A representation of the glyphs, with their capsules, for a representation of the system. Destroy with md_gl_rep_destroy.
+// A representation of the glyphs for a representation of the system. Destroy with md_gl_rep_destroy.
 md_gl_rep_t cartoon_glyphs_rep_create(const CartoonGlyphs& glyphs);
 
 // The colours of the points from those of the atoms of a representation (an alpha of 0 hides an atom), and whether the
 // heads which split are two spheres or one. Whether any point is shown.
 bool cartoon_glyphs_rep_set_colors(const CartoonGlyphs& glyphs, md_gl_rep_t rep, const uint32_t* atom_colors, size_t num_atoms, bool two_head_spheres);
 
-// Picking: the spheres and capsules write the index of a point, the tubes num_points + the index of their control
+// Picking: the spheres write the index of a point, the tubes num_points + the index of their control
 // point, the slabs num_points + num_tube_points + their index (md_gl_picking_offset_t: atom_base at the beginning of the
 // range, backbone_base num_points after it, ring_base num_tube_points after that)
 static inline uint32_t cartoon_glyphs_picking_count(const CartoonGlyphs& glyphs) {

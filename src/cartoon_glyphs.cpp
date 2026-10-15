@@ -18,10 +18,10 @@ static constexpr float HEAD_RADIUS_MAX          = 7.0f;
 static constexpr float HEAVY_ATOMS_PER_BEAD     = 4.0f;   // What a Martini bead stands for
 static constexpr float TAIL_RADIUS              = 1.1f;
 static constexpr float SKELETON_RADIUS          = 2.0f;
-// The backbone of a nucleic acid: a flat band 2 (r + l) wide and 2 r thick, its faces towards the bases
-static constexpr float NUCLEIC_BACKBONE_RADIUS  = 0.7f;
+// The backbone of a nucleic acid: a flat band 2 (r + l) wide and 2 r thick, its faces towards the bases. The r is that of
+// a representation (CARTOON_NUCLEIC_BAND_RADIUS is the default, which it scales), l stays.
+static constexpr float NUCLEIC_BACKBONE_RADIUS  = CARTOON_NUCLEIC_BAND_RADIUS;
 static constexpr float NUCLEIC_BACKBONE_FLAT    = 1.6f;
-static constexpr float NUCLEIC_STICK_RADIUS     = 0.4f;     // From the sugar to the base
 
 static inline bool atom_is_bead(const md_system_t& sys, size_t i) {
     return md_atom_particle_kind(&sys.atom, i) != MD_PARTICLE_ATOM && md_atom_atomic_number(&sys.atom, i) == 0;
@@ -186,8 +186,6 @@ static bool split_head(HeadSplit* out, const md_system_t& sys, const int32_t* at
 struct GlyphBuilder {
     CartoonGlyphs* g;
     md_allocator_i* alloc;
-    md_array(uint32_t) seg_a = nullptr;
-    md_array(uint32_t) seg_b = nullptr;
 
     uint32_t point(const int32_t* atoms, size_t n, int32_t ref, int32_t color_atom, int32_t comp, float radius, CartoonGlyphKind kind, CartoonGlyphVariant variant = CartoonGlyphVariant_Always) {
         const uint32_t idx = (uint32_t)md_array_size(g->point_ref);
@@ -200,12 +198,6 @@ struct GlyphBuilder {
         md_array_push(g->point_radius, radius, alloc);
         md_array_push(g->point_kind, (uint8_t)kind, alloc);
         return idx;
-    }
-
-    void segment(uint32_t a, uint32_t b, float radius) {
-        md_array_push(g->segment_point, a, alloc);
-        md_array_push(g->segment_point, b, alloc);
-        md_array_push(g->segment_radius, radius, alloc);
     }
 
     // The next control point of the current tube, which tube_end closes
@@ -499,7 +491,9 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
                 }
             }
             if (sugar_c1 != UINT32_MAX && base_n != UINT32_MAX) {
-                b.segment(sugar_c1, base_n, NUCLEIC_STICK_RADIUS);
+                // The stick: a slab of two corners, from the sugar whose colour it takes
+                const uint32_t stick[2] = { sugar_c1, base_n };
+                b.slab(stick, 2);
             }
 
             // The band faces the base, or failing one the C1'
@@ -529,7 +523,6 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     g->num_points      = (uint32_t)md_array_size(g->point_ref);
     g->num_tubes       = (uint32_t)md_array_size(g->tube_offset) - 1;
     g->num_tube_points = (uint32_t)md_array_size(g->tube_point);
-    g->num_segments    = (uint32_t)md_array_size(g->segment_radius);
     g->num_slabs       = (uint32_t)md_array_size(g->slab_offset) - 1;
     g->num_source_atoms = (uint32_t)sys.atom.count;
     if (g->num_points == 0 || gl_mol.id == 0) return;
@@ -588,8 +581,6 @@ void cartoon_glyphs_free(CartoonGlyphs* g) {
         md_array_free(g->tube_through, g->alloc);
         md_array_free(g->slab_offset, g->alloc);
         md_array_free(g->slab_point, g->alloc);
-        md_array_free(g->segment_point, g->alloc);
-        md_array_free(g->segment_radius, g->alloc);
     }
     *g = CartoonGlyphs{};
 }
@@ -622,20 +613,7 @@ void cartoon_glyphs_update_flags(const CartoonGlyphs& g, const uint8_t* atom_fla
 
 md_gl_rep_t cartoon_glyphs_rep_create(const CartoonGlyphs& g) {
     if (!cartoon_glyphs_valid(g)) return {};
-    md_gl_rep_t rep = md_gl_rep_create(g.gl_mol);
-    if (g.num_segments > 0) {
-        md_temp_scope_t temp = md_temp_begin();
-        uint32_t* a = (uint32_t*)md_temp_alloc(temp, g.num_segments * sizeof(uint32_t));
-        uint32_t* b = (uint32_t*)md_temp_alloc(temp, g.num_segments * sizeof(uint32_t));
-        for (uint32_t i = 0; i < g.num_segments; ++i) {
-            a[i] = g.segment_point[2 * i + 0];
-            b[i] = g.segment_point[2 * i + 1];
-        }
-        // The radius of a capsule is the radius of the draw (the scale of the representation) times its weight
-        md_gl_rep_set_weak_bonds(rep, g.num_segments, a, b, g.segment_radius);
-        md_temp_end(temp);
-    }
-    return rep;
+    return md_gl_rep_create(g.gl_mol);
 }
 
 bool cartoon_glyphs_rep_set_colors(const CartoonGlyphs& g, md_gl_rep_t rep, const uint32_t* atom_colors, size_t num_atoms, bool two_head_spheres) {
