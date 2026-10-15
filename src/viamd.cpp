@@ -4645,18 +4645,19 @@ void create_default_representations(ApplicationState* state) {
         num_coarse_grained += md_atom_particle_kind(&state->mold.sys.atom, i) == MD_PARTICLE_BEAD;
     }
 
-    // Lipids are shown as their cartoon where their heads and tails are known (md_system_t::lipid, the atoms of
-    // 'headgroup or tail'), and those of them which are not as ligands
-    lipid_cartoon = lipid_present && state->mold.sys.lipid.count > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+    // Lipids are shown as their cartoon where their heads and tails are known (the atoms of 'head or tail'), and the
+    // rest of them (lipids by name whose anatomy is not known, as without bonds) as ligands
     if (lipid_present) {
+        const md_lipid_data_t& lipids = state->mold.sys.lipid;
         size_t num_lipid_comps = 0;
         size_t num_known = 0;
         for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
             num_lipid_comps += md_component_kind(&state->mold.sys.component, i) == MD_COMPONENT_KIND_LIPID;
         }
-        for (size_t i = 0; i < state->mold.sys.lipid.count; ++i) {
-            num_known += state->mold.sys.lipid.comp_range[i].end - state->mold.sys.lipid.comp_range[i].beg;
+        for (size_t i = 0; i < lipids.count; ++i) {
+            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += lipids.comp_range[i].end - lipids.comp_range[i].beg;
         }
+        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
     }
     if (lipid_cartoon) {
@@ -4673,8 +4674,8 @@ void create_default_representations(ApplicationState* state) {
             Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
-        const str_t rest = protein_trace ? (lipid_cartoon ? STR_LIT("not (protein or headgroup or tail)") : STR_LIT("not protein"))
-                                         : (lipid_cartoon ? STR_LIT("not (headgroup or tail)") : STR_LIT("all"));
+        const str_t rest = protein_trace ? (lipid_cartoon ? STR_LIT("not (protein or head or tail)") : STR_LIT("not protein"))
+                                         : (lipid_cartoon ? STR_LIT("not (head or tail)") : STR_LIT("all"));
         Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, rest);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
@@ -4718,7 +4719,7 @@ void create_default_representations(ApplicationState* state) {
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion or headgroup or tail)") : STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion or head or tail)") : STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
