@@ -132,7 +132,11 @@ void main() {
         vec3 view_coord = linear_depth_to_view_coord(tex_coord, linear_depth);
 
         vec3 N = normal;
+#if COMPOSE_PROJECTION_PERSPECTIVE
         vec3 V = -normalize(view_coord);
+#else
+        vec3 V = vec3(0, 0, 1);     // every ray runs along the view axis
+#endif
         color.rgb = shade(color.rgb, V, N);
         result = color.rgb;
     }
