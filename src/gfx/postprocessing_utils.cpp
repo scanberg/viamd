@@ -178,6 +178,7 @@ static struct {
         GLuint fbo = 0;
         GLuint tex[2] = {};             // half res RG32F (visibility, linear depth), ping-pong for the separable blur
         GLuint tex_history[2] = {};     // half res RG32F (frame count + visibility, linear depth), ping-pong over frames
+        GLuint tex_visibility = 0;      // full res R16F: the upsampled visibility, which the compose pass applies
         int history_curr = 0;           // index of the history written last
         bool history_valid = false;
         int history_width = 0;
@@ -475,12 +476,15 @@ void initialize_targets(int width, int height) {
         ensure_texture_2d(&gl.ssao.tex[i],         GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
         ensure_texture_2d(&gl.ssao.tex_history[i], GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
     }
+    ensure_texture_2d(&gl.ssao.tex_visibility, GL_R16F, width, height, GL_RED, GL_FLOAT, GL_NEAREST, GL_NEAREST);
     gl.ssao.history_valid = false;
 }
 
 void shutdown() {
     if (gl.ssao.tex[0]) glDeleteTextures(2, gl.ssao.tex);
     if (gl.ssao.tex_history[0]) glDeleteTextures(2, gl.ssao.tex_history);
+    if (gl.ssao.tex_visibility) glDeleteTextures(1, &gl.ssao.tex_visibility);
+    gl.ssao.tex_visibility = 0;
     gl.ssao.tex[0] = gl.ssao.tex[1] = 0;
     gl.ssao.tex_history[0] = gl.ssao.tex_history[1] = 0;
     gl.ssao.history_valid = false;
@@ -585,7 +589,7 @@ struct ubo_data_t {
     vec3_t ground_radiance;
     float  basic_ambient;
     float  basic_specular;
-    float  pad;
+    float  use_ao;
     vec2_t inv_viewport;
 };
 static_assert(sizeof(ubo_data_t) == 112, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
@@ -599,6 +603,7 @@ static struct {
             GLint texture_depth = -1;
             GLint texture_color = -1;
             GLint texture_normal = -1;
+            GLint texture_ao = -1;
         } uniform_loc;
     } persp, ortho;
     GLuint ubo = 0;
@@ -609,6 +614,7 @@ static void init_variant(decltype(compose.persp)& v, str_t defines) {
     v.uniform_loc.texture_depth = glGetUniformLocation(v.program, "u_texture_depth");
     v.uniform_loc.texture_color = glGetUniformLocation(v.program, "u_texture_color");
     v.uniform_loc.texture_normal = glGetUniformLocation(v.program, "u_texture_normal");
+    v.uniform_loc.texture_ao = glGetUniformLocation(v.program, "u_texture_ao");
     v.uniform_loc.uniform_data = glGetUniformBlockIndex(v.program, "UniformData");
 }
 
@@ -1360,7 +1366,7 @@ void downsample_depth(GLuint linear_depth_tex, int src_lod) {
 
 static vec4_t compute_proj_info(const float proj_mat[4][4]);
 
-// Half-res scale-free SSAO, multiplied into the currently bound color target.
+// Half-res scale-free SSAO, upsampled to full res into gl.ssao.tex_visibility, which the compose pass applies.
 // z_far is the far clip distance: background pixels hold exactly that linear depth and are skipped.
 // With temporal set, the sample pattern is permuted every frame and accumulated in a history (shaders/ssao/
 // ssao_temporal.frag), reprojected with velocity_tex. Without it the pattern is fixed and the result stable.
@@ -1520,9 +1526,14 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
     }
     POP_GPU_SECTION()
 
-    PUSH_GPU_SECTION("Upsample + apply")
+    // Into gl.ssao.tex_visibility at full res, for the compose pass to apply to the light it occludes
+    PUSH_GPU_SECTION("Upsample")
     {
-        reset_gl_state(reset_state);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex_visibility, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, width, height);
+        glScissor(0, 0, width, height);
         const GLuint program = gl.ssao.program_upsample[variant];
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
@@ -1533,14 +1544,11 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 1);
         glUniform1f(glGetUniformLocation(program, "u_px_scale"), px_scale);
         glUniform1f(glGetUniformLocation(program, "u_z_max"), z_max);
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        glDisable(GL_BLEND);
     }
     POP_GPU_SECTION()
     if (timer) glQueryCounter(timer[2], GL_TIMESTAMP);
+    reset_gl_state(reset_state);
 
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(0);
@@ -1567,7 +1575,8 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
     };
 }
 
-static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
+// ao_tex: the visibility of the ambient occlusion (0: none)
+static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, GLuint ao_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
@@ -1592,6 +1601,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
         .ground_radiance = light.ground_radiance,
         .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
         .basic_specular = MAX(settings.shading.specular, 0.0f),
+        .use_ao = ao_tex ? 1.0f : 0.0f,
         .inv_viewport = {1.0f / (float)MAX(width, 1), 1.0f / (float)MAX(height, 1)},
     };
 
@@ -1605,6 +1615,9 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     glBindTexture(GL_TEXTURE_2D, color_tex);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, normal_tex);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, ao_tex ? ao_tex : gl.ssao.tex_visibility);  // a valid texture either way: use_ao gates it
+    glActiveTexture(GL_TEXTURE0);
 
     auto& variant = orthographic ? compose::compose.ortho : compose::compose.persp;
     GLuint program = variant.program;
@@ -1616,6 +1629,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     glUniform1i (variant.uniform_loc.texture_depth, 0);
     glUniform1i (variant.uniform_loc.texture_color, 1);
     glUniform1i (variant.uniform_loc.texture_normal, 2);
+    glUniform1i (variant.uniform_loc.texture_ao, 3);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -2449,20 +2463,21 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     };
     glDrawBuffer(dst_buffer);
 
-    if (do_compose) {
-        PUSH_GPU_SECTION("Compose")
-        compose_deferred(gl.linear_depth.texture, in.color, in.normal, view_param.matrix.curr.proj.elem, ortho, width, height, settings, time);
-        POP_GPU_SECTION()
-    } else {
-        // Seed transient pipeline from external color input when compose stage is disabled.
-        blit_texture(in.color);
-    }
-
+    // The ambient occlusion first: the compose pass applies it to the light it occludes
     if (do_ssao) {
         PUSH_GPU_SECTION("SSAO")
         const bool temporal = settings.ssao.temporal && in.velocity != 0;
         compute_ssao(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, settings.ssao.intensity, temporal, settings.ssao.mode);
         POP_GPU_SECTION()
+    }
+
+    if (do_compose) {
+        PUSH_GPU_SECTION("Compose")
+        compose_deferred(gl.linear_depth.texture, in.color, in.normal, do_ssao ? gl.ssao.tex_visibility : 0, view_param.matrix.curr.proj.elem, ortho, width, height, settings, time);
+        POP_GPU_SECTION()
+    } else {
+        // Seed transient pipeline from external color input when compose stage is disabled.
+        blit_texture(in.color);
     }
 
     // HDR effects -----------------------------------------------------------

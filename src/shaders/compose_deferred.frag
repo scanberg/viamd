@@ -13,12 +13,14 @@ layout (std140) uniform UniformData {
     vec3  u_ground_radiance;    // the environment below the horizon
     float u_basic_ambient;
     float u_basic_specular;
+    float u_use_ao;             // 1: u_texture_ao holds the visibility of the ambient occlusion
     vec2  u_inv_viewport;       // 1 / the size of the viewport, which can be smaller than the targets
 };
 
 uniform sampler2D u_texture_depth;
 uniform sampler2D u_texture_color;
 uniform sampler2D u_texture_normal;
+uniform sampler2D u_texture_ao;
 
 in vec2 tc;
 out vec4 out_frag;
@@ -121,7 +123,14 @@ vec3 environment_radiance(vec3 R, float roughness) {
     return mix(u_ground_radiance, u_sky_radiance, smoothstep(-w, w, R.y));
 }
 
-vec3 shade(vec3 color, vec3 V, vec3 N) {
+// The ambient occlusion is a visibility of the environment, so it applies to the environment's light only: to its
+// diffuse part as it is, and to its specular part as the visibility of the specular lobe (Lagarde and de Rousiers,
+// "Moving Frostbite to PBR", 2014). The key light is not occluded: that would take shadows.
+float specular_occlusion(float N_dot_V, float ao, float roughness) {
+    return clamp(pow(N_dot_V + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);    // roughness: alpha
+}
+
+vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
     vec3  L = normalize(u_light_dir);
     vec3  H = normalize(L + V);
     float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
@@ -151,7 +160,7 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
         vec2  ab = EnvBRDFApprox(N_dot_V, roughness);
         float Fe = F0 * ab.x + ab.y;
         vec3  R  = reflect(-V, N);
-        Lo += (1.0 - Fe) * albedo * environment_irradiance(N) + Fe * environment_radiance(R, roughness);
+        Lo += (1.0 - Fe) * albedo * environment_irradiance(N) * ao + Fe * environment_radiance(R, roughness) * specular_occlusion(N_dot_V, ao, roughness * roughness);
     }
 
     return Lo;
@@ -195,7 +204,9 @@ void main() {
 #else
         vec3 V = vec3(0, 0, 1);     // every ray runs along the view axis
 #endif
-        color.rgb = (u_basic > 0.5) ? shade_basic(color.rgb, V, N) : shade(color.rgb, V, N);
+        float ao = (u_use_ao > 0.5) ? texelFetch(u_texture_ao, pixel, 0).r : 1.0;
+        // Basic: the occlusion darkens all of it, as the depth cue it is there
+        color.rgb = (u_basic > 0.5) ? shade_basic(color.rgb, V, N) * ao : shade(color.rgb, V, N, ao);
         result = color.rgb;
     }
 
