@@ -558,9 +558,11 @@ struct ubo_data_t {
     vec3_t ground_radiance;
     float  basic_ambient;
     float  basic_specular;
-    float  pad[3];
+    float  pad;
+    vec2_t inv_viewport;
 };
 static_assert(sizeof(ubo_data_t) == 112, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
+static_assert(offsetof(ubo_data_t, inv_viewport) == 104, "std140 aligns a vec2 to 8 bytes");
 
 static struct {
     struct {
@@ -1590,7 +1592,7 @@ static float srgb_to_linear(float x) {
     return (x <= 0.04045f) ? (x / 12.92f) : powf((x + 0.055f) / 1.055f, 2.4f);
 }
 
-static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, const postprocess_pipeline::Settings& settings, float time) {
+static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
@@ -1619,6 +1621,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
         .ground_radiance = light.ground_radiance,
         .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
         .basic_specular = MAX(settings.shading.specular, 0.0f),
+        .inv_viewport = {1.0f / (float)MAX(width, 1), 1.0f / (float)MAX(height, 1)},
     };
 
     glBindBuffer(GL_UNIFORM_BUFFER, compose::compose.ubo);
@@ -2483,7 +2486,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
     if (do_compose) {
         PUSH_GPU_SECTION("Compose")
-        compose_deferred(gl.linear_depth.texture, in.color, in.normal, view_param.matrix.curr.proj.elem, ortho, settings, time);
+        compose_deferred(gl.linear_depth.texture, in.color, in.normal, view_param.matrix.curr.proj.elem, ortho, width, height, settings, time);
         POP_GPU_SECTION()
     } else {
         // Seed transient pipeline from external color input when compose stage is disabled.

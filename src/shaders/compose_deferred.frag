@@ -13,6 +13,7 @@ layout (std140) uniform UniformData {
     vec3  u_ground_radiance;    // the environment below the horizon
     float u_basic_ambient;
     float u_basic_specular;
+    vec2  u_inv_viewport;       // 1 / the size of the viewport, which can be smaller than the targets
 };
 
 uniform sampler2D u_texture_depth;
@@ -184,7 +185,7 @@ void main() {
         float linear_depth = texelFetch(u_texture_depth, pixel, 0).x;
         vec3 normal = decode_normal(texelFetch(u_texture_normal, pixel, 0).xy);
 
-        vec2 tex_coord = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_texture_depth, 0));
+        vec2 tex_coord = gl_FragCoord.xy * u_inv_viewport;    // gl_FragCoord is at the pixel centre
         vec3 view_coord = linear_depth_to_view_coord(tex_coord, linear_depth);
 
         vec3 N = normal;
