@@ -1,6 +1,6 @@
 #version 410 core
 
-// Joint bilateral upsample of the half-res AO to full res; output is multiplied into the lit color (blend ZERO, SRC_COLOR).
+// Joint bilateral upsample of the half-res AO to full res, written as the visibility the compose pass applies.
 // Two textureGather calls fetch the 2x2 (visibility, z) footprint.
 #ifndef AO_PERSPECTIVE
 #define AO_PERSPECTIVE 1

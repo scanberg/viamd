@@ -55,12 +55,15 @@ void timeline_period_normalize(TimelinePeriod* r) {
 
 void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_frame, int num_frames) {
     if (r->follow == follow) return;
-    const int32_t cur = (int32_t)llround(current_frame);
     timeline_period_normalize(r);
     if (follow) {
-        r->beg -= cur;
-        r->end -= cur;
+        // Centered on the current frame (an offset of 0), as long as it was. When it cannot be exactly centered,
+        // the extra frame is on the side of the past.
+        const int32_t extent = r->end - r->beg;
+        r->beg = -(extent - extent / 2);
+        r->end = extent / 2;
     } else {
+        const int32_t cur  = (int32_t)llround(current_frame);
         const int32_t last = MAX(num_frames - 1, 0);
         r->beg = CLAMP(r->beg + cur, 0, last);
         r->end = CLAMP(r->end + cur, 0, last);

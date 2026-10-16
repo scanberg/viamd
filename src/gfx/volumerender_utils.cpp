@@ -220,7 +220,7 @@ struct IsoUniformData {
     vec3_t clip_max;
     float  use_depth;
 
-    vec3_t env_radiance;
+    vec3_t sky_radiance;
     float  roughness;
     vec3_t dir_radiance;
     float  F0;
@@ -235,8 +235,16 @@ struct IsoUniformData {
     float  entry_from_near;
     float  use_blocks;
     float  pad;
+
+    vec3_t ground_radiance;
+    float  basic;           // 1: the basic model (postprocess_pipeline::ShadingMode_Basic)
+
+    float  basic_ambient;
+    float  basic_specular;
+    float  linear_colors;   // 1: postprocess_pipeline::ColorSpace_Linear
+    float  light_strength;
 };
-static_assert(sizeof(IsoUniformData) == 3 * 64 + 7 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
+static_assert(sizeof(IsoUniformData) == 3 * 64 + 9 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
 // Block min/max grids: what the isosurface rays skip empty space with. One per density volume, kept
 // here keyed by the volume's texture and rebuilt when notify_data_changed() says its texels changed.
@@ -780,16 +788,23 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.block_size        = 1.0f;
     data.clip_max          = desc.clip_volume.max;
     data.use_depth         = desc.render_target.depth ? 1.0f : 0.0f;
-    data.env_radiance      = desc.shading.env_radiance;
+    const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);    // as in compose_deferred
+    data.sky_radiance      = light.sky_radiance * MAX(desc.shading.environment, 0.0f);
     data.roughness         = desc.shading.roughness;
-    data.dir_radiance      = desc.shading.dir_radiance;
+    data.dir_radiance      = light.light_irradiance;
     data.F0                = powf((n1 - n2) / (n1 + n2), 2.0f);
-    data.light_dir         = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f));   // as in compose_deferred
+    data.light_dir         = light.light_dir;
+    data.ground_radiance   = light.ground_radiance * MAX(desc.shading.environment, 0.0f);
     data.field_beg         = desc.field.range_beg;
     data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
     data.optical_scale     = ISO_OPTICAL_SCALE;
     data.entry_from_near   = near_plane_cuts(model_to_clip, desc.clip_volume.min, desc.clip_volume.max) ? 1.0f : 0.0f;
+    data.basic             = desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f;
+    data.basic_ambient     = CLAMP(desc.shading.ambient, 0.0f, 1.0f);
+    data.basic_specular    = MAX(desc.shading.specular, 0.0f);
+    data.linear_colors     = desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f;
+    data.light_strength    = MAX(desc.shading.light, 0.0f);
 
     const SavedState saved = save_state();
 

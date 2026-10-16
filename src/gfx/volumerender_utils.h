@@ -3,6 +3,8 @@
 #include <core/md_vec_math.h>
 #include <core/md_str.h>
 
+#include <gfx/postprocessing_utils.h>
+
 namespace volume {
 
 void initialize();
@@ -126,14 +128,20 @@ struct IsoRenderDesc {
         float range_end = 1.0f;
     } field;
 
-    // A simplified Cook-Torrance model: uniform environment radiance and one directional light at
-    // {1,1,1} in view space, as in the deferred compose pass. roughness in [0,1], ior of the surfaces
-    // (1.5 ~ plastic, which is the F0 = 0.04 the compose pass uses).
+    // The model of the deferred compose pass for mode, under its lights (postprocess_pipeline::lighting).
+    // Physically based: a simplified Cook-Torrance model of the colours as albedo, with the roughness in [0,1]
+    // and the ior of the surfaces (1.5 ~ plastic, which is the F0 = 0.04 the compose pass uses). Basic: the
+    // colours as given, darkened away from the light down to ambient, with a highlight of strength specular
+    // (postprocess_pipeline::Settings::shading); roughness and ior are not used.
     struct {
-        vec3_t env_radiance = {0,0,0};
         float roughness = 0.4f;
-        vec3_t dir_radiance = {1,1,1};
         float ior = 1.5f;
+        postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
+        float ambient = 0.3f;
+        float specular = 0.25f;
+        postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_Linear;  // how the colours are read
+        float light = 1.0f;         // strength of the directional light (postprocess_pipeline::Settings::shading)
+        float environment = 1.0f;   // strength of the light from the surroundings
     } shading;
 };
 

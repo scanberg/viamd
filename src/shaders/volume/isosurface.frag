@@ -50,11 +50,11 @@ layout(std140) uniform IsoUniforms {
     vec3  u_clip_max;
     float u_use_depth;
 
-    vec3  u_env_radiance;
+    vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
     float u_roughness;
-    vec3  u_dir_radiance;
+    vec3  u_dir_radiance;       // the key light: irradiance at normal incidence
     float u_F0;
-    vec3  u_light_dir;          // view space, normalized
+    vec3  u_light_dir;          // toward the key light, view space, normalized
     float u_field_beg;
 
     vec2  u_inv_res;
@@ -65,6 +65,14 @@ layout(std140) uniform IsoUniforms {
     float u_entry_from_near;    // the near plane cuts the volume: rays start there, not at the proxy entry
     float u_use_blocks;         // u_tex_minmax holds the block min/max grid
     float u_use_cells;          // u_tex_cells holds the cell min/max grid
+
+    vec3  u_ground_radiance;    // the environment below the horizon of the view
+    float u_basic;              // 1: shade_basic, the basic model of the compose pass; the radiances are unused
+
+    float u_basic_ambient;
+    float u_basic_specular;
+    float u_linear_colors;      // 1: the colours are linear reflectances, 0: sRGB (as in the compose pass)
+    float u_light_strength;     // of the directional light, relative to u_dir_radiance (and to the basic light)
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -282,16 +290,39 @@ bool range_holds_iso(float lo, float hi) {
 }
 
 // -----------------------------------------------------------------------------
-// Shading: the model and light of compose_deferred.frag, so a surface with alpha 1 is lit like the
-// opaque geometry around it (with the roughness the caller gives).
+// Shading: the model and lights of compose_deferred.frag, so a surface with alpha 1 is lit like the
+// opaque geometry around it (with the roughness the caller gives): its colour decoded from sRGB to the
+// linear albedo, a key light and an environment of sky and ground.
 // -----------------------------------------------------------------------------
 
 float FresnelSchlick(float cos_theta, float F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-float FresnelSchlickRoughness(float cos_theta, float F0, float roughness) {
-    return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+// The directional albedo of the specular lobe, F0 * x + y: Karis, "Physically Based Shading on Mobile" (2014)
+vec2 EnvBRDFApprox(float NdotV, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04, -0.04);
+    vec4  r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// The irradiance of the sky and ground hemispheres over pi
+vec3 environment_irradiance(vec3 N) {
+    return mix(u_ground_radiance, u_sky_radiance, 0.5 + 0.5 * N.y);
+}
+
+// Their radiance about the direction R, as seen through a lobe of the roughness
+vec3 environment_radiance(vec3 R, float roughness) {
+    float w = 0.1 + roughness;
+    return mix(u_ground_radiance, u_sky_radiance, smoothstep(-w, w, R.y));
+}
+
+// The colours are picked as sRGB
+vec3 srgb_to_linear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 
 float DistributionGGX(float NdotH, float roughness) {
@@ -332,12 +363,36 @@ vec4 surface_color(vec3 p, int i) {
 #endif
 }
 
+// The basic model of compose_deferred.frag (shade_basic): the colour as given where the surface faces the
+// light, darkened toward u_basic_ambient of itself away from it, a highlight blended toward white, all on
+// the display (sRGB) values, returned as linear radiance.
+const float BASIC_SHININESS = 48.0;
+
+vec3 shade_basic(vec3 color, vec3 N, vec3 V) {
+    float w = 0.5 + 0.5 * dot(N, u_light_dir);
+    vec3  c = clamp(color, 0.0, 1.0) * (u_basic_ambient + u_light_strength * (1.0 - u_basic_ambient) * w * w);
+    c /= max(1.0, max(c.r, max(c.g, c.b)));
+    vec3  H = normalize(u_light_dir + V);
+    float s = u_light_strength * u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
+    return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);
+}
+
 // Adds one surface behind which the transmittance is g_T. The diffuse part is scaled by the surface's
 // coverage (alpha); the specular part is not, so a clear surface still shows its reflections. The
-// opacity is the coverage plus what Fresnel reflects away.
-void shade_surface(vec3 albedo, float alpha, vec3 N, vec3 V) {
+// opacity is the coverage plus what the surface reflects away. In the basic model the surface is its shaded
+// colour over its coverage.
+void shade_surface(vec3 color, float alpha, vec3 N, vec3 V) {
+    if (u_basic > 0.5) {
+        float a = clamp(alpha, 0.0, 1.0);
+        g_L += g_T * a * shade_basic(color, N, V);
+        g_T *= 1.0 - a;
+        return;
+    }
+
     float roughness = clamp(u_roughness, 0.04, 1.0);
     float F0 = clamp(u_F0, 0.0, 1.0);
+    vec3  albedo = (u_linear_colors > 0.5) ? clamp(color, 0.0, 1.0) : srgb_to_linear(color);
 
     float NdotV = clamp(dot(N, V), 0.0, 1.0);
     float NdotL = clamp(dot(N, u_light_dir), 0.0, 1.0);
@@ -352,17 +407,20 @@ void shade_surface(vec3 albedo, float alpha, vec3 N, vec3 V) {
         float D = DistributionGGX(NdotH, roughness);
         float G = GeometrySchlickGGX(NdotV, roughness) * GeometrySchlickGGX(NdotL, roughness);
         float F = FresnelSchlick(HdotV, F0);
-        specular += vec3(D * G * F / (4.0 * NdotV * NdotL + 0.0001)) * u_dir_radiance * NdotL;
-        diffuse  += (1.0 - F) * albedo * INV_PI * u_dir_radiance * NdotL;
+        vec3  E = u_dir_radiance * u_light_strength;
+        specular += vec3(D * G * F / (4.0 * NdotV * NdotL + 0.0001)) * E * NdotL;
+        diffuse  += (1.0 - F) * albedo * INV_PI * E * NdotL;
     }
 
-    float Fe = FresnelSchlickRoughness(NdotV, F0, roughness);
-    diffuse  += (1.0 - Fe) * albedo * INV_PI * u_env_radiance;
-    specular += Fe * u_env_radiance;
+    // What the surface reflects of its surroundings is the directional albedo of its specular lobe:
+    // that much of the environment is reflected and that much less passes through
+    vec2  ab = EnvBRDFApprox(NdotV, roughness);
+    float Fe = F0 * ab.x + ab.y;
+    diffuse  += (1.0 - Fe) * albedo * environment_irradiance(N);
+    specular += Fe * environment_radiance(reflect(-V, N), roughness);
 
-    float Fv      = FresnelSchlick(NdotV, F0);
     float a       = clamp(alpha, 0.0, 1.0);
-    float opacity = 1.0 - (1.0 - a) * (1.0 - Fv);
+    float opacity = 1.0 - (1.0 - a) * (1.0 - Fe);
 
     g_L += g_T * (a * diffuse + specular);
     g_T *= 1.0 - opacity;
