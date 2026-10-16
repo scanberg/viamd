@@ -43,19 +43,34 @@ UTEST(timeline_periods, frames_fixed_and_following) {
     EXPECT_FALSE(timeline_period_frames(&beg, &end, r, 0.0, 0));
 }
 
-UTEST(timeline_periods, follow_keeps_the_frames_it_covers) {
+UTEST(timeline_periods, follow_centers_and_keeps_the_extent) {
     TimelinePeriod r = {};
     r.beg = 200; r.end = 100;
 
-    timeline_period_set_follow(&r, true, 150.0, 1001);
+    // Centered on the current frame, wherever that is
+    timeline_period_set_follow(&r, true, 400.0, 1001);
     EXPECT_TRUE(r.follow);
     EXPECT_EQ(-50, r.beg);
     EXPECT_EQ(50, r.end);
 
+    // Fixed again, it keeps the frames it covers
     timeline_period_set_follow(&r, false, 980.0, 1001);
     EXPECT_FALSE(r.follow);
     EXPECT_EQ(930, r.beg);
     EXPECT_EQ(1000, r.end);     // 1030 is past the last frame
+
+    // An extent that cannot be centered exactly leans into the past
+    r.beg = 10; r.end = 19;
+    timeline_period_set_follow(&r, true, 0.0, 1001);
+    EXPECT_EQ(-5, r.beg);
+    EXPECT_EQ(4, r.end);
+
+    // A marker follows on the current frame
+    r.follow = false;
+    r.beg = 70; r.end = 70;
+    timeline_period_set_follow(&r, true, 300.0, 1001);
+    EXPECT_EQ(0, r.beg);
+    EXPECT_EQ(0, r.end);
 }
 
 UTEST(timeline_periods, add_names_colours_and_remove) {
