@@ -317,6 +317,130 @@ static ViewRegion main_view_uncovered_region(const ApplicationState& state, cons
 //static void update_density_volume_texture(ApplicationState* state);
 
 static void render(ApplicationState* state);
+
+// GPU time of the geometry pass, by the kind of what it draws, averaged per frame over GEOMETRY_TIMER_PUBLISH_FRAMES
+// frames. Measured with GL_TIME_ELAPSED queries around the draws of each kind (one md_gl_draw of all the ops of that
+// kind), read back a few frames late so collecting them never stalls, as those of the volume passes. The cartoon, the
+// ribbons and the tubes include the evaluation of their spline, which md_gl_draw does for each call that draws one.
+enum GeometryStage {
+    GeometryStage_SpaceFill,
+    GeometryStage_Licorice,
+    GeometryStage_BallAndStick,
+    GeometryStage_Ribbons,
+    GeometryStage_Cartoon,
+    GeometryStage_GlyphSpheres,     // Of the cartoon of lipids and nucleic acids: heads
+    GeometryStage_GlyphTubes,       // Tails, sterol skeletons, nucleic backbones
+    GeometryStage_GlyphSlabs,       // Sugars, bases, the sticks between them
+    GeometryStage_Other,
+    GeometryStage_Highlight,        // The passes of the selected and highlighted atoms, drawn again over the rest
+    GeometryStage_Count
+};
+
+static const char* geometry_stage_name[GeometryStage_Count] = {
+    "Space fill", "Licorice", "Ball and stick", "Ribbons", "Cartoon", "Heads", "Tubes", "Slabs", "Other", "Selection, highlight",
+};
+
+static constexpr int GEOMETRY_TIMER_QUERY_COUNT    = 128;
+static constexpr int GEOMETRY_TIMER_PUBLISH_FRAMES = 30;
+
+static struct {
+    struct {
+        GLuint id = 0;
+        int    stage = 0;
+        bool   pending = false;
+    } query[GEOMETRY_TIMER_QUERY_COUNT];
+    int    active = -1;         // GL_TIME_ELAPSED queries cannot nest
+    double accum_ms[GeometryStage_Count] = {};
+    int    accum_frames = 0;
+    float  ms[GeometryStage_Count] = {};
+    float  total_ms = 0.0f;
+} geometry_timer;
+
+static void geometry_timer_begin(GeometryStage stage) {
+    if (geometry_timer.active != -1) return;
+    if (!geometry_timer.query[0].id) {
+        for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) glGenQueries(1, &geometry_timer.query[i].id);
+    }
+    for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) {
+        if (!geometry_timer.query[i].pending) {
+            geometry_timer.query[i].stage = stage;
+            geometry_timer.active = i;
+            glBeginQuery(GL_TIME_ELAPSED, geometry_timer.query[i].id);
+            return;
+        }
+    }
+}
+
+static void geometry_timer_end() {
+    if (geometry_timer.active == -1) return;
+    glEndQuery(GL_TIME_ELAPSED);
+    geometry_timer.query[geometry_timer.active].pending = true;
+    geometry_timer.active = -1;
+}
+
+// Once per frame: collects the queries which have finished and publishes the averages
+static void geometry_timings_new_frame() {
+    auto& t = geometry_timer;
+    for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) {
+        if (!t.query[i].pending) continue;
+        GLint available = 0;
+        glGetQueryObjectiv(t.query[i].id, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) continue;
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(t.query[i].id, GL_QUERY_RESULT, &ns);
+        t.accum_ms[t.query[i].stage] += (double)ns * 1.0e-6;
+        t.query[i].pending = false;
+    }
+    t.accum_frames += 1;
+    if (t.accum_frames >= GEOMETRY_TIMER_PUBLISH_FRAMES) {
+        t.total_ms = 0.0f;
+        for (int i = 0; i < GeometryStage_Count; ++i) {
+            t.ms[i] = (float)(t.accum_ms[i] / t.accum_frames);
+            t.total_ms += t.ms[i];
+            t.accum_ms[i] = 0.0;
+        }
+        t.accum_frames = 0;
+    }
+}
+
+static GeometryStage geometry_stage(md_gl_rep_type_t type, bool glyphs) {
+    if (glyphs) {
+        switch (type) {
+        case MD_GL_REP_SPACE_FILL: return GeometryStage_GlyphSpheres;
+        case MD_GL_REP_TUBES:      return GeometryStage_GlyphTubes;
+        case MD_GL_REP_SLABS:      return GeometryStage_GlyphSlabs;
+        default:                   return GeometryStage_Other;
+        }
+    }
+    switch (type) {
+    case MD_GL_REP_SPACE_FILL:     return GeometryStage_SpaceFill;
+    case MD_GL_REP_LICORICE:       return GeometryStage_Licorice;
+    case MD_GL_REP_BALL_AND_STICK: return GeometryStage_BallAndStick;
+    case MD_GL_REP_RIBBONS:        return GeometryStage_Ribbons;
+    case MD_GL_REP_CARTOON:        return GeometryStage_Cartoon;
+    default:                       return GeometryStage_Other;
+    }
+}
+
+// Draws ops a kind at a time, in the order the kinds first appear, each timed as its stage
+static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, size_t count, bool glyphs, md_allocator_i* alloc) {
+    bool done[16] = {};
+    md_array(md_gl_draw_op_t) group = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const uint32_t type = (uint32_t)ops[i].type;
+        if (type < ARRAY_SIZE(done) && done[type]) continue;
+        md_array_shrink(group, 0);
+        for (size_t k = i; k < count; ++k) {
+            if (ops[k].type == ops[i].type) md_array_push(group, ops[k], alloc);
+        }
+        if (type < ARRAY_SIZE(done)) done[type] = true;
+        args.draw_operations = { .count = (uint32_t)md_array_size(group), .ops = group };
+        geometry_timer_begin(geometry_stage(ops[i].type, glyphs));
+        md_gl_draw(&args);
+        geometry_timer_end();
+    }
+}
+
 static void draw_representations_opaque(ApplicationState* state);
 static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
@@ -1987,9 +2111,17 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
             ImGui::Text("%s", fps_buf);
             if (ImGui::IsItemHovered()) {
+                // GPU time of the geometry of the main viewport, by kind (those drawn in the last frames)
+                ImGui::BeginTooltip();
+                ImGui::Text("Geometry, GPU per frame: %.3f ms", geometry_timer.total_ms);
+                for (int i = 0; i < GeometryStage_Count; ++i) {
+                    if (geometry_timer.ms[i] > 0.0f) {
+                        ImGui::Text("  %-20s %.3f ms", geometry_stage_name[i], geometry_timer.ms[i]);
+                    }
+                }
+                ImGui::TextDisabled("  Splines %s, evaluated in each pass which draws them", data->visuals.spline.raycast ? "ray cast" : "as meshes");
                 // GPU time of the volume passes, all views together (main viewport and component windows)
                 const volume::GpuTimings t = volume::timings_get();
-                ImGui::BeginTooltip();
                 ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
                 for (int i = 0; i < volume::TimingStage_Count; ++i) {
                     ImGui::Text("  %-14s %.3f ms", volume::timing_stage_name((volume::TimingStage)i), t.ms[i]);
@@ -6863,6 +6995,7 @@ static void render(ApplicationState* state) {
     update_view_param(state);
 
     volume::timings_new_frame();
+    geometry_timings_new_frame();
 
     gbuffer_clear(&state->gbuffer);
 
@@ -7213,14 +7346,17 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
     const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
 
-    md_gl_draw_op_t spheres = {
-        .type = MD_GL_REP_SPACE_FILL,
-        .args = {},
-        .rep = rep.glyph_rep,
-        .model_matrix = NULL,
-    };
-    spheres.args.space_fill.radius_scale = scale;
-    md_array_push(*ops, spheres, alloc);
+    // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
+    if (state.mold.cartoon_glyphs.num_spheres > 0) {
+        md_gl_draw_op_t spheres = {
+            .type = MD_GL_REP_SPACE_FILL,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .model_matrix = NULL,
+        };
+        spheres.args.space_fill.radius_scale = scale;
+        md_array_push(*ops, spheres, alloc);
+    }
 
     if (state.mold.cartoon_glyphs.num_tubes > 0) {
         md_gl_draw_op_t tubes = {
@@ -7437,12 +7573,11 @@ static void draw_representations_opaque(ApplicationState* state) {
             .max_bond_length = max_bond_length,
         };
 
-        md_gl_draw(&args);
+        draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
 
         if (md_array_size(glyph_ops) > 0) {
-            args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
             args.picking_offset = gl_picking_offset_glyphs(*state);
-            md_gl_draw(&args);
+            draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
 #if EXPERIMENTAL_GFX_API
     }
@@ -7594,6 +7729,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 		.max_bond_length = max_bond_length,
     };
 
+    geometry_timer_begin(GeometryStage_Highlight);
     md_gl_draw(&args);
 
     if (md_array_size(glyph_ops) > 0) {
@@ -7601,4 +7737,5 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         args.picking_offset = gl_picking_offset_glyphs(*data);
         md_gl_draw(&args);
     }
+    geometry_timer_end();
 }

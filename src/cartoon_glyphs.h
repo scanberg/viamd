@@ -74,6 +74,7 @@ enum CartoonGlyphVariant : uint8_t {
 struct CartoonGlyphs {
     md_gl_mol_t gl_mol = {};
     uint32_t num_points = 0;
+    uint32_t num_spheres = 0;       // Points with a sphere (radius > 0): the heads of lipids. A nucleic acid has none
     uint32_t num_tubes = 0;
     uint32_t num_tube_points = 0;   // Control points of all tubes
     uint32_t num_slabs = 0;

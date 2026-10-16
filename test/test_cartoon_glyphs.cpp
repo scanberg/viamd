@@ -54,6 +54,8 @@ UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
     EXPECT_EQ(64u, count_points(g, CartoonGlyph_LipidBackbone, CartoonGlyphVariant_TwoHeadSpheres, true));
     // The tubes start at the backbone in either case, at a point without a sphere
     EXPECT_EQ(64u, count_points(g, CartoonGlyph_LipidBackbone, CartoonGlyphVariant_Always, false));
+    // A head sphere per lipid, and the two of each split head
+    EXPECT_EQ(64u * 3u, g.num_spheres);
 
     for (uint32_t i = 0; i < g.num_points; ++i) {
         const uint32_t n = g.point_offset[i + 1] - g.point_offset[i];
@@ -142,6 +144,8 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     EXPECT_EQ(expected_slabs, g.num_slabs);
     // A control point per nucleotide, which faces its base and which the band passes through
     EXPECT_EQ(nucleotides, g.num_tube_points);
+    // No spheres: the points are control points and corners
+    EXPECT_EQ(0u, g.num_spheres);
     for (uint32_t t = 0; t < g.num_tubes; ++t) {
         EXPECT_EQ(1, (int)g.tube_through[t]);
     }

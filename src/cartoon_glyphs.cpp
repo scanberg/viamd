@@ -524,6 +524,8 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     g->num_tubes       = (uint32_t)md_array_size(g->tube_offset) - 1;
     g->num_tube_points = (uint32_t)md_array_size(g->tube_point);
     g->num_slabs       = (uint32_t)md_array_size(g->slab_offset) - 1;
+    g->num_spheres     = 0;
+    for (uint32_t i = 0; i < g->num_points; ++i) g->num_spheres += g->point_radius[i] > 0.0f ? 1 : 0;
     g->num_source_atoms = (uint32_t)sys.atom.count;
     if (g->num_points == 0 || gl_mol.id == 0) return;
 
