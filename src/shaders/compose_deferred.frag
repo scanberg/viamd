@@ -4,12 +4,13 @@ layout (std140) uniform UniformData {
     vec4  u_proj_info;
     vec3  u_bg_color;
     float u_time;
-    vec3  u_env_radiance;
+    vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
     float u_roughness;
-    vec3  u_dir_radiance;
+    vec3  u_dir_radiance;       // the key light: irradiance at normal incidence
     float u_F0;
-    vec3  u_light_dir;
+    vec3  u_light_dir;          // toward the key light
     float u_basic;              // 1: shade_basic (postprocess_pipeline::ShadingMode_Basic), 0: shade
+    vec3  u_ground_radiance;    // the environment below the horizon
     float u_basic_ambient;
     float u_basic_specular;
 };
@@ -52,12 +53,27 @@ vec3 decode_normal(vec2 enc) {
 const float PI = 3.1415926535;
 const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
-float FresnelSchlick(float cosTheta, float F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+// The colours are picked, and stored, as sRGB
+vec3 srgb_to_linear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
 }
 
-float FresnelSchlickRoughness(float cosTheta, float F0, float roughness) {
-    return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+// -----------------------------------------------------------------------------
+// Physically based shading: a simplified Cook-Torrance model (GGX, Smith-Schlick, Schlick Fresnel) of a
+// dielectric whose albedo is the colour, decoded from sRGB to linear. Lit by a key light and an environment
+// of two uniform hemispheres split at the horizon of the view, the sky above and the ground below:
+//  - the key light: diffuse (1 - F) albedo / pi * E N.L, specular D G F / (4 N.V N.L) * E N.L
+//  - the environment, diffuse: the exact irradiance of the two hemispheres, pi * mix(ground, sky, (1 + N.y) / 2)
+//  - the environment, specular: the radiance about the reflected direction, the horizon blurred by the
+//    roughness, times the directional albedo of the specular lobe (the split sum, from Karis' analytic fit).
+//    That albedo is what the surface reflects of its surroundings, so it also takes its share off the diffuse.
+// The environment does not depend on the background: a dark one no longer leaves the shadowed sides black,
+// and a coloured one does not tint the geometry.
+// -----------------------------------------------------------------------------
+
+float FresnelSchlick(float cosTheta, float F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 float DistributionGGX(float NdotH, float roughness) {
@@ -84,6 +100,26 @@ float GeometrySmith(float NdotV, float NdotL, float roughness) {
     return ggx1 * ggx2;
 }
 
+// The directional albedo of the specular lobe, F0 * x + y: Karis, "Physically Based Shading on Mobile" (2014)
+vec2 EnvBRDFApprox(float NdotV, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04, -0.04);
+    vec4  r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// The irradiance of the environment over pi
+vec3 environment_irradiance(vec3 N) {
+    return mix(u_ground_radiance, u_sky_radiance, 0.5 + 0.5 * N.y);
+}
+
+// The radiance of the environment about the direction R, as seen through a lobe of the roughness
+vec3 environment_radiance(vec3 R, float roughness) {
+    float w = 0.1 + roughness;
+    return mix(u_ground_radiance, u_sky_radiance, smoothstep(-w, w, R.y));
+}
+
 vec3 shade(vec3 color, vec3 V, vec3 N) {
     vec3  L = normalize(u_light_dir);
     vec3  H = normalize(L + V);
@@ -94,29 +130,27 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 
     float F0 = clamp(u_F0, 0.0, 1.0);
     float roughness = clamp(u_roughness, 0.04, 1.0);
-    vec3  albedo = color;
+    vec3  albedo = srgb_to_linear(color);
 
     vec3 Lo = vec3(0);
 
-    // Directional light
+    // Key light
     if (N_dot_L > 0.0) {
         float NDF = DistributionGGX(N_dot_H, roughness);
         float G   = GeometrySmith(N_dot_V, N_dot_L, roughness);
         float F   = FresnelSchlick(H_dot_V, F0);
-        float kS = F;
-        float kD = 1.0 - kS;
         float numerator   = NDF * G * F;
         float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
         vec3 specular     = vec3(numerator / denominator);
-        Lo += (kD * albedo * ONE_OVER_PI + specular) * u_dir_radiance * N_dot_L;
+        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * u_dir_radiance * N_dot_L;
     }
 
-    // Environment (still simplified; see note above about proper IBL)
+    // Environment
     {
-        float F = FresnelSchlickRoughness(N_dot_V, F0, roughness);
-        float kS = F;
-        float kD = 1.0 - kS;
-        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * u_env_radiance;
+        vec2  ab = EnvBRDFApprox(N_dot_V, roughness);
+        float Fe = F0 * ab.x + ab.y;
+        vec3  R  = reflect(-V, N);
+        Lo += (1.0 - Fe) * albedo * environment_irradiance(N) + Fe * environment_radiance(R, roughness);
     }
 
     return Lo;
@@ -130,11 +164,6 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 // way classic molecular viewers light them, and the result is returned as linear radiance: the display
 // transform of the basic mode is the exact sRGB encoding, which takes it back to those values.
 const float BASIC_SHININESS = 48.0;
-
-vec3 srgb_to_linear(vec3 c) {
-    c = clamp(c, 0.0, 1.0);
-    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
-}
 
 vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
     vec3  L = normalize(u_light_dir);

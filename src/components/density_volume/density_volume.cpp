@@ -959,11 +959,8 @@ struct DensityVolume : viamd::EventHandler {
                             .colors = iso.colors,
                             .exact = state->settings.exact_isosurfaces,
                         },
-                        // Lit like the compose pass lights the reference structures: env = background / 4
                         .shading = {
-                            .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
                             .roughness = 0.3f,
-                            .dir_radiance = {10,10,10},
                             .ior = 1.5f,
                             .mode = state->visuals.shading.mode,
                             .ambient = state->visuals.shading.ambient,

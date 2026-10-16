@@ -29,8 +29,8 @@ enum Tonemapper {
 
 // How the compose pass, the first step of the pipeline, lights the colours of the geometry
 enum ShadingMode {
-    // A simplified Cook-Torrance model under one directional light and an environment, then tone mapped
-    // (Settings::tonemap)
+    // A simplified Cook-Torrance model of the colours (sRGB, decoded to linear albedo) under a key light and an
+    // environment of sky and ground (lighting()), then tone mapped (Settings::tonemap)
     ShadingMode_PhysicallyBased,
     // The colours as given where a surface faces the light, darkened away from it, with an optional white
     // highlight (Settings::shading). Shown through the exact sRGB encoding rather than a tone mapper
@@ -60,9 +60,9 @@ struct Inputs {
 };
 
 struct Settings {
-    // The background as picked (display referred) and its intensity. Physically based: the background is
-    // radiance, color * intensity, which is then tone mapped. Basic: it shows as the colour itself and the
-    // intensity is not used.
+    // The background as picked (sRGB) and its intensity. Physically based: the background is radiance, the
+    // colour decoded to linear times the intensity, which is then tone mapped (24 is the white point of the
+    // tone mappers). Basic: it shows as the colour itself and the intensity is not used.
     vec3_t background_color = {1.f, 1.f, 1.f};
     float  background_intensity = 24.f;
 
@@ -125,8 +125,16 @@ void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
 SsaoTimings ssao_timings();
 
-// The light of the compose pass for a shading mode: the direction toward it, in view space (it moves with the
-// camera). The isosurfaces (volume::render_isosurfaces) are lit by the same.
-vec3_t light_direction(ShadingMode mode);
+// The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces
+// (volume::render_isosurfaces) are lit by the same. The radiances are those of the physically based mode, in the
+// units the Neutral and ACES tone mappers expect (their exposure bias takes 4 to 1); they do not depend on the
+// background.
+struct Lighting {
+    vec3_t light_dir;           // toward the key light, normalized
+    vec3_t light_irradiance;    // the key light: irradiance at normal incidence
+    vec3_t sky_radiance;        // the environment above the horizon of the view (view space y > 0)
+    vec3_t ground_radiance;     // the environment below it
+};
+Lighting lighting(ShadingMode mode);
 
 }  // namespace postprocess_pipeline

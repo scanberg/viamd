@@ -6637,13 +6637,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 glDisable(GL_SCISSOR_TEST);
 
-                // A white background (24 is the white point of the tone mappers)
-                const vec3_t bg_color = {1.f, 1.f, 1.f};
-                const float  bg_intensity = 24.f;
-
                 postprocess_pipeline::Settings postprocess_settings = {};
-                postprocess_settings.background_color = bg_color;
-                postprocess_settings.background_intensity = bg_intensity;
+                // A white background (24 is the white point of the tone mappers)
+                postprocess_settings.background_color = {1.f, 1.f, 1.f};
+                postprocess_settings.background_intensity = 24.f;
                 postprocess_settings.shading.mode = state.visuals.shading.mode;
                 postprocess_settings.shading.ambient = state.visuals.shading.ambient;
                 postprocess_settings.shading.specular = state.visuals.shading.specular;
@@ -6705,11 +6702,8 @@ struct QuantumChemistry : viamd::EventHandler {
                             .colors = orb.iso.colors,
                             .exact  = state.settings.exact_isosurfaces,
                         },
-                        // Lit like the compose pass lights the atoms of the panel: env = background / 4
                         .shading = {
-                            .env_radiance = bg_color * bg_intensity * 0.25f,
                             .roughness = 0.3f,
-                            .dir_radiance = {10,10,10},
                             .ior = 1.5f,
                             .mode = state.visuals.shading.mode,
                             .ambient = state.visuals.shading.ambient,
@@ -8205,11 +8199,8 @@ struct QuantumChemistry : viamd::EventHandler {
                                     .colors  = colors,
                                     .exact   = state.settings.exact_isosurfaces,
                                 },
-                                // Lit like the compose pass lights the atoms of the panel: env = background / 4
                                 .shading = {
-                                    .env_radiance = postprocess_settings.background_color * postprocess_settings.background_intensity * 0.25f,
                                     .roughness = 0.3f,
-                                    .dir_radiance = {10,10,10},
                                     .ior = 1.5f,
                                     .mode = postprocess_settings.shading.mode,
                                     .ambient = postprocess_settings.shading.ambient,

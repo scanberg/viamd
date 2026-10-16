@@ -547,17 +547,18 @@ struct ubo_data_t {
     vec4_t proj_info;
     vec3_t bg_color;
     float  time;
-    vec3_t env_radiance;
+    vec3_t sky_radiance;
     float  roughness;
     vec3_t dir_radiance;
     float  F0;
     vec3_t light_dir;
     float  basic;           // 1: ShadingMode_Basic
+    vec3_t ground_radiance;
     float  basic_ambient;
     float  basic_specular;
-    float  pad[2];
+    float  pad[3];
 };
-static_assert(sizeof(ubo_data_t) == 96, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
+static_assert(sizeof(ubo_data_t) == 112, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
 
 static struct {
     struct {
@@ -1577,13 +1578,12 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
 
     const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
 
-    // Basic: the background is shown through the sRGB encoding, so its linear value shows the colour as picked
-    const vec3_t bg_color = basic ?
-        vec3_t{srgb_to_linear(settings.background_color.x), srgb_to_linear(settings.background_color.y), srgb_to_linear(settings.background_color.z)} :
-        settings.background_color * settings.background_intensity;
+    // The colour is sRGB, like those of the geometry. Basic: the background is shown through the sRGB encoding, so
+    // its linear value shows the colour as picked. Physically based: radiance, scaled by the intensity.
+    const vec3_t bg_linear = {srgb_to_linear(settings.background_color.x), srgb_to_linear(settings.background_color.y), srgb_to_linear(settings.background_color.z)};
+    const vec3_t bg_color = basic ? bg_linear : bg_linear * settings.background_intensity;
 
-    const vec3_t env_radiance = bg_color * 0.25f;
-    const vec3_t dir_radiance = {10, 10, 10};
+    const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(settings.shading.mode);
     const float roughness = 0.4f;
     const float F0 = 0.04f;
 
@@ -1591,12 +1591,13 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
         .proj_info = compute_proj_info(proj_mat),
         .bg_color = bg_color,
         .time = time,
-        .env_radiance = env_radiance,
+        .sky_radiance = light.sky_radiance,
         .roughness = roughness,
-        .dir_radiance = dir_radiance,
+        .dir_radiance = light.light_irradiance,
         .F0 = F0,
-        .light_dir = postprocess_pipeline::light_direction(settings.shading.mode),
+        .light_dir = light.light_dir,
         .basic = basic ? 1.0f : 0.0f,
+        .ground_radiance = light.ground_radiance,
         .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
         .basic_specular = MAX(settings.shading.specular, 0.0f),
     };
@@ -2604,11 +2605,24 @@ SsaoTimings ssao_timings() {
     return postprocessing::gl.ssao.timer.published;
 }
 
-vec3_t light_direction(ShadingMode mode) {
-    // Physically based: from the upper right, 55 degrees off the view axis, which models the shapes strongly.
+Lighting lighting(ShadingMode mode) {
+    // Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes
+    // strongly. The sky and the ground fill in the rest, so nothing turns black away from the key light, and their
+    // difference keeps the shapes readable there too. A white surface facing the viewer comes to about 0.8 after
+    // the exposure bias of the tone mappers, where the neutral one is still linear, and about 1.2 where it faces the
+    // key light.
     // Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep
-    // close to their full colour.
-    return mode == ShadingMode_Basic ? vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f)) : vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f));
+    // close to their full colour. The radiances are not used.
+    Lighting l = {
+        .light_dir        = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f)),
+        .light_irradiance = {10.0f, 10.0f, 10.0f},
+        .sky_radiance     = {2.0f, 2.0f, 2.0f},
+        .ground_radiance  = {0.8f, 0.8f, 0.8f},
+    };
+    if (mode == ShadingMode_Basic) {
+        l.light_dir = vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f));
+    }
+    return l;
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {

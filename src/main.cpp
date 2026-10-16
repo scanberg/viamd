@@ -6584,9 +6584,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .range_end = rep.electronic_structure.field_map.range_end,
                 },
                 .shading = {
-                    .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,
                     .roughness = 0.3f,
-                    .dir_radiance = {10,10,10},
                     .ior = 1.5f,
                     .mode = state->visuals.shading.mode,
                     .ambient = state->visuals.shading.ambient,
