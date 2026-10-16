@@ -1614,7 +1614,28 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetItemTooltip(basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
                                                 : "Map the lighting into the colors a display can show");
             if (data->visuals.tonemapping.enabled && !basic_shading) {
-                // ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
+                // Neutral first: it is the default, and the one which keeps the colors
+                static const postprocess_pipeline::Tonemapper tonemappers[] = {
+                    postprocess_pipeline::Tonemapper_Neutral,
+                    postprocess_pipeline::Tonemapper_ACES,
+                    postprocess_pipeline::Tonemapper_Filmic,
+                    postprocess_pipeline::Tonemapper_ExposureGamma,
+                    postprocess_pipeline::Tonemapper_Passthrough,
+                };
+                static const char* tonemapper_names[] = {"Neutral", "ACES", "Filmic", "Exposure Gamma", "Passthrough"};
+                STATIC_ASSERT(ARRAY_SIZE(tonemappers) == postprocess_pipeline::Tonemapper_Count, "every tone mapper is listed");
+                int idx = 0;
+                for (int i = 0; i < (int)ARRAY_SIZE(tonemappers); ++i) {
+                    if (tonemappers[i] == data->visuals.tonemapping.tonemapper) idx = i;
+                }
+                if (ImGui::Combo("Function", &idx, tonemapper_names, IM_ARRAYSIZE(tonemapper_names))) {
+                    data->visuals.tonemapping.tonemapper = tonemappers[idx];
+                }
+                ImGui::SetItemTooltip("Neutral: the colors as they are, only the highlights are compressed (Khronos PBR Neutral).\n"
+                                      "ACES: a filmic curve with more contrast, which shifts and desaturates the colors.\n"
+                                      "Filmic: the Uncharted 2 curve.\n"
+                                      "Exposure Gamma: exposure and gamma only, no compression of the highlights.\n"
+                                      "Passthrough: the values as they are, no gamma.");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
                 ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
             }

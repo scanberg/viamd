@@ -20,11 +20,14 @@ void blit_color(vec4_t color);
 
 namespace postprocess_pipeline {
 
+// Stored in workspaces by value: new ones go at the end
 enum Tonemapper {
     Tonemapper_Passthrough,
     Tonemapper_ExposureGamma,
-    Tonemapper_Filmic,
-    Tonemapper_ACES,
+    Tonemapper_Filmic,      // Uncharted 2
+    Tonemapper_ACES,        // fitted ACES (RRT + ODT): contrast, but it shifts and desaturates colours
+    Tonemapper_Neutral,     // Khronos PBR Neutral: the colours as they are, only the highlights compressed
+    Tonemapper_Count
 };
 
 // How the compose pass, the first step of the pipeline, lights the colours of the geometry
@@ -75,9 +78,9 @@ struct Settings {
 
     struct {
         bool enabled = true;
-        Tonemapper mode = Tonemapper_ACES;
+        Tonemapper mode = Tonemapper_Neutral;
         float exposure = 1.0f;
-        float gamma = 2.4f;
+        float gamma = 2.2f;     // 2.2: the sRGB curve for Neutral
     } tonemap;
 
     // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.

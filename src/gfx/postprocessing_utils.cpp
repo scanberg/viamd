@@ -93,6 +93,7 @@ enum Tonemapping_ {
     Tonemapping_Filmic,
     Tonemapping_ACES,
     Tonemapping_sRGB,       // the display transform of ShadingMode_Basic
+    Tonemapping_Neutral,
 };
 
 static Tonemapping to_legacy_tonemapper(postprocess_pipeline::Tonemapper tm) {
@@ -100,6 +101,7 @@ static Tonemapping to_legacy_tonemapper(postprocess_pipeline::Tonemapper tm) {
         case postprocess_pipeline::Tonemapper_ExposureGamma: return Tonemapping_ExposureGamma;
         case postprocess_pipeline::Tonemapper_Filmic: return Tonemapping_Filmic;
         case postprocess_pipeline::Tonemapper_ACES: return Tonemapping_ACES;
+        case postprocess_pipeline::Tonemapper_Neutral: return Tonemapping_Neutral;
         case postprocess_pipeline::Tonemapper_Passthrough:
         default: return Tonemapping_Passthrough;
     }
@@ -652,6 +654,15 @@ static struct {
     } uniform_loc;
 } srgb;
 
+static struct {
+    GLuint program = 0;
+    struct {
+        GLint texture = -1;
+        GLint exposure = -1;
+        GLint gamma = -1;
+    } uniform_loc;
+} neutral;
+
 void initialize() {
     {
         // PASSTHROUGH
@@ -690,6 +701,13 @@ void initialize() {
         srgb.program = setup_program_from_source(STR_LIT("sRGB"), {(const char*)srgb_frag, srgb_frag_size});
         srgb.uniform_loc.texture = glGetUniformLocation(srgb.program, "u_texture");
     }
+    {
+        // Khronos PBR Neutral
+        neutral.program = setup_program_from_source(STR_LIT("Neutral"), {(const char*)neutral_frag, neutral_frag_size});
+        neutral.uniform_loc.texture = glGetUniformLocation(neutral.program, "u_texture");
+        neutral.uniform_loc.exposure = glGetUniformLocation(neutral.program, "u_exposure");
+        neutral.uniform_loc.gamma = glGetUniformLocation(neutral.program, "u_gamma");
+    }
 }
 
 void shutdown() {
@@ -700,6 +718,7 @@ void shutdown() {
     if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
     if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
     if (srgb.program) glDeleteProgram(srgb.program);
+    if (neutral.program) glDeleteProgram(neutral.program);
 }
 
 }  // namespace tonemapping
@@ -1944,6 +1963,12 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
         case Tonemapping_sRGB:
             glUseProgram(tonemapping::srgb.program);
             glUniform1i(tonemapping::srgb.uniform_loc.texture, 0);
+            break;
+        case Tonemapping_Neutral:
+            glUseProgram(tonemapping::neutral.program);
+            glUniform1i(tonemapping::neutral.uniform_loc.texture, 0);
+            glUniform1f(tonemapping::neutral.uniform_loc.exposure, exposure);
+            glUniform1f(tonemapping::neutral.uniform_loc.gamma, gamma);
             break;
         case Tonemapping_Passthrough:
         default:

@@ -1359,7 +1359,7 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_ACES;
+            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_Neutral;
             float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;
