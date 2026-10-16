@@ -6643,6 +6643,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 postprocess_settings.shading.ambient = state.visuals.shading.ambient;
                 postprocess_settings.shading.specular = state.visuals.shading.specular;
                 postprocess_settings.shading.colors = state.visuals.shading.colors;
+                postprocess_settings.shading.light = state.visuals.shading.light;
+                postprocess_settings.shading.environment = state.visuals.shading.environment;
                 postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
@@ -6708,6 +6710,8 @@ struct QuantumChemistry : viamd::EventHandler {
                             .ambient = state.visuals.shading.ambient,
                             .specular = state.visuals.shading.specular,
                             .colors = state.visuals.shading.colors,
+                            .light = state.visuals.shading.light,
+                            .environment = state.visuals.shading.environment,
                         },
                     };
                     const bool iso_written = volume::render_isosurfaces(vol_desc);
@@ -8106,6 +8110,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_settings.shading.ambient = state.visuals.shading.ambient;
                     postprocess_settings.shading.specular = state.visuals.shading.specular;
                     postprocess_settings.shading.colors = state.visuals.shading.colors;
+                    postprocess_settings.shading.light = state.visuals.shading.light;
+                    postprocess_settings.shading.environment = state.visuals.shading.environment;
                     postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                     postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                     postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
@@ -8206,6 +8212,8 @@ struct QuantumChemistry : viamd::EventHandler {
                                     .ambient = postprocess_settings.shading.ambient,
                                     .specular = postprocess_settings.shading.specular,
                                     .colors = postprocess_settings.shading.colors,
+                                    .light = postprocess_settings.shading.light,
+                                    .environment = postprocess_settings.shading.environment,
                                 },
                             };
                             iso_written = volume::render_isosurfaces(vol_desc);

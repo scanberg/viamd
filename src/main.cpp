@@ -1462,47 +1462,51 @@ static void draw_main_menu(ApplicationState* data) {
         }
         */
         if (ImGui::BeginMenu("Visuals")) {
+            const bool basic_shading = data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic;
+
+            // Sections in the order the image is made: what is seen, how it is lit, what the camera does with the light,
+            // how the result is smoothed; then the isosurfaces' quality and the rest. Every section has its own ID scope:
+            // "Mode" and "Enabled" appear in several.
+
+            ImGui::SeparatorText("View");
+            ImGui::PushID("View");
             if (ImGui::Button("Reset View")) {
                 reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
             }
-            ImGui::Separator();
-            ImGui::Checkbox("VSync", &data->app.window.vsync);
-            ImGui::SetItemTooltip("Limit the frame rate to the display's refresh rate");
-            ImGui::Separator();
-
-            ImGui::BeginGroup();
-            ImGui::Text("Camera");
-            {
-                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
-                if (data->view.mode == CameraMode::Perspective) {
-                    float fov = RAD_TO_DEG(data->view.camera.fov_y);
-                    if (ImGui::SliderFloat("Field of View", &fov, 12.5f, 80.0f, "%.1f deg")) {
-                        data->view.camera.fov_y = DEG_TO_RAD(fov);
-                    }
+            ImGui::Combo("Camera", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
+            if (data->view.mode == CameraMode::Perspective) {
+                float fov = RAD_TO_DEG(data->view.camera.fov_y);
+                if (ImGui::SliderFloat("Field of View", &fov, 12.5f, 80.0f, "%.1f deg")) {
+                    data->view.camera.fov_y = DEG_TO_RAD(fov);
                 }
             }
-            ImGui::EndGroup();
+            ImGui::PopID();
 
-            const bool basic_shading = data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic;
-
-            ImGui::BeginGroup();
-            ImGui::Text("Background");
-            ImGui::ColorEdit3Minimal("Color", data->visuals.background.color.elem);
-            ImGui::SetItemTooltip("Shown as picked, whatever the shading and tone mapping. It does not light the scene.");
-            ImGui::EndGroup();
-            ImGui::Separator();
-
-            // Shading
-            ImGui::BeginGroup();
+            // How the scene is lit, how its colors are read, and what it is shown over
+            ImGui::SeparatorText("Shading");
             ImGui::PushID("Shading");
             {
                 const char* modes[postprocess_pipeline::ShadingMode_Count] = {"Physically Based", "Basic"};
                 int mode = (int)data->visuals.shading.mode;
-                if (ImGui::Combo("Shading", &mode, modes, IM_ARRAYSIZE(modes))) {
+                if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes))) {
                     data->visuals.shading.mode = (postprocess_pipeline::ShadingMode)mode;
                 }
                 ImGui::SetItemTooltip("Physically Based: lit as a plastic-like material by a light and its surroundings, then tone mapped.\n"
                                       "Basic: the colors as they are picked where a surface faces the light, darker away from it. No tone mapping.");
+                ImGui::SliderFloat("Light", &data->visuals.shading.light, 0.0f, 4.0f, "%.2fx");
+                ImGui::SetItemTooltip("Strength of the directional light, relative to the default (1).\n"
+                                      "More makes the shapes stand out more, and the scene brighter. 0 leaves the surroundings only.");
+                if (!basic_shading) {
+                    ImGui::SliderFloat("Environment", &data->visuals.shading.environment, 0.0f, 4.0f, "%.2fx");
+                    ImGui::SetItemTooltip("Strength of the light from all around (a sky a little brighter than the ground), relative to the default (1).\n"
+                                          "More softens the shading and brightens the side away from the light; the ambient occlusion darkens it in creases.\n"
+                                          "At 1 for both, a color facing the viewer shows close to as picked; Exposure (Tone Mapping) scales all of the light.");
+                } else {
+                    ImGui::SliderFloat("Ambient", &data->visuals.shading.ambient, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("How much of the color is left on the side facing away from the light");
+                    ImGui::SliderFloat("Specular", &data->visuals.shading.specular, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("Strength of the white highlight, 0 for none");
+                }
                 const char* color_spaces[postprocess_pipeline::ColorSpace_Count] = {"sRGB", "Linear"};
                 int colors = (int)data->visuals.shading.colors;
                 if (ImGui::Combo("Colors", &colors, color_spaces, IM_ARRAYSIZE(color_spaces))) {
@@ -1512,59 +1516,17 @@ static void draw_main_menu(ApplicationState* data) {
                                       "sRGB: as picked and seen; a color in full light shows as its swatch.\n"
                                       "Linear: as the fraction of the light reflected per channel; lighter and paler than the swatch.\n"
                                       "The background always shows as picked.");
-                if (data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic) {
-                    ImGui::SliderFloat("Ambient", &data->visuals.shading.ambient, 0.0f, 1.0f);
-                    ImGui::SetItemTooltip("How much of the color is left on the side facing away from the light");
-                    ImGui::SliderFloat("Specular", &data->visuals.shading.specular, 0.0f, 1.0f);
-                    ImGui::SetItemTooltip("Strength of the white highlight, 0 for none");
-                }
+                ImGui::ColorEdit3Minimal("Background", data->visuals.background.color.elem);
+                ImGui::SetItemTooltip("Shown as picked, whatever the shading and tone mapping. It does not light the scene.");
+                ImGui::SameLine();
+                ImGui::TextUnformatted("Background");
             }
             ImGui::PopID();
-            ImGui::EndGroup();
-            ImGui::Separator();
-            ImGui::Checkbox("Anti-Aliasing (FXAA)", &data->visuals.fxaa.enabled);
-            ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
-            {
-                int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
-                if (ImGui::Combo("Isosurfaces", &iso_mode, "Fast\0Exact\0")) {
-                    data->settings.exact_isosurfaces = iso_mode == 1;
-                    app_settings::mark_dirty();
-                }
-                ImGui::SetItemTooltip("Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
-                                      "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
-                                      "a finer volume resolution makes both smaller.\n"
-                                      "Exact: intersects every cell a ray passes through, so nothing is missed and the surfaces\n"
-                                      "do not depend on any sampling. Roughly twice the GPU time of Fast.");
-            }
-            // Temporal
-            ImGui::BeginGroup();
-            {
-                ImGui::Checkbox("Temporal Anti-Aliasing", &data->visuals.temporal_aa.enabled);
-                ImGui::SetItemTooltip("Smooth edges by blending each frame with the previous ones");
-                if (data->visuals.temporal_aa.enabled) {
-                    // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                    ImGui::SliderFloat("History Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
-                    ImGui::SetItemTooltip("How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
-                    ImGui::SliderFloat("History Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
-                    ImGui::SetItemTooltip("How much of the previous frames is kept where the image is still");
-                    ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
-                    if (data->visuals.temporal_aa.motion_blur.enabled) {
-                        ImGui::SliderFloat("Motion Blur Strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
-                    }
-                    ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
-                    if (data->visuals.sharpen.enabled) {
-                        ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
-                    }
-                }
-            }
-            ImGui::EndGroup();
-            ImGui::Separator();
 
-            // SSAO
-            ImGui::BeginGroup();
+            ImGui::SeparatorText("Ambient Occlusion");
             ImGui::PushID("SSAO");
-            ImGui::Checkbox("Ambient Occlusion", &data->visuals.ssao.enabled);
-            ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
+            ImGui::Checkbox("Enabled", &data->visuals.ssao.enabled);
+            ImGui::SetItemTooltip("Darken creases and cavities, where less of the surroundings' light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
                 const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
                 int mode = (int)data->visuals.ssao.mode;
@@ -1583,9 +1545,6 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
             }
             ImGui::PopID();
-            ImGui::EndGroup();
-            ImGui::Separator();
-
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
             // Cone Trace
             ImGui::BeginGroup();
@@ -1597,24 +1556,13 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::PopID();
             ImGui::EndGroup();
-            ImGui::Separator();
 #endif
 
-            // DOF
-            ImGui::BeginGroup();
-            ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
-            if (data->visuals.dof.enabled) {
-                // ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
-                ImGui::SliderFloat("Blur Strength", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
-                ImGui::SetItemTooltip("Blur of distant objects, in percent of the view height. Independent of zoom level");
-            }
-            ImGui::EndGroup();
-            ImGui::Separator();
-
-            // Tonemapping
-            ImGui::BeginGroup();
+            // What the camera and the display do with the light
+            ImGui::SeparatorText("Tone Mapping");
+            ImGui::PushID("Tone Mapping");
             ImGui::BeginDisabled(basic_shading);
-            ImGui::Checkbox("Tone Mapping", &data->visuals.tonemapping.enabled);
+            ImGui::Checkbox("Enabled", &data->visuals.tonemapping.enabled);
             ImGui::SetItemTooltip(basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
                                                 : "Map the lighting into the colors a display can show.\nOff: no curve, what is brighter than white is clipped.");
             if (data->visuals.tonemapping.enabled && !basic_shading) {
@@ -1644,17 +1592,72 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("An adjustment of the sRGB curve: 2.2 is the sRGB curve itself");
             }
             ImGui::EndDisabled();
-            ImGui::EndGroup();
-            ImGui::Separator();
+            ImGui::PopID();
 
-            ImGui::BeginGroup();
+            ImGui::SeparatorText("Depth of Field");
+            ImGui::PushID("DOF");
+            ImGui::Checkbox("Enabled", &data->visuals.dof.enabled);
+            ImGui::SetItemTooltip("Blur what lies away from the focus");
+            if (data->visuals.dof.enabled) {
+                // ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
+                ImGui::SliderFloat("Blur Strength", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
+                ImGui::SetItemTooltip("Blur of distant objects, in percent of the view height. Independent of zoom level");
+            }
+            ImGui::PopID();
+
+            ImGui::SeparatorText("Anti-Aliasing");
+            ImGui::PushID("AA");
+            ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
+            ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
+            ImGui::Checkbox("Temporal", &data->visuals.temporal_aa.enabled);
+            ImGui::SetItemTooltip("Smooth edges by blending each frame with the previous ones (TAA)");
+            if (data->visuals.temporal_aa.enabled) {
+                // The options of the temporal resolve: indented under it
+                ImGui::Indent();
+                // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
+                ImGui::SliderFloat("History Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
+                ImGui::SetItemTooltip("How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
+                ImGui::SliderFloat("History Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
+                ImGui::SetItemTooltip("How much of the previous frames is kept where the image is still");
+                ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
+                if (data->visuals.temporal_aa.motion_blur.enabled) {
+                    ImGui::SliderFloat("Motion Blur Strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
+                }
+                ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
+                if (data->visuals.sharpen.enabled) {
+                    ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
+                }
+                ImGui::Unindent();
+            }
+            ImGui::PopID();
+
+            ImGui::SeparatorText("Isosurfaces");
+            ImGui::PushID("Isosurfaces");
+            {
+                int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
+                if (ImGui::Combo("Intersection", &iso_mode, "Fast\0Exact\0")) {
+                    data->settings.exact_isosurfaces = iso_mode == 1;
+                    app_settings::mark_dirty();
+                }
+                ImGui::SetItemTooltip("Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
+                                      "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
+                                      "a finer volume resolution makes both smaller.\n"
+                                      "Exact: intersects every cell a ray passes through, so nothing is missed and the surfaces\n"
+                                      "do not depend on any sampling. Roughly twice the GPU time of Fast.");
+            }
+            ImGui::PopID();
+
+            ImGui::SeparatorText("Other");
+            ImGui::PushID("Other");
             ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
             ImGui::SetItemTooltip("Draw the outline of the periodic box");
             if (data->simulation_box.enabled) {
                 ImGui::SameLine();
                 ImGui::ColorEdit4Minimal("##Box-Color", data->simulation_box.color.elem);
             }
-            ImGui::EndGroup();
+            ImGui::Checkbox("VSync", &data->app.window.vsync);
+            ImGui::SetItemTooltip("Limit the frame rate to the display's refresh rate");
+            ImGui::PopID();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
@@ -6280,6 +6283,8 @@ static void render(ApplicationState* state) {
     settings.shading.ambient = state->visuals.shading.ambient;
     settings.shading.specular = state->visuals.shading.specular;
     settings.shading.colors = state->visuals.shading.colors;
+    settings.shading.light = state->visuals.shading.light;
+    settings.shading.environment = state->visuals.shading.environment;
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
@@ -6615,6 +6620,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .ambient = state->visuals.shading.ambient,
                     .specular = state->visuals.shading.specular,
                     .colors = state->visuals.shading.colors,
+                    .light = state->visuals.shading.light,
+                    .environment = state->visuals.shading.environment,
                 },
             };
 

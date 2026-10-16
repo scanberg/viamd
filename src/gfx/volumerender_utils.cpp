@@ -242,7 +242,7 @@ struct IsoUniformData {
     float  basic_ambient;
     float  basic_specular;
     float  linear_colors;   // 1: postprocess_pipeline::ColorSpace_Linear
-    float  pad1;
+    float  light_strength;
 };
 static_assert(sizeof(IsoUniformData) == 3 * 64 + 9 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
@@ -789,12 +789,12 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.clip_max          = desc.clip_volume.max;
     data.use_depth         = desc.render_target.depth ? 1.0f : 0.0f;
     const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);    // as in compose_deferred
-    data.sky_radiance      = light.sky_radiance;
+    data.sky_radiance      = light.sky_radiance * MAX(desc.shading.environment, 0.0f);
     data.roughness         = desc.shading.roughness;
     data.dir_radiance      = light.light_irradiance;
     data.F0                = powf((n1 - n2) / (n1 + n2), 2.0f);
     data.light_dir         = light.light_dir;
-    data.ground_radiance   = light.ground_radiance;
+    data.ground_radiance   = light.ground_radiance * MAX(desc.shading.environment, 0.0f);
     data.field_beg         = desc.field.range_beg;
     data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
@@ -804,6 +804,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.basic_ambient     = CLAMP(desc.shading.ambient, 0.0f, 1.0f);
     data.basic_specular    = MAX(desc.shading.specular, 0.0f);
     data.linear_colors     = desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f;
+    data.light_strength    = MAX(desc.shading.light, 0.0f);
 
     const SavedState saved = save_state();
 

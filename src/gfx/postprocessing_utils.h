@@ -84,6 +84,8 @@ struct Settings {
     struct {
         ShadingMode mode = ShadingMode_PhysicallyBased;
         ColorSpace colors = ColorSpace_sRGB;    // how the colours of the geometry are read, in either mode
+        float light = 1.0f;         // strength of the directional light, relative to lighting(): in either mode
+        float environment = 1.0f;   // strength of the light from the surroundings (sky and ground), relative to lighting(): physically based only
         // Basic only
         float ambient  = 0.3f;      // the fraction of the colour left on the side facing away from the light
         float specular = 0.25f;     // strength of the white highlight, 0 for none

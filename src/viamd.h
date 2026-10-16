@@ -1338,6 +1338,8 @@ struct ApplicationState {
         struct {
             postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
             postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_sRGB;
+            float light = 1.0f;         // strength of the directional light
+            float environment = 1.0f;   // strength of the light from the surroundings (physically based)
             float ambient = 0.3f;       // basic
             float specular = 0.25f;     // basic
         } shading;

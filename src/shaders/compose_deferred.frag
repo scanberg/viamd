@@ -3,7 +3,7 @@
 layout (std140) uniform UniformData {
     vec4  u_proj_info;
     float u_linear_colors;      // 1: the colours are linear reflectances (ColorSpace_Linear), 0: sRGB
-    float u_pad0;
+    float u_light_strength;     // of the directional light, relative to u_dir_radiance (and to the basic light)
     float u_pad1;
     float u_time;
     vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
@@ -154,7 +154,7 @@ vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
         float numerator   = NDF * G * F;
         float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
         vec3 specular     = vec3(numerator / denominator);
-        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * u_dir_radiance * N_dot_L;
+        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * (u_dir_radiance * u_light_strength) * N_dot_L;
     }
 
     // Environment
@@ -180,9 +180,11 @@ const float BASIC_SHININESS = 48.0;
 vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
     vec3  L = normalize(u_light_dir);
     float w = 0.5 + 0.5 * dot(N, L);
-    vec3  c = clamp(color, 0.0, 1.0) * mix(u_basic_ambient, 1.0, w * w);
+    // The light strength scales what the light adds over the ambient, and its highlight
+    vec3  c = clamp(color, 0.0, 1.0) * (u_basic_ambient + u_light_strength * (1.0 - u_basic_ambient) * w * w);
+    c /= max(1.0, max(c.r, max(c.g, c.b)));     // brighter than the colour (light above 1): keep its hue, not clip per channel
     vec3  H = normalize(L + V);
-    float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    float s = u_light_strength * u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
     return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);     // linear colours are lit as they are
 }

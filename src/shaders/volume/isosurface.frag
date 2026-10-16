@@ -72,7 +72,7 @@ layout(std140) uniform IsoUniforms {
     float u_basic_ambient;
     float u_basic_specular;
     float u_linear_colors;      // 1: the colours are linear reflectances, 0: sRGB (as in the compose pass)
-    float u_pad_basic1;
+    float u_light_strength;     // of the directional light, relative to u_dir_radiance (and to the basic light)
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -370,9 +370,10 @@ const float BASIC_SHININESS = 48.0;
 
 vec3 shade_basic(vec3 color, vec3 N, vec3 V) {
     float w = 0.5 + 0.5 * dot(N, u_light_dir);
-    vec3  c = clamp(color, 0.0, 1.0) * mix(u_basic_ambient, 1.0, w * w);
+    vec3  c = clamp(color, 0.0, 1.0) * (u_basic_ambient + u_light_strength * (1.0 - u_basic_ambient) * w * w);
+    c /= max(1.0, max(c.r, max(c.g, c.b)));
     vec3  H = normalize(u_light_dir + V);
-    float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    float s = u_light_strength * u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
     return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);
 }
@@ -406,8 +407,9 @@ void shade_surface(vec3 color, float alpha, vec3 N, vec3 V) {
         float D = DistributionGGX(NdotH, roughness);
         float G = GeometrySchlickGGX(NdotV, roughness) * GeometrySchlickGGX(NdotL, roughness);
         float F = FresnelSchlick(HdotV, F0);
-        specular += vec3(D * G * F / (4.0 * NdotV * NdotL + 0.0001)) * u_dir_radiance * NdotL;
-        diffuse  += (1.0 - F) * albedo * INV_PI * u_dir_radiance * NdotL;
+        vec3  E = u_dir_radiance * u_light_strength;
+        specular += vec3(D * G * F / (4.0 * NdotV * NdotL + 0.0001)) * E * NdotL;
+        diffuse  += (1.0 - F) * albedo * INV_PI * E * NdotL;
     }
 
     // What the surface reflects of its surroundings is the directional albedo of its specular lobe:

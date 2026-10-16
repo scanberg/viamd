@@ -579,7 +579,8 @@ namespace compose {
 struct ubo_data_t {
     vec4_t proj_info;
     float  linear_colors;   // 1: ColorSpace_Linear
-    float  pad0[2];
+    float  light_strength;  // Settings::shading.light
+    float  pad0;
     float  time;
     vec3_t sky_radiance;
     float  roughness;
@@ -1592,14 +1593,15 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     compose::ubo_data_t data = {
         .proj_info = compute_proj_info(proj_mat),
         .linear_colors = settings.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
+        .light_strength = MAX(settings.shading.light, 0.0f),
         .time = time,
-        .sky_radiance = light.sky_radiance,
+        .sky_radiance = light.sky_radiance * MAX(settings.shading.environment, 0.0f),
         .roughness = roughness,
         .dir_radiance = light.light_irradiance,
         .F0 = F0,
         .light_dir = light.light_dir,
         .basic = basic ? 1.0f : 0.0f,
-        .ground_radiance = light.ground_radiance,
+        .ground_radiance = light.ground_radiance * MAX(settings.shading.environment, 0.0f),
         .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
         .basic_specular = MAX(settings.shading.specular, 0.0f),
         .use_ao = ao_tex ? 1.0f : 0.0f,
@@ -2634,20 +2636,22 @@ SsaoTimings ssao_timings() {
 }
 
 Lighting lighting(ShadingMode mode) {
-    // Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes
-    // strongly, and a sky and a ground which fill in the rest, so nothing turns black away from the key light, and
-    // whose difference keeps the shapes readable there too. A white surface facing the viewer:
-    //   key: 1.04 * cos(55 deg) = 0.60, environment: (0.62 + 0.26) / 2 = 0.44
+    // Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes,
+    // and light from all around, nearly uniform: a sky a little brighter than the ground, which keeps a hint of up
+    // and down. The balance is that of the earlier shading (a uniform environment of radiance 6 against a key light
+    // of 10, in its units): the side away from the key light keeps about 0.37 of the lit side. A white surface
+    // facing the viewer:
+    //   key: 0.87 * cos(55 deg) = 0.50, environment: (0.59 + 0.49) / 2 = 0.54
     // which, less what the specular reflection takes off the diffuse (Fresnel, about 3.5%), is a diffuse reflection
     // of 1: reference white. The specular reflection adds about 0.02 (Neutral's offset takes off 0.04). Facing the
-    // key light it is about 1.55.
+    // key light it is about 1.4. Settings::shading.light and .environment scale the two.
     // Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep
     // close to their full colour. The radiances are not used.
     Lighting l = {
         .light_dir        = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f)),
-        .light_irradiance = vec3_set1(1.04f * (float)PI),
-        .sky_radiance     = vec3_set1(0.62f),
-        .ground_radiance  = vec3_set1(0.26f),
+        .light_irradiance = vec3_set1(0.87f * (float)PI),
+        .sky_radiance     = vec3_set1(0.59f),
+        .ground_radiance  = vec3_set1(0.49f),
     };
     if (mode == ShadingMode_Basic) {
         l.light_dir = vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f));
