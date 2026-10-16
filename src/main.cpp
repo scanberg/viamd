@@ -1506,7 +1506,7 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("How the cartoon and the tubes of lipids and nucleic acids are drawn.\n"
                                       "Mesh: triangles along the spline, with a level of detail.\n"
-                                      "Ray cast: each segment of the spline sphere traced within a quad, whose cost is in the\n"
+                                      "Ray cast: each segment of the spline ray cast exactly within a quad, whose cost is in the\n"
                                       "pixels it covers rather than in the length of the backbone.");
             }
             {
