@@ -6584,6 +6584,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&orb.iso, sizeof(orb.iso), render_hash);
                 render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+                render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
                 render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                 // Baked into the picking buffer, which hovering reads
                 const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
@@ -6636,10 +6637,16 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 glDisable(GL_SCISSOR_TEST);
 
-                const vec3_t bg_color = {24.f, 24.f, 24.f};
+                // A white background (24 is the white point of the tone mappers)
+                const vec3_t bg_color = {1.f, 1.f, 1.f};
+                const float  bg_intensity = 24.f;
 
                 postprocess_pipeline::Settings postprocess_settings = {};
                 postprocess_settings.background_color = bg_color;
+                postprocess_settings.background_intensity = bg_intensity;
+                postprocess_settings.shading.mode = state.visuals.shading.mode;
+                postprocess_settings.shading.ambient = state.visuals.shading.ambient;
+                postprocess_settings.shading.specular = state.visuals.shading.specular;
                 postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
@@ -6700,10 +6707,13 @@ struct QuantumChemistry : viamd::EventHandler {
                         },
                         // Lit like the compose pass lights the atoms of the panel: env = background / 4
                         .shading = {
-                            .env_radiance = bg_color * 0.25f,
+                            .env_radiance = bg_color * bg_intensity * 0.25f,
                             .roughness = 0.3f,
                             .dir_radiance = {10,10,10},
                             .ior = 1.5f,
+                            .mode = state.visuals.shading.mode,
+                            .ambient = state.visuals.shading.ambient,
+                            .specular = state.visuals.shading.specular,
                         },
                     };
                     const bool iso_written = volume::render_isosurfaces(vol_desc);
@@ -7942,6 +7952,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&nto.link_attachment_detachment_density, sizeof(nto.link_attachment_detachment_density), render_hash);
                     render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
                     render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+                    render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
                     render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                     // Baked into the picking buffer, which hovering reads
@@ -8096,7 +8107,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_pipeline::Settings postprocess_settings = {};
                     postprocess_pipeline::Inputs postprocess_inputs = {};
 
-                    postprocess_settings.background_color = state.visuals.background.color * state.visuals.background.intensity;
+                    postprocess_settings.background_color = state.visuals.background.color;
+                    postprocess_settings.background_intensity = state.visuals.background.intensity;
+                    postprocess_settings.shading.mode = state.visuals.shading.mode;
+                    postprocess_settings.shading.ambient = state.visuals.shading.ambient;
+                    postprocess_settings.shading.specular = state.visuals.shading.specular;
                     postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                     postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                     postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
@@ -8192,10 +8207,13 @@ struct QuantumChemistry : viamd::EventHandler {
                                 },
                                 // Lit like the compose pass lights the atoms of the panel: env = background / 4
                                 .shading = {
-                                    .env_radiance = postprocess_settings.background_color * 0.25f,
+                                    .env_radiance = postprocess_settings.background_color * postprocess_settings.background_intensity * 0.25f,
                                     .roughness = 0.3f,
                                     .dir_radiance = {10,10,10},
                                     .ior = 1.5f,
+                                    .mode = postprocess_settings.shading.mode,
+                                    .ambient = postprocess_settings.shading.ambient,
+                                    .specular = postprocess_settings.shading.specular,
                                 },
                             };
                             iso_written = volume::render_isosurfaces(vol_desc);

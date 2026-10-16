@@ -235,8 +235,13 @@ struct IsoUniformData {
     float  entry_from_near;
     float  use_blocks;
     float  pad;
+
+    float  basic;           // 1: the basic model (postprocess_pipeline::ShadingMode_Basic)
+    float  basic_ambient;
+    float  basic_specular;
+    float  pad1;
 };
-static_assert(sizeof(IsoUniformData) == 3 * 64 + 7 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
+static_assert(sizeof(IsoUniformData) == 3 * 64 + 8 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
 // Block min/max grids: what the isosurface rays skip empty space with. One per density volume, kept
 // here keyed by the volume's texture and rebuilt when notify_data_changed() says its texels changed.
@@ -784,12 +789,15 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.roughness         = desc.shading.roughness;
     data.dir_radiance      = desc.shading.dir_radiance;
     data.F0                = powf((n1 - n2) / (n1 + n2), 2.0f);
-    data.light_dir         = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f));   // as in compose_deferred
+    data.light_dir         = postprocess_pipeline::light_direction(desc.shading.mode);   // as in compose_deferred
     data.field_beg         = desc.field.range_beg;
     data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
     data.optical_scale     = ISO_OPTICAL_SCALE;
     data.entry_from_near   = near_plane_cuts(model_to_clip, desc.clip_volume.min, desc.clip_volume.max) ? 1.0f : 0.0f;
+    data.basic             = desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f;
+    data.basic_ambient     = CLAMP(desc.shading.ambient, 0.0f, 1.0f);
+    data.basic_specular    = MAX(desc.shading.specular, 0.0f);
 
     const SavedState saved = save_state();
 

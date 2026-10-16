@@ -1336,6 +1336,12 @@ struct ApplicationState {
             float intensity = 24.0f;
         } background;
 
+        struct {
+            postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
+            float ambient = 0.3f;       // basic
+            float specular = 0.25f;     // basic
+        } shading;
+
         struct { 
             bool enabled = true;
             float intensity = 5.0f;

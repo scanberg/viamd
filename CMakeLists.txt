@@ -275,6 +275,7 @@ set(SHADER_FILES
     src/shaders/tonemap/uncharted.frag
     src/shaders/tonemap/aces.frag
     src/shaders/tonemap/fast_reversible.frag
+    src/shaders/tonemap/srgb.frag
     src/shaders/dof/dof_prepass.frag
     src/shaders/dof/dof_tile.frag
     src/shaders/dof/dof_gather.frag

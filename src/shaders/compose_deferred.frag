@@ -9,6 +9,9 @@ layout (std140) uniform UniformData {
     vec3  u_dir_radiance;
     float u_F0;
     vec3  u_light_dir;
+    float u_basic;              // 1: shade_basic (postprocess_pipeline::ShadingMode_Basic), 0: shade
+    float u_basic_ambient;
+    float u_basic_specular;
 };
 
 uniform sampler2D u_texture_depth;
@@ -119,6 +122,30 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
     return Lo;
 }
 
+// Basic shading: keeps the colours as given. Where a surface faces the light it shows its colour exactly;
+// away from the light the colour darkens to u_basic_ambient of itself, along a wrapped ("half") Lambert
+// falloff, (0.5 + 0.5 N.L)^2, which has no hard terminator and keeps some shape on the far side. The
+// highlight (Blinn-Phong) blends toward white rather than adding to it, so no channel is pushed out of range
+// and the hue stays. The light factor applies to the display (sRGB) values the colours were picked as, the
+// way classic molecular viewers light them, and the result is returned as linear radiance: the display
+// transform of the basic mode is the exact sRGB encoding, which takes it back to those values.
+const float BASIC_SHININESS = 48.0;
+
+vec3 srgb_to_linear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
+    vec3  L = normalize(u_light_dir);
+    float w = 0.5 + 0.5 * dot(N, L);
+    vec3  c = clamp(color, 0.0, 1.0) * mix(u_basic_ambient, 1.0, w * w);
+    vec3  H = normalize(L + V);
+    float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
+    return srgb_to_linear(c);
+}
+
 void main() {
     vec3 result = u_bg_color.rgb;
 
@@ -137,7 +164,7 @@ void main() {
 #else
         vec3 V = vec3(0, 0, 1);     // every ray runs along the view axis
 #endif
-        color.rgb = shade(color.rgb, V, N);
+        color.rgb = (u_basic > 0.5) ? shade_basic(color.rgb, V, N) : shade(color.rgb, V, N);
         result = color.rgb;
     }
 

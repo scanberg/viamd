@@ -48,6 +48,11 @@ layout(std140) uniform IsoUniforms {
     float u_entry_from_near;    // the near plane cuts the volume: rays start there, not at the proxy entry
     float u_pad0;               // u_use_blocks of the exact mode
     float u_pad1;
+
+    float u_basic;              // 1: shade_basic, the basic model of the compose pass; the radiances above are unused
+    float u_basic_ambient;
+    float u_basic_specular;
+    float u_pad_basic;
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -174,10 +179,37 @@ float GeometrySchlickGGX(float NdotV, float roughness) {
     return NdotV / (NdotV * (1.0 - k) + k);
 }
 
+// The basic model of compose_deferred.frag (shade_basic): the colour as given where the surface faces the
+// light, darkened toward u_basic_ambient of itself away from it, a highlight blended toward white, all on
+// the display (sRGB) values, returned as linear radiance.
+const float BASIC_SHININESS = 48.0;
+
+vec3 srgb_to_linear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+vec3 shade_basic(vec3 color, vec3 N, vec3 V) {
+    float w = 0.5 + 0.5 * dot(N, u_light_dir);
+    vec3  c = clamp(color, 0.0, 1.0) * mix(u_basic_ambient, 1.0, w * w);
+    vec3  H = normalize(u_light_dir + V);
+    float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
+    return srgb_to_linear(c);
+}
+
 // Adds one surface to the premultiplied radiance L behind which the transmittance is T.
 // The diffuse part is scaled by the surface's coverage (alpha); the specular part is not, so a clear
 // surface still shows its reflections. The opacity is the coverage plus what Fresnel reflects away.
+// In the basic model the surface is its shaded colour over its coverage.
 void shade_surface(inout vec3 L, inout float T, vec3 albedo, float alpha, vec3 N, vec3 V) {
+    if (u_basic > 0.5) {
+        float a = clamp(alpha, 0.0, 1.0);
+        L += T * a * shade_basic(albedo, N, V);
+        T *= 1.0 - a;
+        return;
+    }
+
     float roughness = clamp(u_roughness, 0.04, 1.0);
     float F0 = clamp(u_F0, 0.0, 1.0);
 

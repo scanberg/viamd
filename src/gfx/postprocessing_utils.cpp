@@ -92,6 +92,7 @@ enum Tonemapping_ {
     Tonemapping_ExposureGamma,
     Tonemapping_Filmic,
     Tonemapping_ACES,
+    Tonemapping_sRGB,       // the display transform of ShadingMode_Basic
 };
 
 static Tonemapping to_legacy_tonemapper(postprocess_pipeline::Tonemapper tm) {
@@ -551,7 +552,12 @@ struct ubo_data_t {
     vec3_t dir_radiance;
     float  F0;
     vec3_t light_dir;
+    float  basic;           // 1: ShadingMode_Basic
+    float  basic_ambient;
+    float  basic_specular;
+    float  pad[2];
 };
+static_assert(sizeof(ubo_data_t) == 96, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
 
 static struct {
     struct {
@@ -638,6 +644,13 @@ static struct {
     } uniform_loc;
 } fast_reversible;
 
+static struct {
+    GLuint program = 0;
+    struct {
+        GLint texture = -1;
+    } uniform_loc;
+} srgb;
+
 void initialize() {
     {
         // PASSTHROUGH
@@ -671,6 +684,11 @@ void initialize() {
         fast_reversible.program_inverse = setup_program_from_source(STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, STR_LIT("#define USE_INVERSE 1"));
         fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
     }
+    {
+        // sRGB (the display transform of the basic shading mode)
+        srgb.program = setup_program_from_source(STR_LIT("sRGB"), {(const char*)srgb_frag, srgb_frag_size});
+        srgb.uniform_loc.texture = glGetUniformLocation(srgb.program, "u_texture");
+    }
 }
 
 void shutdown() {
@@ -680,6 +698,7 @@ void shutdown() {
     if (aces.program) glDeleteProgram(aces.program);
     if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
     if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
+    if (srgb.program) glDeleteProgram(srgb.program);
 }
 
 }  // namespace tonemapping
@@ -1546,16 +1565,27 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
     };
 }
 
-static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, const vec3_t bg_color, float time) {
+static float srgb_to_linear(float x) {
+    x = CLAMP(x, 0.0f, 1.0f);
+    return (x <= 0.04045f) ? (x / 12.92f) : powf((x + 0.055f) / 1.055f, 2.4f);
+}
+
+static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
+
+    const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
+
+    // Basic: the background is shown through the sRGB encoding, so its linear value shows the colour as picked
+    const vec3_t bg_color = basic ?
+        vec3_t{srgb_to_linear(settings.background_color.x), srgb_to_linear(settings.background_color.y), srgb_to_linear(settings.background_color.z)} :
+        settings.background_color * settings.background_intensity;
 
     const vec3_t env_radiance = bg_color * 0.25f;
     const vec3_t dir_radiance = {10, 10, 10};
     const float roughness = 0.4f;
     const float F0 = 0.04f;
-    const vec3_t L = {0.57735026918962576451f, 0.57735026918962576451f, 0.57735026918962576451f}; // 1.0 / sqrt(3)
 
     compose::ubo_data_t data = {
         .proj_info = compute_proj_info(proj_mat),
@@ -1565,7 +1595,10 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
         .roughness = roughness,
         .dir_radiance = dir_radiance,
         .F0 = F0,
-        .light_dir = L,
+        .light_dir = postprocess_pipeline::light_direction(settings.shading.mode),
+        .basic = basic ? 1.0f : 0.0f,
+        .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
+        .basic_specular = MAX(settings.shading.specular, 0.0f),
     };
 
     glBindBuffer(GL_UNIFORM_BUFFER, compose::compose.ubo);
@@ -1906,6 +1939,10 @@ void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure
             glUniform1i(tonemapping::aces.uniform_loc.texture, 0);
             glUniform1f(tonemapping::aces.uniform_loc.exposure, exposure);
             glUniform1f(tonemapping::aces.uniform_loc.gamma, gamma);
+            break;
+        case Tonemapping_sRGB:
+            glUseProgram(tonemapping::srgb.program);
+            glUniform1i(tonemapping::srgb.uniform_loc.texture, 0);
             break;
         case Tonemapping_Passthrough:
         default:
@@ -2307,10 +2344,11 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         ASSERT(glIsTexture(in.velocity));
     }
 
+    const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
     const bool do_compose = true;
     const bool do_velocity = settings.taa.enabled;
     const bool do_ssao = settings.ssao.enabled;
-    const bool do_tonemap = settings.tonemap.enabled;
+    const bool do_tonemap = settings.tonemap.enabled || basic;   // basic shading always has its display transform
     const bool do_dof = settings.dof.enabled;
     const bool do_transparency = in.transparency != 0;
     const bool do_transparency_hdr = in.transparency_hdr != 0;
@@ -2419,7 +2457,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
     if (do_compose) {
         PUSH_GPU_SECTION("Compose")
-        compose_deferred(gl.linear_depth.texture, in.color, in.normal, view_param.matrix.curr.proj.elem, ortho, settings.background_color, time);
+        compose_deferred(gl.linear_depth.texture, in.color, in.normal, view_param.matrix.curr.proj.elem, ortho, settings, time);
         POP_GPU_SECTION()
     } else {
         // Seed transient pipeline from external color input when compose stage is disabled.
@@ -2463,7 +2501,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_ldr[0], 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_ldr[1], 0);
         glDrawBuffer(dst_buffer);
-        Tonemapping tonemapper = settings.tonemap.enabled ? to_legacy_tonemapper(settings.tonemap.mode) : Tonemapping_Passthrough;
+        Tonemapping tonemapper = basic ? Tonemapping_sRGB : settings.tonemap.enabled ? to_legacy_tonemapper(settings.tonemap.mode) : Tonemapping_Passthrough;
         apply_tonemapping(src_texture, tonemapper, settings.tonemap.exposure, settings.tonemap.gamma);
         POP_GPU_SECTION()
     }
@@ -2564,6 +2602,13 @@ void shutdown() {
 
 SsaoTimings ssao_timings() {
     return postprocessing::gl.ssao.timer.published;
+}
+
+vec3_t light_direction(ShadingMode mode) {
+    // Physically based: from the upper right, 55 degrees off the view axis, which models the shapes strongly.
+    // Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep
+    // close to their full colour.
+    return mode == ShadingMode_Basic ? vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f)) : vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f));
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {

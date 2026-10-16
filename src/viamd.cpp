@@ -1858,6 +1858,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
             while (viamd::next_entry(ident, arg, state)) {
                 if      (str_eq(ident, STR_LIT("BackgroundColor")))      viamd::extract_vec3(v.background.color, arg);
                 else if (str_eq(ident, STR_LIT("BackgroundIntensity")))  viamd::extract_flt(v.background.intensity, arg);
+                else if (str_eq(ident, STR_LIT("ShadingMode")))          viamd::extract_enum(v.shading.mode, arg, (int)postprocess_pipeline::ShadingMode_Count);
+                else if (str_eq(ident, STR_LIT("ShadingAmbient")))       viamd::extract_flt(v.shading.ambient, arg);
+                else if (str_eq(ident, STR_LIT("ShadingSpecular")))      viamd::extract_flt(v.shading.specular, arg);
                 else if (str_eq(ident, STR_LIT("SsaoEnabled")))          viamd::extract_bool(v.ssao.enabled, arg);
                 // SsaoIntensity, SsaoRadius, SsaoBias and DofFocusScale belonged to the previous scale-dependent SSAO / DOF
                 // and are deliberately ignored: their values do not translate to the new parameters.
@@ -2188,6 +2191,9 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_section_header(state, STR_LIT("RenderSettings"));
         viamd::write_vec3(state, STR_LIT("BackgroundColor"), v.background.color);
         viamd::write_flt(state,  STR_LIT("BackgroundIntensity"), v.background.intensity);
+        viamd::write_int(state,  STR_LIT("ShadingMode"), (int)v.shading.mode);
+        viamd::write_flt(state,  STR_LIT("ShadingAmbient"), v.shading.ambient);
+        viamd::write_flt(state,  STR_LIT("ShadingSpecular"), v.shading.specular);
         viamd::write_bool(state, STR_LIT("SsaoEnabled"), v.ssao.enabled);
         viamd::write_flt(state,  STR_LIT("SsaoStrength"), v.ssao.intensity);
         viamd::write_bool(state, STR_LIT("SsaoTemporal"), v.ssao.temporal);

@@ -1483,12 +1483,39 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::EndGroup();
 
+            const bool basic_shading = data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic;
+
             ImGui::BeginGroup();
             ImGui::Text("Background");
             ImGui::ColorEdit3Minimal("Color", data->visuals.background.color.elem);
-            ImGui::SameLine();
-            ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
-            ImGui::SetItemTooltip("Background brightness");
+            if (!basic_shading) {
+                // Basic shading shows the background as the colour itself
+                ImGui::SameLine();
+                ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
+                ImGui::SetItemTooltip("Background brightness");
+            }
+            ImGui::EndGroup();
+            ImGui::Separator();
+
+            // Shading
+            ImGui::BeginGroup();
+            ImGui::PushID("Shading");
+            {
+                const char* modes[postprocess_pipeline::ShadingMode_Count] = {"Physically Based", "Basic"};
+                int mode = (int)data->visuals.shading.mode;
+                if (ImGui::Combo("Shading", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    data->visuals.shading.mode = (postprocess_pipeline::ShadingMode)mode;
+                }
+                ImGui::SetItemTooltip("Physically Based: lit as a plastic-like material by a light and its surroundings, then tone mapped.\n"
+                                      "Basic: the colors as they are picked where a surface faces the light, darker away from it. No tone mapping.");
+                if (data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic) {
+                    ImGui::SliderFloat("Ambient", &data->visuals.shading.ambient, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("How much of the color is left on the side facing away from the light");
+                    ImGui::SliderFloat("Specular", &data->visuals.shading.specular, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("Strength of the white highlight, 0 for none");
+                }
+            }
+            ImGui::PopID();
             ImGui::EndGroup();
             ImGui::Separator();
             ImGui::Checkbox("Anti-Aliasing (FXAA)", &data->visuals.fxaa.enabled);
@@ -1582,13 +1609,16 @@ static void draw_main_menu(ApplicationState* data) {
 
             // Tonemapping
             ImGui::BeginGroup();
+            ImGui::BeginDisabled(basic_shading);
             ImGui::Checkbox("Tone Mapping", &data->visuals.tonemapping.enabled);
-            ImGui::SetItemTooltip("Map the lighting into the colors a display can show");
-            if (data->visuals.tonemapping.enabled) {
+            ImGui::SetItemTooltip(basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
+                                                : "Map the lighting into the colors a display can show");
+            if (data->visuals.tonemapping.enabled && !basic_shading) {
                 // ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
                 ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
             }
+            ImGui::EndDisabled();
             ImGui::EndGroup();
             ImGui::Separator();
 
@@ -6219,7 +6249,12 @@ static void render(ApplicationState* state) {
     postprocess_pipeline::Settings settings = {};
     postprocess_pipeline::Inputs inputs = {};
 
-    settings.background_color = state->visuals.background.color * state->visuals.background.intensity;
+    settings.background_color = state->visuals.background.color;
+    settings.background_intensity = state->visuals.background.intensity;
+
+    settings.shading.mode = state->visuals.shading.mode;
+    settings.shading.ambient = state->visuals.shading.ambient;
+    settings.shading.specular = state->visuals.shading.specular;
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
@@ -6553,6 +6588,9 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .roughness = 0.3f,
                     .dir_radiance = {10,10,10},
                     .ior = 1.5f,
+                    .mode = state->visuals.shading.mode,
+                    .ambient = state->visuals.shading.ambient,
+                    .specular = state->visuals.shading.specular,
                 },
             };
 

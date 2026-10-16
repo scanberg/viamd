@@ -965,6 +965,9 @@ struct DensityVolume : viamd::EventHandler {
                             .roughness = 0.3f,
                             .dir_radiance = {10,10,10},
                             .ior = 1.5f,
+                            .mode = state->visuals.shading.mode,
+                            .ambient = state->visuals.shading.ambient,
+                            .specular = state->visuals.shading.specular,
                         },
                     };
                     iso_written = volume::render_isosurfaces(vol_desc);
@@ -1006,7 +1009,11 @@ struct DensityVolume : viamd::EventHandler {
             postprocess_pipeline::Settings postprocess_settings = {};
             postprocess_pipeline::Inputs postprocess_inputs = {};
 
-            postprocess_settings.background_color = state->visuals.background.color * state->visuals.background.intensity;
+            postprocess_settings.background_color = state->visuals.background.color;
+            postprocess_settings.background_intensity = state->visuals.background.intensity;
+            postprocess_settings.shading.mode = state->visuals.shading.mode;
+            postprocess_settings.shading.ambient = state->visuals.shading.ambient;
+            postprocess_settings.shading.specular = state->visuals.shading.specular;
             postprocess_settings.tonemap.enabled = state->visuals.tonemapping.enabled;
             postprocess_settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
             postprocess_settings.tonemap.exposure = state->visuals.tonemapping.exposure;

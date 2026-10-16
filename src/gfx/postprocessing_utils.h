@@ -27,6 +27,19 @@ enum Tonemapper {
     Tonemapper_ACES,
 };
 
+// How the compose pass, the first step of the pipeline, lights the colours of the geometry
+enum ShadingMode {
+    // A simplified Cook-Torrance model under one directional light and an environment, then tone mapped
+    // (Settings::tonemap)
+    ShadingMode_PhysicallyBased,
+    // The colours as given where a surface faces the light, darkened away from it, with an optional white
+    // highlight (Settings::shading). Shown through the exact sRGB encoding rather than a tone mapper
+    // (Settings::tonemap is not used), so a colour in full light appears as it was picked (to within the
+    // precision of the HDR targets: one or two steps of 8 bits).
+    ShadingMode_Basic,
+    ShadingMode_Count
+};
+
 // Estimator of the ambient occlusion. Both feed the same temporal filter, blur and upsample.
 enum SsaoMode {
     SsaoMode_Performance,   // point samples (shaders/ssao/ssao.frag)
@@ -47,7 +60,18 @@ struct Inputs {
 };
 
 struct Settings {
-    vec3_t background_color = {20.f, 20.f, 20.f};
+    // The background as picked (display referred) and its intensity. Physically based: the background is
+    // radiance, color * intensity, which is then tone mapped. Basic: it shows as the colour itself and the
+    // intensity is not used.
+    vec3_t background_color = {1.f, 1.f, 1.f};
+    float  background_intensity = 24.f;
+
+    struct {
+        ShadingMode mode = ShadingMode_PhysicallyBased;
+        // Basic only
+        float ambient  = 0.3f;      // the fraction of the colour left on the side facing away from the light
+        float specular = 0.25f;     // strength of the white highlight, 0 for none
+    } shading;
 
     struct {
         bool enabled = true;
@@ -100,5 +124,9 @@ void initialize(int width, int height);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
 SsaoTimings ssao_timings();
+
+// The light of the compose pass for a shading mode: the direction toward it, in view space (it moves with the
+// camera). The isosurfaces (volume::render_isosurfaces) are lit by the same.
+vec3_t light_direction(ShadingMode mode);
 
 }  // namespace postprocess_pipeline
