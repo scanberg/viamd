@@ -3016,12 +3016,13 @@ static void draw_animation_window(ApplicationState* data) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");
         }
         {
-            // animation.stride, named for what is seen: the frames kept are the keys, the motion between them is interpolated.
+            // animation.stride: while playing, only every Nth frame is kept and the motion between them is interpolated.
+            // Not called keyframes: that name is kept for the keyframes of animations to come.
             // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
             // typed in (Ctrl+click): only the lower bound is enforced.
             const int max_stride = (int)CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
             const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
-            ImGui::SliderInt("Keyframes", &data->animation.stride, 1, max_stride, fmt);
+            ImGui::SliderInt("Stride", &data->animation.stride, 1, max_stride, fmt);
             data->animation.stride = MAX(1, data->animation.stride);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
