@@ -139,6 +139,7 @@ struct IsoRenderDesc {
         postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
         float ambient = 0.3f;
         float specular = 0.25f;
+        postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_sRGB;    // how the colours are read
     } shading;
 };
 

@@ -71,7 +71,7 @@ layout(std140) uniform IsoUniforms {
 
     float u_basic_ambient;
     float u_basic_specular;
-    float u_pad_basic0;
+    float u_linear_colors;      // 1: the colours are linear reflectances, 0: sRGB (as in the compose pass)
     float u_pad_basic1;
 };
 
@@ -374,7 +374,7 @@ vec3 shade_basic(vec3 color, vec3 N, vec3 V) {
     vec3  H = normalize(u_light_dir + V);
     float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
-    return srgb_to_linear(c);
+    return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);
 }
 
 // Adds one surface behind which the transmittance is g_T. The diffuse part is scaled by the surface's
@@ -391,7 +391,7 @@ void shade_surface(vec3 color, float alpha, vec3 N, vec3 V) {
 
     float roughness = clamp(u_roughness, 0.04, 1.0);
     float F0 = clamp(u_F0, 0.0, 1.0);
-    vec3  albedo = srgb_to_linear(color);
+    vec3  albedo = (u_linear_colors > 0.5) ? clamp(color, 0.0, 1.0) : srgb_to_linear(color);
 
     float NdotV = clamp(dot(N, V), 0.0, 1.0);
     float NdotL = clamp(dot(N, u_light_dir), 0.0, 1.0);

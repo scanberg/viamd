@@ -241,7 +241,8 @@ struct IsoUniformData {
 
     float  basic_ambient;
     float  basic_specular;
-    float  pad1[2];
+    float  linear_colors;   // 1: postprocess_pipeline::ColorSpace_Linear
+    float  pad1;
 };
 static_assert(sizeof(IsoUniformData) == 3 * 64 + 9 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
 
@@ -802,6 +803,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.basic             = desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f;
     data.basic_ambient     = CLAMP(desc.shading.ambient, 0.0f, 1.0f);
     data.basic_specular    = MAX(desc.shading.specular, 0.0f);
+    data.linear_colors     = desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f;
 
     const SavedState saved = save_state();
 

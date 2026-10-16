@@ -2,7 +2,9 @@
 
 layout (std140) uniform UniformData {
     vec4  u_proj_info;
-    vec3  u_pad0;
+    float u_linear_colors;      // 1: the colours are linear reflectances (ColorSpace_Linear), 0: sRGB
+    float u_pad0;
+    float u_pad1;
     float u_time;
     vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
     float u_roughness;
@@ -56,7 +58,7 @@ vec3 decode_normal(vec2 enc) {
 const float PI = 3.1415926535;
 const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
-// The colours are picked, and stored, as sRGB
+// The colours are picked, and stored, as sRGB, or are linear reflectances already (u_linear_colors)
 vec3 srgb_to_linear(vec3 c) {
     c = clamp(c, 0.0, 1.0);
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
@@ -140,7 +142,7 @@ vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
 
     float F0 = clamp(u_F0, 0.0, 1.0);
     float roughness = clamp(u_roughness, 0.04, 1.0);
-    vec3  albedo = srgb_to_linear(color);
+    vec3  albedo = (u_linear_colors > 0.5) ? clamp(color, 0.0, 1.0) : srgb_to_linear(color);
 
     vec3 Lo = vec3(0);
 
@@ -182,7 +184,7 @@ vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
     vec3  H = normalize(L + V);
     float s = u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
-    return srgb_to_linear(c);
+    return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);     // linear colours are lit as they are
 }
 
 void main() {

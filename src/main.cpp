@@ -1503,6 +1503,15 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Physically Based: lit as a plastic-like material by a light and its surroundings, then tone mapped.\n"
                                       "Basic: the colors as they are picked where a surface faces the light, darker away from it. No tone mapping.");
+                const char* color_spaces[postprocess_pipeline::ColorSpace_Count] = {"sRGB", "Linear"};
+                int colors = (int)data->visuals.shading.colors;
+                if (ImGui::Combo("Colors", &colors, color_spaces, IM_ARRAYSIZE(color_spaces))) {
+                    data->visuals.shading.colors = (postprocess_pipeline::ColorSpace)colors;
+                }
+                ImGui::SetItemTooltip("How the colors of atoms, cartoons and surfaces are read.\n"
+                                      "sRGB: as picked and seen; a color in full light shows as its swatch.\n"
+                                      "Linear: as the fraction of the light reflected per channel; lighter and paler than the swatch.\n"
+                                      "The background always shows as picked.");
                 if (data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic) {
                     ImGui::SliderFloat("Ambient", &data->visuals.shading.ambient, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("How much of the color is left on the side facing away from the light");
@@ -6270,6 +6279,7 @@ static void render(ApplicationState* state) {
     settings.shading.mode = state->visuals.shading.mode;
     settings.shading.ambient = state->visuals.shading.ambient;
     settings.shading.specular = state->visuals.shading.specular;
+    settings.shading.colors = state->visuals.shading.colors;
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
@@ -6604,6 +6614,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .mode = state->visuals.shading.mode,
                     .ambient = state->visuals.shading.ambient,
                     .specular = state->visuals.shading.specular,
+                    .colors = state->visuals.shading.colors,
                 },
             };
 

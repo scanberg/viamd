@@ -44,6 +44,17 @@ enum ShadingMode {
     ShadingMode_Count
 };
 
+// How the colours of the geometry (and of the isosurfaces) are read. Stored in workspaces by value.
+enum ColorSpace {
+    // As picked and seen: the sRGB colours the pickers show, decoded to linear for the lighting. A colour in full
+    // light shows as it was picked.
+    ColorSpace_sRGB,
+    // As the fraction of the light reflected per channel, used directly. Lighter and paler on screen than the swatch
+    // the picker shows (0.5 reflects half the light, which the display shows as 0.735).
+    ColorSpace_Linear,
+    ColorSpace_Count
+};
+
 // Estimator of the ambient occlusion. Both feed the same temporal filter, blur and upsample.
 enum SsaoMode {
     SsaoMode_Performance,   // point samples (shaders/ssao/ssao.frag)
@@ -72,6 +83,7 @@ struct Settings {
 
     struct {
         ShadingMode mode = ShadingMode_PhysicallyBased;
+        ColorSpace colors = ColorSpace_sRGB;    // how the colours of the geometry are read, in either mode
         // Basic only
         float ambient  = 0.3f;      // the fraction of the colour left on the side facing away from the light
         float specular = 0.25f;     // strength of the white highlight, 0 for none

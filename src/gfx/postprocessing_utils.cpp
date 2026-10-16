@@ -578,7 +578,8 @@ namespace compose {
 
 struct ubo_data_t {
     vec4_t proj_info;
-    vec3_t pad0;
+    float  linear_colors;   // 1: ColorSpace_Linear
+    float  pad0[2];
     float  time;
     vec3_t sky_radiance;
     float  roughness;
@@ -1590,7 +1591,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
 
     compose::ubo_data_t data = {
         .proj_info = compute_proj_info(proj_mat),
-        .pad0 = {0, 0, 0},
+        .linear_colors = settings.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
         .time = time,
         .sky_radiance = light.sky_radiance,
         .roughness = roughness,
