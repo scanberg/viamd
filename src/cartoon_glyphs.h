@@ -50,8 +50,8 @@ struct md_allocator_i;
 // The radii of the cartoon of a nucleic acid, Å, by default (Representation): of the band of its backbone, which its
 // tubes are made with (a representation scales them to its own, md_gl_draw_op_t args.tubes.band_scale), and of the rims
 // of its slabs and the stick from each sugar to its base
-static constexpr float CARTOON_NUCLEIC_BAND_RADIUS = 0.4f;
-static constexpr float CARTOON_NUCLEIC_RING_RADIUS = 0.3f;
+static constexpr float CARTOON_NUCLEIC_BAND_RADIUS = 0.25f;
+static constexpr float CARTOON_NUCLEIC_RING_RADIUS = 0.2f;
 
 enum CartoonGlyphKind : uint8_t {
     CartoonGlyph_LipidHead = 0,     // A head, or the head group of a split head
