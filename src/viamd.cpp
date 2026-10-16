@@ -1780,6 +1780,7 @@ static void workspace_reset(ApplicationState* data) {
     }
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
+    data->view.periodic_images[0] = data->view.periodic_images[1] = data->view.periodic_images[2] = 0;
 
     data->selection.granularity = SelectionGranularity::Atom;
     md_bitmask_clear(&data->selection.selection_mask);
@@ -1921,6 +1922,12 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
                 else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
+                else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
+                    float n[3];
+                    if (viamd::extract_flt_vec(n, 3, arg)) {
+                        for (int k = 0; k < 3; ++k) data->view.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+                    }
+                }
                 else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(pending.box_enabled, arg);
                 else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(pending.box_color, arg);
             }
@@ -2249,6 +2256,10 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
         viamd::write_flt(state,  STR_LIT("DofAperture"), v.dof.aperture);
+        {
+            const float n[3] = { (float)app_state->view.periodic_images[0], (float)app_state->view.periodic_images[1], (float)app_state->view.periodic_images[2] };
+            viamd::write_flt_vec(state, STR_LIT("PeriodicImages"), n, 3);
+        }
         // The ambient occlusion and the anti-aliasing are the computer's settings (the .ini), the simulation box a
         // representation
     }

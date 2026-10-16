@@ -49,6 +49,7 @@
 #define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA
 #define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
 #define FRAME_CACHE_SIZE 4      // Number of frames used in the frame cache
+#define PERIODIC_IMAGES_MAX 3   // Periodic images each way along a cell vector: (2 n + 1)^3 - 1 copies of the scene at most
 
 #if FRAME_CACHE_SIZE == 4
 #define FRAME_CACHE_LRU_TYPE md_lru_cache4_t
@@ -945,6 +946,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
+    bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 
 // A group of representations. What it holds is shown only while the group is, and its filter, when it has one, is the
@@ -1143,6 +1145,10 @@ struct ApplicationState {
         // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
         ViewRegion region = {};
         vec2_t shift = {0, 0};
+
+        // The periodic images shown: the scene again in the neighboring cells, this many each way along a, b and c, of
+        // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
+        int periodic_images[3] = {0, 0, 0};
     } view;
 
     struct {

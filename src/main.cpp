@@ -1667,6 +1667,12 @@ static void draw_main_menu(ApplicationState* data) {
                     data->view.camera.fov_y = DEG_TO_RAD(fov);
                 }
             }
+            if (md_unitcell_flags(&data->mold.state.unitcell) != 0) {
+                ImGui::SliderInt3("Periodic Images", data->view.periodic_images, 0, PERIODIC_IMAGES_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SetItemTooltip("The scene again in the neighboring cells, this many each way along a, b and c:\n"
+                                      "1 1 1 shows the 26 cells around it. A representation can leave itself out\n"
+                                      "(its periodic images, under Representations).");
+            }
             ImGui::PopID();
 
             // How the scene is lit, how its colors are read, and what it is shown over
@@ -6674,11 +6680,47 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     }
 }
 
+// The periodic images shown (view.periodic_images): the translations of the scene into the neighboring cells, all but its
+// own, through the turn the coordinates carry if the orientation is kept (as the box). None without a cell.
+static md_array(mat4_t) periodic_images(const ApplicationState& state, md_allocator_i* alloc) {
+    md_array(mat4_t) images = 0;
+    const md_unitcell_t& cell = state.mold.state.unitcell;
+    const int* n = state.view.periodic_images;
+    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0) return images;
+
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, &cell);
+    const mat4_t M = state.operations.state_rotation * mat4_from_mat3(A);
+    for (int k = -n[2]; k <= n[2]; ++k) {
+        for (int j = -n[1]; j <= n[1]; ++j) {
+            for (int i = -n[0]; i <= n[0]; ++i) {
+                if (i == 0 && j == 0 && k == 0) continue;
+                const vec3_t t = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)i, (float)j, (float)k, 0.0f)));
+                md_array_push(images, mat4_translate(t.x, t.y, t.z), alloc);
+            }
+        }
+    }
+    return images;
+}
+
+// The ops from beg on again, once in each periodic image (their model matrix: md_gl takes it into the transforms, the
+// culling and level of detail of the backbone, and the velocities). The images must outlive the draw.
+static void push_periodic_images(md_array(md_gl_draw_op_t)* ops, size_t beg, const mat4_t* images, size_t num_images, md_allocator_i* alloc) {
+    const size_t end = md_array_size(*ops);
+    for (size_t m = 0; m < num_images; ++m) {
+        for (size_t i = beg; i < end; ++i) {
+            md_gl_draw_op_t op = (*ops)[i];
+            op.model_matrix = &images[m].elem[0][0];
+            md_array_push(*ops, op, alloc);
+        }
+    }
+}
+
 // The edges of the unit cell of the frame shown (a SimulationBox representation), through the turn the coordinates
 // carry if the orientation is kept (the cell itself cannot hold one). Capsules of the thickness, shaded as the rest of
 // the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
 // does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
-static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
+static void draw_simulation_box(ApplicationState* state, const Representation& rep, const mat4_t* images, size_t num_images) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
 
@@ -6703,19 +6745,26 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     const bool    ortho = P.elem[3][3] == 1.0f;
     const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
 
-    for (int i = 0; i < 8; ++i) {
-        for (int k = 0; k < 3; ++k) {
-            const int bit = 1 << k;
-            if (i & bit) continue;
-            const int j = i | bit;
-            const uint32_t col = (rep.box.axes && i == 0) ? axis_color[k] : color;
-            if (rep.box.thickness > 0.0f) {
-                const vec3_t mid  = (corner[i] + corner[j]) * 0.5f;
-                const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
-                const float radius = MAX(0.5f * rep.box.thickness, 0.6f * px_per_depth * depth);
-                immediate::capsule(scope, corner[i], corner[j], radius, col);
-            } else {
-                immediate::line(scope, corner[i], corner[j], col);
+    // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
+    const size_t num_cells = 1 + (rep.periodic_images ? num_images : 0);
+    for (size_t c = 0; c < num_cells; ++c) {
+        const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(images[c - 1].col[3]);
+        for (int i = 0; i < 8; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                const int bit = 1 << k;
+                if (i & bit) continue;
+                const int j = i | bit;
+                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[k] : color;
+                const vec3_t p0 = corner[i] + t;
+                const vec3_t p1 = corner[j] + t;
+                if (rep.box.thickness > 0.0f) {
+                    const vec3_t mid  = (p0 + p1) * 0.5f;
+                    const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
+                    const float radius = MAX(0.5f * rep.box.thickness, 0.6f * px_per_depth * depth);
+                    immediate::capsule(scope, p0, p1, radius, col);
+                } else {
+                    immediate::line(scope, p0, p1, col);
+                }
             }
         }
     }
@@ -6779,11 +6828,15 @@ static void draw_representations_opaque(ApplicationState* state) {
         md_array(md_gl_draw_op_t) draw_ops = 0;
         // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
         md_array(md_gl_draw_op_t) glyph_ops = 0;
+        const md_array(mat4_t) images = periodic_images(*state, frame_alloc);
+        const size_t num_images = md_array_size(images);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
 
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
+                const size_t beg = md_array_size(glyph_ops);
                 cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+                if (rep.periodic_images) push_periodic_images(&glyph_ops, beg, images, num_images, frame_alloc);
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
             }
@@ -6834,7 +6887,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                     default:
                         break;
                     }
+                    const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
+                    if (rep.periodic_images) push_periodic_images(&draw_ops, beg, images, num_images, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 if (representation_shown(*state, rep)) {
@@ -6876,7 +6931,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 }
             } else if (rep.type == RepresentationType::SimulationBox) {
                 if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    draw_simulation_box(state, rep);
+                    draw_simulation_box(state, rep, images, num_images);
                 }
             }
         }
@@ -7010,12 +7065,17 @@ static bool draw_representations_transparent(ApplicationState* state) {
 static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
+    // The periodic images as the opaque pass draws them, so the selected and highlighted atoms show in them too
+    const md_array(mat4_t) images = periodic_images(*data, frame_alloc);
+    const size_t num_images = md_array_size(images);
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon) continue;
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
+            const size_t beg = md_array_size(glyph_ops);
             cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
+            if (rep.periodic_images) push_periodic_images(&glyph_ops, beg, images, num_images, frame_alloc);
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
@@ -7036,7 +7096,9 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             } else if (rep.type == RepresentationType::Cartoon) {
                 op.args.cartoon.raycast = data->settings.raycast_splines;
             }
+            const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
+            if (rep.periodic_images) push_periodic_images(&draw_ops, beg, images, num_images, frame_alloc);
         }
     }
 

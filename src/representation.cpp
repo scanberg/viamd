@@ -1149,6 +1149,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_dbl(rep->dipole.scale, arg);
         } else if (str_eq(ident, STR_LIT("DipoleRadius"))) {
             viamd::extract_flt(rep->dipole.radius, arg);
+        } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
+            viamd::extract_bool(rep->periodic_images, arg);
         } else if (str_eq(ident, STR_LIT("BoxColor"))) {
             viamd::extract_vec4(rep->box.color, arg);
         } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
@@ -1285,6 +1287,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
 
     viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
+    viamd::write_bool(state, STR_LIT("PeriodicImages"), rep.periodic_images);
     viamd::write_bool(state, STR_LIT("AutoUpdate"), rep.dynamic_evaluation);
 
     // Attributes by path: an id is a hash of it, and the path is what a reader can see
@@ -2303,6 +2306,13 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         }
     }
         break;
+    }
+
+    // Of what md_gl draws and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
+    if (((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox) &&
+        md_unitcell_flags(&state->mold.state.unitcell) != 0) {
+        ImGui::Checkbox("periodic images", &rep.periodic_images);
+        ImGui::SetItemTooltip("Repeated in the periodic images of the view, as many as Visuals > View > Periodic Images shows");
     }
 
     if (representation_uses_atom_colors(rep)) {
