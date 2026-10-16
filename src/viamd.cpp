@@ -1857,7 +1857,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
             auto& v = data->visuals;
             while (viamd::next_entry(ident, arg, state)) {
                 if      (str_eq(ident, STR_LIT("BackgroundColor")))      viamd::extract_vec3(v.background.color, arg);
-                else if (str_eq(ident, STR_LIT("BackgroundIntensity")))  viamd::extract_flt(v.background.intensity, arg);
+                // BackgroundIntensity scaled the background radiance up to the white point of the tone mappers.
+                // The background now shows as picked, so it is ignored.
                 else if (str_eq(ident, STR_LIT("ShadingMode")))          viamd::extract_enum(v.shading.mode, arg, (int)postprocess_pipeline::ShadingMode_Count);
                 else if (str_eq(ident, STR_LIT("ShadingAmbient")))       viamd::extract_flt(v.shading.ambient, arg);
                 else if (str_eq(ident, STR_LIT("ShadingSpecular")))      viamd::extract_flt(v.shading.specular, arg);
@@ -2190,7 +2191,6 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         const auto& v = app_state->visuals;
         viamd::write_section_header(state, STR_LIT("RenderSettings"));
         viamd::write_vec3(state, STR_LIT("BackgroundColor"), v.background.color);
-        viamd::write_flt(state,  STR_LIT("BackgroundIntensity"), v.background.intensity);
         viamd::write_int(state,  STR_LIT("ShadingMode"), (int)v.shading.mode);
         viamd::write_flt(state,  STR_LIT("ShadingAmbient"), v.shading.ambient);
         viamd::write_flt(state,  STR_LIT("ShadingSpecular"), v.shading.specular);

@@ -86,26 +86,52 @@ namespace postprocessing {
 // @TODO: Use shared textures for all postprocessing operations
 // @TODO: Use some kind of unified pipeline for all post processing operations
 
-typedef int Tonemapping;
-enum Tonemapping_ {
-    Tonemapping_Passthrough,
-    Tonemapping_ExposureGamma,
-    Tonemapping_Filmic,
-    Tonemapping_ACES,
-    Tonemapping_sRGB,       // the display transform of ShadingMode_Basic
-    Tonemapping_Neutral,
+// The display transform (shaders/tonemap/display.frag): x = exposure * L, display = curve(x) / curve(W), then the sRGB
+// encoding with the gamma setting on top. L is in units of reference white (postprocess_pipeline::lighting). The scene
+// is composited over the background there, after the curve, by its coverage: the background is not part of the scene.
+namespace display {
+
+enum Curve {
+    Curve_None    = 0,  // clip to [0, 1]
+    Curve_Neutral = 1,  // Khronos PBR Neutral
+    Curve_ACES    = 2,  // Stephen Hill's fit of the ACES RRT + ODT
+    Curve_Hable   = 3,  // John Hable's Uncharted 2 curve
 };
 
-static Tonemapping to_legacy_tonemapper(postprocess_pipeline::Tonemapper tm) {
-    switch (tm) {
-        case postprocess_pipeline::Tonemapper_ExposureGamma: return Tonemapping_ExposureGamma;
-        case postprocess_pipeline::Tonemapper_Filmic: return Tonemapping_Filmic;
-        case postprocess_pipeline::Tonemapper_ACES: return Tonemapping_ACES;
-        case postprocess_pipeline::Tonemapper_Neutral: return Tonemapping_Neutral;
-        case postprocess_pipeline::Tonemapper_Passthrough:
-        default: return Tonemapping_Passthrough;
+struct Transform {
+    Curve curve = Curve_None;
+    float exposure = 1.0f;
+    float gamma = 2.2f;
+};
+
+static Transform transform(const postprocess_pipeline::Settings& settings) {
+    Transform t = {};
+    // Basic shading shows the colours as they are, and no tone mapping means no curve: either way only the encoding
+    if (settings.shading.mode == postprocess_pipeline::ShadingMode_Basic || !settings.tonemap.enabled) return t;
+    switch (settings.tonemap.mode) {
+        case postprocess_pipeline::Tonemapper_Neutral: t.curve = Curve_Neutral; break;
+        case postprocess_pipeline::Tonemapper_ACES:    t.curve = Curve_ACES;    break;
+        case postprocess_pipeline::Tonemapper_Filmic:  t.curve = Curve_Hable;   break;
+        default:                                       t.curve = Curve_None;    break;
     }
+    t.exposure = MAX(settings.tonemap.exposure, 1.0e-6f);
+    t.gamma = CLAMP(settings.tonemap.gamma, 0.1f, 10.0f);
+    return t;
 }
+
+static inline float srgb_decode(float x) {
+    x = CLAMP(x, 0.0f, 1.0f);
+    return (x <= 0.04045f) ? (x / 12.92f) : powf((x + 0.055f) / 1.055f, 2.4f);
+}
+
+// The display referred linear value of the background, the sRGB colour c, which the encoding (with its gamma
+// adjustment) shows as c
+static vec3_t background(vec3_t c, const Transform& t) {
+    const float k = t.gamma / 2.2f;
+    return {srgb_decode(powf(CLAMP(c.x, 0.0f, 1.0f), k)), srgb_decode(powf(CLAMP(c.y, 0.0f, 1.0f), k)), srgb_decode(powf(CLAMP(c.z, 0.0f, 1.0f), k))};
+}
+
+}  // namespace display
 
 static inline bool is_orthographic_proj_matrix(const float P[4][4]) { return P[2][3] == 0.0f; }
 
@@ -123,6 +149,7 @@ static struct {
         GLuint tex_half_dof = 0;        // half res RGBA16F: colour + signed CoC (DOF prepass)
         GLuint tex_color[2] = {0, 0};   // HDR ping-pong (R11F_G11F_B10F): compose, SSAO, DOF
         GLuint tex_ldr[2] = {0, 0};     // LDR ping-pong (RGB10_A2): everything after tone mapping
+        GLuint tex_coverage[2] = {0, 0};// R8: coverage of the geometry, sharp and through the depth of field
         GLuint tex_history_prev = 0;
     } rt;
 
@@ -547,7 +574,7 @@ namespace compose {
 
 struct ubo_data_t {
     vec4_t proj_info;
-    vec3_t bg_color;
+    vec3_t pad0;
     float  time;
     vec3_t sky_radiance;
     float  roughness;
@@ -611,35 +638,15 @@ static struct {
     GLuint program = 0;
     struct {
         GLint texture = -1;
-    } uniform_loc;
-} passthrough;
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture = -1;
+        GLint texture_coverage = -1;
+        GLint texture_iso = -1;
+        GLint use_iso = -1;
+        GLint background = -1;
+        GLint curve = -1;
         GLint exposure = -1;
         GLint gamma = -1;
     } uniform_loc;
-} exposure_gamma;
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture = -1;
-        GLint exposure = -1;
-        GLint gamma = -1;
-    } uniform_loc;
-} filmic;
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture = -1;
-        GLint exposure = -1;
-        GLint gamma = -1;
-    } uniform_loc;
-} aces;
+} display_transform;
 
 static struct {
     GLuint program_forward = 0;
@@ -649,48 +656,17 @@ static struct {
     } uniform_loc;
 } fast_reversible;
 
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture = -1;
-    } uniform_loc;
-} srgb;
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture = -1;
-        GLint exposure = -1;
-        GLint gamma = -1;
-    } uniform_loc;
-} neutral;
-
 void initialize() {
     {
-        // PASSTHROUGH
-        passthrough.program = setup_program_from_source(STR_LIT("Passthrough"), {(const char*)passthrough_frag, passthrough_frag_size});
-        passthrough.uniform_loc.texture = glGetUniformLocation(passthrough.program, "u_texture");
-    }
-    {
-        // EXPOSURE GAMMA
-        exposure_gamma.program = setup_program_from_source(STR_LIT("Exposure Gamma"), {(const char*)exposure_gamma_frag, exposure_gamma_frag_size});
-        exposure_gamma.uniform_loc.texture = glGetUniformLocation(exposure_gamma.program, "u_texture");
-        exposure_gamma.uniform_loc.exposure = glGetUniformLocation(exposure_gamma.program, "u_exposure");
-        exposure_gamma.uniform_loc.gamma = glGetUniformLocation(exposure_gamma.program, "u_gamma");
-    }
-    {
-        // UNCHARTED
-        filmic.program = setup_program_from_source(STR_LIT("Filmic"), {(const char*)uncharted_frag, uncharted_frag_size});
-        filmic.uniform_loc.texture = glGetUniformLocation(filmic.program, "u_texture");
-        filmic.uniform_loc.exposure = glGetUniformLocation(filmic.program, "u_exposure");
-        filmic.uniform_loc.gamma = glGetUniformLocation(filmic.program, "u_gamma");
-    }
-    {
-        // ACES
-        aces.program = setup_program_from_source(STR_LIT("ACES"), {(const char*)aces_frag, aces_frag_size});
-        aces.uniform_loc.texture = glGetUniformLocation(aces.program, "u_texture");
-        aces.uniform_loc.exposure = glGetUniformLocation(aces.program, "u_exposure");
-        aces.uniform_loc.gamma = glGetUniformLocation(aces.program, "u_gamma");
+        display_transform.program = setup_program_from_source(STR_LIT("Display transform"), {(const char*)display_frag, display_frag_size});
+        display_transform.uniform_loc.texture          = glGetUniformLocation(display_transform.program, "u_texture");
+        display_transform.uniform_loc.texture_coverage = glGetUniformLocation(display_transform.program, "u_texture_coverage");
+        display_transform.uniform_loc.texture_iso      = glGetUniformLocation(display_transform.program, "u_texture_iso");
+        display_transform.uniform_loc.use_iso          = glGetUniformLocation(display_transform.program, "u_use_iso");
+        display_transform.uniform_loc.background       = glGetUniformLocation(display_transform.program, "u_background");
+        display_transform.uniform_loc.curve            = glGetUniformLocation(display_transform.program, "u_curve");
+        display_transform.uniform_loc.exposure         = glGetUniformLocation(display_transform.program, "u_exposure");
+        display_transform.uniform_loc.gamma            = glGetUniformLocation(display_transform.program, "u_gamma");
     }
     {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
@@ -698,29 +674,12 @@ void initialize() {
         fast_reversible.program_inverse = setup_program_from_source(STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, STR_LIT("#define USE_INVERSE 1"));
         fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
     }
-    {
-        // sRGB (the display transform of the basic shading mode)
-        srgb.program = setup_program_from_source(STR_LIT("sRGB"), {(const char*)srgb_frag, srgb_frag_size});
-        srgb.uniform_loc.texture = glGetUniformLocation(srgb.program, "u_texture");
-    }
-    {
-        // Khronos PBR Neutral
-        neutral.program = setup_program_from_source(STR_LIT("Neutral"), {(const char*)neutral_frag, neutral_frag_size});
-        neutral.uniform_loc.texture = glGetUniformLocation(neutral.program, "u_texture");
-        neutral.uniform_loc.exposure = glGetUniformLocation(neutral.program, "u_exposure");
-        neutral.uniform_loc.gamma = glGetUniformLocation(neutral.program, "u_gamma");
-    }
 }
 
 void shutdown() {
-    if (passthrough.program) glDeleteProgram(passthrough.program);
-    if (exposure_gamma.program) glDeleteProgram(exposure_gamma.program);
-    if (filmic.program) glDeleteProgram(filmic.program);
-    if (aces.program) glDeleteProgram(aces.program);
+    if (display_transform.program) glDeleteProgram(display_transform.program);
     if (fast_reversible.program_forward) glDeleteProgram(fast_reversible.program_forward);
     if (fast_reversible.program_inverse) glDeleteProgram(fast_reversible.program_inverse);
-    if (srgb.program) glDeleteProgram(srgb.program);
-    if (neutral.program) glDeleteProgram(neutral.program);
 }
 
 }  // namespace tonemapping
@@ -841,6 +800,7 @@ namespace blit {
 static GLuint program_tex = 0;
 static GLuint program_tex_dither = 0;
 static GLuint program_tex_covered = 0;
+static GLuint program_coverage = 0;
 static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_color = -1;
@@ -857,6 +817,19 @@ out vec4 out_frag;
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
     out_frag = texelFetch(u_texture, px, 0) * (1.0 - clamp(texelFetch(u_cover, px, 0).a, 0.0, 1.0));
+}
+)");
+
+// The coverage of the geometry: 1 where the G-buffer holds a surface (its colour has alpha), 0 for the background
+constexpr str_t f_shader_src_coverage = STR_LIT(R"(
+#version 150 core
+
+uniform sampler2D u_texture;
+
+out vec4 out_frag;
+
+void main() {
+    out_frag = vec4(texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0).a > 0.0 ? 1.0 : 0.0);
 }
 )");
 
@@ -917,6 +890,8 @@ void initialize() {
 
     program_tex_covered = setup_program_from_source(STR_LIT("blit texture covered"), f_shader_src_tex_covered);
 
+    program_coverage = setup_program_from_source(STR_LIT("blit coverage"), f_shader_src_coverage);
+
     program_col = setup_program_from_source(STR_LIT("blit color"), f_shader_src_col);
     uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
@@ -925,8 +900,9 @@ void shutdown() {
     if (program_tex) glDeleteProgram(program_tex);
     if (program_tex_dither) glDeleteProgram(program_tex_dither);
     if (program_tex_covered) glDeleteProgram(program_tex_covered);
+    if (program_coverage) glDeleteProgram(program_coverage);
     if (program_col) glDeleteProgram(program_col);
-    program_tex = program_tex_dither = program_tex_covered = program_col = 0;
+    program_tex = program_tex_dither = program_tex_covered = program_coverage = program_col = 0;
 }
 }  // namespace blit
 
@@ -1284,6 +1260,8 @@ void initialize(int width, int height) {
     ensure_texture_2d(&gl.rt.tex_color[1], GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
     ensure_texture_2d(&gl.rt.tex_ldr[0], GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
     ensure_texture_2d(&gl.rt.tex_ldr[1], GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_coverage[0], GL_R8, width, height, GL_RED, GL_UNSIGNED_BYTE);
+    ensure_texture_2d(&gl.rt.tex_coverage[1], GL_R8, width, height, GL_RED, GL_UNSIGNED_BYTE);
     ensure_texture_2d(&gl.rt.tex_history_prev, GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
@@ -1344,6 +1322,8 @@ void shutdown() {
     if (gl.bokeh_dof.fbo) glDeleteFramebuffers(1, &gl.bokeh_dof.fbo);
     if (gl.rt.tex_color[0]) glDeleteTextures(2, gl.rt.tex_color);
     if (gl.rt.tex_ldr[0]) glDeleteTextures(2, gl.rt.tex_ldr);
+    if (gl.rt.tex_coverage[0]) glDeleteTextures(2, gl.rt.tex_coverage);
+    gl.rt.tex_coverage[0] = gl.rt.tex_coverage[1] = 0;
     if (gl.rt.tex_history_prev) glDeleteTextures(1, &gl.rt.tex_history_prev);
     if (gl.rt.tex_rgba8) glDeleteTextures(1, &gl.rt.tex_rgba8);
     if (gl.rt.tex_half_dof) glDeleteTextures(1, &gl.rt.tex_half_dof);
@@ -1587,11 +1567,6 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
     };
 }
 
-static float srgb_to_linear(float x) {
-    x = CLAMP(x, 0.0f, 1.0f);
-    return (x <= 0.04045f) ? (x / 12.92f) : powf((x + 0.055f) / 1.055f, 2.4f);
-}
-
 static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
@@ -1599,10 +1574,6 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
 
     const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
 
-    // The colour is sRGB, like those of the geometry. Basic: the background is shown through the sRGB encoding, so
-    // its linear value shows the colour as picked. Physically based: radiance, scaled by the intensity.
-    const vec3_t bg_linear = {srgb_to_linear(settings.background_color.x), srgb_to_linear(settings.background_color.y), srgb_to_linear(settings.background_color.z)};
-    const vec3_t bg_color = basic ? bg_linear : bg_linear * settings.background_intensity;
 
     const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(settings.shading.mode);
     const float roughness = 0.4f;
@@ -1610,7 +1581,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
 
     compose::ubo_data_t data = {
         .proj_info = compute_proj_info(proj_mat),
-        .bg_color = bg_color,
+        .pad0 = {0, 0, 0},
         .time = time,
         .sky_radiance = light.sky_radiance,
         .roughness = roughness,
@@ -1938,47 +1909,30 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
     glBindVertexArray(0);
 }
 
-void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure, float gamma) {
+// color_tex: premultiplied radiance of the scene. coverage_tex (r): coverage of the geometry. iso_tex (a, optional): the
+// isosurfaces' coverage. background: display referred linear, put behind the scene after the curve.
+void apply_display_transform(GLuint color_tex, GLuint coverage_tex, GLuint iso_tex, const display::Transform& t, vec3_t background) {
     ASSERT(glIsTexture(color_tex));
+    ASSERT(glIsTexture(coverage_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, coverage_tex);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, iso_tex ? iso_tex : coverage_tex);     // a valid texture either way
+    glActiveTexture(GL_TEXTURE0);
 
-    switch (tonemapping) {
-        case Tonemapping_ExposureGamma:
-            glUseProgram(tonemapping::exposure_gamma.program);
-            glUniform1i(tonemapping::exposure_gamma.uniform_loc.texture, 0);
-            glUniform1f(tonemapping::exposure_gamma.uniform_loc.exposure, exposure);
-            glUniform1f(tonemapping::exposure_gamma.uniform_loc.gamma, gamma);
-            break;
-        case Tonemapping_Filmic:
-            glUseProgram(tonemapping::filmic.program);
-            glUniform1i(tonemapping::filmic.uniform_loc.texture, 0);
-            glUniform1f(tonemapping::filmic.uniform_loc.exposure, exposure);
-            glUniform1f(tonemapping::filmic.uniform_loc.gamma, gamma);
-            break;
-        case Tonemapping_ACES:
-            glUseProgram(tonemapping::aces.program);
-            glUniform1i(tonemapping::aces.uniform_loc.texture, 0);
-            glUniform1f(tonemapping::aces.uniform_loc.exposure, exposure);
-            glUniform1f(tonemapping::aces.uniform_loc.gamma, gamma);
-            break;
-        case Tonemapping_sRGB:
-            glUseProgram(tonemapping::srgb.program);
-            glUniform1i(tonemapping::srgb.uniform_loc.texture, 0);
-            break;
-        case Tonemapping_Neutral:
-            glUseProgram(tonemapping::neutral.program);
-            glUniform1i(tonemapping::neutral.uniform_loc.texture, 0);
-            glUniform1f(tonemapping::neutral.uniform_loc.exposure, exposure);
-            glUniform1f(tonemapping::neutral.uniform_loc.gamma, gamma);
-            break;
-        case Tonemapping_Passthrough:
-        default:
-            glUseProgram(tonemapping::passthrough.program);
-            glUniform1i(tonemapping::passthrough.uniform_loc.texture, 0);
-            break;
-    }
+    const auto& p = tonemapping::display_transform;
+    glUseProgram(p.program);
+    glUniform1i(p.uniform_loc.texture, 0);
+    glUniform1i(p.uniform_loc.texture_coverage, 1);
+    glUniform1i(p.uniform_loc.texture_iso, 2);
+    glUniform1i(p.uniform_loc.use_iso, iso_tex ? 1 : 0);
+    glUniform3fv(p.uniform_loc.background, 1, background.elem);
+    glUniform1i(p.uniform_loc.curve, (int)t.curve);
+    glUniform1f(p.uniform_loc.exposure, t.exposure);
+    glUniform1f(p.uniform_loc.gamma, t.gamma);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -2223,6 +2177,19 @@ static void blit_texture_dither(GLuint tex, float time) {
     glUseProgram(0);
 }
 
+// The coverage of the geometry in the G-buffer colour gbuffer_color, into r
+static void blit_coverage(GLuint gbuffer_color) {
+    ASSERT(glIsTexture(gbuffer_color));
+    glUseProgram(blit::program_coverage);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gbuffer_color);
+    glUniform1i(glGetUniformLocation(blit::program_coverage, "u_texture"), 0);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
 // tex scaled by (1 - alpha of cover), both premultiplied
 static void blit_texture_covered(GLuint tex, GLuint cover) {
     ASSERT(glIsTexture(tex));
@@ -2373,11 +2340,9 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         ASSERT(glIsTexture(in.velocity));
     }
 
-    const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
     const bool do_compose = true;
     const bool do_velocity = settings.taa.enabled;
     const bool do_ssao = settings.ssao.enabled;
-    const bool do_tonemap = settings.tonemap.enabled || basic;   // basic shading always has its display transform
     const bool do_dof = settings.dof.enabled;
     const bool do_transparency = in.transparency != 0;
     const bool do_transparency_hdr = in.transparency_hdr != 0;
@@ -2522,16 +2487,35 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
     // HDR -> LDR boundary ---------------------------------------------------
 
-    if (do_tonemap) {
-        PUSH_GPU_SECTION("Tonemapping")
+    // The coverage of the geometry, which puts the scene over the background: sharp from the G-buffer, and blurred as
+    // the colour was when the depth of field is on
+    GLuint coverage_tex = gl.rt.tex_coverage[0];
+    {
+        PUSH_GPU_SECTION("Coverage")
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.scratch_fbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_coverage[0], 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        blit_coverage(in.color);
+        if (do_dof) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_coverage[1], 0);
+            apply_dof(gl.linear_depth.texture, gl.rt.tex_coverage[0], settings.dof.focus_depth, settings.dof.aperture);
+            coverage_tex = gl.rt.tex_coverage[1];
+        }
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
+        POP_GPU_SECTION()
+    }
+
+    // Always: tone mapping off (and basic shading) is the display transform without a curve, not no transform
+    {
+        PUSH_GPU_SECTION("Display transform")
         swap_target();
         // From here on the values are display referred: switch the ping-pong pair to the RGB10_A2 targets
         pair = gl.rt.tex_ldr;
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_ldr[0], 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_ldr[1], 0);
         glDrawBuffer(dst_buffer);
-        Tonemapping tonemapper = basic ? Tonemapping_sRGB : settings.tonemap.enabled ? to_legacy_tonemapper(settings.tonemap.mode) : Tonemapping_Passthrough;
-        apply_tonemapping(src_texture, tonemapper, settings.tonemap.exposure, settings.tonemap.gamma);
+        const display::Transform t = display::transform(settings);
+        apply_display_transform(src_texture, coverage_tex, do_transparency_hdr ? in.transparency_hdr : 0, t, display::background(settings.background_color, t));
         POP_GPU_SECTION()
     }
 
@@ -2635,17 +2619,19 @@ SsaoTimings ssao_timings() {
 
 Lighting lighting(ShadingMode mode) {
     // Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes
-    // strongly. The sky and the ground fill in the rest, so nothing turns black away from the key light, and their
-    // difference keeps the shapes readable there too. A white surface facing the viewer comes to about 0.8 after
-    // the exposure bias of the tone mappers, where the neutral one is still linear, and about 1.2 where it faces the
-    // key light.
+    // strongly, and a sky and a ground which fill in the rest, so nothing turns black away from the key light, and
+    // whose difference keeps the shapes readable there too. A white surface facing the viewer:
+    //   key: 1.04 * cos(55 deg) = 0.60, environment: (0.62 + 0.26) / 2 = 0.44
+    // which, less what the specular reflection takes off the diffuse (Fresnel, about 3.5%), is a diffuse reflection
+    // of 1: reference white. The specular reflection adds about 0.02 (Neutral's offset takes off 0.04). Facing the
+    // key light it is about 1.55.
     // Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep
     // close to their full colour. The radiances are not used.
     Lighting l = {
         .light_dir        = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f)),
-        .light_irradiance = {10.0f, 10.0f, 10.0f},
-        .sky_radiance     = {2.0f, 2.0f, 2.0f},
-        .ground_radiance  = {0.8f, 0.8f, 0.8f},
+        .light_irradiance = vec3_set1(1.04f * (float)PI),
+        .sky_radiance     = vec3_set1(0.62f),
+        .ground_radiance  = vec3_set1(0.26f),
     };
     if (mode == ShadingMode_Basic) {
         l.light_dir = vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f));

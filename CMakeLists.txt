@@ -270,13 +270,8 @@ set(SHADER_FILES
     src/shaders/temporal.frag
     src/shaders/luma.frag
     src/shaders/fxaa.frag
-    src/shaders/tonemap/passthrough.frag
-    src/shaders/tonemap/exposure_gamma.frag
-    src/shaders/tonemap/uncharted.frag
-    src/shaders/tonemap/aces.frag
+    src/shaders/tonemap/display.frag
     src/shaders/tonemap/fast_reversible.frag
-    src/shaders/tonemap/srgb.frag
-    src/shaders/tonemap/neutral.frag
     src/shaders/dof/dof_prepass.frag
     src/shaders/dof/dof_tile.frag
     src/shaders/dof/dof_gather.frag

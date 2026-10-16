@@ -1488,12 +1488,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::BeginGroup();
             ImGui::Text("Background");
             ImGui::ColorEdit3Minimal("Color", data->visuals.background.color.elem);
-            if (!basic_shading) {
-                // Basic shading shows the background as the colour itself
-                ImGui::SameLine();
-                ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
-                ImGui::SetItemTooltip("Background brightness");
-            }
+            ImGui::SetItemTooltip("Shown as picked, whatever the shading and tone mapping. It does not light the scene.");
             ImGui::EndGroup();
             ImGui::Separator();
 
@@ -1612,19 +1607,18 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::BeginDisabled(basic_shading);
             ImGui::Checkbox("Tone Mapping", &data->visuals.tonemapping.enabled);
             ImGui::SetItemTooltip(basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
-                                                : "Map the lighting into the colors a display can show");
+                                                : "Map the lighting into the colors a display can show.\nOff: no curve, what is brighter than white is clipped.");
             if (data->visuals.tonemapping.enabled && !basic_shading) {
-                // Neutral first: it is the default, and the one which keeps the colors
+                // Neutral first: it is the default, and the one which keeps the colors. Exposure Gamma is the same as
+                // None (exposure and gamma apply to every curve), and shows as it.
                 static const postprocess_pipeline::Tonemapper tonemappers[] = {
                     postprocess_pipeline::Tonemapper_Neutral,
                     postprocess_pipeline::Tonemapper_ACES,
                     postprocess_pipeline::Tonemapper_Filmic,
-                    postprocess_pipeline::Tonemapper_ExposureGamma,
                     postprocess_pipeline::Tonemapper_Passthrough,
                 };
-                static const char* tonemapper_names[] = {"Neutral", "ACES", "Filmic", "Exposure Gamma", "Passthrough"};
-                STATIC_ASSERT(ARRAY_SIZE(tonemappers) == postprocess_pipeline::Tonemapper_Count, "every tone mapper is listed");
-                int idx = 0;
+                static const char* tonemapper_names[] = {"Neutral", "ACES", "Filmic", "None"};
+                int idx = (int)ARRAY_SIZE(tonemappers) - 1;
                 for (int i = 0; i < (int)ARRAY_SIZE(tonemappers); ++i) {
                     if (tonemappers[i] == data->visuals.tonemapping.tonemapper) idx = i;
                 }
@@ -1633,11 +1627,12 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Neutral: the colors as they are, only the highlights are compressed (Khronos PBR Neutral).\n"
                                       "ACES: a filmic curve with more contrast, which shifts and desaturates the colors.\n"
-                                      "Filmic: the Uncharted 2 curve.\n"
-                                      "Exposure Gamma: exposure and gamma only, no compression of the highlights.\n"
-                                      "Passthrough: the values as they are, no gamma.");
+                                      "Filmic: John Hable's Uncharted 2 curve.\n"
+                                      "None: no curve, what is brighter than white is clipped.");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
+                ImGui::SetItemTooltip("Scales the light reaching the camera. At 1 a color on a surface facing the viewer shows close to as picked (Neutral)");
                 ImGui::SliderFloat("Gamma", &data->visuals.tonemapping.gamma, 1.0f, 3.0f);
+                ImGui::SetItemTooltip("An adjustment of the sRGB curve: 2.2 is the sRGB curve itself");
             }
             ImGui::EndDisabled();
             ImGui::EndGroup();
@@ -6271,7 +6266,6 @@ static void render(ApplicationState* state) {
     postprocess_pipeline::Inputs inputs = {};
 
     settings.background_color = state->visuals.background.color;
-    settings.background_intensity = state->visuals.background.intensity;
 
     settings.shading.mode = state->visuals.shading.mode;
     settings.shading.ambient = state->visuals.shading.ambient;

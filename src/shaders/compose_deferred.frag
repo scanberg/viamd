@@ -2,7 +2,7 @@
 
 layout (std140) uniform UniformData {
     vec4  u_proj_info;
-    vec3  u_bg_color;
+    vec3  u_pad0;
     float u_time;
     vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
     float u_roughness;
@@ -69,8 +69,8 @@ vec3 srgb_to_linear(vec3 c) {
 //  - the environment, specular: the radiance about the reflected direction, the horizon blurred by the
 //    roughness, times the directional albedo of the specular lobe (the split sum, from Karis' analytic fit).
 //    That albedo is what the surface reflects of its surroundings, so it also takes its share off the diffuse.
-// The environment does not depend on the background: a dark one no longer leaves the shadowed sides black,
-// and a coloured one does not tint the geometry.
+// The environment does not depend on the background, which is not part of the scene: a dark one does not leave
+// the shadowed sides black, and a coloured one does not tint the geometry.
 // -----------------------------------------------------------------------------
 
 float FresnelSchlick(float cosTheta, float F0) {
@@ -177,7 +177,8 @@ vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
 }
 
 void main() {
-    vec3 result = u_bg_color.rgb;
+    // Nothing behind the geometry: the display transform puts the background there, by the coverage
+    vec3 result = vec3(0.0);
 
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     vec4 color = texelFetch(u_texture_color, pixel, 0);

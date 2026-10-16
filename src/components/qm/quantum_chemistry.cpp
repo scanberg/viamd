@@ -6638,9 +6638,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 glDisable(GL_SCISSOR_TEST);
 
                 postprocess_pipeline::Settings postprocess_settings = {};
-                // A white background (24 is the white point of the tone mappers)
                 postprocess_settings.background_color = {1.f, 1.f, 1.f};
-                postprocess_settings.background_intensity = 24.f;
                 postprocess_settings.shading.mode = state.visuals.shading.mode;
                 postprocess_settings.shading.ambient = state.visuals.shading.ambient;
                 postprocess_settings.shading.specular = state.visuals.shading.specular;
@@ -8102,7 +8100,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_pipeline::Inputs postprocess_inputs = {};
 
                     postprocess_settings.background_color = state.visuals.background.color;
-                    postprocess_settings.background_intensity = state.visuals.background.intensity;
                     postprocess_settings.shading.mode = state.visuals.shading.mode;
                     postprocess_settings.shading.ambient = state.visuals.shading.ambient;
                     postprocess_settings.shading.specular = state.visuals.shading.specular;

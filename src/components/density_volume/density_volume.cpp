@@ -1007,7 +1007,6 @@ struct DensityVolume : viamd::EventHandler {
             postprocess_pipeline::Inputs postprocess_inputs = {};
 
             postprocess_settings.background_color = state->visuals.background.color;
-            postprocess_settings.background_intensity = state->visuals.background.intensity;
             postprocess_settings.shading.mode = state->visuals.shading.mode;
             postprocess_settings.shading.ambient = state->visuals.shading.ambient;
             postprocess_settings.shading.specular = state->visuals.shading.specular;

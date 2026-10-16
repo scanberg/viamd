@@ -20,13 +20,14 @@ void blit_color(vec4_t color);
 
 namespace postprocess_pipeline {
 
-// Stored in workspaces by value: new ones go at the end
+// The curve of the display transform (shaders/tonemap/display.frag). Stored in workspaces by value: new ones go at
+// the end.
 enum Tonemapper {
-    Tonemapper_Passthrough,
-    Tonemapper_ExposureGamma,
-    Tonemapper_Filmic,      // Uncharted 2
-    Tonemapper_ACES,        // fitted ACES (RRT + ODT): contrast, but it shifts and desaturates colours
-    Tonemapper_Neutral,     // Khronos PBR Neutral: the colours as they are, only the highlights compressed
+    Tonemapper_Passthrough,     // no curve: clipped to the display
+    Tonemapper_ExposureGamma,   // the same as Passthrough (exposure and gamma apply to every curve), kept for workspaces
+    Tonemapper_Filmic,          // John Hable's Uncharted 2 curve
+    Tonemapper_ACES,            // fitted ACES (RRT + ODT): contrast, but it shifts and desaturates colours
+    Tonemapper_Neutral,         // Khronos PBR Neutral: the colours as they are, only the highlights compressed
     Tonemapper_Count
 };
 
@@ -36,9 +37,9 @@ enum ShadingMode {
     // environment of sky and ground (lighting()), then tone mapped (Settings::tonemap)
     ShadingMode_PhysicallyBased,
     // The colours as given where a surface faces the light, darkened away from it, with an optional white
-    // highlight (Settings::shading). Shown through the exact sRGB encoding rather than a tone mapper
-    // (Settings::tonemap is not used), so a colour in full light appears as it was picked (to within the
-    // precision of the HDR targets: one or two steps of 8 bits).
+    // highlight (Settings::shading). Shown through the display transform without a curve or exposure, the exact
+    // sRGB encoding (Settings::tonemap is not used), so a colour in full light appears as it was picked (to within
+    // the precision of the HDR targets: one or two steps of 8 bits).
     ShadingMode_Basic,
     ShadingMode_Count
 };
@@ -56,18 +57,18 @@ struct Inputs {
     GLuint normal = 0;
     GLuint velocity = 0;
     GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
-    GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces)
+    GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces); its alpha is part of the coverage that puts the scene over the background
     bool   transparency_under_hdr = false;  // transparency lies under transparency_hdr (a selection tint under isosurfaces): it is covered by its alpha
     GLuint history = 0;         // TAA history target, written this frame
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
 };
 
 struct Settings {
-    // The background as picked (sRGB) and its intensity. Physically based: the background is radiance, the
-    // colour decoded to linear times the intensity, which is then tone mapped (24 is the white point of the
-    // tone mappers). Basic: it shows as the colour itself and the intensity is not used.
+    // The background (sRGB). Not part of the scene: it lights nothing and is not tone mapped. The scene is put over
+    // it after the display transform, by its coverage (the geometry, through the depth of field, and the
+    // isosurfaces), so it shows as picked in every mode and with every curve, and a translucent surface over it is
+    // blended with it.
     vec3_t background_color = {1.f, 1.f, 1.f};
-    float  background_intensity = 24.f;
 
     struct {
         ShadingMode mode = ShadingMode_PhysicallyBased;
@@ -76,11 +77,15 @@ struct Settings {
         float specular = 0.25f;     // strength of the white highlight, 0 for none
     } shading;
 
+    // The display transform: x = exposure * radiance (in units of reference white, see lighting()), shown as
+    // curve(x) / curve(W), W the white point: 8, three stops above reference white (Hable's curve: its own, 5.6);
+    // then the sRGB encoding raised to 2.2 / gamma (at 2.2 the sRGB curve itself). Off: no curve, exposure 1 and
+    // gamma 2.2.
     struct {
         bool enabled = true;
         Tonemapper mode = Tonemapper_Neutral;
         float exposure = 1.0f;
-        float gamma = 2.2f;     // 2.2: the sRGB curve for Neutral
+        float gamma = 2.2f;
     } tonemap;
 
     // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
@@ -129,12 +134,15 @@ void shutdown();
 SsaoTimings ssao_timings();
 
 // The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces
-// (volume::render_isosurfaces) are lit by the same. The radiances are those of the physically based mode, in the
-// units the Neutral and ACES tone mappers expect (their exposure bias takes 4 to 1); they do not depend on the
-// background.
+// (volume::render_isosurfaces) are lit by the same. They do not depend on the background.
+// Units: radiance in units of reference white, the radiance of a white Lambertian surface under irradiance pi
+// (BRDF 1/pi, so its radiance is the irradiance over pi). The physically based lights are scaled so that the diffuse
+// reflection of a white surface facing the viewer is 1: the display transform at exposure 1 then shows a colour on a
+// surface facing the viewer close to as it was picked (with the Neutral curve, within about 0.02 of reference white:
+// its offset takes off 0.04, the specular reflection of these surroundings adds about 0.02).
 struct Lighting {
     vec3_t light_dir;           // toward the key light, normalized
-    vec3_t light_irradiance;    // the key light: irradiance at normal incidence
+    vec3_t light_irradiance;    // the key light: irradiance at normal incidence (pi: a white surface facing it is 1)
     vec3_t sky_radiance;        // the environment above the horizon of the view (view space y > 0)
     vec3_t ground_radiance;     // the environment below it
 };

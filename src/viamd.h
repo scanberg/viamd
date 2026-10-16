@@ -1332,8 +1332,7 @@ struct ApplicationState {
     // --- VISUALS ---
     struct {
         struct {
-            vec3_t color = {1, 1, 1};
-            float intensity = 24.0f;
+            vec3_t color = {1, 1, 1};   // shown as picked: the scene is put over it after the display transform
         } background;
 
         struct {
