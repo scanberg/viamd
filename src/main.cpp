@@ -1500,7 +1500,8 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SliderFloat("Environment", &data->visuals.shading.environment, 0.0f, 4.0f, "%.2fx");
                     ImGui::SetItemTooltip("Strength of the light from all around (a sky a little brighter than the ground), relative to the default (1).\n"
                                           "More softens the shading and brightens the side away from the light; the ambient occlusion darkens it in creases.\n"
-                                          "At 1 for both, a color facing the viewer shows close to as picked; Exposure (Tone Mapping) scales all of the light.");
+                                          "At 1 for both, a color facing the viewer shows close to as picked (with sRGB colors and the Neutral curve);\n"
+                                          "Exposure (Tone Mapping) scales all of the light.");
                 } else {
                     ImGui::SliderFloat("Ambient", &data->visuals.shading.ambient, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("How much of the color is left on the side facing away from the light");
@@ -1566,15 +1567,15 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetItemTooltip(basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
                                                 : "Map the lighting into the colors a display can show.\nOff: no curve, what is brighter than white is clipped.");
             if (data->visuals.tonemapping.enabled && !basic_shading) {
-                // Neutral first: it is the default, and the one which keeps the colors. Exposure Gamma is the same as
-                // None (exposure and gamma apply to every curve), and shows as it.
+                // ACES first: it is the default, the look the shading had before. Exposure Gamma is the same as None
+                // (exposure and gamma apply to every curve), and shows as it.
                 static const postprocess_pipeline::Tonemapper tonemappers[] = {
-                    postprocess_pipeline::Tonemapper_Neutral,
                     postprocess_pipeline::Tonemapper_ACES,
+                    postprocess_pipeline::Tonemapper_Neutral,
                     postprocess_pipeline::Tonemapper_Filmic,
                     postprocess_pipeline::Tonemapper_Passthrough,
                 };
-                static const char* tonemapper_names[] = {"Neutral", "ACES", "Filmic", "None"};
+                static const char* tonemapper_names[] = {"ACES", "Neutral", "Filmic", "None"};
                 int idx = (int)ARRAY_SIZE(tonemappers) - 1;
                 for (int i = 0; i < (int)ARRAY_SIZE(tonemappers); ++i) {
                     if (tonemappers[i] == data->visuals.tonemapping.tonemapper) idx = i;
@@ -1582,8 +1583,8 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Combo("Function", &idx, tonemapper_names, IM_ARRAYSIZE(tonemapper_names))) {
                     data->visuals.tonemapping.tonemapper = tonemappers[idx];
                 }
-                ImGui::SetItemTooltip("Neutral: the colors as they are, only the highlights are compressed (Khronos PBR Neutral).\n"
-                                      "ACES: a filmic curve with more contrast, which shifts and desaturates the colors.\n"
+                ImGui::SetItemTooltip("ACES: a filmic curve with more contrast, which shifts and desaturates the colors.\n"
+                                      "Neutral: the colors as they are, only the highlights are compressed (Khronos PBR Neutral).\n"
                                       "Filmic: John Hable's Uncharted 2 curve.\n"
                                       "None: no curve, what is brighter than white is clipped.");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);

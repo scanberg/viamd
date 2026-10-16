@@ -44,7 +44,8 @@ enum ShadingMode {
     ShadingMode_Count
 };
 
-// How the colours of the geometry (and of the isosurfaces) are read. Stored in workspaces by value.
+// How the colours of the geometry (and of the isosurfaces) are read. Stored in workspaces by value. Linear by
+// default, the way the colours were read before.
 enum ColorSpace {
     // As picked and seen: the sRGB colours the pickers show, decoded to linear for the lighting. A colour in full
     // light shows as it was picked.
@@ -83,7 +84,7 @@ struct Settings {
 
     struct {
         ShadingMode mode = ShadingMode_PhysicallyBased;
-        ColorSpace colors = ColorSpace_sRGB;    // how the colours of the geometry are read, in either mode
+        ColorSpace colors = ColorSpace_Linear;  // how the colours of the geometry are read, in either mode
         float light = 1.0f;         // strength of the directional light, relative to lighting(): in either mode
         float environment = 1.0f;   // strength of the light from the surroundings (sky and ground), relative to lighting(): physically based only
         // Basic only
@@ -97,7 +98,7 @@ struct Settings {
     // gamma 2.2.
     struct {
         bool enabled = true;
-        Tonemapper mode = Tonemapper_Neutral;
+        Tonemapper mode = Tonemapper_ACES;
         float exposure = 1.0f;
         float gamma = 2.2f;
     } tonemap;

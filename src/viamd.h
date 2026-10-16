@@ -1337,7 +1337,7 @@ struct ApplicationState {
 
         struct {
             postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
-            postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_sRGB;
+            postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_Linear;   // the look the colours had before
             float light = 1.0f;         // strength of the directional light
             float environment = 1.0f;   // strength of the light from the surroundings (physically based)
             float ambient = 0.3f;       // basic
@@ -1361,7 +1361,7 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_Neutral;
+            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_ACES;   // the look the shading had before
             float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;
