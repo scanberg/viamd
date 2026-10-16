@@ -1891,6 +1891,7 @@ struct WindowTree {
     TreeNodes t;
     float button_size = 0.0f;
     float button_spacing = 0.0f;
+    float handle_width = 0.0f;  // The same on every row, whatever its icon, so that the names line up
 };
 
 static void apply_window_actions(ApplicationState* state, const WindowActions& act) {
@@ -1965,29 +1966,42 @@ static void draw_tree_menu(NodeRef node, WindowActions* act) {
     }
 }
 
-// The handle a row is dragged by
-static void draw_drag_handle(NodeRef node, const char* name, float height) {
-    const char* icon = ICON_FA_GRIP_VERTICAL;
-    const ImVec2 icon_size = ImGui::CalcTextSize(icon);
-    const ImVec2 size = {icon_size.x + 6.0f, height};
-    ImGui::InvisibleButton("##handle", size);
+#define DRAG_HANDLE_HINT "Drag to move it: between others, or onto a group to put it in"
+
+// The handle a row is dragged by, the first thing on it. Its icon is the row's to draw (draw_handle_icon): a
+// group's says whether it is open, which is known only once its tree node is drawn.
+struct DragHandle {
+    ImVec2 min;
+    ImVec2 size;
+    bool hot = false;       // Hovered or held
+    bool tooltip = false;   // Hovered and not being dragged
+};
+
+static DragHandle draw_drag_handle(const WindowTree& tree, NodeRef node, const char* name) {
+    DragHandle h;
+    h.size = {tree.handle_width, tree.button_size};
+    ImGui::InvisibleButton("##handle", h.size);
+    h.min = ImGui::GetItemRectMin();
     const bool hovered = ImGui::IsItemHovered();
-    const bool active  = ImGui::IsItemActive();
-    if (hovered || active) {
+    h.hot = hovered || ImGui::IsItemActive();
+    if (h.hot) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     }
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImU32 col = ImGui::GetColorU32((hovered || active) ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-    ImGui::GetWindowDrawList()->AddText(min + (size - icon_size) * 0.5f, col, icon);
 
     if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
         ImGui::SetDragDropPayload(REPRESENTATION_NODE_DND, &node, sizeof(node));
         if (node.group) ImGui::Text("%s %s", ICON_FA_FOLDER, name);
         else            ImGui::TextUnformatted(name);
         ImGui::EndDragDropSource();
-    } else if (hovered) {
-        ImGui::SetTooltip("Drag to move it: between others, or onto a group to put it in");
+    } else {
+        h.tooltip = hovered;
     }
+    return h;
+}
+
+static void draw_handle_icon(const DragHandle& h, const char* icon, ImU32 col) {
+    const ImVec2 icon_size = ImGui::CalcTextSize(icon);
+    ImGui::GetWindowDrawList()->AddText(ImFloor(h.min + (h.size - icon_size) * 0.5f), col, icon);
 }
 
 // Where on a row something dropped goes: above it, below it or into it, by the height the mouse is at
@@ -2368,7 +2382,9 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
     const RowLayout row = row_begin();
     const float pad = 3.0f;
 
-    draw_drag_handle(node, rep.name, tree.button_size);
+    const DragHandle handle = draw_drag_handle(tree, node, rep.name);
+    draw_handle_icon(handle, ICON_FA_GRIP_VERTICAL, ImGui::GetColorU32(handle.hot ? ImGuiCol_Text : ImGuiCol_TextDisabled));
+    if (handle.tooltip) ImGui::SetTooltip(DRAG_HANDLE_HINT);
     ImGui::SameLine(0, 0);
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, pad));
@@ -2449,7 +2465,8 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
     const RowLayout row = row_begin();
     const float pad = 3.0f;
 
-    draw_drag_handle(node, group.name, tree.button_size);
+    // The handle is the folder, so that the name starts where the names of what is in it do, one indent in
+    const DragHandle handle = draw_drag_handle(tree, node, group.name);
     ImGui::SameLine(0, 0);
 
     // A group is open when it is made, which is when it is to be filled
@@ -2460,16 +2477,16 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
 
     // The folder says that it is a group. In the accent colour it has a context of its own, in red one that does
     // not evaluate; the context itself is in the tooltip, for when the group is closed.
-    ImGui::SameLine();
     const bool has_filter = group_has_filter(group);
     const bool invalid = has_filter && !group.filter.result.success && !group.filt_is_dirty;
-    const ImVec4 icon_col = invalid ? ImVec4(0.9f, 0.3f, 0.3f, 1.0f) : ImGui::GetStyleColorVec4(has_filter ? ImGuiCol_CheckMark : ImGuiCol_TextDisabled);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(icon_col, "%s", open ? ICON_FA_FOLDER_OPEN : ICON_FA_FOLDER);
-    if (ImGui::IsItemHovered()) {
-        if (invalid)         ImGui::SetTooltip("Context: %s\n%s", group.filter.text, group.filter.result.error);
-        else if (has_filter) ImGui::SetTooltip("Context: %s", group.filter.text);
-        else                 ImGui::SetTooltip("A group without a context of its own");
+    const ImU32 icon_col = invalid     ? ImGui::GetColorU32(ImVec4(0.9f, 0.3f, 0.3f, 1.0f))
+                         : has_filter  ? ImGui::GetColorU32(ImGuiCol_CheckMark)
+                         : ImGui::GetColorU32(handle.hot ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    draw_handle_icon(handle, open ? ICON_FA_FOLDER_OPEN : ICON_FA_FOLDER, icon_col);
+    if (handle.tooltip) {
+        if (invalid)         ImGui::SetTooltip("Context: %s\n%s\n\n" DRAG_HANDLE_HINT, group.filter.text, group.filter.result.error);
+        else if (has_filter) ImGui::SetTooltip("Context: %s\n\n" DRAG_HANDLE_HINT, group.filter.text);
+        else                 ImGui::SetTooltip("A group without a context of its own\n\n" DRAG_HANDLE_HINT);
     }
 
     ImGui::SameLine();
@@ -2568,6 +2585,8 @@ void draw_representations_window(ApplicationState* state) {
     tree.t = tree_nodes(*state, state->allocator.frame);
     tree.button_size = ImGui::GetFontSize() + 3.0f * 2;
     tree.button_spacing = 2.0f;
+    tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
+                        MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 
     if (tree.t.count == 0) {
         ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");

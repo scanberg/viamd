@@ -64,7 +64,8 @@ bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r,
 // The lower end first
 void timeline_period_normalize(TimelinePeriod* r);
 
-// Fixed or following, covering the frames it covers now (clamped to the trajectory when it stops following)
+// Fixed or following. Made to follow, it keeps its extent and is centered on the current frame (an offset of 0);
+// made fixed, it covers the frames it covers now (clamped to the trajectory)
 void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_frame, int num_frames);
 
 // Adds a period and returns it, NULL when there is no room for another. Without a name it gets one
