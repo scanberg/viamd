@@ -24,6 +24,7 @@ enum EntryType {
     EntryType_Bool,
     EntryType_Int,
     EntryType_Float,
+    EntryType_FloatVec,
     EntryType_Str,
 };
 
@@ -31,7 +32,7 @@ struct Entry {
     char      key[MAX_KEY_LEN + 1];
     EntryType type;
     void*     ptr;
-    size_t    cap;  // EntryType_Str only
+    size_t    cap;  // EntryType_Str: of the buffer, EntryType_FloatVec: the count
 };
 
 struct Hook {
@@ -84,6 +85,10 @@ static void add_entry(str_t key, EntryType type, void* ptr, size_t cap) {
 void bind(str_t key, bool*  value) { add_entry(key, EntryType_Bool,  value, 0); }
 void bind(str_t key, int*   value) { add_entry(key, EntryType_Int,   value, 0); }
 void bind(str_t key, float* value) { add_entry(key, EntryType_Float, value, 0); }
+void bind(str_t key, float* values, size_t count) {
+    ASSERT(count > 0 && count <= 16);
+    add_entry(key, EntryType_FloatVec, values, count);
+}
 void bind(str_t key, char*  buf, size_t cap) {
     ASSERT(cap > 0);
     add_entry(key, EntryType_Str, buf, cap);
@@ -134,6 +139,8 @@ static void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* l
     case EntryType_Bool:  ok = viamd::extract_bool(*(bool*)entry->ptr,  val); break;
     case EntryType_Int:   ok = viamd::extract_int (*(int*)entry->ptr,   val); break;
     case EntryType_Float: ok = viamd::extract_flt (*(float*)entry->ptr, val); break;
+    // All or nothing: a vector missing a number keeps the one it had
+    case EntryType_FloatVec: ok = viamd::extract_flt_vec((float*)entry->ptr, entry->cap, val); break;
     case EntryType_Str:
         // Taken verbatim: an ini line cannot hold a newline, so there is nothing to unescape.
         str_copy_to_char_buf((char*)entry->ptr, entry->cap, val);
@@ -173,6 +180,13 @@ static void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
         case EntryType_Bool:  out_buf->appendf("%s=%d\n", entry.key, *(const bool*)entry.ptr ? 1 : 0); break;
         case EntryType_Int:   out_buf->appendf("%s=%d\n", entry.key, *(const int*)entry.ptr);          break;
         case EntryType_Float: out_buf->appendf("%s=%g\n", entry.key, *(const float*)entry.ptr);        break;
+        case EntryType_FloatVec: {
+            const float* v = (const float*)entry.ptr;
+            out_buf->appendf("%s=", entry.key);
+            for (size_t k = 0; k < entry.cap; ++k) out_buf->appendf(k == 0 ? "%g" : ",%g", v[k]);
+            out_buf->append("\n");
+            break;
+        }
         case EntryType_Str:   out_buf->appendf("%s=%s\n", entry.key, (const char*)entry.ptr);          break;
         default:
             ASSERT(false);

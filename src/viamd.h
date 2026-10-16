@@ -205,6 +205,7 @@ enum class RepresentationType {
     Cartoon = MD_GL_REP_CARTOON,
     ElectronicStructure,
     DipoleMoment,
+    SimulationBox,
     Count
 };
 
@@ -228,7 +229,8 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ribbons",
     "Cartoon",
     "Electronic Structure",
-    "Dipole Moment"
+    "Dipole Moment",
+    "Simulation Box",
 };
 
 inline const char* color_mapping_str[(int)ColorMapping::Count] = {
@@ -875,6 +877,14 @@ struct DipoleRepresentation {
 	float radius = 0.05f;
 };
 
+// The edges of the unit cell, of the frame shown (it may change with it)
+struct BoxRepresentation {
+    vec4_t color = { 0.25f, 0.25f, 0.25f, 1.0f };
+    float thickness = 0.2f;     // Å, the diameter of the edges (capsules, lit), never thinner than a pixel; 0 for lines of
+                                // a pixel, unlit
+    bool axes = false;          // The edges along a, b and c from the origin of the cell red, green and blue
+};
+
 // The representations, the groups they can be put in and everything done with them is in representation.h.
 struct Representation {
     RepresentationNode node = {};   // where it is in the Representations window, see representation_tree.h
@@ -934,6 +944,7 @@ struct Representation {
     ElectronicStructureRepresentation electronic_structure = {};
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
+    BoxRepresentation box = {};
 };
 
 // A group of representations. What it holds is shown only while the group is, and its filter, when it has one, is the
@@ -1419,11 +1430,6 @@ struct ApplicationState {
         } spline;
     } visuals;
 
-    struct {
-        bool enabled = false;
-        vec4_t color = {0, 0, 0, 0.5f};
-    } simulation_box;
-
     // --- REPRESENTATIONS ---
     struct {
         // Both in the order the window lists them. Where each one is in the tree of groups is on the
@@ -1498,6 +1504,15 @@ struct ApplicationState {
         bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
         bool raycast_splines = true;        // The splines of the cartoon and the tubes of the lipids and nucleic acids
                                             // ray cast (a quad per segment), else drawn as meshes
+        // The look a session starts with (Visuals > Save as Default), as the factory sets it until saved. A workspace
+        // has its own, and loading one leaves these be. What depends on the computer rather than on the figure
+        // (ambient occlusion, anti-aliasing, VSync) is bound to the .ini as it is, in visuals.
+        struct {
+            decltype(visuals.background)  background;
+            decltype(visuals.shading)     shading;
+            decltype(visuals.tonemapping) tonemapping;
+            decltype(visuals.dof)         dof;
+        } look;
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;

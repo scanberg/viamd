@@ -499,6 +499,36 @@ static void apply_font_size(void* user_data) {
     style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
 }
 
+// The look of the Visuals menu a session starts with (settings.look) and the session's own (visuals): a workspace
+// sets the latter, Save as Default copies it to the former, which the .ini keeps
+static void visual_look_save(ApplicationState* state) {
+    state->settings.look.background  = state->visuals.background;
+    state->settings.look.shading     = state->visuals.shading;
+    state->settings.look.tonemapping = state->visuals.tonemapping;
+    state->settings.look.dof         = state->visuals.dof;
+    app_settings::mark_dirty();
+}
+
+static void visual_look_restore(ApplicationState* state) {
+    state->visuals.background  = state->settings.look.background;
+    state->visuals.shading     = state->settings.look.shading;
+    state->visuals.tonemapping = state->settings.look.tonemapping;
+    state->visuals.dof         = state->settings.look.dof;
+}
+
+// Once the .ini is read: its enums within their ranges (a file can hold anything), and the session in the look saved
+static void apply_visual_settings(void* user_data) {
+    ApplicationState* state = (ApplicationState*)user_data;
+    const decltype(state->visuals) factory = {};
+    auto& v    = state->visuals;
+    auto& look = state->settings.look;
+    if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
+    if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
+    if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
+    if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
+    visual_look_restore(state);
+}
+
 // timeline.x_values and view_range are stored in display units, so a change to the time preference
 // has to be carried into them. The raw frame times are still with the trajectory, so this re-derives
 // rather than compounding factors, and the visible range is moved by the ratio so the user keeps
@@ -636,6 +666,39 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
+    // What the computer can handle, not what a figure looks like: kept per user as it is, never in a workspace
+    state.app.window.vsync = true;
+    app_settings::bind(STR_LIT("vsync"), &state.app.window.vsync);
+    app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
+    app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
+    app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
+    app_settings::bind(STR_LIT("ssao_temporal"), &state.visuals.ssao.temporal);
+    app_settings::bind(STR_LIT("fxaa"), &state.visuals.fxaa.enabled);
+    app_settings::bind(STR_LIT("taa"), &state.visuals.temporal_aa.enabled);
+    app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
+    app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
+    app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
+    app_settings::bind(STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
+    app_settings::bind(STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
+    app_settings::bind(STR_LIT("sharpen_strength"), &state.visuals.sharpen.weight);
+    // The look a session starts with (Visuals > Save as Default)
+    {
+        auto& look = state.settings.look;
+        app_settings::bind(STR_LIT("look_background"), look.background.color.elem, 3);
+        app_settings::bind_enum(STR_LIT("look_shading"), &look.shading.mode);
+        app_settings::bind_enum(STR_LIT("look_colors"), &look.shading.colors);
+        app_settings::bind(STR_LIT("look_light"), &look.shading.light);
+        app_settings::bind(STR_LIT("look_environment"), &look.shading.environment);
+        app_settings::bind(STR_LIT("look_ambient"), &look.shading.ambient);
+        app_settings::bind(STR_LIT("look_specular"), &look.shading.specular);
+        app_settings::bind(STR_LIT("look_tonemapping"), &look.tonemapping.enabled);
+        app_settings::bind_enum(STR_LIT("look_tonemapper"), &look.tonemapping.tonemapper);
+        app_settings::bind(STR_LIT("look_exposure"), &look.tonemapping.exposure);
+        app_settings::bind(STR_LIT("look_gamma"), &look.tonemapping.gamma);
+        app_settings::bind(STR_LIT("look_dof"), &look.dof.enabled);
+        app_settings::bind(STR_LIT("look_dof_strength"), &look.dof.aperture);
+    }
+    app_settings::on_apply(apply_visual_settings, &state);
     display_units::register_settings();
     app_settings::initialize();
 
@@ -670,7 +733,6 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    state.app.window.vsync = true;
     state.app.file_drop.user_data = &state;
     state.app.file_drop.callback = [](size_t num_files, const str_t file_paths[], void* user_data) {
         ApplicationState* state = (ApplicationState*)user_data;
@@ -1651,13 +1713,17 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGui::SeparatorText("Ambient Occlusion");
             ImGui::PushID("SSAO");
-            ImGui::Checkbox("Enabled", &data->visuals.ssao.enabled);
+            // The computer's settings (the ambient occlusion, the anti-aliasing and VSync here; Splines and Isosurfaces
+            // mark their own) are kept as they are set: the .ini
+            bool machine_dirty = false;
+            machine_dirty |= ImGui::Checkbox("Enabled", &data->visuals.ssao.enabled);
             ImGui::SetItemTooltip("Darken creases and cavities, where less of the surroundings' light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
                 const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
                 int mode = (int)data->visuals.ssao.mode;
                 if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes))) {
                     data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
+                    machine_dirty = true;
                 }
                 ImGui::SetItemTooltip("Performance: point samples.\nQuality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
                 const postprocess_pipeline::SsaoTimings t = postprocess_pipeline::ssao_timings();
@@ -1666,8 +1732,8 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::TextDisabled("%.2f ms", t.total_ms);
                     ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", t.estimator_ms, t.total_ms);
                 }
-                ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
-                ImGui::Checkbox("Temporal Filter", &data->visuals.ssao.temporal);
+                machine_dirty |= ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.0f, 8.f);
+                machine_dirty |= ImGui::Checkbox("Temporal Filter", &data->visuals.ssao.temporal);
                 ImGui::SetItemTooltip("Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
             }
             ImGui::PopID();
@@ -1733,25 +1799,25 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGui::SeparatorText("Anti-Aliasing");
             ImGui::PushID("AA");
-            ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
+            machine_dirty |= ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
             ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
-            ImGui::Checkbox("Temporal", &data->visuals.temporal_aa.enabled);
+            machine_dirty |= ImGui::Checkbox("Temporal", &data->visuals.temporal_aa.enabled);
             ImGui::SetItemTooltip("Smooth edges by blending each frame with the previous ones (TAA)");
             if (data->visuals.temporal_aa.enabled) {
                 // The options of the temporal resolve: indented under it
                 ImGui::Indent();
                 // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                ImGui::SliderFloat("History Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
+                machine_dirty |= ImGui::SliderFloat("History Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
                 ImGui::SetItemTooltip("How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
-                ImGui::SliderFloat("History Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
+                machine_dirty |= ImGui::SliderFloat("History Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
                 ImGui::SetItemTooltip("How much of the previous frames is kept where the image is still");
-                ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
+                machine_dirty |= ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
                 if (data->visuals.temporal_aa.motion_blur.enabled) {
-                    ImGui::SliderFloat("Motion Blur Strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
+                    machine_dirty |= ImGui::SliderFloat("Motion Blur Strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
                 }
-                ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
+                machine_dirty |= ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
                 if (data->visuals.sharpen.enabled) {
-                    ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
+                    machine_dirty |= ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
                 }
                 ImGui::Unindent();
             }
@@ -1799,14 +1865,28 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGui::SeparatorText("Other");
             ImGui::PushID("Other");
-            ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
-            ImGui::SetItemTooltip("Draw the outline of the periodic box");
-            if (data->simulation_box.enabled) {
-                ImGui::SameLine();
-                ImGui::ColorEdit4Minimal("##Box-Color", data->simulation_box.color.elem);
-            }
-            ImGui::Checkbox("VSync", &data->app.window.vsync);
+            machine_dirty |= ImGui::Checkbox("VSync", &data->app.window.vsync);
             ImGui::SetItemTooltip("Limit the frame rate to the display's refresh rate");
+            ImGui::PopID();
+            if (machine_dirty) {
+                app_settings::mark_dirty();
+            }
+
+            // The look (View to Depth of Field but the camera, and the ambient occlusion) is the workspace's: a new
+            // session starts with the one saved here
+            ImGui::Separator();
+            ImGui::PushID("Defaults");
+            if (ImGui::Button("Save as Default")) {
+                visual_look_save(data);
+            }
+            ImGui::SetItemTooltip("Start new sessions with this look: the shading, the background, the tone mapping and\n"
+                                  "the depth of field. A workspace keeps its own and loads it. The rest of this menu is\n"
+                                  "this computer's, kept as it is set.");
+            ImGui::SameLine();
+            if (ImGui::Button("Reset")) {
+                visual_look_restore(data);
+            }
+            ImGui::SetItemTooltip("Back to the look saved as default");
             ImGui::PopID();
             ImGui::EndMenu();
         }
@@ -6222,14 +6302,6 @@ static void render(ApplicationState* state) {
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
-    if (state->simulation_box.enabled && state->mold.state.unitcell.flags != 0) {
-        mat3_t A = { 0 };
-		md_unitcell_A_extract_float(A.elem, &state->mold.state.unitcell);
-        immediate::Scope scope(state->gfx.world, "simulation box");
-        // Through the turn the coordinates carry, if the orientation is kept: the cell itself cannot hold one
-        immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, state->operations.state_rotation * mat4_from_mat3(A), convert_color(state->simulation_box.color));
-    }
-
     {
         immediate::Scope vis_scope(state->gfx.overlay, "visualization");
         immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
@@ -6602,6 +6674,53 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     }
 }
 
+// The edges of the unit cell of the frame shown (a SimulationBox representation), through the turn the coordinates
+// carry if the orientation is kept (the cell itself cannot hold one). Capsules of the thickness, shaded as the rest of
+// the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
+// does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
+static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
+    const md_unitcell_t& cell = state->mold.state.unitcell;
+    if (md_unitcell_flags(&cell) == 0) return;
+
+    mat3_t A = {0};
+    md_unitcell_A_extract_float(A.elem, &cell);
+    const mat4_t M = state->operations.state_rotation * mat4_from_mat3(A);
+    const uint32_t color = convert_color(vec4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
+    const uint32_t axis_color[3] = { convert_color(vec4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
+
+    immediate::Scope scope(state->gfx.world, "simulation box");
+
+    // The corners: bit k of i is the coordinate along cell vector k
+    vec3_t corner[8];
+    for (int i = 0; i < 8; ++i) {
+        corner[i] = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
+    }
+
+    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection
+    const mat4_t& V = state->view.param.matrix.curr.view;
+    const mat4_t& P = state->view.param.matrix.curr.proj;
+    const float   h = (float)MAX(state->gbuffer.height, 1);
+    const bool    ortho = P.elem[3][3] == 1.0f;
+    const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
+
+    for (int i = 0; i < 8; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            const int bit = 1 << k;
+            if (i & bit) continue;
+            const int j = i | bit;
+            const uint32_t col = (rep.box.axes && i == 0) ? axis_color[k] : color;
+            if (rep.box.thickness > 0.0f) {
+                const vec3_t mid  = (corner[i] + corner[j]) * 0.5f;
+                const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
+                const float radius = MAX(0.5f * rep.box.thickness, 0.6f * px_per_depth * depth);
+                immediate::capsule(scope, corner[i], corner[j], radius, col);
+            } else {
+                immediate::line(scope, corner[i], corner[j], col);
+            }
+        }
+    }
+}
+
 static void draw_representations_opaque(ApplicationState* state) {
     ASSERT(state);
 
@@ -6754,6 +6873,10 @@ static void draw_representations_opaque(ApplicationState* state) {
                         immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
                         immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
                     }
+                }
+            } else if (rep.type == RepresentationType::SimulationBox) {
+                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                    draw_simulation_box(state, rep);
                 }
             }
         }

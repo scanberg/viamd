@@ -593,6 +593,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
         case RepresentationType::ElectronicStructure:
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
+        case RepresentationType::SimulationBox:
             return false;
         default:
             return true;
@@ -757,6 +758,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     case RepresentationType::DipoleMoment:
         rep->type_is_valid = md_attributes_get(&state->mold.sys.attributes, rep->dipole.dipole_key) != NULL;
+        break;
+    case RepresentationType::SimulationBox:
+        rep->type_is_valid = md_unitcell_flags(&state->mold.state.unitcell) != 0;
         break;
     default:
         ASSERT(false);
@@ -989,6 +993,13 @@ void create_default_representations(ApplicationState* state) {
     }
 
 done:
+    // The cell, where there is one, hidden: there to be shown, for the coarse grained and the large too
+    if (md_unitcell_flags(&state->mold.state.unitcell) != 0) {
+        Representation* box = create_representation(state, RepresentationType::SimulationBox);
+        snprintf(box->name, sizeof(box->name), "box");
+        box->enabled = false;
+    }
+
     if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
@@ -1138,6 +1149,12 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_dbl(rep->dipole.scale, arg);
         } else if (str_eq(ident, STR_LIT("DipoleRadius"))) {
             viamd::extract_flt(rep->dipole.radius, arg);
+        } else if (str_eq(ident, STR_LIT("BoxColor"))) {
+            viamd::extract_vec4(rep->box.color, arg);
+        } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
+            viamd::extract_flt(rep->box.thickness, arg);
+        } else if (str_eq(ident, STR_LIT("BoxAxes"))) {
+            viamd::extract_bool(rep->box.axes, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureOrbitalIdx"))) {
             viamd::extract_int(rep->electronic_structure.orbital_idx, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureExcitedStateIdx"))) {
@@ -1293,6 +1310,12 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
         viamd::write_vec3(state, STR_LIT("DipoleOffset"), rep.dipole.offset);
         viamd::write_dbl(state,  STR_LIT("DipoleScale"), rep.dipole.scale);
         viamd::write_flt(state,  STR_LIT("DipoleRadius"), rep.dipole.radius);
+    }
+
+    if (rep.type == RepresentationType::SimulationBox) {
+        viamd::write_vec4(state, STR_LIT("BoxColor"), rep.box.color);
+        viamd::write_flt(state,  STR_LIT("BoxThickness"), rep.box.thickness);
+        viamd::write_bool(state, STR_LIT("BoxAxes"), rep.box.axes);
     }
 
     if (rep.type == RepresentationType::ElectronicStructure) {
@@ -2254,6 +2277,18 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         ImGui::SliderScalar("scale", ImGuiDataType_Double, &rep.dipole.scale, &dipole_min, &dipole_max, "%.3f");
         ImGui::SliderFloat("radius", &rep.dipole.radius, 0.01f, 0.5f);
         ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
+        break;
+    case RepresentationType::SimulationBox:
+        // Drawn from the cell every frame, so none of these is an update of the representation
+        ImGui::ColorEdit3("color", rep.box.color.elem);
+        ImGui::SliderFloat("thickness", &rep.box.thickness, 0.0f, 2.0f, rep.box.thickness > 0.0f ? "%.2f Å" : "line", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Diameter of the edges, shaded as the rest of the scene and never thinner than a pixel.\n"
+                              "0: lines of a pixel, unshaded.");
+        ImGui::Checkbox("axes", &rep.box.axes);
+        ImGui::SetItemTooltip("The edges along a, b and c from the origin of the cell in red, green and blue");
+        if (!rep.type_is_valid) {
+            ImGui::TextDisabled("The system has no unit cell");
+        }
         break;
     default:
     {

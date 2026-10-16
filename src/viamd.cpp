@@ -1734,6 +1734,10 @@ struct WorkspacePending {
     bool   has_view_range;
     double view_beg_frame;
     double view_end_frame;
+
+    // The simulation box of a workspace from before it was a representation ([RenderSettings]), which becomes one
+    bool   box_enabled;
+    vec4_t box_color;
 };
 
 static void workspace_reset(ApplicationState* data) {
@@ -1765,8 +1769,15 @@ static void workspace_reset(ApplicationState* data) {
     data->distributions.num_subplots = 1;
     data->timeline.periods = TimelinePeriods{};
 
-    data->visuals = {};
-    data->simulation_box = {};
+    // The look to the factory's, which a workspace written before one of its settings existed was seen in. The rest
+    // of the visuals is the computer's (the .ini), which no workspace sets.
+    {
+        const decltype(data->visuals) factory = {};
+        data->visuals.background  = factory.background;
+        data->visuals.shading     = factory.shading;
+        data->visuals.tonemapping = factory.tonemapping;
+        data->visuals.dof         = factory.dof;
+    }
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
 
@@ -1900,29 +1911,18 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("ShadingEnvironment")))   viamd::extract_flt(v.shading.environment, arg);
                 else if (str_eq(ident, STR_LIT("ShadingAmbient")))       viamd::extract_flt(v.shading.ambient, arg);
                 else if (str_eq(ident, STR_LIT("ShadingSpecular")))      viamd::extract_flt(v.shading.specular, arg);
-                else if (str_eq(ident, STR_LIT("SsaoEnabled")))          viamd::extract_bool(v.ssao.enabled, arg);
-                // SsaoIntensity, SsaoRadius, SsaoBias and DofFocusScale belonged to the previous scale-dependent SSAO / DOF
-                // and are deliberately ignored: their values do not translate to the new parameters.
-                else if (str_eq(ident, STR_LIT("SsaoStrength")))         viamd::extract_flt(v.ssao.intensity, arg);
-                else if (str_eq(ident, STR_LIT("SsaoTemporal")))         viamd::extract_bool(v.ssao.temporal, arg);
-                else if (str_eq(ident, STR_LIT("SsaoMode")))             viamd::extract_enum(v.ssao.mode, arg, (int)postprocess_pipeline::SsaoMode_Count);
+                // The ambient occlusion and the anti-aliasing (Ssao*, Fxaa*, Taa*, MotionBlur*, Sharpen*) were written by
+                // earlier versions and are ignored: they are the computer's settings (the .ini), not the figure's. Without
+                // a radius of the scene, nothing of the ambient occlusion is the figure's. DofFocusScale belonged to the
+                // previous scale-dependent DOF and is ignored too.
                 else if (str_eq(ident, STR_LIT("TonemapEnabled")))       viamd::extract_bool(v.tonemapping.enabled, arg);
                 else if (str_eq(ident, STR_LIT("Tonemapper")))           viamd::extract_enum(v.tonemapping.tonemapper, arg, (int)postprocess_pipeline::Tonemapper_Count);
                 else if (str_eq(ident, STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
                 else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
-                else if (str_eq(ident, STR_LIT("FxaaEnabled")))          viamd::extract_bool(v.fxaa.enabled, arg);
-                else if (str_eq(ident, STR_LIT("TaaEnabled")))           viamd::extract_bool(v.temporal_aa.enabled, arg);
-                else if (str_eq(ident, STR_LIT("TaaJitter")))            viamd::extract_bool(v.temporal_aa.jitter, arg);
-                else if (str_eq(ident, STR_LIT("TaaFeedbackMin")))       viamd::extract_flt(v.temporal_aa.feedback_min, arg);
-                else if (str_eq(ident, STR_LIT("TaaFeedbackMax")))       viamd::extract_flt(v.temporal_aa.feedback_max, arg);
-                else if (str_eq(ident, STR_LIT("MotionBlurEnabled")))    viamd::extract_bool(v.temporal_aa.motion_blur.enabled, arg);
-                else if (str_eq(ident, STR_LIT("MotionBlurScale")))      viamd::extract_flt(v.temporal_aa.motion_blur.motion_scale, arg);
-                else if (str_eq(ident, STR_LIT("SharpenEnabled")))       viamd::extract_bool(v.sharpen.enabled, arg);
-                else if (str_eq(ident, STR_LIT("SharpenWeight")))        viamd::extract_flt(v.sharpen.weight, arg);
-                else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(data->simulation_box.enabled, arg);
-                else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(data->simulation_box.color, arg);
+                else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(pending.box_enabled, arg);
+                else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(pending.box_color, arg);
             }
         } else if (str_eq(section, STR_LIT("Camera"))) {
             // A transform is only restored whole: half of one mixed with the default view is neither
@@ -2018,6 +2018,14 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 MD_LOG_DEBUG("Workspace: nothing reads the section [" STR_FMT "], it is skipped", STR_ARG(section));
             }
         }
+    }
+
+    // The box as it was drawn: lines of a pixel, of its colour
+    if (pending.box_enabled) {
+        Representation* box = create_representation(data, RepresentationType::SimulationBox);
+        snprintf(box->name, sizeof(box->name), "box");
+        if (pending.box_color.w > 0.0f) box->box.color = pending.box_color;
+        box->box.thickness = 0.0f;
     }
 
     // ## 3. Load the files, then apply what refers to them
@@ -2235,27 +2243,14 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("ShadingEnvironment"), v.shading.environment);
         viamd::write_flt(state,  STR_LIT("ShadingAmbient"), v.shading.ambient);
         viamd::write_flt(state,  STR_LIT("ShadingSpecular"), v.shading.specular);
-        viamd::write_bool(state, STR_LIT("SsaoEnabled"), v.ssao.enabled);
-        viamd::write_flt(state,  STR_LIT("SsaoStrength"), v.ssao.intensity);
-        viamd::write_bool(state, STR_LIT("SsaoTemporal"), v.ssao.temporal);
-        viamd::write_int(state,  STR_LIT("SsaoMode"), (int)v.ssao.mode);
         viamd::write_bool(state, STR_LIT("TonemapEnabled"), v.tonemapping.enabled);
         viamd::write_int(state,  STR_LIT("Tonemapper"), (int)v.tonemapping.tonemapper);
         viamd::write_flt(state,  STR_LIT("TonemapExposure"), v.tonemapping.exposure);
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
         viamd::write_flt(state,  STR_LIT("DofAperture"), v.dof.aperture);
-        viamd::write_bool(state, STR_LIT("FxaaEnabled"), v.fxaa.enabled);
-        viamd::write_bool(state, STR_LIT("TaaEnabled"), v.temporal_aa.enabled);
-        viamd::write_bool(state, STR_LIT("TaaJitter"), v.temporal_aa.jitter);
-        viamd::write_flt(state,  STR_LIT("TaaFeedbackMin"), v.temporal_aa.feedback_min);
-        viamd::write_flt(state,  STR_LIT("TaaFeedbackMax"), v.temporal_aa.feedback_max);
-        viamd::write_bool(state, STR_LIT("MotionBlurEnabled"), v.temporal_aa.motion_blur.enabled);
-        viamd::write_flt(state,  STR_LIT("MotionBlurScale"), v.temporal_aa.motion_blur.motion_scale);
-        viamd::write_bool(state, STR_LIT("SharpenEnabled"), v.sharpen.enabled);
-        viamd::write_flt(state,  STR_LIT("SharpenWeight"), v.sharpen.weight);
-        viamd::write_bool(state, STR_LIT("SimulationBoxEnabled"), app_state->simulation_box.enabled);
-        viamd::write_vec4(state, STR_LIT("SimulationBoxColor"), app_state->simulation_box.color);
+        // The ambient occlusion and the anti-aliasing are the computer's settings (the .ini), the simulation box a
+        // representation
     }
 
     // The target, not the camera: the camera eases towards it over several frames (camera_animate),
