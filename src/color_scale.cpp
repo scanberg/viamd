@@ -2,6 +2,7 @@
 
 #include <display_units.h>
 #include <imgui_widgets.h>
+#include <property_grid.h>
 #include <app/IconsFontAwesome6.h>
 
 #include <core/md_common.h>
@@ -89,44 +90,36 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
     ASSERT(lines);
     bool changed = false;
     ImGui::PushID("isolines");
+    const ImGuiStyle& style = ImGui::GetStyle();
 
-    changed |= ImGui::Checkbox("isolines", &lines->show);
-    ImGui::SetItemTooltip("Lines on the surface where the field takes given values.\n"
+    // Shown, and how wide, on one row: the width means nothing without the lines
+    prop::row("isolines", "Lines on the surface where the field takes the given values.\n"
                           "On the legend: hover a value to see its line, click to add a line there,\n"
                           "drag a line to move it, right click to edit or remove one.");
+    changed |= ImGui::Checkbox("##show", &lines->show);
     if (!lines->show) {
         ImGui::PopID();
         return changed;
     }
+    ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    changed |= ImGui::SliderFloat("##width", &lines->width, 0.5f, 6.0f, "width %.1f pt");
 
     char unit_str[32] = "";
     const double scl = display_units::factor_print(unit_str, sizeof(unit_str), unit);
     const float fscl = (float)scl;
 
-    // Under the checkbox and narrower by the indent, so that the labels stay in their column
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float indent = style.IndentSpacing;
-    const float item_w = MAX(ImGui::CalcItemWidth() - indent, 60.0f);
-    const float btn_w  = ImGui::GetFrameHeight();
-    const float gap    = style.ItemInnerSpacing.x;
-    ImGui::Indent(indent);
-
-    ImGui::SetNextItemWidth(item_w);
-    changed |= ImGui::SliderFloat("width", &lines->width, 0.5f, 6.0f, "%.1f pt");
-
-    // The values in the display unit, which is said once, as the label of the list
-    char label[64];
-    if (unit_str[0]) snprintf(label, sizeof(label), "values (%s)", unit_str);
-    else             snprintf(label, sizeof(label), "values");
-
-    // A drag of the whole range over about 300 points
+    // The values in the display unit, which is said once, beside the button that adds one
     const float ext   = fabsf(scale.range_end - scale.range_beg) * fscl;
-    const float speed = ext > 0.0f ? ext / 300.0f : 0.001f;
+    const float speed = ext > 0.0f ? ext / 300.0f : 0.001f;     // the whole range over about 300 points
+    const float btn_w = ImGui::GetFrameHeight();
+    const float gap   = style.ItemInnerSpacing.x;
     int remove = -1;
     for (int i = 0; i < lines->count; ++i) {
         ImGui::PushID(i);
+        prop::row(i == 0 ? "values" : "");
         float v = lines->values[i] * fscl;
-        ImGui::SetNextItemWidth(item_w - btn_w - gap);
+        ImGui::SetNextItemWidth(MAX(prop::control_width() - btn_w - gap, 1.0f));
         if (ImGui::DragFloat("##value", &v, speed, 0.0f, 0.0f, "%.4g")) {
             lines->values[i] = v / fscl;
             changed = true;
@@ -140,10 +133,6 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
             remove = i;
         }
         ImGui::SetItemTooltip("Remove the line");
-        if (i == 0) {
-            ImGui::SameLine(0.0f, gap);
-            ImGui::TextUnformatted(label);
-        }
         ImGui::PopID();
     }
     if (remove >= 0) {
@@ -151,7 +140,7 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
         changed = true;
     }
 
-    const float row_x = ImGui::GetCursorPosX();
+    prop::row(lines->count == 0 ? "values" : "");
     ImGui::BeginDisabled(lines->count >= ISOLINES_MAX);
     if (ImGui::Button(ICON_FA_PLUS, ImVec2(btn_w, 0))) {
         // Zero where the range holds it (the neutral contour of a potential), else the middle of the range
@@ -165,15 +154,14 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
     } else {
         ImGui::SetItemTooltip("Add a line (or click the legend's colour bar where it should be)");
     }
+    ImGui::SameLine(0.0f, 2.0f * gap);
+    ImGui::AlignTextToFramePadding();
     if (lines->count == 0) {
-        // Nothing to list: the label goes with the button, in the column of the labels
-        ImGui::SameLine(0.0f, gap);
         ImGui::TextDisabled("none yet");
-        ImGui::SameLine(row_x + item_w + gap);
-        ImGui::TextUnformatted(label);
+    } else if (unit_str[0]) {
+        ImGui::TextDisabled("%s", unit_str);
     }
 
-    ImGui::Unindent(indent);
     ImGui::PopID();
     return changed;
 }
@@ -424,13 +412,11 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
 
     ImGui::PushID("color_scale");
 
+    prop::row("colormap");
     const ImVec2 button_size = {ImGui::CalcItemWidth(), 0};
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(scale->colormap), button_size, scale->colormap)) {
         ImGui::OpenPopup("Colormap");
     }
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-    changed |= ImGui::Checkbox("legend", &scale->show_legend);
-    ImGui::SetItemTooltip("Show the colour map with its range and unit in the view.\nHold Alt to move or resize it.");
     if (ImGui::BeginPopup("Colormap")) {
         // The qualitative maps are left out: their colours do not order, so they cannot carry a value
         for (int m = COLOR_SCALE_FIRST_CONTINUOUS_COLORMAP; m < ImPlot::GetColormapCount(); ++m) {
@@ -443,39 +429,34 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         ImGui::EndPopup();
     }
 
+    prop::row("legend", "The colour map with its range and unit, in the view. Hold Alt to move or resize it.");
+    changed |= ImGui::Checkbox("##legend", &scale->show_legend);
+
     // Shown in the display unit, kept in the values' own
     char unit_str[32] = "";
     const double scl = display_units::factor_print(unit_str, sizeof(unit_str), unit);
     const float fscl = (float)scl;
 
+    char unit_fmt[64];
+    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
+    char fmt[96];
+    if (scale->symmetric) {
+        snprintf(fmt, sizeof(fmt), (const char*)u8"± %%.4g %s", unit_fmt);
+    } else {
+        snprintf(fmt, sizeof(fmt), "%%.4g to %%.4g %s", unit_fmt);
+    }
+
+    // The range, and whether it follows the values: on the same row, as setting the range by hand stops it following
     bool mode_changed = false;
-    mode_changed |= ImGui::Checkbox("auto range", &scale->auto_range);
+    prop::row("range");
+    mode_changed |= ImGui::Checkbox("auto", &scale->auto_range);
     if (span_tooltip && span_tooltip[0]) {
         ImGui::SetItemTooltip("Follow the span of the values: %s", span_tooltip);
     } else {
         ImGui::SetItemTooltip("Follow the span of the values");
     }
-    ImGui::SameLine();
-    mode_changed |= ImGui::Checkbox("symmetric", &scale->symmetric);
-    ImGui::SetItemTooltip("A range centred on zero");
-    if (mode_changed) {
-        if (scale->symmetric && !scale->auto_range) {
-            const float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
-            scale->range_beg = -r;
-            scale->range_end =  r;
-        }
-        color_scale_update_range(scale, span);
-        changed = true;
-    }
-
-    char unit_fmt[64];
-    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
-    char fmt[96];
-    if (scale->symmetric) {
-        snprintf(fmt, sizeof(fmt), "%%.4g %s", unit_fmt);
-    } else {
-        snprintf(fmt, sizeof(fmt), "%%.4g to %%.4g %s", unit_fmt);
-    }
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::SetNextItemWidth(-FLT_MIN);
     if (scale->symmetric) {
         // From zero to half as far again as the largest magnitude, and never short of the range itself
         float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
@@ -483,7 +464,7 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         limit = MAX(limit, r);
         if (!(limit > 0.0f)) limit = 1.0f;
         float r_disp = r * fscl;
-        if (ImGui::SliderFloat("range ±", &r_disp, 0.0f, limit * fscl, fmt)) {
+        if (ImGui::SliderFloat("##range", &r_disp, 0.0f, limit * fscl, fmt)) {
             scale->range_beg = -r_disp / fscl;
             scale->range_end =  r_disp / fscl;
             scale->auto_range = false;
@@ -501,7 +482,7 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         if (!(hi > lo)) { lo -= 1.0f; hi += 1.0f; }
         float beg = scale->range_beg * fscl;
         float end = scale->range_end * fscl;
-        if (ImGui::RangeSliderFloat("range", &beg, &end, lo * fscl, hi * fscl, fmt)) {
+        if (ImGui::RangeSliderFloat("##range", &beg, &end, lo * fscl, hi * fscl, fmt)) {
             scale->range_beg = beg / fscl;
             scale->range_end = end / fscl;
             scale->auto_range = false;
@@ -509,8 +490,20 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         }
     }
 
+    prop::row("symmetric", "A range centred on zero");
+    mode_changed |= ImGui::Checkbox("##symmetric", &scale->symmetric);
+    if (mode_changed) {
+        if (scale->symmetric && !scale->auto_range) {
+            const float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
+            scale->range_beg = -r;
+            scale->range_end =  r;
+        }
+        color_scale_update_range(scale, span);
+        changed = true;
+    }
+
     if (span.valid) {
-        ImGui::TextDisabled("%s: %.4g to %.4g %s", span_label ? span_label : "values", span.lo * scl, span.hi * scl, unit_str);
+        prop::hint("%s: %.4g to %.4g %s", span_label ? span_label : "values", span.lo * scl, span.hi * scl, unit_str);
         if (span.lo != span.min || span.hi != span.max) {
             ImGui::SetItemTooltip("%s%sextremes %.4g to %.4g %s", span_tooltip ? span_tooltip : "", span_tooltip ? "; " : "", span.min * scl, span.max * scl, unit_str);
         } else if (span_tooltip && span_tooltip[0]) {

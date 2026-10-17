@@ -107,16 +107,16 @@ void color_scale_isolines_remove(ColorScaleIsolines* lines, int idx);
 // the render target, 'px_per_point' of them to a point
 IsolineDesc color_scale_isoline_desc(const ColorScaleIsolines& lines, float px_per_point);
 
-// The controls of the lines: shown, their width, and their values in the display unit. Returns true when a line
-// changed.
+// The controls of the lines, as rows of a property grid: shown and their width, and their values in the display
+// unit. Returns true when a line changed.
 bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorScale& scale, md_unit_t unit);
 
 // The colour of a value, as packed RGBA (ImU32)
 uint32_t color_scale_color_u32(const ColorScale& scale, float value);
 
-// The controls: colour map and legend, auto range and symmetric, the range, and what the values span.
-// 'unit' is the values' own. 'span_label' says what the span is of ("on surface"), 'span_tooltip'
-// how it was measured. Returns true when the scale changed.
+// The controls, as rows of a property grid (property_grid.h): colour map, legend, the range and whether it follows
+// the values, symmetric, and what the values span. 'unit' is the values' own. 'span_label' says what the span is
+// of ("on surface"), 'span_tooltip' how it was measured. Returns true when the scale changed.
 bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip);
 
 // The legend: the colour map over its range with values, headed by 'label' and the unit, in a window

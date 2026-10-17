@@ -1460,7 +1460,6 @@ struct ApplicationState {
         bool atom_visibility_mask_dirty = false;
         uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
         bool show_window = false;
-        bool advanced_mode = false;
     } representation;
 
     struct {

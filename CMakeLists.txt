@@ -186,6 +186,7 @@ set(SRC_FILES
     src/loader.cpp
     src/main.cpp
     src/plot_series.cpp
+    src/property_grid.cpp
     src/representation.cpp
     src/representation_tree.cpp
     src/script_editor.cpp
@@ -212,6 +213,7 @@ set(SRC_FILES
     src/implot_widgets.h
     src/loader.h
     src/plot_series.h
+    src/property_grid.h
     src/representation.h
     src/representation_tree.h
     src/script_editor.h
