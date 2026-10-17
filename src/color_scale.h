@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <core/md_unit.h>
+#include <gfx/isolines.h>
 
 // COLOUR SCALES
 //
@@ -80,6 +81,36 @@ static inline float color_scale_param(const ColorScale& scale, float value) {
     return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
 }
 
+// ISOLINES of a scale: the values at which the surfaces it colours by a field draw lines (gfx/isolines.h). Kept
+// beside a scale by those who colour surfaces, not in it: the atoms a scale colours have no lines.
+//
+// The persistent lines are in the values' own unit and absolute - a threshold is a property of the field, not of
+// the range the map happens to span, which follows the surface when it is automatic. The transient line is the
+// value under the cursor of the legend, set while the legend is hovered (color_scale_draw_legend).
+struct ColorScaleIsolines {
+    bool  show  = true;                     // the persistent lines
+    int   count = 0;
+    float values[ISOLINES_MAX] = {};
+    float width = 1.5f;                     // of a line, in points
+
+    // Per frame, from the legend
+    bool  hover = false;
+    float hover_value = 0.0f;
+    int   drag = -1;                        // the line being dragged on the legend, -1 for none
+};
+
+// Adds a line, kept in order of value; returns its index, -1 when there is no room for another
+int  color_scale_isolines_add(ColorScaleIsolines* lines, float value);
+void color_scale_isolines_remove(ColorScaleIsolines* lines, int idx);
+
+// What a renderer takes (gfx/isolines.h): the lines, when shown, and the transient one, at a width in pixels of
+// the render target, 'px_per_point' of them to a point
+IsolineDesc color_scale_isoline_desc(const ColorScaleIsolines& lines, float px_per_point);
+
+// The controls of the lines: shown, their width, and their values in the display unit. Returns true when a line
+// changed.
+bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorScale& scale, md_unit_t unit);
+
 // The colour of a value, as packed RGBA (ImU32)
 uint32_t color_scale_color_u32(const ColorScale& scale, float value);
 
@@ -93,4 +124,9 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
 // and can then be moved and resized; where it was is kept in the .ini under 'id'. 'owner' names it in
 // its title bar, which shows while Alt is held. 'slot' is its place among the legends drawn, which
 // decides where it starts out.
-void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot);
+//
+// With 'lines' the scale also shows and edits isolines: it takes the mouse while the cursor is over the colour
+// bar and its values (and passes it to the view everywhere else, as without them). The value under the cursor is
+// the transient line; a click adds a line there and dragging moves it, a line's marker is dragged to move it,
+// and a right click edits or removes the line at the cursor.
+void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines = nullptr);

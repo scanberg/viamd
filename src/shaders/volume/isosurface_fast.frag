@@ -77,6 +77,113 @@ uniform sampler3D u_tex_field;
 uniform sampler2D u_tex_field_colormap;
 #endif
 
+#if defined(USE_FIELD)
+// Isolines (gfx/isolines.h): lines on the surfaces where the field takes these values, the persistent ones and
+// the transient one, u_isoline_width pixels wide.
+//
+// A hit is found inside the loops along the ray, where screen space derivatives are undefined, so the field's
+// change per pixel comes from ray differentials (Igehy 1999) instead: the rays through the next pixel along x and
+// along y meet the tangent plane of the hit, which gives how far the surface point moves per pixel (dP/dx, dP/dy),
+// and the field changes by its gradient along that, df/dx = grad f . dP/dx (grad f need not be projected onto
+// the tangent plane: dP/dx lies in it). The gradient is taken from the field volume by central differences over
+// the same offsets as the normals; the band the field is evaluated in is wide enough for them (surface_field.cpp,
+// band_mask). The distance to the line of value v is then |f - v| / |(df/dx, df/dy)| pixels, as on a mesh with
+// dFdx / dFdy, and the lines keep their width in pixels however the surface is turned.
+#define ISOLINES_MAX 8
+uniform int   u_isoline_count;
+uniform float u_isoline_values[ISOLINES_MAX];
+uniform int   u_isoline_hover;
+uniform float u_isoline_hover_value;
+uniform float u_isoline_width;
+uniform float u_field_grad_scale;   // 1 / (2 h), h the world length of the u_grad_offsets steps
+
+bool g_lines = false;   // whether there are any lines to draw
+vec3 g_rx_o;            // the rays through the next pixel along x and along y: origin and direction, view space
+vec3 g_rx_d;
+vec3 g_ry_o;
+vec3 g_ry_d;
+
+// The view space point at normalized device coordinates (ndc, z)
+vec3 isoline_view_point(vec2 ndc, float z) {
+    vec4 m = u_clip_to_model * vec4(ndc, z, 1.0);
+    return (u_model_to_view * vec4(m.xyz / m.w, 1.0)).xyz;
+}
+
+void isoline_init(vec2 ndc) {
+    g_lines = u_isoline_count > 0 || u_isoline_hover != 0;
+    if (!g_lines) return;
+    vec2 nx = ndc + vec2(2.0 * u_inv_res.x, 0.0);
+    vec2 ny = ndc + vec2(0.0, 2.0 * u_inv_res.y);
+    g_rx_o = isoline_view_point(nx, -1.0);
+    g_rx_d = isoline_view_point(nx,  0.0) - g_rx_o;
+    g_ry_o = isoline_view_point(ny, -1.0);
+    g_ry_d = isoline_view_point(ny,  0.0) - g_ry_o;
+}
+
+// Where the ray o + s d meets the plane through P with normal N. At a grazing angle the point runs off far: the
+// field changes a lot from one pixel to the next there, which is what it does on the screen.
+vec3 isoline_plane_hit(vec3 o, vec3 d, vec3 P, vec3 N) {
+    float dn = dot(N, d);
+    float lo = 1.0e-6 * length(d);
+    dn = (dn < 0.0) ? min(dn, -lo) : max(dn, lo);
+    return o + d * (dot(N, P - o) / dn);
+}
+
+// The coverage of a line w pixels wide at distance d (pixels) from its middle, box filtered over a pixel
+float isoline_coverage(float d, float w) {
+    return clamp(0.5 * w + 0.5 - d, 0.0, 1.0);
+}
+
+// The isolines painted onto the colour of a surface: f the field there, g its change per pixel along the
+// surface. The persistent lines dark with a light rim, the transient one light with a dark rim; a line is
+// opaque paint, whatever the coverage of the surface under it. As in isomesh.frag.
+vec4 apply_isolines(vec4 c, float f, float g) {
+    const vec3  DARK  = vec3(0.02);
+    const vec3  LIGHT = vec3(0.95);
+    const float RIM   = 2.0;            // pixels, both sides together
+    float inv_g = 1.0 / max(g, 1.0e-30);
+    float w = u_isoline_width;
+
+    float core = 0.0;
+    float rim  = 0.0;
+    for (int i = 0; i < u_isoline_count; ++i) {
+        float d = abs(f - u_isoline_values[i]) * inv_g;
+        core = max(core, isoline_coverage(d, w));
+        rim  = max(rim,  isoline_coverage(d, w + RIM));
+    }
+    c.rgb = mix(c.rgb, LIGHT, rim);
+    c.rgb = mix(c.rgb, DARK, core);
+    float cover = rim;
+
+    if (u_isoline_hover != 0) {
+        float d  = abs(f - u_isoline_hover_value) * inv_g;
+        float hc = isoline_coverage(d, w);
+        float hr = isoline_coverage(d, w + RIM);
+        c.rgb = mix(c.rgb, DARK, hr);
+        c.rgb = mix(c.rgb, LIGHT, hc);
+        cover = max(cover, hr);
+    }
+    c.a = mix(c.a, 1.0, cover);
+    return c;
+}
+
+// The lines on the surface hit at p (model space), N its view space normal, c its colour
+vec4 surface_isolines(vec4 c, vec3 p, vec3 N) {
+    vec3 ox = u_grad_offsets[0].xyz;
+    vec3 oy = u_grad_offsets[1].xyz;
+    vec3 oz = u_grad_offsets[2].xyz;
+    vec3 G = vec3(
+        texture(u_tex_field, p + ox).r - texture(u_tex_field, p - ox).r,
+        texture(u_tex_field, p + oy).r - texture(u_tex_field, p - oy).r,
+        texture(u_tex_field, p + oz).r - texture(u_tex_field, p - oz).r) * u_field_grad_scale;
+    vec3  P    = (u_model_to_view * vec4(p, 1.0)).xyz;
+    vec3  dPdx = isoline_plane_hit(g_rx_o, g_rx_d, P, N) - P;
+    vec3  dPdy = isoline_plane_hit(g_ry_o, g_ry_d, P, N) - P;
+    float g    = length(vec2(dot(G, dPdx), dot(G, dPdy)));
+    return apply_isolines(c, texture(u_tex_field, p).r, g);
+}
+#endif
+
 layout(location = 0) out vec4 out_color;
 
 const float PI      = 3.1415926535;
@@ -324,6 +431,10 @@ void main() {
     float ext_step = length(mat3(u_model_to_view) * dp) * u_optical_scale;  // extinction per unit tau over one step
     vec3  V     = -normalize(mat3(u_model_to_view) * dir);
 
+#if defined(USE_FIELD)
+    isoline_init(ndc);
+#endif
+
     float d0 = sample_volume(p0);
     uint inside = 0u;
     for (int i = 0; i < u_iso_count; ++i) {
@@ -378,6 +489,9 @@ void main() {
                 if (dot(N, V) < 0.0) N = -N;
 
                 vec4 c = surface_color(ph, i);
+#if defined(USE_FIELD)
+                if (g_lines) c = surface_isolines(c, ph, N);
+#endif
                 shade_surface(L, T, c.rgb, c.a, N, V);
 
                 inside ^= (1u << uint(i));

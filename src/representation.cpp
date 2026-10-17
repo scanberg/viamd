@@ -1223,6 +1223,15 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_bool(rep->electronic_structure.field_map.auto_range, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldLegend"))) {
             viamd::extract_bool(rep->electronic_structure.field_map.show_legend, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolinesShow"))) {
+            viamd::extract_bool(rep->electronic_structure.field_isolines.show, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineWidth"))) {
+            viamd::extract_flt(rep->electronic_structure.field_isolines.width, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineCount"))) {
+            int n;
+            if (viamd::extract_int(n, arg)) {
+                rep->electronic_structure.field_isolines.count = CLAMP(n, 0, ISOLINES_MAX);
+            }
         } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
             viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureTintNeg"))) {
@@ -1243,6 +1252,18 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             int n;
             if (viamd::extract_int(n, arg)) {
                 rep->electronic_structure.density_property.num_isos = CLAMP(n, 0, (int)ARRAY_SIZE(rep->electronic_structure.density_property.values));
+            }
+        } else if (str_begins_with(ident, STR_LIT("ElectronicStructureFieldIsoline"))) {
+            // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
+            const str_t num = str_substr(ident, STR_LIT("ElectronicStructureFieldIsoline").len, SIZE_MAX);
+            int i = 0;
+            bool ok = num.len > 0;
+            for (size_t k = 0; k < num.len; ++k) {
+                if (num.ptr[k] < '0' || num.ptr[k] > '9') { ok = false; break; }
+                i = i * 10 + (num.ptr[k] - '0');
+            }
+            if (ok && i < ISOLINES_MAX) {
+                viamd::extract_flt(rep->electronic_structure.field_isolines.values[i], arg);
             }
         } else {
             for (int i = 0; i < (int)ARRAY_SIZE(rep->electronic_structure.density_property.values); ++i) {
@@ -1360,6 +1381,15 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
             viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldSymmetric"), rep.electronic_structure.field_map.symmetric);
             viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldAutoRange"), rep.electronic_structure.field_map.auto_range);
             viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldLegend"),    rep.electronic_structure.field_map.show_legend);
+            const ColorScaleIsolines& lines = rep.electronic_structure.field_isolines;
+            viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldIsolinesShow"),  lines.show);
+            viamd::write_flt(state,      STR_LIT("ElectronicStructureFieldIsolineWidth"),  lines.width);
+            viamd::write_int(state,      STR_LIT("ElectronicStructureFieldIsolineCount"),  lines.count);
+            for (int j = 0; j < lines.count; ++j) {
+                char key[64];
+                snprintf(key, sizeof(key), "ElectronicStructureFieldIsoline%d", j);
+                viamd::write_flt(state, str_from_cstr(key), lines.values[j]);
+            }
         }
         viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
         for (int j = 0; j < rep.electronic_structure.density_property.num_isos; ++j) {
@@ -1541,6 +1571,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     const SurfaceFieldVolume& vol = es.field_vol;
     color_scale_draw_controls(&es.field_map, mesh_mode ? electronic_structure_mesh_field_span(es) : surface_field_span(vol),
                               surface_field_unit(es.field_kind), "on surface", "its 1st to 99th percentile on the surface");
+    // Drawn as the surface is shaded, like the colours: nothing to re-evaluate
+    color_scale_draw_isoline_controls(&es.field_isolines, es.field_map, surface_field_unit(es.field_kind));
     if (advanced && !mesh_mode && vol.num_surface_samples > 0) {
         ImGui::TextDisabled("%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                             vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
@@ -2757,18 +2789,20 @@ void draw_representations_window(ApplicationState* state) {
 // attribute of its atoms. One per representation at most, since one representation colours by one
 // thing, and only while what it shows exists - a legend of nothing would mislead.
 // A legend is named by its representation's id, so it stays with the representation when they are reordered
-void draw_representation_legends(const ApplicationState& state) {
+void draw_representation_legends(ApplicationState& state) {
     const size_t num_reps = md_array_size(state.representation.reps);
     int slot = 0;
     for (size_t i = 0; i < num_reps; ++i) {
-        const Representation& rep = state.representation.reps[i];
+        Representation& rep = state.representation.reps[i];
+        // The value under the cursor of a legend is of this frame only: none unless its legend is drawn and hovered
+        rep.electronic_structure.field_isolines.hover = false;
         if (!representation_shown(state, rep)) continue;
 
         if (rep.type == RepresentationType::ElectronicStructure) {
-            const ElectronicStructureRepresentation& es = rep.electronic_structure;
+            ElectronicStructureRepresentation& es = rep.electronic_structure;
             const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
             if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
-                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++);
+                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
         }

@@ -4,6 +4,7 @@
 #include <core/md_str.h>
 
 #include <gfx/postprocessing_utils.h>
+#include <gfx/isolines.h>
 
 namespace volume {
 
@@ -127,6 +128,10 @@ struct IsoRenderDesc {
         float range_beg = 0.0f;
         float range_end = 1.0f;
     } field;
+
+    // Lines where the field takes given values, when iso.use_field (gfx/isolines.h). Their width in pixels comes
+    // from the gradient of the field volume and ray differentials: see isosurface.frag.
+    IsolineDesc isolines = {};
 
     // The model of the deferred compose pass for mode, under its lights (postprocess_pipeline::lighting).
     // Physically based: a simplified Cook-Torrance model of the colours as albedo, with the roughness in [0,1]

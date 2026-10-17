@@ -22,6 +22,7 @@
 
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
+#include <gfx/isolines.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -104,6 +105,10 @@ struct Surface {
     mat4_t   world_to_volume = MD_MAT4_IDENT_INIT;    // world -> [0,1]^3 of the colour or field volume
     float    field_range_beg = 0.0f;
     float    field_range_end = 1.0f;
+
+    // Coloring_Field / Coloring_VertexField: lines where the field takes given values (gfx/isolines.h), their
+    // width from the screen space derivatives of the field (the vertex values interpolated over each triangle)
+    IsolineDesc isolines = {};
 };
 
 struct RenderDesc {

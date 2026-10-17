@@ -102,5 +102,6 @@ bool representations_deserialize(ApplicationState* app, str_t section, viamd::de
 // --- UI ---
 
 void draw_representations_window(ApplicationState* app);
-// The legends of the shown representations that colour by a value
-void draw_representation_legends(const ApplicationState& app);
+// The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
+// its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
+void draw_representation_legends(ApplicationState& app);

@@ -206,6 +206,12 @@ struct IsoProgram {
     GLint  loc_tex_entry = -1;
     GLint  loc_tex_exit = -1;
     GLint  loc_tex_minmax = -1;
+    GLint  loc_isoline_count = -1;
+    GLint  loc_isoline_values = -1;
+    GLint  loc_isoline_hover = -1;
+    GLint  loc_isoline_hover_value = -1;
+    GLint  loc_isoline_width = -1;
+    GLint  loc_field_grad_scale = -1;
     GLint  block_index = -1;
 };
 
@@ -325,6 +331,12 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_
     p->loc_tex_entry          = glGetUniformLocation(prog, "u_tex_entry");
     p->loc_tex_exit           = glGetUniformLocation(prog, "u_tex_exit");
     p->loc_tex_minmax         = glGetUniformLocation(prog, "u_tex_minmax");
+    p->loc_isoline_count       = glGetUniformLocation(prog, "u_isoline_count");
+    p->loc_isoline_values      = glGetUniformLocation(prog, "u_isoline_values");
+    p->loc_isoline_hover       = glGetUniformLocation(prog, "u_isoline_hover");
+    p->loc_isoline_hover_value = glGetUniformLocation(prog, "u_isoline_hover_value");
+    p->loc_isoline_width       = glGetUniformLocation(prog, "u_isoline_width");
+    p->loc_field_grad_scale    = glGetUniformLocation(prog, "u_field_grad_scale");
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
@@ -878,6 +890,17 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
         glUniform1fv(p.loc_iso_tau,    count, tau);
         glUniform1i (p.loc_iso_count,  count);
+        if (p.loc_isoline_count != -1) {
+            // Only the field variant has them; the field's gradient is taken over the normals' offsets, h apart
+            const bool lines = use_field && isolines_active(desc.isolines);
+            const GLint line_count = lines ? (GLint)MIN(desc.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
+            glUniform1i(p.loc_isoline_count, line_count);
+            if (line_count > 0) glUniform1fv(p.loc_isoline_values, line_count, desc.isolines.values);
+            glUniform1i(p.loc_isoline_hover, lines && desc.isolines.hover ? 1 : 0);
+            glUniform1f(p.loc_isoline_hover_value, desc.isolines.hover_value);
+            glUniform1f(p.loc_isoline_width, MAX(desc.isolines.width, 0.0f));
+            glUniform1f(p.loc_field_grad_scale, 0.5f / h);
+        }
 
         // Premultiplied radiance over whatever is in the target
         glDisable(GL_DEPTH_TEST);

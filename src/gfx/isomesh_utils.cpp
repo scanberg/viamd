@@ -72,6 +72,7 @@ static struct {
         GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
         GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
         GLint basic, basic_ambient, basic_specular, linear_colors, light_strength;
+        GLint isoline_count, isoline_values, isoline_hover, isoline_hover_value, isoline_width;
     } mesh;
     struct {
         GLuint program = 0;
@@ -228,6 +229,9 @@ void initialize() {
         m.ground_radiance = LOC(p, "u_ground_radiance"); m.roughness = LOC(p, "u_roughness"); m.F0 = LOC(p, "u_F0");
         m.basic = LOC(p, "u_basic"); m.basic_ambient = LOC(p, "u_basic_ambient"); m.basic_specular = LOC(p, "u_basic_specular");
         m.linear_colors = LOC(p, "u_linear_colors"); m.light_strength = LOC(p, "u_light_strength");
+        m.isoline_count = LOC(p, "u_isoline_count"); m.isoline_values = LOC(p, "u_isoline_values");
+        m.isoline_hover = LOC(p, "u_isoline_hover"); m.isoline_hover_value = LOC(p, "u_isoline_hover_value");
+        m.isoline_width = LOC(p, "u_isoline_width");
     }
     {
         auto& a = gl.accumulate;
@@ -556,6 +560,15 @@ static uint64_t desc_hash(const RenderDesc& desc) {
             h = md_hash64(&s.world_to_volume, sizeof(s.world_to_volume), h);
             h = md_hash64(&s.field_range_beg, sizeof(s.field_range_beg), h);
             h = md_hash64(&s.field_range_end, sizeof(s.field_range_end), h);
+            // The lines change the image like the colours do, the transient one too: without it in the hash the
+            // mean would keep the image from before it, and stop drawing once converged
+            if (isolines_active(s.isolines)) {
+                h = md_hash64(&s.isolines.count, sizeof(s.isolines.count), h);
+                h = md_hash64(s.isolines.values, sizeof(float) * MIN(s.isolines.count, (uint32_t)ISOLINES_MAX), h);
+                h = md_hash64(&s.isolines.hover, sizeof(s.isolines.hover), h);
+                if (s.isolines.hover) h = md_hash64(&s.isolines.hover_value, sizeof(s.isolines.hover_value), h);
+                h = md_hash64(&s.isolines.width, sizeof(s.isolines.width), h);
+            }
         }
     }
     return h ? h : 1;
@@ -696,6 +709,14 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glUniform1f(m.field_inv_ext, ext != 0.0f ? 1.0f / ext : 0.0f);
                 glUniform1f(m.tau, MAX(s.optical_density, 0.0f) * OPTICAL_SCALE);
                 glUniform1ui(m.surface_id, (GLuint)i);
+                // Lines only where there is a field to draw them from
+                const bool lines = (coloring == 2 || coloring == 3) && isolines_active(s.isolines);
+                const GLint line_count = lines ? (GLint)MIN(s.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
+                glUniform1i(m.isoline_count, line_count);
+                if (line_count > 0) glUniform1fv(m.isoline_values, line_count, s.isolines.values);
+                glUniform1i(m.isoline_hover, lines && s.isolines.hover ? 1 : 0);
+                glUniform1f(m.isoline_hover_value, s.isolines.hover_value);
+                glUniform1f(m.isoline_width, MAX(s.isolines.width, 0.0f));
                 draw_surface(s);
             }
         };

@@ -7050,6 +7050,13 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     return h;
 }
 
+// Pixels of the render target to a point of the UI, for what is sized in points over the view (the width of an
+// isoline): the framebuffer scale, and in a screenshot at another resolution as much larger as it is
+static float isoline_px_per_point(const ApplicationState* state) {
+    const float h = ImGui::GetIO().DisplaySize.y;
+    return h > 0.0f ? (float)state->gbuffer.height / h : 1.0f;
+}
+
 // The isosurfaces of every electronic structure representation as meshes, in one composite
 static bool draw_representations_transparent_mesh(ApplicationState* state) {
     static constexpr size_t MAX_SURFACES = 256;
@@ -7072,6 +7079,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         const bool use_field  = es.coloring == SurfaceColoring::Field;
         const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
+        const IsolineDesc isolines = color_scale_isoline_desc(es.field_isolines, isoline_px_per_point(state));
         for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
             isomesh::Surface& s = surfaces[j];
             s.world_to_volume = world_to_volume;
@@ -7079,6 +7087,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
                 s.field_colormap = colormap;
                 s.field_range_beg = es.field_map.range_beg;
                 s.field_range_end = es.field_map.range_end;
+                s.isolines = isolines;
             } else if (use_colors) {
                 s.coloring = isomesh::Coloring_ColorVolume;
                 s.color_volume = es.color_vol.tex_id;
@@ -7188,6 +7197,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .range_beg = rep.electronic_structure.field_map.range_beg,
                     .range_end = rep.electronic_structure.field_map.range_end,
                 },
+                .isolines = use_field ? color_scale_isoline_desc(rep.electronic_structure.field_isolines, isoline_px_per_point(state)) : IsolineDesc{},
                 .shading = {
                     .roughness = 0.3f,
                     .ior = 1.5f,

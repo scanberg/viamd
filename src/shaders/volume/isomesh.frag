@@ -48,6 +48,10 @@
 // surfaces seen from inside, the back of a lobe behind its front: exact for one enclosed region along a ray;
 // with several, the exits of the nearer ones are dimmed by the farther ones as well, and the entries of the
 // farther ones are not dimmed by the nearer ones.
+//
+// Isolines (gfx/isolines.h): on a surface coloured by a field, the lines where the field takes given values are
+// painted into its colour before it is shaded, their width in pixels from the screen space derivatives of the
+// field. Every pass paints them alike, so the opacity they give a surface is the same in all of them.
 
 in vec3 v_world;
 in vec3 v_view_pos;
@@ -63,6 +67,15 @@ uniform sampler3D u_tex_field;
 uniform sampler2D u_tex_field_colormap;
 uniform float u_field_beg;
 uniform float u_field_inv_ext;
+
+// Isolines (gfx/isolines.h), where u_coloring is a field (2, 3): lines where the field takes these values, the
+// persistent ones and the transient one, u_isoline_width pixels wide
+#define ISOLINES_MAX 8
+uniform int   u_isoline_count;
+uniform float u_isoline_values[ISOLINES_MAX];
+uniform int   u_isoline_hover;
+uniform float u_isoline_hover_value;
+uniform float u_isoline_width;
 
 uniform sampler2D u_tex_depth;      // the opaque scene, single sampled
 uniform int   u_use_depth;
@@ -205,22 +218,68 @@ void shade_surface(vec3 color, float alpha, vec3 N, vec3 V, out vec3 L, out floa
     opacity = 1.0 - (1.0 - a) * (1.0 - Fe);
 }
 
-vec4 surface_color() {
+// The field the surface is coloured by, at this fragment: the vertices' values interpolated, or the field volume
+float field_value() {
+    if (u_coloring == 3) {
+        return v_value;
+    }
+    if (u_coloring == 2) {
+        vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
+        return texture(u_tex_field, p).r;
+    }
+    return 0.0;
+}
+
+// f: field_value()
+vec4 surface_color(float f) {
     if (u_coloring == 1) {
         vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
         return u_color * texture(u_tex_color_volume, p);
     }
-    if (u_coloring == 3) {
-        float t = clamp((v_value - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
-        return u_color * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
-    }
-    if (u_coloring == 2) {
-        vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
-        float f = texture(u_tex_field, p).r;
+    if (u_coloring == 2 || u_coloring == 3) {
         float t = clamp((f - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
         return u_color * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
     }
     return u_color;
+}
+
+// The coverage of a line w pixels wide at distance d (pixels) from its middle, box filtered over a pixel
+float isoline_coverage(float d, float w) {
+    return clamp(0.5 * w + 0.5 - d, 0.0, 1.0);
+}
+
+// The isolines painted onto the colour of the surface: f the field here, g its change per pixel along the
+// surface, so |f - v| / g is the distance in pixels to the line of value v. The persistent lines are dark with a
+// light rim and the transient one light with a dark rim, which reads on any colour of a map and tells the two
+// apart. A line is opaque paint, whatever the coverage of the surface under it.
+vec4 apply_isolines(vec4 c, float f, float g) {
+    const vec3  DARK  = vec3(0.02);
+    const vec3  LIGHT = vec3(0.95);
+    const float RIM   = 2.0;            // pixels, both sides together
+    float inv_g = 1.0 / max(g, 1.0e-30);
+    float w = u_isoline_width;
+
+    float core = 0.0;
+    float rim  = 0.0;
+    for (int i = 0; i < u_isoline_count; ++i) {
+        float d = abs(f - u_isoline_values[i]) * inv_g;
+        core = max(core, isoline_coverage(d, w));
+        rim  = max(rim,  isoline_coverage(d, w + RIM));
+    }
+    c.rgb = mix(c.rgb, LIGHT, rim);
+    c.rgb = mix(c.rgb, DARK, core);
+    float cover = rim;
+
+    if (u_isoline_hover != 0) {
+        float d  = abs(f - u_isoline_hover_value) * inv_g;
+        float hc = isoline_coverage(d, w);
+        float hr = isoline_coverage(d, w + RIM);
+        c.rgb = mix(c.rgb, DARK, hr);
+        c.rgb = mix(c.rgb, LIGHT, hc);
+        cover = max(cover, hr);
+    }
+    c.a = mix(c.a, 1.0, cover);
+    return c;
 }
 
 uint pcg(uint v) {
@@ -243,6 +302,12 @@ void main() {
     // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
     gl_FragDepth = gl_FragCoord.z;
 
+    // The field and its change per pixel, taken here in uniform control flow: derivatives after a discard are
+    // undefined. Across a triangle the vertex values are linear, so the lines are straight within it and meet at
+    // its edges.
+    float f = field_value();
+    float g = length(vec2(dFdx(f), dFdy(f)));
+
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
     bool  occluded = gl_FragCoord.z >= z_opaque;
@@ -252,7 +317,10 @@ void main() {
     vec3 N = normalize(v_view_nrm);
     if (dot(N, V) < 0.0) N = -N;
 
-    vec4  c = surface_color();
+    vec4  c = surface_color(f);
+    if (u_isoline_count > 0 || u_isoline_hover != 0) {
+        c = apply_isolines(c, f, g);
+    }
     vec3  L;
     float opacity;
     shade_surface(c.rgb, c.a, N, V, L, opacity);

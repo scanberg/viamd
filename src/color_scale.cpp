@@ -2,18 +2,334 @@
 
 #include <display_units.h>
 #include <imgui_widgets.h>
+#include <app/IconsFontAwesome6.h>
 
 #include <core/md_common.h>
 
 #include <imgui.h>
 #include <implot.h>
-#include <implot_internal.h>   // SampleColormapU32
+#include <implot_internal.h>   // SampleColormapU32, the ticker of ColormapScale
 
 #include <math.h>
 #include <stdio.h>
 
 uint32_t color_scale_color_u32(const ColorScale& scale, float value) {
     return ImPlot::SampleColormapU32(color_scale_param(scale, value), scale.colormap);
+}
+
+// The unit goes into a format string, so a '%' in it would be read as a conversion
+static void escape_unit_for_format(char* dst, size_t cap, const char* unit_str) {
+    if (cap == 0) return;
+    dst[0] = '\0';
+    for (size_t i = 0, j = 0; unit_str[i] && j + 2 < cap; ++i) {
+        if (unit_str[i] == '%') dst[j++] = '%';
+        dst[j++] = unit_str[i];
+        dst[j] = '\0';
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Isolines
+// ---------------------------------------------------------------------------
+
+int color_scale_isolines_add(ColorScaleIsolines* lines, float value) {
+    ASSERT(lines);
+    if (lines->count < 0 || lines->count >= ISOLINES_MAX) return -1;
+    int i = lines->count;
+    while (i > 0 && lines->values[i - 1] > value) {
+        lines->values[i] = lines->values[i - 1];
+        --i;
+    }
+    lines->values[i] = value;
+    lines->count += 1;
+    if (lines->drag >= i) lines->drag += 1;
+    return i;
+}
+
+void color_scale_isolines_remove(ColorScaleIsolines* lines, int idx) {
+    if (!lines || idx < 0 || idx >= lines->count) return;
+    for (int i = idx; i + 1 < lines->count; ++i) {
+        lines->values[i] = lines->values[i + 1];
+    }
+    lines->count -= 1;
+    if (lines->drag == idx)     lines->drag = -1;
+    else if (lines->drag > idx) lines->drag -= 1;
+}
+
+// In order of value again, after one was moved; returns where line 'idx' went
+static int isolines_sort(ColorScaleIsolines* lines, int idx) {
+    for (int i = 1; i < lines->count; ++i) {
+        const float v = lines->values[i];
+        const bool moving = idx == i;
+        int j = i;
+        while (j > 0 && lines->values[j - 1] > v) {
+            lines->values[j] = lines->values[j - 1];
+            if (!moving && idx == j - 1) idx = j;
+            --j;
+        }
+        lines->values[j] = v;
+        if (moving) idx = j;
+    }
+    return idx;
+}
+
+IsolineDesc color_scale_isoline_desc(const ColorScaleIsolines& lines, float px_per_point) {
+    IsolineDesc desc;
+    if (lines.show) {
+        desc.count = (uint32_t)CLAMP(lines.count, 0, ISOLINES_MAX);
+        for (uint32_t i = 0; i < desc.count; ++i) desc.values[i] = lines.values[i];
+    }
+    desc.hover       = lines.hover;
+    desc.hover_value = lines.hover_value;
+    desc.width       = MAX(lines.width, 0.25f) * MAX(px_per_point, 0.25f);
+    return desc;
+}
+
+bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorScale& scale, md_unit_t unit) {
+    ASSERT(lines);
+    bool changed = false;
+    ImGui::PushID("isolines");
+
+    char unit_str[32] = "";
+    const double scl = display_units::factor_print(unit_str, sizeof(unit_str), unit);
+    const float fscl = (float)scl;
+    char unit_fmt[64];
+    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
+    char fmt[96];
+    snprintf(fmt, sizeof(fmt), "%%.4g %s", unit_fmt);
+
+    changed |= ImGui::Checkbox("isolines", &lines->show);
+    ImGui::SetItemTooltip("Lines on the surface where the field takes the given values.\n"
+                          "On the legend: hover a value to see its line, click to add a line (drag to place it),\n"
+                          "drag a line's marker to move it, right click to edit or remove one.");
+    if (lines->show) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d of %d", lines->count, ISOLINES_MAX);
+
+        changed |= ImGui::SliderFloat("line width", &lines->width, 0.5f, 6.0f, "%.1f pt");
+
+        // A drag of the whole range over about 300 points
+        const float ext   = fabsf(scale.range_end - scale.range_beg) * fscl;
+        const float speed = ext > 0.0f ? ext / 300.0f : 0.001f;
+        const float btn_w = ImGui::GetFrameHeight();
+        int remove = -1;
+        for (int i = 0; i < lines->count; ++i) {
+            ImGui::PushID(i);
+            float v = lines->values[i] * fscl;
+            ImGui::SetNextItemWidth(MAX(ImGui::CalcItemWidth() - btn_w - ImGui::GetStyle().ItemInnerSpacing.x, 40.0f));
+            if (ImGui::DragFloat("##value", &v, speed, 0.0f, 0.0f, fmt)) {
+                lines->values[i] = v / fscl;
+                changed = true;
+            }
+            // Back in order once the value is set, not while it is being dragged past another
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                isolines_sort(lines, i);
+            }
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+            if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(btn_w, 0))) {
+                remove = i;
+            }
+            ImGui::PopID();
+        }
+        if (remove >= 0) {
+            color_scale_isolines_remove(lines, remove);
+            changed = true;
+        }
+        ImGui::BeginDisabled(lines->count >= ISOLINES_MAX);
+        if (ImGui::Button(ICON_FA_PLUS " line")) {
+            // Zero where the range holds it (the neutral contour of a potential), else the middle of the range
+            const float lo = MIN(scale.range_beg, scale.range_end), hi = MAX(scale.range_beg, scale.range_end);
+            const float v = (lo <= 0.0f && 0.0f <= hi) ? 0.0f : 0.5f * (lo + hi);
+            changed |= color_scale_isolines_add(lines, v) >= 0;
+        }
+        ImGui::EndDisabled();
+    }
+
+    ImGui::PopID();
+    return changed;
+}
+
+// Where the isolines of a legend take the mouse, by the legend's id: the frame of its scale as last drawn. Read
+// before the legend's window is begun, to decide whether it takes input at all.
+static ImGuiStorage legend_hit_storage;
+
+static ImGuiID legend_hit_key(int id, int k) {
+    const int key[2] = {id, k};
+    return ImHashData(key, sizeof(key), 0x15011E5u);
+}
+
+static ImRect legend_hit_get(int id) {
+    return ImRect(legend_hit_storage.GetFloat(legend_hit_key(id, 0), 0.0f), legend_hit_storage.GetFloat(legend_hit_key(id, 1), 0.0f),
+                  legend_hit_storage.GetFloat(legend_hit_key(id, 2), 0.0f), legend_hit_storage.GetFloat(legend_hit_key(id, 3), 0.0f));
+}
+
+static void legend_hit_set(int id, const ImRect& r) {
+    legend_hit_storage.SetFloat(legend_hit_key(id, 0), r.Min.x);
+    legend_hit_storage.SetFloat(legend_hit_key(id, 1), r.Min.y);
+    legend_hit_storage.SetFloat(legend_hit_key(id, 2), r.Max.x);
+    legend_hit_storage.SetFloat(legend_hit_key(id, 3), r.Max.y);
+}
+
+// The line a popup of the legend edits (-1: none, the popup adds one at popup_value). One popup is open at a time.
+static int   legend_popup_line  = -1;
+static float legend_popup_value = 0.0f;
+
+// The isolines over the scale ImPlot::ColormapScale just drew at frame_min, frame_size: their markers, and with
+// 'interactive' the hover, adding, dragging and editing
+static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, double scl, const char* unit_str, int id,
+                            ImVec2 frame_min, ImVec2 frame_size, bool interactive) {
+    // The colour bar as ColormapScale lays it out (implot.cpp): inset by the plot padding, and as wide as its tick
+    // labels leave, whose widths are in the ticker it has just filled
+    const ImPlotStyle& ps = ImPlot::GetStyle();
+    const float pad   = ps.LabelPadding.x + GImPlot->CTicker.MaxSize.x;
+    const float bar_w = MAX(frame_size.x - (pad + 2.0f * ps.PlotPadding.x), ps.MajorTickLen.y);
+    const ImRect frame(frame_min, ImVec2(frame_min.x + frame_size.x, frame_min.y + frame_size.y));
+    const ImRect bar(ImVec2(frame_min.x + ps.PlotPadding.x, frame_min.y + ps.PlotPadding.y),
+                     ImVec2(frame_min.x + ps.PlotPadding.x + bar_w, frame_min.y + frame_size.y - ps.PlotPadding.y));
+    legend_hit_set(id, frame);
+
+    const float beg = scale.range_beg, end = scale.range_end;
+    const float bar_h = bar.GetHeight();
+    if (!(bar_h > 1.0f) || beg == end) return;
+    const float lo = MIN(beg, end), hi = MAX(beg, end);
+
+    // range_beg at the bottom of the bar and range_end at the top, as ColormapScale draws them, also when the
+    // range runs backwards
+    auto y_of = [&](float v) { return bar.Max.y - (v - beg) / (end - beg) * bar_h; };
+    auto v_of = [&](float y) {
+        const float t = CLAMP((bar.Max.y - y) / bar_h, 0.0f, 1.0f);
+        return beg + t * (end - beg);
+    };
+
+    char unit_fmt[64];
+    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
+    char fmt[96];
+    snprintf(fmt, sizeof(fmt), "%%.4g %s", unit_fmt);
+
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    bool hovered = false;
+    int  nearest = -1;
+
+    if (interactive) {
+        ImGui::SetCursorScreenPos(frame_min);
+        ImGui::InvisibleButton("##isolines", frame_size, ImGuiButtonFlags_MouseButtonLeft);
+        hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        const bool active = ImGui::IsItemActive();
+
+        // The line whose marker is within reach of the cursor, the nearest if several are
+        float best = 5.0f;
+        for (int i = 0; i < lines->count; ++i) {
+            const float v = lines->values[i];
+            if (v < lo || v > hi) continue;
+            const float d = fabsf(y_of(v) - mouse.y);
+            if (d <= best) {
+                best = d;
+                nearest = i;
+            }
+        }
+
+        // A press takes the line under it, or adds one there to be dragged into place
+        if (ImGui::IsItemActivated()) {
+            lines->drag = nearest >= 0 ? nearest : color_scale_isolines_add(lines, v_of(mouse.y));
+            if (lines->drag >= 0) lines->show = true;
+        }
+        if (lines->drag >= 0) {
+            if (active && lines->drag < lines->count) {
+                lines->values[lines->drag] = v_of(mouse.y);
+            } else {
+                isolines_sort(lines, lines->drag);
+                lines->drag = -1;
+            }
+        }
+
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            legend_popup_line  = nearest;
+            legend_popup_value = v_of(mouse.y);
+            ImGui::OpenPopup("##isoline");
+        }
+
+        if (hovered && lines->drag < 0) {
+            lines->hover = true;
+            lines->hover_value = v_of(mouse.y);
+        }
+        if ((hovered || lines->drag >= 0) && !ImGui::IsPopupOpen("##isoline")) {
+            const float v = lines->drag >= 0 ? lines->values[lines->drag] : lines->hover_value;
+            ImGui::BeginTooltip();
+            ImGui::Text(fmt, v * scl);
+            if (lines->drag < 0) {
+                ImGui::TextDisabled(nearest >= 0 ? "drag to move, right click to edit" : "click to add a line, right click for more");
+            }
+            ImGui::EndTooltip();
+        }
+    } else if (lines->drag >= 0) {
+        isolines_sort(lines, lines->drag);
+        lines->drag = -1;
+    }
+
+    if (ImGui::BeginPopup("##isoline")) {
+        const float fscl = (float)scl;
+        if (legend_popup_line >= 0 && legend_popup_line < lines->count) {
+            int& i = legend_popup_line;
+            float v = lines->values[i] * fscl;
+            const float speed = fabsf(end - beg) * fscl / 300.0f;
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::DragFloat("##value", &v, speed > 0.0f ? speed : 0.001f, 0.0f, 0.0f, fmt)) {
+                lines->values[i] = v / fscl;
+                lines->show = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                i = isolines_sort(lines, i);
+            }
+            if (ImGui::MenuItem(ICON_FA_XMARK " Remove line")) {
+                color_scale_isolines_remove(lines, i);
+                i = -1;
+            }
+        } else {
+            char item[128];
+            snprintf(item, sizeof(item), ICON_FA_PLUS " Add line at %.4g %s", legend_popup_value * scl, unit_str);
+            if (ImGui::MenuItem(item, nullptr, false, lines->count < ISOLINES_MAX)) {
+                legend_popup_line = color_scale_isolines_add(lines, legend_popup_value);
+                lines->show = true;
+            }
+        }
+        ImGui::MenuItem("Show lines", nullptr, &lines->show);
+        if (ImGui::MenuItem("Remove all lines", nullptr, false, lines->count > 0)) {
+            lines->count = 0;
+            lines->drag  = -1;
+            legend_popup_line = -1;
+        }
+        ImGui::EndPopup();
+    }
+
+    // The markers: across the bar and as a handle to the left of it, drawn as the lines are on the surface - the
+    // persistent ones dark with a light rim, the transient one the other way around. A line beyond the range keeps
+    // its handle at the end it is beyond; hidden lines are faint.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    auto marker = [&](float y, bool persistent, bool across, bool emphasis, float alpha) {
+        const ImU32 dark  = IM_COL32(15, 15, 15, (int)(255 * alpha));
+        const ImU32 light = IM_COL32(245, 245, 245, (int)(255 * alpha));
+        const ImU32 core = persistent ? dark : light;
+        const ImU32 rim  = persistent ? light : dark;
+        const float x0 = bar.Min.x, x1 = bar.Max.x;
+        if (across) {
+            dl->AddLine(ImVec2(x0, y), ImVec2(x1, y), rim, emphasis ? 5.0f : 4.0f);
+            dl->AddLine(ImVec2(x0, y), ImVec2(x1, y), core, 2.0f);
+        }
+        const float s = emphasis ? 5.0f : 4.0f;
+        const float xh = x0 - 1.0f;
+        dl->AddTriangleFilled(ImVec2(xh, y), ImVec2(xh - 1.5f * s, y - s), ImVec2(xh - 1.5f * s, y + s), rim);
+        dl->AddTriangle(ImVec2(xh, y), ImVec2(xh - 1.5f * s, y - s), ImVec2(xh - 1.5f * s, y + s), core, 1.0f);
+    };
+    for (int i = 0; i < lines->count; ++i) {
+        const float v = lines->values[i];
+        const bool inside = lo <= v && v <= hi;
+        const float y = inside ? y_of(v) : (v < lo ? (y_of(lo)) : y_of(hi));
+        const bool emphasis = i == lines->drag || (lines->drag < 0 && i == nearest && hovered);
+        marker(y, true, inside, emphasis, (lines->show ? 1.0f : 0.35f) * (inside ? 1.0f : 0.5f));
+    }
+    if (lines->hover) {
+        marker(y_of(lines->hover_value), false, true, false, 1.0f);
+    }
 }
 
 bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip) {
@@ -66,13 +382,8 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         changed = true;
     }
 
-    // The unit goes into a format string, so a '%' in it would be read as a conversion
-    char unit_fmt[64] = "";
-    for (size_t i = 0, j = 0; unit_str[i] && j + 2 < sizeof(unit_fmt); ++i) {
-        if (unit_str[i] == '%') unit_fmt[j++] = '%';
-        unit_fmt[j++] = unit_str[i];
-        unit_fmt[j] = '\0';
-    }
+    char unit_fmt[64];
+    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
     char fmt[96];
     if (scale->symmetric) {
         snprintf(fmt, sizeof(fmt), "%%.4g %s", unit_fmt);
@@ -125,7 +436,8 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
     return changed;
 }
 
-void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot) {
+void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines) {
+    if (lines) lines->hover = false;
     if (scale.range_end == scale.range_beg) return;
 
     char unit_str[32] = "";
@@ -151,10 +463,14 @@ void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char
     ImGui::SetNextWindowSizeConstraints(ImVec2(MAX(width, 80.0f), 120), ImVec2(MAX(width, 1000.0f), 2000));
 
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
+    // With isolines the scale takes the mouse where the cursor is over it (as it was drawn the frame before) and
+    // while a line is dragged; everywhere else the mouse goes through to the view, as without them
+    const bool interactive = lines && !editable && (lines->drag >= 0 || legend_hit_get(id).Contains(ImGui::GetIO().MousePos));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
                              ImGuiWindowFlags_NoFocusOnAppearing;
     if (!editable) {
-        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
+        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
+        flags |= interactive ? ImGuiWindowFlags_NoNav : ImGuiWindowFlags_NoInputs;
     }
 
     // The look of the text the script draws into the view: light on a translucent dark backing,
@@ -180,9 +496,13 @@ void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char
 
         ImGui::TextUnformatted(header);
         const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ImVec2 frame_min = ImGui::GetCursorScreenPos();
         char scale_id[32];
         snprintf(scale_id, sizeof(scale_id), "##scale%d", id);
         ImPlot::ColormapScale(scale_id, scale.range_beg * scl, scale.range_end * scl, ImVec2(avail.x, avail.y), "%g", ImPlotColormapScaleFlags_NoLabel, scale.colormap);
+        if (lines) {
+            legend_isolines(lines, scale, scl, unit_str, id, frame_min, avail, interactive);
+        }
     }
     ImGui::End();
 

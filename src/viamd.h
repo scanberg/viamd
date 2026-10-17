@@ -557,6 +557,7 @@ struct ElectronicStructureRepresentation {
     // density_vol - evaluated only around the isosurfaces this representation draws
     SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
     ColorScale          field_map  = surface_field_default_scale();
+    ColorScaleIsolines  field_isolines = {};    // lines on the surfaces where the field takes given values
     SurfaceFieldVolume  field_vol  = {};
 
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
