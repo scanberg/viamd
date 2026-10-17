@@ -51,6 +51,8 @@ struct IsoMeshes {
     // vertex), so the evaluation reads them there instead of uploading them again
     float*   xyz = nullptr;
     uint32_t xyz_count = 0;
+    uint32_t* tri_index = nullptr;  // the triangles on the host too, three per triangle, for the field's gradient
+    uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
 
     // Kept between extractions of the same fields

@@ -45,7 +45,7 @@ struct Mesh {
     uint32_t vao = 0;
     uint32_t vbo = 0;   // position xyz, normal xyz: 6 floats per vertex
     uint32_t ibo = 0;
-    uint32_t vbo_value = 0;     // a scalar per vertex (mesh_upload_values), 0 until there are any
+    uint32_t vbo_value = 0;     // a scalar per vertex and its gradient (mesh_upload_values), 0 until there are any
     uint32_t vertex_count = 0;
     uint32_t index_count  = 0;
     vec3_t   bounds_min = {0, 0, 0};    // of the vertices, in the mesh's own coordinates
@@ -57,8 +57,15 @@ struct Mesh {
 bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t stride, uint32_t vertex_count, const uint32_t* index, uint32_t index_count);
 
 // A scalar per vertex (a field evaluated at the vertices), for Coloring_VertexField: vertex_count values,
-// interpolated across the triangles. NULL drops them. A new upload of the mesh drops them too.
-bool mesh_upload_values(Mesh* mesh, const float* values, uint32_t count);
+// interpolated across the triangles, and optionally its gradient along the surface (packed float3 per vertex, per
+// unit of the mesh's coordinates; mesh_field_gradient), which the isolines take their width from. NULL values drop
+// them; NULL gradients are zero. A new upload of the mesh drops them too.
+bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients, uint32_t count);
+
+// The gradient along the surface of a scalar given at the vertices of triangles (xyz packed float3, index three per
+// triangle), per vertex: the gradient of its linear interpolation over each triangle, averaged over the triangles
+// around the vertex by their area. 'out' is packed float3, vertex_count of them.
+void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count);
 void mesh_free(Mesh* mesh);
 
 // What one view keeps between frames: the multisampled frame, the running mean, and the state it belongs to
@@ -106,8 +113,8 @@ struct Surface {
     float    field_range_beg = 0.0f;
     float    field_range_end = 1.0f;
 
-    // Coloring_Field / Coloring_VertexField: lines where the field takes given values (gfx/isolines.h), their
-    // width from the screen space derivatives of the field (the vertex values interpolated over each triangle)
+    // Coloring_VertexField: lines where the field takes given values (gfx/isolines.h), their width in pixels from
+    // the gradient the values were uploaded with and ray differentials (isomesh.frag)
     IsolineDesc isolines = {};
 };
 

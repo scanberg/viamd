@@ -49,14 +49,19 @@
 // with several, the exits of the nearer ones are dimmed by the farther ones as well, and the entries of the
 // farther ones are not dimmed by the nearer ones.
 //
-// Isolines (gfx/isolines.h): on a surface coloured by a field, the lines where the field takes given values are
-// painted into its colour before it is shaded, their width in pixels from the screen space derivatives of the
-// field. Every pass paints them alike, so the opacity they give a surface is the same in all of them.
+// Isolines (gfx/isolines.h): on a surface coloured by the values of its vertices (u_coloring 3), the lines where
+// the field takes given values are painted into its colour before it is shaded, so every pass sees the same
+// opacity. Their width in pixels comes from ray differentials, as in the raycaster (isosurface.frag): the rays
+// of the next pixel along x and y meet the tangent plane, and the field changes along that by its gradient
+// along the surface, which the vertices carry (v_grad). No screen space derivatives: this shader runs per
+// sample and depends on discard and gl_FragDepth in every pass, and on Metal (Apple's OpenGL) a shader that
+// takes derivatives does not stop at a discard, the invocation carries on for the derivatives' sake.
 
 in vec3 v_world;
 in vec3 v_view_pos;
 in vec3 v_view_nrm;
 in float v_value;
+in vec3  v_grad;                    // the gradient of the field along the surface, view space, per world unit
 
 uniform vec4  u_color;              // the surface's colour, alpha = coverage
 uniform int   u_coloring;           // 0: u_color, 1: times the colour volume, 2: the field through its colour map,
@@ -68,8 +73,8 @@ uniform sampler2D u_tex_field_colormap;
 uniform float u_field_beg;
 uniform float u_field_inv_ext;
 
-// Isolines (gfx/isolines.h), where u_coloring is a field (2, 3): lines where the field takes these values, the
-// persistent ones and the transient one, u_isoline_width pixels wide
+// Isolines (gfx/isolines.h), u_coloring 3 only: the persistent lines and the transient one, u_isoline_width
+// pixels wide
 #define ISOLINES_MAX 8
 uniform int   u_isoline_count;
 uniform float u_isoline_values[ISOLINES_MAX];
@@ -218,29 +223,54 @@ void shade_surface(vec3 color, float alpha, vec3 N, vec3 V, out vec3 L, out floa
     opacity = 1.0 - (1.0 - a) * (1.0 - Fe);
 }
 
-// The field the surface is coloured by, at this fragment: the vertices' values interpolated, or the field volume
-float field_value() {
-    if (u_coloring == 3) {
-        return v_value;
-    }
-    if (u_coloring == 2) {
-        vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
-        return texture(u_tex_field, p).r;
-    }
-    return 0.0;
-}
-
-// f: field_value()
-vec4 surface_color(float f) {
+vec4 surface_color() {
     if (u_coloring == 1) {
         vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
         return u_color * texture(u_tex_color_volume, p);
     }
-    if (u_coloring == 2 || u_coloring == 3) {
+    if (u_coloring == 3) {
+        float t = clamp((v_value - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
+        return u_color * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
+    }
+    if (u_coloring == 2) {
+        vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
+        float f = texture(u_tex_field, p).r;
         float t = clamp((f - u_field_beg) * u_field_inv_ext, 0.0, 1.0);
         return u_color * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
     }
     return u_color;
+}
+
+// The view space ray through normalized device coordinates ndc: its origin on the near plane, its direction
+void isoline_view_ray(vec2 ndc, out vec3 o, out vec3 d) {
+    vec4 a = u_inv_proj * vec4(ndc, -1.0, 1.0);
+    vec4 b = u_inv_proj * vec4(ndc,  0.0, 1.0);
+    o = a.xyz / a.w;
+    d = b.xyz / b.w - o;
+}
+
+// Where the ray o + s d meets the plane through P with normal N. At a grazing angle the point runs off far: the
+// field changes a lot from one pixel to the next there, which is what it does on the screen.
+vec3 isoline_plane_hit(vec3 o, vec3 d, vec3 P, vec3 N) {
+    float dn = dot(N, d);
+    float lo = 1.0e-6 * length(d);
+    dn = (dn < 0.0) ? min(dn, -lo) : max(dn, lo);
+    return o + d * (dot(N, P - o) / dn);
+}
+
+// The change of the field per pixel along the surface at P (view space) with normal N, G the field's gradient:
+// how far the point of the surface moves from this pixel's ray to the next pixel's, along x and along y, times G
+float isoline_change_per_pixel(vec3 P, vec3 N, vec3 G) {
+    vec2  ndc  = gl_FragCoord.xy * u_inv_res * 2.0 - 1.0;
+    vec2  step = 2.0 * u_inv_res;
+    vec3  o, d;
+    isoline_view_ray(ndc, o, d);
+    vec3  H  = isoline_plane_hit(o, d, P, N);
+    isoline_view_ray(ndc + vec2(step.x, 0.0), o, d);
+    vec3  Hx = isoline_plane_hit(o, d, P, N);
+    isoline_view_ray(ndc + vec2(0.0, step.y), o, d);
+    vec3  Hy = isoline_plane_hit(o, d, P, N);
+    return length(vec2(dot(G, Hx - H), dot(G, Hy - H)));
 }
 
 // The coverage of a line w pixels wide at distance d (pixels) from its middle, box filtered over a pixel
@@ -302,12 +332,6 @@ void main() {
     // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
     gl_FragDepth = gl_FragCoord.z;
 
-    // The field and its change per pixel, taken here in uniform control flow: derivatives after a discard are
-    // undefined. Across a triangle the vertex values are linear, so the lines are straight within it and meet at
-    // its edges.
-    float f = field_value();
-    float g = length(vec2(dFdx(f), dFdy(f)));
-
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
     bool  occluded = gl_FragCoord.z >= z_opaque;
@@ -317,9 +341,9 @@ void main() {
     vec3 N = normalize(v_view_nrm);
     if (dot(N, V) < 0.0) N = -N;
 
-    vec4  c = surface_color(f);
-    if (u_isoline_count > 0 || u_isoline_hover != 0) {
-        c = apply_isolines(c, f, g);
+    vec4  c = surface_color();
+    if (u_coloring == 3 && (u_isoline_count > 0 || u_isoline_hover != 0)) {
+        c = apply_isolines(c, v_value, isoline_change_per_pixel(v_view_pos, N, v_grad));
     }
     vec3  L;
     float opacity;

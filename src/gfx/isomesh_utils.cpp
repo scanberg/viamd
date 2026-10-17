@@ -309,6 +309,7 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint32_t) * index_count, index, GL_STATIC_DRAW);
     // The values were of the vertices before
     glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -321,28 +322,78 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
     return true;
 }
 
-bool mesh_upload_values(Mesh* mesh, const float* values, uint32_t count) {
+bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients, uint32_t count) {
     ASSERT(mesh);
     if (!mesh->vao) return false;
+    if (values && count != mesh->vertex_count) return false;
     glBindVertexArray(mesh->vao);
     if (!values) {
         glDisableVertexAttribArray(2);
+        glDisableVertexAttribArray(3);
         glVertexAttrib1f(2, 0.0f);
+        glVertexAttrib3f(3, 0.0f, 0.0f, 0.0f);
     } else {
-        if (count != mesh->vertex_count) {
-            glBindVertexArray(0);
-            return false;
+        // The value and its gradient, 4 floats per vertex
+        float* data = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 4 * MAX(count, 1u));
+        for (uint32_t i = 0; i < count; ++i) {
+            data[4 * i + 0] = values[i];
+            data[4 * i + 1] = gradients ? gradients[3 * i + 0] : 0.0f;
+            data[4 * i + 2] = gradients ? gradients[3 * i + 1] : 0.0f;
+            data[4 * i + 3] = gradients ? gradients[3 * i + 2] : 0.0f;
         }
         if (!mesh->vbo_value) glGenBuffers(1, &mesh->vbo_value);
         glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo_value);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * count, values, GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 4 * count, data, GL_STATIC_DRAW);
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), (const void*)0);
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float) * 4, (const void*)0);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 4, (const void*)(sizeof(float)));
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+        md_free(md_get_heap_allocator(), data, sizeof(float) * 4 * MAX(count, 1u));
     }
     glBindVertexArray(0);
     mesh->version += 1;
     return true;
+}
+
+void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count) {
+    ASSERT(out);
+    MEMSET(out, 0, sizeof(float) * 3 * vertex_count);
+    if (!xyz || !values || !index || vertex_count == 0) return;
+    float* weight = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * vertex_count);
+    MEMSET(weight, 0, sizeof(float) * vertex_count);
+
+    for (uint32_t t = 0; t + 2 < index_count; t += 3) {
+        const uint32_t i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count) continue;
+        const vec3_t p0 = {xyz[3 * i0], xyz[3 * i0 + 1], xyz[3 * i0 + 2]};
+        const vec3_t e1 = vec3_t{xyz[3 * i1], xyz[3 * i1 + 1], xyz[3 * i1 + 2]} - p0;
+        const vec3_t e2 = vec3_t{xyz[3 * i2], xyz[3 * i2 + 1], xyz[3 * i2 + 2]} - p0;
+        const vec3_t n  = vec3_cross(e1, e2);
+        const float  a2 = vec3_dot(n, n);     // (twice the area)^2
+        if (!(a2 > 0.0f)) continue;
+        // The gradient g of the linear interpolation in the triangle's plane: g . e1 = f1 - f0, g . e2 = f2 - f0
+        const float  df1 = values[i1] - values[i0];
+        const float  df2 = values[i2] - values[i0];
+        const vec3_t g   = (vec3_cross(e2, n) * df1 + vec3_cross(n, e1) * df2) * (1.0f / a2);
+        const float  w   = sqrtf(a2);
+        const uint32_t tri[3] = {i0, i1, i2};
+        for (uint32_t v : tri) {
+            out[3 * v + 0] += g.x * w;
+            out[3 * v + 1] += g.y * w;
+            out[3 * v + 2] += g.z * w;
+            weight[v] += w;
+        }
+    }
+    for (uint32_t v = 0; v < vertex_count; ++v) {
+        if (weight[v] > 0.0f) {
+            const float inv = 1.0f / weight[v];
+            out[3 * v + 0] *= inv;
+            out[3 * v + 1] *= inv;
+            out[3 * v + 2] *= inv;
+        }
+    }
+    md_free(md_get_heap_allocator(), weight, sizeof(float) * vertex_count);
 }
 
 void mesh_free(Mesh* mesh) {
@@ -709,8 +760,8 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glUniform1f(m.field_inv_ext, ext != 0.0f ? 1.0f / ext : 0.0f);
                 glUniform1f(m.tau, MAX(s.optical_density, 0.0f) * OPTICAL_SCALE);
                 glUniform1ui(m.surface_id, (GLuint)i);
-                // Lines only where there is a field to draw them from
-                const bool lines = (coloring == 2 || coloring == 3) && isolines_active(s.isolines);
+                // Lines only on the values of the vertices: they carry the gradient the width is taken from
+                const bool lines = coloring == 3 && isolines_active(s.isolines);
                 const GLint line_count = lines ? (GLint)MIN(s.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
                 glUniform1i(m.isoline_count, line_count);
                 if (line_count > 0) glUniform1fv(m.isoline_values, line_count, s.isolines.values);

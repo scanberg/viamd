@@ -120,6 +120,14 @@ static void keep_xyz(IsoMeshes* m, const float* pos, size_t stride, uint32_t cou
     }
 }
 
+// The triangles on the host, for the gradient of what is evaluated at the vertices
+static void keep_index(IsoMeshes* m, const uint32_t* idx, uint32_t count) {
+    free(m->tri_index);
+    m->tri_index = count ? (uint32_t*)malloc(sizeof(uint32_t) * count) : nullptr;
+    m->tri_index_count = m->tri_index ? count : 0;
+    if (m->tri_index) MEMCPY(m->tri_index, idx, sizeof(uint32_t) * count);
+}
+
 // The device copy of the vertices, which goes with the mesh it is of
 static void drop_gpu_xyz(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
@@ -136,6 +144,7 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
     drop_gpu_xyz(m, state);
     isomesh::mesh_free(&m->mesh);
     free(m->xyz);
+    free(m->tri_index);
     const uint64_t version = m->mesh.version;
     *m = {};
     m->mesh.version = version;
@@ -194,6 +203,7 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         if (ok) {
             set_ranges(m, n, gm.index_offset, gm.index_count_of);
             keep_xyz(m, pos, 4, gm.vertex_count);
+            keep_index(m, idx, gm.index_count);
             // The positions stay on the device for what is evaluated at them; the normals and indices
             // are in GL now
             m->gpu_xyz = gm.position;
@@ -299,6 +309,7 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
         if (ok) {
             set_ranges(m, n, offset, count);
             keep_xyz(m, pos, 3, (uint32_t)nv);
+            keep_index(m, idx, (uint32_t)ni);
         }
         free(pos);
         free(nrm);
@@ -346,6 +357,7 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
         ok = isomesh::mesh_upload(&m->mesh, nullptr, nullptr, 3, 0, nullptr, 0);
         set_ranges(m, 0, nullptr, nullptr);
         keep_xyz(m, nullptr, 3, 0);
+        keep_index(m, nullptr, 0);
     } else {
 #if MD_ENABLE_GPU
         ok = on_gpu = extract_gpu(m, state, slots, n, cell_size);
@@ -529,14 +541,19 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             points.gpu_xyz    = em.meshes.gpu_xyz;
             points.gpu_stride = sizeof(float) * 4;
             points.count      = nv;
-            if (surface_field_evaluate_points(&em.field_points, values, points, desc) &&
-                isomesh::mesh_upload_values(&em.meshes.mesh, values, nv)) {
+            // and its gradient along the surface, which the isolines take their width from
+            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MAX(nv, 1u));
+            bool evaluated = surface_field_evaluate_points(&em.field_points, values, points, desc);
+            if (evaluated) {
+                isomesh::mesh_field_gradient(gradients, em.meshes.xyz, values, nv, em.meshes.tri_index, em.meshes.tri_index_count);
+            }
+            if (evaluated && isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
                 MD_LOG_DEBUG("Isosurface meshes: %s at %u vertices in %.1f ms (%s)", surface_field_kind_str[(int)es.field_kind], nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
-                isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, 0);
+                isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
             }
             md_temp_end(temp);
         }

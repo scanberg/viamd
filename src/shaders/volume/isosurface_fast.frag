@@ -87,8 +87,8 @@ uniform sampler2D u_tex_field_colormap;
 // and the field changes by its gradient along that, df/dx = grad f . dP/dx (grad f need not be projected onto
 // the tangent plane: dP/dx lies in it). The gradient is taken from the field volume by central differences over
 // the same offsets as the normals; the band the field is evaluated in is wide enough for them (surface_field.cpp,
-// band_mask). The distance to the line of value v is then |f - v| / |(df/dx, df/dy)| pixels, as on a mesh with
-// dFdx / dFdy, and the lines keep their width in pixels however the surface is turned.
+// band_mask). The distance to the line of value v is then |f - v| / |(df/dx, df/dy)| pixels, and the lines keep
+// their width in pixels however the surface is turned. The mesh shader does the same (isomesh.frag).
 #define ISOLINES_MAX 8
 uniform int   u_isoline_count;
 uniform float u_isoline_values[ISOLINES_MAX];
