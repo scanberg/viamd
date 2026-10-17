@@ -110,12 +110,15 @@ constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ri
 // the part of a tube around a control point. A hit names the point (cartoon_glyphs_picked_point) and resolves to the
 // component it stands for.
 constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking domain cartoon glyph");
+// The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
+// the component before the break (MD_COMPONENT_FLAG_BREAK_AFTER) and resolves to it and the one after it.
+constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
 static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
     return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring ||
-           domain == PickingDomain_CartoonGlyph;
+           domain == PickingDomain_CartoonGlyph || domain == PickingDomain_ChainGap;
 }
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
@@ -946,6 +949,7 @@ struct Representation {
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
+    bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
@@ -1320,6 +1324,7 @@ struct ApplicationState {
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
     PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
     PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
+    PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per component
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -2407,6 +2412,7 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
         .bond_base     = state.picking_range_bond.beg,
         .backbone_base = state.picking_range_backbone.beg,
         .ring_base     = state.picking_range_ring.beg,
+        .gap_base      = state.picking_range_gap.beg,
     };
 }
 
