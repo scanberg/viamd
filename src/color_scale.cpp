@@ -90,61 +90,90 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
     bool changed = false;
     ImGui::PushID("isolines");
 
+    changed |= ImGui::Checkbox("isolines", &lines->show);
+    ImGui::SetItemTooltip("Lines on the surface where the field takes given values.\n"
+                          "On the legend: hover a value to see its line, click to add a line there,\n"
+                          "drag a line to move it, right click to edit or remove one.");
+    if (!lines->show) {
+        ImGui::PopID();
+        return changed;
+    }
+
     char unit_str[32] = "";
     const double scl = display_units::factor_print(unit_str, sizeof(unit_str), unit);
     const float fscl = (float)scl;
-    char unit_fmt[64];
-    escape_unit_for_format(unit_fmt, sizeof(unit_fmt), unit_str);
-    char fmt[96];
-    snprintf(fmt, sizeof(fmt), "%%.4g %s", unit_fmt);
 
-    changed |= ImGui::Checkbox("isolines", &lines->show);
-    ImGui::SetItemTooltip("Lines on the surface where the field takes the given values.\n"
-                          "On the legend: hover a value to see its line, click to add a line (drag to place it),\n"
-                          "drag a line's marker to move it, right click to edit or remove one.");
-    if (lines->show) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d of %d", lines->count, ISOLINES_MAX);
+    // Under the checkbox and narrower by the indent, so that the labels stay in their column
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float indent = style.IndentSpacing;
+    const float item_w = MAX(ImGui::CalcItemWidth() - indent, 60.0f);
+    const float btn_w  = ImGui::GetFrameHeight();
+    const float gap    = style.ItemInnerSpacing.x;
+    ImGui::Indent(indent);
 
-        changed |= ImGui::SliderFloat("line width", &lines->width, 0.5f, 6.0f, "%.1f pt");
+    ImGui::SetNextItemWidth(item_w);
+    changed |= ImGui::SliderFloat("width", &lines->width, 0.5f, 6.0f, "%.1f pt");
 
-        // A drag of the whole range over about 300 points
-        const float ext   = fabsf(scale.range_end - scale.range_beg) * fscl;
-        const float speed = ext > 0.0f ? ext / 300.0f : 0.001f;
-        const float btn_w = ImGui::GetFrameHeight();
-        int remove = -1;
-        for (int i = 0; i < lines->count; ++i) {
-            ImGui::PushID(i);
-            float v = lines->values[i] * fscl;
-            ImGui::SetNextItemWidth(MAX(ImGui::CalcItemWidth() - btn_w - ImGui::GetStyle().ItemInnerSpacing.x, 40.0f));
-            if (ImGui::DragFloat("##value", &v, speed, 0.0f, 0.0f, fmt)) {
-                lines->values[i] = v / fscl;
-                changed = true;
-            }
-            // Back in order once the value is set, not while it is being dragged past another
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                isolines_sort(lines, i);
-            }
-            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-            if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(btn_w, 0))) {
-                remove = i;
-            }
-            ImGui::PopID();
-        }
-        if (remove >= 0) {
-            color_scale_isolines_remove(lines, remove);
+    // The values in the display unit, which is said once, as the label of the list
+    char label[64];
+    if (unit_str[0]) snprintf(label, sizeof(label), "values (%s)", unit_str);
+    else             snprintf(label, sizeof(label), "values");
+
+    // A drag of the whole range over about 300 points
+    const float ext   = fabsf(scale.range_end - scale.range_beg) * fscl;
+    const float speed = ext > 0.0f ? ext / 300.0f : 0.001f;
+    int remove = -1;
+    for (int i = 0; i < lines->count; ++i) {
+        ImGui::PushID(i);
+        float v = lines->values[i] * fscl;
+        ImGui::SetNextItemWidth(item_w - btn_w - gap);
+        if (ImGui::DragFloat("##value", &v, speed, 0.0f, 0.0f, "%.4g")) {
+            lines->values[i] = v / fscl;
             changed = true;
         }
-        ImGui::BeginDisabled(lines->count >= ISOLINES_MAX);
-        if (ImGui::Button(ICON_FA_PLUS " line")) {
-            // Zero where the range holds it (the neutral contour of a potential), else the middle of the range
-            const float lo = MIN(scale.range_beg, scale.range_end), hi = MAX(scale.range_beg, scale.range_end);
-            const float v = (lo <= 0.0f && 0.0f <= hi) ? 0.0f : 0.5f * (lo + hi);
-            changed |= color_scale_isolines_add(lines, v) >= 0;
+        // Back in order once the value is set, not while it is being dragged past another
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            isolines_sort(lines, i);
         }
-        ImGui::EndDisabled();
+        ImGui::SameLine(0.0f, gap);
+        if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(btn_w, 0))) {
+            remove = i;
+        }
+        ImGui::SetItemTooltip("Remove the line");
+        if (i == 0) {
+            ImGui::SameLine(0.0f, gap);
+            ImGui::TextUnformatted(label);
+        }
+        ImGui::PopID();
+    }
+    if (remove >= 0) {
+        color_scale_isolines_remove(lines, remove);
+        changed = true;
     }
 
+    const float row_x = ImGui::GetCursorPosX();
+    ImGui::BeginDisabled(lines->count >= ISOLINES_MAX);
+    if (ImGui::Button(ICON_FA_PLUS, ImVec2(btn_w, 0))) {
+        // Zero where the range holds it (the neutral contour of a potential), else the middle of the range
+        const float lo = MIN(scale.range_beg, scale.range_end), hi = MAX(scale.range_beg, scale.range_end);
+        const float v = (lo <= 0.0f && 0.0f <= hi) ? 0.0f : 0.5f * (lo + hi);
+        changed |= color_scale_isolines_add(lines, v) >= 0;
+    }
+    ImGui::EndDisabled();
+    if (lines->count >= ISOLINES_MAX) {
+        ImGui::SetItemTooltip("%d lines at most", ISOLINES_MAX);
+    } else {
+        ImGui::SetItemTooltip("Add a line (or click the legend's colour bar where it should be)");
+    }
+    if (lines->count == 0) {
+        // Nothing to list: the label goes with the button, in the column of the labels
+        ImGui::SameLine(0.0f, gap);
+        ImGui::TextDisabled("none yet");
+        ImGui::SameLine(row_x + item_w + gap);
+        ImGui::TextUnformatted(label);
+    }
+
+    ImGui::Unindent(indent);
     ImGui::PopID();
     return changed;
 }
@@ -174,6 +203,13 @@ static void legend_hit_set(int id, const ImRect& r) {
 static int   legend_popup_line  = -1;
 static float legend_popup_value = 0.0f;
 
+// The drag of a line on a legend (one at a time): how far the line was from the cursor when it was taken, so that
+// one taken off-centre does not jump to the cursor, and whether it has moved since, so that a click on a line
+// leaves it where it was
+static float legend_drag_offset = 0.0f;
+static float legend_drag_press_y = 0.0f;
+static bool  legend_drag_moved = false;
+
 // The isolines over the scale ImPlot::ColormapScale just drew at frame_min, frame_size: their markers, and with
 // 'interactive' the hover, adding, dragging and editing
 static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, double scl, const char* unit_str, int id,
@@ -199,6 +235,27 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
     auto v_of = [&](float y) {
         const float t = CLAMP((bar.Max.y - y) / bar_h, 0.0f, 1.0f);
         return beg + t * (end - beg);
+    };
+
+    // A value taken from the bar is rounded to the coarsest 1, 2 or 5 times a power of ten (in the display unit)
+    // that is still finer than a pixel of the bar: what a click or a drag gives reads as a round number, and
+    // nothing the bar can resolve is lost to the rounding
+    double step = 0.0;
+    {
+        const double per_px = fabs((double)(end - beg) * scl) / (double)bar_h;
+        if (per_px > 0.0) {
+            const double p = pow(10.0, floor(log10(per_px)));
+            const double m = per_px / p;
+            step = (m >= 5.0 ? 5.0 : m >= 2.0 ? 2.0 : 1.0) * p;
+        }
+    }
+    auto pick = [&](float y) {
+        float v = v_of(y);
+        if (step > 0.0) {
+            v = (float)(round((double)v * scl / step) * step / scl);
+            v = CLAMP(v, lo, hi);
+        }
+        return v;
     };
 
     char unit_fmt[64];
@@ -228,36 +285,65 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
             }
         }
 
-        // A press takes the line under it, or adds one there to be dragged into place
+        // A press takes the line within reach, or adds one where it is, to be dragged into place
         if (ImGui::IsItemActivated()) {
-            lines->drag = nearest >= 0 ? nearest : color_scale_isolines_add(lines, v_of(mouse.y));
+            if (nearest >= 0) {
+                lines->drag = nearest;
+                legend_drag_offset = y_of(lines->values[nearest]) - mouse.y;
+            } else {
+                lines->drag = color_scale_isolines_add(lines, pick(mouse.y));
+                legend_drag_offset = 0.0f;
+            }
+            legend_drag_press_y = mouse.y;
+            legend_drag_moved = false;
             if (lines->drag >= 0) lines->show = true;
         }
         if (lines->drag >= 0) {
             if (active && lines->drag < lines->count) {
-                lines->values[lines->drag] = v_of(mouse.y);
+                legend_drag_moved |= mouse.y != legend_drag_press_y;
+                if (legend_drag_moved) {
+                    lines->values[lines->drag] = pick(mouse.y + legend_drag_offset);
+                }
             } else {
                 isolines_sort(lines, lines->drag);
                 lines->drag = -1;
             }
         }
 
+        // The cursor says what a press does: move the line within reach (or being moved), add one, or nothing when
+        // there is no room for another
+        if (lines->drag >= 0 || (hovered && nearest >= 0)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        } else if (hovered && lines->count >= ISOLINES_MAX) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+        }
+
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             legend_popup_line  = nearest;
-            legend_popup_value = v_of(mouse.y);
+            legend_popup_value = pick(mouse.y);
             ImGui::OpenPopup("##isoline");
         }
 
-        if (hovered && lines->drag < 0) {
+        // What the cursor points at is drawn as the transient line, on the surface and here: the line being moved,
+        // or the one within reach, or else the value under the cursor
+        if (lines->drag >= 0) {
             lines->hover = true;
-            lines->hover_value = v_of(mouse.y);
+            lines->hover_value = lines->values[lines->drag];
+        } else if (hovered) {
+            lines->hover = true;
+            lines->hover_value = nearest >= 0 ? lines->values[nearest] : pick(mouse.y);
         }
-        if ((hovered || lines->drag >= 0) && !ImGui::IsPopupOpen("##isoline")) {
-            const float v = lines->drag >= 0 ? lines->values[lines->drag] : lines->hover_value;
+        if (lines->hover && !ImGui::IsPopupOpen("##isoline")) {
             ImGui::BeginTooltip();
-            ImGui::Text(fmt, v * scl);
+            ImGui::Text(fmt, lines->hover_value * scl);
             if (lines->drag < 0) {
-                ImGui::TextDisabled(nearest >= 0 ? "drag to move, right click to edit" : "click to add a line, right click for more");
+                if (nearest >= 0) {
+                    ImGui::TextDisabled("drag to move, right click to edit");
+                } else if (lines->count >= ISOLINES_MAX) {
+                    ImGui::TextDisabled("%d lines at most", ISOLINES_MAX);
+                } else {
+                    ImGui::TextDisabled("click to add a line, right click for more");
+                }
             }
             ImGui::EndTooltip();
         }
@@ -328,7 +414,7 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
         marker(y, true, inside, emphasis, (lines->show ? 1.0f : 0.35f) * (inside ? 1.0f : 0.5f));
     }
     if (lines->hover) {
-        marker(y_of(lines->hover_value), false, true, false, 1.0f);
+        marker(y_of(lines->hover_value), false, true, lines->drag >= 0 || nearest >= 0, 1.0f);
     }
 }
 
