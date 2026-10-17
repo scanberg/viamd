@@ -3880,9 +3880,17 @@ void electronic_structure_representation_update(ApplicationState* state, Represe
     vol_hash = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), vol_hash);
     vol_hash = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), vol_hash);
 
+    // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
+    // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom
+    const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+    const bool needs_volume = !mesh_mode || es.coloring == SurfaceColoring::AtomColors;
+    vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
+
     if (vol_hash != es.vol_hash) {
         es.vol_hash = vol_hash;
-        electronic_structure_evaluate(state, rep);
+        if (needs_volume) {
+            electronic_structure_evaluate(state, rep);
+        }
     }
 
     if (es.coloring == SurfaceColoring::AtomColors) {
@@ -3892,7 +3900,7 @@ void electronic_structure_representation_update(ApplicationState* state, Represe
             es.col_hash = col_hash;
             electronic_structure_color_volume_update(state, rep, atom_colors);
         }
-    } else if (es.coloring == SurfaceColoring::Field) {
+    } else if (es.coloring == SurfaceColoring::Field && !mesh_mode) {
         electronic_structure_field_update(state, rep);
     }
 }

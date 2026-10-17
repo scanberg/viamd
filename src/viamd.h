@@ -500,6 +500,15 @@ struct Volume {
 // the world. Defined in viamd.cpp because it is the half that touches GL.
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
 
+// How the isosurfaces of the electronic structure are drawn (Settings::isosurface_rendering)
+enum IsosurfaceRendering {
+    IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (volume::render_isosurfaces)
+    IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h, isomesh::render)
+};
+
+// The meshes of an electronic structure representation (iso_meshes.cpp)
+struct EsIsoMesh;
+
 // Descriptor for handling iso surfaces
 struct IsoDesc {
     size_t count;
@@ -511,6 +520,7 @@ struct IsoDesc {
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
+    EsIsoMesh* iso_mesh = nullptr;     // owned: the mesh rendering mode's surfaces, made on first use
     VolumeResolution resolution = VolumeResolution::Mid;
 
     // Shared for all electronic structure representations
@@ -1447,6 +1457,7 @@ struct ApplicationState {
         md_bitmask_t visibility_mask = {};     // the union of the masks of the shown representations
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
+        uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
         bool show_window = false;
         bool advanced_mode = false;
     } representation;
@@ -1519,6 +1530,7 @@ struct ApplicationState {
             decltype(visuals.tonemapping) tonemapping;
             decltype(visuals.dof)         dof;
         } look;
+        int  isosurface_rendering = 0;      // IsosurfaceRendering: raycast volumes or meshes of the fields (iso_meshes.h)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;

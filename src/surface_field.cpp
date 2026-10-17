@@ -827,3 +827,150 @@ void surface_field_free(SurfaceFieldVolume* vol) {
     if (vol->colormap_tex) gl::free_texture(&vol->colormap_tex);
     *vol = SurfaceFieldVolume{};
 }
+
+// ---------------------------------------------------------------------------
+// Field at points
+// ---------------------------------------------------------------------------
+
+static void field_points_charges_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream) {
+#if MD_ENABLE_GPU
+    if (fp->gpu_charges && stream) md_gto_int_gpu_charges_destroy(stream, (md_gto_int_gpu_charges_t)fp->gpu_charges);
+#else
+    (void)stream;
+#endif
+    fp->gpu_charges = nullptr;
+    if (fp->charges) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_gto_int_charges_free(fp->charges, heap);
+        md_free(heap, fp->charges, sizeof(md_gto_int_charges_t));
+        fp->charges = nullptr;
+    }
+    fp->source_hash = 0;
+}
+
+void surface_field_points_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream) {
+    ASSERT(fp);
+    field_points_charges_free(fp, stream);
+    *fp = SurfaceFieldPoints{};
+}
+
+#if MD_ENABLE_GPU
+static bool evaluate_points_gpu(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, md_gpu_stream_t stream) {
+    if (!fp->gpu_charges) {
+        if (fp->charges->point_dipole || fp->charges->point_quadrupole) return false;   // the CPU's
+        fp->gpu_charges = md_gto_int_gpu_charges_create(stream, fp->charges);
+        if (!fp->gpu_charges) return false;
+    }
+    const size_t count = points.count;
+    md_gpu_addr_t xyz = points.gpu_xyz;
+    uint32_t stride = points.gpu_stride;
+    md_gpu_mem_t pts = {};
+    if (!xyz) {
+        // Not on the device: up they go
+        const size_t bytes = sizeof(float) * 3 * count;
+        pts = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, bytes);
+        void* dst = pts.gpu ? md_gpu_upload_begin(stream, pts.gpu, bytes) : nullptr;
+        if (!dst) {
+            if (pts.gpu) md_gpu_free(stream, pts.gpu);
+            return false;
+        }
+        MEMCPY(dst, points.xyz, bytes);
+        md_gpu_upload_end(stream);
+        xyz = pts.gpu;
+        stride = 0;
+    }
+    md_gpu_mem_t res = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * count);
+    md_gpu_mem_t rb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * count);
+    bool ok = false;
+    if (res.gpu && rb.cpu) {
+        md_gto_int_gpu_potential_xyz_desc_t pd = {};
+        pd.charges       = (md_gto_int_gpu_charges_t)fp->gpu_charges;
+        pd.xyz           = xyz;
+        pd.xyz_stride    = stride;
+        pd.num_xyz       = (uint32_t)count;
+        pd.out_potential = res.gpu;
+        if (md_gto_int_gpu_potential_xyz_launch(stream, &pd)) {
+            md_gpu_copy(stream, rb.gpu, res.gpu, sizeof(float) * count);
+            md_gpu_stream_sync(stream);
+            MEMCPY(out, rb.cpu, sizeof(float) * count);
+            ok = true;
+        }
+    }
+    if (pts.gpu) md_gpu_free(stream, pts.gpu);
+    if (res.gpu) md_gpu_free(stream, res.gpu);
+    if (rb.gpu)  md_gpu_free(stream, rb.gpu);
+    return ok;
+}
+#endif
+
+static void evaluate_points_cpu(const md_gto_int_charges_t* charges, float* out, const float* xyz, size_t count) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* v = (double*)md_temp_alloc(temp, sizeof(double) * count);
+    struct Payload {
+        const md_gto_int_charges_t* charges;
+        const float* xyz;
+        double* out;
+    } payload = { charges, xyz, v };
+    const uint64_t work = md_gto_int_charges_work_per_point(charges);
+    const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
+    task_system::ID task = task_system::create_pool_task(STR_LIT("## Surface Field Points"), (uint32_t)count, [p = &payload](uint32_t beg, uint32_t end, uint32_t) {
+        md_gto_int_potential_xyz(p->out + beg, NULL, p->xyz + 3 * (size_t)beg, end - beg, 0, p->charges);
+    }, grain);
+    task_system::enqueue_task(task);
+    task_system::task_wait_for(task);
+    for (size_t i = 0; i < count; ++i) out[i] = (float)v[i];
+}
+
+bool surface_field_evaluate_points(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc) {
+    ASSERT(fp);
+    ASSERT(desc.sys);
+    const size_t count = points.count;
+    if (count == 0) return true;
+    if (!out || !(points.xyz || (points.gpu_xyz && desc.gpu_stream))) return false;
+
+    if (!fp->charges || fp->source_hash != desc.source_hash) {
+        field_points_charges_free(fp, desc.gpu_stream);
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
+        MEMSET(q, 0, sizeof(*q));
+        if (!build_charges(q, desc, heap)) {
+            md_free(heap, q, sizeof(md_gto_int_charges_t));
+            return false;
+        }
+        fp->charges = q;
+        fp->source_hash = desc.source_hash;
+    }
+
+    const md_tick_t t0 = md_tick_now();
+    bool on_gpu = false;
+#if MD_ENABLE_GPU
+    if (desc.gpu_stream) on_gpu = evaluate_points_gpu(fp, out, points, desc.gpu_stream);
+#endif
+    if (!on_gpu) {
+        if (!points.xyz) return false;
+        evaluate_points_cpu(fp->charges, out, points.xyz, count);
+    }
+    fp->on_gpu  = on_gpu;
+    fp->seconds = md_tick_to_milliseconds(md_tick_now() - t0) * 1.0e-3;
+    return true;
+}
+
+ColorScaleSpan surface_field_span_of(const float* values, size_t count) {
+    ColorScaleSpan span;
+    if (!values || count == 0) return span;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    float* v = (float*)md_temp_alloc(temp, sizeof(float) * count);
+    MEMCPY(v, values, sizeof(float) * count);
+    const size_t lo_idx = (size_t)(0.01 * (double)(count - 1));
+    const size_t hi_idx = (size_t)(0.99 * (double)(count - 1));
+    span.valid = true;
+    span.min = *std::min_element(v, v + count);
+    span.max = *std::max_element(v, v + count);
+    std::nth_element(v, v + lo_idx, v + count);
+    span.lo = v[lo_idx];
+    std::nth_element(v, v + hi_idx, v + count);
+    span.hi = v[hi_idx];
+    return span;
+}

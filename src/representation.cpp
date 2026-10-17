@@ -16,6 +16,7 @@
 #include <imgui_widgets.h>
 
 #include <gfx/gl_utils.h>
+#include <iso_meshes.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -271,6 +272,8 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
+    // and its meshes of the old one's basis
+    electronic_structure_mesh_free(state, &rep->electronic_structure);
 
     flag_representation_as_dirty(rep);
 }
@@ -284,6 +287,7 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
+    rep->electronic_structure.iso_mesh           = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -353,6 +357,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
     surface_field_free(&rep.electronic_structure.field_vol);
+    electronic_structure_mesh_free(state, &rep.electronic_structure);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -776,6 +781,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             if (rep->type == RepresentationType::Cartoon) {
                 rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
             }
+            state->representation.gl_version += 1;
 
 #if EXPERIMENTAL_GFX_API
             md_gfx_rep_attr_t attributes = {};
@@ -1461,7 +1467,7 @@ bool representations_deserialize(ApplicationState* app, str_t section, viamd::de
 // How the isosurfaces of an electronic structure representation are coloured. The atoms' colours
 // are not offered for a density property; a field is offered whenever the dataset has what one is
 // made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool advanced, bool allow_atom_colors) {
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool advanced, bool allow_atom_colors, bool mesh_mode) {
     bool update_rep = false;
 
     bool any_field = false;
@@ -1531,10 +1537,11 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
     // nothing re-evaluated: it is not an update of the representation
+    // With mesh rendering the field is evaluated at the vertices of the meshes, not on a volume
     const SurfaceFieldVolume& vol = es.field_vol;
-    color_scale_draw_controls(&es.field_map, surface_field_span(vol), surface_field_unit(es.field_kind),
-                              "on surface", "its 1st to 99th percentile on the surface");
-    if (advanced && vol.num_surface_samples > 0) {
+    color_scale_draw_controls(&es.field_map, mesh_mode ? electronic_structure_mesh_field_span(es) : surface_field_span(vol),
+                              surface_field_unit(es.field_kind), "on surface", "its 1st to 99th percentile on the surface");
+    if (advanced && !mesh_mode && vol.num_surface_samples > 0) {
         ImGui::TextDisabled("%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                             vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
@@ -1879,7 +1886,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             ImGui::SetItemTooltip("Optical density shared by all custom isosurfaces");
         }
 
-        update_rep |= draw_surface_coloring(es, state->mold.sys, advanced, false);
+        update_rep |= draw_surface_coloring(es, state->mold.sys, advanced, false, state->settings.isosurface_rendering == IsosurfaceRendering_Mesh);
 
         return update_rep;
     }
@@ -1894,7 +1901,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Optical density of the isosurfaces");
         }
-        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
+        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true, state->settings.isosurface_rendering == IsosurfaceRendering_Mesh);
         if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
             ImGui::ColorEdit4("tint positive", rep.electronic_structure.tint_psi_pos.elem);
             ImGui::ColorEdit4("tint negative", rep.electronic_structure.tint_psi_neg.elem);
@@ -1911,7 +1918,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Optical density of the isosurfaces");
         }
-        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
+        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true, state->settings.isosurface_rendering == IsosurfaceRendering_Mesh);
         if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
             if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 ImGui::ColorEdit4("tint attachment", rep.electronic_structure.tint_att.elem);
@@ -2759,7 +2766,8 @@ void draw_representation_legends(const ApplicationState& state) {
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             const ElectronicStructureRepresentation& es = rep.electronic_structure;
-            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && es.field_vol.tex_id) {
+            const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++);
                 continue;
             }

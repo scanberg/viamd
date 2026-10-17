@@ -42,6 +42,9 @@
 #include <gfx/immediate_draw_utils.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volumerender_utils.h>
+#include <gfx/isomesh_utils.h>
+#include <iso_meshes.h>
+#include <md_gto_iso.h>
 
 #include <resource_path.h>
 #include <app_settings.h>
@@ -81,6 +84,9 @@ static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data whi
 static md_allocator_i* persistent_alloc = 0;
 
 static bool use_gfx = false;
+
+// The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames
+static isomesh::Target iso_mesh_target;
 
 constexpr str_t shader_output_snippet = STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
@@ -663,6 +669,7 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
     app_settings::bind(STR_LIT("raycast_splines"), &state.settings.raycast_splines);
+    app_settings::bind(STR_LIT("isosurface_rendering"), &state.settings.isosurface_rendering);
     app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
@@ -730,6 +737,8 @@ int main(int argc, char** argv) {
         // Potentials (surface fields). Kernels are made on first use, so this costs nothing until a
         // surface is coloured by one.
         md_gto_int_gpu_initialize(state.gpu_device);
+        // Isosurface meshes (the mesh rendering mode): kernels made on the first extraction
+        md_gto_iso_gpu_initialize(state.gpu_device);
     }
 #endif
 
@@ -765,6 +774,7 @@ int main(int argc, char** argv) {
     postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
     VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
+    isomesh::initialize();
     VIAMD_LOG_DEBUG("Initializing task system...");
     md_os_sys_info_t sys_info = {0};
 	md_os_sys_info_query(&sys_info);
@@ -994,6 +1004,7 @@ int main(int argc, char** argv) {
                 VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
                 postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
                 volume::initialize();
+                isomesh::initialize();
                 md_gl_shaders_destroy(state.gl.shaders);
                 state.gl.shaders = md_gl_shaders_create(shader_output_snippet);
             }
@@ -1479,6 +1490,11 @@ int main(int argc, char** argv) {
     postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
+    isomesh::target_free(&iso_mesh_target);
+    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+        electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
+    }
+    isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
@@ -1490,6 +1506,7 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_drain(&state);
         system_gpu_data_free(&state);
         md_gto_int_gpu_shutdown();
+        md_gto_iso_gpu_shutdown();
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
@@ -1856,12 +1873,31 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SeparatorText("Isosurfaces");
             ImGui::PushID("Isosurfaces");
             {
+                int rendering = CLAMP(data->settings.isosurface_rendering, 0, 1);
+                if (ImGui::Combo("Rendering", &rendering, "Ray Casting\0Mesh\0")) {
+                    data->settings.isosurface_rendering = rendering;
+                    app_settings::mark_dirty();
+                    // Their volumes are evaluated only when something draws from them
+                    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+                        if (data->representation.reps[i].type == RepresentationType::ElectronicStructure) {
+                            flag_representation_as_dirty(&data->representation.reps[i]);
+                        }
+                    }
+                }
+                ImGui::SetItemTooltip("Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
+                                      "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
+                                      "field itself rather than from the volume, at a spacing set by the representation's resolution,\n"
+                                      "and drawn with stochastic transparency that is refined over the frames while the view\n"
+                                      "is still. Extraction runs when the surface changes (an isovalue, an orbital, a frame);\n"
+                                      "drawing is cheap. Volumes from scripts are always ray cast.");
+                // Also for the volumes that are ray cast in either mode (from scripts)
                 int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
                 if (ImGui::Combo("Intersection", &iso_mode, "Fast\0Exact\0")) {
                     data->settings.exact_isosurfaces = iso_mode == 1;
                     app_settings::mark_dirty();
                 }
-                ImGui::SetItemTooltip("Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
+                ImGui::SetItemTooltip("How ray cast isosurfaces are found (with Mesh rendering: only those of volumes from scripts).\n"
+                                      "Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
                                       "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
                                       "a finer volume resolution makes both smaller.\n"
                                       "Exact: intersects every cell a ray passes through, so nothing is missed and the surfaces\n"
@@ -6977,12 +7013,129 @@ static void draw_representations_opaque(ApplicationState* state) {
 #endif
 }
 
+// What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
+// the depth of what the representations draw (draw_representations_opaque)
+static uint64_t opaque_scene_hash(const ApplicationState* state) {
+    uint64_t h = md_hash64(&state->mold.gpu_buffers_version, sizeof(state->mold.gpu_buffers_version), state->representation.gl_version);
+    h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
+    h = md_hash64(state->view.periodic_images, sizeof(state->view.periodic_images), h);
+    h = md_hash64(&state->settings.raycast_splines, sizeof(state->settings.raycast_splines), h);
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        const Representation& rep = state->representation.reps[i];
+        const bool shown = representation_shown(*state, rep) && rep.type_is_valid;
+        h = md_hash64(&shown, sizeof(shown), h);
+        if (!shown) continue;
+        h = md_hash64(&rep.type, sizeof(rep.type), h);
+        h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
+        h = md_hash64(&rep.scale, sizeof(rep.scale), h);
+        h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
+        h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
+        if (rep.type == RepresentationType::Cartoon) {
+            h = md_hash64(&rep.two_head_spheres, sizeof(rep.two_head_spheres), h);
+            h = md_hash64(&rep.nucleic_band_radius, sizeof(rep.nucleic_band_radius), h);
+            h = md_hash64(&rep.nucleic_ring_radius, sizeof(rep.nucleic_ring_radius), h);
+        }
+        if (rep.type == RepresentationType::SimulationBox) {
+            h = md_hash64(&rep.box.thickness, sizeof(rep.box.thickness), h);
+            h = md_hash64(&rep.box.axes, sizeof(rep.box.axes), h);
+        }
+        if (rep.type == RepresentationType::DipoleMoment) {
+            h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
+            h = md_hash64(&rep.dipole.dipole_index, sizeof(rep.dipole.dipole_index), h);
+            h = md_hash64(&rep.dipole.offset, sizeof(rep.dipole.offset), h);
+            h = md_hash64(&rep.dipole.scale, sizeof(rep.dipole.scale), h);
+            h = md_hash64(&rep.dipole.radius, sizeof(rep.dipole.radius), h);
+        }
+    }
+    return h;
+}
+
+// The isosurfaces of every electronic structure representation as meshes, in one composite
+static bool draw_representations_transparent_mesh(ApplicationState* state) {
+    static constexpr size_t MAX_SURFACES = 256;
+    isomesh::Surface surfaces[MAX_SURFACES];
+    size_t num_surfaces = 0;
+    uint64_t scene_hash = opaque_scene_hash(state);
+
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        ElectronicStructureRepresentation& es = rep.electronic_structure;
+
+        IsoDesc iso;
+        electronic_structure_iso_desc_init(&iso, es);
+        const size_t n = electronic_structure_mesh_surfaces(surfaces + num_surfaces, MAX_SURFACES - num_surfaces, state, &rep, iso);
+
+        // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
+        // the colour volume spans the box of the density volume
+        const mat4_t world_to_volume = mat4_inverse(es.density_vol.texture_to_world);
+        const bool use_field  = es.coloring == SurfaceColoring::Field;
+        const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
+        const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
+        for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
+            isomesh::Surface& s = surfaces[j];
+            s.world_to_volume = world_to_volume;
+            if (s.coloring == isomesh::Coloring_VertexField) {
+                s.field_colormap = colormap;
+                s.field_range_beg = es.field_map.range_beg;
+                s.field_range_end = es.field_map.range_end;
+            } else if (use_colors) {
+                s.coloring = isomesh::Coloring_ColorVolume;
+                s.color_volume = es.color_vol.tex_id;
+            }
+        }
+        // The contents of the colour volume (the vertex values are in the mesh's version)
+        if (use_colors) {
+            scene_hash = md_hash64(&es.col_hash, sizeof(es.col_hash), scene_hash);
+        }
+        num_surfaces += n;
+    }
+
+    const isomesh::RenderDesc desc = {
+        .render_target = {
+            .depth = state->gbuffer.tex.depth,
+            .color = state->gbuffer.tex.transparency_hdr,
+            .width = state->gbuffer.width,
+            .height = state->gbuffer.height,
+            .clear_color = true,
+        },
+        .matrix = {
+            .view = state->view.param.matrix.curr.view,
+            .proj = state->view.param.matrix.curr.proj,
+            .proj_no_jitter = state->view.param.matrix.curr.proj_no_jitter,
+        },
+        .surfaces = surfaces,
+        .num_surfaces = num_surfaces,
+        .shading = {
+            .roughness = 0.3f,
+            .ior = 1.5f,
+            .mode = state->visuals.shading.mode,
+            .ambient = state->visuals.shading.ambient,
+            .specular = state->visuals.shading.specular,
+            .colors = state->visuals.shading.colors,
+            .light = state->visuals.shading.light,
+            .environment = state->visuals.shading.environment,
+        },
+        .scene_hash = scene_hash,
+    };
+    if (num_surfaces == 0) {
+        isomesh::target_free(&iso_mesh_target);
+        return false;
+    }
+    return isomesh::render(&iso_mesh_target, desc);
+}
+
 static bool draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
     if (state->mold.sys.atom.count == 0) return false;
 
     const size_t num_representations = md_array_size(state->representation.reps);
     if (num_representations == 0) return false;
+
+    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
+        return draw_representations_transparent_mesh(state);
+    }
+    isomesh::target_free(&iso_mesh_target);
 
     bool written = false;
 

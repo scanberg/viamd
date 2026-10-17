@@ -169,3 +169,36 @@ ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol);
 uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap);
 
 void surface_field_free(SurfaceFieldVolume* vol);
+
+// FIELD AT POINTS
+// The field evaluated exactly where it is wanted, at a list of points - the vertices of an isosurface
+// mesh (iso_meshes.h) - rather than on a volume a surface samples: no grid, no band, no interpolation
+// but across a triangle. The charge distribution is kept while desc.source_hash stays the same, so a
+// new set of points (another isovalue) costs only their evaluation. On the GPU when desc.gpu_stream is
+// set and md_gto_int can evaluate the distribution there (point charges only), else on the CPU's
+// worker threads. Blocking.
+struct SurfaceFieldPoints {
+    md_gto_int_charges_t* charges = nullptr;
+    void*    gpu_charges = nullptr;     // md_gto_int_gpu_charges_t
+    uint64_t source_hash = 0;
+    bool     on_gpu = false;            // where the last evaluation ran
+    double   seconds = 0.0;             // and what it took
+};
+
+// The points, bohr. The GPU path reads gpu_xyz when there is one (points already on the device, say where
+// an extraction left them: no upload), else uploads xyz; the CPU path reads xyz. Either alone will do,
+// xyz is what lets the CPU take over from a GPU that cannot evaluate the field.
+struct SurfaceFieldPointSet {
+    const float*  xyz = nullptr;        // host, packed float3
+    md_gpu_addr_t gpu_xyz = 0;          // device, float xyz at gpu_xyz + i * gpu_stride
+    uint32_t      gpu_stride = 0;       // bytes, a multiple of 4; 0 = packed
+    size_t        count = 0;
+};
+
+// desc: kind, sys, state, basis_atom_xyz / num_basis_atoms, source_hash, gpu_stream (optional); the rest
+// is not used. Returns false when the field cannot be made, or cannot be evaluated where the points are.
+bool surface_field_evaluate_points(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc);
+void surface_field_points_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream);
+
+// The spread of values (1st to 99th percentile, and the extremes) as a colour scale reads it
+ColorScaleSpan surface_field_span_of(const float* values, size_t count);

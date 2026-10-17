@@ -195,6 +195,7 @@ set(SRC_FILES
     src/timeline_periods.cpp
     src/timeline_periods_ui.cpp
     src/viamd.cpp
+    src/iso_meshes.cpp
 
     src/app_settings.h
     src/cartoon_glyphs.h
@@ -202,6 +203,7 @@ set(SRC_FILES
     src/color_utils.h
     src/display_units.h
     src/surface_field.h
+    src/iso_meshes.h
     src/event.h
     src/file_list.h
     src/filter_input.h
@@ -241,6 +243,7 @@ set(GFX_FILES
     src/gfx/immediate_draw_utils.cpp
     src/gfx/postprocessing_utils.cpp
     src/gfx/volumerender_utils.cpp
+    src/gfx/isomesh_utils.cpp
 
     src/gfx/camera.h
     src/gfx/camera_utils.h
@@ -251,6 +254,7 @@ set(GFX_FILES
     src/gfx/postprocessing_utils.h
     src/gfx/view_param.h
     src/gfx/volumerender_utils.h
+    src/gfx/isomesh_utils.h
 )
 
 # One folder per component under src/components. Adding a component means adding its folder; there
@@ -293,6 +297,9 @@ set(SHADER_FILES
     src/shaders/volume/block_proxy.vert
     src/shaders/volume/block_proxy.frag
     src/shaders/volume/splat_color.comp
+    src/shaders/volume/isomesh.vert
+    src/shaders/volume/isomesh.frag
+    src/shaders/volume/isomesh_accumulate.frag
     src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/ssao_temporal.frag

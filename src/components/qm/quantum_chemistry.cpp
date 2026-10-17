@@ -8,10 +8,13 @@
 #include <color_utils.h>
 
 #include <gfx/volumerender_utils.h>
+#include <gfx/isomesh_utils.h>
+#include <iso_meshes.h>
 #include <gfx/gl_utils.h>
 #include <gfx/immediate_draw_utils.h>
 
 #include <md_gto.h>
+#include <md_gto_iso.h>
 #include <md_util.h>
 #include <md_topo.h>
 #include <md_vector_graphics.h>
@@ -215,6 +218,78 @@ enum OrbitalColumn {
     OrbitalColumn_EneBeta,
 };
 
+// The panels' isosurfaces as meshes (IsosurfaceRendering_Mesh): a field per panel, all extracted together
+// (iso_meshes.h), and the running mean of each panel's image
+struct PanelMeshes {
+    static constexpr int MAX = (int)ISO_MESHES_MAX_SLOTS;
+    md_gto_iso_field_t* field[MAX] = {};
+    uint64_t  field_key[MAX] = {};
+    int       slot[MAX] = {};       // the panel's slot in 'meshes', -1 for none
+    IsoMeshes meshes = {};
+    isomesh::Target target[MAX] = {};
+    bool      converged = true;     // every panel's image is final: the panels need not be redrawn
+};
+
+static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
+    iso_meshes_free(&pm->meshes, state);
+    for (int i = 0; i < PanelMeshes::MAX; ++i) {
+        md_gto_iso_field_destroy(pm->field[i]);
+        isomesh::target_free(&pm->target[i]);
+    }
+    *pm = {};
+}
+
+// Where the atoms are: a field is of one geometry
+static uint64_t panel_positions_hash(const ApplicationState& state) {
+    const md_system_state_t& st = state.mold.state;
+    return (st.xyz && st.num_atoms) ? md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, 0x9a7e1) : 0x9a7e1;
+}
+
+// Panel i's field, made by 'make' when its key changed (0: none)
+template <typename F>
+static void panel_meshes_field(PanelMeshes* pm, ApplicationState* state, int i, uint64_t key, F make) {
+    if (pm->field_key[i] == key) return;
+    // The extraction state holds the fields: let it go before one of them does
+    iso_meshes_free(&pm->meshes, state);
+    md_gto_iso_field_destroy(pm->field[i]);
+    pm->field[i] = key ? make() : nullptr;
+    pm->field_key[i] = key;
+}
+
+// The meshes of the first 'count' panels at one isovalue
+static void panel_meshes_update(PanelMeshes* pm, ApplicationState* state, int count, double iso, uint32_t sheets) {
+    IsoMeshSlot slots[PanelMeshes::MAX];
+    uint32_t n = 0;
+    uint64_t key = 0x5107;
+    for (int i = 0; i < PanelMeshes::MAX; ++i) {
+        pm->slot[i] = -1;
+        if (i < count && pm->field[i] && iso > 0.0) {
+            pm->slot[i] = (int)n;
+            slots[n++] = {pm->field[i], iso, sheets};
+            key = md_hash64(&pm->field_key[i], sizeof(pm->field_key[i]), key);
+        }
+    }
+    iso_meshes_update(&pm->meshes, state, slots, n, iso_meshes_cell_size(VolumeResolution::Mid), key);
+}
+
+// Panel i's surfaces: the positive sheet in colors[0], the negative one in colors[1]
+static size_t panel_meshes_surfaces(isomesh::Surface out[2], const PanelMeshes& pm, int i, const vec4_t colors[2]) {
+    const int k = pm.slot[i];
+    if (k < 0 || !pm.meshes.ok) return 0;
+    size_t n = 0;
+    for (int s = 0; s < 2; ++s) {
+        if (pm.meshes.index_count[k][s] == 0) continue;
+        isomesh::Surface& surf = out[n++];
+        surf = {};
+        surf.mesh = &pm.meshes.mesh;
+        surf.index_offset = pm.meshes.index_offset[k][s];
+        surf.index_count  = pm.meshes.index_count[k][s];
+        surf.model = iso_meshes_model_matrix();
+        surf.color = colors[s];
+    }
+    return n;
+}
+
 // Fills row_to_mo with the mo indices in the order the table lists them, and mo_to_row with its
 // inverse. The grid shows a span of table ROWS rather than a span of mo indices, so both views
 // agree by construction whatever the sort is - see draw_orb_window.
@@ -415,6 +490,8 @@ struct QuantumChemistry : viamd::EventHandler {
         int  sort_column    = OrbitalColumn_Idx;
         bool sort_ascending = false;
 
+        PanelMeshes mesh = {};
+
         IsoDesc iso = {
             .count = 2,
             .values = {0.05f, -0.05},
@@ -437,6 +514,7 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t out_tex[2] = {};       // RGBA8: the finished panel
         uint32_t out_fbo = 0;
         uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
+        PanelMeshes mesh = {};
 
         int sel_nto_idx = -1;
 
@@ -783,6 +861,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // away. Nothing the attribute table owns is allocated from it - those pointers belong to the
     // system - so what lives here is this component's own derived state.
     md_allocator_i* arena = 0;
+    ApplicationState* app = nullptr;    // for what has to be released with the GPU stream (the panels' meshes)
 
     // The GTO basis, built from the system's basis/ attributes. One shell per contracted radial
     // shell,
@@ -810,6 +889,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(4));
+                app = &state;
                 md_bitmask_init(&critical_points.selection_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
                 md_bitmask_init(&critical_points.highlight_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
 
@@ -829,6 +909,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdShutdown:
+                if (app) {
+                    panel_meshes_free(&orb.mesh, app);
+                    panel_meshes_free(&nto.mesh, app);
+                }
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
@@ -1243,6 +1327,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // than freed through td_cache_free().
         td_cache = TransitionDensityCache{};
         atom_xyzw = nullptr;
+        if (app) {
+            panel_meshes_free(&orb.mesh, app);
+            panel_meshes_free(&nto.mesh, app);
+        }
         orb = QuantumChemistry::Orb{};
         nto = QuantumChemistry::Nto{};
         // The arena reset above already released everything these held.
@@ -6569,9 +6657,38 @@ struct QuantumChemistry : viamd::EventHandler {
             mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
             mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
 
-            // The panels are only redrawn when something they show changed: a static grid costs nothing
+            // The mesh rendering mode: each panel's orbital as a field, the meshes of all of them extracted together
+            const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+            if (mesh_mode) {
+                const uint64_t pos_hash = panel_positions_hash(state);
+                for (int i = 0; i < PanelMeshes::MAX; ++i) {
+                    const int mo_idx = (i < num_mos) ? orb.vol_mo_idx[i] : -1;
+                    const SpinChannel mo_type = orb.vol_mo_type[i];
+                    uint64_t key = 0;
+                    if (-1 < mo_idx && mo_idx < num_tot_mos) {
+                        const int id[2] = {mo_idx, (int)mo_type};
+                        key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                    }
+                    panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
+                        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+                        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
+                        return iso_field_create_orbital(&state, path, &slice);
+                    });
+                }
+                panel_meshes_update(&orb.mesh, &state, num_mos, fabs((double)orb.iso.values[0]), MD_GTO_ISO_SHEET_BOTH);
+            } else if (orb.mesh.meshes.key) {
+                panel_meshes_free(&orb.mesh, &state);
+            }
+
+            // The panels are only redrawn when something they show changed, or while their meshes are refined
+            // over the frames: a static grid costs nothing
             uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)gl_rep.id);
             {
+                render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
+                if (mesh_mode) {
+                    render_hash = md_hash64(&orb.mesh.meshes.mesh.version, sizeof(orb.mesh.meshes.mesh.version), render_hash);
+                }
                 const int layout[3] = { width, height, num_mos };
                 render_hash = md_hash64(layout, sizeof(layout), render_hash);
                 for (int i = 0; i < num_mos; ++i) {
@@ -6592,7 +6709,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = render_hash ? render_hash : 1;
             }
 
-            if (gl_rep.id && render_hash != orb.render_hash) {
+            if (gl_rep.id && (render_hash != orb.render_hash || (mesh_mode && !orb.mesh.converged))) {
                 orb.render_hash = render_hash;
 
                 gbuffer_clear(&gbuf);
@@ -6679,42 +6796,82 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Every panel is its own orbital's isosurfaces over the one opaque image they share, put
                 // through post-processing on its own: the surfaces are composited in HDR, before tone mapping
                 PUSH_GPU_SECTION("ORB GRID PANELS")
+                bool converged = true;
                 for (int i = 0; i < num_mos; ++i) {
-                    volume::IsoRenderDesc vol_desc = {
-                        .render_target = {
-                            .depth  = orb.gbuf.tex.depth,
-                            .color  = orb.iso_tex[i],
-                            .width  = orb.gbuf.width,
-                            .height = orb.gbuf.height,
-                            .clear_color = true,
-                        },
-                        .texture = {
-                            .density_volume = orb.vol[i].tex_id,
-                        },
-                        .matrix = {
-                            .model = orb.vol[i].texture_to_world,
-                            .view  = view_mat,
-                            .proj  = proj_mat,
-                            .inv_proj = inv_proj_mat,
-                        },
-                        .iso = {
-                            .count  = (size_t)orb.iso.count,
-                            .values = orb.iso.values,
-                            .colors = orb.iso.colors,
-                            .exact  = state.settings.exact_isosurfaces,
-                        },
-                        .shading = {
-                            .roughness = 0.3f,
-                            .ior = 1.5f,
-                            .mode = state.visuals.shading.mode,
-                            .ambient = state.visuals.shading.ambient,
-                            .specular = state.visuals.shading.specular,
-                            .colors = state.visuals.shading.colors,
-                            .light = state.visuals.shading.light,
-                            .environment = state.visuals.shading.environment,
-                        },
-                    };
-                    const bool iso_written = volume::render_isosurfaces(vol_desc);
+                    bool iso_written = false;
+                    if (mesh_mode) {
+                        // The sheet of each sign in the colour of the isovalue of that sign
+                        const bool pos_first = orb.iso.values[0] >= 0.0f;
+                        const vec4_t colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
+                        isomesh::Surface surfaces[2];
+                        const size_t num_surfaces = panel_meshes_surfaces(surfaces, orb.mesh, i, colors);
+                        const isomesh::RenderDesc mesh_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .matrix = {
+                                .view = view_mat,
+                                .proj = proj_mat,
+                                .proj_no_jitter = proj_mat,
+                            },
+                            .surfaces = surfaces,
+                            .num_surfaces = num_surfaces,
+                            .shading = {
+                                .roughness = 0.3f,
+                                .ior = 1.5f,
+                                .mode = state.visuals.shading.mode,
+                                .ambient = state.visuals.shading.ambient,
+                                .specular = state.visuals.shading.specular,
+                                .colors = state.visuals.shading.colors,
+                                .light = state.visuals.shading.light,
+                                .environment = state.visuals.shading.environment,
+                            },
+                            .scene_hash = render_hash,
+                        };
+                        bool panel_converged = true;
+                        iso_written = isomesh::render(&orb.mesh.target[i], mesh_desc, &panel_converged);
+                        converged &= panel_converged;
+                    } else {
+                        volume::IsoRenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .texture = {
+                                .density_volume = orb.vol[i].tex_id,
+                            },
+                            .matrix = {
+                                .model = orb.vol[i].texture_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                            },
+                            .iso = {
+                                .count  = (size_t)orb.iso.count,
+                                .values = orb.iso.values,
+                                .colors = orb.iso.colors,
+                                .exact  = state.settings.exact_isosurfaces,
+                            },
+                            .shading = {
+                                .roughness = 0.3f,
+                                .ior = 1.5f,
+                                .mode = state.visuals.shading.mode,
+                                .ambient = state.visuals.shading.ambient,
+                                .specular = state.visuals.shading.specular,
+                                .colors = state.visuals.shading.colors,
+                                .light = state.visuals.shading.light,
+                                .environment = state.visuals.shading.environment,
+                            },
+                        };
+                        iso_written = volume::render_isosurfaces(vol_desc);
+                    }
 
                     postprocess_pipeline::Inputs postprocess_inputs = {};
                     postprocess_inputs.depth = orb.gbuf.tex.depth;
@@ -6729,6 +6886,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     glViewport(0, 0, orb.gbuf.width, orb.gbuf.height);
                     postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                 }
+                orb.mesh.converged = converged;
                 POP_GPU_SECTION()
 
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -7930,9 +8088,33 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                 }
 
-                // The panels are only redrawn when something they show changed: a static view costs nothing
+                // The mesh rendering mode: the attachment and detachment densities as fields, extracted together
+                const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+                if (mesh_mode) {
+                    const uint64_t pos_hash = panel_positions_hash(state);
+                    for (int i : nto_target_idx) {
+                        const int id[2] = {nto.sel_nto_idx, i};
+                        uint64_t key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                        panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
+                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
+                            const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
+                            return iso_field_create_density_matrix(&state, D, td_cache.dim);
+                        });
+                    }
+                    panel_meshes_update(&nto.mesh, &state, 2, nto.iso_val * nto.iso_val, MD_GTO_ISO_SHEET_POSITIVE);
+                } else if (nto.mesh.meshes.key) {
+                    panel_meshes_free(&nto.mesh, &state);
+                }
+
+                // The panels are only redrawn when something they show changed, or while their meshes are
+                // refined over the frames: a static view costs nothing
                 uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)nto.gl_rep.id);
                 {
+                    render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
+                    if (mesh_mode) {
+                        render_hash = md_hash64(&nto.mesh.meshes.mesh.version, sizeof(nto.mesh.meshes.mesh.version), render_hash);
+                    }
                     const int layout[2] = { width, height };
                     render_hash = md_hash64(layout, sizeof(layout), render_hash);
                     for (int i : nto_target_idx) {
@@ -7959,7 +8141,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = render_hash ? render_hash : 1;
                 }
 
-                if (render_hash != nto.render_hash) {
+                if (render_hash != nto.render_hash || (mesh_mode && !nto.mesh.converged)) {
                     nto.render_hash = render_hash;
 
                     gbuffer_clear(&gbuf);
@@ -8154,6 +8336,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // Every panel is its own density's isosurfaces over the opaque image (and selection) the two
                     // share, put through post-processing on its own: the surfaces are composited in HDR
                     PUSH_GPU_SECTION("NTO PANELS")
+                    bool converged = true;
                     for (int i : nto_target_idx) {
                         bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
                     
@@ -8181,7 +8364,41 @@ struct QuantumChemistry : viamd::EventHandler {
                             values[1] = -(float)nto.iso_val;
                         }
 
-                        if (enabled) {
+                        if (enabled && mesh_mode) {
+                            const vec4_t sheet_colors[2] = {colors[0], colors[0]};
+                            isomesh::Surface surfaces[2];
+                            const size_t num_surfaces = panel_meshes_surfaces(surfaces, nto.mesh, i, sheet_colors);
+                            const isomesh::RenderDesc mesh_desc = {
+                                .render_target = {
+                                    .depth  = nto.gbuf.tex.depth,
+                                    .color  = nto.iso_tex[i],
+                                    .width  = nto.gbuf.width,
+                                    .height = nto.gbuf.height,
+                                    .clear_color = true,
+                                },
+                                .matrix = {
+                                    .view = view_mat,
+                                    .proj = proj_mat,
+                                    .proj_no_jitter = proj_mat,
+                                },
+                                .surfaces = surfaces,
+                                .num_surfaces = num_surfaces,
+                                .shading = {
+                                    .roughness = 0.3f,
+                                    .ior = 1.5f,
+                                    .mode = postprocess_settings.shading.mode,
+                                    .ambient = postprocess_settings.shading.ambient,
+                                    .specular = postprocess_settings.shading.specular,
+                                    .colors = postprocess_settings.shading.colors,
+                                    .light = postprocess_settings.shading.light,
+                                    .environment = postprocess_settings.shading.environment,
+                                },
+                                .scene_hash = render_hash,
+                            };
+                            bool panel_converged = true;
+                            iso_written = isomesh::render(&nto.mesh.target[i], mesh_desc, &panel_converged);
+                            converged &= panel_converged;
+                        } else if (enabled) {
                             volume::IsoRenderDesc vol_desc = {
                                 .render_target = {
                                     .depth  = nto.gbuf.tex.depth,
@@ -8227,6 +8444,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         glViewport(0, 0, nto.gbuf.width, nto.gbuf.height);
                         postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                     }
+                    nto.mesh.converged = converged;
                     POP_GPU_SECTION();
 
                     // Reset state
