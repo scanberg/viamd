@@ -13,14 +13,7 @@
 
 #include <shaders.inl>
 
-#define PUSH_GPU_SECTION(lbl)                                                                       \
-    {                                                                                               \
-        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
-    }
-#define POP_GPU_SECTION()                       \
-    {                                           \
-        if (glPopDebugGroup) glPopDebugGroup(); \
-    }
+#include <gfx/profiler.h>
 
 namespace isomesh {
 

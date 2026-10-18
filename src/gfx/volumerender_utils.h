@@ -11,24 +11,7 @@ namespace volume {
 void initialize();
 void shutdown();
 
-// GPU time spent in the volume passes, averaged per frame over the last few frames. Measured with
-// GL_TIME_ELAPSED queries that are read back a few frames late, so collecting them never stalls.
-enum TimingStage {
-    TimingStage_BlockMinMax,
-    TimingStage_EntryExit,
-    TimingStage_Raycast,
-    TimingStage_Count
-};
-
-struct GpuTimings {
-    float ms[TimingStage_Count] = {};
-    float total_ms = 0.0f;
-};
-
-// Call once per frame: collects finished queries and publishes the averages
-void timings_new_frame();
-GpuTimings timings_get();
-const char* timing_stage_name(TimingStage stage);
+// GPU time: the passes are profiler sections ("Block min/max", "Entry / exit", "Raycast"), see gfx/profiler.h
 
 // The isosurface renderer keeps a coarse min/max grid per density volume to skip empty space, and has to
 // be told when a volume's texels change: call this after every upload into (or evaluation onto) a density

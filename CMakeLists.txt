@@ -246,6 +246,7 @@ set(GFX_FILES
     src/gfx/postprocessing_utils.cpp
     src/gfx/volumerender_utils.cpp
     src/gfx/isomesh_utils.cpp
+    src/gfx/profiler.cpp
 
     src/gfx/camera.h
     src/gfx/camera_utils.h
@@ -257,6 +258,7 @@ set(GFX_FILES
     src/gfx/view_param.h
     src/gfx/volumerender_utils.h
     src/gfx/isomesh_utils.h
+    src/gfx/profiler.h
 )
 
 # One folder per component under src/components. Adding a component means adding its folder; there

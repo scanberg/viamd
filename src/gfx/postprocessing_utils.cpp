@@ -37,14 +37,7 @@
 
 #include <shaders.inl>
 
-#define PUSH_GPU_SECTION(lbl)                                                                       \
-    {                                                                                               \
-        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
-    }
-#define POP_GPU_SECTION()                       \
-    {                                           \
-        if (glPopDebugGroup) glPopDebugGroup(); \
-    }
+#include <gfx/profiler.h>
 
 struct GLResetState {
 	GLint fbo = 0;
@@ -188,16 +181,6 @@ static struct {
         mat4_t history_proj = {};
         uint32_t frame = 0;             // drives the per-frame permutation of the sample pattern
         int history_mode = 0;           // estimator the history was accumulated with
-        // GPU time, from timestamp queries read back a few frames late (TIMER_FRAMES in flight)
-        struct {
-            GLuint query[4][3] = {};    // per frame in flight: start, after the estimator, end
-            bool   pending[4] = {};
-            int    next = 0;
-            double accum_total = 0.0;
-            double accum_estimator = 0.0;
-            int    accum_frames = 0;
-            postprocess_pipeline::SsaoTimings published = {};
-        } timer;
         // Index 0 = orthographic, 1 = perspective
         GLuint program_ao[2] = {};          // ssao.frag:         point samples ("Performance")
         GLuint program_ao_quality[2] = {};  // ssao_bitmask.frag: slices with a visibility bitmask ("Quality")
@@ -499,40 +482,8 @@ void shutdown() {
         gl.ssao.program_ao[i] = gl.ssao.program_ao_quality[i] = 0;
         gl.ssao.program_temporal[i] = gl.ssao.program_blur[i] = gl.ssao.program_upsample[i] = 0;
     }
-    if (gl.ssao.timer.query[0][0]) glDeleteQueries(ARRAY_SIZE(gl.ssao.timer.query) * 3, &gl.ssao.timer.query[0][0]);
-    gl.ssao.timer = {};
 }
 
-// Collects the timestamps of frames that have completed and publishes averages over TIMER_PUBLISH_FRAMES frames.
-// Returns the query set to record this frame into, or nullptr while all of them are still in flight.
-static constexpr int TIMER_PUBLISH_FRAMES = 30;
-static GLuint* timer_frame_queries() {
-    auto& t = gl.ssao.timer;
-    if (!t.query[0][0]) glGenQueries(ARRAY_SIZE(t.query) * 3, &t.query[0][0]);
-    for (int f = 0; f < (int)ARRAY_SIZE(t.query); ++f) {
-        if (!t.pending[f]) continue;
-        GLint available = 0;
-        glGetQueryObjectiv(t.query[f][2], GL_QUERY_RESULT_AVAILABLE, &available);
-        if (!available) continue;
-        GLuint64 ns[3] = {};
-        for (int i = 0; i < 3; ++i) glGetQueryObjectui64v(t.query[f][i], GL_QUERY_RESULT, &ns[i]);
-        t.accum_estimator += (double)(ns[1] - ns[0]) * 1.0e-6;
-        t.accum_total     += (double)(ns[2] - ns[0]) * 1.0e-6;
-        t.accum_frames    += 1;
-        t.pending[f] = false;
-    }
-    if (t.accum_frames >= TIMER_PUBLISH_FRAMES) {
-        t.published.estimator_ms = (float)(t.accum_estimator / t.accum_frames);
-        t.published.total_ms     = (float)(t.accum_total / t.accum_frames);
-        t.accum_estimator = t.accum_total = 0.0;
-        t.accum_frames = 0;
-    }
-    const int f = t.next;
-    if (t.pending[f]) return nullptr;
-    t.next = (f + 1) % (int)ARRAY_SIZE(t.query);
-    t.pending[f] = true;
-    return t.query[f];
-}
 
 }  // namespace ssao
 
@@ -1407,9 +1358,6 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         memcmp(&gl.ssao.history_proj, &view_param.matrix.prev.proj, sizeof(mat4_t)) == 0;
     const int frame = temporal ? (int)(gl.ssao.frame++ & 15) : 0;
 
-    GLuint* timer = ssao::timer_frame_queries();
-    if (timer) glQueryCounter(timer[0], GL_TIMESTAMP);
-
     glBindVertexArray(gl.vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -1438,7 +1386,6 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
-    if (timer) glQueryCounter(timer[1], GL_TIMESTAMP);
 
     // Index into gl.ssao.tex of the latest result
     int src = 0;
@@ -1553,7 +1500,6 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
-    if (timer) glQueryCounter(timer[2], GL_TIMESTAMP);
     reset_gl_state(reset_state);
 
     glActiveTexture(GL_TEXTURE0);
@@ -2643,9 +2589,6 @@ void shutdown() {
     postprocessing::shutdown();
 }
 
-SsaoTimings ssao_timings() {
-    return postprocessing::gl.ssao.timer.published;
-}
 
 Lighting lighting(ShadingMode mode) {
     // Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes,

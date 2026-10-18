@@ -59,13 +59,11 @@
 #error "Unsupported frame cache size"
 #endif
 
-// For cpu profiling
-#define PUSH_CPU_SECTION(lbl) {};
-#define POP_CPU_SECTION() {};
-
-// For gpu profiling
-#define PUSH_GPU_SECTION(lbl) { if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); }
-#define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
+// Profiling: PUSH_GPU_SECTION / POP_GPU_SECTION / PROFILE_SCOPE (gfx/profiler.h). A section is a debug group and is
+// timed on the GPU and the CPU; one that issues no GL work is timed on the CPU only, in effect.
+#include <gfx/profiler.h>
+#define PUSH_CPU_SECTION(lbl) PUSH_GPU_SECTION(lbl)
+#define POP_CPU_SECTION()     POP_GPU_SECTION()
 
 // For logging
 #define VIAMD_LOG_INFO  MD_LOG_INFO
@@ -1624,6 +1622,7 @@ struct ApplicationState {
     bool show_script_window = true;
     bool show_script_reference_window = false;
     bool show_debug_window = false;
+    bool show_profiler_window = false;
     bool show_property_export_window = false;
 
     TextEditor editor = {};

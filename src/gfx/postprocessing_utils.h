@@ -137,16 +137,10 @@ struct Settings {
     } sharpen;
 };
 
-// GPU time of the ambient occlusion, averaged over a number of frames (0 until the first results are in)
-struct SsaoTimings {
-    float estimator_ms = 0.0f;  // the AO pass alone
-    float total_ms = 0.0f;      // estimator, temporal filter, blur and upsample
-};
 
 void initialize(int width, int height);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
-SsaoTimings ssao_timings();
 
 // The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces
 // (volume::render_isosurfaces) are lit by the same. They do not depend on the background.

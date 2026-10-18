@@ -338,10 +338,9 @@ static ViewRegion main_view_uncovered_region(const ApplicationState& state, cons
 
 static void render(ApplicationState* state);
 
-// GPU time of the geometry pass, by the kind of what it draws, averaged per frame over GEOMETRY_TIMER_PUBLISH_FRAMES
-// frames. Measured with GL_TIME_ELAPSED queries around the draws of each kind (one md_gl_draw of all the ops of that
-// kind), read back a few frames late so collecting them never stalls, as those of the volume passes. The cartoon, the
-// ribbons and the tubes include the evaluation of their spline, which md_gl_draw does for each call that draws one.
+// The geometry pass by the kind of what it draws: a profiler section each (gfx/profiler.h), around one md_gl_draw of
+// all the ops of that kind. The cartoon, the ribbons and the tubes include the evaluation of their spline, which
+// md_gl_draw does for each call that draws one.
 enum GeometryStage {
     GeometryStage_SpaceFill,
     GeometryStage_Licorice,
@@ -359,69 +358,6 @@ enum GeometryStage {
 static const char* geometry_stage_name[GeometryStage_Count] = {
     "Space fill", "Licorice", "Ball and stick", "Ribbons", "Cartoon", "Heads", "Tubes", "Slabs", "Other", "Selection, highlight",
 };
-
-static constexpr int GEOMETRY_TIMER_QUERY_COUNT    = 128;
-static constexpr int GEOMETRY_TIMER_PUBLISH_FRAMES = 30;
-
-static struct {
-    struct {
-        GLuint id = 0;
-        int    stage = 0;
-        bool   pending = false;
-    } query[GEOMETRY_TIMER_QUERY_COUNT];
-    int    active = -1;         // GL_TIME_ELAPSED queries cannot nest
-    double accum_ms[GeometryStage_Count] = {};
-    int    accum_frames = 0;
-    float  ms[GeometryStage_Count] = {};
-    float  total_ms = 0.0f;
-} geometry_timer;
-
-static void geometry_timer_begin(GeometryStage stage) {
-    if (geometry_timer.active != -1) return;
-    if (!geometry_timer.query[0].id) {
-        for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) glGenQueries(1, &geometry_timer.query[i].id);
-    }
-    for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) {
-        if (!geometry_timer.query[i].pending) {
-            geometry_timer.query[i].stage = stage;
-            geometry_timer.active = i;
-            glBeginQuery(GL_TIME_ELAPSED, geometry_timer.query[i].id);
-            return;
-        }
-    }
-}
-
-static void geometry_timer_end() {
-    if (geometry_timer.active == -1) return;
-    glEndQuery(GL_TIME_ELAPSED);
-    geometry_timer.query[geometry_timer.active].pending = true;
-    geometry_timer.active = -1;
-}
-
-// Once per frame: collects the queries which have finished and publishes the averages
-static void geometry_timings_new_frame() {
-    auto& t = geometry_timer;
-    for (int i = 0; i < GEOMETRY_TIMER_QUERY_COUNT; ++i) {
-        if (!t.query[i].pending) continue;
-        GLint available = 0;
-        glGetQueryObjectiv(t.query[i].id, GL_QUERY_RESULT_AVAILABLE, &available);
-        if (!available) continue;
-        GLuint64 ns = 0;
-        glGetQueryObjectui64v(t.query[i].id, GL_QUERY_RESULT, &ns);
-        t.accum_ms[t.query[i].stage] += (double)ns * 1.0e-6;
-        t.query[i].pending = false;
-    }
-    t.accum_frames += 1;
-    if (t.accum_frames >= GEOMETRY_TIMER_PUBLISH_FRAMES) {
-        t.total_ms = 0.0f;
-        for (int i = 0; i < GeometryStage_Count; ++i) {
-            t.ms[i] = (float)(t.accum_ms[i] / t.accum_frames);
-            t.total_ms += t.ms[i];
-            t.accum_ms[i] = 0.0;
-        }
-        t.accum_frames = 0;
-    }
-}
 
 static GeometryStage geometry_stage(md_gl_rep_type_t type, bool glyphs) {
     if (glyphs) {
@@ -442,7 +378,7 @@ static GeometryStage geometry_stage(md_gl_rep_type_t type, bool glyphs) {
     }
 }
 
-// Draws ops a kind at a time, in the order the kinds first appear, each timed as its stage
+// Draws ops a kind at a time, in the order the kinds first appear, each a profiler section
 static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, size_t count, bool glyphs, md_allocator_i* alloc) {
     bool done[16] = {};
     md_array(md_gl_draw_op_t) group = 0;
@@ -455,9 +391,9 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
         }
         if (type < ARRAY_SIZE(done)) done[type] = true;
         args.draw_operations = { .count = (uint32_t)md_array_size(group), .ops = group };
-        geometry_timer_begin(geometry_stage(ops[i].type, glyphs));
+        PUSH_GPU_SECTION(geometry_stage_name[geometry_stage(ops[i].type, glyphs)]);
         md_gl_draw(&args);
-        geometry_timer_end();
+        POP_GPU_SECTION();
     }
 }
 
@@ -481,6 +417,7 @@ static void open_script_reference(ApplicationState* state, str_t topic, bool tak
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
 static void draw_debug_window(ApplicationState* state);
+static void draw_profiler_window(ApplicationState* state);
 static void draw_property_export_window(ApplicationState* state);
 static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
@@ -859,6 +796,10 @@ int main(int argc, char** argv) {
 
     // Main loop
     while (!state.app.window.should_close) {
+        // The frame for the profiler, in sections: the start (events, ImGui's new frame, files, components' frame
+        // ticks), the windows, the main viewport's input, the update of the state, its upload, the rendering
+        profiler::frame_begin();
+        PUSH_GPU_SECTION("Start");
         application::update(&state.app);
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
@@ -889,7 +830,10 @@ int main(int argc, char** argv) {
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
+        POP_GPU_SECTION();
+
         // GUI
+        PUSH_GPU_SECTION("Windows");
         if (state.show_script_window) draw_script_editor_window(&state);
         if (state.show_script_reference_window) draw_script_reference_window(&state);
         if (state.load_dataset.show_window) draw_load_dataset_window(&state);
@@ -902,6 +846,7 @@ int main(int argc, char** argv) {
         if (state.show_property_export_window) draw_property_export_window(&state);
         if (state.structure_export.show_window) draw_structure_export_window(&state);
         if (state.show_debug_window) draw_debug_window(&state);
+        if (state.show_profiler_window) draw_profiler_window(&state);
         if (state.animation.show_window) draw_animation_window(&state);
 
         draw_async_task_window(&state);
@@ -912,7 +857,9 @@ int main(int argc, char** argv) {
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
         draw_representation_legends(state);
-            
+        POP_GPU_SECTION();
+
+        PUSH_GPU_SECTION("Viewport");
         ImGui::BeginCanvas("Main interaction window", true);
         const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();
@@ -1007,6 +954,9 @@ int main(int argc, char** argv) {
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
             script_set_hovered_property(&state,  STR_LIT(""));
         }
+        POP_GPU_SECTION();
+
+        PUSH_GPU_SECTION("Update");
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
@@ -1471,12 +1421,21 @@ int main(int argc, char** argv) {
         // re-interpolates mold.state from the trajectory before it is ever uploaded.
         viamd::event_system_process_event_queue();
 
+        POP_GPU_SECTION();
+
+        PUSH_GPU_SECTION("Upload");
         update_md_buffers(&state);
         update_timeline_time_unit(&state);
+        POP_GPU_SECTION();
 
+        PUSH_GPU_SECTION("Render");
         render(&state);
+        POP_GPU_SECTION();
 
+        PUSH_GPU_SECTION("Main thread tasks");
         task_system::execute_main_task_queue();
+        POP_GPU_SECTION();
+        profiler::frame_end();
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
@@ -1500,6 +1459,7 @@ int main(int argc, char** argv) {
     state.gfx.world = nullptr;
     state.gfx.overlay = nullptr;
 
+    profiler::shutdown();
     VIAMD_LOG_DEBUG("Shutting down post processing...");
     postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
@@ -1773,9 +1733,10 @@ static void draw_main_menu(ApplicationState* data) {
                                      "Darken creases and cavities, where less of the surroundings' light reaches (SSAO)")) {
                 const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
                 int mode = (int)data->visuals.ssao.mode;
-                const postprocess_pipeline::SsaoTimings t = postprocess_pipeline::ssao_timings();
+                // Its GPU time in the main view (the component windows' have their own)
+                const float ao_ms = profiler::gpu_ms("SSAO", "Render");
                 ms_text[0] = '\0';
-                if (t.total_ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", t.total_ms);
+                if (ao_ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", ao_ms);
                 prop::row("mode", "Performance: point samples.\nQuality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
                 ImGui::SetNextItemWidth(prop::control_width_before(ms_text));
                 if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
@@ -1785,7 +1746,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ms_text[0]) {
                     ImGui::SameLine(0.0f, 2.0f * gap);
                     ImGui::TextDisabled("%s", ms_text);
-                    ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", t.estimator_ms, t.total_ms);
+                    ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", profiler::gpu_ms("AO", "Render"), ao_ms);
                 }
                 prop::row("intensity");
                 machine_dirty |= ImGui::SliderFloat("##intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
@@ -1885,7 +1846,9 @@ static void draw_main_menu(ApplicationState* data) {
             // How the cartoon and the tubes are drawn: a choice of cost, the images are close to the same. Kept per user,
             // as the isosurfaces' below (a slower GPU wants the meshes)
             if (prop::section("Splines")) {
-                const float ms = geometry_timer.ms[GeometryStage_Cartoon] + geometry_timer.ms[GeometryStage_GlyphTubes];
+                const float cartoon_ms = profiler::gpu_ms(geometry_stage_name[GeometryStage_Cartoon], "Render");
+                const float tubes_ms   = profiler::gpu_ms(geometry_stage_name[GeometryStage_GlyphTubes], "Render");
+                const float ms = cartoon_ms + tubes_ms;
                 ms_text[0] = '\0';
                 if (ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", ms);
                 int spline_mode = data->settings.raycast_splines ? 1 : 0;
@@ -1902,7 +1865,7 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SameLine(0.0f, 2.0f * gap);
                     ImGui::TextDisabled("%s", ms_text);
                     ImGui::SetItemTooltip("GPU time per frame of the cartoon and the tubes, their splines evaluated\n"
-                                          "Cartoon: %.3f ms\nTubes: %.3f ms", geometry_timer.ms[GeometryStage_Cartoon], geometry_timer.ms[GeometryStage_GlyphTubes]);
+                                          "Cartoon: %.3f ms\nTubes: %.3f ms", cartoon_ms, tubes_ms);
                 }
                 prop::section_end();
             }
@@ -1972,6 +1935,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
+            ImGui::Checkbox("Profiler", &data->show_profiler_window);
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
 
@@ -2333,26 +2297,9 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
             ImGui::Text("%s", fps_buf);
             if (ImGui::IsItemHovered()) {
-                // GPU time of the geometry of the main viewport, by kind (those drawn in the last frames)
+                // Where the frame goes, on the GPU and the CPU (all of it: Windows > Profiler)
                 ImGui::BeginTooltip();
-                ImGui::Text("Geometry, GPU per frame: %.3f ms", geometry_timer.total_ms);
-                for (int i = 0; i < GeometryStage_Count; ++i) {
-                    if (geometry_timer.ms[i] > 0.0f) {
-                        ImGui::Text("  %-20s %.3f ms", geometry_stage_name[i], geometry_timer.ms[i]);
-                    }
-                }
-                ImGui::TextDisabled("  Splines %s, evaluated in each pass which draws them", data->settings.raycast_splines ? "ray cast" : "as meshes");
-                // GPU time of the volume passes, all views together (main viewport and component windows)
-                const volume::GpuTimings t = volume::timings_get();
-                ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
-                for (int i = 0; i < volume::TimingStage_Count; ++i) {
-                    ImGui::Text("  %-14s %.3f ms", volume::timing_stage_name((volume::TimingStage)i), t.ms[i]);
-                }
-                if (data->visuals.ssao.enabled) {
-                    const postprocess_pipeline::SsaoTimings ao = postprocess_pipeline::ssao_timings();
-                    ImGui::Text("Ambient occlusion, GPU per frame: %.3f ms", ao.total_ms);
-                    ImGui::Text("  %-14s %.3f ms", "Estimator", ao.estimator_ms);
-                }
+                profiler::draw_summary();
                 ImGui::EndTooltip();
             }
         }
@@ -5078,6 +5025,19 @@ static void draw_distribution_window(ApplicationState* data) {
     ImGui::End();
 }
 
+// The frame's sections and their times (gfx/profiler.h)
+static void draw_profiler_window(ApplicationState* data) {
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 36.0f, ImGui::GetFontSize() * 32.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Profiler", &data->show_profiler_window)) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("Per frame, averaged over 30 frames. GPU: the work a section issued; CPU: from its start to its "
+                            "end. The wait for vsync is outside the frame.");
+        ImGui::PopTextWrapPos();
+        profiler::draw_table();
+    }
+    ImGui::End();
+}
+
 static void draw_debug_window(ApplicationState* data) {
     ASSERT(data);
 
@@ -6356,8 +6316,6 @@ static void render(ApplicationState* state) {
 
     update_view_param(state);
 
-    volume::timings_new_frame();
-    geometry_timings_new_frame();
 
     gbuffer_clear(&state->gbuffer);
 
@@ -7328,7 +7286,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 		.max_bond_length = max_bond_length,
     };
 
-    geometry_timer_begin(GeometryStage_Highlight);
+    PUSH_GPU_SECTION(geometry_stage_name[GeometryStage_Highlight]);
     md_gl_draw(&args);
 
     if (md_array_size(glyph_ops) > 0) {
@@ -7336,5 +7294,5 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         args.picking_offset = gl_picking_offset_glyphs(*data);
         md_gl_draw(&args);
     }
-    geometry_timer_end();
+    POP_GPU_SECTION();
 }

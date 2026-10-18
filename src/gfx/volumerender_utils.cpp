@@ -18,14 +18,7 @@
 
 #include <shaders.inl>
 
-#define PUSH_GPU_SECTION(lbl)                                                                       \
-    {                                                                                               \
-        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
-    }
-#define POP_GPU_SECTION()                       \
-    {                                           \
-        if (glPopDebugGroup) glPopDebugGroup(); \
-    }
+#include <gfx/profiler.h>
 
 static constexpr str_t v_shader_src_fs_quad = STR_LIT(
     R"(
@@ -83,84 +76,6 @@ struct DvrUniformData {
     float  use_depth;
 };
 static_assert(sizeof(DvrUniformData) == 64 + 3 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
-
-// -----------------------------------------------------------------------------
-// GPU timings
-// -----------------------------------------------------------------------------
-
-// A redraw of the orbital grid alone issues three queries per panel, and they come back a few frames late
-static constexpr int    TIMER_QUERY_COUNT     = 256;
-static constexpr int    TIMER_PUBLISH_FRAMES  = 30;
-
-static struct {
-    struct {
-        GLuint id = 0;
-        int    stage = 0;
-        bool   pending = false;
-    } query[TIMER_QUERY_COUNT];
-
-    int    active = -1;     // the query recording right now: GL_TIME_ELAPSED queries cannot nest
-    double accum_ms[TimingStage_Count] = {};
-    int    accum_frames = 0;
-    GpuTimings published = {};
-} timing;
-
-static void timer_begin(TimingStage stage) {
-    if (timing.active != -1) return;
-    for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
-        if (timing.query[i].id && !timing.query[i].pending) {
-            timing.query[i].stage = stage;
-            timing.active = i;
-            glBeginQuery(GL_TIME_ELAPSED, timing.query[i].id);
-            return;
-        }
-    }
-}
-
-static void timer_end() {
-    if (timing.active == -1) return;
-    glEndQuery(GL_TIME_ELAPSED);
-    timing.query[timing.active].pending = true;
-    timing.active = -1;
-}
-
-void timings_new_frame() {
-    for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
-        if (!timing.query[i].pending) continue;
-        GLint available = 0;
-        glGetQueryObjectiv(timing.query[i].id, GL_QUERY_RESULT_AVAILABLE, &available);
-        if (!available) continue;
-        GLuint64 ns = 0;
-        glGetQueryObjectui64v(timing.query[i].id, GL_QUERY_RESULT, &ns);
-        timing.accum_ms[timing.query[i].stage] += (double)ns * 1.0e-6;
-        timing.query[i].pending = false;
-    }
-
-    timing.accum_frames += 1;
-    if (timing.accum_frames >= TIMER_PUBLISH_FRAMES) {
-        GpuTimings t = {};
-        for (int i = 0; i < TimingStage_Count; ++i) {
-            t.ms[i] = (float)(timing.accum_ms[i] / timing.accum_frames);
-            t.total_ms += t.ms[i];
-            timing.accum_ms[i] = 0.0;
-        }
-        timing.published = t;
-        timing.accum_frames = 0;
-    }
-}
-
-GpuTimings timings_get() {
-    return timing.published;
-}
-
-const char* timing_stage_name(TimingStage stage) {
-    switch (stage) {
-    case TimingStage_BlockMinMax: return "Block min/max";
-    case TimingStage_EntryExit:   return "Entry / exit";
-    case TimingStage_Raycast:     return "Raycast";
-    default: return "";
-    }
-}
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -527,7 +442,7 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
     glBindVertexArray(iso.vao);
 
     bool complete = true;
-    timer_begin(TimingStage_BlockMinMax);
+    PUSH_GPU_SECTION("Block min/max");
     for (int z = 0; z < bd[2]; ++z) {
         glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, g->minmax, 0, z);
         if (z == 0) {
@@ -542,7 +457,7 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
         glUniform1i(iso.minmax.loc_layer, z);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
-    timer_end();
+    POP_GPU_SECTION();
 
     glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0, 0);
     glBindVertexArray(0);
@@ -637,7 +552,7 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
     glUniform1i(iso.proxy.loc_iso_count, count);
     glBindVertexArray(iso.vao);
 
-    timer_begin(TimingStage_EntryExit);
+    PUSH_GPU_SECTION("Entry / exit");
     glClearDepth(1.0);
     glClear(GL_DEPTH_BUFFER_BIT);
     glDepthFunc(GL_LESS);
@@ -648,7 +563,7 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
     glClear(GL_DEPTH_BUFFER_BIT);
     glDepthFunc(GL_GREATER);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 14, instances);
-    timer_end();
+    POP_GPU_SECTION();
 
     glClearDepth(1.0);
     if (!depth_clamp) glDisable(GL_DEPTH_CLAMP);
@@ -911,9 +826,9 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
         glBindVertexArray(iso.vao);
-        timer_begin(TimingStage_Raycast);
+        PUSH_GPU_SECTION("Raycast");
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        timer_end();
+        POP_GPU_SECTION();
         glBindVertexArray(0);
         glUseProgram(0);
 
@@ -933,12 +848,6 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
 }
 
 void initialize() {
-    if (!timing.query[0].id) {
-        for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
-            glGenQueries(1, &timing.query[i].id);
-        }
-    }
-
     iso_initialize();
 
     glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);
@@ -1319,9 +1228,9 @@ void render_dvr(const DvrRenderDesc& desc) {
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
         glBindVertexArray(gl.vao);
-        timer_begin(TimingStage_Raycast);
+        PUSH_GPU_SECTION("Raycast");
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        timer_end();
+        POP_GPU_SECTION();
         glBindVertexArray(0);
         glUseProgram(0);
     }

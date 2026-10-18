@@ -3317,7 +3317,11 @@ static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, 
         return false;
     }
 
-    md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), packed, false, op);
+    {
+        // It times itself with a GL_TIME_ELAPSED query, which cannot run within the profiler's
+        profiler::Pause pause;
+        md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), packed, false, op);
+    }
     volume::notify_data_changed(vol_tex);
     return true;
 }
