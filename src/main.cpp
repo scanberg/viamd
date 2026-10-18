@@ -321,13 +321,15 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 static void update_view_param(ApplicationState* state);
 
-// Whether an anti-aliasing is applied: its own switch and the one over both. Temporal carries more than the smoothing
-// (the jitter, motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
+// Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
+// motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
 static inline bool fxaa_active(const ApplicationState* state) {
-    return state->visuals.anti_aliasing.enabled && state->visuals.fxaa.enabled;
+    const auto& aa = state->visuals.anti_aliasing;
+    return aa.enabled && (aa.mode == AntiAliasingMode::FXAA || aa.mode == AntiAliasingMode::FXAA_TAA);
 }
 static inline bool taa_active(const ApplicationState* state) {
-    return state->visuals.anti_aliasing.enabled && state->visuals.temporal_aa.enabled;
+    const auto& aa = state->visuals.anti_aliasing;
+    return aa.enabled && (aa.mode == AntiAliasingMode::TAA || aa.mode == AntiAliasingMode::FXAA_TAA);
 }
 
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
@@ -540,6 +542,7 @@ static void apply_visual_settings(void* user_data) {
     auto& v    = state->visuals;
     auto& look = state->settings.look;
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
+    if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
@@ -692,8 +695,7 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
     app_settings::bind(STR_LIT("ssao_temporal"), &state.visuals.ssao.temporal);
     app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
-    app_settings::bind(STR_LIT("fxaa"), &state.visuals.fxaa.enabled);
-    app_settings::bind(STR_LIT("taa"), &state.visuals.temporal_aa.enabled);
+    app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
     app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
@@ -1841,18 +1843,22 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            // One switch over both kinds, on the header; folded, as the switch is what is mostly wanted and which kind
-            // and the temporal resolve's settings seldom
+            // The switch on the header, as the other effects', and the mode within; folded, as the switch is what is
+            // mostly wanted, the mode and the temporal resolve's settings seldom
             bool aa_toggled = false;
             if (prop::section_toggle("Anti-Aliasing", &data->visuals.anti_aliasing.enabled, &aa_toggled, false,
-                                     "Smooth jagged edges.\nOff: neither kind below is applied, and screenshots are a single sample.")) {
-                prop::row("FXAA", "Smooth edges in one pass over the finished image");
-                machine_dirty |= ImGui::Checkbox("##fxaa", &data->visuals.fxaa.enabled);
-                prop::row("temporal", "Smooth edges by blending each frame with the previous ones (TAA). Screenshots gather a sample per jitter position.");
-                machine_dirty |= ImGui::Checkbox("##temporal", &data->visuals.temporal_aa.enabled);
-                if (data->visuals.temporal_aa.enabled) {
-                    // The options of the temporal resolve, under it
-                    ImGui::Indent();
+                                     "Smooth jagged edges.\nOff: screenshots are a single sample.")) {
+                const char* modes[(int)AntiAliasingMode::Count] = {"FXAA", "TAA", "FXAA + TAA"};
+                int mode = (int)data->visuals.anti_aliasing.mode;
+                prop::row("mode", "FXAA: one pass over the finished frame. Cheap; softens fine detail a little.\n"
+                                  "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image; screenshots gather a sample per shift.\n"
+                                  "FXAA + TAA: FXAA on each frame, then the blend.");
+                if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    data->visuals.anti_aliasing.mode = (AntiAliasingMode)mode;
+                    machine_dirty = true;
+                }
+                if (taa_active(data)) {
+                    // The temporal resolve's settings, in the modes that have it
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
@@ -1872,7 +1878,6 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetNextItemWidth(-FLT_MIN);
                         machine_dirty |= ImGui::SliderFloat("##sharpen_strength", &data->visuals.sharpen.weight, 0.0f, 4.0f, "strength %.2f");
                     }
-                    ImGui::Unindent();
                 }
                 prop::section_end();
             }

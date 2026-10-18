@@ -126,6 +126,8 @@ enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
 enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
+// FXAA_TAA in the order the passes run: FXAA on the frame, then the blend with the frames before
+enum class AntiAliasingMode { FXAA, TAA, FXAA_TAA, Count };
 
 enum class ColorMapping {
     Uniform,
@@ -1420,18 +1422,15 @@ struct ApplicationState {
             float aperture = 1.0f;      // percent of the view height (CoC of an object at infinity)
         } dof;
 
-        // The switch over both kinds below: off, neither is applied, and what each is set to is kept. Use
-        // fxaa_active() and taa_active() for whether one is applied.
+        // Whether jagged edges are smoothed, and how: the mode is kept while off. Every mode smooths, so there is no
+        // being on with nothing applied. fxaa_active() and taa_active() say which passes run.
         struct {
             bool enabled = true;
+            AntiAliasingMode mode = AntiAliasingMode::FXAA_TAA;
         } anti_aliasing;
 
+        // The temporal resolve's settings, used in the modes with TAA
         struct {
-            bool enabled = true;
-        } fxaa;
-
-        struct {
-            bool enabled = true;
             bool jitter = true;
             float feedback_min = 0.80f;
             float feedback_max = 0.95f;
