@@ -1977,15 +1977,15 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
             const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
             if (electronic_structure_is_signed(es)) {
-                prop::row(tint ? "tint positive" : "positive", tint ? tint_tooltip : nullptr);
+                prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
                 prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
-                prop::row(tint ? "tint negative" : "negative", tint ? tint_tooltip : nullptr);
+                prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
                 prop::color("##neg", tint ? es.tint_psi_neg.elem : es.col_psi_neg.elem, true);
             } else {
                 vec4_t& col = attachment ? (tint ? es.tint_att : es.col_att) :
                               detachment ? (tint ? es.tint_det : es.col_det) :
                                            (tint ? es.tint_den : es.col_den);
-                prop::row(tint ? "tint" : "color", tint ? tint_tooltip : nullptr);
+                prop::row(tint ? "surface tint" : "color", tint ? tint_tooltip : nullptr);
                 prop::color("##color", col.elem, true);
             }
         }
@@ -2330,6 +2330,22 @@ static bool draw_atom_coloring(ApplicationState* state, Representation& rep) {
             prop::color("##bond_base_color", rep.bond_base_color.elem);
         }
     }
+
+    // The last step of the colours, whatever made them: towards the tint, by its amount, then their saturation
+    // (tint_colors, in OKLab). The colour is faint while the amount leaves it nothing to do.
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float swatch_w = 3.0f * ImGui::GetFrameHeight();
+    prop::row("tint", "How far the colours go towards the tint colour: 0 not at all, 1 its hue and chroma");
+    ImGui::SetNextItemWidth(MAX(prop::control_width() - swatch_w - gap, 1.0f));
+    update_rep |= ImGui::SliderFloat("##tint_scale", &rep.tint_scale, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SameLine(0.0f, gap);
+    ImGui::SetNextItemWidth(swatch_w);
+    if (rep.tint_scale <= 0.0f) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.35f);
+    update_rep |= prop::color("##tint_color", rep.tint_color.elem);
+    if (rep.tint_scale <= 0.0f) ImGui::PopStyleVar();
+    prop::row("saturation", "How much of their chroma the colours keep: 1 all of it, 0 grey");
+    update_rep |= ImGui::SliderFloat("##saturation", &rep.saturation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
     return update_rep;
 }
 
@@ -2564,24 +2580,6 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::section_end();
         }
         break;
-    }
-
-    // What every colour of the atoms goes through last
-    if (representation_uses_atom_colors(rep) && prop::section("Look", false)) {
-        // How much of the tint, and the tint, on one row: the colour is faint while it does nothing
-        const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
-        const float swatch_w = 3.0f * ImGui::GetFrameHeight();
-        prop::row("tint", "How much of the tint colour the colours take: 0 none, 1 the tint itself");
-        ImGui::SetNextItemWidth(MAX(prop::control_width() - swatch_w - gap, 1.0f));
-        update_rep |= ImGui::SliderFloat("##tint_scale", &rep.tint_scale, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SameLine(0.0f, gap);
-        ImGui::SetNextItemWidth(swatch_w);
-        if (rep.tint_scale <= 0.0f) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.35f);
-        update_rep |= prop::color("##tint_color", rep.tint_color.elem);
-        if (rep.tint_scale <= 0.0f) ImGui::PopStyleVar();
-        prop::row("saturation");
-        update_rep |= ImGui::SliderFloat("##saturation", &rep.saturation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        prop::section_end();
     }
 
     prop::end();
