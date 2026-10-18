@@ -1674,10 +1674,20 @@ static void draw_main_menu(ApplicationState* data) {
             // A menu sizes itself to what is in it, and the rows fill what there is: the width is set here
             ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 26.0f, 0.0f));
 
-            // Sections in the order the image is made: what is seen, how it is lit, what the camera does with the light,
-            // how the result is smoothed; then how splines and isosurfaces are drawn, and the display. The effects that
+            // The display first, then sections in the order the image is made: what is seen, how it is lit, what the camera
+            // does with the light, how the result is smoothed; then how splines and isosurfaces are drawn. The effects that
             // can be turned off have the switch on their header, and their settings only while they are on.
             prop::begin("visuals");
+
+            // The computer's settings (VSync, the ambient occlusion and the anti-aliasing here; Splines and Isosurfaces
+            // mark their own) are kept as they are set: the .ini
+            bool machine_dirty = false;
+
+            if (prop::section("Display")) {
+                prop::row("vsync", "Limit the frame rate to the display's refresh rate");
+                machine_dirty |= ImGui::Checkbox("##vsync", &data->app.window.vsync);
+                prop::section_end();
+            }
 
             if (prop::section("View")) {
                 prop::row("camera");
@@ -1744,9 +1754,6 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            // The computer's settings (the ambient occlusion, the anti-aliasing and VSync here; Splines and Isosurfaces
-            // mark their own) are kept as they are set: the .ini
-            bool machine_dirty = false;
             bool toggled = false;
 
             if (prop::section_toggle("Ambient Occlusion", &data->visuals.ssao.enabled, &toggled, true,
@@ -1826,11 +1833,10 @@ static void draw_main_menu(ApplicationState* data) {
             if (prop::section("Anti-Aliasing")) {
                 prop::row("FXAA", "Smooth jagged edges in the rendered image");
                 machine_dirty |= ImGui::Checkbox("##fxaa", &data->visuals.fxaa.enabled);
-                prop::row("temporal", "Smooth edges by blending each frame with the previous ones (TAA)");
-                machine_dirty |= ImGui::Checkbox("##temporal", &data->visuals.temporal_aa.enabled);
-                if (data->visuals.temporal_aa.enabled) {
-                    // The options of the temporal resolve, under it
-                    ImGui::Indent();
+                // Its own section within, folded: the switch is what is mostly wanted, the resolve's settings seldom
+                bool taa_toggled = false;
+                if (prop::section_toggle("Temporal", &data->visuals.temporal_aa.enabled, &taa_toggled, false,
+                                         "Smooth edges by blending each frame with the previous ones (TAA)")) {
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
@@ -1850,8 +1856,9 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetNextItemWidth(-FLT_MIN);
                         machine_dirty |= ImGui::SliderFloat("##sharpen_strength", &data->visuals.sharpen.weight, 0.0f, 4.0f, "strength %.2f");
                     }
-                    ImGui::Unindent();
+                    prop::section_end();
                 }
+                machine_dirty |= taa_toggled;
                 prop::section_end();
             }
 
@@ -1913,11 +1920,6 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            if (prop::section("Display")) {
-                prop::row("vsync", "Limit the frame rate to the display's refresh rate");
-                machine_dirty |= ImGui::Checkbox("##vsync", &data->app.window.vsync);
-                prop::section_end();
-            }
             prop::end();
             if (machine_dirty) {
                 app_settings::mark_dirty();
