@@ -36,8 +36,16 @@ void end();
 bool section(const char* name, bool default_open = true);
 void section_end();
 
+// A section about something that can be turned off (an effect): the header's name is a checkbox for 'enabled', and
+// the rows are there while it is on - returns true, and section_end() is to follow, when it is open and on.
+// 'toggled' (optional) says whether the checkbox was clicked this frame; 'tooltip' is the checkbox's.
+bool section_toggle(const char* name, bool* enabled, bool* toggled = nullptr, bool default_open = true, const char* tooltip = nullptr);
+
 // A row: the label, and the control column for what follows. The tooltip, if any, is the label's.
 void row(const char* label, const char* tooltip = nullptr);
+
+// The width to give a control so that 'text' (dimmed, after it on the same row: a timing, a unit) fits beside it
+float control_width_before(const char* text);
 
 // Dimmed text in the control column, wrapped: what a setting is measured against, why there is nothing to set
 void hint(const char* fmt, ...) IM_FMTARGS(1);

@@ -70,34 +70,70 @@ float control_width() {
     return MAX(g.right_x - control_x(), 1.0f);
 }
 
-bool section(const char* name, bool default_open) {
-    IM_ASSERT(g.active);
-    const ImGuiStyle& style = ImGui::GetStyle();
-    ImGui::PushID(name);
+float control_width_before(const char* text) {
+    const float w = (text && text[0]) ? ImGui::CalcTextSize(text).x + ImGui::GetStyle().ItemInnerSpacing.x * 2.0f : 0.0f;
+    return MAX(control_width() - w, 1.0f);
+}
 
-    // Dimmed, unframed, with a rule from the name to the right edge: a divider that folds, beneath the rows of the
-    // representations themselves
+// The header of a section: dimmed, unframed, with a rule from its name to the right edge - a divider that folds,
+// beneath the rows of whatever the grid is the properties of. With 'enabled', the name is a checkbox that turns
+// what the section is about on and off. As high as a row, so that the checkbox fits it.
+static bool header(const char* name, bool default_open, bool* enabled, bool* toggled, const char* tooltip) {
+    const ImGuiStyle& style = ImGui::GetStyle();
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (default_open) flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-    const bool open = ImGui::TreeNodeEx("##section", flags, "%s", name);
-    ImGui::PopStyleColor();
+    if (enabled)      flags |= ImGuiTreeNodeFlags_AllowOverlap;     // the checkbox over the node takes the clicks on it
 
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+    const bool open = ImGui::TreeNodeEx("##section", flags, "%s", enabled ? "" : name);
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
-    const float x0 = mn.x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(name).x + style.ItemInnerSpacing.x * 2.0f;
+    float x0 = mn.x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(name).x + style.ItemInnerSpacing.x * 2.0f;
+    if (enabled) {
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(mn.x + ImGui::GetTreeNodeToLabelSpacing(), mn.y));
+        const bool t = ImGui::Checkbox(name, enabled);
+        if (toggled) *toggled = t;
+        if (tooltip && tooltip[0]) ImGui::SetItemTooltip("%s", tooltip);
+        x0 = ImGui::GetItemRectMax().x + style.ItemInnerSpacing.x * 2.0f;
+    }
+    ImGui::PopStyleColor();
+
     const float x1 = ImGui::GetWindowPos().x - ImGui::GetScrollX() + g.right_x;
     const float y  = IM_ROUND((mn.y + mx.y) * 0.5f);
     if (x0 < x1) {
         ImGui::GetWindowDrawList()->AddLine(ImVec2(x0, y), ImVec2(x1, y), ImGui::GetColorU32(ImGuiCol_Separator));
     }
+    return open;
+}
 
-    if (!open) {
+static void section_open() {
+    ImGui::Indent(indent_width());
+    g.depth += 1;
+}
+
+bool section(const char* name, bool default_open) {
+    IM_ASSERT(g.active);
+    ImGui::PushID(name);
+    if (!header(name, default_open, nullptr, nullptr, nullptr)) {
         ImGui::PopID();
         return false;
     }
-    ImGui::Indent(indent_width());
-    g.depth += 1;
+    section_open();
+    return true;
+}
+
+bool section_toggle(const char* name, bool* enabled, bool* toggled, bool default_open, const char* tooltip) {
+    IM_ASSERT(g.active && enabled);
+    if (toggled) *toggled = false;
+    ImGui::PushID(name);
+    const bool open = header(name, default_open, enabled, toggled, tooltip);
+    if (!open || !*enabled) {
+        ImGui::PopID();
+        return false;
+    }
+    section_open();
     return true;
 }
 
