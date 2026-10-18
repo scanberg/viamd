@@ -1093,6 +1093,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_vec4(rep->bond_base_color, arg);
         } else if (str_eq(ident, STR_LIT("BondOrders"))) {
             viamd::extract_bool(rep->bond_orders, arg);
+        } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
+            viamd::extract_bool(rep->chain_gaps, arg);
         } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
             viamd::extract_bool(rep->two_head_spheres, arg);
         } else if (str_eq(ident, STR_LIT("NucleicBandRadius"))) {
@@ -1310,6 +1312,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_flt(state,  STR_LIT("BondSharpness"), rep.bond_sharpness);
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
+    viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
     viamd::write_flt(state,  STR_LIT("NucleicBandRadius"), rep.nucleic_band_radius);
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
@@ -2349,6 +2352,15 @@ static bool draw_atom_coloring(ApplicationState* state, Representation& rep) {
     return update_rep;
 }
 
+// Whether a chain of the system is broken somewhere (MD_COMPONENT_FLAG_BREAK_AFTER): residues missing in a crystal
+// structure, which the representations with chain gaps draw a dashed line over
+static bool system_has_chain_breaks(const md_system_t& sys) {
+    for (size_t i = 0; i < sys.component.count; ++i) {
+        if (md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER) return true;
+    }
+    return false;
+}
+
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
 static bool draw_geometry(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
@@ -2400,6 +2412,13 @@ static bool draw_geometry(ApplicationState* state, Representation& rep) {
         break;
     default:
         break;
+    }
+    // Shown where the system has a break to draw it over
+    const bool gaps = rep.type == RepresentationType::Cartoon || rep.type == RepresentationType::Ribbons ||
+                      rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick;
+    if (gaps && system_has_chain_breaks(state->mold.sys)) {
+        prop::row("chain gaps", "A dashed line over each break of a chain, where residues are missing (or its pieces are not bonded)");
+        update_rep |= ImGui::Checkbox("##chain_gaps", &rep.chain_gaps);
     }
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");

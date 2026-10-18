@@ -505,6 +505,8 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     if ((kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
     if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
     if (flags & MD_COMPONENT_FLAG_TERMINAL_END) tooltip_list_add(&kind_list, nucleotide ? "3' end" : "C-terminus");
+    if (flags & MD_COMPONENT_FLAG_BREAK_BEFORE) tooltip_list_add(&kind_list, "chain break before");
+    if (flags & MD_COMPONENT_FLAG_BREAK_AFTER)  tooltip_list_add(&kind_list, "chain break after");
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
 
     if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
@@ -545,6 +547,55 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     tooltip_append_index(&index, place);
+    tooltip_row_list(req, STR_LIT("index"), index);
+}
+
+// The gap of a chain over a break after the component comp_idx (md_gl_mol_set_chain_gaps): the residues on either side,
+// how many residues are missing between them by their numbering, and how far apart the atoms a link would join are in
+// the current frame. The numbering is that of the residues of the sequence in an mmCIF file, which counts the missing
+// ones exactly, but the author's in a PDB file, which may skip where nothing is missing; a model built in pieces may
+// number on over a break where something is.
+static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t comp_idx) {
+    const md_system_t& sys = state.mold.sys;
+    ASSERT((size_t)comp_idx + 1 < sys.component.count);
+    if (!(md_system_component_flags(&sys, comp_idx) & MD_COMPONENT_FLAG_BREAK_AFTER)) return;
+
+    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const int inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1;
+    const TooltipPlace place[2] = {
+        {.comp_idx = (int)comp_idx,     .inst_idx = inst_idx},
+        {.comp_idx = (int)comp_idx + 1, .inst_idx = inst_idx},
+    };
+
+    md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += "chain break";
+    tooltip_append_place(&title, sys, place[0], &place[1]);
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
+
+    const int missing = md_component_seq_id(&sys.component, comp_idx + 1) - md_component_seq_id(&sys.component, comp_idx) - 1;
+    if (missing > 0) {
+        tooltip_row(req, STR_LIT("missing"), "%d residue%s by the numbering", missing, missing == 1 ? "" : "s");
+    } else {
+        tooltip_row(req, STR_LIT("missing"), "none by the numbering");
+    }
+
+    md_atom_idx_t atoms[2];
+    if (md_util_chain_break_atoms(atoms, &sys, comp_idx)) {
+        const md_system_state_t& sys_state = state.mold.state;
+        vec3_t d = vec3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
+        md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+        md_str_writer_t span = md_str_writer_create(req->alloc);
+        md_str_writer_fmt(&span, "%.1f " TOOLTIP_ANGSTROM " (", vec3_length(d));
+        tooltip_append_atom_name(&span, sys, atoms[0]);
+        span += " - ";
+        tooltip_append_atom_name(&span, sys, atoms[1]);
+        span += ")";
+        tooltip_row(req, STR_LIT("span"), "%s", md_str_writer_to_cstr(&span));
+    }
+
+    md_str_writer_t index = md_str_writer_create(req->alloc);
+    md_str_writer_fmt(&index, "component(%u) component(%u)", comp_idx + 1, comp_idx + 2);
+    if (inst_idx != -1) md_str_writer_fmt(&index, " instance(%d)", inst_idx + 1);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
@@ -711,6 +762,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
         if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
+    } else if (hit.domain == PickingDomain_ChainGap) {
+        if ((size_t)hit.local_idx + 1 < sys.component.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
     }
@@ -5451,6 +5504,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
             picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
+            // One index per component, which the gap over a break after it writes: only those are drawn
+            picking_range_reserve(&state->picking_range_gap, space, PickingDomain_ChainGap, state->mold.sys.component.count);
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -5498,6 +5553,13 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == PickingDomain_Ring) {
                         // The circle of an aromatic ring stands for the atoms of the ring
                         mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, surf->hit.local_idx, state->selection.granularity, state->mold.sys);
+                    } else if (surf->hit.domain == PickingDomain_ChainGap) {
+                        // The gap of a chain stands for the residues on either side of its break
+                        const size_t comp_idx = surf->hit.local_idx;
+                        if (comp_idx + 1 < state->mold.sys.component.count) {
+                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, comp_idx,     state->selection.granularity, state->mold.sys);
+                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, comp_idx + 1, state->selection.granularity, state->mold.sys);
+                        }
                     } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
                         // A point of the cartoon of a lipid or a nucleic acid stands for its component, as a cartoon segment does
                         const uint32_t point_idx = cartoon_glyphs_picked_point(state->mold.cartoon_glyphs, surf->hit.local_idx);

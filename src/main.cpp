@@ -6937,6 +6937,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.licorice.sharpness = rep.bond_sharpness;
                         op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
                         op.args.licorice.bond_orders = rep.bond_orders;
+                        op.args.licorice.chain_gaps = rep.chain_gaps;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6948,6 +6949,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.ball_and_stick.sharpness = rep.bond_sharpness;
                         op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
                         op.args.ball_and_stick.bond_orders = rep.bond_orders;
+                        op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -6955,12 +6957,14 @@ static void draw_representations_opaque(ApplicationState* state) {
                     case RepresentationType::Ribbons:
                         op.args.ribbons.width_scale = rep.scale.x;
                         op.args.ribbons.thickness_scale = rep.scale.y;
+                        op.args.ribbons.chain_gaps = rep.chain_gaps;
                         break;
                     case RepresentationType::Cartoon:
                         op.args.cartoon.coil_scale = rep.scale.x;
                         op.args.cartoon.sheet_scale = rep.scale.y;
                         op.args.cartoon.helix_scale = rep.scale.z;
                         op.args.cartoon.raycast = state->settings.raycast_splines;
+                        op.args.cartoon.chain_gaps = rep.chain_gaps;
                         break;
                     default:
                         break;
@@ -7071,6 +7075,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
+        h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
         if (rep.type == RepresentationType::Cartoon) {
             h = md_hash64(&rep.two_head_spheres, sizeof(rep.two_head_spheres), h);
@@ -7296,10 +7301,15 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             MEMCPY(&op.args, &rep.scale, MIN(sizeof(op.args), sizeof(rep.scale)));
             if (rep.type == RepresentationType::Licorice) {
                 op.args.licorice.bond_orders = rep.bond_orders;
+                op.args.licorice.chain_gaps = rep.chain_gaps;
             } else if (rep.type == RepresentationType::BallAndStick) {
                 op.args.ball_and_stick.bond_orders = rep.bond_orders;
+                op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
+            } else if (rep.type == RepresentationType::Ribbons) {
+                op.args.ribbons.chain_gaps = rep.chain_gaps;
             } else if (rep.type == RepresentationType::Cartoon) {
                 op.args.cartoon.raycast = data->settings.raycast_splines;
+                op.args.cartoon.chain_gaps = rep.chain_gaps;
             }
             const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
