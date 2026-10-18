@@ -46,7 +46,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA
+#define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA (at the full resolution: a screenshot's)
+#define JITTER_SEQUENCE_MAX 32  // Upscaling: a pixel of the G-buffer covers several shown, so more positions (jitter_count)
 #define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
 #define FRAME_CACHE_SIZE 4      // Number of frames used in the frame cache
 #define PERIODIC_IMAGES_MAX 3   // Periodic images each way along a cell vector: (2 n + 1)^3 - 1 copies of the scene at most
@@ -1146,7 +1147,7 @@ struct ApplicationState {
         CameraMode mode = CameraMode::Perspective;
 
         struct {
-            vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
+            vec2_t sequence[JITTER_SEQUENCE_MAX] {};
         } jitter;
 
 		ViewTransform target = {};
@@ -1536,6 +1537,9 @@ struct ApplicationState {
         int  isosurface_rendering = 0;      // IsosurfaceRendering: raycast volumes or meshes of the fields (iso_meshes.h)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
+        // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
+        // which rebuilds the detail over frames, else a frame on its own. Screenshots are at the full resolution.
+        float render_scale = 1.0f;
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
@@ -2473,6 +2477,7 @@ struct InteractionSurfaceHitArgs {
     uint32_t width;
     uint32_t height;
     const mat4_t& clip_to_world;
+    float pixel_scale = 1.0f;   // the fbo's pixels per framebuffer pixel: the render scale, where it is upscaled
 };
 
 bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args);

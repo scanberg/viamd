@@ -321,6 +321,25 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 static void update_view_param(ApplicationState* state);
 
+// The lowest render scale offered: below half, too little of the detail is left to rebuild
+static constexpr float RENDER_SCALE_MIN = 0.5f;
+
+// The G-buffer's size for an image shown of out_w x out_h: the render scale of each side, at least a pixel
+static void render_size(const ApplicationState* state, uint32_t out_w, uint32_t out_h, uint32_t* w, uint32_t* h) {
+    const float s = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
+    *w = MAX((uint32_t)(out_w * s + 0.5f), 1U);
+    *h = MAX((uint32_t)(out_h * s + 0.5f), 1U);
+}
+
+// The jitter's positions: JITTER_SEQUENCE_SIZE at the full resolution, and as many per pixel shown when a pixel of
+// the G-buffer covers several (1 / scale^2 of them), up to JITTER_SEQUENCE_MAX
+static uint32_t jitter_count(const ApplicationState* state) {
+    const float sx = (float)state->gbuffer.width  / (float)MAX(state->gbuffer.out_width, 1U);
+    const float sy = (float)state->gbuffer.height / (float)MAX(state->gbuffer.out_height, 1U);
+    const float n  = (float)JITTER_SEQUENCE_SIZE / MAX(sx * sy, 1.0e-3f);
+    return CLAMP((uint32_t)ceilf(n), (uint32_t)JITTER_SEQUENCE_SIZE, (uint32_t)JITTER_SEQUENCE_MAX);
+}
+
 // Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
 // motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
 static inline bool fxaa_active(const ApplicationState* state) {
@@ -480,6 +499,7 @@ static void apply_visual_settings(void* user_data) {
     auto& look = state->settings.look;
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
     if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
+    state->settings.render_scale = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
@@ -627,6 +647,7 @@ int main(int argc, char** argv) {
     // What the computer can handle, not what a figure looks like: kept per user as it is, never in a workspace
     state.app.window.vsync = true;
     app_settings::bind(STR_LIT("vsync"), &state.app.window.vsync);
+    app_settings::bind(STR_LIT("render_scale"), &state.settings.render_scale);
     app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
@@ -722,7 +743,7 @@ int main(int argc, char** argv) {
 
     VIAMD_LOG_DEBUG("Initializing post processing...");
 
-    postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
+    postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height, state.gbuffer.out_width, state.gbuffer.out_height);
     VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
     isomesh::initialize();
@@ -879,6 +900,7 @@ int main(int argc, char** argv) {
                 .width = state.gbuffer.width,
                 .height = state.gbuffer.height,
                 .clip_to_world = clip_to_world,
+                .pixel_scale = (float)state.gbuffer.width / (float)MAX(state.app.framebuffer.width, 1),
             };
 
             interaction_surface_hit_extract(&hit, surface_state, args);
@@ -966,7 +988,7 @@ int main(int argc, char** argv) {
 
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
                 VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
-                postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
+                postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height, state.gbuffer.out_width, state.gbuffer.out_height);
                 volume::initialize();
                 isomesh::initialize();
                 md_gl_shaders_destroy(state.gl.shaders);
@@ -1518,7 +1540,7 @@ static void update_view_param(ApplicationState* data) {
 
     if (taa_active(data) && data->visuals.temporal_aa.jitter) {
         static uint32_t i = 0;
-        i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
+        i = (i+1) % jitter_count(data);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
             const vec2_t j = param.jitter.curr;
@@ -1659,6 +1681,24 @@ static void draw_main_menu(ApplicationState* data) {
             if (prop::section("Display")) {
                 prop::row("vsync", "Limit the frame rate to the display's refresh rate");
                 machine_dirty |= ImGui::Checkbox("##vsync", &data->app.window.vsync);
+
+                // A fraction of each side, in steps of 5 %, and the size it renders at beside it
+                prop::row("resolution", "Render the scene at this fraction of the display's resolution and upscale it.\n"
+                                        "TAA rebuilds the detail over frames: a still view comes close to the full resolution, a moving one is softer.\n"
+                                        "FXAA, or no anti-aliasing, upscales each frame on its own: softer.\n"
+                                        "Screenshots are rendered at the full resolution.");
+                uint32_t rw = 0, rh = 0;
+                render_size(data, data->app.framebuffer.width, data->app.framebuffer.height, &rw, &rh);
+                char size_text[32];
+                snprintf(size_text, sizeof(size_text), "%u x %u", rw, rh);
+                ImGui::SetNextItemWidth(prop::control_width_before(size_text));
+                float percent = data->settings.render_scale * 100.0f;
+                if (ImGui::SliderFloat("##resolution", &percent, RENDER_SCALE_MIN * 100.0f, 100.0f, "%.0f %%")) {
+                    data->settings.render_scale = CLAMP(roundf(percent / 5.0f) * 0.05f, RENDER_SCALE_MIN, 1.0f);
+                    machine_dirty = true;
+                }
+                ImGui::SameLine(0.0f, 2.0f * gap);
+                ImGui::TextDisabled("%s", size_text);
                 prop::section_end();
             }
 
@@ -2039,8 +2079,8 @@ static void draw_main_menu(ApplicationState* data) {
 
                 switch (data->screenshot.resolution) {
                 case ScreenshotResolution::Window:
-                    data->screenshot.res_x = data->gbuffer.width;
-                    data->screenshot.res_y = data->gbuffer.height;
+                    data->screenshot.res_x = data->app.framebuffer.width;
+                    data->screenshot.res_y = data->app.framebuffer.height;
                     break;
                 case ScreenshotResolution::FHD:
                     data->screenshot.res_x = 1920;
@@ -2069,8 +2109,8 @@ static void draw_main_menu(ApplicationState* data) {
                     ASSERT(false);
                 }
             } else {
-                data->screenshot.res_x = data->gbuffer.width;
-                data->screenshot.res_y = data->gbuffer.height;
+                data->screenshot.res_x = data->app.framebuffer.width;
+                data->screenshot.res_y = data->app.framebuffer.height;
             }
             if (ImGui::MenuItem("Take Screenshot")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,png,bmp"))) {
@@ -6300,18 +6340,25 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 static void render(ApplicationState* state) {
     bool do_screenshot = !str_empty(state->screenshot.path_to_file);
 
-    uint32_t gbuffer_target_width  = state->app.framebuffer.width;
-    uint32_t gbuffer_target_height = state->app.framebuffer.height;
+    // The image shown, and the G-buffer it is made from: the render scale of it, upscaled in post-processing.
+    // A screenshot is at its own resolution, in full.
+    uint32_t out_width  = state->app.framebuffer.width;
+    uint32_t out_height = state->app.framebuffer.height;
+    uint32_t gbuffer_target_width  = out_width;
+    uint32_t gbuffer_target_height = out_height;
     if (do_screenshot) {
-        gbuffer_target_width  = state->screenshot.res_x;
-        gbuffer_target_height = state->screenshot.res_y;
+        out_width  = gbuffer_target_width  = state->screenshot.res_x;
+        out_height = gbuffer_target_height = state->screenshot.res_y;
+    } else {
+        render_size(state, out_width, out_height, &gbuffer_target_width, &gbuffer_target_height);
     }
 
     // Resize Framebuffer
-    if ((state->gbuffer.width != gbuffer_target_width || state->gbuffer.height != gbuffer_target_height) &&
-        (gbuffer_target_width != 0 && gbuffer_target_height != 0)) {
-        gbuffer_init(&state->gbuffer, gbuffer_target_width, gbuffer_target_height);
-        postprocess_pipeline::initialize(state->gbuffer.width, state->gbuffer.height);
+    if ((state->gbuffer.width != gbuffer_target_width || state->gbuffer.height != gbuffer_target_height ||
+         state->gbuffer.out_width != out_width || state->gbuffer.out_height != out_height) &&
+        (gbuffer_target_width != 0 && gbuffer_target_height != 0 && out_width != 0 && out_height != 0)) {
+        gbuffer_init(&state->gbuffer, gbuffer_target_width, gbuffer_target_height, out_width, out_height);
+        postprocess_pipeline::initialize(state->gbuffer.width, state->gbuffer.height, out_width, out_height);
     }
 
     update_view_param(state);
@@ -6601,6 +6648,11 @@ static void render(ApplicationState* state) {
     settings.sharpen.enabled = taa_active(state) && state->visuals.sharpen.enabled;
     settings.sharpen.weight = state->visuals.sharpen.weight;
 
+    // Upscaled from the G-buffer's size to the viewport's (a screenshot is made at its size)
+    if (!do_screenshot) {
+        inputs.width  = (int)state->gbuffer.width;
+        inputs.height = (int)state->gbuffer.height;
+    }
     inputs.depth = state->gbuffer.tex.depth;
     inputs.color = state->gbuffer.tex.color;
     inputs.normal = state->gbuffer.tex.normal;
@@ -6767,7 +6819,7 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection
     const mat4_t& V = state->view.param.matrix.curr.view;
     const mat4_t& P = state->view.param.matrix.curr.proj;
-    const float   h = (float)MAX(state->gbuffer.height, 1);
+    const float   h = (float)MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
     const bool    ortho = P.elem[3][3] == 1.0f;
     const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
 

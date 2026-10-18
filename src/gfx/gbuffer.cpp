@@ -5,7 +5,7 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 
-void gbuffer_init(GBuffer* gbuf, int width, int height) {
+void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_height) {
     ASSERT(gbuf);
 
     // A 0x0 framebuffer -- an iconified window, or a window manager that reports no
@@ -15,6 +15,8 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     // clamp here and let the first frame that reports real dimensions resize us.
     width  = MAX(width,  1);
     height = MAX(height, 1);
+    out_width  = out_width  > 0 ? out_width  : width;
+    out_height = out_height > 0 ? out_height : height;
 
     bool attach_textures_deferred = false;
     if (!gbuf->fbo) {
@@ -86,13 +88,13 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // Temporal history is not attached to the G-buffer FBO, but it follows the same size/lifetime.
+    // Temporal history is not attached to the G-buffer FBO; it has its lifetime, and the size of the image shown
     const uint32_t history_textures[2] = {gbuf->tex.history, gbuf->tex.history_prev};
     // RGB10_A2: the history holds display referred (tone mapped) colour. R11F_G11F_B10F has a 5-6 bit mantissa, too
     // coarse for the exponential blend to converge (feedback ~0.95 moves less than one step per frame).
     for (uint32_t tex : history_textures) {
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB10_A2, width, height, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB10_A2, out_width, out_height, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -103,6 +105,8 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
 
     gbuf->width = width;
     gbuf->height = height;
+    gbuf->out_width = out_width;
+    gbuf->out_height = out_height;
 
     const GLenum draw_buffers[] = {
         GL_COLOR_ATTACHMENT_COLOR,

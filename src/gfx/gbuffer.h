@@ -30,15 +30,19 @@ struct GBuffer {
         uint32_t picking = 0;
         uint32_t transparency = 0;
         uint32_t transparency_hdr = 0;  // RGBA16F, premultiplied linear radiance blended over the scene before tone mapping (isosurfaces). Not attached to fbo.
-        uint32_t history = 0;       // TAA history written this frame
+        uint32_t history = 0;       // TAA history written this frame, at the output size
         uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
     } tex;
 
     uint32_t fbo = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t out_width = 0;         // what post-processing makes of it: the size of the image shown, and of the history
+    uint32_t out_height = 0;
 };
 
-void gbuffer_init(GBuffer* gbuf, int width, int height);
+// out_width / out_height: the size of the image post-processing makes, when it is upscaled from the G-buffer's;
+// 0: the G-buffer's own
+void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width = 0, int out_height = 0);
 void gbuffer_clear(GBuffer* gbuf);
 void gbuffer_free(GBuffer* gbuf);

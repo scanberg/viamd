@@ -132,8 +132,10 @@ static struct {
     GLuint vao = 0;
     GLuint v_shader_fs_quad = 0;
     bool programs_ready = false;    // programs are compiled once; initialize() on resize only reallocates targets
-    uint32_t tex_width = 0;
+    uint32_t tex_width = 0;         // the size of the G-buffer, and of the targets up to the anti-aliasing
     uint32_t tex_height = 0;
+    uint32_t out_width = 0;         // the size of the image shown, when it is upscaled to it: of the TAA's output and on
+    uint32_t out_height = 0;
 
     struct {
         GLuint fbo = 0;
@@ -143,7 +145,9 @@ static struct {
         GLuint tex_color[2] = {0, 0};   // HDR ping-pong (R11F_G11F_B10F): compose, SSAO, DOF
         GLuint tex_ldr[2] = {0, 0};     // LDR ping-pong (RGB10_A2): everything after tone mapping
         GLuint tex_coverage[2] = {0, 0};// R8: coverage of the geometry, sharp and through the depth of field
-        GLuint tex_history_prev = 0;
+        GLuint tex_history_prev = 0;    // at the output size
+        GLuint out_fbo = 0;             // the targets at the output size, when upscaling: the TAA's and what follows it
+        GLuint tex_out[2] = {0, 0};     // LDR ping-pong (RGB10_A2) at the output size
     } rt;
 
     struct {
@@ -238,41 +242,34 @@ static struct {
         } uniform_loc;
     } fxaa;
 
+    // The temporal resolve: [with motion blur][upscaling from a G-buffer smaller than the image shown]
+    struct Gl_TemporalProgram {
+        GLuint program = 0;
+        struct {
+            GLint tex_linear_depth = -1;
+            GLint tex_main = -1;
+            GLint tex_prev = -1;
+            GLint tex_vel = -1;
+            GLint tex_vel_neighbormax = -1;
+            GLint texel_size = -1;
+            GLint in_size = -1;
+            GLint out_texel_size = -1;
+            GLint time = -1;
+            GLint feedback_min = -1;
+            GLint feedback_max = -1;
+            GLint motion_scale = -1;
+            GLint jitter_uv = -1;
+            GLint pixel_size = -1;
+        } uniform_loc;
+    } temporal[2][2];
+
+    // An image to the output size, a frame on its own (Catmull-Rom): where the image is upscaled without TAA
     struct {
-        struct {
-            GLuint program = 0;
-            struct {
-                GLint tex_linear_depth = -1;
-                GLint tex_main = -1;
-                GLint tex_prev = -1;
-                GLint tex_vel = -1;
-                GLint tex_vel_neighbormax = -1;
-                GLint texel_size = -1;
-                GLint time = -1;
-                GLint feedback_min = -1;
-                GLint feedback_max = -1;
-                GLint motion_scale = -1;
-                GLint jitter_uv = -1;
-                GLint pixel_size = -1;
-            } uniform_loc;
-        } with_motion_blur;
-        struct {
-            GLuint program = 0;
-            struct {
-                GLint tex_linear_depth = -1;
-                GLint tex_main = -1;
-                GLint tex_prev = -1;
-                GLint tex_vel = -1;
-                GLint texel_size = -1;
-                GLint time = -1;
-                GLint feedback_min = -1;
-                GLint feedback_max = -1;
-                GLint motion_scale = -1;
-                GLint jitter_uv = -1;
-                GLint pixel_size = -1;
-            } uniform_loc;
-        } no_motion_blur;
-    } temporal;
+        GLuint program = 0;
+        GLint  loc_tex = -1;
+        GLint  loc_src_texel = -1;
+        GLint  loc_src_size = -1;
+    } upscale;
 } gl;
 
 static constexpr str_t v_shader_src_fs_quad = STR_LIT(
@@ -1062,42 +1059,79 @@ void shutdown() {
 }  // namespace velocity
 
 namespace temporal {
+static void get_locations(decltype(gl.temporal[0][0]) p) {  // a reference to one of them
+    const GLuint prog = p.program;
+    p.uniform_loc.tex_linear_depth    = glGetUniformLocation(prog, "u_tex_linear_depth");
+    p.uniform_loc.tex_main            = glGetUniformLocation(prog, "u_tex_main");
+    p.uniform_loc.tex_prev            = glGetUniformLocation(prog, "u_tex_prev");
+    p.uniform_loc.tex_vel             = glGetUniformLocation(prog, "u_tex_vel");
+    p.uniform_loc.tex_vel_neighbormax = glGetUniformLocation(prog, "u_tex_vel_neighbormax");
+    p.uniform_loc.texel_size          = glGetUniformLocation(prog, "u_texel_size");
+    p.uniform_loc.in_size             = glGetUniformLocation(prog, "u_in_size");
+    p.uniform_loc.out_texel_size      = glGetUniformLocation(prog, "u_out_texel_size");
+    p.uniform_loc.jitter_uv           = glGetUniformLocation(prog, "u_jitter_uv");
+    p.uniform_loc.time                = glGetUniformLocation(prog, "u_time");
+    p.uniform_loc.feedback_min        = glGetUniformLocation(prog, "u_feedback_min");
+    p.uniform_loc.feedback_max        = glGetUniformLocation(prog, "u_feedback_max");
+    p.uniform_loc.motion_scale        = glGetUniformLocation(prog, "u_motion_scale");
+    p.uniform_loc.pixel_size          = glGetUniformLocation(prog, "u_pixel_size");
+}
+
+// Catmull-Rom from nine bilinear taps (the four of a row of weights folded into two where they are the same sign):
+// sharp, but each frame on its own, for upscaling without TAA. Clamped at 0 for its overshoot.
+static constexpr str_t f_shader_src_upscale = STR_LIT(R"(
+#version 150 core
+uniform sampler2D u_tex;
+uniform vec4 u_src_texel;   // 1 / size, size of u_tex
+uniform vec2 u_src_size;    // of the image in it: its corner (the texture can be larger, shared with larger views)
+in vec2 tc;
+out vec4 out_frag;
+
+void main() {
+    vec2 p   = tc * u_src_size;
+    vec2 t1  = floor(p - 0.5) + 0.5;
+    vec2 f   = p - t1;
+    vec2 w0  = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1  = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2  = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3  = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0  = (t1 - 1.0) * u_src_texel.xy;
+    vec2 t3  = (t1 + 2.0) * u_src_texel.xy;
+    vec2 t12 = (t1 + w2 / w12) * u_src_texel.xy;
+    vec4 c =
+        (texture(u_tex, vec2(t0.x,  t0.y)) * w0.x + texture(u_tex, vec2(t12.x, t0.y)) * w12.x + texture(u_tex, vec2(t3.x,  t0.y)) * w3.x) * w0.y +
+        (texture(u_tex, vec2(t0.x, t12.y)) * w0.x + texture(u_tex, vec2(t12.x, t12.y)) * w12.x + texture(u_tex, vec2(t3.x, t12.y)) * w3.x) * w12.y +
+        (texture(u_tex, vec2(t0.x,  t3.y)) * w0.x + texture(u_tex, vec2(t12.x, t3.y)) * w12.x + texture(u_tex, vec2(t3.x,  t3.y)) * w3.x) * w3.y;
+    out_frag = max(c, vec4(0.0));
+}
+)");
+
 void initialize() {
-    {
-        gl.temporal.with_motion_blur.program = setup_program_from_source(STR_LIT("temporal aa + motion-blur"), {(const char*)temporal_frag, temporal_frag_size});
-        gl.temporal.no_motion_blur.program   = setup_program_from_source(STR_LIT("temporal aa"), {(const char*)temporal_frag, temporal_frag_size}, STR_LIT("#define USE_MOTION_BLUR 0\n"));
-
-        gl.temporal.with_motion_blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_linear_depth");
-        gl.temporal.with_motion_blur.uniform_loc.tex_main = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_main");
-        gl.temporal.with_motion_blur.uniform_loc.tex_prev = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_prev");
-        gl.temporal.with_motion_blur.uniform_loc.tex_vel = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_vel");
-        gl.temporal.with_motion_blur.uniform_loc.tex_vel_neighbormax = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_tex_vel_neighbormax");
-        gl.temporal.with_motion_blur.uniform_loc.texel_size = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_texel_size");
-        gl.temporal.with_motion_blur.uniform_loc.jitter_uv = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_jitter_uv");
-        gl.temporal.with_motion_blur.uniform_loc.time = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_time");
-        gl.temporal.with_motion_blur.uniform_loc.feedback_min = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_feedback_min");
-        gl.temporal.with_motion_blur.uniform_loc.feedback_max = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_feedback_max");
-        gl.temporal.with_motion_blur.uniform_loc.motion_scale = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_motion_scale");
-        gl.temporal.with_motion_blur.uniform_loc.pixel_size = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_pixel_size");
-
-        gl.temporal.no_motion_blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_linear_depth");
-        gl.temporal.no_motion_blur.uniform_loc.tex_main = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_main");
-        gl.temporal.no_motion_blur.uniform_loc.tex_prev = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_prev");
-        gl.temporal.no_motion_blur.uniform_loc.tex_vel = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_vel");
-        gl.temporal.no_motion_blur.uniform_loc.texel_size = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_texel_size");
-        gl.temporal.no_motion_blur.uniform_loc.jitter_uv = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_jitter_uv");
-        gl.temporal.no_motion_blur.uniform_loc.time = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_time");
-        gl.temporal.no_motion_blur.uniform_loc.feedback_min = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_feedback_min");
-        gl.temporal.no_motion_blur.uniform_loc.feedback_max = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_feedback_max");
-        gl.temporal.no_motion_blur.uniform_loc.motion_scale = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_motion_scale");
-        gl.temporal.no_motion_blur.uniform_loc.pixel_size = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_pixel_size");
+    const str_t src = {(const char*)temporal_frag, temporal_frag_size};
+    gl.temporal[1][0].program = setup_program_from_source(STR_LIT("temporal aa + motion-blur"), src);
+    gl.temporal[0][0].program = setup_program_from_source(STR_LIT("temporal aa"), src, STR_LIT("#define USE_MOTION_BLUR 0\n"));
+    gl.temporal[1][1].program = setup_program_from_source(STR_LIT("temporal aa upscale + motion-blur"), src, STR_LIT("#define UPSCALE 1\n"));
+    gl.temporal[0][1].program = setup_program_from_source(STR_LIT("temporal aa upscale"), src, STR_LIT("#define USE_MOTION_BLUR 0\n#define UPSCALE 1\n"));
+    for (auto& row : gl.temporal) {
+        for (auto& p : row) get_locations(p);
     }
+
+    gl.upscale.program       = setup_program_from_source(STR_LIT("upscale"), f_shader_src_upscale);
+    gl.upscale.loc_tex       = glGetUniformLocation(gl.upscale.program, "u_tex");
+    gl.upscale.loc_src_texel = glGetUniformLocation(gl.upscale.program, "u_src_texel");
+    gl.upscale.loc_src_size  = glGetUniformLocation(gl.upscale.program, "u_src_size");
 }
 
 void shutdown() {
-    if (gl.temporal.with_motion_blur.program) glDeleteProgram(gl.temporal.with_motion_blur.program);
-    if (gl.temporal.no_motion_blur.program)   glDeleteProgram(gl.temporal.no_motion_blur.program);
-    gl.temporal.with_motion_blur.program = gl.temporal.no_motion_blur.program = 0;
+    for (auto& row : gl.temporal) {
+        for (auto& p : row) {
+            if (p.program) glDeleteProgram(p.program);
+            p.program = 0;
+        }
+    }
+    if (gl.upscale.program) glDeleteProgram(gl.upscale.program);
+    gl.upscale.program = 0;
 }
 }  // namespace temporal
 
@@ -1171,7 +1205,10 @@ static void initialize_programs() {
 
 // Called at startup and on every resize. Programs used to be recompiled (and the old ones leaked) on every call;
 // now they are created once and only the size dependent targets are reallocated here.
-void initialize(int width, int height) {
+// width / height: the G-buffer's size; out_width / out_height: the image shown, when it is upscaled to it (0: the same)
+void initialize(int width, int height, int out_width = 0, int out_height = 0) {
+    out_width  = out_width  > 0 ? out_width  : width;
+    out_height = out_height > 0 ? out_height : height;
     if (!gl.programs_ready) {
         initialize_programs();
     }
@@ -1201,6 +1238,7 @@ void initialize(int width, int height) {
 
     ensure_framebuffer(&gl.rt.fbo);
     ensure_framebuffer(&gl.rt.scratch_fbo);
+    ensure_framebuffer(&gl.rt.out_fbo);
     ensure_framebuffer(&gl.linear_depth.fbo);
     ensure_framebuffer(&gl.ssao.fbo);
     ensure_framebuffer(&gl.bokeh_dof.fbo);
@@ -1225,7 +1263,9 @@ void initialize(int width, int height) {
     ensure_texture_2d(&gl.rt.tex_ldr[1], GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
     ensure_texture_2d(&gl.rt.tex_coverage[0], GL_R8, width, height, GL_RED, GL_UNSIGNED_BYTE);
     ensure_texture_2d(&gl.rt.tex_coverage[1], GL_R8, width, height, GL_RED, GL_UNSIGNED_BYTE);
-    ensure_texture_2d(&gl.rt.tex_history_prev, GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_history_prev, GL_RGB10_A2, out_width, out_height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_out[0], GL_RGB10_A2, out_width, out_height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_out[1], GL_RGB10_A2, out_width, out_height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
     ensure_texture_2d(&gl.rt.tex_half_dof, GL_RGBA16F, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_FLOAT);
@@ -1246,6 +1286,8 @@ void initialize(int width, int height) {
 
     gl.tex_width = width;
     gl.tex_height = height;
+    gl.out_width = out_width;
+    gl.out_height = out_height;
 
     ssao::initialize_targets(width, height);
     dof::initialize_targets(width, height);
@@ -2015,9 +2057,13 @@ void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
     glUseProgram(0);
 }
 
+// The temporal resolve into the bound targets: the history (location 0) and the image shown (location 1), of the
+// viewport's size, out_width x out_height. The current frame is width x height, in the corner of the pipeline's textures
+// (which can be larger, shared with larger views); upscaling when it is smaller than the output.
 void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_history_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const vec2_t& curr_jitter,
                        const vec2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time,
-                       vec2_t pixel_size) {
+                       vec2_t pixel_size, int width, int height, int out_width, int out_height) {
+    const bool upscale = width != out_width || height != out_height;
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(velocity_tex));
@@ -2026,6 +2072,8 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_hi
     const vec2_t res = {(float)gl.tex_width, (float)gl.tex_height};
     const vec2_t inv_res = 1.0f / res;
     const vec4_t texel_size = vec4_t{inv_res.x, inv_res.y, res.x, res.y};
+    const vec2_t in_size = {(float)width, (float)height};
+    const vec4_t out_texel_size = vec4_t{1.0f / (float)out_width, 1.0f / (float)out_height, (float)out_width, (float)out_height};
     const vec2_t jitter_uv_curr = curr_jitter / res;
     const vec2_t jitter_uv_prev = prev_jitter / res;
     const vec4_t jitter_uv = vec4_t{jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y};
@@ -2045,39 +2093,37 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_hi
     glActiveTexture(GL_TEXTURE4);
     glBindTexture(GL_TEXTURE_2D, velocity_neighbormax_tex);
 
-    if (motion_scale != 0.f) {
-        glUseProgram(gl.temporal.with_motion_blur.program);
+    const auto& p = gl.temporal[motion_scale != 0.f ? 1 : 0][upscale ? 1 : 0];
+    glUseProgram(p.program);
+    glUniform1i(p.uniform_loc.tex_linear_depth, 0);
+    glUniform1i(p.uniform_loc.tex_main, 1);
+    glUniform1i(p.uniform_loc.tex_prev, 2);
+    glUniform1i(p.uniform_loc.tex_vel, 3);
+    glUniform1i(p.uniform_loc.tex_vel_neighbormax, 4);
+    glUniform4fv(p.uniform_loc.texel_size, 1, &texel_size.x);
+    glUniform2fv(p.uniform_loc.in_size, 1, in_size.elem);
+    glUniform4fv(p.uniform_loc.out_texel_size, 1, &out_texel_size.x);
+    glUniform4fv(p.uniform_loc.jitter_uv, 1, &jitter_uv.x);
+    glUniform1f(p.uniform_loc.time, time);
+    glUniform1f(p.uniform_loc.feedback_min, feedback_min);
+    glUniform1f(p.uniform_loc.feedback_max, feedback_max);
+    glUniform1f(p.uniform_loc.motion_scale, motion_scale);
+    glUniform2fv(p.uniform_loc.pixel_size, 1, pixel_size.elem);
 
-        glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_linear_depth, 0);
-        glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_main, 1);
-        glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_prev, 2);
-        glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_vel, 3);
-        glUniform1i(gl.temporal.with_motion_blur.uniform_loc.tex_vel_neighbormax, 4);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
 
-        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.texel_size, 1, &texel_size.x);
-        glUniform4fv(gl.temporal.with_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv.x);
-        glUniform1f(gl.temporal.with_motion_blur.uniform_loc.time, time);
-        glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_min, feedback_min);
-        glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_max, feedback_max);
-        glUniform1f(gl.temporal.with_motion_blur.uniform_loc.motion_scale, motion_scale);
-        glUniform2fv(gl.temporal.with_motion_blur.uniform_loc.pixel_size, 1, pixel_size.elem);
-    } else {
-        glUseProgram(gl.temporal.no_motion_blur.program);
-
-        glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_linear_depth, 0);
-        glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_main, 1);
-        glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_prev, 2);
-        glUniform1i(gl.temporal.no_motion_blur.uniform_loc.tex_vel, 3);
-
-        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.texel_size, 1, &texel_size.x);
-        glUniform4fv(gl.temporal.no_motion_blur.uniform_loc.jitter_uv, 1, &jitter_uv.x);
-        glUniform1f(gl.temporal.no_motion_blur.uniform_loc.time, time);
-        glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_min, feedback_min);
-        glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_max, feedback_max);
-        glUniform1f(gl.temporal.no_motion_blur.uniform_loc.motion_scale, motion_scale);
-        glUniform2fv(gl.temporal.no_motion_blur.uniform_loc.pixel_size, 1, pixel_size.elem);
-    }
-
+// The source (src_width x src_height in the corner of a texture of the pipeline's size) to the viewport, Catmull-Rom
+static void upscale_texture(GLuint src, int src_width, int src_height) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glUseProgram(gl.upscale.program);
+    glUniform1i(gl.upscale.loc_tex, 0);
+    glUniform4f(gl.upscale.loc_src_texel, 1.0f / (float)gl.tex_width, 1.0f / (float)gl.tex_height, (float)gl.tex_width, (float)gl.tex_height);
+    glUniform2f(gl.upscale.loc_src_size, (float)src_width, (float)src_height);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -2329,11 +2375,17 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
 
-    int width = reset_state.viewport[2];
-    int height = reset_state.viewport[3];
+    // The image shown is the viewport's size; the G-buffer is that or, upscaling, smaller (in.width / in.height)
+    const int out_width  = reset_state.viewport[2];
+    const int out_height = reset_state.viewport[3];
+    int width  = in.width  > 0 ? in.width  : out_width;
+    int height = in.height > 0 ? in.height : out_height;
+    const bool upscale = width != out_width || height != out_height;
 
-    if (width > (int)gl.tex_width || height > (int)gl.tex_height) {
-        initialize(width, height);
+    // The targets are shared by the views (the main one and the component windows'), of different sizes: here they only
+    // grow, and each view uses their corner. The main view sets them to its size when it changes (initialize()).
+    if (width > (int)gl.tex_width || height > (int)gl.tex_height || out_width > (int)gl.out_width || out_height > (int)gl.out_height) {
+        initialize(MAX(width, (int)gl.tex_width), MAX(height, (int)gl.tex_height), MAX(out_width, (int)gl.out_width), MAX(out_height, (int)gl.out_height));
     }
 
     // Postprocessing targets have no depth attachment – disable depth test so no
@@ -2400,7 +2452,8 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_color[0], 0);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_color[1], 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, in.history, 0);
+    // The history is the output's size: upscaling, it goes to the targets of that size (to_output_size below)
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, upscale ? 0 : in.history, 0);
     glViewport(0, 0, width, height);
     glScissor(0, 0, width, height);
     glDrawBuffers(2, draw_buffers);
@@ -2520,14 +2573,27 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         POP_GPU_SECTION()
     }
 
+    // From here on, upscaling: the targets at the output size. The ping-pong goes on in them.
+    auto to_output_size = [&]() {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.out_fbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_out[0], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_out[1], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, in.history, 0);
+        glViewport(0, 0, out_width, out_height);
+        glScissor(0, 0, out_width, out_height);
+        pair = gl.rt.tex_out;
+        dst_buffer = GL_COLOR_ATTACHMENT0;
+    };
+
     if (do_taa) {
         GLuint history_prev = in.history_prev;
         if (!history_prev) {
-            copy_texture_2d(gl.rt.tex_history_prev, in.history, width, height);
+            copy_texture_2d(gl.rt.tex_history_prev, in.history, out_width, out_height);
             history_prev = gl.rt.tex_history_prev;
         }
 
         swap_target();
+        if (upscale) to_output_size();
         const float feedback_min = settings.taa.feedback_min;
         const float feedback_max = settings.taa.feedback_max;
         const float motion_scale = settings.taa.motion_blur.enabled ? settings.taa.motion_blur.motion_scale : 0.f;
@@ -2547,8 +2613,16 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         const vec2_t pixel_size = {2.0f / (P[1][1] * (float)height), is_orthographic_proj_matrix(P) ? 0.0f : 1.0f};
 
         apply_temporal_aa(gl.linear_depth.texture, src_texture, history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
-                          feedback_min, feedback_max, motion_scale, time, pixel_size);
+                          feedback_min, feedback_max, motion_scale, time, pixel_size, width, height, out_width, out_height);
 
+        POP_GPU_SECTION()
+    } else if (upscale) {
+        // Each frame on its own (FXAA or none)
+        PUSH_GPU_SECTION("Upscale")
+        swap_target();
+        to_output_size();
+        glDrawBuffer(dst_buffer);
+        upscale_texture(src_texture, width, height);
         POP_GPU_SECTION()
     }
 
@@ -2579,10 +2653,10 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
 namespace postprocess_pipeline {
 
-void initialize(int width, int height) {
+void initialize(int width, int height, int out_width, int out_height) {
     // glTexStorage2D rejects zero dimensions outright (GL_INVALID_VALUE), so guard the
     // 0x0 startup/iconified case here as well. See gbuffer_init().
-    postprocessing::initialize(MAX(width, 1), MAX(height, 1));
+    postprocessing::initialize(MAX(width, 1), MAX(height, 1), MAX(out_width, 0), MAX(out_height, 0));
 }
 
 void shutdown() {

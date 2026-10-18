@@ -64,6 +64,10 @@ enum SsaoMode {
 };
 
 struct Inputs {
+    // The G-buffer's size, when it is smaller than the image made (the viewport's size): upscaled to it, by the TAA
+    // where it is on, else a frame on its own. 0: the viewport's size.
+    int    width = 0;
+    int    height = 0;
     GLuint depth = 0;
     GLuint color = 0;
     GLuint normal = 0;
@@ -71,7 +75,7 @@ struct Inputs {
     GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
     GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces); its alpha is part of the coverage that puts the scene over the background
     bool   transparency_under_hdr = false;  // transparency lies under transparency_hdr (a selection tint under isosurfaces): it is covered by its alpha
-    GLuint history = 0;         // TAA history target, written this frame
+    GLuint history = 0;         // TAA history target, written this frame, at the size of the image made
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
 };
 
@@ -138,7 +142,8 @@ struct Settings {
 };
 
 
-void initialize(int width, int height);
+// width / height: the G-buffer's size; out_width / out_height: the image made, when it is upscaled to it (0: the same)
+void initialize(int width, int height, int out_width = 0, int out_height = 0);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
 

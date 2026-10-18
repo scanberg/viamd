@@ -5145,7 +5145,7 @@ InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_
 bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args) {
     ASSERT(out_hit);
     if (state.hovered && args.fbo && args.width && args.height) {
-        const ImVec2 local_coord = ImVec2(state.mouse_local.x, state.surface_size.y - state.mouse_local.y) * ImGui::GetIO().DisplayFramebufferScale;
+        const ImVec2 local_coord = ImVec2(state.mouse_local.x, state.surface_size.y - state.mouse_local.y) * ImGui::GetIO().DisplayFramebufferScale * args.pixel_scale;
 
         PickingReadbackRequest request = {
             .fbo = args.fbo,
