@@ -320,6 +320,16 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 }
 
 static void update_view_param(ApplicationState* state);
+
+// Whether an anti-aliasing is applied: its own switch and the one over both. Temporal carries more than the smoothing
+// (the jitter, motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
+static inline bool fxaa_active(const ApplicationState* state) {
+    return state->visuals.anti_aliasing.enabled && state->visuals.fxaa.enabled;
+}
+static inline bool taa_active(const ApplicationState* state) {
+    return state->visuals.anti_aliasing.enabled && state->visuals.temporal_aa.enabled;
+}
+
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
 
 //static void update_density_volume_texture(ApplicationState* state);
@@ -681,6 +691,7 @@ int main(int argc, char** argv) {
     app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
     app_settings::bind(STR_LIT("ssao_temporal"), &state.visuals.ssao.temporal);
+    app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
     app_settings::bind(STR_LIT("fxaa"), &state.visuals.fxaa.enabled);
     app_settings::bind(STR_LIT("taa"), &state.visuals.temporal_aa.enabled);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
@@ -1543,7 +1554,7 @@ static void update_view_param(ApplicationState* data) {
     const float f = data->view.camera.far_plane;
     const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
 
-    if (data->visuals.temporal_aa.enabled && data->visuals.temporal_aa.jitter) {
+    if (taa_active(data) && data->visuals.temporal_aa.jitter) {
         static uint32_t i = 0;
         i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
@@ -1830,13 +1841,18 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            if (prop::section("Anti-Aliasing")) {
-                prop::row("FXAA", "Smooth jagged edges in the rendered image");
+            // One switch over both kinds, on the header; folded, as the switch is what is mostly wanted and which kind
+            // and the temporal resolve's settings seldom
+            bool aa_toggled = false;
+            if (prop::section_toggle("Anti-Aliasing", &data->visuals.anti_aliasing.enabled, &aa_toggled, false,
+                                     "Smooth jagged edges.\nOff: neither kind below is applied, and screenshots are a single sample.")) {
+                prop::row("FXAA", "Smooth edges in one pass over the finished image");
                 machine_dirty |= ImGui::Checkbox("##fxaa", &data->visuals.fxaa.enabled);
-                // Its own section within, folded: the switch is what is mostly wanted, the resolve's settings seldom
-                bool taa_toggled = false;
-                if (prop::section_toggle("Temporal", &data->visuals.temporal_aa.enabled, &taa_toggled, false,
-                                         "Smooth edges by blending each frame with the previous ones (TAA)")) {
+                prop::row("temporal", "Smooth edges by blending each frame with the previous ones (TAA). Screenshots gather a sample per jitter position.");
+                machine_dirty |= ImGui::Checkbox("##temporal", &data->visuals.temporal_aa.enabled);
+                if (data->visuals.temporal_aa.enabled) {
+                    // The options of the temporal resolve, under it
+                    ImGui::Indent();
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
@@ -1856,11 +1872,11 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetNextItemWidth(-FLT_MIN);
                         machine_dirty |= ImGui::SliderFloat("##sharpen_strength", &data->visuals.sharpen.weight, 0.0f, 4.0f, "strength %.2f");
                     }
-                    prop::section_end();
+                    ImGui::Unindent();
                 }
-                machine_dirty |= taa_toggled;
                 prop::section_end();
             }
+            machine_dirty |= aa_toggled;
 
             // How the cartoon and the tubes are drawn: a choice of cost, the images are close to the same. Kept per user,
             // as the isosurfaces' below (a slower GPU wants the meshes)
@@ -2098,7 +2114,7 @@ static void draw_main_menu(ApplicationState* data) {
                     }
                     if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
-                        if (data->visuals.temporal_aa.enabled) {
+                        if (taa_active(data)) {
                             data->screenshot.sample_target = JITTER_SEQUENCE_SIZE;
                         } else {
                             data->screenshot.sample_target = 1;
@@ -6609,18 +6625,18 @@ static void render(ApplicationState* state) {
     settings.dof.focus_depth = state->visuals.dof.focus_depth;
     settings.dof.aperture = state->visuals.dof.aperture * 0.01f;
 
-    settings.fxaa.enabled = state->visuals.fxaa.enabled;
+    settings.fxaa.enabled = fxaa_active(state);
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)state->app.timing.delta_s;
     const float motion_scale = state->visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
-    settings.taa.enabled = state->visuals.temporal_aa.enabled;
+    settings.taa.enabled = taa_active(state);
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
     settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
     settings.taa.motion_blur.motion_scale = motion_scale;
 
-    settings.sharpen.enabled = state->visuals.temporal_aa.enabled && state->visuals.sharpen.enabled;
+    settings.sharpen.enabled = taa_active(state) && state->visuals.sharpen.enabled;
     settings.sharpen.weight = state->visuals.sharpen.weight;
 
     inputs.depth = state->gbuffer.tex.depth;

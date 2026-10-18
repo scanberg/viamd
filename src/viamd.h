@@ -1420,6 +1420,12 @@ struct ApplicationState {
             float aperture = 1.0f;      // percent of the view height (CoC of an object at infinity)
         } dof;
 
+        // The switch over both kinds below: off, neither is applied, and what each is set to is kept. Use
+        // fxaa_active() and taa_active() for whether one is applied.
+        struct {
+            bool enabled = true;
+        } anti_aliasing;
+
         struct {
             bool enabled = true;
         } fxaa;
