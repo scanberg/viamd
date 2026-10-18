@@ -698,7 +698,6 @@ int main(int argc, char** argv) {
     app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
-    app_settings::bind(STR_LIT("taa_prefilter"), &state.visuals.temporal_aa.prefilter);
     app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
     app_settings::bind(STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
     app_settings::bind(STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
@@ -1863,8 +1862,6 @@ static void draw_main_menu(ApplicationState* data) {
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
                     machine_dirty |= ImGui::SliderFloat("##history_max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f, "%.2f");
-                    prop::row("prefilter", "Steadier where the detail is finer than a pixel (atoms far away, thin lines): there each frame is smoothed before it is blended, a little softer.\nElsewhere the image is as without it.");
-                    machine_dirty |= ImGui::Checkbox("##prefilter", &data->visuals.temporal_aa.prefilter);
                     // On, and how much, on one row each: the amount means nothing while off
                     prop::row("motion blur");
                     machine_dirty |= ImGui::Checkbox("##motion_blur", &data->visuals.temporal_aa.motion_blur.enabled);
@@ -6640,7 +6637,6 @@ static void render(ApplicationState* state) {
     settings.taa.enabled = taa_active(state);
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
-    settings.taa.prefilter = state->visuals.temporal_aa.prefilter;
     settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
     settings.taa.motion_blur.motion_scale = motion_scale;
 

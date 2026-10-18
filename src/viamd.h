@@ -1434,7 +1434,6 @@ struct ApplicationState {
             bool jitter = true;
             float feedback_min = 0.80f;
             float feedback_max = 0.95f;
-            bool prefilter = false;     // smooth each frame where its detail is finer than a pixel, before the blend
 
             struct {
                 bool enabled = true;

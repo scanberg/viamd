@@ -51,6 +51,10 @@
 #ifndef MINMAX_4TAP_VARYING
 #define MINMAX_4TAP_VARYING 0
 #endif
+// The current frame smoothed where its detail is finer than a pixel, before the blend (PREFILTER below; MINMAX_3X3*)
+#ifndef USE_PREFILTER
+#define USE_PREFILTER 1
+#endif
 // Tints what the prefilter smooths, red by how much
 #ifndef DEBUG_PREFILTER
 #define DEBUG_PREFILTER 0
@@ -70,8 +74,6 @@ uniform float u_feedback_min = 0.88;
 uniform float u_feedback_max = 0.97;
 uniform float u_motion_scale = 0.1;
 
-// The prefilter (1: on): the current frame smoothed where its detail is finer than a pixel, before the blend (MINMAX_3X3*)
-uniform float u_prefilter = 0.0;
 // A pixel's height in view space: x at linear depth 1 (y = 1, perspective) or at any (y = 0, orthographic)
 uniform vec2  u_pixel_size = vec2(0.0, 1.0);
 
@@ -488,16 +490,18 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist, float d[9])
 		cavg = 0.5 * (cavg + cavg5);
 	#endif
 
-	if (u_prefilter > 0.0) {
+	#if USE_PREFILTER
+	{
 		vec4 c[9] = vec4[9](ctl, ctc, ctr, cml, cmc, cmr, cbl, cbc, cbr);
 		float l[9];
 		for (int i = 0; i < 9; ++i) l[i] = luminance(c[i].rgb);
-		float k = u_prefilter * fine_detail(l, d);
+		float k = fine_detail(l, d);
 		if (k > 0.0) {
 			texel0 = mix(texel0, reconstruct_3x3(c), k);
 		}
 		g_prefilter_debug = k;
 	}
+	#endif
 
 #elif MINMAX_4TAP_VARYING// this is the method used in v2 (PDTemporalReprojection2)
 
