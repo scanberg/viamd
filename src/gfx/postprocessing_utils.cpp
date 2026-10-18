@@ -270,6 +270,8 @@ static struct {
                 GLint feedback_max = -1;
                 GLint motion_scale = -1;
                 GLint jitter_uv = -1;
+                GLint prefilter = -1;
+                GLint pixel_size = -1;
             } uniform_loc;
         } with_motion_blur;
         struct {
@@ -285,6 +287,8 @@ static struct {
                 GLint feedback_max = -1;
                 GLint motion_scale = -1;
                 GLint jitter_uv = -1;
+                GLint prefilter = -1;
+                GLint pixel_size = -1;
             } uniform_loc;
         } no_motion_blur;
     } temporal;
@@ -1125,6 +1129,8 @@ void initialize() {
         gl.temporal.with_motion_blur.uniform_loc.feedback_min = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_feedback_min");
         gl.temporal.with_motion_blur.uniform_loc.feedback_max = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_feedback_max");
         gl.temporal.with_motion_blur.uniform_loc.motion_scale = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_motion_scale");
+        gl.temporal.with_motion_blur.uniform_loc.prefilter = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_prefilter");
+        gl.temporal.with_motion_blur.uniform_loc.pixel_size = glGetUniformLocation(gl.temporal.with_motion_blur.program, "u_pixel_size");
 
         gl.temporal.no_motion_blur.uniform_loc.tex_linear_depth = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_linear_depth");
         gl.temporal.no_motion_blur.uniform_loc.tex_main = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_tex_main");
@@ -1136,6 +1142,8 @@ void initialize() {
         gl.temporal.no_motion_blur.uniform_loc.feedback_min = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_feedback_min");
         gl.temporal.no_motion_blur.uniform_loc.feedback_max = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_feedback_max");
         gl.temporal.no_motion_blur.uniform_loc.motion_scale = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_motion_scale");
+        gl.temporal.no_motion_blur.uniform_loc.prefilter = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_prefilter");
+        gl.temporal.no_motion_blur.uniform_loc.pixel_size = glGetUniformLocation(gl.temporal.no_motion_blur.program, "u_pixel_size");
     }
 }
 
@@ -2066,7 +2074,8 @@ void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
 }
 
 void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_history_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const vec2_t& curr_jitter,
-                       const vec2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time) {
+                       const vec2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time,
+                       bool prefilter, vec2_t pixel_size) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(velocity_tex));
@@ -2109,6 +2118,8 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_hi
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_min, feedback_min);
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.feedback_max, feedback_max);
         glUniform1f(gl.temporal.with_motion_blur.uniform_loc.motion_scale, motion_scale);
+        glUniform1f(gl.temporal.with_motion_blur.uniform_loc.prefilter, prefilter ? 1.0f : 0.0f);
+        glUniform2fv(gl.temporal.with_motion_blur.uniform_loc.pixel_size, 1, pixel_size.elem);
     } else {
         glUseProgram(gl.temporal.no_motion_blur.program);
 
@@ -2123,6 +2134,8 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_hi
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_min, feedback_min);
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.feedback_max, feedback_max);
         glUniform1f(gl.temporal.no_motion_blur.uniform_loc.motion_scale, motion_scale);
+        glUniform1f(gl.temporal.no_motion_blur.uniform_loc.prefilter, prefilter ? 1.0f : 0.0f);
+        glUniform2fv(gl.temporal.no_motion_blur.uniform_loc.pixel_size, 1, pixel_size.elem);
     }
 
     glBindVertexArray(gl.vao);
@@ -2588,8 +2601,13 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         const GLenum taa_buffers[2] = { GL_COLOR_ATTACHMENT2, dst_buffer };
         glDrawBuffers(2, taa_buffers);
 
+        // A pixel's height in view space: x at linear depth 1 (perspective, y = 1) or anywhere (orthographic, y = 0).
+        // The prefilter measures steps in depth by it.
+        const float (*P)[4] = view_param.matrix.curr.proj.elem;
+        const vec2_t pixel_size = {2.0f / (P[1][1] * (float)height), is_orthographic_proj_matrix(P) ? 0.0f : 1.0f};
+
         apply_temporal_aa(gl.linear_depth.texture, src_texture, history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
-                          feedback_min, feedback_max, motion_scale, time);
+                          feedback_min, feedback_max, motion_scale, time, settings.taa.prefilter, pixel_size);
 
         POP_GPU_SECTION()
     }

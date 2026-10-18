@@ -125,6 +125,8 @@ struct Settings {
         bool enabled = true;
         float feedback_min = 0.80f;
         float feedback_max = 0.95f;
+        // Each frame smoothed where its detail is finer than a pixel, before the blend: steadier there
+        bool prefilter = false;
         struct {
             bool enabled = true;
             float motion_scale = 0.5f;

@@ -325,11 +325,11 @@ static void update_view_param(ApplicationState* state);
 // motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
 static inline bool fxaa_active(const ApplicationState* state) {
     const auto& aa = state->visuals.anti_aliasing;
-    return aa.enabled && (aa.mode == AntiAliasingMode::FXAA || aa.mode == AntiAliasingMode::FXAA_TAA);
+    return aa.enabled && aa.mode == AntiAliasingMode::FXAA;
 }
 static inline bool taa_active(const ApplicationState* state) {
     const auto& aa = state->visuals.anti_aliasing;
-    return aa.enabled && (aa.mode == AntiAliasingMode::TAA || aa.mode == AntiAliasingMode::FXAA_TAA);
+    return aa.enabled && aa.mode == AntiAliasingMode::TAA;
 }
 
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
@@ -698,6 +698,7 @@ int main(int argc, char** argv) {
     app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
+    app_settings::bind(STR_LIT("taa_prefilter"), &state.visuals.temporal_aa.prefilter);
     app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
     app_settings::bind(STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
     app_settings::bind(STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
@@ -1848,21 +1849,22 @@ static void draw_main_menu(ApplicationState* data) {
             bool aa_toggled = false;
             if (prop::section_toggle("Anti-Aliasing", &data->visuals.anti_aliasing.enabled, &aa_toggled, false,
                                      "Smooth jagged edges.\nOff: screenshots are a single sample.")) {
-                const char* modes[(int)AntiAliasingMode::Count] = {"FXAA", "TAA", "FXAA + TAA"};
+                const char* modes[(int)AntiAliasingMode::Count] = {"TAA", "FXAA"};
                 int mode = (int)data->visuals.anti_aliasing.mode;
-                prop::row("mode", "FXAA: one pass over the finished frame. Cheap; softens fine detail a little.\n"
-                                  "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image; screenshots gather a sample per shift.\n"
-                                  "FXAA + TAA: FXAA on each frame, then the blend.");
+                prop::row("mode", "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image; screenshots gather a sample per shift.\n"
+                                  "FXAA: one pass over each frame on its own. Nothing is carried over from frame to frame, but edges crawl in motion and detail finer than a pixel flickers.");
                 if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
                     data->visuals.anti_aliasing.mode = (AntiAliasingMode)mode;
                     machine_dirty = true;
                 }
                 if (taa_active(data)) {
-                    // The temporal resolve's settings, in the modes that have it
+                    // The temporal resolve's settings
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
                     machine_dirty |= ImGui::SliderFloat("##history_max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f, "%.2f");
+                    prop::row("prefilter", "Steadier where the detail is finer than a pixel (atoms far away, thin lines): there each frame is smoothed before it is blended, a little softer.\nElsewhere the image is as without it.");
+                    machine_dirty |= ImGui::Checkbox("##prefilter", &data->visuals.temporal_aa.prefilter);
                     // On, and how much, on one row each: the amount means nothing while off
                     prop::row("motion blur");
                     machine_dirty |= ImGui::Checkbox("##motion_blur", &data->visuals.temporal_aa.motion_blur.enabled);
@@ -6638,6 +6640,7 @@ static void render(ApplicationState* state) {
     settings.taa.enabled = taa_active(state);
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
+    settings.taa.prefilter = state->visuals.temporal_aa.prefilter;
     settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
     settings.taa.motion_blur.motion_scale = motion_scale;
 
