@@ -662,7 +662,6 @@ int main(int argc, char** argv) {
     // reads the file, so the bound values are current by the time the loop starts.
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
-    app_settings::bind(STR_LIT("raycast_splines"), &state.settings.raycast_splines);
     app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
@@ -1652,7 +1651,7 @@ static void draw_main_menu(ApplicationState* data) {
             const bool basic_shading = data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic;
 
             // Sections in the order the image is made: what is seen, how it is lit, what the camera does with the light,
-            // how the result is smoothed; then how splines and isosurfaces are drawn, and the rest. Every section has its
+            // how the result is smoothed; then how isosurfaces are drawn, and the rest. Every section has its
             // own ID scope: "Mode" and "Enabled" appear in several.
 
             ImGui::SeparatorText("View");
@@ -1719,8 +1718,8 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGui::SeparatorText("Ambient Occlusion");
             ImGui::PushID("SSAO");
-            // The computer's settings (the ambient occlusion, the anti-aliasing and VSync here; Splines and Isosurfaces
-            // mark their own) are kept as they are set: the .ini
+            // The computer's settings (the ambient occlusion, the anti-aliasing and VSync here; Isosurfaces marks its
+            // own) are kept as they are set: the .ini
             bool machine_dirty = false;
             machine_dirty |= ImGui::Checkbox("Enabled", &data->visuals.ssao.enabled);
             ImGui::SetItemTooltip("Darken creases and cavities, where less of the surroundings' light reaches (SSAO)");
@@ -1826,30 +1825,6 @@ static void draw_main_menu(ApplicationState* data) {
                     machine_dirty |= ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
                 }
                 ImGui::Unindent();
-            }
-            ImGui::PopID();
-
-            // How the cartoon and the tubes are drawn: a choice of cost, the images are close to the same. Kept per user,
-            // as the isosurfaces' below (a slower GPU wants the meshes)
-            ImGui::SeparatorText("Splines");
-            ImGui::PushID("Splines");
-            {
-                int spline_mode = data->settings.raycast_splines ? 1 : 0;
-                if (ImGui::Combo("Mode", &spline_mode, "Mesh\0Ray Cast\0")) {
-                    data->settings.raycast_splines = spline_mode == 1;
-                    app_settings::mark_dirty();
-                }
-                ImGui::SetItemTooltip("How the cartoon and the tubes of lipids and nucleic acids are drawn.\n"
-                                      "Mesh: triangles along the spline, with a level of detail. Cheap where the screen is full.\n"
-                                      "Ray Cast: each segment of the spline ray cast within a quad: exact surfaces at any zoom, at a\n"
-                                      "cost in the pixels the quads cover (all of them, where the GPU cannot cull hidden ones early).");
-                const float ms = geometry_timer.ms[GeometryStage_Cartoon] + geometry_timer.ms[GeometryStage_GlyphTubes];
-                if (ms > 0.0f) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("%.2f ms", ms);
-                    ImGui::SetItemTooltip("GPU time per frame of the cartoon and the tubes, their splines evaluated\n"
-                                          "Cartoon: %.3f ms\nTubes: %.3f ms", geometry_timer.ms[GeometryStage_Cartoon], geometry_timer.ms[GeometryStage_GlyphTubes]);
-                }
             }
             ImGui::PopID();
 
@@ -2273,7 +2248,6 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::Text("  %-20s %.3f ms", geometry_stage_name[i], geometry_timer.ms[i]);
                     }
                 }
-                ImGui::TextDisabled("  Splines %s, evaluated in each pass which draws them", data->settings.raycast_splines ? "ray cast" : "as meshes");
                 // GPU time of the volume passes, all views together (main viewport and component windows)
                 const volume::GpuTimings t = volume::timings_get();
                 ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
@@ -6661,7 +6635,6 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         tubes.args.tubes.radius_scale = scale;
         // The bands of the nucleic acids are made with the default radius, a representation has its own
         tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
-        tubes.args.tubes.raycast = state.settings.raycast_splines;
         md_array_push(*ops, tubes, alloc);
     }
 
@@ -6882,7 +6855,6 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.cartoon.coil_scale = rep.scale.x;
                         op.args.cartoon.sheet_scale = rep.scale.y;
                         op.args.cartoon.helix_scale = rep.scale.z;
-                        op.args.cartoon.raycast = state->settings.raycast_splines;
                         break;
                     default:
                         break;
@@ -7093,8 +7065,6 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
                 op.args.licorice.bond_orders = rep.bond_orders;
             } else if (rep.type == RepresentationType::BallAndStick) {
                 op.args.ball_and_stick.bond_orders = rep.bond_orders;
-            } else if (rep.type == RepresentationType::Cartoon) {
-                op.args.cartoon.raycast = data->settings.raycast_splines;
             }
             const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);

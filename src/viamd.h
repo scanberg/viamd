@@ -1508,8 +1508,6 @@ struct ApplicationState {
     struct {
         bool keep_representations = false;
         bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
-        bool raycast_splines = true;        // The splines of the cartoon and the tubes of the lipids and nucleic acids
-                                            // ray cast (a quad per segment), else drawn as meshes
         // The look a session starts with (Visuals > Save as Default), as the factory sets it until saved. A workspace
         // has its own, and loading one leaves these be. What depends on the computer rather than on the figure
         // (ambient occlusion, anti-aliasing, VSync) is bound to the .ini as it is, in visuals.
