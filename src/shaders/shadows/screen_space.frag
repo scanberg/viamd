@@ -16,8 +16,15 @@
 // are uniform along each chord, and the blur and the temporal filter average the chords into the whole disk.
 //
 // Scale-free like the ambient occlusion: the steps are spaced log-uniformly in screen space between u_r_min and u_r_max
-// (shadows reach further than the occlusion), the assumed thickness of an occluder is proportional to its lateral
-// distance, and the depth comes from the rotated-grid mip chain with the footprint growing with the distance.
+// (shadows reach further than the occlusion), and the assumed thickness of an occluder is proportional to its lateral
+// distance.
+//
+// Every step reads the half-res depth (mip 1), not a level of a footprint growing with the distance as the ambient
+// occlusion does. A coarser level holds the depth of one pixel per texel (rotated grid): the far steps would then find
+// an occluder's edge only to within the texel, the same texel for every frame and for all the pixels about it, and the
+// error does not average out but shows as a fixed mottle in the soft shadows, the larger the closer the view. The steps
+// of neighbouring pixels lie along the same line (the light's direction hardly changes over the screen), so they read
+// close texels and stay in the texture cache, unlike the ambient occlusion's slices, which turn from pixel to pixel.
 //
 // What it cannot see: occluders outside the view, and what is hidden behind the nearest surface, whose thickness is a
 // guess. The key light is on the viewer's side, so the occluders of what is seen are mostly in front of it, on screen;
@@ -33,13 +40,11 @@
 #define AO_PERSPECTIVE 1
 #endif
 #define SH_NUM_STEPS    20      // along the line toward the light
-#define SH_LOG_Q        3       // a step at distance s px reads mip floor(log2(s)) - SH_LOG_Q (but at least 1)
-#define SH_MAX_MIP      5
 #define SH_THICKNESS    1.0     // assumed thickness of an occluder, as a multiple of its lateral distance
 #define SH_BIAS_PX      0.5     // height above the tangent plane, in pixel footprints, up to which a sample is taken
                                 // for the receiving surface itself
 
-uniform sampler2D u_tex_linear_depth;   // R32F linear view depth, mips 0..SH_MAX_MIP (rotated grid), texelFetch only
+uniform sampler2D u_tex_linear_depth;   // R32F linear view depth with mips (rotated grid): level 1 is read, texelFetch only
 uniform sampler2D u_tex_normal;         // full-res G-buffer normal (RG16, spheremap encoded, view space)
 
 uniform vec4  u_proj_info;
@@ -166,12 +171,11 @@ void main() {
         vec2 spx = frag_px + d * s;                     // s: lateral distance in full-res px
         if (any(lessThan(spx, vec2(0.0))) || any(greaterThanEqual(spx, u_full_res))) break;
 
-        int   m  = clamp(findMSB(int(s)) - SH_LOG_Q, 1, SH_MAX_MIP);
-        ivec2 tx = ivec2(spx) >> m;
-        float sz = texelFetch(u_tex_linear_depth, tx, m).r;
+        ivec2 th = ivec2(spx) >> 1;
+        float sz = texelFetch(u_tex_linear_depth, th, 1).r;
         if (sz >= u_z_max) continue;
-        for (int l = m; l > 0; --l) tx = tx * 2 + ivec2(tx.y & 1, tx.x & 1);
-        vec3 S = uv_to_view((vec2(tx) + 0.5) / u_full_res, sz);
+        ivec2 tx = th * 2 + ivec2(th.y & 1, th.x & 1);  // the full-res pixel it holds
+        vec3  S  = uv_to_view((vec2(tx) + 0.5) / u_full_res, sz);
 
         // Front face and the same point pushed back along its view ray by the assumed thickness
         float thick = SH_THICKNESS * s * px_world;

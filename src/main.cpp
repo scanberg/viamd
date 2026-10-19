@@ -6517,7 +6517,8 @@ static bool input_activity() {
 }
 
 // The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
-// feedback on a still view) and twice through the jitter, the temporal ambient occlusion likewise; else the one frame
+// feedback on a still view) and twice through the jitter, the temporal ambient occlusion and the shadows likewise (their
+// histories, 32 frames: twice through their sample pattern); else the one frame
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
@@ -6526,6 +6527,9 @@ static uint32_t settle_frames(const ApplicationState* state) {
         n = MAX(n, 2 * jitter_count(state));
     }
     if (state->visuals.ssao.enabled && state->visuals.ssao.temporal) {
+        n = MAX(n, 32u);
+    }
+    if (state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f) {
         n = MAX(n, 32u);
     }
     return CLAMP(n, 1u, 240u);

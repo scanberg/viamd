@@ -428,7 +428,7 @@ static void copy_texture_2d(GLuint dst_tex, GLuint src_tex, int width, int heigh
 namespace ssao {
 // Scale-free SSAO, see shaders/ssao/ssao.frag. None of these constants depend on the scale of the scene: the sampling
 // range is defined in screen space and the occlusion test is angular, so there is no world-space radius to tune.
-static constexpr int   MAX_MIP        = 5;      // must match AO_MAX_MIP in ssao.frag (and SH_MAX_MIP in screen_space.frag)
+static constexpr int   MAX_MIP        = 5;      // must match AO_MAX_MIP in ssao.frag
 static constexpr float R_MIN_PX       = 2.0f;   // smallest sampling distance, full-res pixels
 static constexpr float R_MAX_FRACTION = 0.1f;   // largest sampling distance, fraction of the viewport height
 
