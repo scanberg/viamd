@@ -309,6 +309,7 @@ set(SHADER_FILES
     src/shaders/ssao/ssao_bitmask.frag
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
+    src/shaders/shadows/screen_space.frag
 )
 
 # Bake shaders into a single header file

@@ -1439,6 +1439,12 @@ struct ApplicationState {
             float specular = 0.25f;     // basic
         } shading;
 
+        // Shadows of the directional light, found in screen space
+        struct {
+            bool enabled = true;
+            float softness = 10.0f;     // the light's angular radius, degrees
+        } shadows;
+
         struct { 
             bool enabled = true;
             float intensity = 5.0f;

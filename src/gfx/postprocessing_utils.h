@@ -108,6 +108,16 @@ struct Settings {
         float gamma = 2.2f;
     } tonemap;
 
+    // Shadows of the directional light (both modes), found in screen space: the visibility of the light, as the
+    // ambient occlusion is the visibility of the surroundings. Scale-free as it is, with a longer reach. The light is
+    // a disk: softness is its angular radius (degrees), which sets how the shadows soften with distance.
+    struct {
+        bool enabled = true;
+        float softness = 10.0f;
+        bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
+    } shadows;
+
+    // The visibility of the surroundings, which darkens their light (physically based) or all of it (basic).
     // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
     struct {
         bool enabled = true;

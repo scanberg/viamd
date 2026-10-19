@@ -128,6 +128,22 @@ static vec3_t background(vec3_t c, const Transform& t) {
 
 static inline bool is_orthographic_proj_matrix(const float P[4][4]) { return P[2][3] == 0.0f; }
 
+// A visibility estimated in screen space at half resolution, and its history over frames (see filter_visibility)
+struct Gl_Visibility {
+    GLuint tex[2] = {};             // half res RG32F (visibility, linear depth), ping-pong for the separable blur
+    GLuint tex_history[2] = {};     // half res RG32F (frame count + visibility, linear depth), ping-pong over frames
+    GLuint tex_visibility = 0;      // full res R16F: the upsampled visibility, which the compose pass applies
+    int history_curr = 0;           // index of the history written last
+    bool history_valid = false;
+    int history_width = 0;
+    int history_height = 0;
+    int history_variant = 0;
+    int history_mode = 0;           // estimator the history was accumulated with
+    mat4_t history_view = {};       // view and projection the history was written with
+    mat4_t history_proj = {};
+    uint32_t frame = 0;             // drives the per-frame permutation of the sample pattern
+};
+
 static struct {
     GLuint vao = 0;
     GLuint v_shader_fs_quad = 0;
@@ -171,24 +187,17 @@ static struct {
         } downsample;
     } linear_depth;
 
+    // The screen-space visibilities: of the surroundings (the ambient occlusion) and of the key light (the shadows).
+    // Each is estimated at half resolution, then filtered over time and space and upsampled by the same passes.
     struct {
         GLuint fbo = 0;
-        GLuint tex[2] = {};             // half res RG32F (visibility, linear depth), ping-pong for the separable blur
-        GLuint tex_history[2] = {};     // half res RG32F (frame count + visibility, linear depth), ping-pong over frames
-        GLuint tex_visibility = 0;      // full res R16F: the upsampled visibility, which the compose pass applies
-        int history_curr = 0;           // index of the history written last
-        bool history_valid = false;
-        int history_width = 0;
-        int history_height = 0;
-        int history_variant = 0;
-        mat4_t history_view = {};       // view and projection the history was written with
-        mat4_t history_proj = {};
-        uint32_t frame = 0;             // drives the per-frame permutation of the sample pattern
-        int history_mode = 0;           // estimator the history was accumulated with
+        Gl_Visibility ao;
+        Gl_Visibility shadow;
         // Index 0 = orthographic, 1 = perspective
-        GLuint program_ao[2] = {};          // ssao.frag:         point samples ("Performance")
-        GLuint program_ao_quality[2] = {};  // ssao_bitmask.frag: slices with a visibility bitmask ("Quality")
-        GLuint program_temporal[2] = {};
+        GLuint program_ao[2] = {};          // ssao/ssao.frag:          point samples ("Performance")
+        GLuint program_ao_quality[2] = {};  // ssao/ssao_bitmask.frag:  slices with a visibility bitmask ("Quality")
+        GLuint program_shadow[2] = {};      // shadows/screen_space.frag: a slice along the light, a bitmask over its chord
+        GLuint program_temporal[2] = {};    // the filters, for both
         GLuint program_blur[2] = {};
         GLuint program_upsample[2] = {};
     } ssao;
@@ -419,35 +428,50 @@ static void copy_texture_2d(GLuint dst_tex, GLuint src_tex, int width, int heigh
 namespace ssao {
 // Scale-free SSAO, see shaders/ssao/ssao.frag. None of these constants depend on the scale of the scene: the sampling
 // range is defined in screen space and the occlusion test is angular, so there is no world-space radius to tune.
-static constexpr int   MAX_MIP        = 5;      // must match AO_MAX_MIP in ssao.frag
+static constexpr int   MAX_MIP        = 5;      // must match AO_MAX_MIP in ssao.frag (and SH_MAX_MIP in screen_space.frag)
 static constexpr float R_MIN_PX       = 2.0f;   // smallest sampling distance, full-res pixels
 static constexpr float R_MAX_FRACTION = 0.1f;   // largest sampling distance, fraction of the viewport height
+
+// The screen-space shadows (shaders/shadows/screen_space.frag) reach further: a cavity is in the shadow of its rim
+// as far below it as the light's slant carries it
+static constexpr float SHADOW_R_MIN_PX       = 1.0f;
+static constexpr float SHADOW_R_MAX_FRACTION = 0.3f;
 
 static GLuint setup_variant(str_t name, str_t src, bool perspective) {
     return setup_program_from_source(name, src, perspective ? STR_LIT("#define AO_PERSPECTIVE 1") : STR_LIT("#define AO_PERSPECTIVE 0"));
 }
 
-void initialize_programs() {
-    const str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
-    const str_t quality_src  = {(const char*)ssao_bitmask_frag, ssao_bitmask_frag_size};
-    const str_t temporal_src = {(const char*)ssao_temporal_frag, ssao_temporal_frag_size};
-    const str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
-    const str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
-    for (int i = 0; i < 2; ++i) {
-        if (gl.ssao.program_ao[i])         glDeleteProgram(gl.ssao.program_ao[i]);
-        if (gl.ssao.program_ao_quality[i]) glDeleteProgram(gl.ssao.program_ao_quality[i]);
-        if (gl.ssao.program_temporal[i])   glDeleteProgram(gl.ssao.program_temporal[i]);
-        if (gl.ssao.program_blur[i])       glDeleteProgram(gl.ssao.program_blur[i]);
-        if (gl.ssao.program_upsample[i])   glDeleteProgram(gl.ssao.program_upsample[i]);
-        gl.ssao.program_ao[i]         = setup_variant(STR_LIT("ssao"),          ao_src,       i == 1);
-        gl.ssao.program_ao_quality[i] = setup_variant(STR_LIT("ssao quality"),  quality_src,  i == 1);
-        gl.ssao.program_temporal[i] = setup_variant(STR_LIT("ssao temporal"), temporal_src, i == 1);
-        gl.ssao.program_blur[i]     = setup_variant(STR_LIT("ssao blur"),     blur_src,     i == 1);
-        gl.ssao.program_upsample[i] = setup_variant(STR_LIT("ssao upsample"), upsample_src, i == 1);
+static GLuint* all_programs[] = {gl.ssao.program_ao, gl.ssao.program_ao_quality, gl.ssao.program_shadow,
+                                 gl.ssao.program_temporal, gl.ssao.program_blur, gl.ssao.program_upsample};
+
+static void delete_programs() {
+    for (GLuint* programs : all_programs) {
+        for (int i = 0; i < 2; ++i) {
+            if (programs[i]) glDeleteProgram(programs[i]);
+            programs[i] = 0;
+        }
     }
 }
 
-void initialize_targets(int width, int height) {
+void initialize_programs() {
+    const str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
+    const str_t quality_src  = {(const char*)ssao_bitmask_frag, ssao_bitmask_frag_size};
+    const str_t shadow_src   = {(const char*)screen_space_frag, screen_space_frag_size};
+    const str_t temporal_src = {(const char*)ssao_temporal_frag, ssao_temporal_frag_size};
+    const str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
+    const str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
+    delete_programs();
+    for (int i = 0; i < 2; ++i) {
+        gl.ssao.program_ao[i]         = setup_variant(STR_LIT("ssao"),          ao_src,       i == 1);
+        gl.ssao.program_ao_quality[i] = setup_variant(STR_LIT("ssao quality"),  quality_src,  i == 1);
+        gl.ssao.program_shadow[i]     = setup_variant(STR_LIT("shadows"),       shadow_src,   i == 1);
+        gl.ssao.program_temporal[i]   = setup_variant(STR_LIT("ssao temporal"), temporal_src, i == 1);
+        gl.ssao.program_blur[i]       = setup_variant(STR_LIT("ssao blur"),     blur_src,     i == 1);
+        gl.ssao.program_upsample[i]   = setup_variant(STR_LIT("ssao upsample"), upsample_src, i == 1);
+    }
+}
+
+static void initialize_targets(Gl_Visibility* v, int width, int height) {
     // Must have the dimensions of mip level 1 of the linear depth texture.
     // RG32F: the depth channel feeds the bilateral weights and the history test, which work at the scale of a pixel
     // footprint. Half floats quantise depth to about 1e-3 of its value, more than a footprint at 4K, and the camera
@@ -455,32 +479,33 @@ void initialize_targets(int width, int height) {
     const int half_w = MAX(width / 2, 1);
     const int half_h = MAX(height / 2, 1);
     for (int i = 0; i < 2; ++i) {
-        ensure_texture_2d(&gl.ssao.tex[i],         GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
-        ensure_texture_2d(&gl.ssao.tex_history[i], GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+        ensure_texture_2d(&v->tex[i],         GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+        ensure_texture_2d(&v->tex_history[i], GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
     }
-    ensure_texture_2d(&gl.ssao.tex_visibility, GL_R16F, width, height, GL_RED, GL_FLOAT, GL_NEAREST, GL_NEAREST);
-    gl.ssao.history_valid = false;
+    ensure_texture_2d(&v->tex_visibility, GL_R16F, width, height, GL_RED, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    v->history_valid = false;
+}
+
+static void shutdown(Gl_Visibility* v) {
+    if (v->tex[0]) glDeleteTextures(2, v->tex);
+    if (v->tex_history[0]) glDeleteTextures(2, v->tex_history);
+    if (v->tex_visibility) glDeleteTextures(1, &v->tex_visibility);
+    v->tex_visibility = 0;
+    v->tex[0] = v->tex[1] = 0;
+    v->tex_history[0] = v->tex_history[1] = 0;
+    v->history_valid = false;
+}
+
+void initialize_targets(int width, int height) {
+    initialize_targets(&gl.ssao.ao, width, height);
+    initialize_targets(&gl.ssao.shadow, width, height);
 }
 
 void shutdown() {
-    if (gl.ssao.tex[0]) glDeleteTextures(2, gl.ssao.tex);
-    if (gl.ssao.tex_history[0]) glDeleteTextures(2, gl.ssao.tex_history);
-    if (gl.ssao.tex_visibility) glDeleteTextures(1, &gl.ssao.tex_visibility);
-    gl.ssao.tex_visibility = 0;
-    gl.ssao.tex[0] = gl.ssao.tex[1] = 0;
-    gl.ssao.tex_history[0] = gl.ssao.tex_history[1] = 0;
-    gl.ssao.history_valid = false;
-    for (int i = 0; i < 2; ++i) {
-        if (gl.ssao.program_ao[i])         glDeleteProgram(gl.ssao.program_ao[i]);
-        if (gl.ssao.program_ao_quality[i]) glDeleteProgram(gl.ssao.program_ao_quality[i]);
-        if (gl.ssao.program_temporal[i])   glDeleteProgram(gl.ssao.program_temporal[i]);
-        if (gl.ssao.program_blur[i])       glDeleteProgram(gl.ssao.program_blur[i]);
-        if (gl.ssao.program_upsample[i])   glDeleteProgram(gl.ssao.program_upsample[i]);
-        gl.ssao.program_ao[i] = gl.ssao.program_ao_quality[i] = 0;
-        gl.ssao.program_temporal[i] = gl.ssao.program_blur[i] = gl.ssao.program_upsample[i] = 0;
-    }
+    shutdown(&gl.ssao.ao);
+    shutdown(&gl.ssao.shadow);
+    delete_programs();
 }
-
 
 }  // namespace ssao
 
@@ -509,7 +534,7 @@ struct ubo_data_t {
     vec4_t proj_info;
     float  linear_colors;   // 1: ColorSpace_Linear
     float  light_strength;  // Settings::shading.light
-    float  pad0;
+    float  use_shadow;      // 1: u_texture_shadow holds the visibility of the key light
     float  time;
     vec3_t sky_radiance;
     float  roughness;
@@ -535,6 +560,7 @@ static struct {
             GLint texture_color = -1;
             GLint texture_normal = -1;
             GLint texture_ao = -1;
+            GLint texture_shadow = -1;
         } uniform_loc;
     } persp, ortho;
     GLuint ubo = 0;
@@ -546,6 +572,7 @@ static void init_variant(decltype(compose.persp)& v, str_t defines) {
     v.uniform_loc.texture_color = glGetUniformLocation(v.program, "u_texture_color");
     v.uniform_loc.texture_normal = glGetUniformLocation(v.program, "u_texture_normal");
     v.uniform_loc.texture_ao = glGetUniformLocation(v.program, "u_texture_ao");
+    v.uniform_loc.texture_shadow = glGetUniformLocation(v.program, "u_texture_shadow");
     v.uniform_loc.uniform_data = glGetUniformBlockIndex(v.program, "UniformData");
 }
 
@@ -1399,76 +1426,92 @@ void downsample_depth(GLuint linear_depth_tex, int src_lod) {
 
 static vec4_t compute_proj_info(const float proj_mat[4][4]);
 
-// Half-res scale-free SSAO, upsampled to full res into gl.ssao.tex_visibility, which the compose pass applies.
-// z_far is the far clip distance: background pixels hold exactly that linear depth and are skipped.
-// With temporal set, the sample pattern is permuted every frame and accumulated in a history (shaders/ssao/
-// ssao_temporal.frag), reprojected with velocity_tex. Without it the pattern is fixed and the result stable.
-// mode selects the estimator; everything after it (temporal filter, blur, upsample) is shared.
-void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, float intensity, bool temporal,
-                  postprocess_pipeline::SsaoMode mode) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(normal_tex));
-    ASSERT(!temporal || glIsTexture(velocity_tex));
+// What the passes of a screen-space visibility share for a frame: the view, the sizes, the units
+struct VisibilityFrame {
+    int width = 0;              // full res (the viewport)
+    int height = 0;
+    int half_w = 0;
+    int half_h = 0;
+    int variant = 0;            // 0 = orthographic, 1 = perspective
+    vec4_t proj_info = {};
+    float px_scale = 0;         // world size of a full-res pixel at depth 1 (persp) or absolute (ortho)
+    float z_max = 0;            // background pixels hold the far clip distance: at or beyond this they are skipped
+};
 
-    GLResetState reset_state = {};
-    record_gl_reset_state(&reset_state);
-
-    const int width  = reset_state.viewport[2];
-    const int height = reset_state.viewport[3];
-    const int half_w = MAX(width  / 2, 1);
-    const int half_h = MAX(height / 2, 1);
-
+static VisibilityFrame visibility_frame(const GLResetState& reset_state, const ViewParam& view_param, float z_far) {
+    VisibilityFrame f;
+    f.width  = reset_state.viewport[2];
+    f.height = reset_state.viewport[3];
+    f.half_w = MAX(f.width  / 2, 1);
+    f.half_h = MAX(f.height / 2, 1);
     const float (*proj_mat)[4] = view_param.matrix.curr.proj.elem;
-    const int    variant   = is_orthographic_proj_matrix(proj_mat) ? 0 : 1;
-    const vec4_t proj_info = compute_proj_info(proj_mat);
-    const float  px_scale  = proj_info.y / (float)height;  // world size of a pixel at depth 1 (persp) or absolute (ortho)
-    const float  z_max     = z_far * 0.99f;
-    const float  r_max     = MAX(ssao::R_MAX_FRACTION * (float)height, 2.0f * ssao::R_MIN_PX);
+    f.variant   = is_orthographic_proj_matrix(proj_mat) ? 0 : 1;
+    f.proj_info = compute_proj_info(proj_mat);
+    f.px_scale  = f.proj_info.y / (float)f.height;
+    f.z_max     = z_far * 0.99f;
+    return f;
+}
 
-    // The history is only usable if it was written in the directly preceding frame of this view, at this size and
-    // with this estimator (switching modes shows the other estimator at once instead of blending into it)
-    const bool history_valid = temporal && gl.ssao.history_valid &&
-        gl.ssao.history_width == half_w && gl.ssao.history_height == half_h && gl.ssao.history_variant == variant &&
-        gl.ssao.history_mode == (int)mode &&
-        memcmp(&gl.ssao.history_view, &view_param.matrix.prev.view, sizeof(mat4_t)) == 0 &&
-        memcmp(&gl.ssao.history_proj, &view_param.matrix.prev.proj, sizeof(mat4_t)) == 0;
-    const int frame = temporal ? (int)(gl.ssao.frame++ & 15) : 0;
+// The history of v is only usable if it was written in the directly preceding frame of this view, at this size and
+// with this estimator (switching modes shows the other estimator at once instead of blending into it)
+static bool visibility_history_valid(const Gl_Visibility& v, const VisibilityFrame& f, const ViewParam& view_param, bool temporal, int mode) {
+    return temporal && v.history_valid &&
+        v.history_width == f.half_w && v.history_height == f.half_h && v.history_variant == f.variant &&
+        v.history_mode == mode &&
+        memcmp(&v.history_view, &view_param.matrix.prev.view, sizeof(mat4_t)) == 0 &&
+        memcmp(&v.history_proj, &view_param.matrix.prev.proj, sizeof(mat4_t)) == 0;
+}
+
+// Uniforms every estimator takes, with its program bound and the linear depth on unit 0, the normals on unit 1
+static void set_estimator_uniforms(GLuint program, const VisibilityFrame& f, float r_min, float r_max, int frame) {
+    glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
+    glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &f.proj_info.x);
+    glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)f.width, (float)f.height);
+    glUniform1f(glGetUniformLocation(program, "u_px_scale"), f.px_scale);
+    glUniform1f(glGetUniformLocation(program, "u_r_min"), r_min);
+    glUniform1f(glGetUniformLocation(program, "u_r_max"), r_max);
+    glUniform1f(glGetUniformLocation(program, "u_z_max"), f.z_max);
+    glUniform1i(glGetUniformLocation(program, "u_frame"), frame);
+}
+
+// Binds the half-res target of the estimator of v, and its inputs: the linear depth on unit 0, the normals on unit 1
+static void begin_estimator(Gl_Visibility* v, const VisibilityFrame& f, GLuint linear_depth_tex, GLuint normal_tex) {
+    glBindVertexArray(gl.vao);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, v->tex[0], 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, f.half_w, f.half_h);
+    glScissor(0, 0, f.half_w, f.half_h);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, normal_tex);
+}
+
+// What follows the estimator of a visibility, which has written (visibility, linear depth) into v->tex[0] at half res:
+// with temporal set (the estimator's pattern permuted by the frame), the accumulation in the history
+// (shaders/ssao/ssao_temporal.frag), reprojected with velocity_tex; then a separable bilateral blur (blur.frag) and
+// a joint bilateral upsample (upsample.frag) to full res, into v->tex_visibility, which the compose pass applies.
+// Without temporal the pattern is fixed and the result stable.
+static void filter_visibility(Gl_Visibility* v, const VisibilityFrame& f, GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex,
+                              const ViewParam& view_param, bool temporal, bool history_valid, int mode) {
+    const int variant = f.variant;
 
     glBindVertexArray(gl.vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, half_w, half_h);
-    glScissor(0, 0, half_w, half_h);
+    glViewport(0, 0, f.half_w, f.half_h);
+    glScissor(0, 0, f.half_w, f.half_h);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, normal_tex);
 
-    PUSH_GPU_SECTION("AO")
-    {
-        const GLuint program = mode == postprocess_pipeline::SsaoMode_Quality ? gl.ssao.program_ao_quality[variant] : gl.ssao.program_ao[variant];
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex[0], 0);
-        glUseProgram(program);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, normal_tex);
-        glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 0);
-        glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
-        glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &proj_info.x);
-        glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)width, (float)height);
-        glUniform1f(glGetUniformLocation(program, "u_px_scale"), px_scale);
-        glUniform1f(glGetUniformLocation(program, "u_r_min"), ssao::R_MIN_PX);
-        glUniform1f(glGetUniformLocation(program, "u_r_max"), r_max);
-        glUniform1f(glGetUniformLocation(program, "u_intensity"), MAX(intensity, 0.0f));
-        glUniform1f(glGetUniformLocation(program, "u_z_max"), z_max);
-        glUniform1i(glGetUniformLocation(program, "u_frame"), frame);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-    POP_GPU_SECTION()
-
-    // Index into gl.ssao.tex of the latest result
+    // Index into v->tex of the latest result
     int src = 0;
 
     if (temporal) {
         PUSH_GPU_SECTION("Temporal")
-        const int hist_prev = gl.ssao.history_curr;
+        const int hist_prev = v->history_curr;
         const int hist_curr = hist_prev ^ 1;
 
         // This frame's view space -> the previous frame's. The AO passes use view space with z into the screen (positive
@@ -1483,30 +1526,30 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         const vec2_t jitter_delta   = view_param.jitter.curr - view_param.jitter.prev;
 
         const GLuint program = gl.ssao.program_temporal[variant];
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex_history[hist_curr], 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.ssao.tex[1], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, v->tex_history[hist_curr], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, v->tex[1], 0);
         const GLenum buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
         glDrawBuffers(2, buffers);
 
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gl.ssao.tex[0]);
-        // normal_tex is still bound to unit 1
+        glBindTexture(GL_TEXTURE_2D, v->tex[0]);
+        // normal_tex is bound to unit 1
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, gl.ssao.tex_history[hist_prev]);
+        glBindTexture(GL_TEXTURE_2D, v->tex_history[hist_prev]);
         glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, velocity_tex);
         glUniform1i(glGetUniformLocation(program, "u_tex_ao"), 0);
         glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
         glUniform1i(glGetUniformLocation(program, "u_tex_history"), 2);
         glUniform1i(glGetUniformLocation(program, "u_tex_velocity"), 3);
-        glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &proj_info.x);
+        glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &f.proj_info.x);
         glUniform4fv(glGetUniformLocation(program, "u_proj_info_prev"), 1, &proj_info_prev.x);
         glUniformMatrix4fv(glGetUniformLocation(program, "u_curr_to_prev"), 1, GL_FALSE, &curr_to_prev.elem[0][0]);
         glUniform2f(glGetUniformLocation(program, "u_jitter_delta"), jitter_delta.x, jitter_delta.y);
-        glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)width, (float)height);
-        glUniform1f(glGetUniformLocation(program, "u_px_scale"), px_scale);
-        glUniform1f(glGetUniformLocation(program, "u_z_max"), z_max);
+        glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)f.width, (float)f.height);
+        glUniform1f(glGetUniformLocation(program, "u_px_scale"), f.px_scale);
+        glUniform1f(glGetUniformLocation(program, "u_z_max"), f.z_max);
         glUniform1i(glGetUniformLocation(program, "u_history_valid"), history_valid ? 1 : 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -1514,18 +1557,18 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
         glActiveTexture(GL_TEXTURE0);
 
-        gl.ssao.history_curr    = hist_curr;
-        gl.ssao.history_valid   = true;
-        gl.ssao.history_width   = half_w;
-        gl.ssao.history_height  = half_h;
-        gl.ssao.history_variant = variant;
-        gl.ssao.history_mode    = (int)mode;
-        gl.ssao.history_view    = view_param.matrix.curr.view;
-        gl.ssao.history_proj    = view_param.matrix.curr.proj;
+        v->history_curr    = hist_curr;
+        v->history_valid   = true;
+        v->history_width   = f.half_w;
+        v->history_height  = f.half_h;
+        v->history_variant = variant;
+        v->history_mode    = mode;
+        v->history_view    = view_param.matrix.curr.view;
+        v->history_proj    = view_param.matrix.curr.proj;
         src = 1;
         POP_GPU_SECTION()
     } else {
-        gl.ssao.history_valid = false;
+        v->history_valid = false;
     }
 
     PUSH_GPU_SECTION("Blur")
@@ -1534,10 +1577,10 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         glUseProgram(program);
         glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
         glUniform1i(glGetUniformLocation(program, "u_tex_normal"), 1);
-        glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &proj_info.x);
-        glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)width, (float)height);
-        glUniform1f(glGetUniformLocation(program, "u_px_scale"), px_scale);
-        glUniform1f(glGetUniformLocation(program, "u_z_max"), z_max);
+        glUniform4fv(glGetUniformLocation(program, "u_proj_info"), 1, &f.proj_info.x);
+        glUniform2f(glGetUniformLocation(program, "u_full_res"), (float)f.width, (float)f.height);
+        glUniform1f(glGetUniformLocation(program, "u_px_scale"), f.px_scale);
+        glUniform1f(glGetUniformLocation(program, "u_z_max"), f.z_max);
         // The temporal filter already averages every pixel over the whole pattern; the blur then only has to cover
         // one period for the frames right after a disocclusion
         glUniform1i(glGetUniformLocation(program, "u_radius"), temporal ? 2 : 4);
@@ -1546,8 +1589,8 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         // normal_tex is still bound to unit 1
         glActiveTexture(GL_TEXTURE0);
         for (int pass = 0; pass < 2; ++pass) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex[src ^ 1], 0);
-            glBindTexture(GL_TEXTURE_2D, gl.ssao.tex[src]);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, v->tex[src ^ 1], 0);
+            glBindTexture(GL_TEXTURE_2D, v->tex[src]);
             glUniform2i(loc_dir, pass == 0 ? 1 : 0, pass == 0 ? 0 : 1);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             src ^= 1;
@@ -1555,29 +1598,102 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
     }
     POP_GPU_SECTION()
 
-    // Into gl.ssao.tex_visibility at full res, for the compose pass to apply to the light it occludes
+    // Into v->tex_visibility at full res, for the compose pass to apply to the light it occludes
     PUSH_GPU_SECTION("Upsample")
     {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.ssao.tex_visibility, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, v->tex_visibility, 0);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glViewport(0, 0, width, height);
-        glScissor(0, 0, width, height);
+        glViewport(0, 0, f.width, f.height);
+        glScissor(0, 0, f.width, f.height);
         const GLuint program = gl.ssao.program_upsample[variant];
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, gl.ssao.tex[src]);
+        glBindTexture(GL_TEXTURE_2D, v->tex[src]);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
         glUniform1i(glGetUniformLocation(program, "u_tex_ao"), 0);
         glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 1);
-        glUniform1f(glGetUniformLocation(program, "u_px_scale"), px_scale);
-        glUniform1f(glGetUniformLocation(program, "u_z_max"), z_max);
+        glUniform1f(glGetUniformLocation(program, "u_px_scale"), f.px_scale);
+        glUniform1f(glGetUniformLocation(program, "u_z_max"), f.z_max);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
-    reset_gl_state(reset_state);
 
+    glActiveTexture(GL_TEXTURE0);
+}
+
+// Half-res scale-free SSAO, upsampled to full res into gl.ssao.ao.tex_visibility, which the compose pass applies to the
+// light of the surroundings. z_far is the far clip distance: background pixels hold exactly that linear depth and are
+// skipped. With temporal set, the sample pattern is permuted every frame and accumulated in a history, reprojected
+// with velocity_tex (filter_visibility). mode selects the estimator; everything after it is shared.
+void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, float intensity, bool temporal,
+                  postprocess_pipeline::SsaoMode mode) {
+    ASSERT(glIsTexture(linear_depth_tex));
+    ASSERT(glIsTexture(normal_tex));
+    ASSERT(!temporal || glIsTexture(velocity_tex));
+
+    GLResetState reset_state = {};
+    record_gl_reset_state(&reset_state);
+
+    Gl_Visibility* v = &gl.ssao.ao;
+    const VisibilityFrame f = visibility_frame(reset_state, view_param, z_far);
+    const float r_max = MAX(ssao::R_MAX_FRACTION * (float)f.height, 2.0f * ssao::R_MIN_PX);
+    const bool history_valid = visibility_history_valid(*v, f, view_param, temporal, (int)mode);
+    const int frame = temporal ? (int)(v->frame++ & 15) : 0;
+
+    PUSH_GPU_SECTION("AO")
+    {
+        const GLuint program = mode == postprocess_pipeline::SsaoMode_Quality ? gl.ssao.program_ao_quality[f.variant] : gl.ssao.program_ao[f.variant];
+        begin_estimator(v, f, linear_depth_tex, normal_tex);
+        glUseProgram(program);
+        set_estimator_uniforms(program, f, ssao::R_MIN_PX, r_max, frame);
+        glUniform1f(glGetUniformLocation(program, "u_intensity"), MAX(intensity, 0.0f));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    POP_GPU_SECTION()
+
+    filter_visibility(v, f, linear_depth_tex, normal_tex, velocity_tex, view_param, temporal, history_valid, (int)mode);
+
+    reset_gl_state(reset_state);
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(0);
+}
+
+// Half-res screen-space shadows of the key light (shaders/shadows/screen_space.frag), filtered as the ambient occlusion
+// is (filter_visibility), into gl.ssao.shadow.tex_visibility, which the compose pass applies to the key light.
+// light_dir: toward the light, in the view space (GL: z toward the viewer); light_radius: its angular radius (radians).
+void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, vec3_t light_dir, float light_radius, bool temporal) {
+    ASSERT(glIsTexture(linear_depth_tex));
+    ASSERT(glIsTexture(normal_tex));
+    ASSERT(!temporal || glIsTexture(velocity_tex));
+
+    GLResetState reset_state = {};
+    record_gl_reset_state(&reset_state);
+
+    Gl_Visibility* v = &gl.ssao.shadow;
+    const VisibilityFrame f = visibility_frame(reset_state, view_param, z_far);
+    const float r_max = MAX(ssao::SHADOW_R_MAX_FRACTION * (float)f.height, 2.0f * ssao::SHADOW_R_MIN_PX);
+    const bool history_valid = visibility_history_valid(*v, f, view_param, temporal, 0);
+    const int frame = temporal ? (int)(v->frame++ & 15) : 0;
+
+    // The passes' view space has z into the screen
+    const vec3_t L = vec3_normalize(vec3_t{light_dir.x, light_dir.y, -light_dir.z});
+
+    PUSH_GPU_SECTION("Shadow Rays")
+    {
+        const GLuint program = gl.ssao.program_shadow[f.variant];
+        begin_estimator(v, f, linear_depth_tex, normal_tex);
+        glUseProgram(program);
+        set_estimator_uniforms(program, f, ssao::SHADOW_R_MIN_PX, r_max, frame);
+        glUniform3f(glGetUniformLocation(program, "u_light_dir"), L.x, L.y, L.z);
+        glUniform1f(glGetUniformLocation(program, "u_light_radius"), MAX(light_radius, 1.0e-3f));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    POP_GPU_SECTION()
+
+    filter_visibility(v, f, linear_depth_tex, normal_tex, velocity_tex, view_param, temporal, history_valid, 0);
+
+    reset_gl_state(reset_state);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(0);
 }
@@ -1603,8 +1719,9 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
     };
 }
 
-// ao_tex: the visibility of the ambient occlusion (0: none)
-static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, GLuint ao_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
+// ao_tex: the visibility of the surroundings, the ambient occlusion (0: none); shadow_tex: the visibility of the key
+// light, its shadows (0: none)
+static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, GLuint ao_tex, GLuint shadow_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
@@ -1620,6 +1737,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
         .proj_info = compute_proj_info(proj_mat),
         .linear_colors = settings.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
         .light_strength = MAX(settings.shading.light, 0.0f),
+        .use_shadow = shadow_tex ? 1.0f : 0.0f,
         .time = time,
         .sky_radiance = light.sky_radiance * MAX(settings.shading.environment, 0.0f),
         .roughness = roughness,
@@ -1645,7 +1763,9 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, normal_tex);
     glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, ao_tex ? ao_tex : gl.ssao.tex_visibility);  // a valid texture either way: use_ao gates it
+    glBindTexture(GL_TEXTURE_2D, ao_tex ? ao_tex : gl.ssao.ao.tex_visibility);  // a valid texture either way: use_ao gates it
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, shadow_tex ? shadow_tex : gl.ssao.shadow.tex_visibility);  // use_shadow gates it
     glActiveTexture(GL_TEXTURE0);
 
     auto& variant = orthographic ? compose::compose.ortho : compose::compose.persp;
@@ -1659,6 +1779,7 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     glUniform1i (variant.uniform_loc.texture_color, 1);
     glUniform1i (variant.uniform_loc.texture_normal, 2);
     glUniform1i (variant.uniform_loc.texture_ao, 3);
+    glUniform1i (variant.uniform_loc.texture_shadow, 4);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -2358,6 +2479,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     const bool do_compose = true;
     const bool do_velocity = settings.taa.enabled;
     const bool do_ssao = settings.ssao.enabled;
+    const bool do_shadows = settings.shadows.enabled && settings.shading.light > 0.0f;
     const bool do_dof = settings.dof.enabled;
     const bool do_transparency = in.transparency != 0;
     const bool do_transparency_hdr = in.transparency_hdr != 0;
@@ -2413,7 +2535,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         GL_COLOR_ATTACHMENT1,
     };
 
-    if (do_ssao) {
+    if (do_ssao || do_shadows) {
         PUSH_GPU_SECTION("Generate Linear Depth Mipmaps") {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -2471,7 +2593,8 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     };
     glDrawBuffer(dst_buffer);
 
-    // The ambient occlusion first: the compose pass applies it to the light it occludes
+    // The visibilities first, the ambient occlusion's and the shadows': the compose pass applies them to the light they
+    // occlude, the surroundings' and the key light's
     if (do_ssao) {
         PUSH_GPU_SECTION("SSAO")
         const bool temporal = settings.ssao.temporal && in.velocity != 0;
@@ -2479,9 +2602,18 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         POP_GPU_SECTION()
     }
 
+    if (do_shadows) {
+        PUSH_GPU_SECTION("Shadows")
+        const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(settings.shading.mode);
+        const bool temporal = settings.shadows.temporal && in.velocity != 0;
+        compute_shadows(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, light.light_dir, (float)DEG_TO_RAD(settings.shadows.softness), temporal);
+        POP_GPU_SECTION()
+    }
+
     if (do_compose) {
         PUSH_GPU_SECTION("Compose")
-        compose_deferred(gl.linear_depth.texture, in.color, in.normal, do_ssao ? gl.ssao.tex_visibility : 0, view_param.matrix.curr.proj.elem, ortho, width, height, settings, time);
+        compose_deferred(gl.linear_depth.texture, in.color, in.normal, do_ssao ? gl.ssao.ao.tex_visibility : 0, do_shadows ? gl.ssao.shadow.tex_visibility : 0,
+                         view_param.matrix.curr.proj.elem, ortho, width, height, settings, time);
         POP_GPU_SECTION()
     } else {
         // Seed transient pipeline from external color input when compose stage is disabled.
