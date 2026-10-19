@@ -407,6 +407,24 @@ static inline bool taa_active(const ApplicationState* state) {
     return aa.enabled && aa.mode == AntiAliasingMode::TAA;
 }
 
+// The frames the shadows and the ambient occlusion take to settle when they are filtered over time: their histories,
+// twice through their sample patterns (shaders/ssao/ssao_temporal.frag)
+static constexpr uint32_t OCCLUSION_SETTLE_FRAMES = 32;
+
+static inline bool occlusion_temporal_active(const ApplicationState* state) {
+    const bool shadows = state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f;
+    return (shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal;
+}
+
+// The frames a screenshot (without the GUI) is made over: the TAA's jitter once through, and as many as the shadows and
+// the ambient occlusion take to settle. A screenshot at another resolution than the window's starts their histories
+// again: with fewer frames it would show their first estimates, unfiltered over time.
+static uint32_t screenshot_samples(const ApplicationState* state) {
+    uint32_t n = taa_active(state) ? JITTER_SEQUENCE_SIZE : 1;
+    if (occlusion_temporal_active(state)) n = MAX(n, OCCLUSION_SETTLE_FRAMES);
+    return n;
+}
+
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
 
 //static void update_density_volume_texture(ApplicationState* state);
@@ -2206,11 +2224,7 @@ static void draw_main_menu(ApplicationState* data) {
                     }
                     if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
-                        if (taa_active(data)) {
-                            data->screenshot.sample_target = JITTER_SEQUENCE_SIZE;
-                        } else {
-                            data->screenshot.sample_target = 1;
-                        }
+                        data->screenshot.sample_target = (int)screenshot_samples(data);
                     }
                     else {
                         VIAMD_LOG_ERROR("Supplied image extension is not supported");
@@ -6529,7 +6543,7 @@ static bool input_activity() {
 
 // The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
 // feedback on a still view) and twice through the jitter, the shadows and the ambient occlusion likewise when they are
-// filtered over time (their histories, 32 frames: twice through their sample patterns); else the one frame
+// filtered over time; else the one frame
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
@@ -6537,9 +6551,8 @@ static uint32_t settle_frames(const ApplicationState* state) {
         n = (uint32_t)ceil(log(0.01) / log(feedback));
         n = MAX(n, 2 * jitter_count(state));
     }
-    const bool shadows = state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f;
-    if ((shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal) {
-        n = MAX(n, 32u);
+    if (occlusion_temporal_active(state)) {
+        n = MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
     return CLAMP(n, 1u, 240u);
 }
