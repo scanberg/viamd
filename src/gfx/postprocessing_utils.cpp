@@ -2636,7 +2636,10 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_present) {
         swap_target();
         glDepthMask(0);
-        if (in.marks && in.marks_group) {
+        if (!settings.present) {
+            // Kept to be presented later (postprocess_pipeline::present): as it is, without the dither
+            blit_texture(src_texture);
+        } else if (in.marks && in.marks_group) {
             PUSH_GPU_SECTION("Present marks")
             present_marks(src_texture, in.marks, in.marks_group, settings, time);
             POP_GPU_SECTION()
@@ -2698,6 +2701,28 @@ void execute(const Inputs& in, const Settings& settings, const ViewParam& view) 
     }
 
     postprocessing::execute(in, settings, view);
+}
+
+void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings) {
+    ASSERT(glIsTexture(image));
+    // For the dither, as execute() seeds it
+    static float time = 0.f;
+    time = time + 0.01f;
+    if (time > 100.f) time -= 100.f;
+
+    const GLboolean last_depth_test = glIsEnabled(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDepthMask(0);
+    if (marks && marks_group) {
+        PUSH_GPU_SECTION("Present marks")
+        postprocessing::present_marks(image, marks, marks_group, settings, time);
+        POP_GPU_SECTION()
+    } else {
+        postprocessing::blit_texture_dither(image, time);
+    }
+    if (last_depth_test) glEnable(GL_DEPTH_TEST);
+    glDepthMask(1);
 }
 
 }  // namespace postprocess_pipeline

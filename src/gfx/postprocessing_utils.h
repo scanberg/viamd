@@ -141,6 +141,10 @@ struct Settings {
         float weight = 1.0f;
     } sharpen;
 
+    // The image made presented as it is made (dithered to 8 bits, with the marks), or kept as it is, to be presented
+    // later (present())
+    bool present = true;
+
     // The marks (Inputs::marks), put over the finished image as it is presented, in display colours: [0] of the
     // selection, [1] of the highlight. A tint where they are in view, a fill where they are behind something, and the
     // outline of where they are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours,
@@ -158,7 +162,13 @@ struct Settings {
 
 // width / height: the G-buffer's size; out_width / out_height: the image made, when it is upscaled to it (0: the same)
 void initialize(int width, int height, int out_width = 0, int out_height = 0);
+// Makes the image into the framebuffer bound, over the viewport (the size of the image made): presented (dithered to
+// 8 bits, with the marks) or, without Settings::present, as it is, to be presented later
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
+// Presents an image execute() made without presenting it (its size: the viewport's) into the framebuffer bound:
+// dithered, with the marks of the selection and the highlight over it when there are any (Inputs::marks,
+// Settings::marks). For showing the image again while nothing in it has changed.
+void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings);
 void shutdown();
 
 // The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces

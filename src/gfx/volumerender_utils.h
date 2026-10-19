@@ -22,6 +22,9 @@ void notify_data_changed(uint32_t volume_texture);
 // Changes every time notify_data_changed() is called for the texture, and never repeats for it; 0 for a
 // texture never announced. For callers that cache what they render from a volume.
 uint64_t data_version(uint32_t volume_texture);
+// Changes every time notify_data_changed() is called, for any texture: for a view that caches what it renders from
+// the volumes it shows
+uint64_t data_version_any();
 
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);

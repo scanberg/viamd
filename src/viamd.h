@@ -1243,6 +1243,10 @@ struct ApplicationState {
         int                 last_interpolated_stride = 1;
         uint32_t            dirty_gpu_buffers = 0;
         uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
+        uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
+                                                        // alone: the image of the scene depends on them only through the
+                                                        // visible and the selected atoms (representation.visibility_mask_hash,
+                                                        // render.selection_hash), not through the highlighted
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -1580,6 +1584,9 @@ struct ApplicationState {
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
         // which rebuilds the detail over frames, else a frame on its own. Screenshots are at the full resolution.
         float render_scale = 1.0f;
+        // The scene rendered only while something in it changes, and settles; else the image made last is shown again
+        // (render: lazy rendering)
+        bool lazy_rendering = true;
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
@@ -1669,6 +1676,26 @@ struct ApplicationState {
     bool show_profiler_window = false;
     bool show_property_export_window = false;
 
+    // --- LAZY RENDERING ---
+    // The main view's image is made again only when what it is made from changes (scene_key), and for as many frames
+    // after as it takes to settle (the TAA's history, the temporal ambient occlusion, the meshed isosurfaces); else the
+    // image made last (gbuffer.tex.image) is shown again. Input (a click, a drag, a key, the wheel) counts as a change:
+    // what it edits need not be in the key. The marks are drawn again when they change, the scene or not.
+    struct {
+        uint64_t scene_key = 0;         // of the image kept
+        uint64_t marks_key = 0;         // of the marks kept, 0 for none
+        uint32_t settle_frames = 0;     // still to make after the last change
+        bool image_valid = false;       // gbuffer.tex.image holds the scene (not after the G-buffer is made anew)
+        uint64_t version = 0;           // render_invalidate()
+
+        // Of the main loop's: for the keys
+        uint64_t selection_hash = 0;
+        uint64_t highlight_hash = 0;
+
+        // Of the last frames, whether the scene was made in each (bit i: i frames ago), for the profiler
+        uint64_t history = 0;
+    } render;
+
     TextEditor editor = {};
     script_editor::Markers editor_markers = {};
     bool editor_focused = false;    // the script editor had keyboard focus when it was last drawn
@@ -1721,6 +1748,12 @@ enum ViewFitRound {
     ViewFitRound_Highlight = 0,
     ViewFitRound_Selection,
     ViewFitRound_Visible,
+};
+
+// The payload of EventType_ViamdRenderKey: what a handler draws into the main view from, folded into key
+struct RenderKey {
+    const ApplicationState* state = nullptr;
+    uint64_t key = 0;
 };
 
 // This is the supplied event payload for requesting a view fit.
@@ -2665,6 +2698,10 @@ void script_vis_begin_frame(ApplicationState* state);
 // Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
 // shown (script.vis_shown), highlighting its atoms. After everything which sets one, before drawing.
 void script_vis_update(ApplicationState* state);
+// What is shown of the script (script.vis_shown), for the key of what the main view draws: 0 when nothing is
+uint64_t script_vis_shown_key(const ApplicationState* state);
+// The main view is made again (lazy rendering): for a change to what it draws that is not in its key
+static inline void render_invalidate(ApplicationState* state) { state->render.version += 1; }
 // Drops every result, waiting for a running computation. Before the system goes.
 void script_vis_reset(ApplicationState* state);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

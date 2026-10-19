@@ -34,10 +34,12 @@ struct GBuffer {
         uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
         uint32_t marks = 0;         // RGBA8 at the output size, of fbo_marks: 1 where the selection is in view (r), there at all (g), the highlight the same (b, a)
         uint32_t marks_group = 0;   // R8 at the output size, of fbo_marks: of the highlight, 1 + the group it is in, 8 more in view, 0 none (in units of 1/255)
+        uint32_t image = 0;         // RGB10_A2 at the output size, of fbo_image: the image made of the G-buffer, before it is presented
     } tex;
 
     uint32_t fbo = 0;
     uint32_t fbo_marks = 0;
+    uint32_t fbo_image = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t out_width = 0;         // what post-processing makes of it: the size of the image shown, and of the history

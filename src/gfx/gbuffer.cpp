@@ -37,6 +37,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     if (!gbuf->tex.history_prev) glGenTextures(1, &gbuf->tex.history_prev);
     if (!gbuf->tex.marks) glGenTextures(1, &gbuf->tex.marks);
     if (!gbuf->tex.marks_group) glGenTextures(1, &gbuf->tex.marks_group);
+    if (!gbuf->tex.image) glGenTextures(1, &gbuf->tex.image);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
     // A DEPTH_STENCIL internal format requires format GL_DEPTH_STENCIL and type
@@ -120,6 +121,14 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    // The image made, display referred as the TAA's history is: shown again while nothing in it changes (render())
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.image);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB10_A2, out_width, out_height, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glBindTexture(GL_TEXTURE_2D, 0);
 
     gbuf->width = width;
@@ -175,6 +184,17 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
         glClear(GL_COLOR_BUFFER_BIT);
     }
     glDeleteFramebuffers(1, &clear_fbo);
+
+    if (!gbuf->fbo_image) {
+        glGenFramebuffers(1, &gbuf->fbo_image);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo_image);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuf->tex.image, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        const GLenum image_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (image_status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("Image framebuffer is incomplete (0x%04X)", (unsigned int)image_status);
+        }
+    }
 
     if (!gbuf->fbo_marks) {
         glGenFramebuffers(1, &gbuf->fbo_marks);
@@ -235,6 +255,8 @@ void gbuffer_free(GBuffer* gbuf) {
     if (gbuf->tex.history_prev) glDeleteTextures(1, &gbuf->tex.history_prev);
     if (gbuf->tex.marks) glDeleteTextures(1, &gbuf->tex.marks);
     if (gbuf->tex.marks_group) glDeleteTextures(1, &gbuf->tex.marks_group);
+    if (gbuf->tex.image) glDeleteTextures(1, &gbuf->tex.image);
+    if (gbuf->fbo_image) glDeleteFramebuffers(1, &gbuf->fbo_image);
     if (gbuf->fbo_marks) glDeleteFramebuffers(1, &gbuf->fbo_marks);
 }
 
@@ -254,6 +276,9 @@ void gbuffer_marks_begin(GBuffer* gbuf) {
     glDepthMask(0);
     glEnable(GL_BLEND);
     glBlendEquation(GL_MAX);
+    // As the opaque pass culls, which the marks' geometry has to match
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
 
     glActiveTexture(GL_TEXTURE0 + MD_GL_USER_TEXTURE_UNIT);
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);

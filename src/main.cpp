@@ -24,6 +24,7 @@
 #include <core/md_log.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
+#include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_ring_allocator.h>
@@ -86,8 +87,10 @@ static md_allocator_i* persistent_alloc = 0;
 
 static bool use_gfx = false;
 
-// The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames
+// The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames, and whether it has
+// converged (the view is made until it has)
 static isomesh::Target iso_mesh_target;
+static bool iso_mesh_converged = true;
 
 constexpr str_t shader_output_snippet = STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
@@ -467,6 +470,7 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
+static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
 
@@ -696,6 +700,7 @@ int main(int argc, char** argv) {
     state.app.window.vsync = true;
     app_settings::bind(STR_LIT("vsync"), &state.app.window.vsync);
     app_settings::bind(STR_LIT("render_scale"), &state.settings.render_scale);
+    app_settings::bind(STR_LIT("lazy_rendering"), &state.settings.lazy_rendering);
     app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
@@ -1043,6 +1048,7 @@ int main(int argc, char** argv) {
                 md_gl_shaders_destroy(state.gl.shaders_marks);
                 state.gl.shaders = md_gl_shaders_create(output_snippet(state));
                 state.gl.shaders_marks = md_gl_shaders_create(shader_output_snippet_marks);
+                render_invalidate(&state);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
@@ -1444,6 +1450,8 @@ int main(int argc, char** argv) {
         uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.selection.selection_mask), 0);
         uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
         f_hash = md_hash64_combine(f_hash, state.selection.highlight_groups.key);
+        state.render.selection_hash = s_hash;
+        state.render.highlight_hash = h_hash;
         
         // What each representation is: not the bytes of the struct, which hold handles, pointers and flags that
         // change without the representation changing (its atom mask, for one, is replaced whenever it is evaluated)
@@ -1757,6 +1765,11 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SameLine(0.0f, 2.0f * gap);
                 ImGui::TextDisabled("%s", size_text);
+
+                prop::row("lazy rendering", "Render the scene only when something in it changes, and show the last image otherwise: "
+                                            "it saves power, on a laptop the battery.\n"
+                                            "Hovering and selecting only draw their marks again.");
+                machine_dirty |= ImGui::Checkbox("##lazy_rendering", &data->settings.lazy_rendering);
                 prop::section_end();
             }
 
@@ -5103,6 +5116,9 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("Per frame, averaged over 30 frames. GPU: the work a section issued; CPU: from its start to its "
                             "end. The wait for vsync is outside the frame.");
+        const int made = (int)popcnt64(data->render.history);
+        ImGui::TextDisabled("The scene was made in %d of the last 64 frames%s.", made,
+                            data->settings.lazy_rendering ? "; shown again as it was in the others" : " (lazy rendering is off)");
         ImGui::PopTextWrapPos();
         profiler::draw_table();
     }
@@ -6180,6 +6196,9 @@ static void update_md_buffers(ApplicationState* data) {
     if (data->mold.dirty_gpu_buffers) {
         data->mold.gpu_buffers_version += 1;
     }
+    if (data->mold.dirty_gpu_buffers & ~MolBit_DirtyFlags) {
+        data->mold.gpu_scene_version += 1;
+    }
 
     if (data->mold.dirty_gpu_buffers & (MolBit_DirtyPosition | MolBit_ClearVelocity)) {
         // Derived from the positions and velocities of the atoms below, when a cartoon shows them
@@ -6384,32 +6403,81 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     ImGui::End();
 }
 
-static void render(ApplicationState* state) {
-    bool do_screenshot = !str_empty(state->screenshot.path_to_file);
-
-    // The image shown, and the G-buffer it is made from: the render scale of it, upscaled in post-processing.
-    // A screenshot is at its own resolution, in full.
-    uint32_t out_width  = state->app.framebuffer.width;
-    uint32_t out_height = state->app.framebuffer.height;
-    uint32_t gbuffer_target_width  = out_width;
-    uint32_t gbuffer_target_height = out_height;
-    if (do_screenshot) {
-        out_width  = gbuffer_target_width  = state->screenshot.res_x;
-        out_height = gbuffer_target_height = state->screenshot.res_y;
-    } else {
-        render_size(state, out_width, out_height, &gbuffer_target_width, &gbuffer_target_height);
+// Input that may change what the main view draws, though not in its key: a click or a drag anywhere (a button, a
+// slider), the wheel, a key that is not typed into a text field (which edits a script or a filter, whose results are in
+// the key). Hovering is not: what it changes is in the keys, the highlight in the marks'.
+static bool input_activity() {
+    const ImGuiIO& io = ImGui::GetIO();
+    for (int i = 0; i < ImGuiMouseButton_COUNT; ++i) {
+        if (io.MouseDown[i] || ImGui::IsMouseReleased(i)) return true;
     }
-
-    // Resize Framebuffer
-    if ((state->gbuffer.width != gbuffer_target_width || state->gbuffer.height != gbuffer_target_height ||
-         state->gbuffer.out_width != out_width || state->gbuffer.out_height != out_height) &&
-        (gbuffer_target_width != 0 && gbuffer_target_height != 0 && out_width != 0 && out_height != 0)) {
-        gbuffer_init(&state->gbuffer, gbuffer_target_width, gbuffer_target_height, out_width, out_height);
-        postprocess_pipeline::initialize(state->gbuffer.width, state->gbuffer.height, out_width, out_height);
+    if (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f) return true;
+    if (!io.WantTextInput) {
+        for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+            if (ImGui::IsKeyDown((ImGuiKey)k) || ImGui::IsKeyReleased((ImGuiKey)k)) return true;
+        }
     }
+    return false;
+}
 
+// The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
+// feedback on a still view) and twice through the jitter, the temporal ambient occlusion likewise; else the one frame
+static uint32_t settle_frames(const ApplicationState* state) {
+    uint32_t n = 1;
+    if (taa_active(state)) {
+        const double feedback = CLAMP((double)state->visuals.temporal_aa.feedback_max, 0.5, 0.99);
+        n = (uint32_t)ceil(log(0.01) / log(feedback));
+        n = MAX(n, 2 * jitter_count(state));
+    }
+    if (state->visuals.ssao.enabled && state->visuals.ssao.temporal) {
+        n = MAX(n, 32u);
+    }
+    return CLAMP(n, 1u, 240u);
+}
+
+// What the image of the scene is made from (render_scene), but for the marks, and for what input changes (input_activity):
+// while it is the same and the image has settled, the image is shown again rather than made again
+static uint64_t scene_key(const ApplicationState* state) {
+    uint64_t h = 0;
+    const GBuffer& gbuf = state->gbuffer;
+    const uint32_t size[4] = {gbuf.width, gbuf.height, gbuf.out_width, gbuf.out_height};
+    h = md_hash64(size, sizeof(size), h);
+
+    // The view
+    const Camera& c = state->view.camera;
+    const float camera[11] = {c.orientation.x, c.orientation.y, c.orientation.z, c.orientation.w, c.position.x, c.position.y, c.position.z,
+                              c.distance, c.near_plane, c.far_plane, c.fov_y};
+    h = md_hash64(camera, sizeof(camera), h);
+    h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
+    h = md_hash64(&state->view.shift, sizeof(state->view.shift), h);
+    h = md_hash64(&state->mold.unitcell_transform, sizeof(state->mold.unitcell_transform), h);
+
+    // How it looks
+    h = md_hash64(&state->visuals, sizeof(state->visuals), h);
+    h = md_hash64(&state->settings, sizeof(state->settings), h);
+
+    // What it shows: the representations and the atoms (their visibility, the dimmed by the selection: not the
+    // highlighted), the volumes, what the script shows, what the components draw
+    h = md_hash64_combine(h, opaque_scene_hash(state));
+    h = md_hash64(&state->render.selection_hash, sizeof(state->render.selection_hash), h);
+    const uint64_t volumes = volume::data_version_any();
+    h = md_hash64(&volumes, sizeof(volumes), h);
+    const uint64_t vis = script_vis_shown_key(state);
+    h = md_hash64(&vis, sizeof(vis), h);
+    const vec4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
+    h = md_hash64(vis_colors, sizeof(vis_colors), h);
+    h = md_hash64(&state->render.version, sizeof(state->render.version), h);
+    h = md_hash64(&use_gfx, sizeof(use_gfx), h);
+
+    RenderKey rk = {state, h};
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderKey, viamd::EventPayloadType_RenderKey, &rk);
+    return rk.key ? rk.key : 1;
+}
+
+// The image of the scene: the G-buffer, made into the image kept (gbuffer.tex.image) by post-processing, which
+// render() presents
+static void render_scene(ApplicationState* state, bool do_screenshot) {
     update_view_param(state);
-
 
     gbuffer_clear(&state->gbuffer);
 
@@ -6500,24 +6568,6 @@ static void render(ApplicationState* state) {
     //glDisable(GL_BLEND);
     POP_GPU_SECTION()
 
-    // The marks of the selection and the highlight: the selected and highlighted atoms drawn once, both, into a target
-    // of the size of the image made, unjittered, each fragment marked in view or behind the scene; put over the
-    // finished image as it is presented (postprocessing: Settings::marks). They are not part of the scene: changing them
-    // changes nothing in it, nor in its history.
-    const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
-    const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
-    if (draw_marks) {
-        PUSH_GPU_SECTION("Marks")
-        gbuffer_marks_begin(&state->gbuffer);
-        draw_representations_marks(state);
-        gbuffer_marks_end(&state->gbuffer);
-        POP_GPU_SECTION()
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
-    }
-
     // The transparent representations test the depth of the opaque ones, but do not write it
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -6554,19 +6604,6 @@ static void render(ApplicationState* state) {
     glEnable(GL_CULL_FACE);
 
     POP_GPU_SECTION()  // G-buffer
-
-    if (do_screenshot && state->screenshot.hide_gui) {
-        // Activate gbuffer to store screenshot
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    } else {
-        // Activate backbuffer
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
-        glDrawBuffer(GL_BACK);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
 
     PUSH_GPU_SECTION("Postprocessing")
     postprocess_pipeline::Settings settings = {};
@@ -6623,15 +6660,11 @@ static void render(ApplicationState* state) {
     inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
     inputs.history_prev = settings.taa.enabled ? state->gbuffer.tex.history_prev : 0;
 
-    if (draw_marks) {
-        // The highlight fades in, the outline is as wide on a display of more pixels per point
-        constexpr double HIGHLIGHT_FADE_IN_S = 0.12;
-        const float t = (float)CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
-        const int outline_step = MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
-        inputs.marks = state->gbuffer.tex.marks;
-        inputs.marks_group = state->gbuffer.tex.marks_group;
-        marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
-    }
+    // Kept, and presented after (render())
+    settings.present = false;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo_image);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, state->gbuffer.out_width, state->gbuffer.out_height);
 
     postprocess_pipeline::execute(inputs, settings, state->view.param);
     POP_GPU_SECTION()
@@ -6641,6 +6674,103 @@ static void render(ApplicationState* state) {
         uint32_t tmp = state->gbuffer.tex.history;
         state->gbuffer.tex.history = state->gbuffer.tex.history_prev;
         state->gbuffer.tex.history_prev = tmp;
+    }
+}
+
+static void render(ApplicationState* state) {
+    bool do_screenshot = !str_empty(state->screenshot.path_to_file);
+
+    // The image shown, and the G-buffer it is made from: the render scale of it, upscaled in post-processing.
+    // A screenshot is at its own resolution, in full.
+    uint32_t out_width  = state->app.framebuffer.width;
+    uint32_t out_height = state->app.framebuffer.height;
+    uint32_t gbuffer_target_width  = out_width;
+    uint32_t gbuffer_target_height = out_height;
+    if (do_screenshot) {
+        out_width  = gbuffer_target_width  = state->screenshot.res_x;
+        out_height = gbuffer_target_height = state->screenshot.res_y;
+    } else {
+        render_size(state, out_width, out_height, &gbuffer_target_width, &gbuffer_target_height);
+    }
+
+    // Resize Framebuffer
+    if ((state->gbuffer.width != gbuffer_target_width || state->gbuffer.height != gbuffer_target_height ||
+         state->gbuffer.out_width != out_width || state->gbuffer.out_height != out_height) &&
+        (gbuffer_target_width != 0 && gbuffer_target_height != 0 && out_width != 0 && out_height != 0)) {
+        gbuffer_init(&state->gbuffer, gbuffer_target_width, gbuffer_target_height, out_width, out_height);
+        postprocess_pipeline::initialize(state->gbuffer.width, state->gbuffer.height, out_width, out_height);
+        state->render.image_valid = false;
+    }
+
+    // The scene is made when something in it changed, until it settles; else the image kept is shown again. Always for a
+    // screenshot, and without lazy rendering.
+    auto& lazy = state->render;
+    const uint64_t key = scene_key(state);
+    if (key != lazy.scene_key || !lazy.image_valid || input_activity()) {
+        lazy.scene_key = key;
+        lazy.settle_frames = settle_frames(state);
+    }
+    const bool scene = do_screenshot || !state->settings.lazy_rendering || lazy.settle_frames > 0 || !lazy.image_valid;
+    lazy.history = (lazy.history << 1) | (scene ? 1 : 0);
+    if (scene) {
+        PUSH_GPU_SECTION("Scene")
+        render_scene(state, do_screenshot);
+        POP_GPU_SECTION()
+        lazy.image_valid = !do_screenshot;
+        if (lazy.settle_frames > 0) lazy.settle_frames -= 1;
+        // The meshed isosurfaces average frames until they have converged
+        if (!iso_mesh_converged) lazy.settle_frames = MAX(lazy.settle_frames, 1u);
+    }
+
+    // The marks of the selection and the highlight: the selected and highlighted atoms drawn once, both, into a target
+    // of the size of the image made, unjittered, each fragment marked in view or behind the scene (its depth, from the
+    // G-buffer); put over the image as it is presented. They are not part of the scene: changing them changes nothing in
+    // it, nor in its history. Drawn again when they change, or the scene was made.
+    const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
+    const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
+    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
+    if (draw_marks) {
+        uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
+        marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
+        marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
+        marks_key = marks_key ? marks_key : 1;
+        if (scene || marks_key != lazy.marks_key) {
+            PUSH_GPU_SECTION("Marks")
+            gbuffer_marks_begin(&state->gbuffer);
+            draw_representations_marks(state);
+            gbuffer_marks_end(&state->gbuffer);
+            POP_GPU_SECTION()
+            lazy.marks_key = marks_key;
+        }
+    } else {
+        lazy.marks_key = 0;
+    }
+
+    if (do_screenshot && state->screenshot.hide_gui) {
+        // Activate gbuffer to store screenshot
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
+        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    } else {
+        // Activate backbuffer
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
+        glDrawBuffer(GL_BACK);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+
+    {
+        PUSH_GPU_SECTION("Present")
+        postprocess_pipeline::Settings settings = {};
+        if (draw_marks) {
+            // The highlight fades in, the outline is as wide on a display of more pixels per point
+            constexpr double HIGHLIGHT_FADE_IN_S = 0.12;
+            const float t = (float)CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
+            const int outline_step = MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
+            marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
+        }
+        postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings);
+        POP_GPU_SECTION()
     }
 
     if (do_screenshot && state->screenshot.hide_gui) {
@@ -7029,9 +7159,10 @@ static void draw_representations_opaque(ApplicationState* state) {
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
-// the depth of what the representations draw (draw_representations_opaque)
+// the depth of what the representations draw (draw_representations_opaque): not what is highlighted or selected
 static uint64_t opaque_scene_hash(const ApplicationState* state) {
-    uint64_t h = md_hash64(&state->mold.gpu_buffers_version, sizeof(state->mold.gpu_buffers_version), state->representation.gl_version);
+    uint64_t h = md_hash64(&state->mold.gpu_scene_version, sizeof(state->mold.gpu_scene_version), state->representation.gl_version);
+    h = md_hash64(&state->representation.visibility_mask_hash, sizeof(state->representation.visibility_mask_hash), h);
     h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
     h = md_hash64(state->view.periodic_images, sizeof(state->view.periodic_images), h);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
@@ -7146,7 +7277,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         isomesh::target_free(&iso_mesh_target);
         return false;
     }
-    return isomesh::render(&iso_mesh_target, desc);
+    return isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
 }
 
 static bool draw_representations_transparent(ApplicationState* state) {
@@ -7156,6 +7287,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
     const size_t num_representations = md_array_size(state->representation.reps);
     if (num_representations == 0) return false;
 
+    iso_mesh_converged = true;
     if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
         return draw_representations_transparent_mesh(state);
     }

@@ -286,10 +286,19 @@ static double animate_interpolation_factor(double dt, double target_factor) {
     return target_factor * dt * INV_TARGET_DT;
 }
 
+// Within these of the target, an animation is at the target: the exponential approach would go on in the last bits
+// for ever, and a view that never stops moving is never still enough to keep (lazy rendering). Far below a pixel.
+static const double SNAP_SHIFT    = 1.0e-5;     // of the shift, in clip space (a pixel is about 1e-3)
+static const double SNAP_RELATIVE = 1.0e-5;     // of the position and the distance, relative to the distance
+static const double SNAP_ANGLE    = 1.0e-5;     // of the orientation, in radians (a pixel is about 1e-4 at most)
+
 void camera_animate_shift(vec2_t* current, vec2_t target, double dt, double target_factor) {
     ASSERT(current);
     const float t = (float)CLAMP(animate_interpolation_factor(dt, target_factor), 0.0, 1.0);
     *current = *current + (target - *current) * t;
+    if (fabs((double)current->x - (double)target.x) < SNAP_SHIFT && fabs((double)current->y - (double)target.y) < SNAP_SHIFT) {
+        *current = target;
+    }
 }
 
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor) {
@@ -301,6 +310,26 @@ void camera_animate(ViewTransform* current, const ViewTransform& target, double 
     quat_t ori[2] = {current->orientation, target.orientation};
     float dist[2] = {current->distance, target.distance};
     camera_interpolate_look_at(&current->position, &current->orientation, &current->distance, pos, ori, dist, interpolation_factor);
+
+    // At the target when within a fraction of a pixel of it. The angle between the orientations by the length of their
+    // difference (about half the angle), which floats resolve where the dot product does not.
+    const double scale = MAX((double)target.distance, 1.0e-3);
+    double d_pos = 0.0, dot = 0.0, d_ori_minus = 0.0, d_ori_plus = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const double d = (double)current->position.elem[i] - (double)target.position.elem[i];
+        d_pos += d * d;
+    }
+    for (int i = 0; i < 4; ++i) {
+        const double a = current->orientation.elem[i], b = target.orientation.elem[i];
+        dot += a * b;
+        d_ori_minus += (a - b) * (a - b);
+        d_ori_plus  += (a + b) * (a + b);
+    }
+    const double angle = 2.0 * sqrt(dot < 0.0 ? d_ori_plus : d_ori_minus);
+    if (sqrt(d_pos) < SNAP_RELATIVE * scale && fabs((double)current->distance - (double)target.distance) < SNAP_RELATIVE * scale &&
+        angle < SNAP_ANGLE) {
+        *current = target;
+    }
 }
 
 // -----------------------------------------------------------------------------------------------------------

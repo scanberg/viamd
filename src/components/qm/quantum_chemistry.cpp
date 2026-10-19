@@ -1049,6 +1049,23 @@ struct QuantumChemistry : viamd::EventHandler {
                 //draw_orb_volume(state);
                 break;
             }
+            case viamd::EventType_ViamdRenderKey: {
+                // What the critical points are drawn from (RenderTransparent): they are selected and highlighted
+                // by hovering and clicking them
+                ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
+                RenderKey* rk = (RenderKey*)e.payload;
+                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+                    const md_topo_extremum_graph_t& g = critical_points.simp_graph;
+                    const uint64_t counts[2] = {(uint64_t)g.num_vertices, (uint64_t)g.num_edges};
+                    uint64_t h = md_hash64(counts, sizeof(counts), rk->key);
+                    h = md_hash64(&g.vertices, sizeof(g.vertices), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.selection_mask), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.highlight_mask), h);
+                    h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
+                    rk->key = h;
+                }
+                break;
+            }
             case viamd::EventType_ViamdInteractionSurface: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_InteractionSurfaceEvent);
                 ASSERT(e.payload);

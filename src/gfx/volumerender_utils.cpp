@@ -384,14 +384,22 @@ static BlockGrid* block_grid_acquire(GLuint volume) {
     return slot;
 }
 
+// Of every announcement, which the version counter is not: it also counts the grids made as volumes are drawn
+static uint64_t data_changes = 0;
+
 void notify_data_changed(uint32_t volume_texture) {
     if (!volume_texture) return;
     block_grid_acquire(volume_texture)->version = ++iso.version_counter;
+    ++data_changes;
 }
 
 uint64_t data_version(uint32_t volume_texture) {
     const BlockGrid* g = block_grid_find(volume_texture);
     return g ? g->version : 0;
+}
+
+uint64_t data_version_any() {
+    return data_changes;
 }
 
 // The block grid of the volume, (re)built if its texels changed since. NULL when it cannot be made.

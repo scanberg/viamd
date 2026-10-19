@@ -15,6 +15,10 @@ enum : EventType {
 
 	EventType_ViamdRenderOpaque				= HASH_STR_LIT("VIAMD Render Opaque"),			// Render opaque geometry into GBuffer
 	EventType_ViamdRenderTransparent		= HASH_STR_LIT("VIAMD Render Transparent"),		// Render transparent geometry (Occurs after opaque render pass)
+	// Before the main view is rendered, every frame: a handler that draws into it (RenderOpaque, RenderTransparent) folds
+	// what it draws from into the key (payload RenderKey), as it changes without input (a hover, a result arriving). The
+	// view is made again when the key changes, and else shown as it was made (lazy rendering).
+	EventType_ViamdRenderKey				= HASH_STR_LIT("VIAMD Render Key"),
 
 	EventType_ViamdWindowDrawMenu			= HASH_STR_LIT("VIAMD Draw Window Menu"),		// Draw the menu
 
@@ -67,6 +71,7 @@ enum : EventPayloadType {
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
+	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
 };
 
 }

@@ -5918,6 +5918,14 @@ void script_vis_update(ApplicationState* state) {
     }
 }
 
+uint64_t script_vis_shown_key(const ApplicationState* state) {
+    ASSERT(state);
+    const auto& sc = state->script;
+    if (!sc.vis_shown || !sc.vis_result) return 0;
+    const uint64_t key = md_hash64(&sc.vis_result->state_key, sizeof(sc.vis_result->state_key), sc.vis_result->key);
+    return key ? key : 1;
+}
+
 str_t script_vis_value_text(ApplicationState* state) {
     ASSERT(state);
     const auto& sc = state->script;
