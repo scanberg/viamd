@@ -27,8 +27,9 @@ struct DensityVolume : viamd::EventHandler {
     bool show_window = false;
     bool enabled = false;
 
-    // The volume property shown, by path; empty for none. One at a time.
+    // The volume property shown, by path; empty for none. One at a time. Of an array of volumes, one of them: v[member + 1].
     SeriesKey volume_key = {};
+    uint32_t  volume_member = 0;
     ApplicationState* app = nullptr;
 
     md_allocator_i* arena = nullptr;
@@ -85,9 +86,11 @@ struct DensityVolume : viamd::EventHandler {
     bool dirty_rep = false;
     bool dirty_vol = false;
 
-    // How the volume shown stands against the script (series_state), and what it is called, as of the last update
+    // How the volume shown stands against the script (series_state), what it is called ("v", "v[2]"), and how many
+    // volumes its property has, as of the last update
     SeriesState volume_state = {};
     char volume_label[64] = "";
+    uint32_t volume_count = 0;
 
     struct {
         RepresentationType type = RepresentationType::BallAndStick;
@@ -122,6 +125,7 @@ struct DensityVolume : viamd::EventHandler {
 
     void reset_workspace_settings() {
         volume_key = {};
+        volume_member = 0;
         dvr.enabled = true;
         dvr.tf.alpha_scale = 1.0f;
         dvr.tf.colormap = DEFAULT_COLORMAP;
@@ -160,6 +164,9 @@ struct DensityVolume : viamd::EventHandler {
             if (volume_key.period != 0) {
                 viamd::write_int(state, STR_LIT("PropertyPeriod"), (int)volume_key.period);
             }
+            if (volume_member != 0) {
+                viamd::write_int(state, STR_LIT("PropertyMember"), (int)volume_member);
+            }
         }
         viamd::write_bool(state, STR_LIT("DvrEnabled"), dvr.enabled);
         viamd::write_int (state, STR_LIT("DvrColormap"), dvr.tf.colormap);
@@ -196,6 +203,7 @@ struct DensityVolume : viamd::EventHandler {
     void deserialize(viamd::deserialization_state_t& state) {
         SeriesSource source = SeriesSource_Script;
         uint32_t period = 0;
+        uint32_t member = 0;
         str_t path = {};
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
@@ -206,6 +214,9 @@ struct DensityVolume : viamd::EventHandler {
             } else if (str_eq_cstr(ident, "PropertyPeriod")) {
                 int i = 0;
                 if (viamd::extract_int(i, arg)) period = (uint32_t)MAX(i, 0);
+            } else if (str_eq_cstr(ident, "PropertyMember")) {
+                int i = 0;
+                if (viamd::extract_int(i, arg)) member = (uint32_t)MAX(i, 0);
             } else if (str_eq_cstr(ident, "PropertyPath")) {
                 viamd::extract_str(path, arg);
             } else if (str_eq_cstr(ident, "DvrEnabled")) {
@@ -266,6 +277,7 @@ struct DensityVolume : viamd::EventHandler {
         }
         if (!str_empty(path)) {
             volume_key = series_key(source, path, SeriesVariant_Values, period);
+            volume_member = member;
         }
         // Workspaces from before the two were exclusive can have both on: DVR wins, as it did by default
         if (dvr.enabled && iso.enabled) {
@@ -290,11 +302,16 @@ struct DensityVolume : viamd::EventHandler {
         // Resolved by path every frame: the evaluation's table is rebuilt when the script recompiles
         const bool selected = volume_key.path[0] != '\0';
         SeriesVolumeView vol_view = {};
-        const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key);
+        const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key, volume_member);
+        if (resolved) {
+            // Of an array which became shorter, the last of it
+            volume_member = vol_view.member;
+        }
 
         const float* vol_data = resolved ? vol_view.data : NULL;
         const uint32_t* vol_dim = vol_view.dim;
         volume_state = resolved ? vol_view.state : SeriesState{};
+        volume_count = resolved ? vol_view.count : 0;
         str_copy_to_char_buf(volume_label, sizeof(volume_label), str_from_cstr(vol_view.label));
         const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
@@ -326,6 +343,14 @@ struct DensityVolume : viamd::EventHandler {
             dirty_vol = true;
         }
 
+        // Another volume of the array: other data, and other reference structures
+        static uint32_t s_member = 0;
+        if (s_member != volume_member) {
+            s_member = volume_member;
+            dirty_vol = true;
+            dirty_rep = true;
+        }
+
         static double s_frame = 0;
         if (s_frame != state->animation.frame) {
             s_frame = state->animation.frame;
@@ -346,7 +371,8 @@ struct DensityVolume : viamd::EventHandler {
                         .sys = &state->mold.sys,
                         .state = &state->mold.state
                     };
-                    result = md_script_vis_eval_ref(&vis, vis_ref, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
+                    // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
+                    result = md_script_vis_eval_ref(&vis, vis_ref, (int)vol_view.member, &ctx, MD_SCRIPT_VISUALIZE_SDF);
                 }
 
                 if (result) {
@@ -471,11 +497,17 @@ struct DensityVolume : viamd::EventHandler {
                             key.period = period;
                             char label[96];
                             series_label(label, sizeof(label), state, key);
+                            const uint32_t count = series_volume_count(state, key);
+                            if (count > 1) {
+                                const size_t len = strnlen(label, sizeof(label));
+                                snprintf(label + len, sizeof(label) - len, " \xC2\xB7 %u volumes", count);
+                            }
                             const bool is_selected = series_key_equal(key, volume_key);
                             ImGui::PushID((int)period);
                             ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
                             if (ImGui::Selectable(label, is_selected)) {
                                 volume_key = is_selected ? SeriesKey{} : key;
+                                volume_member = 0;
                             }
                             if (ImGui::IsItemHovered()) {
                                 const str_t ident = series_script_ident(key);
@@ -495,6 +527,24 @@ struct DensityVolume : viamd::EventHandler {
 
                     if (candidate_count == 0) {
                         ImGui::Text("No volume properties available.");
+                    }
+
+                    if (volume_count > 1) {
+                        // Of an array of volumes ('sdf(...) in residue(1:n)'), one at a time, as the script names them
+                        ImGui::SeparatorText("Volume of the array");
+                        const str_t ident = series_script_ident(volume_key);
+                        int m = (int)volume_member + 1;
+                        char fmt[96];
+                        snprintf(fmt, sizeof(fmt), STR_FMT "[%%d] of %u", STR_ARG(ident), volume_count);
+                        ImGui::SetNextItemWidth(button_size.x);
+                        if (ImGui::SliderInt("##member", &m, 1, (int)volume_count, fmt, ImGuiSliderFlags_AlwaysClamp)) {
+                            volume_member = (uint32_t)(m - 1);
+                        }
+                        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                            // Whose volume it is: the reference structures of that one
+                            script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), (int)volume_member, MD_SCRIPT_VISUALIZE_DEFAULT);
+                            script_set_hovered_property(state, ident);
+                        }
                     }
                     ImGui::EndMenu();
                 }
@@ -692,6 +742,7 @@ struct DensityVolume : viamd::EventHandler {
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VOLUME_SERIES_DND)) {
                     volume_key = ((const SeriesDragPayload*)payload->Data)->key;
+                    volume_member = 0;
                 }
                 ImGui::EndDragDropTarget();
             }
@@ -763,9 +814,10 @@ struct DensityVolume : viamd::EventHandler {
             draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
-            if (volume_state.status != SeriesStatus_Current) {
-                // What is shown is not all of what the script says: how it stands, in the corner
-                char suffix[32], text[128], tip[160];
+            if (volume_state.status != SeriesStatus_Current || volume_count > 1) {
+                // What is shown is not all of what the script says: how it stands, in the corner. Of an array of
+                // volumes, which one it is ("v[2]") as well.
+                char suffix[32], text[128], tip[256];
                 series_state_suffix(suffix, sizeof(suffix), volume_state);
                 snprintf(text, sizeof(text), "%s%s", volume_label, suffix);
                 const ImVec2 pad = ImGui::GetStyle().FramePadding;
@@ -776,6 +828,11 @@ struct DensityVolume : viamd::EventHandler {
                 draw_list->AddText(p0 + pad, IM_COL32(255, 255, 255, 255), text);
                 if (ImGui::IsMouseHoveringRect(p0, p1)) {
                     series_state_describe(tip, sizeof(tip), volume_state);
+                    if (volume_count > 1) {
+                        const size_t len = strnlen(tip, sizeof(tip));
+                        snprintf(tip + len, sizeof(tip) - len, "%sVolume %u of the %u in the array: another is picked under Property",
+                                 len ? "\n" : "", volume_member + 1, volume_count);
+                    }
                     ImGui::SetTooltip("%s", tip);
                 }
             }

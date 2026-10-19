@@ -5713,7 +5713,8 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             .sys = &data.mold.sys,
             .state = &data.mold.state,
         };
-        result = md_script_vis_eval_ref(&vis, vis_ref, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
+        // The structures of the volume exported: of an array, those of its member
+        result = md_script_vis_eval_ref(&vis, vis_ref, (int)volume.member, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
     }
 
     if (result == true) {
@@ -5819,6 +5820,7 @@ static void draw_property_export_window(ApplicationState* data) {
         static SeriesKey selected = {};
         static int table_format  = 0;
         static int volume_format = 0;
+        static int volume_member = 0;   // of an array of volumes; -1 for each of them, in a file of its own
         static int bins_exp      = 7;   // 128 bins
 
         if (task_system::task_is_running(data->tasks.evaluate)) {
@@ -5925,6 +5927,39 @@ static void draw_property_export_window(ApplicationState* data) {
                 ImGui::EndCombo();
             }
             file_extension = volume_formats[volume_format].ext;
+
+            // Of an array of volumes ('sdf(...) in residue(1:n)'), one as the script names it, or each to a file of its
+            // own: each volume is about its own reference structures, which go along in the file
+            const uint32_t count = selected_valid ? series_volume_count(data, selected) : 0;
+            if (count > 1) {
+                const str_t ident = series_script_ident(selected);
+                volume_member = CLAMP(volume_member, -1, (int)count - 1);
+                char preview[96];
+                if (volume_member < 0) {
+                    snprintf(preview, sizeof(preview), "All, one file each");
+                } else {
+                    snprintf(preview, sizeof(preview), STR_FMT "[%d]", STR_ARG(ident), volume_member + 1);
+                }
+                if (ImGui::BeginCombo("Volume", preview)) {
+                    if (ImGui::Selectable("All, one file each", volume_member < 0)) {
+                        volume_member = -1;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("'name.cube' is written as 'name_1.cube' to 'name_%u.cube'", count);
+                    }
+                    for (uint32_t m = 0; m < count; ++m) {
+                        char item[96];
+                        snprintf(item, sizeof(item), STR_FMT "[%u]", STR_ARG(ident), m + 1);
+                        if (ImGui::Selectable(item, volume_member == (int)m)) {
+                            volume_member = (int)m;
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            script_visualize_ref(data, md_script_ir_property_vis_ref(data->script.eval_ir, ident), (int)m, MD_SCRIPT_VISUALIZE_DEFAULT);
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
         } else {
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
                 for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
@@ -5949,11 +5984,30 @@ static void draw_property_export_window(ApplicationState* data) {
             series_label(label, sizeof(label), data, selected);
 
             if (kind == ExportKind_Volume) {
-                SeriesVolumeView view;
-                if (!series_resolve_volume(&view, data, selected)) {
-                    VIAMD_LOG_ERROR("'%s' has no volume to export", label);
-                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view, path)) {
-                    VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
+                // One volume, or of an array each to a file of its own: 'name.cube' as 'name_1.cube', 'name_2.cube', ...
+                const uint32_t count = series_volume_count(data, selected);
+                const bool each = count > 1 && volume_member < 0;
+                const uint32_t beg = each ? 0 : (uint32_t)MAX(volume_member, 0);
+                const uint32_t end = each ? count : beg + 1;
+                str_t stem = path;
+                str_t ext  = file_extension;
+                size_t sep;
+                if (each && extract_ext(&ext, path) && !str_find_char(&sep, ext, '/') && !str_find_char(&sep, ext, '\\')) {
+                    extract_file_path_without_ext(&stem, path);
+                } else {
+                    ext = file_extension;
+                }
+                for (uint32_t m = beg; m < end; ++m) {
+                    SeriesVolumeView view;
+                    const str_t file = each ? str_printf(alloc, STR_FMT "_%u." STR_FMT, STR_ARG(stem), m + 1, STR_ARG(ext)) : path;
+                    if (!series_resolve_volume(&view, data, selected, m)) {
+                        VIAMD_LOG_ERROR("'%s' has no volume to export", label);
+                        break;
+                    }
+                    if (!str_eq(file_extension, STR_LIT("cube")) || !export_cube(*data, view, file)) {
+                        break;
+                    }
+                    VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", view.label, STR_ARG(file));
                 }
             } else {
                 // Columns in the units the plots show them in, so a column and its axis label agree

@@ -341,17 +341,25 @@ static inline double series_histogram_index_at(const SeriesHistogramView& v, dou
 
 // ## Volumes
 
-// A script property evaluated as a volume (rank 3), for the density volume and the export
+// A script property evaluated as a volume, for the density volume and the export: one volume, published {x, y, z}, or an
+// array of them ('sdf(...) in residue(1:n)'), published {n, x, y, z}. Of an array, one member is viewed at a time, its
+// reference structures visualized with subidx member (md_script_vis_eval_ref), as the script editor names it: v[member + 1].
 struct SeriesVolumeView {
-    const float* data = nullptr;    // dim[0] * dim[1] * dim[2] values, as the script publishes them. Valid this frame.
+    const float* data = nullptr;    // dim[0] * dim[1] * dim[2] values of the member, as the script publishes them. Valid this frame.
     uint32_t dim[3] = {};
-    uint64_t version = 0;           // of the data: changes whenever it does
-    char  label[64] = "";
+    uint32_t count = 0;             // the volumes of the property: 1 for a single volume
+    uint32_t member = 0;            // which of them data is, [0, count)
+    uint64_t version = 0;           // of the data of the property: changes whenever it does, not with the member
+    char  label[64] = "";           // "v", "v[2]" of an array, "v[2] (Production)"
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
     SeriesState state = {};
 };
-bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key);
+// member is clamped to the volumes there are (out->member is the one resolved)
+bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key, uint32_t member = 0);
+// The volumes of the property at key without resolving it (nothing is asked of a period's slot): 1 for a volume, n for an
+// array of n, 0 when none is published
+uint32_t series_volume_count(const ApplicationState* app, const SeriesKey& key);
 
 // ## Listing script properties
 
