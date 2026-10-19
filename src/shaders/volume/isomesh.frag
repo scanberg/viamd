@@ -1,26 +1,33 @@
 #version 410 core
 
 // Isosurface meshes with stochastic transparency (Enderton et al., "Stochastic Transparency", 2010) behind two
-// exactly peeled layers, into a multisampled target; the passes of one frame selected by u_pass
+// exactly peeled layers, a sample per pixel; the passes of a frame are programs of their own (ISOMESH_PASS)
 // (isomesh_utils.cpp):
 //
 //   PASS_TRANSMITTANCE  every fragment, no depth test: sum log(1 - opacity) (the exact coverage of all of them
 //                       together) and the optical depth of the regions they enclose (below), additively
-//   PASS_PEEL0          the nearest fragment of every sample (depth test), and its opacity
-//   PASS_PEEL1          the nearest one behind that (per sample), and its opacity
-//   PASS_DEPTH          the stochastic depth of the fragments behind those two: each covers a sample with
+//                       (ISOMESH_TRANSMITTANCE: the opacity alone, not the colour)
+//   PASS_PEEL0          the nearest fragment of every pixel (depth test), and its opacity
+//   PASS_PEEL1          the nearest one behind that, and its opacity
+//   PASS_DEPTH          the stochastic depth of the fragments behind those two: each covers the pixel with
 //                       probability = its opacity, and the depth test keeps the nearest covering one
-//   PASS_ACCUMULATE     every fragment adds its radiance times its visibility in each sample: 1 for the
-//                       nearest, 1 - o0 for the second, (1 - o0)(1 - o1) where it is not behind the stochastic
-//                       depth (test LEQUAL) for the rest
+//   PASS_ACCUMULATE     every fragment adds its radiance times its visibility: 1 for the nearest, 1 - o0 for the
+//                       second, (1 - o0)(1 - o1) where it is not behind the stochastic depth (test LEQUAL) for
+//                       the rest
 //
 // The two nearest layers and the one behind them are exact; only the visibility of the layers behind those
 // is estimated, from the layers in between. Without the peeling the nearest layer alone is exact, and where
 // surfaces lie behind nearer ones (the back of a lobe, a lobe behind another) the estimate of their
 // visibility depends on two or more random thresholds: the speckle that takes long to converge. Simulated per
-// pixel, four layers of opacity ~0.8: the error after 64 frames goes from ~2/255 to ~0.04/255. PASS_PEEL1,
-// PASS_DEPTH and PASS_ACCUMULATE run per sample (sample shading), comparing their depth with the peeled ones;
-// every pass writes the depth it compares (gl_FragDepth), so a fragment always finds its own.
+// pixel (the thresholds below), four layers of opacity ~0.8: the error after 128 frames goes from ~3/255 to
+// ~0.1/255.
+//
+// A sample per pixel, in plain textures: the depth the passes compare with the peeled ones is the rasterizer's,
+// which with one sample is the pixel's, so nothing writes gl_FragDepth and the depth tests run before the shading.
+// Each pass is a program of its own (ISOMESH_PASS), without the others' discards and registers. On an M4 Pro the
+// four passes cost a tenth of what they did per sample into a multisampled target of two, in one program writing
+// the depth it compared (under sample shading Apple's OpenGL gives gl_FragCoord.z at the pixel's centre, not at
+// the sample the depth buffer holds). The edges are antialiased by the mean of the frames (isomesh_utils.h).
 //
 // Every fragment is shaded like a hit of the isosurface raycaster (isosurface.frag, the model of the deferred
 // compose pass): a surface reflects L = a * diffuse + specular and lets 1 - opacity through, opacity =
@@ -30,9 +37,9 @@
 // surface is seen; isomesh_accumulate.frag scales the sum to the exact coverage (Enderton's alpha correction)
 // and averages the frames, which converges to the composite.
 //
-// The coverage thresholds (PASS_DEPTH): stratified over the samples of a pixel (u + i/n for sample i), u from a
-// blue noise threshold map (a void and cluster ordering, isomesh_utils.cpp) tiled over the screen, read at an
-// offset per frame (the R2 sequence, so a pixel goes through the values of the map evenly) and per layer. A layer is a
+// The coverage thresholds (PASS_DEPTH): from a blue noise threshold map (a void and cluster ordering,
+// isomesh_utils.cpp) tiled over the screen, read at an offset per frame (the R2 sequence, so a pixel goes through
+// the values of the map evenly) and per layer. A layer is a
 // triangle - the finest there is, so two sheets that overlap in a pixel never share their thresholds (the
 // draws told apart by u_surface_id, as gl_PrimitiveID starts from 0 in each) - and its offset is drawn again
 // every few frames, so no two layers stay at one relative offset for long. Thresholds correlated between the
@@ -53,9 +60,9 @@
 // the field takes given values are painted into its colour before it is shaded, so every pass sees the same
 // opacity. Their width in pixels comes from ray differentials, as in the raycaster (isosurface.frag): the rays
 // of the next pixel along x and y meet the tangent plane, and the field changes along that by its gradient
-// along the surface, which the vertices carry (v_grad). No screen space derivatives: this shader runs per
-// sample and depends on discard and gl_FragDepth in every pass, and on Metal (Apple's OpenGL) a shader that
-// takes derivatives does not stop at a discard, the invocation carries on for the derivatives' sake.
+// along the surface, which the vertices carry (v_grad). No screen space derivatives: the passes depend on discard,
+// and on Metal (Apple's OpenGL) a shader that takes derivatives does not stop at a discard, the invocation carries on
+// for the derivatives' sake.
 
 in vec3 v_world;
 in vec3 v_view_pos;
@@ -85,15 +92,18 @@ uniform float u_isoline_width;
 uniform sampler2D u_tex_depth;      // the opaque scene, single sampled
 uniform int   u_use_depth;
 
-uniform int   u_pass;               // PASS_*
 uniform uint  u_frame;              // index of the frame being accumulated
-uniform int   u_samples;            // samples per pixel of the target
 uniform uint  u_surface_id;         // tells the draws apart (gl_PrimitiveID starts from 0 in each)
 
-uniform sampler2DMS u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
-uniform sampler2DMS u_tex_peel_depth0;  // the depth of the nearest layer (PASS_PEEL0)
-uniform sampler2DMS u_tex_peel_depth1;  // and of the second (PASS_PEEL1)
-uniform sampler2DMS u_tex_peel_opacity; // their opacities (r, g)
+// A program per pass: ISOMESH_TRANSMITTANCE, or ISOMESH_PASS the number of one of the others (PASS_*)
+#if !defined(ISOMESH_TRANSMITTANCE) && !defined(ISOMESH_PASS)
+#error "isomesh.frag is built for a pass: ISOMESH_TRANSMITTANCE or ISOMESH_PASS"
+#endif
+
+uniform sampler2D   u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
+uniform sampler2D   u_tex_peel_depth0;  // the depth of the nearest layer (PASS_PEEL0)
+uniform sampler2D   u_tex_peel_depth1;  // and of the second (PASS_PEEL1)
+uniform sampler2D   u_tex_peel_opacity; // their opacities (r, g)
 uniform float u_tau;                // optical density of the surface times the extinction per world unit
 uniform float u_od_ref;             // distance subtracted from d, so the sums stay small (half floats)
 uniform mat4  u_inv_proj;
@@ -114,8 +124,11 @@ uniform float u_basic_specular;
 uniform float u_linear_colors;
 uniform float u_light_strength;
 
+#ifdef ISOMESH_TRANSMITTANCE
+layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth
+#else
 layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity
-layout(location = 1) out vec4 out_tod;      // PASS_TRANSMITTANCE: log(1 - opacity), optical depth
+#endif
 
 const int PASS_TRANSMITTANCE = 0;
 const int PASS_PEEL0         = 1;
@@ -312,6 +325,48 @@ vec4 apply_isolines(vec4 c, float f, float g) {
     return c;
 }
 
+#ifdef ISOMESH_TRANSMITTANCE
+// The opacity alone, for the transmittance: the alpha of surface_color with apply_isolines' lines on it, and the
+// Fresnel term of shade_surface
+
+// The cover apply_isolines gives the lines (their rims), without their colours
+float isoline_cover(float f, float g) {
+    const float RIM = 2.0;              // as apply_isolines'
+    float inv_g = 1.0 / max(g, 1.0e-30);
+    float w = u_isoline_width + RIM;
+    float cover = 0.0;
+    for (int i = 0; i < u_isoline_count; ++i) {
+        cover = max(cover, isoline_coverage(abs(f - u_isoline_values[i]) * inv_g, w));
+    }
+    if (u_isoline_hover != 0) {
+        cover = max(cover, isoline_coverage(abs(f - u_isoline_hover_value) * inv_g, w));
+    }
+    return cover;
+}
+
+float surface_alpha(vec3 N) {
+    float a = u_color.a;
+    if (u_coloring == 1) {
+        vec3 p = (u_world_to_volume * vec4(v_world, 1.0)).xyz;
+        a *= texture(u_tex_color_volume, p).a;
+    }
+    if (u_coloring == 3 && (u_isoline_count > 0 || u_isoline_hover != 0)) {
+        a = mix(a, 1.0, isoline_cover(v_value, isoline_change_per_pixel(v_view_pos, N, v_grad)));
+    }
+    return a;
+}
+
+float surface_opacity(float alpha, vec3 N, vec3 V) {
+    float a = clamp(alpha, 0.0, 1.0);
+    if (u_basic > 0.5) return a;
+    float roughness = clamp(u_roughness, 0.04, 1.0);
+    float F0 = clamp(u_F0, 0.0, 1.0);
+    vec2  ab = EnvBRDFApprox(clamp(dot(N, V), 0.0, 1.0), roughness);
+    float Fe = F0 * ab.x + ab.y;
+    return 1.0 - (1.0 - a) * (1.0 - Fe);
+}
+#endif
+
 uint pcg(uint v) {
     uint s = v * 747796405u + 2891336453u;
     uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
@@ -324,23 +379,35 @@ float ray_distance(vec3 p) {
 }
 
 void main() {
-    // The depth the depth tests see is the one the passes compare with the peeled depths: written, not left to
-    // the rasterizer. Under sample shading gl_FragCoord.z is not everywhere the depth at the sample - Apple's
-    // OpenGL (on Metal) gives the depth at the pixel's centre, while the depth buffer holds the sample's - and a
-    // fragment then misses its own peeled depth by its slope times the offset of the sample, far beyond
-    // PEEL_EPS: the layers of whole triangles misclassified, bands of them where the slope turns. Where
-    // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
-    gl_FragDepth = gl_FragCoord.z;
-
+#ifdef ISOMESH_TRANSMITTANCE
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
     bool  occluded = gl_FragCoord.z >= z_opaque;
-    if (occluded && u_pass != PASS_TRANSMITTANCE) discard;
+
+    // The opacity of every fragment, outside the branch below: the colour volume is sampled with derivatives
+    vec3 V = normalize(-v_view_pos);
+    vec3 N = normalize(v_view_nrm);
+    if (dot(N, V) < 0.0) N = -N;
+    float opacity = clamp(surface_opacity(surface_alpha(N), N, V), 0.0, MAX_OPACITY);
+
+    // Behind the opaque scene: hides nothing, and the ray through the enclosed regions ends at the scene
+    vec3 p = v_view_pos;
+    if (occluded) {
+        vec4 v = u_inv_proj * vec4(gl_FragCoord.xy * u_inv_res * 2.0 - 1.0, z_opaque * 2.0 - 1.0, 1.0);
+        p = v.xyz / v.w;
+    }
+    float od = (gl_FrontFacing ? -u_tau : u_tau) * (ray_distance(p) - u_od_ref);
+    out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), od, 0.0, 0.0);
+#else
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
+    if (gl_FragCoord.z >= z_opaque) discard;       // behind the opaque scene
 
     vec3 V = normalize(-v_view_pos);
     vec3 N = normalize(v_view_nrm);
     if (dot(N, V) < 0.0) N = -N;
 
+    // The passes before PASS_ACCUMULATE use the opacity alone: the compiler leaves the rest out of their programs
     vec4  c = surface_color();
     if (u_coloring == 3 && (u_isoline_count > 0 || u_isoline_hover != 0)) {
         c = apply_isolines(c, v_value, isoline_change_per_pixel(v_view_pos, N, v_grad));
@@ -349,55 +416,43 @@ void main() {
     float opacity;
     shade_surface(c.rgb, c.a, N, V, L, opacity);
     opacity = clamp(opacity, 0.0, MAX_OPACITY);
-
-    if (u_pass == PASS_TRANSMITTANCE) {
-        // Behind the opaque scene: hides nothing, and the ray through the enclosed regions ends at the scene
-        vec3 p = v_view_pos;
-        if (occluded) {
-            vec4 v = u_inv_proj * vec4(gl_FragCoord.xy * u_inv_res * 2.0 - 1.0, z_opaque * 2.0 - 1.0, 1.0);
-            p = v.xyz / v.w;
-        }
-        float od = (gl_FrontFacing ? -u_tau : u_tau) * (ray_distance(p) - u_od_ref);
-        out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), od, 0.0, 0.0);
-        return;
-    }
-
     if (opacity <= 0.0) discard;
 
-    if (u_pass == PASS_PEEL0) {
+    if (ISOMESH_PASS == PASS_PEEL0) {
         out_color = vec4(opacity);
         return;
     }
 
-    // Per sample from here on
+    // The peeled layers of the pixel from here on
     float z  = gl_FragCoord.z;
-    float z0 = texelFetch(u_tex_peel_depth0, px, gl_SampleID).r;
-    if (u_pass == PASS_PEEL1) {
+    float z0 = texelFetch(u_tex_peel_depth0, px, 0).r;
+    if (ISOMESH_PASS == PASS_PEEL1) {
         if (z <= z0 + PEEL_EPS) discard;
         out_color = vec4(opacity);
         return;
     }
-    float z1 = texelFetch(u_tex_peel_depth1, px, gl_SampleID).r;
+    float z1 = texelFetch(u_tex_peel_depth1, px, 0).r;
 
-    if (u_pass == PASS_DEPTH) {
+    if (ISOMESH_PASS == PASS_DEPTH) {
         if (z <= z1 + PEEL_EPS) discard;
-        // stratified thresholds over the samples, from the blue noise at an offset per layer and frame
+        // the threshold, from the blue noise at an offset per layer and frame
         uint  layer = pcg(pcg(uint(gl_PrimitiveID)) ^ (u_surface_id * 0x9E3779B9u));
         uint  shift = pcg(layer ^ ((u_frame / LAYER_FRAMES + 1u) * 0x68E31DA4u));
         vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(u_frame) + 0.5);
         ivec2 q     = (px + ivec2(int(shift & 0xFFFFu), int(shift >> 16u)) + ivec2(r2 * float(BLUE_NOISE_SIZE))) & (BLUE_NOISE_SIZE - 1);
         float u0    = texelFetch(u_tex_blue_noise, q, 0).r;
-        if (fract(u0 + float(gl_SampleID) / float(u_samples)) >= opacity) discard;
+        if (u0 >= opacity) discard;
         out_color = vec4(0.0);
         return;
     }
 
-    // PASS_ACCUMULATE: the transmittance in front of this fragment in this sample
-    vec2  o01 = texelFetch(u_tex_peel_opacity, px, gl_SampleID).rg;
+    // PASS_ACCUMULATE: the transmittance in front of this fragment
+    vec2  o01 = texelFetch(u_tex_peel_opacity, px, 0).rg;
     float vis = (z <= z0 + PEEL_EPS) ? 1.0 : (z <= z1 + PEEL_EPS) ? (1.0 - o01.r) : (1.0 - o01.r) * (1.0 - o01.g);
     // Seen from inside (the back faces): behind the absorption of what the surfaces enclose
     if (!gl_FrontFacing) {
-        L *= exp(-max(texelFetch(u_tex_tod, px, gl_SampleID).g, 0.0));
+        L *= exp(-max(texelFetch(u_tex_tod, px, 0).g, 0.0));
     }
     out_color = vec4(L, opacity) * vis;
+#endif
 }

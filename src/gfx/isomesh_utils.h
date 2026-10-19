@@ -2,7 +2,7 @@
 
 // ISOSURFACE MESHES
 // The alternative to raycasting the isosurfaces of a volume (volume::render_isosurfaces): triangle meshes
-// extracted from the field itself (md_gto_iso), drawn with stochastic transparency into a multisampled target
+// extracted from the field itself (md_gto_iso), drawn with stochastic transparency a sample per pixel at a time
 // and averaged over frames until the image has converged, when it is kept as it is until something changes.
 //
 // The result is what the raycaster gives: premultiplied linear radiance with coverage in alpha, blended over
@@ -17,9 +17,11 @@
 // until 'converged'.
 //
 // A frame is five passes over the meshes (isomesh.frag: the transmittance, two layers peeled exactly, the
-// stochastic depth behind them, the radiance times visibility; the last four per sample) into a multisampled
-// target, one resolving pass into the mean and one composite. A Target holds 28 bytes per sample and 24 per
-// pixel of history; the samples per pixel (4, 2 or 1) are as many as fit MEMORY_BUDGET.
+// stochastic depth behind them, the radiance times visibility), each a program of its own, into a target of a sample
+// per pixel, and one pass into the mean that also puts it over the caller's target (once the mean is kept, that
+// alone), both over the pixels the surfaces' bounds cover. The mean antialiases the edges: it is of the caller's
+// jittered projections, or when there are none (proj as proj_no_jitter) of a jitter of its own over the pixel. A
+// Target holds 28 bytes per pixel for the frame and 24 for the history.
 
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
@@ -30,12 +32,9 @@
 
 namespace isomesh {
 
-// Frames averaged before the image is kept as it is
-static constexpr uint32_t MAX_FRAMES = 64;
-
-// Bytes of multisampled storage a Target may take: 4 samples per pixel up to about 1920 x 1200, 2 up to about
-// 2560 x 1600, 1 above
-static constexpr size_t MEMORY_BUDGET = (size_t)272 << 20;
+// Frames averaged before the image is kept as it is. With a sample per pixel a frame is about twice as noisy as one of
+// two samples was, and (on an M4 Pro) a fifth of its time: 128 rather than 64
+static constexpr uint32_t MAX_FRAMES = 128;
 
 void initialize();
 void shutdown();
@@ -69,24 +68,24 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
 void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count);
 void mesh_free(Mesh* mesh);
 
-// What one view keeps between frames: the multisampled frame, the running mean, and the state it belongs to
+// What one view keeps between frames: the frame, the running mean, and the state it belongs to
 struct Target {
     uint32_t width = 0, height = 0;
-    uint32_t samples = 0;
-    uint32_t tex_ms_color = 0;      // radiance and opacity times visibility (RGBA16F)
-    uint32_t tex_ms_tod   = 0;      // log transmittance and optical depth (RG16F)
-    uint32_t tex_ms_depth = 0;      // the stochastic depth
-    uint32_t tex_ms_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
-    uint32_t tex_ms_peel_opacity  = 0;    // and their opacities (RG16F)
-    uint32_t fbo_color = 0;         // tex_ms_color + tex_ms_depth
-    uint32_t fbo_tod   = 0;         // tex_ms_tod
-    uint32_t fbo_peel[2] = {};      // tex_ms_peel_opacity + tex_ms_peel_depth[i]
+    uint32_t tex_frame_color = 0;      // radiance and opacity times visibility (RGBA16F)
+    uint32_t tex_frame_tod   = 0;      // log transmittance and optical depth (RG16F)
+    uint32_t tex_frame_depth = 0;      // the stochastic depth
+    uint32_t tex_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
+    uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F)
+    uint32_t fbo_color = 0;         // tex_frame_color + tex_frame_depth
+    uint32_t fbo_tod   = 0;         // tex_frame_tod
+    uint32_t fbo_peel[2] = {};      // tex_peel_opacity + tex_peel_depth[i]
     uint32_t fbo       = 0;         // the history being written
     uint32_t tex_history_color[2] = {};
     uint32_t tex_history_t[2]     = {};
     uint32_t cur = 0;           // which history holds the mean
     uint32_t frame = 0;         // frames in the mean
     uint64_t hash = 0;          // of what the mean is of
+    uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
 };
 
 void target_free(Target* target);

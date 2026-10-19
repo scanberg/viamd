@@ -5044,8 +5044,8 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
                       (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
                       (unsigned)state->gbuffer.width, (unsigned)state->gbuffer.height);
     if (iso_mesh_target.width) {
-        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %u samples per pixel, ", iso_mesh_target.width,
-                          iso_mesh_target.height, iso_mesh_target.samples);
+        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %llu triangles, ", iso_mesh_target.width,
+                          iso_mesh_target.height, (unsigned long long)iso_mesh_target.triangles);
         if (state->profiler_keep_isomeshes) {
             md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
         } else {
