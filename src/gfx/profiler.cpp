@@ -5,12 +5,15 @@
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_writer.h>
 
 #include <imgui.h>
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 namespace profiler {
 
@@ -83,6 +86,8 @@ static struct {
     int    window_start = 0;       // the frame the current window began in
     int    cpu_frames = 0;         // frames in the current window
     int    gpu_frames = 0;         // frames whose GPU times went into it
+    int    published_cpu_frames = 0;   // the same of the window published
+    int    published_gpu_frames = 0;
     bool   warned = false;
 } g;
 
@@ -205,6 +210,8 @@ static void publish() {
         const Node& n = g.nodes[i];
         if (n.parent >= 0) g.nodes[n.parent].gpu_ms += n.gpu_ms;
     }
+    g.published_cpu_frames = g.cpu_frames;
+    g.published_gpu_frames = g.gpu_frames;
     g.window_start = g.frame;
     g.cpu_frames = 0;
     g.gpu_frames = 0;
@@ -407,6 +414,72 @@ void draw_summary() {
         if (n.shown) ImGui::Text("  %-22s GPU %7.3f ms   CPU %7.3f ms", n.name, n.gpu_ms, n.cpu_ms);
     }
     ImGui::TextDisabled("Every section: Windows > Profiler");
+}
+
+// EXPORT
+
+// A field of a CSV row, quoted when it has to be
+static void write_csv_field(md_writer_i* w, const char* s) {
+    if (!strpbrk(s, ",\"\r\n")) {
+        md_write_cstr(w, s);
+        return;
+    }
+    md_write_char(w, '"');
+    for (const char* c = s; *c; ++c) {
+        if (*c == '"') md_write_char(w, '"');
+        md_write_char(w, *c);
+    }
+    md_write_char(w, '"');
+}
+
+// The section and those shown within it, in the order of the table
+static void write_csv_rows(md_writer_i* w, int i) {
+    const Node& n = g.nodes[i];
+    // Its path: the names from the root, written before the rows within it are (so one buffer does for all of them)
+    static char path[MAX_DEPTH * NAME_LEN];
+    int chain[MAX_DEPTH + 1];
+    int count = 0;
+    for (int p = i; p >= 0 && count < (int)ARRAY_SIZE(chain); p = g.nodes[p].parent) chain[count++] = p;
+    size_t len = 0;
+    path[0] = '\0';
+    for (int k = count - 1; k >= 0 && len + 1 < sizeof(path); --k) {
+        const int m = snprintf(path + len, sizeof(path) - len, k == count - 1 ? "%s" : "/%s", g.nodes[chain[k]].name);
+        if (m < 0) break;
+        len = MIN(len + (size_t)m, sizeof(path) - 1);
+    }
+    write_csv_field(w, path);
+    md_writef(w, ",%.4f,%.4f,%.4f,%.2f\n", n.gpu_ms, n.gpu_self_ms, n.cpu_ms, n.calls);
+    for (int c = n.first_child; c >= 0; c = g.nodes[c].next_sibling) {
+        if (g.nodes[c].shown) write_csv_rows(w, c);
+    }
+}
+
+void write_csv(md_writer_i* w, const char* info) {
+    char when[64] = "";
+    const time_t t = time(nullptr);
+    if (const struct tm* tm = localtime(&t)) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", tm);
+    const char* vendor   = (const char*)glGetString(GL_VENDOR);
+    const char* renderer = (const char*)glGetString(GL_RENDERER);
+    const char* version  = (const char*)glGetString(GL_VERSION);
+
+    md_writef(w, "# VIAMD profiler, %s\n", when);
+#ifdef NDEBUG
+    md_write_cstr(w, "# build: NDEBUG\n");
+#else
+    md_write_cstr(w, "# build: debug (asserts on)\n");
+#endif
+    md_writef(w, "# GL: %s | %s | %s\n", vendor ? vendor : "?", renderer ? renderer : "?", version ? version : "?");
+    md_writef(w, "# per frame, averaged over %d frames (the GPU's over %d of them)\n", g.published_cpu_frames, g.published_gpu_frames);
+    for (const char* line = info; line && *line;) {
+        const char* end = strchr(line, '\n');
+        const size_t n = end ? (size_t)(end - line) : strlen(line);
+        md_write_cstr(w, "# ");
+        md_write(w, line, n);
+        md_write_char(w, '\n');
+        line = end ? end + 1 : line + n;
+    }
+    md_write_cstr(w, "section,gpu_ms,gpu_self_ms,cpu_ms,calls\n");
+    if (g.node_count && g.nodes[0].shown) write_csv_rows(w, 0);
 }
 
 }  // namespace profiler
