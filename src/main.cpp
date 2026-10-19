@@ -324,6 +324,10 @@ static void update_view_param(ApplicationState* state);
 // The lowest render scale offered: below half, too little of the detail is left to rebuild
 static constexpr float RENDER_SCALE_MIN = 0.5f;
 
+// The range of the shadows' softness, the light's angular radius (degrees): from about the sun's to a large softbox's
+static constexpr float SHADOW_SOFTNESS_MIN = 0.5f;
+static constexpr float SHADOW_SOFTNESS_MAX = 20.0f;
+
 // The G-buffer's size for an image shown of out_w x out_h: the render scale of each side, at least a pixel
 static void render_size(const ApplicationState* state, uint32_t out_w, uint32_t out_h, uint32_t* w, uint32_t* h) {
     const float s = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
@@ -500,6 +504,7 @@ static void apply_visual_settings(void* user_data) {
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
     if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
     state->settings.render_scale = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
+    v.shadows.softness = CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
@@ -647,6 +652,8 @@ int main(int argc, char** argv) {
     state.app.window.vsync = true;
     app_settings::bind(STR_LIT("vsync"), &state.app.window.vsync);
     app_settings::bind(STR_LIT("render_scale"), &state.settings.render_scale);
+    app_settings::bind(STR_LIT("shadows"), &state.visuals.shadows.enabled);
+    app_settings::bind(STR_LIT("shadows_softness"), &state.visuals.shadows.softness);
     app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
@@ -1765,6 +1772,28 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::color("##background", data->visuals.background.color.elem);
                 prop::section_end();
             }
+
+            // The visibilities of the two lights: the shadows (of the light), the ambient occlusion (of the surroundings)
+            bool shadows_toggled = false;
+            if (prop::section_toggle("Shadows", &data->visuals.shadows.enabled, &shadows_toggled, false,
+                                     "Shadows of the directional light: darken cavities and what lies behind other parts, where the light is blocked.\n"
+                                     "Found in what is on screen (screen space): what is off screen, or hidden behind a surface, casts none.")) {
+                // Its GPU time in the main view
+                const float shadow_ms = profiler::gpu_ms("Shadows", "Render");
+                ms_text[0] = '\0';
+                if (shadow_ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", shadow_ms);
+                prop::row("softness", "The size of the light, as its angular radius. A larger light casts softer shadows,\n"
+                                      "whose edges blur more the further they fall from what casts them.");
+                ImGui::SetNextItemWidth(prop::control_width_before(ms_text));
+                machine_dirty |= ImGui::SliderFloat("##softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX, (const char*)u8"%.1f°", ImGuiSliderFlags_AlwaysClamp);
+                if (ms_text[0]) {
+                    ImGui::SameLine(0.0f, 2.0f * gap);
+                    ImGui::TextDisabled("%s", ms_text);
+                    ImGui::SetItemTooltip("GPU time per frame\nRays: %.3f ms\nTotal (with filtering): %.3f ms", profiler::gpu_ms("Shadow Rays", "Render"), shadow_ms);
+                }
+                prop::section_end();
+            }
+            machine_dirty |= shadows_toggled;
 
             bool toggled = false;
 
@@ -6658,6 +6687,9 @@ static void render(ApplicationState* state) {
     settings.shading.colors = state->visuals.shading.colors;
     settings.shading.light = state->visuals.shading.light;
     settings.shading.environment = state->visuals.shading.environment;
+
+    settings.shadows.enabled = state->visuals.shadows.enabled;
+    settings.shadows.softness = state->visuals.shadows.softness;
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;

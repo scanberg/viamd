@@ -6766,6 +6766,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
                 postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                postprocess_settings.shadows.enabled = false;
                 postprocess_settings.ssao.enabled = false;
                 postprocess_settings.dof.enabled = false;
                 postprocess_settings.fxaa.enabled = true;
@@ -8298,6 +8299,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                     postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
                     postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                    postprocess_settings.shadows.enabled = false;
                     postprocess_settings.ssao.enabled = false;
                     postprocess_settings.dof.enabled = false;
                     postprocess_settings.fxaa.enabled = true;
