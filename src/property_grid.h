@@ -41,6 +41,12 @@ void section_end();
 // 'toggled' (optional) says whether the checkbox was clicked this frame; 'tooltip' is the checkbox's.
 bool section_toggle(const char* name, bool* enabled, bool* toggled = nullptr, bool default_open = true, const char* tooltip = nullptr);
 
+// A section about several things that are each turned on and off in its rows (effects that combine): the header's name
+// is a checkbox for all of them, checked when all are on, mixed when some are and clear when none is. A click turns
+// all of them off when any is on, else all on. The rows are there while it is open - returns true, and section_end()
+// is to follow, when it is open. 'toggled' (optional) says whether the checkbox was clicked this frame.
+bool section_toggle_all(const char* name, bool* const* enabled, int count, bool* toggled = nullptr, bool default_open = true, const char* tooltip = nullptr);
+
 // A row: the label, and the control column for what follows. The tooltip, if any, is the label's.
 void row(const char* label, const char* tooltip = nullptr);
 

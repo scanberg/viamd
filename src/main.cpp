@@ -1845,9 +1845,13 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             // The visibilities of the two lights, found in what is on screen: the shadows (of the directional light) and
-            // the ambient occlusion (of the surroundings). Each has its switch and its own settings beside it; they share
-            // the temporal filter and the time.
-            if (prop::section("Shadows & Occlusion")) {
+            // the ambient occlusion (of the surroundings). Each has its switch and its own settings beside it, the header's
+            // switch is for both; they share the temporal filter and the time.
+            bool* occlusion_switches[2] = {&data->visuals.shadows.enabled, &data->visuals.ssao.enabled};
+            bool occlusion_toggled = false;
+            if (prop::section_toggle_all("Shadows & Occlusion", occlusion_switches, 2, &occlusion_toggled, false,
+                                         "Darken what less light reaches: the shadows of the directional light and the occlusion of the surroundings.\n"
+                                         "Turns both off, or on; each has its own switch in the section.")) {
                 const bool shadows_on = data->visuals.shadows.enabled;
                 const bool ao_on = data->visuals.ssao.enabled;
 
@@ -1901,6 +1905,7 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 prop::section_end();
             }
+            machine_dirty |= occlusion_toggled;
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
             if (prop::section_toggle("Cone Traced AO", &data->visuals.cone_traced_ao.enabled)) {
                 prop::row("intensity");
