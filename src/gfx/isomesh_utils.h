@@ -18,7 +18,8 @@
 //
 // A frame is five passes over the meshes (isomesh.frag: the transmittance, two layers peeled exactly, the
 // stochastic depth behind them, the radiance times visibility), each a program of its own, into a target of a sample
-// per pixel, one pass into the mean and one composite. The mean antialiases the edges: it is of the caller's
+// per pixel, and one pass into the mean that also puts it over the caller's target (once the mean is kept, that
+// alone), both over the pixels the surfaces' bounds cover. The mean antialiases the edges: it is of the caller's
 // jittered projections, or when there are none (proj as proj_no_jitter) of a jitter of its own over the pixel. A
 // Target holds 28 bytes per pixel of the frame and 24 of history (Experiment_Multisampled: 28 per sample, the
 // samples per pixel (4, 2 or 1) as many as fit MEMORY_BUDGET).
@@ -174,6 +175,7 @@ enum Experiment {
     Experiment_None = 0,
     Experiment_Multisampled,    // as it was: per sample into a multisampled target, one program for the passes after
                                 // the transmittance, writing gl_FragDepth
+    Experiment_SeparateResolve, // the mean and the composite in passes of their own, over all of the target
     Experiment_Count
 };
 void set_experiment(Experiment e);

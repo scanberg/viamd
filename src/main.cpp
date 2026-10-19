@@ -5062,8 +5062,8 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
 // the rows of their ISOSURFACE MESHES in one table, to the clipboard
 static const isomesh::Experiment profiler_sweep_steps[] = {
     isomesh::Experiment_None,
-    isomesh::Experiment_Multisampled,   // as it was
-    isomesh::Experiment_None,           // again: how far the times drift over the sweep
+    isomesh::Experiment_SeparateResolve,    // the mean and the composite as they were
+    isomesh::Experiment_None,               // again: how far the times drift over the sweep
 };
 
 static struct {
@@ -5185,7 +5185,8 @@ static void draw_profiler_window(ApplicationState* data) {
         int e = (int)isomesh::experiment();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
         if (ImGui::Combo("Experiment", &e, names, isomesh::Experiment_Count)) isomesh::set_experiment((isomesh::Experiment)e);
-        ImGui::SetItemTooltip("What the isosurface meshes are drawn with: multisampled is how they were, to compare with");
+        ImGui::SetItemTooltip("What the isosurface meshes are drawn with: multisampled and separate-resolve are how they "
+                              "were, to compare with");
         ImGui::SameLine();
         if (ImGui::Button("Sweep")) profiler_sweep_start(data);
         ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. The times "

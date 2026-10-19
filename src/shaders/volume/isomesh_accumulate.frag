@@ -7,6 +7,8 @@
 //            (whose mean is the coverage, which the composite uses to correct the radiance)
 // out_t:     the transmittance of the surfaces (exactly), and that times the absorption of what they enclose:
 //            what reaches the eye of the scene behind them
+// out_composite: the new mean as the composite (isomesh_utils.cpp) puts it over the caller's target, blended there
+//            (ONE, ONE_MINUS_SRC_ALPHA): in the same pass, so the mean is not read again for it
 
 #ifdef ISOMESH_MULTISAMPLE     // as it was (isomesh::Experiment_Multisampled)
 uniform sampler2DMS u_tex_color;
@@ -22,6 +24,7 @@ uniform float       u_weight;           // 1 / (n + 1); 1 discards the history
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_t;
+layout(location = 2) out vec4 out_composite;
 
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
@@ -44,4 +47,10 @@ void main() {
         out_color = mix(texelFetch(u_tex_history_color, px, 0), color, u_weight);
         out_t = vec4(mix(texelFetch(u_tex_history_t, px, 0).rg, t, u_weight), 0.0, 0.0);
     }
+
+    // As the composite: the radiance scaled to the exact coverage of the surfaces (Enderton's alpha correction), and
+    // the coverage of the surfaces and what they enclose
+    float coverage = 1.0 - out_t.r;
+    vec3  L = (out_color.a > 1.0e-4) ? out_color.rgb * (coverage / out_color.a) : out_color.rgb;
+    out_composite = vec4(L, 1.0 - out_t.g);
 }

@@ -473,6 +473,7 @@ const char* experiment_name(Experiment e) {
     switch (e) {
         case Experiment_None:         return "one-sample";
         case Experiment_Multisampled: return "multisampled";
+        case Experiment_SeparateResolve: return "separate-resolve";
         default:                      return "?";
     }
 }
@@ -754,6 +755,40 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
     t->triangles = tris;
 
+    // The pixels the surfaces can cover: their bounds projected (as the mean is keyed on, unjittered), with a margin for
+    // the jitter, or all of the target when the bounds reach behind the eye. The mean and the composite are of these
+    // alone: what lies outside is not read, and a new view or new bounds is a new mean.
+    int rect[4] = {0, 0, (int)w, (int)h};  // x, y, width, height
+    if (any && g_experiment != Experiment_SeparateResolve) {
+        const mat4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
+        float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
+        bool behind = false;
+        for (int k = 0; k < 8 && !behind; ++k) {
+            const vec4_t q = PV * vec4_t{(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z, 1.0f};
+            if (q.w <= 1.0e-6f) {
+                behind = true;
+                break;
+            }
+            const float x = CLAMP((q.x / q.w * 0.5f + 0.5f) * (float)w, -4.0f, (float)w + 4.0f);
+            const float y = CLAMP((q.y / q.w * 0.5f + 0.5f) * (float)h, -4.0f, (float)h + 4.0f);
+            x0 = MIN(x0, x);
+            x1 = MAX(x1, x);
+            y0 = MIN(y0, y);
+            y1 = MAX(y1, y);
+        }
+        if (!behind) {
+            const int ix0 = CLAMP((int)floorf(x0) - 2, 0, (int)w);
+            const int iy0 = CLAMP((int)floorf(y0) - 2, 0, (int)h);
+            const int ix1 = CLAMP((int)ceilf(x1) + 2, 0, (int)w);
+            const int iy1 = CLAMP((int)ceilf(y1) + 2, 0, (int)h);
+            rect[0] = ix0;
+            rect[1] = iy0;
+            rect[2] = ix1 - ix0;
+            rect[3] = iy1 - iy0;
+        }
+    }
+    bool composited = false;    // the Mean put the new mean over the caller's target
+
     PUSH_GPU_SECTION("ISOSURFACE MESHES")
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_CULL_FACE);
@@ -946,6 +981,26 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         PUSH_GPU_SECTION("Mean")
         const uint32_t next = 1 - t->cur;
         attach(t->fbo, t->tex_history_color[next], t->tex_history_t[next]);
+        // and the new mean over the caller's target in the same pass (out_composite), blended there alone
+        if (g_experiment != Experiment_SeparateResolve) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, desc.render_target.color, 0);
+            const GLenum bufs[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+            glDrawBuffers(3, bufs);
+            composited = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            if (!composited) {
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, 0, 0);
+                glDrawBuffers(2, bufs);
+            } else if (desc.render_target.clear_color) {
+                const GLfloat zero[4] = {0, 0, 0, 0};
+                glClearBufferfv(GL_COLOR, 2, zero);
+            }
+        }
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(rect[0], rect[1], rect[2], rect[3]);
+        if (composited) {
+            glEnablei(GL_BLEND, 2);
+            glBlendFunci(2, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        }
         auto& a = (ms_target == GL_TEXTURE_2D_MULTISAMPLE && gl.accumulate_ms.program) ? gl.accumulate_ms : gl.accumulate;
         glUseProgram(a.program);
         glActiveTexture(GL_TEXTURE0);
@@ -966,6 +1021,11 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glBindTexture(ms_target, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(ms_target, 0);
+        glDisable(GL_SCISSOR_TEST);
+        if (composited) {
+            glDisable(GL_BLEND);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, 0, 0);
+        }
         POP_GPU_SECTION()
 
         t->cur = next;
@@ -975,34 +1035,39 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         t->frame = 0;
     }
 
-    // Over the caller's target
-    bool done = false;
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    const GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
-    if (status == GL_FRAMEBUFFER_COMPLETE) {
-        glViewport(0, 0, (GLsizei)w, (GLsizei)h);
-        if (desc.render_target.clear_color) {
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+    // Over the caller's target, unless the Mean put the new mean there already
+    bool done = composited;
+    if (!composited) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        const GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (status == GL_FRAMEBUFFER_COMPLETE) {
+            glViewport(0, 0, (GLsizei)w, (GLsizei)h);
+            if (desc.render_target.clear_color) {
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+            if (any && t->frame > 0) {
+                glEnable(GL_SCISSOR_TEST);
+                glScissor(rect[0], rect[1], rect[2], rect[3]);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                glUseProgram(gl.composite.program);
+                bind_texture(0, GL_TEXTURE_2D, t->tex_history_color[t->cur]);
+                bind_texture(1, GL_TEXTURE_2D, t->tex_history_t[t->cur]);
+                glUniform1i(gl.composite.tex_color, 0);
+                glUniform1i(gl.composite.tex_t, 1);
+                glBindVertexArray(gl.vao);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glDisable(GL_SCISSOR_TEST);
+            }
+            done = true;
+        } else {
+            MD_LOG_ERROR("Isosurface meshes: the colour target framebuffer is incomplete (0x%04X)", (unsigned int)status);
         }
-        if (any && t->frame > 0) {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            glUseProgram(gl.composite.program);
-            bind_texture(0, GL_TEXTURE_2D, t->tex_history_color[t->cur]);
-            bind_texture(1, GL_TEXTURE_2D, t->tex_history_t[t->cur]);
-            glUniform1i(gl.composite.tex_color, 0);
-            glUniform1i(gl.composite.tex_t, 1);
-            glBindVertexArray(gl.vao);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-        }
-        done = true;
-    } else {
-        MD_LOG_ERROR("Isosurface meshes: the colour target framebuffer is incomplete (0x%04X)", (unsigned int)status);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
     }
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
 
     for (int unit = 0; unit < 6; ++unit) {
         bind_texture(unit, GL_TEXTURE_2D, 0);
