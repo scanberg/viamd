@@ -23,6 +23,15 @@
 #include <nfd.h>
 #include <nfd_glfw3.h>
 
+// NFD's GTK backend: on Linux, unless it is built for the xdg-desktop-portal, which defines NFD_PORTAL. GTK is linked
+// in through nfd; the one function used here is declared rather than gtk.h included, which takes GTK's include paths.
+#if MD_PLATFORM_LINUX && !defined(NFD_PORTAL)
+#define VIAMD_NFD_GTK 1
+extern "C" void gtk_disable_setlocale(void);
+#else
+#define VIAMD_NFD_GTK 0
+#endif
+
 #include <imgui.h>
 #include <implot.h>
 
@@ -47,23 +56,23 @@ static struct {
     Context internal_ctx{};
 } data;
 
-// The decimal point is '.', always: in the workspace, in the script, in every number shown or typed in. A program
-// starts in the "C" locale and VIAMD never asks for another, but the native file dialog can switch the whole process
-// to the user's: GTK's initialization (NFD_Init on Linux) calls setlocale(LC_ALL, ""), and on Windows a shell
-// extension the dialog loads shares the CRT and may do the same. Under a decimal comma locale printf writes 1.5 as
-// "1,5" and scanf reads "1.5" as 1, and so does everything formatted outside mdlib: ImGui's numeric fields, which
-// format and parse through the C library, the labels, the .ini. So LC_NUMERIC is put back to "C" after the dialogs,
-// and checked once a frame for whatever else switches it. The other categories, the text encoding and the dialog's
-// language, stay as the user has them.
+// The decimal point is '.', always: in the workspace, in the script, in every number shown or typed in. What mdlib
+// writes does not depend on the locale (md_snprintf), but the rest does: ImGui formats and parses its numeric fields
+// through the C library, scanf included, and so do the labels and the .ini. Under a decimal comma locale 1.5 shows as
+// "1,5" and a typed "1.5" reads as 1. So LC_NUMERIC stays "C", while the other categories follow the user (see
+// initialize()).
 //
-// setlocale is process wide and not synchronized with the worker threads; it is only called here once something
-// else has already switched the locale under them.
-static void keep_c_numeric_locale(const char* after) {
+// GTK, which NFD initializes on Linux, would switch it: gtk_init calls setlocale(LC_ALL, "") unless it is told not
+// to, and it is. Nothing else is known to, and this check, once a frame, is for whatever does: loud, as that is a
+// bug to find rather than something to put right in silence. It is put back as well, so numbers stay readable
+// meanwhile. setlocale is process wide and not synchronized with the worker threads; it is only called here once
+// something else has already switched the locale under them.
+static void check_c_numeric_locale() {
     const char* cur = setlocale(LC_NUMERIC, NULL);
     if (cur && strcmp(cur, "C") == 0) {
         return;
     }
-    MD_LOG_DEBUG("The numeric locale was '%s' after %s, it is put back to \"C\"", cur ? cur : "unknown", after);
+    MD_LOG_ERROR("Something switched the numeric locale to '%s', it is put back to \"C\": numbers would be shown and read with a decimal comma", cur ? cur : "unknown");
     setlocale(LC_NUMERIC, "C");
 }
 
@@ -405,10 +414,17 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
 #endif
 
+#if VIAMD_NFD_GTK
+    // gtk_init, in NFD_Init, would call setlocale(LC_ALL, "") and take LC_NUMERIC with it. GTK is kept from touching
+    // the locale at all, and VIAMD sets it: the user's in every category but the numbers, so the dialog keeps its
+    // language, its sorting of names and its dates. This holds whenever GTK gets initialized, not only in NFD_Init.
+    gtk_disable_setlocale();
+    setlocale(LC_ALL, "");
+    setlocale(LC_NUMERIC, "C");
+#endif
     if (NFD_Init() != NFD_OKAY) {
         MD_LOG_ERROR("Failed to initialize NativeFileDialog: %s", NFD_GetError());
     }
-    keep_c_numeric_locale("initializing the file dialog");
 
     MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 
@@ -430,7 +446,7 @@ void shutdown(Context* ctx) {
 
 void update(Context* ctx) {
     glfwPollEvents();
-    keep_c_numeric_locale("the window events");
+    check_c_numeric_locale();
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -532,7 +548,6 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         args.title = "Save File";
         result = NFD_SaveDialogU8_With(&out_path, &args);
     }
-    keep_c_numeric_locale("the file dialog");
 
     if (result == NFD_OKAY) {
         int len = snprintf(str_buf, str_cap, "%s", out_path);
