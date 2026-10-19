@@ -2800,16 +2800,17 @@ void draw_representations_window(ApplicationState* state) {
 
     WindowActions act;
 
-    if (ImGui::Button(ICON_FA_PLUS)) {
-        act.add_representation = true;
-    }
-    ImGui::SetItemTooltip("Add a representation");
-    ImGui::SameLine();
     if (ImGui::Button(ICON_FA_FOLDER_PLUS)) {
         act.add_group = true;
     }
     ImGui::SetItemTooltip("Add a group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_PLUS)) {
+        act.add_representation = true;
+    }
+    ImGui::SetItemTooltip("Add a representation");
+
     // Removing everything at the far end, behind a question: it cannot be taken back
     ImGui::SameLine();
     const float trash_w = ImGui::CalcTextSize(ICON_FA_TRASH_CAN).x + 2.0f * ImGui::GetStyle().FramePadding.x;
