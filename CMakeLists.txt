@@ -275,7 +275,6 @@ if (NOT VIAMD_ENABLE_QM)
 endif()
 
 set(SHADER_FILES 
-    src/shaders/scale_hsv.frag
     src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
     src/shaders/luma.frag

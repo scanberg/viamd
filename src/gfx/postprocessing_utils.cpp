@@ -503,27 +503,6 @@ void shutdown() {
 }
 }
 
-namespace hsv {
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint texture_color = -1;
-        GLint hsv_scale = -1;
-    } uniform_loc;
-} gl;
-
-void initialize() {
-    gl.program = setup_program_from_source(STR_LIT("scale hsv"), {(const char*)scale_hsv_frag, scale_hsv_frag_size});
-    gl.uniform_loc.texture_color = glGetUniformLocation(gl.program, "u_texture_atom_color");
-    gl.uniform_loc.hsv_scale = glGetUniformLocation(gl.program, "u_hsv_scale");
-}
-
-void shutdown() {
-    if (gl.program) glDeleteProgram(gl.program);
-}
-}  // namespace hsv
-
 namespace compose {
 
 struct ubo_data_t {
@@ -757,26 +736,9 @@ void shutdown() {
 namespace blit {
 static GLuint program_tex = 0;
 static GLuint program_tex_dither = 0;
-static GLuint program_tex_covered = 0;
+static GLuint program_marks = 0;
 static GLuint program_coverage = 0;
-static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
-static GLint uniform_loc_color = -1;
-
-// A premultiplied texture, covered by the coverage (alpha) of another: what lies under it
-constexpr str_t f_shader_src_tex_covered = STR_LIT(R"(
-#version 150 core
-
-uniform sampler2D u_texture;
-uniform sampler2D u_cover;
-
-out vec4 out_frag;
-
-void main() {
-    ivec2 px = ivec2(gl_FragCoord.xy);
-    out_frag = texelFetch(u_texture, px, 0) * (1.0 - clamp(texelFetch(u_cover, px, 0).a, 0.0, 1.0));
-}
-)");
 
 // The coverage of the geometry: 1 where the G-buffer holds a surface (its colour has alpha), 0 for the background
 constexpr str_t f_shader_src_coverage = STR_LIT(R"(
@@ -827,16 +789,67 @@ void main() {
 }
 )");
 
-// Premultiplied: what it writes goes into the transparency buffer, which holds premultiplied colour
-constexpr str_t f_shader_src_col = STR_LIT(R"(
+// The final copy with the marks of the selection and the highlight put over it (Inputs::marks, Settings::marks).
+// The image is anti-aliased, the marks are not: they are a pixel soft, by a tent over the 3x3 pixels about each, which
+// four bilinear taps between the pixels make. The outline is the band in which the tent of where the marks are at all
+// is neither 0 nor 1: two pixels wide, and with taps further out (u_outline_step) as many times wider.
+constexpr str_t f_shader_src_marks = STR_LIT(R"(
 #version 150 core
 
-uniform vec4 u_color;
+uniform sampler2D u_texture;
+uniform sampler2D u_marks;          // the output's size, filtered: selection in view, at all; highlight in view, at all
+uniform float u_time;
+
+uniform vec4  u_visible[2];         // selection, highlight
+uniform vec4  u_hidden[2];
+uniform vec4  u_outline[2];
+uniform float u_highlight;          // how much of the highlight shows
+uniform int   u_outline_step;
+
 out vec4 out_frag;
 
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// The mean of the four 2x2 blocks of pixels about this one, r pixels out diagonally
+vec4 marks_about(vec2 px, float r, vec2 inv_size) {
+    return 0.25 * (texture(u_marks, (px + vec2(-r, -r)) * inv_size) +
+                   texture(u_marks, (px + vec2( r, -r)) * inv_size) +
+                   texture(u_marks, (px + vec2(-r,  r)) * inv_size) +
+                   texture(u_marks, (px + vec2( r,  r)) * inv_size));
+}
+
 void main() {
-	float a = clamp(u_color.a, 0.0, 1.0);
-	out_frag = vec4(u_color.rgb * a, a);
+    vec4 c = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+    vec2 inv_size = 1.0 / vec2(textureSize(u_marks, 0));
+
+    // The tent of the marks about the pixel, and for the outline, wider with the taps further out
+    vec4 m = marks_about(gl_FragCoord.xy, 0.5, inv_size);
+    vec4 ring = m;
+    if (u_outline_step > 1) {
+        ring = 0.5 * (m + marks_about(gl_FragCoord.xy, float(u_outline_step) - 0.5, inv_size));
+    }
+
+    if (max(max(ring.y, ring.w), max(m.y, m.w)) > 0.0) {
+        vec2 vis    = m.xz;
+        vec2 hidden = max(m.yw - m.xz, 0.0);
+        vec2 edge   = clamp(2.0 - 2.0 * abs(2.0 * ring.yw - 1.0), 0.0, 1.0);
+
+        // The highlight over the selection
+        for (int i = 0; i < 2; ++i) {
+            float k = i == 0 ? 1.0 : u_highlight;
+            c.rgb = mix(c.rgb, u_visible[i].rgb, u_visible[i].a * vis[i] * k);
+            c.rgb = mix(c.rgb, u_hidden[i].rgb,  u_hidden[i].a * hidden[i] * k);
+            c.rgb = mix(c.rgb, u_outline[i].rgb, u_outline[i].a * edge[i] * k);
+        }
+    }
+
+    vec2 p = gl_FragCoord.xy + u_time * 61.0;
+    float d = hash(p) + hash(p + vec2(17.31, 41.17)) - 1.0;   // triangular in [-1, 1]
+    out_frag = vec4(c.rgb + d / 255.0, c.a);
 }
 )");
 
@@ -846,21 +859,18 @@ void initialize() {
 
     program_tex_dither = setup_program_from_source(STR_LIT("blit texture dither"), f_shader_src_tex_dither);
 
-    program_tex_covered = setup_program_from_source(STR_LIT("blit texture covered"), f_shader_src_tex_covered);
+    program_marks = setup_program_from_source(STR_LIT("present marks"), f_shader_src_marks);
 
     program_coverage = setup_program_from_source(STR_LIT("blit coverage"), f_shader_src_coverage);
 
-    program_col = setup_program_from_source(STR_LIT("blit color"), f_shader_src_col);
-    uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
 
 void shutdown() {
     if (program_tex) glDeleteProgram(program_tex);
     if (program_tex_dither) glDeleteProgram(program_tex_dither);
-    if (program_tex_covered) glDeleteProgram(program_tex_covered);
+    if (program_marks) glDeleteProgram(program_marks);
     if (program_coverage) glDeleteProgram(program_coverage);
-    if (program_col) glDeleteProgram(program_col);
-    program_tex = program_tex_dither = program_tex_covered = program_coverage = program_col = 0;
+    program_tex = program_tex_dither = program_marks = program_coverage = 0;
 }
 }  // namespace blit
 
@@ -1191,7 +1201,6 @@ static void initialize_programs() {
     ssao::initialize_programs();
     dof::initialize_programs();
     velocity::initialize_programs();
-    hsv::initialize();
     tonemapping::initialize();
     temporal::initialize();
     blit::initialize();
@@ -1298,7 +1307,6 @@ void shutdown() {
     ssao::shutdown();
     dof::shutdown();
     velocity::shutdown();
-    hsv::shutdown();
     tonemapping::shutdown();
     temporal::shutdown();
     blit::shutdown();
@@ -2130,44 +2138,6 @@ static void upscale_texture(GLuint src, int src_width, int src_height) {
     glUseProgram(0);
 }
 
-void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
-    GLResetState reset_state = {};
-    record_gl_reset_state(&reset_state);
-
-    GLint w, h;
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, color_tex);
-
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-
-    glBindVertexArray(gl.vao);
-
-    glViewport(0, 0, w, h);
-    glScissor(0, 0, w, h);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.scratch_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_rgba8, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, color_tex);
-
-    glUseProgram(hsv::gl.program);
-    glUniform1i(hsv::gl.uniform_loc.texture_color, 0);
-    glUniform3fv(hsv::gl.uniform_loc.hsv_scale, 1, &hsv_scale.x);
-    glBindVertexArray(gl.vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glUseProgram(0);
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, color_tex, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT1);
-    blit_texture(gl.rt.tex_rgba8);
-
-    reset_gl_state(reset_state);
-}
-
 void blit_texture(GLuint tex) {
     ASSERT(glIsTexture(tex));
     glUseProgram(blit::program_tex);
@@ -2193,6 +2163,31 @@ static void blit_texture_dither(GLuint tex, float time) {
     glUseProgram(0);
 }
 
+// The final copy, with the marks over it (Settings::marks)
+static void present_marks(GLuint tex, GLuint marks, const postprocess_pipeline::Settings& settings, float time) {
+    ASSERT(glIsTexture(tex));
+    ASSERT(glIsTexture(marks));
+    const GLuint p = blit::program_marks;
+    glUseProgram(p);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, marks);
+    glUniform1i(glGetUniformLocation(p, "u_texture"), 0);
+    glUniform1i(glGetUniformLocation(p, "u_marks"), 1);
+    glUniform1f(glGetUniformLocation(p, "u_time"), time);
+    glUniform4fv(glGetUniformLocation(p, "u_visible"), 2, settings.marks.visible[0].elem);
+    glUniform4fv(glGetUniformLocation(p, "u_hidden"),  2, settings.marks.hidden[0].elem);
+    glUniform4fv(glGetUniformLocation(p, "u_outline"), 2, settings.marks.outline[0].elem);
+    glUniform1f(glGetUniformLocation(p, "u_highlight"), settings.marks.highlight);
+    glUniform1i(glGetUniformLocation(p, "u_outline_step"), MAX(settings.marks.outline_step, 1));
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(0);
+}
+
 // The coverage of the geometry in the G-buffer colour gbuffer_color, into r
 static void blit_coverage(GLuint gbuffer_color) {
     ASSERT(glIsTexture(gbuffer_color));
@@ -2200,33 +2195,6 @@ static void blit_coverage(GLuint gbuffer_color) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gbuffer_color);
     glUniform1i(glGetUniformLocation(blit::program_coverage, "u_texture"), 0);
-    glBindVertexArray(gl.vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glUseProgram(0);
-}
-
-// tex scaled by (1 - alpha of cover), both premultiplied
-static void blit_texture_covered(GLuint tex, GLuint cover) {
-    ASSERT(glIsTexture(tex));
-    ASSERT(glIsTexture(cover));
-    glUseProgram(blit::program_tex_covered);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, cover);
-    glActiveTexture(GL_TEXTURE0);
-    glUniform1i(glGetUniformLocation(blit::program_tex_covered, "u_texture"), 0);
-    glUniform1i(glGetUniformLocation(blit::program_tex_covered, "u_cover"), 1);
-    glBindVertexArray(gl.vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glUseProgram(0);
-}
-
-void blit_color(vec4_t color) {
-    glUseProgram(blit::program_col);
-    glUniform4fv(blit::uniform_loc_color, 1, &color.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -2549,11 +2517,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         PUSH_GPU_SECTION("Add Transparency")
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);    // premultiplied
-        if (in.transparency_under_hdr && do_transparency_hdr) {
-            blit_texture_covered(in.transparency, in.transparency_hdr);
-        } else {
-            blit_texture(in.transparency);
-        }
+        blit_texture(in.transparency);
         glDisable(GL_BLEND);
         POP_GPU_SECTION()
     }
@@ -2641,7 +2605,13 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_present) {
         swap_target();
         glDepthMask(0);
-        blit_texture_dither(src_texture, time);
+        if (in.marks) {
+            PUSH_GPU_SECTION("Present marks")
+            present_marks(src_texture, in.marks, settings, time);
+            POP_GPU_SECTION()
+        } else {
+            blit_texture_dither(src_texture, time);
+        }
     }
 
     if (last_depth_test) glEnable(GL_DEPTH_TEST);

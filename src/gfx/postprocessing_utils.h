@@ -10,11 +10,7 @@ namespace postprocessing {
 
 void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
 
-void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
-
 void blit_texture(GLuint tex);
-// Writes the colour premultiplied by its alpha, (rgb * a, a): meant for the transparency buffer
-void blit_color(vec4_t color);
 
 }  // namespace postprocessing
 
@@ -72,11 +68,13 @@ struct Inputs {
     GLuint color = 0;
     GLuint normal = 0;
     GLuint velocity = 0;
-    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
+    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, DVR)
     GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces); its alpha is part of the coverage that puts the scene over the background
-    bool   transparency_under_hdr = false;  // transparency lies under transparency_hdr (a selection tint under isosurfaces): it is covered by its alpha
     GLuint history = 0;         // TAA history target, written this frame, at the size of the image made
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
+    // optional: the marks of the selection and the highlight at the size of the image made, put over it as it is presented
+    // (Settings::marks), filtered linearly: the selection in view (r), there at all (g), the highlight the same (b, a)
+    GLuint marks = 0;
 };
 
 struct Settings {
@@ -139,6 +137,17 @@ struct Settings {
         bool enabled = true;
         float weight = 1.0f;
     } sharpen;
+
+    // The marks (Inputs::marks), put over the finished image as it is presented, in display colours: [0] of the
+    // selection, [1] of the highlight. A tint where they are in view, a fill where they are behind something, and the
+    // outline of where they are at all. A colour's alpha is how much of it.
+    struct {
+        vec4_t visible[2] = {};
+        vec4_t hidden[2]  = {};
+        vec4_t outline[2] = {};
+        float highlight   = 1.0f;   // how much of the highlight shows: it fades in
+        int   outline_step = 1;     // pixels between the taps that find the outline, which is about twice as wide
+    } marks;
 };
 
 

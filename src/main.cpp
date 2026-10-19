@@ -119,7 +119,11 @@ vec2 compute_ss_vel(vec3 view_coord, vec3 view_vel) {
     return ss_vel;
 }
 
-void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {
+   // Not selected while something is (AtomBit_Dimmed): less of its colour
+   if ((atom_flags & 16u) != 0u) {
+       color.rgb = mix(vec3(dot(color.rgb, vec3(0.2126, 0.7152, 0.0722))), color.rgb, DIMMED_SATURATION);
+   }
    out_color  = color;
    out_normal = vec4(encode_normal(view_normal), 0, 0);
    out_velocity = vec4(compute_ss_vel(view_coord, view_vel), 0, 0);
@@ -127,8 +131,46 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )");
 
-constexpr str_t shader_output_snippet_lean_and_mean = STR_LIT(R"(
-void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+// The G-buffer's snippet as the shaders are made of it: with the saturation of the dimmed atoms in it
+static_assert(AtomBit_Dimmed == 16u, "The G-buffer's snippet tests the flags by this bit");
+static str_t output_snippet(const ApplicationState& state) {
+    return str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", CLAMP(state.selection.color.saturation, 0.0f, 1.0f), STR_ARG(shader_output_snippet));
+}
+
+// The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
+// where the fragment is in view and 1 in g where it is there at all, in view or behind the scene; of the highlighted
+// the same in b and a. Blended by max. In view is within a tolerance of the depth of the scene (the G-buffer's,
+// md_user_texture_0): that is of the render scale and jittered, the marks are neither, so the depth sampled is up to
+// about a pixel of the scene off, which on a surface at an angle to the view is a step in depth: about two pixels'
+// worth of its slope.
+static_assert(AtomBit_Highlighted == 1u && AtomBit_Selected == 2u, "The marks snippet tests the flags by these bits");
+constexpr str_t shader_output_snippet_marks = STR_LIT(R"(
+layout(location = 0) out vec4 out_marks;
+uniform sampler2D md_user_texture_0;
+
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {
+    vec4  clip  = u_view_to_clip * vec4(view_coord, 1.0);
+    vec2  uv    = clip.xy / clip.w * 0.5 + 0.5;
+    ivec2 size  = textureSize(md_user_texture_0, 0);
+    ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    float depth = texelFetch(md_user_texture_0, texel, 0).r;
+    vec4  scene = u_clip_to_view * vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    float scene_z = -scene.z / scene.w;
+    float z = -view_coord.z;
+
+    // The size of a pixel of the scene where the fragment is, and the slope of its surface to the view
+#if ORTHO
+    float pixel  = 2.0 / (u_view_to_clip[1][1] * float(size.y));
+    float facing = abs(view_normal.z);
+#else
+    float pixel  = 2.0 * z / (u_view_to_clip[1][1] * float(size.y));
+    float facing = abs(dot(view_normal, normalize(view_coord)));
+#endif
+    float slope = sqrt(max(1.0 - facing * facing, 0.0)) / max(facing, 0.125);
+    float tolerance = 2.0 * pixel * slope + 2e-3 * z;
+
+    vec2 mark = vec2(z <= scene_z + tolerance ? 1.0 : 0.0, 1.0);
+    out_marks = vec4((atom_flags & 2u) != 0u ? mark : vec2(0.0), (atom_flags & 1u) != 0u ? mark : vec2(0.0));
 }
 )");
 
@@ -370,12 +412,11 @@ enum GeometryStage {
     GeometryStage_GlyphTubes,       // Tails, sterol skeletons, nucleic backbones
     GeometryStage_GlyphSlabs,       // Sugars, bases, the sticks between them
     GeometryStage_Other,
-    GeometryStage_Highlight,        // The passes of the selected and highlighted atoms, drawn again over the rest
     GeometryStage_Count
 };
 
 static const char* geometry_stage_name[GeometryStage_Count] = {
-    "Space fill", "Licorice", "Ball and stick", "Ribbons", "Cartoon", "Heads", "Tubes", "Slabs", "Other", "Selection, highlight",
+    "Space fill", "Licorice", "Ball and stick", "Ribbons", "Cartoon", "Heads", "Tubes", "Slabs", "Other",
 };
 
 static GeometryStage geometry_stage(md_gl_rep_type_t type, bool glyphs) {
@@ -417,7 +458,8 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 }
 
 static void draw_representations_opaque(ApplicationState* state);
-static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
+// The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
+static void draw_representations_marks(ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
 
@@ -755,8 +797,8 @@ int main(int argc, char** argv) {
     task_system::initialize((size_t)num_threads);
 
     md_gl_initialize();
-    state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
-    state.gl.shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
+    state.gl.shaders                = md_gl_shaders_create(output_snippet(state));
+    state.gl.shaders_marks          = md_gl_shaders_create(shader_output_snippet_marks);
 
     // Which of these are open is part of a workspace; the components register their own on initialize
     workspace_register_window("Timelines",       &state.timeline.show_window);
@@ -991,7 +1033,9 @@ int main(int argc, char** argv) {
                 volume::initialize();
                 isomesh::initialize();
                 md_gl_shaders_destroy(state.gl.shaders);
-                state.gl.shaders = md_gl_shaders_create(shader_output_snippet);
+                md_gl_shaders_destroy(state.gl.shaders_marks);
+                state.gl.shaders = md_gl_shaders_create(output_snippet(state));
+                state.gl.shaders_marks = md_gl_shaders_create(shader_output_snippet_marks);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
@@ -1407,12 +1451,19 @@ int main(int argc, char** argv) {
 
         // These represent the 'current' state so we can compare against it to see if they were modified
         static uint64_t highlight_hash = 0;
+        static bool     highlight_empty = true;
         static uint64_t selection_hash = 0;
         static uint64_t representation_hash = 0;
         static uint64_t flag_hash = 0;
 
         if (h_hash != highlight_hash) {
             highlight_hash = h_hash;
+            // The highlight fades in where there was none: from one atom to the next it stays
+            const bool empty = md_bitmask_empty(&state.selection.highlight_mask);
+            if (highlight_empty && !empty) {
+                state.selection.highlight_time = ImGui::GetTime();
+            }
+            highlight_empty = empty;
             // enqueue the event here and do not broadcast (stall)
             viamd::event_system_enqueue_event(viamd::EventType_ViamdHighlightMaskChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
@@ -6175,14 +6226,19 @@ static void update_md_buffers(ApplicationState* data) {
             md_bitset_iter_t it = md_bitmask_iter(&data->selection.highlight_mask);
             while (md_bitset_iter_next(&it)) {
                 uint64_t idx = it.idx;
-                flags[idx] |= AtomBit_Highlighted;
+                flags[idx] |= AtomBit_Highlighted | AtomBit_Marked;
             }
         }
         {
             md_bitset_iter_t it = md_bitmask_iter(&data->selection.selection_mask);
             while (md_bitset_iter_next(&it)) {
                 uint64_t idx = it.idx;
-                flags[idx] |= AtomBit_Selected;
+                flags[idx] |= AtomBit_Selected | AtomBit_Marked;
+            }
+        }
+        if (!md_bitmask_empty(&data->selection.selection_mask)) {
+            for (size_t i = 0; i < sys.atom.count; ++i) {
+                if (!(flags[i] & AtomBit_Selected)) flags[i] |= AtomBit_Dimmed;
             }
         }
         {
@@ -6425,118 +6481,32 @@ static void render(ApplicationState* state) {
     //glDisable(GL_BLEND);
     POP_GPU_SECTION()
 
-    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-
-    if (!use_gfx) {
-        PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitmask_empty(&state->selection.selection_mask);
-        const bool atom_highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-
-        glDepthMask(0);
-
-        // @NOTE(Robin): This is a b*tch to get right, What we want is to separate in a single pass, the visible selected from the
-        // non visible selected. In order to achieve this, we start with a cleared stencil of value 1 then either set it to zero selected and not visible
-        // and to two if it is selected and visible. But the visible atoms should always be able to write over a non visible 0, but not the other way around.
-        // Hence the GL_GREATER stencil test against the reference value of 2.
-
-        if (!atom_selection_empty) {
-            glColorMask(0, 0, 0, 0);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_EQUAL);
-
-            glEnable(GL_STENCIL_TEST);
-            glStencilMask(0xFF);
-
-            glClearStencil(1);
-            glClear(GL_STENCIL_BUFFER_BIT);
-
-            glStencilFunc(GL_GREATER, 0x02, 0xFF);
-            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(state, AtomBit_Selected | AtomBit_Visible);
-
-            glDisable(GL_DEPTH_TEST);
-
-            glStencilMask(0x0);
-            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-            glColorMask(1, 1, 1, 1);
-
-            glStencilFunc(GL_EQUAL, 2, 0xFF);
-            postprocessing::blit_color(state->selection.color.selection.visible);
-
-            glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(state->selection.color.selection.hidden);
-        }
-
-        if (!atom_highlight_empty) {
-            glColorMask(0, 0, 0, 0);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_EQUAL);
-
-            glEnable(GL_STENCIL_TEST);
-            glStencilMask(0xFF);
-
-            glClearStencil(1);
-            glClear(GL_STENCIL_BUFFER_BIT);
-
-            glStencilFunc(GL_GREATER, 0x02, 0xFF);
-            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(state, AtomBit_Highlighted | AtomBit_Visible);
-
-            glDisable(GL_DEPTH_TEST);
-
-            glStencilMask(0x0);
-            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-            glColorMask(1, 1, 1, 1);
-
-            glStencilFunc(GL_EQUAL, 2, 0xFF);
-            vec4_t col_vis = state->selection.color.highlight.visible;
-            col_vis.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
-
-            postprocessing::blit_color(col_vis);
-
-            glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(state->selection.color.highlight.hidden);
-        }
-
-        glDisable(GL_STENCIL_TEST);
-
-        if (!atom_selection_empty) {
-            PUSH_GPU_SECTION("Desaturate")
-            const float saturation = state->selection.color.saturation;
-            glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-            postprocessing::scale_hsv(state->gbuffer.tex.color, vec3_t{1, saturation, 1});
-            POP_GPU_SECTION()
-        }
-
-        glDepthFunc(GL_LESS);
-        glDepthMask(0);
-        glColorMask(1,1,1,1);
+    // The marks of the selection and the highlight: the selected and highlighted atoms drawn once, both, into a target
+    // of the size of the image made, unjittered, each fragment marked in view or behind the scene; put over the
+    // finished image as it is presented (postprocessing: Settings::marks). They are not part of the scene: changing them
+    // changes nothing in it, nor in its history.
+    const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
+    const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
+    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
+    if (draw_marks) {
+        PUSH_GPU_SECTION("Marks")
+        gbuffer_marks_begin(&state->gbuffer);
+        draw_representations_marks(state);
+        gbuffer_marks_end(&state->gbuffer);
         POP_GPU_SECTION()
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
+        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
     }
 
-    glDisable(GL_STENCIL_TEST);
+    // The transparent representations test the depth of the opaque ones, but do not write it
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
+    glDepthMask(0);
     glColorMask(1, 1, 1, 1);
-
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     const bool transparency_hdr_written = draw_representations_transparent(state);
-    if (transparency_hdr_written) {
-        // What the transparency buffer holds so far (the selection and highlight tints) lies under the
-        // isosurfaces, which are composited before it, in HDR: cover it by their coverage here. The
-        // overlays drawn after this stay on top of everything.
-        PUSH_GPU_SECTION("Isosurface coverage")
-        glDisable(GL_DEPTH_TEST);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
-        postprocessing::blit_texture(state->gbuffer.tex.transparency_hdr);
-        glDisable(GL_BLEND);
-        glEnable(GL_DEPTH_TEST);
-        POP_GPU_SECTION()
-    }
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };
@@ -6633,6 +6603,15 @@ static void render(ApplicationState* state) {
     inputs.transparency_hdr = transparency_hdr_written ? state->gbuffer.tex.transparency_hdr : 0;
     inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
     inputs.history_prev = settings.taa.enabled ? state->gbuffer.tex.history_prev : 0;
+
+    if (draw_marks) {
+        // The highlight fades in, the outline is as wide on a display of more pixels per point
+        constexpr double HIGHLIGHT_FADE_IN_S = 0.12;
+        const float t = (float)CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
+        const int outline_step = MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
+        inputs.marks = state->gbuffer.tex.marks;
+        marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
+    }
 
     postprocess_pipeline::execute(inputs, settings, state->view.param);
     POP_GPU_SECTION()
@@ -7241,7 +7220,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
     return written;
 }
 
-static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {
+static void draw_representations_marks(ApplicationState* data) {
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
     // The periodic images as the opaque pass draws them, so the selected and highlighted atoms show in them too
@@ -7265,8 +7244,8 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
                 .rep = data->representation.reps[i].md_rep,
                 .model_matrix = NULL,
             };
-            // The scales lead every struct of the args. The geometry has to be that of the opaque pass, which this
-            // draws again with GL_EQUAL depth: the bond orders too.
+            // The scales lead every struct of the args. The geometry has to be that of the opaque pass, whose depth
+            // tells the marks in view from those behind it: the bond orders too.
             MEMCPY(&op.args, &rep.scale, MIN(sizeof(op.args), sizeof(rep.scale)));
             if (rep.type == RepresentationType::Licorice) {
                 op.args.licorice.bond_orders = rep.bond_orders;
@@ -7298,25 +7277,22 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         max_bond_length = MAX(3.0, min_half_box_ext);
     }
 
+    // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still
     md_gl_draw_args_t args = {
-        .shaders = data->gl.shaders_lean_and_mean,
+        .shaders = data->gl.shaders_marks,
         .draw_operations = {
             .count = md_array_size(draw_ops),
             .ops = draw_ops,
         },
         .view_transform = {
             .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
-            .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
-            // These two are for temporal anti-aliasing reprojection
-            //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
-            //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
+            .proj_matrix = &data->view.param.matrix.curr.proj_no_jitter.elem[0][0],
         },
         .picking_offset = gl_picking_offset(*data),
-        .atom_mask = mask,
+        .atom_mask = AtomBit_Marked | AtomBit_Visible,
 		.max_bond_length = max_bond_length,
     };
 
-    PUSH_GPU_SECTION(geometry_stage_name[GeometryStage_Highlight]);
     md_gl_draw(&args);
 
     if (md_array_size(glyph_ops) > 0) {
@@ -7324,5 +7300,4 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         args.picking_offset = gl_picking_offset_glyphs(*data);
         md_gl_draw(&args);
     }
-    POP_GPU_SECTION();
 }

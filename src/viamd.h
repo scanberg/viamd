@@ -75,9 +75,6 @@
 // One colour per script property (by its place in the script), shared by every view of it
 inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
-#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
-#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
-
 #define INVALID_PICKING_IDX (~0U)
 
 constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
@@ -190,6 +187,8 @@ enum AtomBit_ {
     AtomBit_Highlighted = 1u << 0,
     AtomBit_Selected    = 1u << 1,
     AtomBit_Visible     = 1u << 2,
+    AtomBit_Marked      = 1u << 3,  // Highlighted or selected: the atoms the mark pass draws (md_gl's atom mask takes all its bits)
+    AtomBit_Dimmed      = 1u << 4,  // Not selected while something is: drawn with less of its colour (selection.color.saturation)
 };
 
 enum MolBit_ {
@@ -1179,7 +1178,7 @@ struct ApplicationState {
 
     struct {
         md_gl_shaders_t shaders = {};
-        md_gl_shaders_t shaders_lean_and_mean = {};
+        md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
     } gl;
 
     // --- MDLIB DATA ---
@@ -1279,19 +1278,27 @@ struct ApplicationState {
         md_bitmask_t highlight_mask {};
         Selection* stored_selections = NULL;
 
+        // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
+        // tint where they are in view, a fainter fill where they are behind something else, and the outline of their
+        // silhouette, in view or not. The alpha is how much of the colour. While something is selected, the atoms that
+        // are not keep 'saturation' of their colour (AtomBit_Dimmed): the scene, not what is drawn over it.
         struct {
             struct {
-                vec4_t visible = {0.0f, 0.0f, 1.0f,  0.3f};
-                vec4_t hidden  = {0.0f, 0.0f, 0.25f, 0.4f};
+                vec4_t visible = {0.15f, 0.40f, 1.00f, 0.35f};
+                vec4_t hidden  = {0.15f, 0.40f, 1.00f, 0.15f};
+                vec4_t outline = {0.25f, 0.55f, 1.00f, 0.90f};
             } selection;
 
             struct {
-                vec4_t visible = {1.0f, 1.0f, 0.0f, 0.3f};
-                vec4_t hidden  = {0.5f, 0.5f, 0.0f, 0.4f};
+                vec4_t visible = {1.00f, 0.85f, 0.10f, 0.35f};
+                vec4_t hidden  = {1.00f, 0.85f, 0.10f, 0.15f};
+                vec4_t outline = {1.00f, 0.85f, 0.10f, 0.90f};
             } highlight;
 
-            float saturation = 0.3f;
+            float saturation = 0.3f;        // Taken into the G-buffer's shaders as they are made (output_snippet)
         } color;
+
+        double highlight_time = 0.0;        // when a highlight last appeared where there was none (ImGui::GetTime()): it fades in from there
 
         struct {
             AtomFilter filter;
@@ -2432,6 +2439,20 @@ static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationS
         .backbone_base = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points,
         .ring_base     = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
     };
+}
+
+// The marks of the selection and the highlight as post-processing puts them over the image (Settings::marks, from
+// selection.color). highlight: how much of the highlight shows; outline_step: the outline's width, about half of it
+static inline void marks_settings(postprocess_pipeline::Settings* settings, const ApplicationState& state, float highlight, int outline_step) {
+    const auto& c = state.selection.color;
+    settings->marks.visible[0] = c.selection.visible;
+    settings->marks.hidden[0]  = c.selection.hidden;
+    settings->marks.outline[0] = c.selection.outline;
+    settings->marks.visible[1] = c.highlight.visible;
+    settings->marks.hidden[1]  = c.highlight.hidden;
+    settings->marks.outline[1] = c.highlight.outline;
+    settings->marks.highlight = highlight;
+    settings->marks.outline_step = outline_step;
 }
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);

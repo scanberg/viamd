@@ -2,6 +2,8 @@
 
 #include <gfx/gl_utils.h>
 
+#include <md_gl.h>
+
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 
@@ -33,6 +35,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
     if (!gbuf->tex.history) glGenTextures(1, &gbuf->tex.history);
     if (!gbuf->tex.history_prev) glGenTextures(1, &gbuf->tex.history_prev);
+    if (!gbuf->tex.marks) glGenTextures(1, &gbuf->tex.marks);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
     // A DEPTH_STENCIL internal format requires format GL_DEPTH_STENCIL and type
@@ -101,6 +104,14 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
 
+    // The marks are drawn over the image made, at its size, unjittered (render()); filtered when they are put over it
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.marks);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, out_width, out_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     glBindTexture(GL_TEXTURE_2D, 0);
 
     gbuf->width = width;
@@ -157,6 +168,17 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     }
     glDeleteFramebuffers(1, &clear_fbo);
 
+    if (!gbuf->fbo_marks) {
+        glGenFramebuffers(1, &gbuf->fbo_marks);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo_marks);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuf->tex.marks, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        const GLenum marks_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (marks_status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("Marks framebuffer is incomplete (0x%04X)", (unsigned int)marks_status);
+        }
+    }
+
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
 
@@ -201,4 +223,37 @@ void gbuffer_free(GBuffer* gbuf) {
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
     if (gbuf->tex.history) glDeleteTextures(1, &gbuf->tex.history);
     if (gbuf->tex.history_prev) glDeleteTextures(1, &gbuf->tex.history_prev);
+    if (gbuf->tex.marks) glDeleteTextures(1, &gbuf->tex.marks);
+    if (gbuf->fbo_marks) glDeleteFramebuffers(1, &gbuf->fbo_marks);
+}
+
+void gbuffer_marks_begin(GBuffer* gbuf) {
+    ASSERT(gbuf);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo_marks);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, gbuf->out_width, gbuf->out_height);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(1, 1, 1, 1);
+    const float zero[4] = {0, 0, 0, 0};
+    glClearBufferfv(GL_COLOR, 0, zero);
+
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(0);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_MAX);
+
+    glActiveTexture(GL_TEXTURE0 + MD_GL_USER_TEXTURE_UNIT);
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void gbuffer_marks_end(GBuffer* gbuf) {
+    ASSERT(gbuf);
+    glActiveTexture(GL_TEXTURE0 + MD_GL_USER_TEXTURE_UNIT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    glBlendEquation(GL_FUNC_ADD);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
 }
