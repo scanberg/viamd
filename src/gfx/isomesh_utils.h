@@ -2,7 +2,7 @@
 
 // ISOSURFACE MESHES
 // The alternative to raycasting the isosurfaces of a volume (volume::render_isosurfaces): triangle meshes
-// extracted from the field itself (md_gto_iso), drawn with stochastic transparency into a multisampled target
+// extracted from the field itself (md_gto_iso), drawn with stochastic transparency a sample per pixel at a time
 // and averaged over frames until the image has converged, when it is kept as it is until something changes.
 //
 // The result is what the raycaster gives: premultiplied linear radiance with coverage in alpha, blended over
@@ -17,9 +17,11 @@
 // until 'converged'.
 //
 // A frame is five passes over the meshes (isomesh.frag: the transmittance, two layers peeled exactly, the
-// stochastic depth behind them, the radiance times visibility; the first at pixel rate, the last four per sample)
-// into a multisampled target, one resolving pass into the mean and one composite. A Target holds 28 bytes per
-// sample and 24 per pixel of history; the samples per pixel (4, 2 or 1) are as many as fit MEMORY_BUDGET.
+// stochastic depth behind them, the radiance times visibility), each a program of its own, into a target of a sample
+// per pixel, one pass into the mean and one composite. The mean antialiases the edges: it is of the caller's
+// jittered projections, or when there are none (proj as proj_no_jitter) of a jitter of its own over the pixel. A
+// Target holds 28 bytes per pixel of the frame and 24 of history (Experiment_Multisampled: 28 per sample, the
+// samples per pixel (4, 2 or 1) as many as fit MEMORY_BUDGET).
 
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
@@ -30,8 +32,9 @@
 
 namespace isomesh {
 
-// Frames averaged before the image is kept as it is
-static constexpr uint32_t MAX_FRAMES = 64;
+// Frames averaged before the image is kept as it is. A frame of a sample per pixel is about twice the noise of one of
+// two samples per pixel, and on an M4 Pro a fifth of its time: more of them
+static constexpr uint32_t MAX_FRAMES = 128;
 
 // Bytes of multisampled storage a Target may take: 4 samples per pixel up to about 1920 x 1200, 2 up to about
 // 2560 x 1600, 1 above
@@ -87,7 +90,7 @@ struct Target {
     uint32_t cur = 0;           // which history holds the mean
     uint32_t frame = 0;         // frames in the mean
     uint64_t hash = 0;          // of what the mean is of
-    uint32_t tex_target = 0;    // of the per-sample textures: GL_TEXTURE_2D_MULTISAMPLE, or GL_TEXTURE_2D (Experiment_OneSample*)
+    uint32_t tex_target = 0;    // of the frame's textures: GL_TEXTURE_2D, or GL_TEXTURE_2D_MULTISAMPLE (Experiment_Multisampled)
     uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
 };
 
@@ -169,12 +172,8 @@ bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
 // Those marked 'timing only' do not draw the right image.
 enum Experiment {
     Experiment_None = 0,
-    Experiment_Specialized,                 // a program per pass, of that pass's code alone (no other pass's discards)
-    Experiment_SpecializedNoFragDepth,      // and the rasterizer's depth: timing only on Apple's OpenGL
-    Experiment_OneSample,                   // a sample per pixel in plain textures: shaded per pixel, the rasterizer's depth
-    Experiment_OneSampleSpecialized,        // and a program per pass
-    Experiment_OneSampleSpecializedSeeded,  // and the depth targets begun with the opaque scene's depth: Peel 0 and
-                                            // Accumulate without discard
+    Experiment_Multisampled,    // as it was: per sample into a multisampled target, one program for the passes after
+                                // the transmittance, writing gl_FragDepth
     Experiment_Count
 };
 void set_experiment(Experiment e);

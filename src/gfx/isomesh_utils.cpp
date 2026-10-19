@@ -11,6 +11,7 @@
 #include <math.h>
 #include <float.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <shaders.inl>
 
@@ -40,16 +41,6 @@ void main() {
     float coverage = 1.0 - t.r;
     vec3 L = (c.a > 1.0e-4) ? c.rgb * (coverage / c.a) : c.rgb;
     out_color = vec4(L, 1.0 - t.g);
-}
-)");
-
-// Experiment_*Seeded: the opaque scene's depth into a depth target, where a clear would put 1
-static constexpr str_t f_shader_src_seed = STR_LIT(R"(
-#version 410 core
-uniform sampler2D u_tex_depth;
-uniform int u_use_depth;
-void main() {
-    gl_FragDepth = (u_use_depth != 0) ? texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).r : 1.0;
 }
 )");
 
@@ -86,16 +77,11 @@ struct AccumulateProgram {
 };
 
 static struct {
-    MeshProgram mesh;       // PASS_PEEL0 .. PASS_ACCUMULATE, per sample
+    MeshProgram mesh;       // Experiment_Multisampled: PASS_PEEL0 .. PASS_ACCUMULATE in one, per sample
     MeshProgram mesh_tod;   // PASS_TRANSMITTANCE, at pixel rate
-    MeshProgram experiment[8][5];       // the per-sample program of an experiment's defines (by EF_* >> 1) and pass (0: all)
-    bool        experiment_tried[8][5];
+    MeshProgram pass[5];                // PASS_PEEL0 .. PASS_ACCUMULATE, a program each (by Pass), a sample per pixel
     AccumulateProgram accumulate;
-    AccumulateProgram accumulate_1;     // of plain textures (Experiment_OneSample*)
-    struct {
-        GLuint program = 0;
-        GLint tex_depth, use_depth;
-    } seed;                             // Experiment_*Seeded
+    AccumulateProgram accumulate_ms;    // of multisampled textures (Experiment_Multisampled)
     struct {
         GLuint program = 0;
         GLint tex_color, tex_t;
@@ -254,22 +240,26 @@ void initialize() {
 
     shutdown();
 
-    gl.mesh.program       = link(vert, frag, "mesh");
+    static const char* const pass_defines[5] = {"", "#define ISOMESH_PASS 1", "#define ISOMESH_PASS 2", "#define ISOMESH_PASS 3",
+                                                "#define ISOMESH_PASS 4"};
+    for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
+        gl.pass[p].program = link(vert, frag, "pass", str_from_cstr(pass_defines[p]));
+    }
     gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
+    gl.mesh.program       = link(vert, frag, "multisampled", STR_LIT("#define ISOMESH_MULTISAMPLE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
-    gl.accumulate_1.program = link(v_shader_src_fs_triangle, acc, "accumulate of plain textures", STR_LIT("#define ISOMESH_ONE_SAMPLE"));
-    gl.seed.program       = link(v_shader_src_fs_triangle, f_shader_src_seed, "seed");
+    gl.accumulate_ms.program = link(v_shader_src_fs_triangle, acc, "multisampled accumulate", STR_LIT("#define ISOMESH_MULTISAMPLE"));
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
-    gl.ok = gl.mesh.program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
+    gl.ok = gl.pass[Pass_Peel0].program && gl.pass[Pass_Peel1].program && gl.pass[Pass_Depth].program &&
+            gl.pass[Pass_Accumulate].program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
     if (!gl.ok) return;
 
 #define LOC(prog, name) glGetUniformLocation(prog, name)
-    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod};
+    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod, &gl.pass[Pass_Peel0], &gl.pass[Pass_Peel1], &gl.pass[Pass_Depth],
+                                          &gl.pass[Pass_Accumulate]};
     for (MeshProgram* mp : mesh_programs) mesh_locations(mp);
     accumulate_locations(&gl.accumulate);
-    accumulate_locations(&gl.accumulate_1);
-    gl.seed.tex_depth = LOC(gl.seed.program, "u_tex_depth");
-    gl.seed.use_depth = LOC(gl.seed.program, "u_use_depth");
+    accumulate_locations(&gl.accumulate_ms);
     gl.composite.tex_color = LOC(gl.composite.program, "u_tex_color");
     gl.composite.tex_t     = LOC(gl.composite.program, "u_tex_t");
 #undef LOC
@@ -292,18 +282,12 @@ void initialize() {
 }
 
 void shutdown() {
-    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.accumulate.program, &gl.accumulate_1.program,
-                          &gl.composite.program, &gl.seed.program};
+    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.pass[Pass_Peel0].program, &gl.pass[Pass_Peel1].program,
+                          &gl.pass[Pass_Depth].program, &gl.pass[Pass_Accumulate].program, &gl.accumulate.program,
+                          &gl.accumulate_ms.program, &gl.composite.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
-    }
-    for (int d = 0; d < 8; ++d) {
-        for (int p = 0; p < 5; ++p) {
-            if (gl.experiment[d][p].program) glDeleteProgram(gl.experiment[d][p].program);
-            gl.experiment[d][p].program = 0;
-            gl.experiment_tried[d][p] = false;
-        }
     }
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     if (gl.fbo) glDeleteFramebuffers(1, &gl.fbo);
@@ -487,60 +471,32 @@ Experiment experiment() { return g_experiment; }
 
 const char* experiment_name(Experiment e) {
     switch (e) {
-        case Experiment_None:                       return "baseline";
-        case Experiment_Specialized:                return "specialized";
-        case Experiment_SpecializedNoFragDepth:     return "specialized-no-fragdepth";
-        case Experiment_OneSample:                  return "1-sample";
-        case Experiment_OneSampleSpecialized:       return "1-sample-specialized";
-        case Experiment_OneSampleSpecializedSeeded: return "1-sample-specialized-seeded";
-        default:                                    return "?";
+        case Experiment_None:         return "one-sample";
+        case Experiment_Multisampled: return "multisampled";
+        default:                      return "?";
     }
 }
 
-// What an experiment changes, as the defines of isomesh.frag (EF_SPECIALIZED: ISOMESH_PASS)
-enum : uint32_t {
-    EF_SPECIALIZED  = 1,
-    EF_NO_FRAGDEPTH = 2,
-    EF_ONE_SAMPLE   = 4,
-    EF_SEEDED       = 8,
-};
-
-static uint32_t experiment_flags(Experiment e) {
-    switch (e) {
-        case Experiment_Specialized:                return EF_SPECIALIZED;
-        case Experiment_SpecializedNoFragDepth:     return EF_SPECIALIZED | EF_NO_FRAGDEPTH;
-        case Experiment_OneSample:                  return EF_ONE_SAMPLE;
-        case Experiment_OneSampleSpecialized:       return EF_ONE_SAMPLE | EF_SPECIALIZED;
-        case Experiment_OneSampleSpecializedSeeded: return EF_ONE_SAMPLE | EF_SPECIALIZED | EF_SEEDED;
-        default:                                    return 0;
-    }
+// The program of a pass: its own, or under Experiment_Multisampled the one of the passes after the transmittance
+static const MeshProgram& mesh_program(Pass pass) {
+    if (pass == Pass_Transmittance) return gl.mesh_tod;
+    if (g_experiment == Experiment_Multisampled && gl.mesh.program) return gl.mesh;
+    return gl.pass[pass];
 }
 
-// The program of a pass per sample under the flags: gl.mesh without any, else built the first time it is asked for
-// (gl.mesh if it does not build)
-static const MeshProgram& mesh_program(uint32_t flags, Pass pass) {
-    if (!flags) return gl.mesh;
-    const int d = (int)((flags >> 1) & 7);
-    const int p = (flags & EF_SPECIALIZED) ? (int)pass : 0;
-    MeshProgram& m = gl.experiment[d][p];
-    if (!gl.experiment_tried[d][p]) {
-        gl.experiment_tried[d][p] = true;
-        char defines[256];
-        int n = 0;
-        if (p)                       n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_PASS %d\n", p);
-        if (flags & EF_NO_FRAGDEPTH) n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_NO_FRAGDEPTH\n");
-        if (flags & EF_ONE_SAMPLE)   n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_ONE_SAMPLE\n");
-        if (flags & EF_SEEDED)       n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_SEEDED\n");
-        const str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
-        const str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
-        m.program = link(vert, frag, experiment_name(g_experiment), str_t{defines, (size_t)n});
-        if (m.program) mesh_locations(&m);
+// The radical inverse of i in base b: Halton's sequence, in [0, 1)
+static float halton(uint32_t i, uint32_t b) {
+    float f = 1.0f, r = 0.0f;
+    while (i > 0) {
+        f /= (float)b;
+        r += f * (float)(i % b);
+        i /= b;
     }
-    return m.program ? m : gl.mesh;
+    return r;
 }
 
-// Experiment_OneSample*: a texture of one sample per pixel. A multisampled texture of one sample is not that
-// everywhere (an implementation may give it more), so a plain one.
+// A texture of a sample per pixel. A multisampled texture of one sample is not that everywhere (an implementation may
+// give it more), so a plain one.
 static GLuint texture_plain(GLenum format, uint32_t width, uint32_t height) {
     const bool depth  = format == GL_DEPTH_COMPONENT24 || format == GL_DEPTH_COMPONENT32F;
     const GLenum base = depth ? GL_DEPTH_COMPONENT : (format == GL_RG16F ? GL_RG : GL_RGBA);
@@ -557,7 +513,7 @@ static GLuint texture_plain(GLenum format, uint32_t width, uint32_t height) {
 }
 
 static bool target_init(Target* t, uint32_t width, uint32_t height) {
-    const bool   plain  = (experiment_flags(g_experiment) & EF_ONE_SAMPLE) != 0;
+    const bool   plain  = g_experiment != Experiment_Multisampled;
     const GLenum target = plain ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
     if (t->fbo && t->width == width && t->height == height && t->tex_target == (uint32_t)target) return true;
     target_free(t);
@@ -770,7 +726,6 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     }
 
     const GLenum   ms_target = (GLenum)t->tex_target;
-    const uint32_t ef = experiment_flags(g_experiment) & (gl.seed.program ? ~0u : ~(uint32_t)EF_SEEDED);
 
     const uint64_t hash = desc_hash(desc);
     if (hash != t->hash) {
@@ -808,7 +763,16 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
     if (any && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
         const mat4_t& V = desc.matrix.view;
-        const mat4_t& P = desc.matrix.proj;
+        // The caller's projection, or when it is not jittered (proj as proj_no_jitter) one of its own jittered over the
+        // pixel by the frame (Halton 2, 3): the mean is then of the pixel's area, the edges antialiased
+        mat4_t P = desc.matrix.proj;
+        if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(mat4_t)) == 0) {
+            const uint32_t n = t->frame + 1;
+            mat4_t J = mat4_ident();
+            J.elem[3][0] = 2.0f * (halton(n, 2) - 0.5f) / (float)w;
+            J.elem[3][1] = 2.0f * (halton(n, 3) - 0.5f) / (float)h;
+            P = J * P;
+        }
         const bool use_depth = desc.render_target.depth != 0;
         glViewport(0, 0, (GLsizei)w, (GLsizei)h);
         glEnable(GL_MULTISAMPLE);
@@ -868,7 +832,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
         // Each pass with its program: the experiment's, if it has one of its own
         auto draw_surfaces = [&](Pass pass) {
-            const MeshProgram& m = (pass == Pass_Transmittance) ? gl.mesh_tod : mesh_program(ef, pass);
+            const MeshProgram& m = mesh_program(pass);
             set_frame_uniforms(m);
             glUniform1i(m.pass, (GLint)pass);
             for (size_t i = 0; i < desc.num_surfaces; ++i) {
@@ -907,27 +871,6 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             }
         };
 
-        // Experiment_*Seeded: a depth target begun with the opaque scene's depth instead of cleared, so that the depth
-        // test keeps out what lies behind the scene (the passes then do not discard it)
-        const bool seeded = (ef & EF_SEEDED) != 0;
-        auto begin_depth = [&]() {
-            if (!seeded) {
-                glClear(GL_DEPTH_BUFFER_BIT);
-                return;
-            }
-            GLboolean mask[4];
-            glGetBooleanv(GL_COLOR_WRITEMASK, mask);
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-            glDepthFunc(GL_ALWAYS);
-            glUseProgram(gl.seed.program);
-            glUniform1i(gl.seed.tex_depth, 0);
-            glUniform1i(gl.seed.use_depth, use_depth ? 1 : 0);
-            glBindVertexArray(gl.vao);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-            glDepthFunc(GL_LESS);
-            glColorMask(mask[0], mask[1], mask[2], mask[3]);
-        };
-
         // The coverage of all the surfaces together and the optical depth of what they enclose, at pixel rate (its
         // own program): it compares with nothing per sample, so the coverage of the samples is all it needs of them
         PUSH_GPU_SECTION("Transmittance")
@@ -960,8 +903,8 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
                 glClearBufferfv(GL_COLOR, 0, zero);     // opacity 0: no layer
             }
-            begin_depth();
-            glColorMask(k == 0, k == 1 || seeded, GL_FALSE, GL_FALSE);     // seeded: Peel 0 writes both, no mask
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
             if (k == 1) bind_texture(6, ms_target, t->tex_ms_peel_depth[0]);
             draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()
@@ -973,7 +916,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         PUSH_GPU_SECTION("Stochastic depth")
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
         glDrawBuffer(GL_NONE);
-        begin_depth();
+        glClear(GL_DEPTH_BUFFER_BIT);
         bind_texture(7, ms_target, t->tex_ms_peel_depth[1]);
         draw_surfaces(Pass_Depth);
         POP_GPU_SECTION()
@@ -1003,7 +946,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         PUSH_GPU_SECTION("Mean")
         const uint32_t next = 1 - t->cur;
         attach(t->fbo, t->tex_history_color[next], t->tex_history_t[next]);
-        auto& a = (ms_target == GL_TEXTURE_2D && gl.accumulate_1.program) ? gl.accumulate_1 : gl.accumulate;
+        auto& a = (ms_target == GL_TEXTURE_2D_MULTISAMPLE && gl.accumulate_ms.program) ? gl.accumulate_ms : gl.accumulate;
         glUseProgram(a.program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(ms_target, t->tex_ms_color);
