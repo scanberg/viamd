@@ -8,6 +8,7 @@
 #include <core/md_arena_allocator.h>
 
 #include <math.h>
+#include <initializer_list>     // The loops over braced lists: libc++ does not bring it in through the others
 
 // The colour space conversions are header only and are what the representation colouring and the
 // colour optimizer (optimize_colors) are built on. Round trips are the useful property: a conversion pair that
