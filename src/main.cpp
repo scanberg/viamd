@@ -5044,9 +5044,13 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
                       (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
                       (unsigned)state->gbuffer.width, (unsigned)state->gbuffer.height);
     if (iso_mesh_target.width) {
-        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %u samples per pixel, %u of %u frames in the mean\n",
-                          iso_mesh_target.width, iso_mesh_target.height, iso_mesh_target.samples, iso_mesh_target.frame,
-                          isomesh::MAX_FRAMES);
+        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %u samples per pixel, ", iso_mesh_target.width,
+                          iso_mesh_target.height, iso_mesh_target.samples);
+        if (state->profiler_keep_isomeshes) {
+            md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
+        } else {
+            md_str_writer_fmt(sw, "%u of %u frames in the mean\n", iso_mesh_target.frame, isomesh::MAX_FRAMES);
+        }
     }
 }
 
@@ -5103,6 +5107,10 @@ static void draw_profiler_window(ApplicationState* data) {
         }
         ImGui::SetItemTooltip("The same, to the clipboard");
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Checkbox("Isosurface meshes every frame", &data->profiler_keep_isomeshes);
+        ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
+                              "view kept still");
 
         profiler::draw_table();
     }
@@ -7201,6 +7209,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
             .environment = state->visuals.shading.environment,
         },
         .scene_hash = scene_hash,
+        .keep_drawing = state->profiler_keep_isomeshes,
     };
     if (num_surfaces == 0) {
         isomesh::target_free(&iso_mesh_target);

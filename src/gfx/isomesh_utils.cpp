@@ -670,7 +670,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     glFrontFace(GL_CCW);
     glBlendEquation(GL_FUNC_ADD);
 
-    if (any && t->frame < MAX_FRAMES) {
+    if (any && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
         const mat4_t& V = desc.matrix.view;
         const mat4_t& P = desc.matrix.proj;
         const bool use_depth = desc.render_target.depth != 0;
@@ -852,7 +852,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glUniform1i(a.tex_history_color, 2);
         glUniform1i(a.tex_history_t, 3);
         glUniform1i(a.samples, (GLint)t->samples);
-        glUniform1f(a.weight, 1.0f / (float)(t->frame + 1));
+        glUniform1f(a.weight, 1.0f / (float)(MIN(t->frame, MAX_FRAMES - 1) + 1));   // past MAX_FRAMES: keep_drawing
         glBindVertexArray(gl.vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glActiveTexture(GL_TEXTURE0);
@@ -904,7 +904,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     POP_GPU_SECTION()
     restore_state(saved);
 
-    if (converged) *converged = !any || t->frame >= MAX_FRAMES;
+    if (converged) *converged = !any || (t->frame >= MAX_FRAMES && !desc.keep_drawing);
     return done;
 }
 

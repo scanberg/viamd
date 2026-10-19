@@ -13,7 +13,8 @@
 // The frames are independent estimates of the composite; a Target keeps their mean. It restarts when anything
 // it was given changes (the meshes, their colours, the view, the projection without its jitter, the shading,
 // the size, desc.scene_hash), and after MAX_FRAMES frames it stops drawing the meshes and only composites what
-// it has. A caller drawing into a view that is redrawn only on change (a panel) redraws until 'converged'.
+// it has (unless desc.keep_drawing). A caller drawing into a view that is redrawn only on change (a panel) redraws
+// until 'converged'.
 //
 // A frame is five passes over the meshes (isomesh.frag: the transmittance, two layers peeled exactly, the
 // stochastic depth behind them, the radiance times visibility; the last four per sample) into a multisampled
@@ -151,6 +152,10 @@ struct RenderDesc {
     // Whatever else the image depends on that the desc does not show: the opaque scene behind the surfaces,
     // the contents of the colour and field volumes
     uint64_t scene_hash = 0;
+
+    // For profiling a still view: the meshes drawn every frame, past MAX_FRAMES too, the mean then of about the last
+    // MAX_FRAMES frames (each new one weighs 1 / MAX_FRAMES). It never converges.
+    bool keep_drawing = false;
 };
 
 // Returns true when the colour target holds this pass's result (cleared and/or drawn into). 'converged' (optional)
