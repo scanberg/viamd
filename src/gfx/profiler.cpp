@@ -88,6 +88,7 @@ static struct {
     int    gpu_frames = 0;         // frames whose GPU times went into it
     int    published_cpu_frames = 0;   // the same of the window published
     int    published_gpu_frames = 0;
+    int    publish_count = 0;
     bool   warned = false;
 } g;
 
@@ -212,6 +213,7 @@ static void publish() {
     }
     g.published_cpu_frames = g.cpu_frames;
     g.published_gpu_frames = g.gpu_frames;
+    g.publish_count += 1;
     g.window_start = g.frame;
     g.cpu_frames = 0;
     g.gpu_frames = 0;
@@ -432,29 +434,37 @@ static void write_csv_field(md_writer_i* w, const char* s) {
     md_write_char(w, '"');
 }
 
-// The section and those shown within it, in the order of the table
-static void write_csv_rows(md_writer_i* w, int i) {
+// The section and those shown within it, in the order of the table: all of them, or with 'subtree' those named so,
+// what is within them and the frame
+static void write_csv_node(md_writer_i* w, int i, const char* subtree, const char* first, bool inside) {
     const Node& n = g.nodes[i];
-    // Its path: the names from the root, written before the rows within it are (so one buffer does for all of them)
-    static char path[MAX_DEPTH * NAME_LEN];
-    int chain[MAX_DEPTH + 1];
-    int count = 0;
-    for (int p = i; p >= 0 && count < (int)ARRAY_SIZE(chain); p = g.nodes[p].parent) chain[count++] = p;
-    size_t len = 0;
-    path[0] = '\0';
-    for (int k = count - 1; k >= 0 && len + 1 < sizeof(path); --k) {
-        const int m = snprintf(path + len, sizeof(path) - len, k == count - 1 ? "%s" : "/%s", g.nodes[chain[k]].name);
-        if (m < 0) break;
-        len = MIN(len + (size_t)m, sizeof(path) - 1);
+    inside = inside || !subtree || strcmp(n.name, subtree) == 0;
+    if (inside || i == 0) {
+        // Its path: the names from the root, written before the rows within it are (so one buffer does for all of them)
+        static char path[MAX_DEPTH * NAME_LEN];
+        int chain[MAX_DEPTH + 1];
+        int count = 0;
+        for (int p = i; p >= 0 && count < (int)ARRAY_SIZE(chain); p = g.nodes[p].parent) chain[count++] = p;
+        size_t len = 0;
+        path[0] = '\0';
+        for (int k = count - 1; k >= 0 && len + 1 < sizeof(path); --k) {
+            const int m = snprintf(path + len, sizeof(path) - len, k == count - 1 ? "%s" : "/%s", g.nodes[chain[k]].name);
+            if (m < 0) break;
+            len = MIN(len + (size_t)m, sizeof(path) - 1);
+        }
+        if (first) {
+            write_csv_field(w, first);
+            md_write_char(w, ',');
+        }
+        write_csv_field(w, path);
+        md_writef(w, ",%.4f,%.4f,%.4f,%.2f\n", n.gpu_ms, n.gpu_self_ms, n.cpu_ms, n.calls);
     }
-    write_csv_field(w, path);
-    md_writef(w, ",%.4f,%.4f,%.4f,%.2f\n", n.gpu_ms, n.gpu_self_ms, n.cpu_ms, n.calls);
     for (int c = n.first_child; c >= 0; c = g.nodes[c].next_sibling) {
-        if (g.nodes[c].shown) write_csv_rows(w, c);
+        if (g.nodes[c].shown) write_csv_node(w, c, subtree, first, inside);
     }
 }
 
-void write_csv(md_writer_i* w, const char* info) {
+void write_csv_header(md_writer_i* w, const char* info, const char* first_column) {
     char when[64] = "";
     const time_t t = time(nullptr);
     if (const struct tm* tm = localtime(&t)) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", tm);
@@ -478,8 +488,22 @@ void write_csv(md_writer_i* w, const char* info) {
         md_write_char(w, '\n');
         line = end ? end + 1 : line + n;
     }
+    if (first_column) {
+        write_csv_field(w, first_column);
+        md_write_char(w, ',');
+    }
     md_write_cstr(w, "section,gpu_ms,gpu_self_ms,cpu_ms,calls\n");
-    if (g.node_count && g.nodes[0].shown) write_csv_rows(w, 0);
 }
+
+void write_csv_rows(md_writer_i* w, const char* subtree, const char* first) {
+    if (g.node_count && g.nodes[0].shown) write_csv_node(w, 0, subtree, first, false);
+}
+
+void write_csv(md_writer_i* w, const char* info) {
+    write_csv_header(w, info);
+    write_csv_rows(w);
+}
+
+int publish_count() { return g.publish_count; }
 
 }  // namespace profiler

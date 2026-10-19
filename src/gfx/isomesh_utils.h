@@ -87,6 +87,8 @@ struct Target {
     uint32_t cur = 0;           // which history holds the mean
     uint32_t frame = 0;         // frames in the mean
     uint64_t hash = 0;          // of what the mean is of
+    uint32_t sample_cap = 0;    // the samples per pixel it was made with at most (Experiment_OneSample*)
+    uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
 };
 
 void target_free(Target* target);
@@ -161,5 +163,20 @@ struct RenderDesc {
 // Returns true when the colour target holds this pass's result (cleared and/or drawn into). 'converged' (optional)
 // says whether the image is final: nothing changes it until the desc does.
 bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
+
+// EXPERIMENTS
+// For timing the passes (Windows > Profiler): what render() does differently, for every Target, until it is set back.
+// Those marked 'timing only' do not draw the right image.
+enum Experiment {
+    Experiment_None = 0,
+    Experiment_NoFragDepth,             // timing only on Apple's OpenGL: the depth the rasterizer writes, not the shader
+    Experiment_OneSample,               // one sample per pixel
+    Experiment_OneSampleNoFragDepth,    // and the depth the rasterizer writes, which is then the sample's
+    Experiment_GeometryOnly,            // timing only: the meshes drawn with GL_RASTERIZER_DISCARD
+    Experiment_Count
+};
+void set_experiment(Experiment e);
+Experiment experiment();
+const char* experiment_name(Experiment e);     // a short one, for tables
 
 }  // namespace isomesh

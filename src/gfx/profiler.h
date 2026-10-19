@@ -69,6 +69,15 @@ void draw_summary();
 // without, its CPU time, in ms per frame, and its calls per frame. Before anything is published, the header alone.
 void write_csv(md_writer_i* w, const char* info);
 
+// Its parts, for tables of one's own: the '#' lines and the header, after a first column named 'first_column' if one
+// is given; and the rows, with 'subtree' only those of the sections named so, what is within them and the frame's,
+// each after a first field 'first' if one is given
+void write_csv_header(md_writer_i* w, const char* info, const char* first_column = nullptr);
+void write_csv_rows(md_writer_i* w, const char* subtree = nullptr, const char* first = nullptr);
+
+// How many times the times have been published (each time of the frames since the time before)
+int publish_count();
+
 }  // namespace profiler
 
 #define PROFILER_CONCAT_(a, b) a##b

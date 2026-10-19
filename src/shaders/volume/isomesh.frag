@@ -399,7 +399,9 @@ void main() {
     // fragment then misses its own peeled depth by its slope times the offset of the sample, far beyond
     // PEEL_EPS: the layers of whole triangles misclassified, bands of them where the slope turns. Where
     // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
+#ifndef ISOMESH_NO_FRAGDEPTH   // an experiment, for timing (isomesh::Experiment_*NoFragDepth)
     gl_FragDepth = gl_FragCoord.z;
+#endif
 
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;

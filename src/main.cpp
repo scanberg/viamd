@@ -5044,13 +5044,67 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
                       (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
                       (unsigned)state->gbuffer.width, (unsigned)state->gbuffer.height);
     if (iso_mesh_target.width) {
-        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %u samples per pixel, ", iso_mesh_target.width,
-                          iso_mesh_target.height, iso_mesh_target.samples);
+        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %u samples per pixel, %llu triangles, ", iso_mesh_target.width,
+                          iso_mesh_target.height, iso_mesh_target.samples, (unsigned long long)iso_mesh_target.triangles);
         if (state->profiler_keep_isomeshes) {
             md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
         } else {
             md_str_writer_fmt(sw, "%u of %u frames in the mean\n", iso_mesh_target.frame, isomesh::MAX_FRAMES);
         }
+    }
+    if (isomesh::experiment() != isomesh::Experiment_None) {
+        md_str_writer_fmt(sw, "isosurface mesh experiment: %s\n", isomesh::experiment_name(isomesh::experiment()));
+    }
+}
+
+// The isosurface mesh experiments in turn (isomesh::Experiment), the meshes drawn every frame and each experiment timed
+// over a window of the profiler's of its own (the second after it was set, which the one before does not reach into):
+// the rows of their ISOSURFACE MESHES in one table, to the clipboard
+static struct {
+    int  step = -1;             // the experiment being timed, -1: none
+    int  publish_at = 0;        // the profiler's publish its times are taken from
+    bool keep_before = false;
+    isomesh::Experiment experiment_before = isomesh::Experiment_None;
+    md_str_writer_t table = {};
+    bool has_table = false;
+} profiler_sweep;
+
+static void profiler_sweep_start(ApplicationState* state) {
+    auto& s = profiler_sweep;
+    if (!s.has_table) {
+        s.table = md_str_writer_create(md_get_heap_allocator());
+        s.has_table = true;
+    }
+    md_str_writer_reset(&s.table);
+    md_temp_scope_t temp = md_temp_begin();
+    md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
+    profiler_export_info(&info, state);
+    md_str_writer_fmt(&info, "sweep: each experiment over the profiler's second window after it was set");
+    profiler::write_csv_header(&s.table.w, md_str_writer_to_cstr(&info), "experiment");
+    md_temp_end(temp);
+
+    s.keep_before = state->profiler_keep_isomeshes;
+    s.experiment_before = isomesh::experiment();
+    state->profiler_keep_isomeshes = true;
+    s.step = 0;
+    isomesh::set_experiment((isomesh::Experiment)s.step);
+    s.publish_at = profiler::publish_count() + 2;
+}
+
+static void profiler_sweep_update(ApplicationState* state) {
+    auto& s = profiler_sweep;
+    if (s.step < 0 || profiler::publish_count() < s.publish_at) return;
+    profiler::write_csv_rows(&s.table.w, "ISOSURFACE MESHES", isomesh::experiment_name((isomesh::Experiment)s.step));
+    s.step += 1;
+    if (s.step < isomesh::Experiment_Count) {
+        isomesh::set_experiment((isomesh::Experiment)s.step);
+        s.publish_at = profiler::publish_count() + 2;
+    } else {
+        s.step = -1;
+        isomesh::set_experiment(s.experiment_before);
+        state->profiler_keep_isomeshes = s.keep_before;
+        ImGui::SetClipboardText(md_str_writer_to_cstr(&s.table));
+        VIAMD_LOG_INFO("Profiler: the sweep's times are on the clipboard");
     }
 }
 
@@ -5081,6 +5135,7 @@ static void profiler_export_csv(const ApplicationState* state, str_t path) {
 static void draw_profiler_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 36.0f, ImGui::GetFontSize() * 32.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Profiler", &data->show_profiler_window)) {
+        profiler_sweep_update(data);
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("Per frame, averaged over 30 frames. GPU: the work a section issued; CPU: from its start to its "
                             "end. The wait for vsync is outside the frame.");
@@ -5111,6 +5166,29 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::Checkbox("Isosurface meshes every frame", &data->profiler_keep_isomeshes);
         ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
                               "view kept still");
+
+        // The isosurface mesh experiments (isomesh::Experiment): one at a time, or all in turn
+        const bool sweeping = profiler_sweep.step >= 0;
+        ImGui::BeginDisabled(sweeping);
+        const char* names[isomesh::Experiment_Count];
+        for (int i = 0; i < isomesh::Experiment_Count; ++i) names[i] = isomesh::experiment_name((isomesh::Experiment)i);
+        int e = (int)isomesh::experiment();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        if (ImGui::Combo("Experiment", &e, names, isomesh::Experiment_Count)) isomesh::set_experiment((isomesh::Experiment)e);
+        ImGui::SetItemTooltip("What the isosurface meshes are drawn with: no-fragdepth and geometry-only for their times "
+                              "only, the image is not right");
+        ImGui::SameLine();
+        if (ImGui::Button("Sweep")) profiler_sweep_start(data);
+        ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. The times "
+                              "go to the clipboard");
+        ImGui::EndDisabled();
+        if (sweeping) {
+            ImGui::SameLine();
+            ImGui::Text("%d / %d", profiler_sweep.step + 1, (int)isomesh::Experiment_Count);
+        } else if (profiler_sweep.has_table && !md_str_writer_empty(&profiler_sweep.table)) {
+            ImGui::SameLine();
+            if (ImGui::Button("Copy sweep")) ImGui::SetClipboardText(md_str_writer_to_cstr(&profiler_sweep.table));
+        }
 
         profiler::draw_table();
     }
