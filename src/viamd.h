@@ -1439,7 +1439,8 @@ struct ApplicationState {
             float specular = 0.25f;     // basic
         } shading;
 
-        // Shadows of the directional light, found in screen space
+        // The visibilities of the two lights, found in screen space: the shadows of the directional light and the
+        // ambient occlusion of the surroundings. They share a temporal filter.
         struct {
             bool enabled = true;
             float softness = 10.0f;     // the light's angular radius, degrees
@@ -1448,9 +1449,10 @@ struct ApplicationState {
         struct { 
             bool enabled = true;
             float intensity = 5.0f;
-            bool temporal = true;
             postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Performance;
         } ssao;
+
+        bool occlusion_temporal = true; // accumulate the shadows and the ambient occlusion over frames
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
         struct {

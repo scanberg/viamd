@@ -711,7 +711,7 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
-    app_settings::bind(STR_LIT("ssao_temporal"), &state.visuals.ssao.temporal);
+    app_settings::bind(STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
     app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
     app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
@@ -1737,7 +1737,6 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Visuals")) {
             const bool basic_shading = data->visuals.shading.mode == postprocess_pipeline::ShadingMode_Basic;
             const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
-            char ms_text[32];
 
             // A menu sizes itself to what is in it, and the rows fill what there is: the width is set here
             ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 26.0f, 0.0f));
@@ -1817,7 +1816,7 @@ static void draw_main_menu(ApplicationState* data) {
                     data->visuals.shading.mode = (postprocess_pipeline::ShadingMode)mode;
                 }
                 prop::row("light", "Strength of the directional light, relative to the default (1).\n"
-                                   "More makes the shapes stand out more, and the scene brighter. 0 leaves the surroundings only.");
+                                   "More makes the shapes stand out more, its shadows deeper, and the scene brighter. 0 leaves the surroundings only.");
                 ImGui::SliderFloat("##light", &data->visuals.shading.light, 0.0f, 4.0f, (const char*)u8"%.2f×");
                 if (!basic_shading) {
                     prop::row("environment", "Strength of the light from all around (a sky a little brighter than the ground), relative to the default (1).\n"
@@ -1845,56 +1844,63 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            // The visibilities of the two lights: the shadows (of the light), the ambient occlusion (of the surroundings)
-            bool shadows_toggled = false;
-            if (prop::section_toggle("Shadows", &data->visuals.shadows.enabled, &shadows_toggled, false,
-                                     "Shadows of the directional light: darken cavities and what lies behind other parts, where the light is blocked.\n"
-                                     "Found in what is on screen (screen space): what is off screen, or hidden behind a surface, casts none.")) {
-                // Its GPU time in the main view
-                const float shadow_ms = profiler::gpu_ms("Shadows", "Render");
-                ms_text[0] = '\0';
-                if (shadow_ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", shadow_ms);
-                prop::row("softness", "The size of the light, as its angular radius. A larger light casts softer shadows,\n"
-                                      "whose edges blur more the further they fall from what casts them.");
-                ImGui::SetNextItemWidth(prop::control_width_before(ms_text));
-                machine_dirty |= ImGui::SliderFloat("##softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX, (const char*)u8"%.1f°", ImGuiSliderFlags_AlwaysClamp);
-                if (ms_text[0]) {
-                    ImGui::SameLine(0.0f, 2.0f * gap);
-                    ImGui::TextDisabled("%s", ms_text);
-                    ImGui::SetItemTooltip("GPU time per frame\nRays: %.3f ms\nTotal (with filtering): %.3f ms", profiler::gpu_ms("Shadow Rays", "Render"), shadow_ms);
+            // The visibilities of the two lights, found in what is on screen: the shadows (of the directional light) and
+            // the ambient occlusion (of the surroundings). Each has its switch and its own settings beside it; they share
+            // the temporal filter and the time.
+            if (prop::section("Shadows & Occlusion")) {
+                const bool shadows_on = data->visuals.shadows.enabled;
+                const bool ao_on = data->visuals.ssao.enabled;
+
+                prop::row("shadows", "Shadows of the directional light: darken cavities and what lies behind other parts, where the light is blocked.\n"
+                                     "How dark they are is how strong the light is against the surroundings (Shading: Light, Environment).\n"
+                                     "Found in what is on screen: what is off screen, or hidden behind a surface, casts none.");
+                machine_dirty |= ImGui::Checkbox("##shadows", &data->visuals.shadows.enabled);
+                if (shadows_on) {
+                    ImGui::SameLine(0.0f, gap);
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    machine_dirty |= ImGui::SliderFloat("##softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX,
+                                                        (const char*)u8"softness %.1f°", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::SetItemTooltip("The size of the light, as its angular radius. A larger light casts softer shadows,\n"
+                                          "whose edges blur more the further they fall from what casts them.");
+                }
+
+                prop::row("ambient occlusion", "Darken creases and cavities, where less of the surroundings' light reaches (SSAO).\n"
+                                               "Performance: point samples.\n"
+                                               "Quality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
+                machine_dirty |= ImGui::Checkbox("##ssao", &data->visuals.ssao.enabled);
+                if (ao_on) {
+                    const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
+                    int mode = (int)data->visuals.ssao.mode;
+                    ImGui::SameLine(0.0f, gap);
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::Combo("##ssao_mode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                        data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
+                        machine_dirty = true;
+                    }
+                    prop::row("occlusion strength", "How much the ambient occlusion darkens. The shadows have no such setting: they are as dark as the light is strong.");
+                    machine_dirty |= ImGui::SliderFloat("##ssao_intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
+                }
+
+                if (shadows_on || ao_on) {
+                    prop::row("temporal filter", "Accumulate the shadows and the occlusion over frames: removes the flicker in crevasses and smooths the soft shadows.\n"
+                                                 "Off gives a fixed sample pattern instead.");
+                    machine_dirty |= ImGui::Checkbox("##occlusion_temporal", &data->visuals.occlusion_temporal);
+
+                    // Their GPU time in the main view (the component windows' have their own), with filtering
+                    const float shadow_ms = shadows_on ? profiler::gpu_ms("Shadows", "Render") : 0.0f;
+                    const float ao_ms = ao_on ? profiler::gpu_ms("SSAO", "Render") : 0.0f;
+                    if (shadow_ms + ao_ms > 0.0f) {
+                        prop::row("GPU time");
+                        ImGui::TextDisabled("%.2f ms", shadow_ms + ao_ms);
+                        ImGui::SetItemTooltip("GPU time per frame, with filtering\n"
+                                              "Shadows: %.3f ms (rays %.3f ms)\n"
+                                              "Ambient occlusion: %.3f ms (estimator %.3f ms)",
+                                              shadow_ms, shadows_on ? profiler::gpu_ms("Shadow Rays", "Render") : 0.0f,
+                                              ao_ms, ao_on ? profiler::gpu_ms("AO", "Render") : 0.0f);
+                    }
                 }
                 prop::section_end();
             }
-            machine_dirty |= shadows_toggled;
-
-            bool toggled = false;
-
-            if (prop::section_toggle("Ambient Occlusion", &data->visuals.ssao.enabled, &toggled, false,
-                                     "Darken creases and cavities, where less of the surroundings' light reaches (SSAO)")) {
-                const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
-                int mode = (int)data->visuals.ssao.mode;
-                // Its GPU time in the main view (the component windows' have their own)
-                const float ao_ms = profiler::gpu_ms("SSAO", "Render");
-                ms_text[0] = '\0';
-                if (ao_ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", ao_ms);
-                prop::row("mode", "Performance: point samples.\nQuality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
-                ImGui::SetNextItemWidth(prop::control_width_before(ms_text));
-                if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
-                    data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
-                    machine_dirty = true;
-                }
-                if (ms_text[0]) {
-                    ImGui::SameLine(0.0f, 2.0f * gap);
-                    ImGui::TextDisabled("%s", ms_text);
-                    ImGui::SetItemTooltip("GPU time per frame\nEstimator: %.3f ms\nTotal (with filtering): %.3f ms", profiler::gpu_ms("AO", "Render"), ao_ms);
-                }
-                prop::row("intensity");
-                machine_dirty |= ImGui::SliderFloat("##intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
-                prop::row("temporal filter", "Accumulate the occlusion over frames: removes the flicker in crevasses and allows a sharper result.\nOff gives a fixed sample pattern instead.");
-                machine_dirty |= ImGui::Checkbox("##temporal", &data->visuals.ssao.temporal);
-                prop::section_end();
-            }
-            machine_dirty |= toggled;
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
             if (prop::section_toggle("Cone Traced AO", &data->visuals.cone_traced_ao.enabled)) {
                 prop::row("intensity");
@@ -6517,8 +6523,8 @@ static bool input_activity() {
 }
 
 // The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
-// feedback on a still view) and twice through the jitter, the temporal ambient occlusion and the shadows likewise (their
-// histories, 32 frames: twice through their sample pattern); else the one frame
+// feedback on a still view) and twice through the jitter, the shadows and the ambient occlusion likewise when they are
+// filtered over time (their histories, 32 frames: twice through their sample patterns); else the one frame
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
@@ -6526,10 +6532,8 @@ static uint32_t settle_frames(const ApplicationState* state) {
         n = (uint32_t)ceil(log(0.01) / log(feedback));
         n = MAX(n, 2 * jitter_count(state));
     }
-    if (state->visuals.ssao.enabled && state->visuals.ssao.temporal) {
-        n = MAX(n, 32u);
-    }
-    if (state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f) {
+    const bool shadows = state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f;
+    if ((shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal) {
         n = MAX(n, 32u);
     }
     return CLAMP(n, 1u, 240u);
@@ -6720,10 +6724,11 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
 
     settings.shadows.enabled = state->visuals.shadows.enabled;
     settings.shadows.softness = state->visuals.shadows.softness;
+    settings.shadows.temporal = state->visuals.occlusion_temporal;
 
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
-    settings.ssao.temporal = state->visuals.ssao.temporal;
+    settings.ssao.temporal = state->visuals.occlusion_temporal;
     settings.ssao.mode = state->visuals.ssao.mode;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
