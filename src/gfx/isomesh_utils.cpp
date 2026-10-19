@@ -55,18 +55,23 @@ enum Pass {     // isomesh.frag
     Pass_Accumulate    = 4,
 };
 
+// isomesh.frag, built twice: PASS_TRANSMITTANCE at pixel rate (ISOMESH_TRANSMITTANCE) and the other passes per
+// sample. A uniform one of them has not got is at -1, which glUniform ignores, so both are set up alike.
+struct MeshProgram {
+    GLuint program = 0;
+    GLint model, view, proj;
+    GLint color, coloring, world_to_volume, tex_color_volume, tex_field, tex_field_colormap, field_beg, field_inv_ext;
+    GLint tex_depth, use_depth, pass, frame, samples, surface_id;
+    GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise;
+    GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
+    GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
+    GLint basic, basic_ambient, basic_specular, linear_colors, light_strength;
+    GLint isoline_count, isoline_values, isoline_hover, isoline_hover_value, isoline_width;
+};
+
 static struct {
-    struct {
-        GLuint program = 0;
-        GLint model, view, proj;
-        GLint color, coloring, world_to_volume, tex_color_volume, tex_field, tex_field_colormap, field_beg, field_inv_ext;
-        GLint tex_depth, use_depth, pass, frame, samples, surface_id;
-        GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise;
-        GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
-        GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
-        GLint basic, basic_ambient, basic_specular, linear_colors, light_strength;
-        GLint isoline_count, isoline_values, isoline_hover, isoline_hover_value, isoline_width;
-    } mesh;
+    MeshProgram mesh;       // PASS_PEEL0 .. PASS_ACCUMULATE, per sample
+    MeshProgram mesh_tod;   // PASS_TRANSMITTANCE, at pixel rate
     struct {
         GLuint program = 0;
         GLint tex_color, tex_tod, samples, tex_history_color, tex_history_t, weight;
@@ -172,9 +177,9 @@ static void blue_noise_generate(float* out, int n) {
     md_free(md_get_heap_allocator(), energy0, sizeof(float) * N);
 }
 
-static GLuint link(str_t v_src, str_t f_src, const char* name) {
+static GLuint link(str_t v_src, str_t f_src, const char* name, str_t f_defines = {}) {
     GLuint v = gl::compile_shader_from_source(v_src, GL_VERTEX_SHADER);
-    GLuint f = gl::compile_shader_from_source(f_src, GL_FRAGMENT_SHADER);
+    GLuint f = gl::compile_shader_from_source(f_src, GL_FRAGMENT_SHADER, f_defines);
     GLuint p = 0;
     if (v && f) {
         p = glCreateProgram();
@@ -198,14 +203,16 @@ void initialize() {
     shutdown();
 
     gl.mesh.program       = link(vert, frag, "mesh");
+    gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
-    gl.ok = gl.mesh.program && gl.accumulate.program && gl.composite.program;
+    gl.ok = gl.mesh.program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
     if (!gl.ok) return;
 
 #define LOC(prog, name) glGetUniformLocation(prog, name)
-    {
-        auto& m = gl.mesh;
+    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod};
+    for (MeshProgram* mp : mesh_programs) {
+        auto& m = *mp;
         const GLuint p = m.program;
         m.model = LOC(p, "u_model"); m.view = LOC(p, "u_view"); m.proj = LOC(p, "u_proj");
         m.color = LOC(p, "u_color"); m.coloring = LOC(p, "u_coloring"); m.world_to_volume = LOC(p, "u_world_to_volume");
@@ -254,7 +261,7 @@ void initialize() {
 }
 
 void shutdown() {
-    GLuint* programs[] = {&gl.mesh.program, &gl.accumulate.program, &gl.composite.program};
+    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.accumulate.program, &gl.composite.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
@@ -693,41 +700,47 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         const mat4_t inv_proj = mat4_inverse(P);
         const float inv_res[2] = {1.0f / (float)w, 1.0f / (float)h};
 
-        auto& m = gl.mesh;
-        glUseProgram(m.program);
         bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
-        glUniform1i(m.tex_depth, 0);
-        glUniform1i(m.tex_tod, 1);
-        glUniform1i(m.tex_color_volume, 2);
-        glUniform1i(m.tex_field, 3);
-        glUniform1i(m.tex_field_colormap, 4);
         bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
-        glUniform1i(m.tex_blue_noise, 5);
-        glUniform1i(m.tex_peel_depth0, 6);
-        glUniform1i(m.tex_peel_depth1, 7);
-        glUniform1i(m.tex_peel_opacity, 8);
-        glUniform1i(m.use_depth, use_depth ? 1 : 0);
-        glUniform1ui(m.frame, t->frame);
-        glUniform1i(m.samples, (GLint)t->samples);
-        glUniformMatrix4fv(m.view, 1, GL_FALSE, V.elem[0]);
-        glUniformMatrix4fv(m.proj, 1, GL_FALSE, P.elem[0]);
-        glUniformMatrix4fv(m.inv_proj, 1, GL_FALSE, inv_proj.elem[0]);
-        glUniform2fv(m.inv_res, 1, inv_res);
-        glUniform1i(m.ortho, ortho ? 1 : 0);
-        glUniform1f(m.od_ref, od_ref);
-        glUniform3fv(m.light_dir, 1, light.light_dir.elem);
-        glUniform3fv(m.dir_radiance, 1, light.light_irradiance.elem);
-        glUniform3fv(m.sky_radiance, 1, sky.elem);
-        glUniform3fv(m.ground_radiance, 1, ground.elem);
-        glUniform1f(m.roughness, desc.shading.roughness);
-        glUniform1f(m.F0, F0);
-        glUniform1f(m.basic, desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f);
-        glUniform1f(m.basic_ambient, CLAMP(desc.shading.ambient, 0.0f, 1.0f));
-        glUniform1f(m.basic_specular, MAX(desc.shading.specular, 0.0f));
-        glUniform1f(m.linear_colors, desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f);
-        glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
 
-        auto draw_surfaces = [&](Pass pass) {
+        // What the draws of the frame share, in both programs
+        auto set_frame_uniforms = [&](const MeshProgram& m) {
+            glUseProgram(m.program);
+            glUniform1i(m.tex_depth, 0);
+            glUniform1i(m.tex_tod, 1);
+            glUniform1i(m.tex_color_volume, 2);
+            glUniform1i(m.tex_field, 3);
+            glUniform1i(m.tex_field_colormap, 4);
+            glUniform1i(m.tex_blue_noise, 5);
+            glUniform1i(m.tex_peel_depth0, 6);
+            glUniform1i(m.tex_peel_depth1, 7);
+            glUniform1i(m.tex_peel_opacity, 8);
+            glUniform1i(m.use_depth, use_depth ? 1 : 0);
+            glUniform1ui(m.frame, t->frame);
+            glUniform1i(m.samples, (GLint)t->samples);
+            glUniformMatrix4fv(m.view, 1, GL_FALSE, V.elem[0]);
+            glUniformMatrix4fv(m.proj, 1, GL_FALSE, P.elem[0]);
+            glUniformMatrix4fv(m.inv_proj, 1, GL_FALSE, inv_proj.elem[0]);
+            glUniform2fv(m.inv_res, 1, inv_res);
+            glUniform1i(m.ortho, ortho ? 1 : 0);
+            glUniform1f(m.od_ref, od_ref);
+            glUniform3fv(m.light_dir, 1, light.light_dir.elem);
+            glUniform3fv(m.dir_radiance, 1, light.light_irradiance.elem);
+            glUniform3fv(m.sky_radiance, 1, sky.elem);
+            glUniform3fv(m.ground_radiance, 1, ground.elem);
+            glUniform1f(m.roughness, desc.shading.roughness);
+            glUniform1f(m.F0, F0);
+            glUniform1f(m.basic, desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f);
+            glUniform1f(m.basic_ambient, CLAMP(desc.shading.ambient, 0.0f, 1.0f));
+            glUniform1f(m.basic_specular, MAX(desc.shading.specular, 0.0f));
+            glUniform1f(m.linear_colors, desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f);
+            glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
+        };
+        set_frame_uniforms(gl.mesh_tod);
+        set_frame_uniforms(gl.mesh);
+
+        auto draw_surfaces = [&](const MeshProgram& m, Pass pass) {
+            glUseProgram(m.program);
             glUniform1i(m.pass, (GLint)pass);
             for (size_t i = 0; i < desc.num_surfaces; ++i) {
                 const Surface& s = desc.surfaces[i];
@@ -765,21 +778,20 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             }
         };
 
-        // The coverage of all the surfaces together and the optical depth of what they enclose
+        // The coverage of all the surfaces together and the optical depth of what they enclose, at pixel rate (its
+        // own program): it compares with nothing per sample, so the coverage of the samples is all it needs of them
         PUSH_GPU_SECTION("Transmittance")
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
         {
-            // fragment output 1 (out_tod) into the one attachment
-            const GLenum bufs[2] = {GL_NONE, GL_COLOR_ATTACHMENT0};
-            glDrawBuffers(2, bufs);
             const GLfloat zero[4] = {0, 0, 0, 0};
-            glClearBufferfv(GL_COLOR, 1, zero);
+            glClearBufferfv(GL_COLOR, 0, zero);
         }
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        draw_surfaces(Pass_Transmittance);
+        draw_surfaces(gl.mesh_tod, Pass_Transmittance);
         POP_GPU_SECTION()
 
         // The two nearest layers, exactly: their depths and opacities in each sample
@@ -800,7 +812,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glClear(GL_DEPTH_BUFFER_BIT);
             glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
             if (k == 1) bind_texture(6, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_depth[0]);
-            draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
+            draw_surfaces(gl.mesh, k == 0 ? Pass_Peel0 : Pass_Peel1);
         }
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         POP_GPU_SECTION()
@@ -811,7 +823,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glDrawBuffer(GL_NONE);
         glClear(GL_DEPTH_BUFFER_BIT);
         bind_texture(7, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_depth[1]);
-        draw_surfaces(Pass_Depth);
+        draw_surfaces(gl.mesh, Pass_Depth);
         POP_GPU_SECTION()
 
         // Every surface times its visibility
@@ -827,7 +839,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glBlendFunc(GL_ONE, GL_ONE);
         bind_texture(1, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_tod);
         bind_texture(8, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_opacity);
-        draw_surfaces(Pass_Accumulate);
+        draw_surfaces(gl.mesh, Pass_Accumulate);
         const int ms_units[4] = {1, 6, 7, 8};
         for (int unit : ms_units) bind_texture(unit, GL_TEXTURE_2D_MULTISAMPLE, 0);
         glDisable(GL_DEPTH_TEST);

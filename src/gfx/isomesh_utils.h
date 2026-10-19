@@ -17,9 +17,9 @@
 // until 'converged'.
 //
 // A frame is five passes over the meshes (isomesh.frag: the transmittance, two layers peeled exactly, the
-// stochastic depth behind them, the radiance times visibility; the last four per sample) into a multisampled
-// target, one resolving pass into the mean and one composite. A Target holds 28 bytes per sample and 24 per
-// pixel of history; the samples per pixel (4, 2 or 1) are as many as fit MEMORY_BUDGET.
+// stochastic depth behind them, the radiance times visibility; the first at pixel rate, the last four per sample)
+// into a multisampled target, one resolving pass into the mean and one composite. A Target holds 28 bytes per
+// sample and 24 per pixel of history; the samples per pixel (4, 2 or 1) are as many as fit MEMORY_BUDGET.
 
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
