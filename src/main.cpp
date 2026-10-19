@@ -639,7 +639,6 @@ int main(int argc, char** argv) {
     // reads the file, so the bound values are current by the time the loop starts.
     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
-    app_settings::bind(STR_LIT("raycast_splines"), &state.settings.raycast_splines);
     app_settings::bind(STR_LIT("isosurface_rendering"), &state.settings.isosurface_rendering);
     app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
@@ -1670,12 +1669,12 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 26.0f, 0.0f));
 
             // The display first, then sections in the order the image is made: what is seen, how it is lit, what the camera
-            // does with the light, how the result is smoothed; then how splines and isosurfaces are drawn. The effects that
+            // does with the light, how the result is smoothed; then how isosurfaces are drawn. The effects that
             // can be turned off have the switch on their header, and their settings only while they are on.
             prop::begin("visuals");
 
-            // The computer's settings (VSync, the ambient occlusion and the anti-aliasing here; Splines and Isosurfaces
-            // mark their own) are kept as they are set: the .ini
+            // The computer's settings (VSync, the ambient occlusion and the anti-aliasing here; Isosurfaces marks its own)
+            // are kept as they are set: the .ini
             bool machine_dirty = false;
 
             if (prop::section("Display")) {
@@ -1769,7 +1768,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             bool toggled = false;
 
-            if (prop::section_toggle("Ambient Occlusion", &data->visuals.ssao.enabled, &toggled, true,
+            if (prop::section_toggle("Ambient Occlusion", &data->visuals.ssao.enabled, &toggled, false,
                                      "Darken creases and cavities, where less of the surroundings' light reaches (SSAO)")) {
                 const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
                 int mode = (int)data->visuals.ssao.mode;
@@ -1807,7 +1806,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // What the camera and the display do with the light. Basic shading has none of it: shown, but not to be set.
             ImGui::BeginDisabled(basic_shading);
-            if (prop::section_toggle("Tone Mapping", &data->visuals.tonemapping.enabled, nullptr, true,
+            if (prop::section_toggle("Tone Mapping", &data->visuals.tonemapping.enabled, nullptr, false,
                                      basic_shading ? "Not used by Basic shading, which shows the colors as they are picked"
                                                    : "Map the lighting into the colors a display can show.\nOff: no curve, what is brighter than white is clipped.")) {
                 // ACES first: it is the default, the look the shading had before. Exposure Gamma is the same as None
@@ -1838,7 +1837,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::EndDisabled();
 
-            if (prop::section_toggle("Depth of Field", &data->visuals.dof.enabled, nullptr, true, "Blur what lies away from the focus")) {
+            if (prop::section_toggle("Depth of Field", &data->visuals.dof.enabled, nullptr, false, "Blur what lies away from the focus")) {
                 prop::row("blur", "Blur of distant objects, in percent of the view height. Independent of zoom level");
                 ImGui::SliderFloat("##blur", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
                 prop::section_end();
@@ -1883,34 +1882,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
             machine_dirty |= aa_toggled;
 
-            // How the cartoon and the tubes are drawn: a choice of cost, the images are close to the same. Kept per user,
-            // as the isosurfaces' below (a slower GPU wants the meshes)
-            if (prop::section("Splines")) {
-                const float cartoon_ms = profiler::gpu_ms(geometry_stage_name[GeometryStage_Cartoon], "Render");
-                const float tubes_ms   = profiler::gpu_ms(geometry_stage_name[GeometryStage_GlyphTubes], "Render");
-                const float ms = cartoon_ms + tubes_ms;
-                ms_text[0] = '\0';
-                if (ms > 0.0f) snprintf(ms_text, sizeof(ms_text), "%.2f ms", ms);
-                int spline_mode = data->settings.raycast_splines ? 1 : 0;
-                prop::row("mode", "How the cartoon and the tubes of lipids and nucleic acids are drawn.\n"
-                                  "Mesh: triangles along the spline, with a level of detail. Cheap where the screen is full.\n"
-                                  "Ray Cast: each segment of the spline ray cast within a quad: exact surfaces at any zoom, at a\n"
-                                  "cost in the pixels the quads cover (all of them, where the GPU cannot cull hidden ones early).");
-                ImGui::SetNextItemWidth(prop::control_width_before(ms_text));
-                if (ImGui::Combo("##mode", &spline_mode, "Mesh\0Ray Cast\0")) {
-                    data->settings.raycast_splines = spline_mode == 1;
-                    app_settings::mark_dirty();
-                }
-                if (ms_text[0]) {
-                    ImGui::SameLine(0.0f, 2.0f * gap);
-                    ImGui::TextDisabled("%s", ms_text);
-                    ImGui::SetItemTooltip("GPU time per frame of the cartoon and the tubes, their splines evaluated\n"
-                                          "Cartoon: %.3f ms\nTubes: %.3f ms", cartoon_ms, tubes_ms);
-                }
-                prop::section_end();
-            }
-
-            if (prop::section("Isosurfaces")) {
+            if (prop::section("Isosurfaces", false)) {
                 int rendering = CLAMP(data->settings.isosurface_rendering, 0, 1);
                 prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
                                        "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
@@ -6739,7 +6711,6 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         tubes.args.tubes.radius_scale = scale;
         // The bands of the nucleic acids are made with the default radius, a representation has its own
         tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
-        tubes.args.tubes.raycast = state.settings.raycast_splines;
         md_array_push(*ops, tubes, alloc);
     }
 
@@ -6963,7 +6934,6 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.cartoon.coil_scale = rep.scale.x;
                         op.args.cartoon.sheet_scale = rep.scale.y;
                         op.args.cartoon.helix_scale = rep.scale.z;
-                        op.args.cartoon.raycast = state->settings.raycast_splines;
                         op.args.cartoon.chain_gaps = rep.chain_gaps;
                         break;
                     default:
@@ -7065,7 +7035,6 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     uint64_t h = md_hash64(&state->mold.gpu_buffers_version, sizeof(state->mold.gpu_buffers_version), state->representation.gl_version);
     h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
     h = md_hash64(state->view.periodic_images, sizeof(state->view.periodic_images), h);
-    h = md_hash64(&state->settings.raycast_splines, sizeof(state->settings.raycast_splines), h);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
         const bool shown = representation_shown(*state, rep) && rep.type_is_valid;
@@ -7308,7 +7277,6 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             } else if (rep.type == RepresentationType::Ribbons) {
                 op.args.ribbons.chain_gaps = rep.chain_gaps;
             } else if (rep.type == RepresentationType::Cartoon) {
-                op.args.cartoon.raycast = data->settings.raycast_splines;
                 op.args.cartoon.chain_gaps = rep.chain_gaps;
             }
             const size_t beg = md_array_size(draw_ops);
