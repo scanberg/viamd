@@ -2,6 +2,11 @@
 
 #include <color_utils.h>
 
+#include <md_system.h>
+#include <md_util.h>
+#include <md_pdb.h>
+#include <core/md_arena_allocator.h>
+
 #include <math.h>
 
 // The colour space conversions are header only and are what the representation colouring and the
@@ -107,4 +112,40 @@ UTEST(viamd_color, oklch_hue_sweep_stays_in_gamut) {
             EXPECT_LE(rgb.elem[c], 1.0f);
         }
     }
+}
+
+// Res Type: every atom takes the color of the type of its residue, which is that of the standard residue the type is a
+// form of (HIE is one of HIS) until it is given one of its own
+UTEST(viamd_color, comp_type) {
+    static const char* pdb =
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  C   ALA A   1       2.009   1.420   0.000  1.00  0.00           C\n"
+        "ATOM      4  O   ALA A   1       1.251   2.390   0.000  1.00  0.00           O\n"
+        "ATOM      5  N   HIE A   2       3.332   1.536   0.000  1.00  0.00           N\n"
+        "ATOM      6  CA  HIE A   2       3.970   2.846   0.000  1.00  0.00           C\n"
+        "ATOM      7  C   HIE A   2       5.486   2.705   0.000  1.00  0.00           C\n"
+        "ATOM      8  O   HIE A   2       6.009   1.593   0.000  1.00  0.00           O\n"
+        "HETATM    9  O   HOH A 101      20.000  20.000  20.000  1.00  0.00           O\n";
+
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(3, (int)sys.component.count);
+
+    uint32_t colors[9] = {};
+    color_atoms_comp_type(colors, 9, sys);
+    for (int a = 0; a < 4; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_ALA), colors[a]);
+    for (int a = 4; a < 8; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_HIS), colors[a]);
+    EXPECT_EQ(md_component_type_color(&sys.component.type, (size_t)md_component_type_idx(&sys.component, 2)) | 0xFF000000u, colors[8]);
+
+    // A color of its own, opaque whatever alpha it was given
+    const md_component_type_idx_t his = md_component_type_idx(&sys.component, 1);
+    sys.component.type.color[his] = 0x00102030u;
+    color_atoms_comp_type(colors, 9, sys);
+    for (int a = 4; a < 8; ++a) EXPECT_EQ(0xFF102030u, colors[a]);
+
+    md_arena_allocator_destroy(alloc);
 }

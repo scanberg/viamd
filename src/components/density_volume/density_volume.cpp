@@ -250,6 +250,7 @@ struct DensityVolume : viamd::EventHandler {
                 viamd::extract_enum(rep.type, arg, (int)RepresentationType::Count);
             } else if (str_eq_cstr(ident, "RepColorMapping")) {
                 viamd::extract_enum(rep.colormap, arg, (int)ColorMapping::Count);
+                if (rep.colormap == ColorMapping::Attribute) rep.colormap = ColorMapping::Type;    // Not offered here
             } else if (str_eq_cstr(ident, "RepParam")) {
                 viamd::extract_flt_vec(rep.param, 4, arg);
             } else if (str_eq_cstr(ident, "RepColor")) {
@@ -385,8 +386,14 @@ struct DensityVolume : viamd::EventHandler {
                 case ColorMapping::CompName:
                     color_atoms_comp_name(colors, num_atoms, sys);
                     break;
+                case ColorMapping::CompType:
+                    color_atoms_comp_type(colors, num_atoms, sys);
+                    break;
                 case ColorMapping::CompSeqId:
                     color_atoms_comp_seq_id(colors, num_atoms, sys);
+                    break;
+                case ColorMapping::CompIndex:
+                    color_atoms_comp_idx(colors, num_atoms, sys);
                     break;
                 case ColorMapping::InstId:
                     color_atoms_inst_id(colors, num_atoms, sys);
@@ -601,9 +608,10 @@ struct DensityVolume : viamd::EventHandler {
                         }
 
                         if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
-                            for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
-                                if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
-                                    rep.colormap = (ColorMapping)i;
+                            for (ColorMapping mapping : color_mapping_order) {
+                                if (mapping == ColorMapping::Attribute) continue;   // Not offered here
+                                if (ImGui::Selectable(color_mapping_str[(int)mapping], rep.colormap == mapping)) {
+                                    rep.colormap = mapping;
                                     dirty_rep = true;
                                 }
                             }

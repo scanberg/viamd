@@ -128,17 +128,19 @@ enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
 // TAA: each frame blended with the ones before; FXAA: each frame on its own (nothing carried over time)
 enum class AntiAliasingMode { TAA, FXAA, Count };
 
+// Stored in workspaces by value: append, never insert or reorder. The order shown is color_mapping_order.
 enum class ColorMapping {
     Uniform,
-    Type,
-    Serial,
-    CompName,
+    Type,               // the colour of the atom type
+    Serial,             // one per atom index
+    CompName,           // one per component name, of no meaning
     CompSeqId,
     CompIndex,
     InstId,
     InstIndex,
     SecondaryStructure,
     Attribute,          // a per atom attribute of the system, through a colour scale
+    CompType,           // the colour of the component type, from its standard monomer unless overridden (md_component_type_data_t)
     Count
 };
 
@@ -244,17 +246,34 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Simulation Box",
 };
 
+// What a component (residue) and an instance (chain) are, is said in the words of the files: residue and chain
 inline const char* color_mapping_str[(int)ColorMapping::Count] = {
-    "Uniform Color",
-    "Type",
-    "Serial",
+    "Uniform",
+    "Atom Type",
+    "Atom Index",
     "Res Name",
-    "Seq Id",
-    "Res Idx",
+    "Res Id",
+    "Res Index",
     "Chain Id",
-    "Chain Idx",
+    "Chain Index",
     "Secondary Structure",
     "Attribute",
+    "Res Type",
+};
+
+// The order the colour mappings are listed in
+inline const ColorMapping color_mapping_order[(int)ColorMapping::Count] = {
+    ColorMapping::Uniform,
+    ColorMapping::Type,
+    ColorMapping::Serial,
+    ColorMapping::CompName,
+    ColorMapping::CompType,
+    ColorMapping::CompSeqId,
+    ColorMapping::CompIndex,
+    ColorMapping::InstId,
+    ColorMapping::InstIndex,
+    ColorMapping::SecondaryStructure,
+    ColorMapping::Attribute,
 };
 
 

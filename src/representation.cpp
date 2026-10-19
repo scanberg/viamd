@@ -663,6 +663,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         case ColorMapping::CompName:
             color_atoms_comp_name(colors, num_atoms, sys);
             break;
+        case ColorMapping::CompType:
+            color_atoms_comp_type(colors, num_atoms, sys);
+            break;
         case ColorMapping::CompSeqId:
             color_atoms_comp_seq_id(colors, num_atoms, sys);
             break;
@@ -928,7 +931,7 @@ void create_default_representations(ApplicationState* state) {
         if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
     }
     if (lipid_cartoon) {
-        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompName, STR_LIT("lipid"));
+        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("lipid"));
         snprintf(lip->name, sizeof(lip->name), "lipid");
     }
 
@@ -978,7 +981,7 @@ void create_default_representations(ApplicationState* state) {
             num_on_backbone += state->mold.sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
         }
         const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
-        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompName : ColorMapping::Type, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompType : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
@@ -2252,8 +2255,17 @@ static bool draw_atom_coloring(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
 
     prop::row("coloring");
-    if (ImGui::Combo("##atom_coloring", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
-        update_rep = true;
+    if (ImGui::BeginCombo("##atom_coloring", color_mapping_str[(int)rep.color_mapping])) {
+        for (ColorMapping mapping : color_mapping_order) {
+            if (ImGui::Selectable(color_mapping_str[(int)mapping], rep.color_mapping == mapping)) {
+                rep.color_mapping = mapping;
+                update_rep = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (rep.color_mapping == ColorMapping::CompType) {
+        ImGui::SetItemTooltip("The colors of the residue types, set in the Residue Types of the System window");
     }
 
     if (rep.color_mapping == ColorMapping::Uniform) {

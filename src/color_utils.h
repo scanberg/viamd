@@ -278,6 +278,8 @@ void color_atoms_cpk                (uint32_t* colors, size_t count, const md_sy
 void color_atoms_type               (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_idx                (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_name          (uint32_t* colors, size_t count, const md_system_t& sys);
+// The colour of the type of each component (sys.component.type), white before the types are inferred
+void color_atoms_comp_type          (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_system_t& sys);

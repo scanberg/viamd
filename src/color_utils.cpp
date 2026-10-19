@@ -132,6 +132,18 @@ void color_atoms_comp_name(uint32_t* colors, size_t count, const md_system_t& sy
     }
 }
 
+void color_atoms_comp_type(uint32_t* colors, size_t count, const md_system_t& sys) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (size_t i = 0; i < sys.component.count; i++) {
+        const md_component_type_idx_t type_idx = md_component_type_idx(&sys.component, i);
+        if (type_idx < 0) continue;
+        const uint32_t color = md_component_type_color(&sys.component.type, (size_t)type_idx) | 0xFF000000U;
+        md_urange_t range = md_component_atom_range(&sys.component, i);
+        range.end = MIN(range.end, (uint32_t)count);
+        if (range.beg < range.end) set_colors(colors + range.beg, range.end - range.beg, color);
+    }
+}
+
 void color_atoms_comp_seq_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t i = 0; i < sys.component.count; i++) {
