@@ -75,6 +75,9 @@ struct Inputs {
     // optional: the marks of the selection and the highlight at the size of the image made, put over it as it is presented
     // (Settings::marks), filtered linearly: the selection in view (r), there at all (g), the highlight the same (b, a)
     GLuint marks = 0;
+    // with marks: the group of the highlight (Settings::marks.groups) at the same size, R8 in units of 1/255: 1 + the
+    // group, 8 more where it is in view, 0 none
+    GLuint marks_group = 0;
 };
 
 struct Settings {
@@ -140,11 +143,13 @@ struct Settings {
 
     // The marks (Inputs::marks), put over the finished image as it is presented, in display colours: [0] of the
     // selection, [1] of the highlight. A tint where they are in view, a fill where they are behind something, and the
-    // outline of where they are at all. A colour's alpha is how much of it.
+    // outline of where they are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours,
+    // group k > 0 the colour groups[k - 1] with their alphas.
     struct {
         vec4_t visible[2] = {};
         vec4_t hidden[2]  = {};
         vec4_t outline[2] = {};
+        vec3_t groups[7]  = {};
         float highlight   = 1.0f;   // how much of the highlight shows: it fades in
         int   outline_step = 1;     // pixels between the taps that find the outline, which is about twice as wide
     } marks;

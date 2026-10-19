@@ -139,13 +139,16 @@ static str_t output_snippet(const ApplicationState& state) {
 
 // The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
 // where the fragment is in view and 1 in g where it is there at all, in view or behind the scene; of the highlighted
-// the same in b and a. Blended by max. In view is within a tolerance of the depth of the scene (the G-buffer's,
-// md_user_texture_0): that is of the render scale and jittered, the marks are neither, so the depth sampled is up to
-// about a pixel of the scene off, which on a surface at an angle to the view is a step in depth: about two pixels'
-// worth of its slope.
-static_assert(AtomBit_Highlighted == 1u && AtomBit_Selected == 2u, "The marks snippet tests the flags by these bits");
+// the same in b and a; and in the second target, of the highlighted, the group they are in (AtomBit_GroupMask) + 1,
+// 8 more where in view, so that the group in view wins. Blended by max. In view is within a tolerance of the depth of
+// the scene (the G-buffer's, md_user_texture_0): that is of the render scale and jittered, the marks are neither, so
+// the depth sampled is up to about a pixel of the scene off, which on a surface at an angle to the view is a step in
+// depth: about two pixels' worth of its slope.
+static_assert(AtomBit_Highlighted == 1u && AtomBit_Selected == 2u && AtomBit_GroupShift == 5 && HIGHLIGHT_GROUP_COLORS == 8,
+              "The marks snippet tests the flags by these bits");
 constexpr str_t shader_output_snippet_marks = STR_LIT(R"(
 layout(location = 0) out vec4 out_marks;
+layout(location = 1) out vec4 out_group;
 uniform sampler2D md_user_texture_0;
 
 void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {
@@ -169,8 +172,12 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
     float slope = sqrt(max(1.0 - facing * facing, 0.0)) / max(facing, 0.125);
     float tolerance = 2.0 * pixel * slope + 2e-3 * z;
 
-    vec2 mark = vec2(z <= scene_z + tolerance ? 1.0 : 0.0, 1.0);
-    out_marks = vec4((atom_flags & 2u) != 0u ? mark : vec2(0.0), (atom_flags & 1u) != 0u ? mark : vec2(0.0));
+    bool in_view = z <= scene_z + tolerance;
+    vec2 mark = vec2(in_view ? 1.0 : 0.0, 1.0);
+    bool highlighted = (atom_flags & 1u) != 0u;
+    out_marks = vec4((atom_flags & 2u) != 0u ? mark : vec2(0.0), highlighted ? mark : vec2(0.0));
+    uint group = 1u + ((atom_flags >> 5u) & 7u) + (in_view ? 8u : 0u);
+    out_group = vec4(highlighted ? float(group) / 255.0 : 0.0, 0.0, 0.0, 0.0);
 }
 )");
 
@@ -1436,6 +1443,7 @@ int main(int argc, char** argv) {
         uint64_t h_hash = md_bitset_hash64(md_bitmask_view(&state.selection.highlight_mask), 0);
         uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.selection.selection_mask), 0);
         uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
+        f_hash = md_hash64_combine(f_hash, state.selection.highlight_groups.key);
         
         // What each representation is: not the bytes of the struct, which hold handles, pointers and flags that
         // change without the representation changing (its atom mask, for one, is replaced whenever it is evaluated)
@@ -6230,6 +6238,17 @@ static void update_md_buffers(ApplicationState* data) {
             }
         }
         {
+            // The colour of the group of the highlight each atom is in: of the last group it is in
+            const auto& groups = data->selection.highlight_groups;
+            for (size_t g = 0; g < groups.count; ++g) {
+                const uint8_t color = (uint8_t)((g % HIGHLIGHT_GROUP_COLORS) << AtomBit_GroupShift);
+                md_bitset_iter_t it = md_bitset_iter(groups.sets[g]);
+                while (md_bitset_iter_next(&it)) {
+                    if (it.idx < sys.atom.count) flags[it.idx] = (uint8_t)((flags[it.idx] & ~AtomBit_GroupMask) | color);
+                }
+            }
+        }
+        {
             md_bitset_iter_t it = md_bitmask_iter(&data->selection.selection_mask);
             while (md_bitset_iter_next(&it)) {
                 uint64_t idx = it.idx;
@@ -6610,6 +6629,7 @@ static void render(ApplicationState* state) {
         const float t = (float)CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
         const int outline_step = MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
         inputs.marks = state->gbuffer.tex.marks;
+        inputs.marks_group = state->gbuffer.tex.marks_group;
         marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
     }
 

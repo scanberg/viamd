@@ -33,6 +33,7 @@ struct GBuffer {
         uint32_t history = 0;       // TAA history written this frame, at the output size
         uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
         uint32_t marks = 0;         // RGBA8 at the output size, of fbo_marks: 1 where the selection is in view (r), there at all (g), the highlight the same (b, a)
+        uint32_t marks_group = 0;   // R8 at the output size, of fbo_marks: of the highlight, 1 + the group it is in, 8 more in view, 0 none (in units of 1/255)
     } tex;
 
     uint32_t fbo = 0;
@@ -49,7 +50,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width = 0, int o
 void gbuffer_clear(GBuffer* gbuf);
 void gbuffer_free(GBuffer* gbuf);
 
-// The mark pass: begin binds the marks target (tex.marks, cleared) at its size, blending by max, with neither depth
+// The mark pass: begin binds the marks targets (tex.marks, tex.marks_group, cleared) at their size, blending by max, with neither depth
 // test nor depth write nor scissor test, and the G-buffer's depth to md_gl's first user texture unit, where the marks
 // snippet samples it (MD_GL_USER_TEXTURE_UNIT). end undoes the blending and the binding and turns the depth test back
 // on; the framebuffer and viewport are left for the caller to set.

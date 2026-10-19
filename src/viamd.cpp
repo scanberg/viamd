@@ -5873,6 +5873,7 @@ void script_vis_begin_frame(ApplicationState* state) {
     ASSERT(state);
     state->script.vis_target = {};
     state->script.vis_shown = nullptr;
+    state->selection.highlight_groups = {};
 }
 
 void script_vis_update(ApplicationState* state) {
@@ -5906,6 +5907,13 @@ void script_vis_update(ApplicationState* state) {
         sc.vis_shown = &sc.vis_result->vis;
         if (!md_bitset_empty(sc.vis_shown->atom_mask)) {
             md_bitmask_assign(&state->selection.highlight_mask, sc.vis_shown->atom_mask);
+            // Its elements, a colour each, when there is more than one. Known by what is visualized, not where the
+            // atoms are: playing, the atoms' flags are not made again every frame for them
+            const size_t num_groups = md_array_size(sc.vis_shown->groups);
+            if (num_groups > 1) {
+                const uint64_t key = md_hash64(&num_groups, sizeof(num_groups), sc.vis_result->key);
+                state->selection.highlight_groups = {sc.vis_shown->groups, num_groups, key ? key : 1};
+            }
         }
     }
 }

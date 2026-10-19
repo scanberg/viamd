@@ -189,7 +189,14 @@ enum AtomBit_ {
     AtomBit_Visible     = 1u << 2,
     AtomBit_Marked      = 1u << 3,  // Highlighted or selected: the atoms the mark pass draws (md_gl's atom mask takes all its bits)
     AtomBit_Dimmed      = 1u << 4,  // Not selected while something is: drawn with less of its colour (selection.color.saturation)
+    // The group of the highlight an atom is in, of HIGHLIGHT_GROUP_COLORS (selection.highlight_groups): which colour it
+    // is marked in. 0 when the highlight has no groups.
+    AtomBit_GroupShift  = 5,
+    AtomBit_GroupMask   = 7u << AtomBit_GroupShift,
 };
+
+// The colours the groups of the highlight are marked in, in turn: two groups fewer than this apart differ in colour
+#define HIGHLIGHT_GROUP_COLORS 8
 
 enum MolBit_ {
     MolBit_None                     = 0,
@@ -1295,10 +1302,33 @@ struct ApplicationState {
                 vec4_t outline = {1.00f, 0.85f, 0.10f, 0.90f};
             } highlight;
 
+            // The colours of the groups of the highlight after the first, which has the highlight's own; with the
+            // alphas of its colours. In an order in which each differs much from the one before it, and the last
+            // from the highlight's yellow.
+            vec3_t highlight_groups[HIGHLIGHT_GROUP_COLORS - 1] = {
+                {0.25f, 0.85f, 0.35f},  // green
+                {0.95f, 0.30f, 0.80f},  // magenta
+                {0.15f, 0.85f, 0.95f},  // cyan
+                {1.00f, 0.50f, 0.05f},  // orange
+                {0.60f, 0.40f, 1.00f},  // violet
+                {0.70f, 0.95f, 0.15f},  // lime
+                {0.95f, 0.20f, 0.20f},  // red
+            };
+
             float saturation = 0.3f;        // Taken into the G-buffer's shaders as they are made (output_snippet)
         } color;
 
         double highlight_time = 0.0;        // when a highlight last appeared where there was none (ImGui::GetTime()): it fades in from there
+
+        // The groups of the highlight, when what set it has them: the elements of the expression hovered, residue(:) a
+        // group per residue. Group i is marked in colour i % HIGHLIGHT_GROUP_COLORS (AtomBit_GroupMask): 0 is the
+        // highlight's own, k > 0 color.highlight_groups[k - 1]. Not owned: set with the highlight every frame
+        // (script_vis_update), cleared at its start. key: what they are, 0 for none.
+        struct {
+            const md_bitset_t* sets = nullptr;
+            size_t count = 0;
+            uint64_t key = 0;
+        } highlight_groups;
 
         struct {
             AtomFilter filter;
@@ -2451,6 +2481,10 @@ static inline void marks_settings(postprocess_pipeline::Settings* settings, cons
     settings->marks.visible[1] = c.highlight.visible;
     settings->marks.hidden[1]  = c.highlight.hidden;
     settings->marks.outline[1] = c.highlight.outline;
+    static_assert(sizeof(settings->marks.groups) == sizeof(c.highlight_groups), "A colour for each group after the first");
+    for (int i = 0; i < HIGHLIGHT_GROUP_COLORS - 1; ++i) {
+        settings->marks.groups[i] = c.highlight_groups[i];
+    }
     settings->marks.highlight = highlight;
     settings->marks.outline_step = outline_step;
 }

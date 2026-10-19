@@ -794,15 +794,17 @@ void main() {
 // four bilinear taps between the pixels make. The outline is the band in which the tent of where the marks are at all
 // is neither 0 nor 1: two pixels wide, and with taps further out (u_outline_step) as many times wider.
 constexpr str_t f_shader_src_marks = STR_LIT(R"(
-#version 150 core
+#version 410 core
 
 uniform sampler2D u_texture;
 uniform sampler2D u_marks;          // the output's size, filtered: selection in view, at all; highlight in view, at all
+uniform sampler2D u_marks_group;    // the highlight's group: 1 + it, 8 more in view, 0 none (in 1/255)
 uniform float u_time;
 
 uniform vec4  u_visible[2];         // selection, highlight
 uniform vec4  u_hidden[2];
 uniform vec4  u_outline[2];
+uniform vec3  u_groups[7];          // the highlight's groups after the first
 uniform float u_highlight;          // how much of the highlight shows
 uniform int   u_outline_step;
 
@@ -822,6 +824,21 @@ vec4 marks_about(vec2 px, float r, vec2 inv_size) {
                    texture(u_marks, (px + vec2( r,  r)) * inv_size));
 }
 
+// The highlight's group at the pixel, of the 3x3 about it where it has none (by its tent its marks reach that far):
+// the one in view first, of those the last
+int group_about(vec2 px, vec2 inv_size) {
+    float g = texelFetch(u_marks_group, ivec2(px), 0).r;
+    if (g == 0.0) {
+        vec4 m = max(max(textureGather(u_marks_group, (px + vec2(-0.49, -0.49)) * inv_size),
+                         textureGather(u_marks_group, (px + vec2( 0.49, -0.49)) * inv_size)),
+                     max(textureGather(u_marks_group, (px + vec2(-0.49,  0.49)) * inv_size),
+                         textureGather(u_marks_group, (px + vec2( 0.49,  0.49)) * inv_size)));
+        g = max(max(m.x, m.y), max(m.z, m.w));
+    }
+    int code = int(g * 255.0 + 0.5);
+    return code > 0 ? (code - 1) % 8 : 0;
+}
+
 void main() {
     vec4 c = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
     vec2 inv_size = 1.0 / vec2(textureSize(u_marks, 0));
@@ -838,12 +855,21 @@ void main() {
         vec2 hidden = max(m.yw - m.xz, 0.0);
         vec2 edge   = clamp(2.0 - 2.0 * abs(2.0 * ring.yw - 1.0), 0.0, 1.0);
 
-        // The highlight over the selection
+        // The highlight over the selection, in the colours of its group
+        vec3 visible[2] = vec3[2](u_visible[0].rgb, u_visible[1].rgb);
+        vec3 hidden_c[2] = vec3[2](u_hidden[0].rgb, u_hidden[1].rgb);
+        vec3 outline[2] = vec3[2](u_outline[0].rgb, u_outline[1].rgb);
+        if (max(ring.w, m.w) > 0.0) {
+            int g = group_about(gl_FragCoord.xy, inv_size);
+            if (g > 0) {
+                visible[1] = hidden_c[1] = outline[1] = u_groups[g - 1];
+            }
+        }
         for (int i = 0; i < 2; ++i) {
             float k = i == 0 ? 1.0 : u_highlight;
-            c.rgb = mix(c.rgb, u_visible[i].rgb, u_visible[i].a * vis[i] * k);
-            c.rgb = mix(c.rgb, u_hidden[i].rgb,  u_hidden[i].a * hidden[i] * k);
-            c.rgb = mix(c.rgb, u_outline[i].rgb, u_outline[i].a * edge[i] * k);
+            c.rgb = mix(c.rgb, visible[i],  u_visible[i].a * vis[i] * k);
+            c.rgb = mix(c.rgb, hidden_c[i], u_hidden[i].a * hidden[i] * k);
+            c.rgb = mix(c.rgb, outline[i],  u_outline[i].a * edge[i] * k);
         }
     }
 
@@ -2164,17 +2190,22 @@ static void blit_texture_dither(GLuint tex, float time) {
 }
 
 // The final copy, with the marks over it (Settings::marks)
-static void present_marks(GLuint tex, GLuint marks, const postprocess_pipeline::Settings& settings, float time) {
+static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const postprocess_pipeline::Settings& settings, float time) {
     ASSERT(glIsTexture(tex));
     ASSERT(glIsTexture(marks));
+    ASSERT(glIsTexture(marks_group));
     const GLuint p = blit::program_marks;
     glUseProgram(p);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, marks);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, marks_group);
     glUniform1i(glGetUniformLocation(p, "u_texture"), 0);
     glUniform1i(glGetUniformLocation(p, "u_marks"), 1);
+    glUniform1i(glGetUniformLocation(p, "u_marks_group"), 2);
+    glUniform3fv(glGetUniformLocation(p, "u_groups"), 7, settings.marks.groups[0].elem);
     glUniform1f(glGetUniformLocation(p, "u_time"), time);
     glUniform4fv(glGetUniformLocation(p, "u_visible"), 2, settings.marks.visible[0].elem);
     glUniform4fv(glGetUniformLocation(p, "u_hidden"),  2, settings.marks.hidden[0].elem);
@@ -2605,9 +2636,9 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_present) {
         swap_target();
         glDepthMask(0);
-        if (in.marks) {
+        if (in.marks && in.marks_group) {
             PUSH_GPU_SECTION("Present marks")
-            present_marks(src_texture, in.marks, settings, time);
+            present_marks(src_texture, in.marks, in.marks_group, settings, time);
             POP_GPU_SECTION()
         } else {
             blit_texture_dither(src_texture, time);
