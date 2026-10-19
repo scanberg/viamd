@@ -342,37 +342,46 @@ void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint
 // ## Optimized categorical colors
 //
 // Colors for the categories a system uses (its atom or residue types) which are as distinct as they can be. They are
-// told apart by their distance in OKLab, as they are shown: lightness, chroma and hue all move, within a band of
-// lightness and chroma that keeps them of one look. Some keep their colors (anchors: those which mean something, an
-// element, a standard residue, a color the user picked) and the others are kept apart from them. A category which
-// matters more (more of the atoms) is kept further from the others than a rare one, and how they look to a
-// deuteranope counts too. The same input gives the same colors.
+// told apart by their distance in OKLab, as they are shown, and how they look to a deuteranope counts too. A category
+// which matters more (more of the atoms) is kept further from the others than a rare one. The same input gives the
+// same colors.
+//
+// A category with a color of meaning (an element, a standard residue) is pulled: it is drawn back to that color, as by
+// a spring of constant force, and moves only for a pair too close to tell apart where that buys a clearly larger
+// distance. It never moves far and keeps a grey or a strong color it has. Pulled categories of one color are meant
+// alike and move as one. The others are free: they move easily, within a band of lightness and chroma which keeps them
+// of one look, and one of a large share of the weight (the solvent, the bulk lipid) is kept calm.
 
 struct ColorOptimizeItem {
-    uint32_t color = 0;         // In: the color it has (stored, RGBA as convert_color), where it starts and for an anchor
-                                // the color it keeps. Out: the optimized color.
+    uint32_t color = 0;         // In: the color it starts from (stored, RGBA as convert_color), for one which is pulled
+                                // the color it is drawn back to. Out: the optimized color.
     float weight = 1.0f;        // How much it matters that it stands apart, its share of the atoms say. > 0
-    bool fixed = false;         // An anchor
-    bool keep_hue = false;      // Moves in lightness and chroma only: keeps its hue, or its greyness
+    float pull = 0.0f;          // 0: free. Above: how hard it is drawn back to its color, what a unit of distance from it
+                                // costs against a unit of the smallest distance gained (about 0.5: moves when that pays
+                                // twice over; 2 or more: hardly moves)
+    bool fixed = false;         // Keeps its color
 };
 
 struct ColorOptimizeDesc {
     bool linear_input = false;  // The colors are shown as linear reflectances (ColorSpace_Linear): the band and the
                                 // distances are of the colors as they are shown
-    float lightness_min = 0.64f;    // The band of the colors shown (OKLab), about that of the default residue palette as
-    float lightness_max = 0.92f;    // viamd shows it: light enough to read under the lighting, and of a moderate chroma
-    float chroma_min = 0.05f;       // Of those which do not keep their hue: no greys, which mean 'nothing in particular'
+    float lightness_min = 0.64f;    // The band of the free colors shown (OKLab), about that of the default residue palette
+    float lightness_max = 0.92f;    // as viamd shows it: light enough to read under the lighting, and of a moderate chroma
+    float chroma_min = 0.05f;       // No greys, which mean 'nothing in particular'
     float chroma_max = 0.13f;
+    float max_drift = 0.06f;        // How far (OKLab) a pulled color may move from where it started
+    float enough_distance = 0.10f;  // A pulled color moves only for a pair closer than this (OKLab, over how much the
+                                    // pair matters: a rare category may come closer)
     float cvd_weight = 0.4f;        // How much the distances seen with deuteranopia count, against those of normal vision
-    bool calm_dominant = true;      // A category of a large share of the weight (the solvent, the bulk lipid) is kept lighter
-                                    // and of a lower chroma: large areas in calm colors, small ones in vivid colors
+    bool calm_dominant = true;      // A free category of a large share of the weight is kept lighter and of a lower
+                                    // chroma: large areas in calm colors, small ones in vivid colors
     uint32_t seed = 1;
-    uint32_t moves_per_item = 600;  // Trials per item which is not an anchor, at most 120000 in all
+    uint32_t moves_per_item = 600;  // Trials per color which moves, at most 120000 in all
 };
 
 struct ColorOptimizeResult {
-    float min_distance = 0.0f;  // The smallest distance (OKLab, as shown) between two items, at least one of which moved
-    size_t num_moved = 0;       // Items which are not anchors
+    float min_distance = 0.0f;  // The smallest distance (OKLab, as shown) between two colors, unless both are fixed
+    size_t num_moved = 0;       // Items whose color changed
 };
 
 ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, const ColorOptimizeDesc& desc = ColorOptimizeDesc());

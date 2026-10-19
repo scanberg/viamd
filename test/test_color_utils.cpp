@@ -204,7 +204,7 @@ UTEST(viamd_color, optimize_colors_spreads_alike) {
     for (int i = 0; i < 12; ++i) EXPECT_EQ(items[i].color, again[i].color);
 }
 
-// Anchors keep their colors, the others keep away from them, and stay within the band as they are shown
+// Fixed ones keep their colors, the others keep away from them, and stay within the band as they are shown
 UTEST(viamd_color, optimize_colors_anchors_and_band) {
     const uint32_t anchors[3] = {0xFF2020F0u, 0xFFF04646u, 0xFF838383u};   // CPK oxygen, nitrogen, carbon (ABGR)
     for (bool linear : {false, true}) {
@@ -229,26 +229,39 @@ UTEST(viamd_color, optimize_colors_anchors_and_band) {
     }
 }
 
-// One which keeps its hue moves in lightness and chroma only, and a grey stays a grey
-UTEST(viamd_color, optimize_colors_keep_hue) {
-    ColorOptimizeItem items[6];
-    for (int i = 0; i < 3; ++i) { items[i].color = 0xFFD07040u; items[i].keep_hue = true; }   // One blue, three times
-    for (int i = 3; i < 6; ++i) { items[i].color = 0xFF838383u; items[i].keep_hue = true; }   // One grey, three times
-    const ColorOptimizeResult r = optimize_colors(items, 6);
-    EXPECT_GT(r.min_distance, 0.04f);
-    const vec3_t ref = srgb_to_oklab(vec3_from_vec4(convert_color(0xFFD07040u)));
-    const float ref_h = atan2f(ref.z, ref.y) / (2.0f * (float)PI);
-    for (int i = 0; i < 6; ++i) {
-        const vec3_t lab = srgb_to_oklab(vec3_from_vec4(convert_color(items[i].color)));
-        const float C = sqrtf(lab.y * lab.y + lab.z * lab.z);
-        if (i < 3) {
-            float dh = atan2f(lab.z, lab.y) / (2.0f * (float)PI) - ref_h;
-            dh -= roundf(dh);
-            EXPECT_LT(fabsf(dh), 0.03f);
-        } else {
-            EXPECT_LT(C, 0.035f);
+// Pulled colors which stand apart already keep their colors exactly, a grey among them too, and pulled items of one
+// color stay of one color. The free ones keep away from them.
+UTEST(viamd_color, optimize_colors_pulled_stay) {
+    const uint32_t cpk[4] = {0xFF2020F0u, 0xFFF04646u, 0xFF838383u, 0xFF30C8FFu};   // Oxygen, nitrogen, carbon, sulfur (ABGR)
+    ColorOptimizeItem items[12];
+    for (int i = 0; i < 8; ++i) { items[i].color = cpk[i % 4]; items[i].pull = 0.5f; items[i].weight = 10.0f; }
+    for (int i = 8; i < 12; ++i) items[i].color = cpk[2];                           // Free, start on top of carbon
+    const ColorOptimizeResult r = optimize_colors(items, 12);
+    for (int i = 0; i < 8; ++i) EXPECT_EQ(cpk[i % 4], items[i].color);
+    EXPECT_EQ((size_t)4, r.num_moved);
+    EXPECT_GT(r.min_distance, 0.06f);
+}
+
+// Pulled colors too close to tell apart move, but not far, and the harder the pull the less. Pulled items of one color
+// move as one.
+UTEST(viamd_color, optimize_colors_pulled_drift) {
+    const uint32_t reds[2] = {0xFF2020F0u, 0xFF2828E0u};
+    float moved[2] = {};
+    for (int p = 0; p < 2; ++p) {
+        ColorOptimizeItem items[3];
+        for (int i = 0; i < 3; ++i) { items[i].color = reds[i & 1]; items[i].pull = p == 0 ? 0.3f : 1.5f; }
+        ColorOptimizeDesc desc;
+        optimize_colors(items, 3, desc);
+        EXPECT_EQ(items[0].color, items[2].color);
+        for (int i = 0; i < 2; ++i) {
+            const float d = oklab_distance(items[i].color, reds[i], false);
+            EXPECT_LE(d, desc.max_drift + 0.005f);
+            moved[p] += d;
         }
+        if (p == 0) EXPECT_GT(oklab_distance(items[0].color, items[1].color, false), 0.06f);
     }
+    EXPECT_GT(moved[0], 0.04f);
+    EXPECT_LT(moved[1], moved[0]);
 }
 
 // A category of most of the weight (the solvent) is lighter and calmer than the rare ones around it

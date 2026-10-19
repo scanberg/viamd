@@ -400,31 +400,62 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     ColorOptimizeResult result = {};
     if (!items || count == 0) return result;
 
-    const float Lmin = CLAMP(MIN(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
-    const float Lmax = CLAMP(MAX(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
-    const float Cmin = MAX(0.0f, MIN(desc.chroma_min, desc.chroma_max));
-    const float Cmax = MAX(desc.chroma_min, desc.chroma_max);
-    const float grey_chroma = 0.03f;    // Below this a color counts as a grey, and one which keeps its hue stays grey
-    const float hue_slack   = 0.02f;    // How far (in turns) one which keeps its hue may turn
-    const float tau         = 0.01f;    // The softness of the smallest distance which is pushed up
-    const float wc          = MAX(desc.cvd_weight, 0.0f);
+    const float Lmin  = CLAMP(MIN(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Lmax  = CLAMP(MAX(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Cmin  = MAX(0.0f, MIN(desc.chroma_min, desc.chroma_max));
+    const float Cmax  = MAX(desc.chroma_min, desc.chroma_max);
+    const float drift_max = MAX(desc.max_drift, 0.0f);
+    const float snap  = 0.01f;  // A pulled color which moved less than this (not a visible change) keeps its color
+    const float tau   = 0.01f;  // The softness of the smallest distance which is pushed up
+    const float wc    = MAX(desc.cvd_weight, 0.0f);
+    const double floor_term = exp(-(double)MAX(desc.enough_distance, 0.0f) / (double)tau);
 
-    std::vector<OptColor> c(count);
-    std::vector<float> h0(count, 0.0f);
-    std::vector<uint8_t> grey(count, 0);
+    // The colors which move, each of one item or of the pulled items of one color, which are meant alike. Fixed items
+    // of one color are one too: they are not kept apart from each other.
+    struct Unit {
+        size_t first = 0;
+        float weight = 0.0f;
+        float pull = 0.0f;
+        bool fixed = false;
+    };
+    std::vector<Unit> units;
+    std::vector<size_t> unit_of(count);
+    for (size_t i = 0; i < count; ++i) {
+        const ColorOptimizeItem& it = items[i];
+        const bool shared = it.fixed || it.pull > 0.0f;
+        size_t u = units.size();
+        if (shared) {
+            for (size_t v = 0; v < units.size(); ++v) {
+                const Unit& un = units[v];
+                const ColorOptimizeItem& f = items[un.first];
+                if (un.fixed == it.fixed && (un.fixed || un.pull > 0.0f) && f.color == it.color) { u = v; break; }
+            }
+        }
+        if (u == units.size()) {
+            Unit un;
+            un.first = i;
+            un.fixed = it.fixed;
+            units.push_back(un);
+        }
+        units[u].weight += MAX(it.weight, 0.0f);
+        units[u].pull = it.fixed ? 0.0f : MAX(units[u].pull, it.pull);
+        unit_of[i] = u;
+    }
+    const size_t n = units.size();
+
+    std::vector<OptColor> c(n), c0(n);
     float wmax = 0.0f;
-    for (size_t i = 0; i < count; ++i) wmax = MAX(wmax, items[i].weight);
+    double wsum = 0.0;
+    for (const Unit& u : units) { wmax = MAX(wmax, u.weight); wsum += u.weight; }
     if (wmax <= 0.0f) wmax = 1.0f;
-    std::vector<float> wq(count);   // The weights, normalized and flattened: a rare item may come closer, not much closer
-    for (size_t i = 0; i < count; ++i) wq[i] = powf(CLAMP(items[i].weight / wmax, 1.0e-6f, 1.0f), 0.25f);
+    std::vector<float> wq(n);   // The weights, normalized and flattened: a rare color may come closer, not much closer
+    for (size_t i = 0; i < n; ++i) wq[i] = powf(CLAMP(units[i].weight / wmax, 1.0e-6f, 1.0f), 0.25f);
 
-    // The band of each item: one of a large share of the weight is held lighter and calmer
-    std::vector<float> lo_L(count, Lmin), hi_C(count, Cmax);
-    if (desc.calm_dominant) {
-        double wsum = 0.0;
-        for (size_t i = 0; i < count; ++i) wsum += MAX(items[i].weight, 0.0f);
-        for (size_t i = 0; i < count && wsum > 0.0; ++i) {
-            const float share = (float)(MAX(items[i].weight, 0.0f) / wsum);
+    // The band of each free color: one of a large share of the weight is held lighter and calmer
+    std::vector<float> lo_L(n, Lmin), hi_C(n, Cmax);
+    if (desc.calm_dominant && wsum > 0.0) {
+        for (size_t i = 0; i < n; ++i) {
+            const float share = (float)(units[i].weight / wsum);
             const float dominance = MIN(1.0f, 2.0f * share);   // From none to full as the share goes to a half
             lo_L[i] = Lmin + (Lmax - Lmin) * 0.8f * dominance;
             hi_C[i] = MAX(Cmin, Cmax * (1.0f - 0.6f * dominance));
@@ -432,104 +463,134 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     }
 
     std::vector<size_t> moving;
-    for (size_t i = 0; i < count; ++i) {
-        const vec3_t shown = shown_from_stored(items[i].color, desc.linear_input);
-        set_shown(c[i], shown);
+    for (size_t i = 0; i < n; ++i) {
+        set_shown(c[i], shown_from_stored(items[units[i].first].color, desc.linear_input));
         const vec3_t lab = c[i].lab;
         c[i].L = lab.x;
         c[i].C = sqrtf(lab.y * lab.y + lab.z * lab.z);
         c[i].h = atan2f(lab.z, lab.y) / (2.0f * (float)PI);
         c[i].h -= floorf(c[i].h);
-        if (items[i].fixed) continue;
-
+        c0[i] = c[i];
+        if (units[i].fixed) continue;
         moving.push_back(i);
-        h0[i]   = c[i].h;
-        grey[i] = items[i].keep_hue && c[i].C < grey_chroma;
-        float L = CLAMP(c[i].L, lo_L[i], Lmax);
-        float C = items[i].keep_hue ? (grey[i] ? c[i].C : CLAMP(c[i].C, grey_chroma, MAX(hi_C[i], c[i].C))) : CLAMP(c[i].C, Cmin, hi_C[i]);
+        if (units[i].pull > 0.0f) continue;     // Starts where it is
+
+        const float L = CLAMP(c[i].L, lo_L[i], Lmax);
+        const float C = CLAMP(c[i].C, Cmin, hi_C[i]);
         float h = c[i].h;
-        // Items which start out alike (types of one hashed color, or of one element) are spread first
+        // Free colors which start out alike (types of one hashed color, or which have none) are spread over the hues first
         for (size_t j = 0; j < i; ++j) {
-            if (distance(lab, c[j].lab) < 0.02f) {
-                if (items[i].keep_hue) L = CLAMP(L + ((moving.size() & 1) ? 0.06f : -0.06f), lo_L[i], Lmax);
-                else                   h = h + 0.618034f * (float)moving.size();
+            if (distance(lab, c0[j].lab) < 0.02f) {
+                h = h + 0.618034f * (float)moving.size();
                 break;
             }
         }
         set_lch(c[i], L, C, h);
     }
-    result.num_moved = moving.size();
 
-    // The pairs which can change are those with an item which moves. Each adds exp(-e / tau) to what is minimized, e
-    // being its distance (normal vision and deuteranopia) over how much the pair matters: a soft minimum.
+    // Each pair, unless both are fixed, has a term exp(-e / tau), e being its distance (normal vision and deuteranopia)
+    // over how much the pair matters. A free color moves when the sum of its terms goes down: -tau log of the sum is a
+    // soft minimum of the e, which it pushes up. A pulled color is drawn back to where it started: it moves when the
+    // soft minimum of the e which are not enough, -tau log(floor + sum of max(term - floor, 0)), goes up by more than
+    // what the move costs, its pull times how much further it is from where it started. Nothing is gained when no pair
+    // is too close, and then it moves back only.
     const auto pair_term = [&](const OptColor& a, const OptColor& b, size_t i, size_t j) -> double {
+        if (units[i].fixed && units[j].fixed) return 0.0;
         const float d = (distance(a.lab, b.lab) + wc * distance(a.cvd, b.cvd)) / (1.0f + wc);
         const float importance = 0.5f + 0.5f * wq[i] * wq[j];
         return exp(-(double)(d / importance) / (double)tau);
     };
+    const auto crowding = [&](double t) { return MAX(t - floor_term, 0.0); };
 
-    if (!moving.empty()) {
-        std::vector<double> term(count * count, 0.0);
-        for (size_t i = 0; i < count; ++i) {
-            for (size_t j = i + 1; j < count; ++j) {
-                if (items[i].fixed && items[j].fixed) continue;
-                term[i * count + j] = term[j * count + i] = pair_term(c[i], c[j], i, j);
+    if (!moving.empty() && n > 1) {
+        std::vector<double> term(n * n, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = i + 1; j < n; ++j) {
+                term[i * n + j] = term[j * n + i] = pair_term(c[i], c[j], i, j);
             }
         }
+        const auto total_crowding = [&]() {
+            double sum = 0.0;
+            for (size_t i = 0; i < n; ++i) {
+                for (size_t j = i + 1; j < n; ++j) sum += crowding(term[i * n + j]);
+            }
+            return sum;
+        };
+        double S = total_crowding();
 
         Rng rng(desc.seed);
-        std::vector<double> trial(count, 0.0);
+        std::vector<double> trial(n, 0.0);
         const uint64_t total = MIN((uint64_t)desc.moves_per_item * moving.size(), (uint64_t)120000);
         for (uint64_t m = 0; m < total; ++m) {
             const size_t k = moving[rng.next() % moving.size()];
             const float a = 1.0f - 0.85f * (float)m / (float)total;    // Steps shrink as it settles
+            const bool pulled = units[k].pull > 0.0f;
 
-            // Drawn before they are clamped: CLAMP evaluates its arguments more than once
+            // Drawn before they are used: CLAMP evaluates its arguments more than once
             const float nL = rng.normal(), nC = rng.normal(), nh = rng.normal();
-            const float L0 = c[k].L + nL * 0.04f * a;
-            float L = CLAMP(L0, lo_L[k], Lmax);
-            float C, h;
-            if (items[k].keep_hue) {
-                const float C0 = c[k].C + nC * (grey[k] ? 0.01f : 0.025f) * a;
-                const float Chi = grey[k] ? grey_chroma : MAX(hi_C[k], c[k].C);
-                C = CLAMP(C0, grey[k] ? 0.0f : grey_chroma, Chi);
-                float dh = c[k].h + nh * 0.01f * a - h0[k];
-                dh -= roundf(dh);
-                h = h0[k] + CLAMP(dh, -hue_slack, hue_slack);
-            } else {
-                const float C0 = c[k].C + nC * 0.025f * a;
-                C = CLAMP(C0, Cmin, hi_C[k]);
-                h = c[k].h + nh * 0.06f * a;
-            }
             OptColor cand = c[k];
-            set_lch(cand, L, C, h);
+            if (pulled) {
+                // Near where it started, of any lightness and chroma
+                const float L = CLAMP(c[k].L + nL * 0.02f * a, 0.0f, 1.0f);
+                const float C = MAX(c[k].C + nC * 0.015f * a, 0.0f);
+                set_lch(cand, L, C, c[k].h + nh * 0.03f * a);
+                if (distance(cand.lab, c0[k].lab) > drift_max) continue;
+            } else {
+                const float L0 = c[k].L + nL * 0.04f * a;
+                const float C0 = c[k].C + nC * 0.025f * a;
+                const float L = CLAMP(L0, lo_L[k], Lmax);
+                const float C = CLAMP(C0, Cmin, hi_C[k]);
+                set_lch(cand, L, C, c[k].h + nh * 0.06f * a);
+            }
+            // The chroma asked for beyond the gamut is not kept: what is shown is all there is
+            cand.C = MIN(cand.C, sqrtf(cand.lab.y * cand.lab.y + cand.lab.z * cand.lab.z) + 1.0e-4f);
 
-            double before = 0.0, after = 0.0;
-            for (size_t j = 0; j < count; ++j) {
+            double before = 0.0, after = 0.0, crowd_before = 0.0, crowd_after = 0.0;
+            for (size_t j = 0; j < n; ++j) {
                 if (j == k) continue;
-                before += term[k * count + j];
                 trial[j] = pair_term(cand, c[j], k, j);
-                after += trial[j];
+                before += term[k * n + j];
+                after  += trial[j];
+                crowd_before += crowding(term[k * n + j]);
+                crowd_after  += crowding(trial[j]);
             }
-            if (after <= before) {
+            bool accept = after <= before;
+            if (pulled) {
+                const double rest = MAX(S - crowd_before, 0.0);
+                const double cost = (double)units[k].pull * (distance(cand.lab, c0[k].lab) - distance(c[k].lab, c0[k].lab));
+                accept = floor_term + rest + crowd_after <= (floor_term + rest + crowd_before) * exp(-cost / (double)tau);
+            }
+            if (accept) {
                 c[k] = cand;
-                for (size_t j = 0; j < count; ++j) {
+                for (size_t j = 0; j < n; ++j) {
                     if (j == k) continue;
-                    term[k * count + j] = term[j * count + k] = trial[j];
+                    term[k * n + j] = term[j * n + k] = trial[j];
                 }
+                S = S - crowd_before + crowd_after;
+                if ((m & 1023) == 0) S = total_crowding();
             }
-        }
-
-        for (size_t i : moving) {
-            items[i].color = stored_from_shown(c[i].srgb, desc.linear_input);
-            set_shown(c[i], shown_from_stored(items[i].color, desc.linear_input));  // What is reported is what is stored
         }
     }
 
-    float min_d = 1.0e9f;
     for (size_t i = 0; i < count; ++i) {
-        for (size_t j = i + 1; j < count; ++j) {
-            if (items[i].fixed && items[j].fixed) continue;
+        const size_t u = unit_of[i];
+        if (units[u].fixed) continue;
+        if (units[u].pull > 0.0f && distance(c[u].lab, c0[u].lab) < snap) continue;    // Keeps its color exactly
+        const uint32_t color = stored_from_shown(c[u].srgb, desc.linear_input);
+        if (color != items[i].color) {
+            items[i].color = color;
+            result.num_moved += 1;
+        }
+    }
+    // What is reported is what is stored
+    for (size_t u = 0; u < n; ++u) {
+        set_shown(c[u], shown_from_stored(items[units[u].first].color, desc.linear_input));
+    }
+
+    float min_d = 1.0e9f;
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            if (units[i].fixed && units[j].fixed) continue;
             min_d = MIN(min_d, distance(c[i].lab, c[j].lab));
         }
     }

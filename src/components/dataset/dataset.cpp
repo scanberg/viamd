@@ -190,11 +190,11 @@ struct Dataset : viamd::EventHandler {
 
     MonomerDefault monomer_defaults[MD_MONOMER_COUNT] = {};
 
-    // The Optimize colors popups of the atom and residue types
+    // What the last Optimize colors of the atom and residue types did, shown under the button
     struct ColorOptimizePanel {
-        int  scope = 0;             // 0: the types without a color of meaning, 1: every type in use, keeping its hue
         bool has_result = false;
-        ColorOptimizeResult result = {};
+        size_t num_changed = 0;     // Types whose color it changed
+        float min_distance = 0.0f;  // optimize_colors
     };
     ColorOptimizePanel atom_type_optimize;
     ColorOptimizePanel comp_type_optimize;
@@ -231,6 +231,8 @@ struct Dataset : viamd::EventHandler {
     void clear_dataset_items() {
         comp_types = 0;
         atom_types = 0;
+        atom_type_optimize = {};
+        comp_type_optimize = {};
         atom_type_order = 0;
         atom_type_selected = -1;
         comp_type_order = 0;
@@ -2114,10 +2116,13 @@ struct Dataset : viamd::EventHandler {
     // ## Optimized colors
     //
     // A button for the atom types and one for the residue types: the colors of the types the system uses made as
-    // distinct as they can be (optimize_colors). The types whose colors mean something are anchors: those which follow
-    // their defaults (an element, a standard residue) and those the user colored. The others, or every type keeping its
-    // hue, move. What comes out are ordinary colors of the types, unlinked from their defaults: stored in the workspace
-    // and restored by Reset like any edit.
+    // distinct as they can be (optimize_colors). Every type in use is recolored, starting from its default, so that the
+    // result depends on the types the system uses only. A type with a color of meaning (an element, a standard residue,
+    // the element of an ion) is pulled back to it and moves a little at most, the others move freely. What comes out
+    // are ordinary colors of the types, unlinked from their defaults where they moved: stored in the workspace and
+    // restored by Reset like any edit.
+
+    static constexpr float color_optimize_pull = 0.5f;
 
     static ColorOptimizeDesc color_optimize_desc(const ApplicationState& data) {
         ColorOptimizeDesc desc;
@@ -2125,10 +2130,11 @@ struct Dataset : viamd::EventHandler {
         return desc;
     }
 
-    // The row of the table with the filter, Reset and Optimize colors. Returns true when the colors are to be optimized.
+    // The row of the table with the filter, Reset and Optimize colors, and under it what the last optimization did.
+    // Returns true when the colors are to be optimized.
     static bool draw_type_table_toolbar(const char* id, bool show_filter, char* filter, size_t filter_cap, const char* filter_hint,
                                         size_t num_modified, bool& reset_clicked, const char* reset_tip,
-                                        ColorOptimizePanel& panel, const char* scope0_tip, const char* scope1_tip) {
+                                        ColorOptimizePanel& panel, const char* optimize_tip) {
         const ImGuiStyle& style = ImGui::GetStyle();
         char reset_lbl[48] = "";
         float reset_w = 0;
@@ -2136,7 +2142,7 @@ struct Dataset : viamd::EventHandler {
             snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
             reset_w = ImGui::CalcTextSize(reset_lbl).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
         }
-        const char* opt_lbl = "Optimize colors...";
+        const char* opt_lbl = "Optimize colors";
         const float opt_w = ImGui::CalcTextSize(opt_lbl).x + style.FramePadding.x * 2;
 
         ImGui::PushID(id);
@@ -2152,37 +2158,22 @@ struct Dataset : viamd::EventHandler {
             ImGui::SetItemTooltip("%s", reset_tip);
             ImGui::SameLine();
         }
-        if (ImGui::Button(opt_lbl)) {
-            ImGui::OpenPopup("##optimize");
-        }
-        ImGui::SetItemTooltip("Make the colors of the types in use as distinct as they can be");
+        const bool run = ImGui::Button(opt_lbl);
+        ImGui::SetItemTooltip("%s", optimize_tip);
 
-        bool run = false;
-        if (ImGui::BeginPopup("##optimize")) {
-            ImGui::TextUnformatted("Make the colors of the types in use as distinct as they can be");
-            ImGui::TextDisabled("The more atoms of a type, the further it is kept from the others");
-            ImGui::Separator();
-            ImGui::RadioButton("Types without a color of meaning", &panel.scope, 0);
-            ImGui::SetItemTooltip("%s", scope0_tip);
-            ImGui::RadioButton("All types in use, keeping their hues", &panel.scope, 1);
-            ImGui::SetItemTooltip("%s", scope1_tip);
-            if (ImGui::Button("Optimize")) {
-                run = true;
+        if (reset_clicked) panel.has_result = false;
+        if (panel.has_result && !run) {
+            char changed[48];
+            if (panel.num_changed == 0) snprintf(changed, sizeof(changed), "No color changed");
+            else snprintf(changed, sizeof(changed), "%zu type%s recolored", panel.num_changed, panel.num_changed == 1 ? "" : "s");
+            if (panel.min_distance > 0.0f) {
+                ImGui::TextDisabled("%s, closest pair %.3f apart (OKLab)", changed, panel.min_distance);
+            } else {
+                ImGui::TextDisabled("%s", changed);     // Fewer than two colors
             }
-            if (panel.has_result) {
-                ImGui::Separator();
-                if (panel.result.num_moved == 0) {
-                    ImGui::TextDisabled("No type to recolor: their colors all mean something");
-                } else {
-                    ImGui::Text("%zu types recolored, the closest two %.3f apart (OKLab)", panel.result.num_moved, panel.result.min_distance);
-                    if (panel.result.min_distance < 0.03f) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Too many types to tell apart by color alone:");
-                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "color by a coarser grouping instead");
-                    }
-                    ImGui::TextDisabled("Reset restores the colors they had");
-                }
+            if (panel.min_distance > 0.0f && panel.min_distance < 0.03f) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Too many types to tell apart by color alone");
             }
-            ImGui::EndPopup();
         }
         return run;
     }
@@ -2448,28 +2439,36 @@ struct Dataset : viamd::EventHandler {
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
             if (atom_types[i].count == 0) continue;     // Only the types in use
-            const bool no_element = type_is_bead(type.flags[i]) || type.z[i] == 0;
-            const bool user_color = compute_atom_type_delta(type, atom_types[i], i).color;
+            // A type of an element is pulled to the color of its defaults, a bead or a type without an element starts
+            // from the color it was loaded with and is free
+            const bool has_element = !type_is_bead(type.flags[i]) && type.z[i] != 0;
             ColorOptimizeItem it;
-            it.color  = type.color[i];
+            it.color  = has_element ? u32_from_vec4(element_defaults[type.z[i]].color) : atom_types[i].load.color;
+            it.pull   = has_element ? color_optimize_pull : 0.0f;
             it.weight = (float)atom_types[i].count;
-            if (atom_type_optimize.scope == 0) {
-                it.fixed = !no_element || user_color;
-            } else {
-                it.keep_hue = true;
-            }
             md_array_push(items, it, md_temp_allocator(temp));
             md_array_push(index, i, md_temp_allocator(temp));
         }
-        atom_type_optimize.result = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
-        atom_type_optimize.has_result = true;
+        const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        atom_type_optimize.has_result   = true;
+        atom_type_optimize.min_distance = res.min_distance;
+        atom_type_optimize.num_changed  = 0;
 
         for (size_t k = 0; k < md_array_size(items); ++k) {
             const size_t i = index[k];
-            if (items[k].fixed || items[k].color == type.color[i]) continue;
+            DatasetItem& item = atom_types[i];
+            if (items[k].pull > 0.0f) {
+                const ElementDefault& def = element_defaults[type.z[i]];
+                if (items[k].color == u32_from_vec4(def.color)) {
+                    // It kept the color of its element: linked again, when that changes nothing else
+                    if (!item.use_defaults && type.radius[i] == def.radius && type.mass[i] == def.mass) item.use_defaults = true;
+                } else {
+                    item.use_defaults = false;  // A color of its own now
+                }
+            }
+            atom_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            color_changed |= type.color[i] != items[k].color;
             type.color[i] = items[k].color;
-            atom_types[i].use_defaults = false;     // A color of its own now
-            color_changed = true;
         }
     }
 
@@ -2498,8 +2497,10 @@ struct Dataset : viamd::EventHandler {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##atom_type_toolbar", show_filter, atom_type_filter, sizeof(atom_type_filter), "Filter by name or element",
                 num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", atom_type_optimize,
-                "Coarse grained beads and types without an element, which you have not colored. The rest keep their colors and are kept apart from.",
-                "Every type in use: the types of one element take shades of its color, the beads move freely within theirs.");
+                "Make the colors of the atom types in use as distinct as they can be, the more atoms of a type the further it is kept\n"
+                "from the others. Every type starts from its default: colors you set are replaced, and Reset undoes it.\n\n"
+                "Types of an element are pulled back to its color and move a little at most, where two are too close to tell apart.\n"
+                "Coarse grained beads and types without an element move freely.");
             if (reset_clicked) {
                 for (size_t i = first; i < num_types; ++i) {
                     if (compute_atom_type_delta(type, atom_types[i], i)) {
@@ -3113,34 +3114,36 @@ struct Dataset : viamd::EventHandler {
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
             if (comp_types[i].count == 0) continue;     // Only the types in use
-            // A monatomic ion has the color of its element, which means something, unless it is a bead without one
-            bool element_color = false;
-            if (md_component_type_kind(&type, i) == MD_COMPONENT_KIND_ION) {
+            // A form of a standard residue is pulled to the color of its defaults, a monatomic ion to that of its element
+            // (which it was inferred with), unless it is a bead without one. The others start from the color they were
+            // inferred with and are free.
+            const bool has_monomer = comp_type_has_monomer(type, i);
+            bool element_ion = false;
+            if (!has_monomer && md_component_type_kind(&type, i) == MD_COMPONENT_KIND_ION) {
                 const md_urange_t atoms = md_system_component_atom_range(&data.mold.sys, (size_t)comp_types[i].comp_indices[0]);
-                element_color = atoms.end > atoms.beg && md_atom_atomic_number(&data.mold.sys.atom, atoms.beg) != 0;
+                element_ion = atoms.end > atoms.beg && md_atom_atomic_number(&data.mold.sys.atom, atoms.beg) != 0;
             }
-            const bool no_meaning = !comp_type_has_monomer(type, i) && !element_color;
-            const bool user_color = compute_comp_type_delta(type, i).color;
             ColorOptimizeItem it;
-            it.color  = type.color[i];
+            it.color  = has_monomer ? monomer_default_color(md_component_type_monomer(&type, i)) : comp_types[i].load_color;
+            it.pull   = has_monomer || element_ion ? color_optimize_pull : 0.0f;
             it.weight = (float)comp_types[i].atom_count;
-            if (comp_type_optimize.scope == 0) {
-                it.fixed = !no_meaning || user_color;
-            } else {
-                it.keep_hue = true;
-            }
             md_array_push(items, it, md_temp_allocator(temp));
             md_array_push(index, i, md_temp_allocator(temp));
         }
-        comp_type_optimize.result = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
-        comp_type_optimize.has_result = true;
+        const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        comp_type_optimize.has_result   = true;
+        comp_type_optimize.min_distance = res.min_distance;
+        comp_type_optimize.num_changed  = 0;
 
         for (size_t k = 0; k < md_array_size(items); ++k) {
             const size_t i = index[k];
-            if (items[k].fixed || items[k].color == type.color[i]) continue;
+            if (comp_type_has_monomer(type, i)) {
+                // Linked to its defaults as long as it kept their color
+                comp_types[i].use_defaults = items[k].color == monomer_default_color(md_component_type_monomer(&type, i));
+            }
+            comp_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            color_changed |= type.color[i] != items[k].color;
             type.color[i] = items[k].color;
-            comp_types[i].use_defaults = false;     // A color of its own now
-            color_changed = true;
         }
     }
 
@@ -3173,8 +3176,10 @@ struct Dataset : viamd::EventHandler {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##comp_type_toolbar", show_filter, comp_type_filter, sizeof(comp_type_filter), "Filter by name, standard residue or kind",
                 num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", comp_type_optimize,
-                "Types without a standard residue (ligands, lipids, water; ions only when they are beads without an element), which you have not colored. The rest keep their colors and are kept apart from.",
-                "Every type in use: the forms of a standard residue keep the hue of its family, the others move within theirs.");
+                "Make the colors of the residue types in use as distinct as they can be, the more atoms of a type the further it is kept\n"
+                "from the others. Every type starts from its default: colors you set are replaced, and Reset undoes it.\n\n"
+                "Standard residues are pulled back to their palette color, and ions to the color of their element: they move a little\n"
+                "at most, where two are too close to tell apart. The rest (ligands, lipids, water) move freely.");
             if (reset_clicked) {
                 for (size_t i = 0; i < num_types; ++i) {
                     if (compute_comp_type_delta(type, i)) reset_comp_type(type, i, color_changed);
