@@ -10,7 +10,7 @@
 #include <math.h>
 
 // The colour space conversions are header only and are what the representation colouring and the
-// Oklab colour optimizer are built on. Round trips are the useful property: a conversion pair that
+// colour optimizer (optimize_colors) are built on. Round trips are the useful property: a conversion pair that
 // does not return where it started will drift every time a colour passes through it.
 
 namespace {
@@ -102,8 +102,8 @@ UTEST(viamd_color, rgb_hcl_round_trip_is_approximate) {
 }
 
 UTEST(viamd_color, oklch_hue_sweep_stays_in_gamut) {
-    // The colour optimizer walks hue at fixed lightness and chroma, and hands the result straight
-    // to the renderer, so the conversion has to come back inside the display gamut.
+    // A hue walked at fixed lightness and chroma is handed straight to the renderer, so the
+    // conversion has to come back inside the display gamut.
     for (int i = 0; i < 64; ++i) {
         const float hue = (float)i / 64.0f;
         const vec3_t rgb = oklch_to_srgb(vec3_t{0.6f, 0.08f, hue});
@@ -148,4 +148,117 @@ UTEST(viamd_color, comp_type) {
     for (int a = 4; a < 8; ++a) EXPECT_EQ(0xFF102030u, colors[a]);
 
     md_arena_allocator_destroy(alloc);
+}
+
+// The gamut mapping lowers the chroma of a color out of gamut, and keeps its lightness and hue
+UTEST(viamd_color, oklch_mapped_keeps_lightness_and_hue) {
+    for (int i = 0; i < 36; ++i) {
+        const float h = (float)i / 36.0f;
+        for (float L : {0.3f, 0.6f, 0.9f}) {
+            const vec3_t rgb = oklch_to_srgb_mapped(L, 0.4f, h);    // Far out of gamut at every hue
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_GE(rgb.elem[c], 0.0f);
+                EXPECT_LE(rgb.elem[c], 1.0f);
+            }
+            const vec3_t lab = srgb_to_oklab(rgb);
+            EXPECT_NEAR((double)L, (double)lab.x, 2.0e-3);
+            const float C = sqrtf(lab.y * lab.y + lab.z * lab.z);
+            if (C > 0.02f) {
+                float dh = atan2f(lab.z, lab.y) / (2.0f * (float)PI) - h;
+                dh -= roundf(dh);
+                EXPECT_LT(fabsf(dh), 0.01f);
+            }
+        }
+    }
+}
+
+namespace {
+
+float oklab_distance(uint32_t a, uint32_t b, bool linear_input) {
+    vec3_t ca = vec3_from_vec4(convert_color(a)), cb = vec3_from_vec4(convert_color(b));
+    if (linear_input) { ca = linear_srgb_to_srgb(ca); cb = linear_srgb_to_srgb(cb); }
+    const vec3_t d = srgb_to_oklab(ca) - srgb_to_oklab(cb);
+    return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+}
+
+}  // namespace
+
+// Twelve categories of one color come apart, and the same input gives the same colors
+UTEST(viamd_color, optimize_colors_spreads_alike) {
+    ColorOptimizeItem items[12];
+    for (auto& it : items) it.color = 0xFF8080C0u;
+    const ColorOptimizeResult r = optimize_colors(items, 12);
+    EXPECT_EQ((size_t)12, r.num_moved);
+    EXPECT_GT(r.min_distance, 0.08f);
+    float min_d = 1.0f;
+    for (int i = 0; i < 12; ++i) {
+        EXPECT_EQ(0xFF000000u, items[i].color & 0xFF000000u);
+        for (int j = i + 1; j < 12; ++j) min_d = MIN(min_d, oklab_distance(items[i].color, items[j].color, false));
+    }
+    EXPECT_NEAR((double)r.min_distance, (double)min_d, 1.0e-4);
+
+    ColorOptimizeItem again[12];
+    for (auto& it : again) it.color = 0xFF8080C0u;
+    optimize_colors(again, 12);
+    for (int i = 0; i < 12; ++i) EXPECT_EQ(items[i].color, again[i].color);
+}
+
+// Anchors keep their colors, the others keep away from them, and stay within the band as they are shown
+UTEST(viamd_color, optimize_colors_anchors_and_band) {
+    const uint32_t anchors[3] = {0xFF2020F0u, 0xFFF04646u, 0xFF838383u};   // CPK oxygen, nitrogen, carbon (ABGR)
+    for (bool linear : {false, true}) {
+        ColorOptimizeItem items[9];
+        for (int i = 0; i < 3; ++i) { items[i].color = anchors[i]; items[i].fixed = true; }
+        for (int i = 3; i < 9; ++i) items[i].color = anchors[i % 3];        // Start on top of the anchors
+        ColorOptimizeDesc desc;
+        desc.linear_input = linear;
+        const ColorOptimizeResult r = optimize_colors(items, 9, desc);
+        EXPECT_EQ((size_t)6, r.num_moved);
+        for (int i = 0; i < 3; ++i) EXPECT_EQ(anchors[i], items[i].color);
+        for (int i = 3; i < 9; ++i) {
+            for (int j = 0; j < 9; ++j) {
+                if (j != i) EXPECT_GT(oklab_distance(items[i].color, items[j].color, linear), 0.06f);
+            }
+            vec3_t shown = vec3_from_vec4(convert_color(items[i].color));
+            if (linear) shown = linear_srgb_to_srgb(shown);
+            const vec3_t lab = srgb_to_oklab(shown);
+            EXPECT_GE(lab.x, desc.lightness_min - 0.01f);
+            EXPECT_LE(lab.x, desc.lightness_max + 0.01f);
+        }
+    }
+}
+
+// One which keeps its hue moves in lightness and chroma only, and a grey stays a grey
+UTEST(viamd_color, optimize_colors_keep_hue) {
+    ColorOptimizeItem items[6];
+    for (int i = 0; i < 3; ++i) { items[i].color = 0xFFD07040u; items[i].keep_hue = true; }   // One blue, three times
+    for (int i = 3; i < 6; ++i) { items[i].color = 0xFF838383u; items[i].keep_hue = true; }   // One grey, three times
+    const ColorOptimizeResult r = optimize_colors(items, 6);
+    EXPECT_GT(r.min_distance, 0.04f);
+    const vec3_t ref = srgb_to_oklab(vec3_from_vec4(convert_color(0xFFD07040u)));
+    const float ref_h = atan2f(ref.z, ref.y) / (2.0f * (float)PI);
+    for (int i = 0; i < 6; ++i) {
+        const vec3_t lab = srgb_to_oklab(vec3_from_vec4(convert_color(items[i].color)));
+        const float C = sqrtf(lab.y * lab.y + lab.z * lab.z);
+        if (i < 3) {
+            float dh = atan2f(lab.z, lab.y) / (2.0f * (float)PI) - ref_h;
+            dh -= roundf(dh);
+            EXPECT_LT(fabsf(dh), 0.03f);
+        } else {
+            EXPECT_LT(C, 0.035f);
+        }
+    }
+}
+
+// A category of most of the weight (the solvent) is lighter and calmer than the rare ones around it
+UTEST(viamd_color, optimize_colors_calm_dominant) {
+    ColorOptimizeItem items[8];
+    for (int i = 0; i < 8; ++i) { items[i].color = 0xFF8080C0u; items[i].weight = 1.0f; }
+    items[0].weight = 20.0f;
+    optimize_colors(items, 8);
+    const vec3_t dom = srgb_to_oklab(vec3_from_vec4(convert_color(items[0].color)));
+    const float dom_C = sqrtf(dom.y * dom.y + dom.z * dom.z);
+    ColorOptimizeDesc d;
+    EXPECT_GE(dom.x, d.lightness_min + 0.8f * (d.lightness_max - d.lightness_min) * 0.99f);
+    EXPECT_LE(dom_C, d.chroma_max * 0.4f + 0.005f);
 }

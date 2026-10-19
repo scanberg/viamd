@@ -226,6 +226,11 @@ inline vec3_t oklch_to_srgb(vec3_t oklch) {
     return vec3_clamp_f(rgb, 0.0f, 1.0f);
 }
 
+// The color of the given lightness, chroma and hue (in turns, [0,1)) of OKLCH, brought into the sRGB gamut by lowering
+// its chroma, which keeps its lightness and hue. oklch_to_srgb clamps the channels instead, which shifts the hue of a
+// color out of gamut and brightens it.
+vec3_t oklch_to_srgb_mapped(float L, float C, float h);
+
 inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
@@ -333,3 +338,41 @@ void scale_saturation(uint32_t* colors, md_bitset_t mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
 void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation = 1.0f);
+
+// ## Optimized categorical colors
+//
+// Colors for the categories a system uses (its atom or residue types) which are as distinct as they can be. They are
+// told apart by their distance in OKLab, as they are shown: lightness, chroma and hue all move, within a band of
+// lightness and chroma that keeps them of one look. Some keep their colors (anchors: those which mean something, an
+// element, a standard residue, a color the user picked) and the others are kept apart from them. A category which
+// matters more (more of the atoms) is kept further from the others than a rare one, and how they look to a
+// deuteranope counts too. The same input gives the same colors.
+
+struct ColorOptimizeItem {
+    uint32_t color = 0;         // In: the color it has (stored, RGBA as convert_color), where it starts and for an anchor
+                                // the color it keeps. Out: the optimized color.
+    float weight = 1.0f;        // How much it matters that it stands apart, its share of the atoms say. > 0
+    bool fixed = false;         // An anchor
+    bool keep_hue = false;      // Moves in lightness and chroma only: keeps its hue, or its greyness
+};
+
+struct ColorOptimizeDesc {
+    bool linear_input = false;  // The colors are shown as linear reflectances (ColorSpace_Linear): the band and the
+                                // distances are of the colors as they are shown
+    float lightness_min = 0.64f;    // The band of the colors shown (OKLab), about that of the default residue palette as
+    float lightness_max = 0.92f;    // viamd shows it: light enough to read under the lighting, and of a moderate chroma
+    float chroma_min = 0.05f;       // Of those which do not keep their hue: no greys, which mean 'nothing in particular'
+    float chroma_max = 0.13f;
+    float cvd_weight = 0.4f;        // How much the distances seen with deuteranopia count, against those of normal vision
+    bool calm_dominant = true;      // A category of a large share of the weight (the solvent, the bulk lipid) is kept lighter
+                                    // and of a lower chroma: large areas in calm colors, small ones in vivid colors
+    uint32_t seed = 1;
+    uint32_t moves_per_item = 600;  // Trials per item which is not an anchor, at most 120000 in all
+};
+
+struct ColorOptimizeResult {
+    float min_distance = 0.0f;  // The smallest distance (OKLab, as shown) between two items, at least one of which moved
+    size_t num_moved = 0;       // Items which are not anchors
+};
+
+ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, const ColorOptimizeDesc& desc = ColorOptimizeDesc());

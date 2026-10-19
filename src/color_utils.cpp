@@ -5,6 +5,9 @@
 #include <md_system.h>
 #include <md_util.h>
 
+#include <math.h>
+#include <vector>
+
 static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
     if (color == 0xFFFFFFFFU) {
         MEMSET(colors, 0xFF, sizeof(uint32_t) * count);
@@ -15,22 +18,6 @@ static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
     }
 }
 
-#if 0
-static float u32_to_hue(uint32_t u32) {
-    const uint32_t mod = 24;
-    // The u32 is assumed to be random between [0, UINT_MAX[
-    return (float)(u32 % mod) / (float)mod;
-}
-
-static uint32_t u32_to_color(uint32_t u32) {
-	const float chroma = 0.9f;
-	const float luminance = 1.0f;
-	const float hue = u32_to_hue(u32);
-	const vec3_t lch = {hue, chroma, luminance};
-	const vec3_t rgb  = oklch_to_srgb(lch);
-	return convert_color({rgb.x, rgb.y, rgb.z, 1.0f});
-}
-#endif
 
 // https://github.com/uekstrom/colorwheel
 static const vec3_t wheel_colors[] = {
@@ -316,4 +303,236 @@ void tint_colors(vec4_t* colors, size_t count, vec4_t tint_color, float tint_str
         vec3_t out_rgb = oklab_to_linear_srgb(lab);
         colors[i] = vec4_from_vec3(out_rgb, rgba.w);
     }
+}
+// ## Optimized categorical colors
+
+vec3_t oklch_to_srgb_mapped(float L, float C, float h) {
+    L = CLAMP(L, 0.0f, 1.0f);
+    C = MAX(C, 0.0f);
+    const float ang = h * 2.0f * (float)PI;
+    const float ca = cosf(ang);
+    const float sa = sinf(ang);
+    const auto linear = [&](float c) { return oklab_to_linear_srgb(vec3_t{L, c * ca, c * sa}); };
+    const auto in_gamut = [](vec3_t v) {
+        const float eps = 1.0e-4f;
+        return v.x >= -eps && v.y >= -eps && v.z >= -eps && v.x <= 1.0f + eps && v.y <= 1.0f + eps && v.z <= 1.0f + eps;
+    };
+
+    vec3_t lin = linear(C);
+    if (!in_gamut(lin)) {
+        // The grey of the lightness is in gamut, the chroma in between is found by bisection
+        float lo = 0.0f, hi = C;
+        lin = linear(0.0f);
+        for (int i = 0; i < 24; ++i) {
+            const float mid = 0.5f * (lo + hi);
+            const vec3_t m = linear(mid);
+            if (in_gamut(m)) { lo = mid; lin = m; } else { hi = mid; }
+        }
+    }
+    return linear_srgb_to_srgb(lin);
+}
+
+namespace {
+
+// Machado, Oliveira and Fernandes 2009: deuteranopia of severity 1, in linear sRGB
+constexpr float deutan_matrix[3][3] = {
+    { 0.367322f, 0.860646f, -0.227968f},
+    { 0.280085f, 0.672501f,  0.047413f},
+    {-0.011820f, 0.042940f,  0.968881f},
+};
+
+struct OptColor {
+    float L = 0, C = 0, h = 0;  // The color shown, OKLCH (h in turns)
+    vec3_t srgb = {};           // The color shown
+    vec3_t lab = {};            // Its OKLab
+    vec3_t cvd = {};            // The OKLab of what a deuteranope sees
+};
+
+inline vec3_t shown_from_stored(uint32_t stored, bool linear_input) {
+    const vec4_t c = convert_color(stored);
+    const vec3_t rgb = {c.x, c.y, c.z};
+    // Taken as a linear reflectance, the value is shown as its encoding
+    return linear_input ? linear_srgb_to_srgb(rgb) : rgb;
+}
+
+inline uint32_t stored_from_shown(vec3_t srgb, bool linear_input) {
+    const vec3_t rgb = linear_input ? srgb_to_linear_srgb(srgb) : srgb;
+    return convert_color(vec4_t{rgb.x, rgb.y, rgb.z, 1.0f});
+}
+
+void set_shown(OptColor& c, vec3_t srgb) {
+    c.srgb = srgb;
+    c.lab = srgb_to_oklab(srgb);
+    const vec3_t lin = srgb_to_linear_srgb(srgb);
+    vec3_t d;
+    d.x = deutan_matrix[0][0] * lin.x + deutan_matrix[0][1] * lin.y + deutan_matrix[0][2] * lin.z;
+    d.y = deutan_matrix[1][0] * lin.x + deutan_matrix[1][1] * lin.y + deutan_matrix[1][2] * lin.z;
+    d.z = deutan_matrix[2][0] * lin.x + deutan_matrix[2][1] * lin.y + deutan_matrix[2][2] * lin.z;
+    c.cvd = linear_srgb_to_oklab(vec3_clamp_f(d, 0.0f, 1.0f));
+}
+
+void set_lch(OptColor& c, float L, float C, float h) {
+    c.L = L; c.C = C; c.h = h - floorf(h);
+    set_shown(c, oklch_to_srgb_mapped(c.L, c.C, c.h));
+}
+
+inline float distance(vec3_t a, vec3_t b) {
+    const vec3_t d = a - b;
+    return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+}
+
+// A small deterministic generator, the same colors for the same input on every platform
+struct Rng {
+    uint64_t s;
+    explicit Rng(uint64_t seed) : s(seed * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull) {}
+    uint64_t next() { s ^= s >> 12; s ^= s << 25; s ^= s >> 27; return s * 0x2545F4914F6CDD1Dull; }
+    float uniform() { return (float)(next() >> 40) * (1.0f / 16777216.0f); }
+    float normal() {
+        const float u1 = MAX(uniform(), 1.0e-7f);
+        const float u2 = uniform();
+        return sqrtf(-2.0f * logf(u1)) * cosf(2.0f * (float)PI * u2);
+    }
+};
+
+}  // namespace
+
+ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, const ColorOptimizeDesc& desc) {
+    ColorOptimizeResult result = {};
+    if (!items || count == 0) return result;
+
+    const float Lmin = CLAMP(MIN(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Lmax = CLAMP(MAX(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Cmin = MAX(0.0f, MIN(desc.chroma_min, desc.chroma_max));
+    const float Cmax = MAX(desc.chroma_min, desc.chroma_max);
+    const float grey_chroma = 0.03f;    // Below this a color counts as a grey, and one which keeps its hue stays grey
+    const float hue_slack   = 0.02f;    // How far (in turns) one which keeps its hue may turn
+    const float tau         = 0.01f;    // The softness of the smallest distance which is pushed up
+    const float wc          = MAX(desc.cvd_weight, 0.0f);
+
+    std::vector<OptColor> c(count);
+    std::vector<float> h0(count, 0.0f);
+    std::vector<uint8_t> grey(count, 0);
+    float wmax = 0.0f;
+    for (size_t i = 0; i < count; ++i) wmax = MAX(wmax, items[i].weight);
+    if (wmax <= 0.0f) wmax = 1.0f;
+    std::vector<float> wq(count);   // The weights, normalized and flattened: a rare item may come closer, not much closer
+    for (size_t i = 0; i < count; ++i) wq[i] = powf(CLAMP(items[i].weight / wmax, 1.0e-6f, 1.0f), 0.25f);
+
+    // The band of each item: one of a large share of the weight is held lighter and calmer
+    std::vector<float> lo_L(count, Lmin), hi_C(count, Cmax);
+    if (desc.calm_dominant) {
+        double wsum = 0.0;
+        for (size_t i = 0; i < count; ++i) wsum += MAX(items[i].weight, 0.0f);
+        for (size_t i = 0; i < count && wsum > 0.0; ++i) {
+            const float share = (float)(MAX(items[i].weight, 0.0f) / wsum);
+            const float dominance = MIN(1.0f, 2.0f * share);   // From none to full as the share goes to a half
+            lo_L[i] = Lmin + (Lmax - Lmin) * 0.8f * dominance;
+            hi_C[i] = MAX(Cmin, Cmax * (1.0f - 0.6f * dominance));
+        }
+    }
+
+    std::vector<size_t> moving;
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t shown = shown_from_stored(items[i].color, desc.linear_input);
+        set_shown(c[i], shown);
+        const vec3_t lab = c[i].lab;
+        c[i].L = lab.x;
+        c[i].C = sqrtf(lab.y * lab.y + lab.z * lab.z);
+        c[i].h = atan2f(lab.z, lab.y) / (2.0f * (float)PI);
+        c[i].h -= floorf(c[i].h);
+        if (items[i].fixed) continue;
+
+        moving.push_back(i);
+        h0[i]   = c[i].h;
+        grey[i] = items[i].keep_hue && c[i].C < grey_chroma;
+        float L = CLAMP(c[i].L, lo_L[i], Lmax);
+        float C = items[i].keep_hue ? (grey[i] ? c[i].C : CLAMP(c[i].C, grey_chroma, MAX(hi_C[i], c[i].C))) : CLAMP(c[i].C, Cmin, hi_C[i]);
+        float h = c[i].h;
+        // Items which start out alike (types of one hashed color, or of one element) are spread first
+        for (size_t j = 0; j < i; ++j) {
+            if (distance(lab, c[j].lab) < 0.02f) {
+                if (items[i].keep_hue) L = CLAMP(L + ((moving.size() & 1) ? 0.06f : -0.06f), lo_L[i], Lmax);
+                else                   h = h + 0.618034f * (float)moving.size();
+                break;
+            }
+        }
+        set_lch(c[i], L, C, h);
+    }
+    result.num_moved = moving.size();
+
+    // The pairs which can change are those with an item which moves. Each adds exp(-e / tau) to what is minimized, e
+    // being its distance (normal vision and deuteranopia) over how much the pair matters: a soft minimum.
+    const auto pair_term = [&](const OptColor& a, const OptColor& b, size_t i, size_t j) -> double {
+        const float d = (distance(a.lab, b.lab) + wc * distance(a.cvd, b.cvd)) / (1.0f + wc);
+        const float importance = 0.5f + 0.5f * wq[i] * wq[j];
+        return exp(-(double)(d / importance) / (double)tau);
+    };
+
+    if (!moving.empty()) {
+        std::vector<double> term(count * count, 0.0);
+        for (size_t i = 0; i < count; ++i) {
+            for (size_t j = i + 1; j < count; ++j) {
+                if (items[i].fixed && items[j].fixed) continue;
+                term[i * count + j] = term[j * count + i] = pair_term(c[i], c[j], i, j);
+            }
+        }
+
+        Rng rng(desc.seed);
+        std::vector<double> trial(count, 0.0);
+        const uint64_t total = MIN((uint64_t)desc.moves_per_item * moving.size(), (uint64_t)120000);
+        for (uint64_t m = 0; m < total; ++m) {
+            const size_t k = moving[rng.next() % moving.size()];
+            const float a = 1.0f - 0.85f * (float)m / (float)total;    // Steps shrink as it settles
+
+            // Drawn before they are clamped: CLAMP evaluates its arguments more than once
+            const float nL = rng.normal(), nC = rng.normal(), nh = rng.normal();
+            const float L0 = c[k].L + nL * 0.04f * a;
+            float L = CLAMP(L0, lo_L[k], Lmax);
+            float C, h;
+            if (items[k].keep_hue) {
+                const float C0 = c[k].C + nC * (grey[k] ? 0.01f : 0.025f) * a;
+                const float Chi = grey[k] ? grey_chroma : MAX(hi_C[k], c[k].C);
+                C = CLAMP(C0, grey[k] ? 0.0f : grey_chroma, Chi);
+                float dh = c[k].h + nh * 0.01f * a - h0[k];
+                dh -= roundf(dh);
+                h = h0[k] + CLAMP(dh, -hue_slack, hue_slack);
+            } else {
+                const float C0 = c[k].C + nC * 0.025f * a;
+                C = CLAMP(C0, Cmin, hi_C[k]);
+                h = c[k].h + nh * 0.06f * a;
+            }
+            OptColor cand = c[k];
+            set_lch(cand, L, C, h);
+
+            double before = 0.0, after = 0.0;
+            for (size_t j = 0; j < count; ++j) {
+                if (j == k) continue;
+                before += term[k * count + j];
+                trial[j] = pair_term(cand, c[j], k, j);
+                after += trial[j];
+            }
+            if (after <= before) {
+                c[k] = cand;
+                for (size_t j = 0; j < count; ++j) {
+                    if (j == k) continue;
+                    term[k * count + j] = term[j * count + k] = trial[j];
+                }
+            }
+        }
+
+        for (size_t i : moving) {
+            items[i].color = stored_from_shown(c[i].srgb, desc.linear_input);
+            set_shown(c[i], shown_from_stored(items[i].color, desc.linear_input));  // What is reported is what is stored
+        }
+    }
+
+    float min_d = 1.0e9f;
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = i + 1; j < count; ++j) {
+            if (items[i].fixed && items[j].fixed) continue;
+            min_d = MIN(min_d, distance(c[i].lab, c[j].lab));
+        }
+    }
+    result.min_distance = min_d < 1.0e9f ? min_d : 0.0f;
+    return result;
 }

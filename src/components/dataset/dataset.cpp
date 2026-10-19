@@ -1,6 +1,7 @@
-#include <viamd_event.h>
+﻿#include <viamd_event.h>
 #include <viamd.h>
 #include <representation.h>
+#include <color_utils.h>
 #include <event.h>
 #include <serialization_utils.h>
 #include <display_units.h>
@@ -188,6 +189,15 @@ struct Dataset : viamd::EventHandler {
     int  monomer_popup      = -1;           // Monomer whose defaults are being edited
 
     MonomerDefault monomer_defaults[MD_MONOMER_COUNT] = {};
+
+    // The Optimize colors popups of the atom and residue types
+    struct ColorOptimizePanel {
+        int  scope = 0;             // 0: the types without a color of meaning, 1: every type in use, keeping its hue
+        bool has_result = false;
+        ColorOptimizeResult result = {};
+    };
+    ColorOptimizePanel atom_type_optimize;
+    ColorOptimizePanel comp_type_optimize;
 
     // Atom type overrides read from a workspace, waiting for a system to be applied to.
     // Deliberately heap allocated: `arena` is reset by init_dataset_items, which runs after these are parsed.
@@ -2101,6 +2111,82 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableSetColumnIndex(1);
     }
 
+    // ## Optimized colors
+    //
+    // A button for the atom types and one for the residue types: the colors of the types the system uses made as
+    // distinct as they can be (optimize_colors). The types whose colors mean something are anchors: those which follow
+    // their defaults (an element, a standard residue) and those the user colored. The others, or every type keeping its
+    // hue, move. What comes out are ordinary colors of the types, unlinked from their defaults: stored in the workspace
+    // and restored by Reset like any edit.
+
+    static ColorOptimizeDesc color_optimize_desc(const ApplicationState& data) {
+        ColorOptimizeDesc desc;
+        desc.linear_input = data.visuals.shading.colors == postprocess_pipeline::ColorSpace_Linear;
+        return desc;
+    }
+
+    // The row of the table with the filter, Reset and Optimize colors. Returns true when the colors are to be optimized.
+    static bool draw_type_table_toolbar(const char* id, bool show_filter, char* filter, size_t filter_cap, const char* filter_hint,
+                                        size_t num_modified, bool& reset_clicked, const char* reset_tip,
+                                        ColorOptimizePanel& panel, const char* scope0_tip, const char* scope1_tip) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        char reset_lbl[48] = "";
+        float reset_w = 0;
+        if (num_modified) {
+            snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
+            reset_w = ImGui::CalcTextSize(reset_lbl).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
+        }
+        const char* opt_lbl = "Optimize colors...";
+        const float opt_w = ImGui::CalcTextSize(opt_lbl).x + style.FramePadding.x * 2;
+
+        ImGui::PushID(id);
+        defer { ImGui::PopID(); };
+        if (show_filter) {
+            ImGui::SetNextItemWidth(-(reset_w + opt_w + style.ItemSpacing.x));
+            ImGui::InputTextWithHint("##filter", filter_hint, filter, filter_cap);
+            ImGui::SameLine();
+        }
+        reset_clicked = false;
+        if (num_modified) {
+            reset_clicked = ImGui::Button(reset_lbl);
+            ImGui::SetItemTooltip("%s", reset_tip);
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(opt_lbl)) {
+            ImGui::OpenPopup("##optimize");
+        }
+        ImGui::SetItemTooltip("Make the colors of the types in use as distinct as they can be");
+
+        bool run = false;
+        if (ImGui::BeginPopup("##optimize")) {
+            ImGui::TextUnformatted("Make the colors of the types in use as distinct as they can be");
+            ImGui::TextDisabled("The more atoms of a type, the further it is kept from the others");
+            ImGui::Separator();
+            ImGui::RadioButton("Types without a color of meaning", &panel.scope, 0);
+            ImGui::SetItemTooltip("%s", scope0_tip);
+            ImGui::RadioButton("All types in use, keeping their hues", &panel.scope, 1);
+            ImGui::SetItemTooltip("%s", scope1_tip);
+            if (ImGui::Button("Optimize")) {
+                run = true;
+            }
+            if (panel.has_result) {
+                ImGui::Separator();
+                if (panel.result.num_moved == 0) {
+                    ImGui::TextDisabled("No type to recolor: their colors all mean something");
+                } else {
+                    ImGui::Text("%zu types recolored, the closest two %.3f apart (OKLab)", panel.result.num_moved, panel.result.min_distance);
+                    if (panel.result.min_distance < 0.03f) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Too many types to tell apart by color alone:");
+                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "color by a coarser grouping instead");
+                    }
+                    ImGui::TextDisabled("Reset restores the colors they had");
+                }
+            }
+            ImGui::EndPopup();
+        }
+        return run;
+    }
+
     // ## Atom types
 
     static constexpr float atom_type_min_mass   = 1.0f;
@@ -2351,6 +2437,42 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    void optimize_atom_type_colors(ApplicationState& data, bool& color_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        const size_t num_types = md_system_atom_type_count(&data.mold.sys);
+        if (num_types == 0 || md_array_size(atom_types) != num_types) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(ColorOptimizeItem) items = 0;
+        md_array(size_t) index = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            if (atom_types[i].count == 0) continue;     // Only the types in use
+            const bool no_element = type_is_bead(type.flags[i]) || type.z[i] == 0;
+            const bool user_color = compute_atom_type_delta(type, atom_types[i], i).color;
+            ColorOptimizeItem it;
+            it.color  = type.color[i];
+            it.weight = (float)atom_types[i].count;
+            if (atom_type_optimize.scope == 0) {
+                it.fixed = !no_element || user_color;
+            } else {
+                it.keep_hue = true;
+            }
+            md_array_push(items, it, md_temp_allocator(temp));
+            md_array_push(index, i, md_temp_allocator(temp));
+        }
+        atom_type_optimize.result = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        atom_type_optimize.has_result = true;
+
+        for (size_t k = 0; k < md_array_size(items); ++k) {
+            const size_t i = index[k];
+            if (items[k].fixed || items[k].color == type.color[i]) continue;
+            type.color[i] = items[k].color;
+            atom_types[i].use_defaults = false;     // A color of its own now
+            color_changed = true;
+        }
+    }
+
     void draw_atom_types(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
         md_system_t& sys = data.mold.sys;
         md_atom_type_data_t& type = sys.atom.type;
@@ -2372,27 +2494,21 @@ struct Dataset : viamd::EventHandler {
         }
 
         const bool show_filter = num_types - first > 8;
-        if (show_filter || num_modified) {
-            char reset_lbl[48] = "";
-            float reset_w = 0;
-            if (num_modified) {
-                snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
-                reset_w = ImGui::CalcTextSize(reset_lbl).x + ImGui::GetStyle().FramePadding.x * 2;
-            }
-            if (show_filter) {
-                ImGui::SetNextItemWidth(num_modified ? -(reset_w + ImGui::GetStyle().ItemSpacing.x) : -FLT_MIN);
-                ImGui::InputTextWithHint("##atom_type_filter", "Filter by name or element", atom_type_filter, sizeof(atom_type_filter));
-                if (num_modified) ImGui::SameLine();
-            }
-            if (num_modified) {
-                if (ImGui::Button(reset_lbl)) {
-                    for (size_t i = first; i < num_types; ++i) {
-                        if (compute_atom_type_delta(type, atom_types[i], i)) {
-                            reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
-                        }
+        {
+            bool reset_clicked = false;
+            const bool optimize = draw_type_table_toolbar("##atom_type_toolbar", show_filter, atom_type_filter, sizeof(atom_type_filter), "Filter by name or element",
+                num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", atom_type_optimize,
+                "Coarse grained beads and types without an element, which you have not colored. The rest keep their colors and are kept apart from.",
+                "Every type in use: the types of one element take shades of its color, the beads move freely within theirs.");
+            if (reset_clicked) {
+                for (size_t i = first; i < num_types; ++i) {
+                    if (compute_atom_type_delta(type, atom_types[i], i)) {
+                        reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
                     }
                 }
-                ImGui::SetItemTooltip("Restore the modified atom types (marked *) to what was loaded");
+            }
+            if (optimize) {
+                optimize_atom_type_colors(data, color_changed);
             }
         }
         const str_t filter = show_filter ? str_trim(str_from_cstr(atom_type_filter)) : STR_LIT("");
@@ -2986,6 +3102,48 @@ struct Dataset : viamd::EventHandler {
         ImGui::EndTable();
     }
 
+    void optimize_comp_type_colors(ApplicationState& data, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t num_types = md_component_type_count(&type);
+        if (num_types == 0 || md_array_size(comp_types) != num_types) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(ColorOptimizeItem) items = 0;
+        md_array(size_t) index = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            if (comp_types[i].count == 0) continue;     // Only the types in use
+            // A monatomic ion has the color of its element, which means something, unless it is a bead without one
+            bool element_color = false;
+            if (md_component_type_kind(&type, i) == MD_COMPONENT_KIND_ION) {
+                const md_urange_t atoms = md_system_component_atom_range(&data.mold.sys, (size_t)comp_types[i].comp_indices[0]);
+                element_color = atoms.end > atoms.beg && md_atom_atomic_number(&data.mold.sys.atom, atoms.beg) != 0;
+            }
+            const bool no_meaning = !comp_type_has_monomer(type, i) && !element_color;
+            const bool user_color = compute_comp_type_delta(type, i).color;
+            ColorOptimizeItem it;
+            it.color  = type.color[i];
+            it.weight = (float)comp_types[i].atom_count;
+            if (comp_type_optimize.scope == 0) {
+                it.fixed = !no_meaning || user_color;
+            } else {
+                it.keep_hue = true;
+            }
+            md_array_push(items, it, md_temp_allocator(temp));
+            md_array_push(index, i, md_temp_allocator(temp));
+        }
+        comp_type_optimize.result = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        comp_type_optimize.has_result = true;
+
+        for (size_t k = 0; k < md_array_size(items); ++k) {
+            const size_t i = index[k];
+            if (items[k].fixed || items[k].color == type.color[i]) continue;
+            type.color[i] = items[k].color;
+            comp_types[i].use_defaults = false;     // A color of its own now
+            color_changed = true;
+        }
+    }
+
     void draw_comp_types(ApplicationState& data, bool& color_changed) {
         md_system_t& sys = data.mold.sys;
         md_component_type_data_t& type = sys.component.type;
@@ -3011,25 +3169,19 @@ struct Dataset : viamd::EventHandler {
         if (comp_type_selected >= (int)num_types) comp_type_selected = -1;
 
         const bool show_filter = num_used > 8;
-        if (show_filter || num_modified) {
-            char reset_lbl[48] = "";
-            float reset_w = 0;
-            if (num_modified) {
-                snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
-                reset_w = ImGui::CalcTextSize(reset_lbl).x + ImGui::GetStyle().FramePadding.x * 2;
-            }
-            if (show_filter) {
-                ImGui::SetNextItemWidth(num_modified ? -(reset_w + ImGui::GetStyle().ItemSpacing.x) : -FLT_MIN);
-                ImGui::InputTextWithHint("##comp_type_filter", "Filter by name, standard residue or kind", comp_type_filter, sizeof(comp_type_filter));
-                if (num_modified) ImGui::SameLine();
-            }
-            if (num_modified) {
-                if (ImGui::Button(reset_lbl)) {
-                    for (size_t i = 0; i < num_types; ++i) {
-                        if (compute_comp_type_delta(type, i)) reset_comp_type(type, i, color_changed);
-                    }
+        {
+            bool reset_clicked = false;
+            const bool optimize = draw_type_table_toolbar("##comp_type_toolbar", show_filter, comp_type_filter, sizeof(comp_type_filter), "Filter by name, standard residue or kind",
+                num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", comp_type_optimize,
+                "Types without a standard residue (ligands, lipids, water; ions only when they are beads without an element), which you have not colored. The rest keep their colors and are kept apart from.",
+                "Every type in use: the forms of a standard residue keep the hue of its family, the others move within theirs.");
+            if (reset_clicked) {
+                for (size_t i = 0; i < num_types; ++i) {
+                    if (compute_comp_type_delta(type, i)) reset_comp_type(type, i, color_changed);
                 }
-                ImGui::SetItemTooltip("Restore the modified residue types (marked *) to what was loaded");
+            }
+            if (optimize) {
+                optimize_comp_type_colors(data, color_changed);
             }
         }
         const str_t filter = show_filter ? str_trim(str_from_cstr(comp_type_filter)) : STR_LIT("");
