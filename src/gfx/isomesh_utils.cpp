@@ -10,6 +10,7 @@
 
 #include <math.h>
 #include <float.h>
+#include <stdio.h>
 
 #include <shaders.inl>
 
@@ -42,6 +43,16 @@ void main() {
 }
 )");
 
+// Experiment_*Seeded: the opaque scene's depth into a depth target, where a clear would put 1
+static constexpr str_t f_shader_src_seed = STR_LIT(R"(
+#version 410 core
+uniform sampler2D u_tex_depth;
+uniform int u_use_depth;
+void main() {
+    gl_FragDepth = (u_use_depth != 0) ? texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).r : 1.0;
+}
+)");
+
 // Extinction per world unit (Ångström) of unit optical density, as the raycaster's (ISO_OPTICAL_SCALE)
 static constexpr float OPTICAL_SCALE = 150.0f;
 static constexpr int   MAX_SAMPLES   = 4;
@@ -69,14 +80,22 @@ struct MeshProgram {
     GLint isoline_count, isoline_values, isoline_hover, isoline_hover_value, isoline_width;
 };
 
+struct AccumulateProgram {
+    GLuint program = 0;
+    GLint tex_color, tex_tod, samples, tex_history_color, tex_history_t, weight;
+};
+
 static struct {
     MeshProgram mesh;       // PASS_PEEL0 .. PASS_ACCUMULATE, per sample
     MeshProgram mesh_tod;   // PASS_TRANSMITTANCE, at pixel rate
-    MeshProgram mesh_nfd;   // as mesh, without writing gl_FragDepth (Experiment_*NoFragDepth)
+    MeshProgram experiment[8][5];       // the per-sample program of an experiment's defines (by EF_* >> 1) and pass (0: all)
+    bool        experiment_tried[8][5];
+    AccumulateProgram accumulate;
+    AccumulateProgram accumulate_1;     // of plain textures (Experiment_OneSample*)
     struct {
         GLuint program = 0;
-        GLint tex_color, tex_tod, samples, tex_history_color, tex_history_t, weight;
-    } accumulate;
+        GLint tex_depth, use_depth;
+    } seed;                             // Experiment_*Seeded
     struct {
         GLuint program = 0;
         GLint tex_color, tex_t;
@@ -196,6 +215,38 @@ static GLuint link(str_t v_src, str_t f_src, const char* name, str_t f_defines =
     return p;
 }
 
+#define LOC(prog, name) glGetUniformLocation(prog, name)
+static void mesh_locations(MeshProgram* mp) {
+    auto& m = *mp;
+    const GLuint p = m.program;
+    m.model = LOC(p, "u_model"); m.view = LOC(p, "u_view"); m.proj = LOC(p, "u_proj");
+    m.color = LOC(p, "u_color"); m.coloring = LOC(p, "u_coloring"); m.world_to_volume = LOC(p, "u_world_to_volume");
+    m.tex_color_volume = LOC(p, "u_tex_color_volume"); m.tex_field = LOC(p, "u_tex_field"); m.tex_field_colormap = LOC(p, "u_tex_field_colormap");
+    m.field_beg = LOC(p, "u_field_beg"); m.field_inv_ext = LOC(p, "u_field_inv_ext");
+    m.tex_depth = LOC(p, "u_tex_depth"); m.use_depth = LOC(p, "u_use_depth"); m.pass = LOC(p, "u_pass"); m.frame = LOC(p, "u_frame");
+    m.samples = LOC(p, "u_samples"); m.surface_id = LOC(p, "u_surface_id");
+    m.tex_tod = LOC(p, "u_tex_tod"); m.tau = LOC(p, "u_tau"); m.od_ref = LOC(p, "u_od_ref");
+    m.inv_proj = LOC(p, "u_inv_proj"); m.inv_res = LOC(p, "u_inv_res"); m.ortho = LOC(p, "u_ortho");
+    m.tex_blue_noise = LOC(p, "u_tex_blue_noise");
+    m.tex_peel_depth0 = LOC(p, "u_tex_peel_depth0"); m.tex_peel_depth1 = LOC(p, "u_tex_peel_depth1");
+    m.tex_peel_opacity = LOC(p, "u_tex_peel_opacity");
+    m.light_dir = LOC(p, "u_light_dir"); m.dir_radiance = LOC(p, "u_dir_radiance"); m.sky_radiance = LOC(p, "u_sky_radiance");
+    m.ground_radiance = LOC(p, "u_ground_radiance"); m.roughness = LOC(p, "u_roughness"); m.F0 = LOC(p, "u_F0");
+    m.basic = LOC(p, "u_basic"); m.basic_ambient = LOC(p, "u_basic_ambient"); m.basic_specular = LOC(p, "u_basic_specular");
+    m.linear_colors = LOC(p, "u_linear_colors"); m.light_strength = LOC(p, "u_light_strength");
+    m.isoline_count = LOC(p, "u_isoline_count"); m.isoline_values = LOC(p, "u_isoline_values");
+    m.isoline_hover = LOC(p, "u_isoline_hover"); m.isoline_hover_value = LOC(p, "u_isoline_hover_value");
+    m.isoline_width = LOC(p, "u_isoline_width");
+}
+
+static void accumulate_locations(AccumulateProgram* ap) {
+    auto& a = *ap;
+    const GLuint p = a.program;
+    a.tex_color = LOC(p, "u_tex_color"); a.tex_tod = LOC(p, "u_tex_tod"); a.samples = LOC(p, "u_samples");
+    a.tex_history_color = LOC(p, "u_tex_history_color"); a.tex_history_t = LOC(p, "u_tex_history_t"); a.weight = LOC(p, "u_weight");
+}
+#undef LOC
+
 void initialize() {
     const str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
     const str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
@@ -205,42 +256,20 @@ void initialize() {
 
     gl.mesh.program       = link(vert, frag, "mesh");
     gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
-    gl.mesh_nfd.program   = link(vert, frag, "mesh without gl_FragDepth", STR_LIT("#define ISOMESH_NO_FRAGDEPTH"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
+    gl.accumulate_1.program = link(v_shader_src_fs_triangle, acc, "accumulate of plain textures", STR_LIT("#define ISOMESH_ONE_SAMPLE"));
+    gl.seed.program       = link(v_shader_src_fs_triangle, f_shader_src_seed, "seed");
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
-    gl.ok = gl.mesh.program && gl.mesh_tod.program && gl.mesh_nfd.program && gl.accumulate.program && gl.composite.program;
+    gl.ok = gl.mesh.program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
     if (!gl.ok) return;
 
 #define LOC(prog, name) glGetUniformLocation(prog, name)
-    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod, &gl.mesh_nfd};
-    for (MeshProgram* mp : mesh_programs) {
-        auto& m = *mp;
-        const GLuint p = m.program;
-        m.model = LOC(p, "u_model"); m.view = LOC(p, "u_view"); m.proj = LOC(p, "u_proj");
-        m.color = LOC(p, "u_color"); m.coloring = LOC(p, "u_coloring"); m.world_to_volume = LOC(p, "u_world_to_volume");
-        m.tex_color_volume = LOC(p, "u_tex_color_volume"); m.tex_field = LOC(p, "u_tex_field"); m.tex_field_colormap = LOC(p, "u_tex_field_colormap");
-        m.field_beg = LOC(p, "u_field_beg"); m.field_inv_ext = LOC(p, "u_field_inv_ext");
-        m.tex_depth = LOC(p, "u_tex_depth"); m.use_depth = LOC(p, "u_use_depth"); m.pass = LOC(p, "u_pass"); m.frame = LOC(p, "u_frame");
-        m.samples = LOC(p, "u_samples"); m.surface_id = LOC(p, "u_surface_id");
-        m.tex_tod = LOC(p, "u_tex_tod"); m.tau = LOC(p, "u_tau"); m.od_ref = LOC(p, "u_od_ref");
-        m.inv_proj = LOC(p, "u_inv_proj"); m.inv_res = LOC(p, "u_inv_res"); m.ortho = LOC(p, "u_ortho");
-        m.tex_blue_noise = LOC(p, "u_tex_blue_noise");
-        m.tex_peel_depth0 = LOC(p, "u_tex_peel_depth0"); m.tex_peel_depth1 = LOC(p, "u_tex_peel_depth1");
-        m.tex_peel_opacity = LOC(p, "u_tex_peel_opacity");
-        m.light_dir = LOC(p, "u_light_dir"); m.dir_radiance = LOC(p, "u_dir_radiance"); m.sky_radiance = LOC(p, "u_sky_radiance");
-        m.ground_radiance = LOC(p, "u_ground_radiance"); m.roughness = LOC(p, "u_roughness"); m.F0 = LOC(p, "u_F0");
-        m.basic = LOC(p, "u_basic"); m.basic_ambient = LOC(p, "u_basic_ambient"); m.basic_specular = LOC(p, "u_basic_specular");
-        m.linear_colors = LOC(p, "u_linear_colors"); m.light_strength = LOC(p, "u_light_strength");
-        m.isoline_count = LOC(p, "u_isoline_count"); m.isoline_values = LOC(p, "u_isoline_values");
-        m.isoline_hover = LOC(p, "u_isoline_hover"); m.isoline_hover_value = LOC(p, "u_isoline_hover_value");
-        m.isoline_width = LOC(p, "u_isoline_width");
-    }
-    {
-        auto& a = gl.accumulate;
-        const GLuint p = a.program;
-        a.tex_color = LOC(p, "u_tex_color"); a.tex_tod = LOC(p, "u_tex_tod"); a.samples = LOC(p, "u_samples");
-        a.tex_history_color = LOC(p, "u_tex_history_color"); a.tex_history_t = LOC(p, "u_tex_history_t"); a.weight = LOC(p, "u_weight");
-    }
+    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod};
+    for (MeshProgram* mp : mesh_programs) mesh_locations(mp);
+    accumulate_locations(&gl.accumulate);
+    accumulate_locations(&gl.accumulate_1);
+    gl.seed.tex_depth = LOC(gl.seed.program, "u_tex_depth");
+    gl.seed.use_depth = LOC(gl.seed.program, "u_use_depth");
     gl.composite.tex_color = LOC(gl.composite.program, "u_tex_color");
     gl.composite.tex_t     = LOC(gl.composite.program, "u_tex_t");
 #undef LOC
@@ -263,10 +292,18 @@ void initialize() {
 }
 
 void shutdown() {
-    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.mesh_nfd.program, &gl.accumulate.program, &gl.composite.program};
+    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.accumulate.program, &gl.accumulate_1.program,
+                          &gl.composite.program, &gl.seed.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
+    }
+    for (int d = 0; d < 8; ++d) {
+        for (int p = 0; p < 5; ++p) {
+            if (gl.experiment[d][p].program) glDeleteProgram(gl.experiment[d][p].program);
+            gl.experiment[d][p].program = 0;
+            gl.experiment_tried[d][p] = false;
+        }
     }
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     if (gl.fbo) glDeleteFramebuffers(1, &gl.fbo);
@@ -450,18 +487,79 @@ Experiment experiment() { return g_experiment; }
 
 const char* experiment_name(Experiment e) {
     switch (e) {
-        case Experiment_None:                 return "baseline";
-        case Experiment_NoFragDepth:          return "no-fragdepth";
-        case Experiment_OneSample:            return "1-sample";
-        case Experiment_OneSampleNoFragDepth: return "1-sample-no-fragdepth";
-        case Experiment_GeometryOnly:         return "geometry-only";
-        default:                              return "?";
+        case Experiment_None:                       return "baseline";
+        case Experiment_Specialized:                return "specialized";
+        case Experiment_SpecializedNoFragDepth:     return "specialized-no-fragdepth";
+        case Experiment_OneSample:                  return "1-sample";
+        case Experiment_OneSampleSpecialized:       return "1-sample-specialized";
+        case Experiment_OneSampleSpecializedSeeded: return "1-sample-specialized-seeded";
+        default:                                    return "?";
     }
 }
 
+// What an experiment changes, as the defines of isomesh.frag (EF_SPECIALIZED: ISOMESH_PASS)
+enum : uint32_t {
+    EF_SPECIALIZED  = 1,
+    EF_NO_FRAGDEPTH = 2,
+    EF_ONE_SAMPLE   = 4,
+    EF_SEEDED       = 8,
+};
+
+static uint32_t experiment_flags(Experiment e) {
+    switch (e) {
+        case Experiment_Specialized:                return EF_SPECIALIZED;
+        case Experiment_SpecializedNoFragDepth:     return EF_SPECIALIZED | EF_NO_FRAGDEPTH;
+        case Experiment_OneSample:                  return EF_ONE_SAMPLE;
+        case Experiment_OneSampleSpecialized:       return EF_ONE_SAMPLE | EF_SPECIALIZED;
+        case Experiment_OneSampleSpecializedSeeded: return EF_ONE_SAMPLE | EF_SPECIALIZED | EF_SEEDED;
+        default:                                    return 0;
+    }
+}
+
+// The program of a pass per sample under the flags: gl.mesh without any, else built the first time it is asked for
+// (gl.mesh if it does not build)
+static const MeshProgram& mesh_program(uint32_t flags, Pass pass) {
+    if (!flags) return gl.mesh;
+    const int d = (int)((flags >> 1) & 7);
+    const int p = (flags & EF_SPECIALIZED) ? (int)pass : 0;
+    MeshProgram& m = gl.experiment[d][p];
+    if (!gl.experiment_tried[d][p]) {
+        gl.experiment_tried[d][p] = true;
+        char defines[256];
+        int n = 0;
+        if (p)                       n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_PASS %d\n", p);
+        if (flags & EF_NO_FRAGDEPTH) n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_NO_FRAGDEPTH\n");
+        if (flags & EF_ONE_SAMPLE)   n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_ONE_SAMPLE\n");
+        if (flags & EF_SEEDED)       n += snprintf(defines + n, sizeof(defines) - n, "#define ISOMESH_SEEDED\n");
+        const str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
+        const str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
+        m.program = link(vert, frag, experiment_name(g_experiment), str_t{defines, (size_t)n});
+        if (m.program) mesh_locations(&m);
+    }
+    return m.program ? m : gl.mesh;
+}
+
+// Experiment_OneSample*: a texture of one sample per pixel. A multisampled texture of one sample is not that
+// everywhere (an implementation may give it more), so a plain one.
+static GLuint texture_plain(GLenum format, uint32_t width, uint32_t height) {
+    const bool depth  = format == GL_DEPTH_COMPONENT24 || format == GL_DEPTH_COMPONENT32F;
+    const GLenum base = depth ? GL_DEPTH_COMPONENT : (format == GL_RG16F ? GL_RG : GL_RGBA);
+    const GLenum type = depth ? GL_FLOAT : GL_HALF_FLOAT;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)format, (GLsizei)width, (GLsizei)height, 0, base, type, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
 static bool target_init(Target* t, uint32_t width, uint32_t height) {
-    const int cap = (g_experiment == Experiment_OneSample || g_experiment == Experiment_OneSampleNoFragDepth) ? 1 : MAX_SAMPLES;
-    if (t->fbo && t->width == width && t->height == height && t->sample_cap == (uint32_t)cap) return true;
+    const bool   plain  = (experiment_flags(g_experiment) & EF_ONE_SAMPLE) != 0;
+    const GLenum target = plain ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+    if (t->fbo && t->width == width && t->height == height && t->tex_target == (uint32_t)target) return true;
     target_free(t);
 
     GLint max_color = 1, max_depth = 1;
@@ -469,32 +567,35 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
     glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &max_depth);
     // As many samples as the budget allows: colour 8, transmittance 4, three depths 12, peeled opacities 4 bytes
     const size_t bytes_per_sample = 28;
-    GLsizei samples = CLAMP(MIN(max_color, max_depth), 1, cap);
+    GLsizei samples = CLAMP(MIN(max_color, max_depth), 1, MAX_SAMPLES);
     while (samples > 1 && (size_t)width * height * samples * bytes_per_sample > MEMORY_BUDGET) samples /= 2;
 
-    t->tex_ms_color = texture_ms(samples, GL_RGBA16F, width, height);
-    t->tex_ms_tod   = texture_ms(samples, GL_RG16F, width, height);
-    t->tex_ms_depth = texture_ms(samples, GL_DEPTH_COMPONENT24, width, height);
-    t->tex_ms_peel_depth[0] = texture_ms(samples, GL_DEPTH_COMPONENT32F, width, height);
-    t->tex_ms_peel_depth[1] = texture_ms(samples, GL_DEPTH_COMPONENT32F, width, height);
-    t->tex_ms_peel_opacity  = texture_ms(samples, GL_RG16F, width, height);
-    GLint actual = samples;
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_color);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D_MULTISAMPLE, 0, GL_TEXTURE_SAMPLES, &actual);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+    auto tex = [&](GLenum format) { return plain ? texture_plain(format, width, height) : texture_ms(samples, format, width, height); };
+    t->tex_ms_color = tex(GL_RGBA16F);
+    t->tex_ms_tod   = tex(GL_RG16F);
+    t->tex_ms_depth = tex(GL_DEPTH_COMPONENT24);
+    t->tex_ms_peel_depth[0] = tex(GL_DEPTH_COMPONENT32F);
+    t->tex_ms_peel_depth[1] = tex(GL_DEPTH_COMPONENT32F);
+    t->tex_ms_peel_opacity  = tex(GL_RG16F);
+    GLint actual = 1;
+    if (!plain) {
+        glBindTexture(target, t->tex_ms_color);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_MULTISAMPLE, 0, GL_TEXTURE_SAMPLES, &actual);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+    }
 
     glGenFramebuffers(1, &t->fbo_color);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_color, 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_depth, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_color, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_ms_depth, 0);
     glGenFramebuffers(1, &t->fbo_tod);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_tod, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_tod, 0);
     for (int i = 0; i < 2; ++i) {
         glGenFramebuffers(1, &t->fbo_peel[i]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[i]);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_opacity, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_depth[i], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_peel_opacity, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_ms_peel_depth[i], 0);
     }
 
     for (int i = 0; i < 2; ++i) {
@@ -506,7 +607,7 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
     t->width   = width;
     t->height  = height;
     t->samples = (uint32_t)MAX(actual, 1);
-    t->sample_cap = (uint32_t)cap;
+    t->tex_target = (uint32_t)target;
     t->frame   = 0;
     t->hash    = 0;
     t->cur     = 0;
@@ -668,6 +769,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         return false;
     }
 
+    const GLenum   ms_target = (GLenum)t->tex_target;
+    const uint32_t ef = experiment_flags(g_experiment) & (gl.seed.program ? ~0u : ~(uint32_t)EF_SEEDED);
+
     const uint64_t hash = desc_hash(desc);
     if (hash != t->hash) {
         t->hash  = hash;
@@ -761,14 +865,11 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1f(m.linear_colors, desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f);
             glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
         };
-        // The program of the passes per sample: the experiment's, if it has one of its own
-        const bool no_fragdepth = g_experiment == Experiment_NoFragDepth || g_experiment == Experiment_OneSampleNoFragDepth;
-        const MeshProgram& mesh = no_fragdepth ? gl.mesh_nfd : gl.mesh;
-        set_frame_uniforms(gl.mesh_tod);
-        set_frame_uniforms(mesh);
 
-        auto draw_surfaces = [&](const MeshProgram& m, Pass pass) {
-            glUseProgram(m.program);
+        // Each pass with its program: the experiment's, if it has one of its own
+        auto draw_surfaces = [&](Pass pass) {
+            const MeshProgram& m = (pass == Pass_Transmittance) ? gl.mesh_tod : mesh_program(ef, pass);
+            set_frame_uniforms(m);
             glUniform1i(m.pass, (GLint)pass);
             for (size_t i = 0; i < desc.num_surfaces; ++i) {
                 const Surface& s = desc.surfaces[i];
@@ -802,10 +903,29 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glUniform1i(m.isoline_hover, lines && s.isolines.hover ? 1 : 0);
                 glUniform1f(m.isoline_hover_value, s.isolines.hover_value);
                 glUniform1f(m.isoline_width, MAX(s.isolines.width, 0.0f));
-                if (g_experiment == Experiment_GeometryOnly) glEnable(GL_RASTERIZER_DISCARD);
                 draw_surface(s);
-                if (g_experiment == Experiment_GeometryOnly) glDisable(GL_RASTERIZER_DISCARD);
             }
+        };
+
+        // Experiment_*Seeded: a depth target begun with the opaque scene's depth instead of cleared, so that the depth
+        // test keeps out what lies behind the scene (the passes then do not discard it)
+        const bool seeded = (ef & EF_SEEDED) != 0;
+        auto begin_depth = [&]() {
+            if (!seeded) {
+                glClear(GL_DEPTH_BUFFER_BIT);
+                return;
+            }
+            GLboolean mask[4];
+            glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glDepthFunc(GL_ALWAYS);
+            glUseProgram(gl.seed.program);
+            glUniform1i(gl.seed.tex_depth, 0);
+            glUniform1i(gl.seed.use_depth, use_depth ? 1 : 0);
+            glBindVertexArray(gl.vao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glDepthFunc(GL_LESS);
+            glColorMask(mask[0], mask[1], mask[2], mask[3]);
         };
 
         // The coverage of all the surfaces together and the optical depth of what they enclose, at pixel rate (its
@@ -821,7 +941,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        draw_surfaces(gl.mesh_tod, Pass_Transmittance);
+        draw_surfaces(Pass_Transmittance);
         POP_GPU_SECTION()
 
         // The two nearest layers, exactly: their depths and opacities in each sample
@@ -840,10 +960,10 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
                 glClearBufferfv(GL_COLOR, 0, zero);     // opacity 0: no layer
             }
-            glClear(GL_DEPTH_BUFFER_BIT);
-            glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
-            if (k == 1) bind_texture(6, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_depth[0]);
-            draw_surfaces(mesh, k == 0 ? Pass_Peel0 : Pass_Peel1);
+            begin_depth();
+            glColorMask(k == 0, k == 1 || seeded, GL_FALSE, GL_FALSE);     // seeded: Peel 0 writes both, no mask
+            if (k == 1) bind_texture(6, ms_target, t->tex_ms_peel_depth[0]);
+            draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()
         }
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -853,9 +973,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         PUSH_GPU_SECTION("Stochastic depth")
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
         glDrawBuffer(GL_NONE);
-        glClear(GL_DEPTH_BUFFER_BIT);
-        bind_texture(7, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_depth[1]);
-        draw_surfaces(mesh, Pass_Depth);
+        begin_depth();
+        bind_texture(7, ms_target, t->tex_ms_peel_depth[1]);
+        draw_surfaces(Pass_Depth);
         POP_GPU_SECTION()
 
         // Every surface times its visibility
@@ -869,11 +989,11 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glDepthFunc(GL_LEQUAL);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        bind_texture(1, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_tod);
-        bind_texture(8, GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_peel_opacity);
-        draw_surfaces(mesh, Pass_Accumulate);
+        bind_texture(1, ms_target, t->tex_ms_tod);
+        bind_texture(8, ms_target, t->tex_ms_peel_opacity);
+        draw_surfaces(Pass_Accumulate);
         const int ms_units[4] = {1, 6, 7, 8};
-        for (int unit : ms_units) bind_texture(unit, GL_TEXTURE_2D_MULTISAMPLE, 0);
+        for (int unit : ms_units) bind_texture(unit, ms_target, 0);
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDisable(GL_BLEND);
@@ -883,12 +1003,12 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         PUSH_GPU_SECTION("Mean")
         const uint32_t next = 1 - t->cur;
         attach(t->fbo, t->tex_history_color[next], t->tex_history_t[next]);
-        auto& a = gl.accumulate;
+        auto& a = (ms_target == GL_TEXTURE_2D && gl.accumulate_1.program) ? gl.accumulate_1 : gl.accumulate;
         glUseProgram(a.program);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_color);
+        glBindTexture(ms_target, t->tex_ms_color);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, t->tex_ms_tod);
+        glBindTexture(ms_target, t->tex_ms_tod);
         bind_texture(2, GL_TEXTURE_2D, t->tex_history_color[t->cur]);
         bind_texture(3, GL_TEXTURE_2D, t->tex_history_t[t->cur]);
         glUniform1i(a.tex_color, 0);
@@ -900,9 +1020,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glBindVertexArray(gl.vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+        glBindTexture(ms_target, 0);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+        glBindTexture(ms_target, 0);
         POP_GPU_SECTION()
 
         t->cur = next;

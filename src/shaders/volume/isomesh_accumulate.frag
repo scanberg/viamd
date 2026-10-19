@@ -8,8 +8,13 @@
 // out_t:     the transmittance of the surfaces (exactly), and that times the absorption of what they enclose:
 //            what reaches the eye of the scene behind them
 
+#ifdef ISOMESH_ONE_SAMPLE      // an experiment (isomesh::Experiment_OneSample*): plain textures, texelFetch at level 0
+uniform sampler2D   u_tex_color;
+uniform sampler2D   u_tex_tod;
+#else
 uniform sampler2DMS u_tex_color;
 uniform sampler2DMS u_tex_tod;
+#endif
 uniform int         u_samples;
 uniform sampler2D   u_tex_history_color;
 uniform sampler2D   u_tex_history_t;

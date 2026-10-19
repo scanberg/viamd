@@ -93,10 +93,25 @@ uniform uint  u_frame;              // index of the frame being accumulated
 uniform int   u_samples;            // samples per pixel of the target
 uniform uint  u_surface_id;         // tells the draws apart (gl_PrimitiveID starts from 0 in each)
 
-uniform sampler2DMS u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
-uniform sampler2DMS u_tex_peel_depth0;  // the depth of the nearest layer (PASS_PEEL0)
-uniform sampler2DMS u_tex_peel_depth1;  // and of the second (PASS_PEEL1)
-uniform sampler2DMS u_tex_peel_opacity; // their opacities (r, g)
+// Experiments (isomesh::Experiment): a sample per pixel in plain textures (ISOMESH_ONE_SAMPLE), a program per pass
+// (ISOMESH_PASS, its PASS_*), the depth targets begun with the opaque scene's depth (ISOMESH_SEEDED)
+#ifdef ISOMESH_ONE_SAMPLE
+#define SAMPLER_MS   sampler2D
+#define SAMPLE_INDEX 0
+#else
+#define SAMPLER_MS   sampler2DMS
+#define SAMPLE_INDEX gl_SampleID
+#endif
+#ifdef ISOMESH_PASS
+#define CUR_PASS ISOMESH_PASS
+#else
+#define CUR_PASS u_pass
+#endif
+
+uniform SAMPLER_MS  u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
+uniform SAMPLER_MS  u_tex_peel_depth0;  // the depth of the nearest layer (PASS_PEEL0)
+uniform SAMPLER_MS  u_tex_peel_depth1;  // and of the second (PASS_PEEL1)
+uniform SAMPLER_MS  u_tex_peel_opacity; // their opacities (r, g)
 uniform float u_tau;                // optical density of the surface times the extinction per world unit
 uniform float u_od_ref;             // distance subtracted from d, so the sums stay small (half floats)
 uniform mat4  u_inv_proj;
@@ -399,14 +414,16 @@ void main() {
     // fragment then misses its own peeled depth by its slope times the offset of the sample, far beyond
     // PEEL_EPS: the layers of whole triangles misclassified, bands of them where the slope turns. Where
     // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
-#ifndef ISOMESH_NO_FRAGDEPTH   // an experiment, for timing (isomesh::Experiment_*NoFragDepth)
+#if !defined(ISOMESH_NO_FRAGDEPTH) && !defined(ISOMESH_ONE_SAMPLE)   // experiments: the rasterizer's depth
     gl_FragDepth = gl_FragCoord.z;
 #endif
 
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
     bool  occluded = gl_FragCoord.z >= z_opaque;
-    if (occluded && u_pass != PASS_TRANSMITTANCE) discard;
+#ifndef ISOMESH_SEEDED      // seeded: the depth test keeps out what lies behind the opaque scene
+    if (occluded && CUR_PASS != PASS_TRANSMITTANCE) discard;
+#endif
 
     vec3 V = normalize(-v_view_pos);
     vec3 N = normalize(v_view_nrm);
@@ -421,7 +438,7 @@ void main() {
     shade_surface(c.rgb, c.a, N, V, L, opacity);
     opacity = clamp(opacity, 0.0, MAX_OPACITY);
 
-    if (u_pass == PASS_TRANSMITTANCE) {
+    if (CUR_PASS == PASS_TRANSMITTANCE) {
         // Behind the opaque scene: hides nothing, and the ray through the enclosed regions ends at the scene
         vec3 p = v_view_pos;
         if (occluded) {
@@ -433,24 +450,32 @@ void main() {
         return;
     }
 
+#ifdef ISOMESH_SEEDED       // seeded: Peel 0 and Accumulate without discard (a layer of no opacity hides nothing)
+    if (opacity <= 0.0 && CUR_PASS != PASS_PEEL0 && CUR_PASS != PASS_ACCUMULATE) discard;
+#else
     if (opacity <= 0.0) discard;
+#endif
 
-    if (u_pass == PASS_PEEL0) {
+    if (CUR_PASS == PASS_PEEL0) {
+#ifdef ISOMESH_SEEDED       // all of the target, no colour mask: no second layer yet
+        out_color = vec4(opacity, 0.0, 0.0, 0.0);
+#else
         out_color = vec4(opacity);
+#endif
         return;
     }
 
     // Per sample from here on
     float z  = gl_FragCoord.z;
-    float z0 = texelFetch(u_tex_peel_depth0, px, gl_SampleID).r;
-    if (u_pass == PASS_PEEL1) {
+    float z0 = texelFetch(u_tex_peel_depth0, px, SAMPLE_INDEX).r;
+    if (CUR_PASS == PASS_PEEL1) {
         if (z <= z0 + PEEL_EPS) discard;
         out_color = vec4(opacity);
         return;
     }
-    float z1 = texelFetch(u_tex_peel_depth1, px, gl_SampleID).r;
+    float z1 = texelFetch(u_tex_peel_depth1, px, SAMPLE_INDEX).r;
 
-    if (u_pass == PASS_DEPTH) {
+    if (CUR_PASS == PASS_DEPTH) {
         if (z <= z1 + PEEL_EPS) discard;
         // stratified thresholds over the samples, from the blue noise at an offset per layer and frame
         uint  layer = pcg(pcg(uint(gl_PrimitiveID)) ^ (u_surface_id * 0x9E3779B9u));
@@ -458,18 +483,22 @@ void main() {
         vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(u_frame) + 0.5);
         ivec2 q     = (px + ivec2(int(shift & 0xFFFFu), int(shift >> 16u)) + ivec2(r2 * float(BLUE_NOISE_SIZE))) & (BLUE_NOISE_SIZE - 1);
         float u0    = texelFetch(u_tex_blue_noise, q, 0).r;
-        if (fract(u0 + float(gl_SampleID) / float(u_samples)) >= opacity) discard;
+        if (fract(u0 + float(SAMPLE_INDEX) / float(u_samples)) >= opacity) discard;
         out_color = vec4(0.0);
         return;
     }
 
     // PASS_ACCUMULATE: the transmittance in front of this fragment in this sample
-    vec2  o01 = texelFetch(u_tex_peel_opacity, px, gl_SampleID).rg;
+    vec2  o01 = texelFetch(u_tex_peel_opacity, px, SAMPLE_INDEX).rg;
     float vis = (z <= z0 + PEEL_EPS) ? 1.0 : (z <= z1 + PEEL_EPS) ? (1.0 - o01.r) : (1.0 - o01.r) * (1.0 - o01.g);
     // Seen from inside (the back faces): behind the absorption of what the surfaces enclose
     if (!gl_FrontFacing) {
-        L *= exp(-max(texelFetch(u_tex_tod, px, gl_SampleID).g, 0.0));
+        L *= exp(-max(texelFetch(u_tex_tod, px, SAMPLE_INDEX).g, 0.0));
     }
+#ifdef ISOMESH_SEEDED
+    out_color = (opacity > 0.0) ? vec4(L, opacity) * vis : vec4(0.0);
+#else
     out_color = vec4(L, opacity) * vis;
+#endif
 #endif
 }

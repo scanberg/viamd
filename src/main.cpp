@@ -5060,8 +5060,18 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
 // The isosurface mesh experiments in turn (isomesh::Experiment), the meshes drawn every frame and each experiment timed
 // over a window of the profiler's of its own (the second after it was set, which the one before does not reach into):
 // the rows of their ISOSURFACE MESHES in one table, to the clipboard
+static const isomesh::Experiment profiler_sweep_steps[] = {
+    isomesh::Experiment_None,
+    isomesh::Experiment_Specialized,
+    isomesh::Experiment_SpecializedNoFragDepth,
+    isomesh::Experiment_OneSample,
+    isomesh::Experiment_OneSampleSpecialized,
+    isomesh::Experiment_OneSampleSpecializedSeeded,
+    isomesh::Experiment_None,   // again: how far the times drift over the sweep
+};
+
 static struct {
-    int  step = -1;             // the experiment being timed, -1: none
+    int  step = -1;             // the step being timed (profiler_sweep_steps), -1: none
     int  publish_at = 0;        // the profiler's publish its times are taken from
     bool keep_before = false;
     isomesh::Experiment experiment_before = isomesh::Experiment_None;
@@ -5079,7 +5089,8 @@ static void profiler_sweep_start(ApplicationState* state) {
     md_temp_scope_t temp = md_temp_begin();
     md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
     profiler_export_info(&info, state);
-    md_str_writer_fmt(&info, "sweep: each experiment over the profiler's second window after it was set");
+    md_str_writer_fmt(&info, "sweep: each experiment over the profiler's second window after it was set, the last "
+                             "the first again (the drift); a row's experiment with the samples per pixel it had");
     profiler::write_csv_header(&s.table.w, md_str_writer_to_cstr(&info), "experiment");
     md_temp_end(temp);
 
@@ -5087,17 +5098,20 @@ static void profiler_sweep_start(ApplicationState* state) {
     s.experiment_before = isomesh::experiment();
     state->profiler_keep_isomeshes = true;
     s.step = 0;
-    isomesh::set_experiment((isomesh::Experiment)s.step);
+    isomesh::set_experiment(profiler_sweep_steps[s.step]);
     s.publish_at = profiler::publish_count() + 2;
 }
 
 static void profiler_sweep_update(ApplicationState* state) {
     auto& s = profiler_sweep;
     if (s.step < 0 || profiler::publish_count() < s.publish_at) return;
-    profiler::write_csv_rows(&s.table.w, "ISOSURFACE MESHES", isomesh::experiment_name((isomesh::Experiment)s.step));
+    char first[96];
+    snprintf(first, sizeof(first), "%d %s %uspp", s.step + 1, isomesh::experiment_name(profiler_sweep_steps[s.step]),
+             iso_mesh_target.samples);
+    profiler::write_csv_rows(&s.table.w, "ISOSURFACE MESHES", first);
     s.step += 1;
-    if (s.step < isomesh::Experiment_Count) {
-        isomesh::set_experiment((isomesh::Experiment)s.step);
+    if (s.step < (int)ARRAY_SIZE(profiler_sweep_steps)) {
+        isomesh::set_experiment(profiler_sweep_steps[s.step]);
         s.publish_at = profiler::publish_count() + 2;
     } else {
         s.step = -1;
@@ -5175,8 +5189,8 @@ static void draw_profiler_window(ApplicationState* data) {
         int e = (int)isomesh::experiment();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
         if (ImGui::Combo("Experiment", &e, names, isomesh::Experiment_Count)) isomesh::set_experiment((isomesh::Experiment)e);
-        ImGui::SetItemTooltip("What the isosurface meshes are drawn with: no-fragdepth and geometry-only for their times "
-                              "only, the image is not right");
+        ImGui::SetItemTooltip("What the isosurface meshes are drawn with: specialized-no-fragdepth for its times only, "
+                              "its image is not right on Apple's OpenGL");
         ImGui::SameLine();
         if (ImGui::Button("Sweep")) profiler_sweep_start(data);
         ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. The times "
@@ -5184,7 +5198,7 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::EndDisabled();
         if (sweeping) {
             ImGui::SameLine();
-            ImGui::Text("%d / %d", profiler_sweep.step + 1, (int)isomesh::Experiment_Count);
+            ImGui::Text("%d / %d", profiler_sweep.step + 1, (int)ARRAY_SIZE(profiler_sweep_steps));
         } else if (profiler_sweep.has_table && !md_str_writer_empty(&profiler_sweep.table)) {
             ImGui::SameLine();
             if (ImGui::Button("Copy sweep")) ImGui::SetClipboardText(md_str_writer_to_cstr(&profiler_sweep.table));

@@ -87,7 +87,7 @@ struct Target {
     uint32_t cur = 0;           // which history holds the mean
     uint32_t frame = 0;         // frames in the mean
     uint64_t hash = 0;          // of what the mean is of
-    uint32_t sample_cap = 0;    // the samples per pixel it was made with at most (Experiment_OneSample*)
+    uint32_t tex_target = 0;    // of the per-sample textures: GL_TEXTURE_2D_MULTISAMPLE, or GL_TEXTURE_2D (Experiment_OneSample*)
     uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
 };
 
@@ -169,10 +169,12 @@ bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
 // Those marked 'timing only' do not draw the right image.
 enum Experiment {
     Experiment_None = 0,
-    Experiment_NoFragDepth,             // timing only on Apple's OpenGL: the depth the rasterizer writes, not the shader
-    Experiment_OneSample,               // one sample per pixel
-    Experiment_OneSampleNoFragDepth,    // and the depth the rasterizer writes, which is then the sample's
-    Experiment_GeometryOnly,            // timing only: the meshes drawn with GL_RASTERIZER_DISCARD
+    Experiment_Specialized,                 // a program per pass, of that pass's code alone (no other pass's discards)
+    Experiment_SpecializedNoFragDepth,      // and the rasterizer's depth: timing only on Apple's OpenGL
+    Experiment_OneSample,                   // a sample per pixel in plain textures: shaded per pixel, the rasterizer's depth
+    Experiment_OneSampleSpecialized,        // and a program per pass
+    Experiment_OneSampleSpecializedSeeded,  // and the depth targets begun with the opaque scene's depth: Peel 0 and
+                                            // Accumulate without discard
     Experiment_Count
 };
 void set_experiment(Experiment e);
