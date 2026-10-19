@@ -444,12 +444,8 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     const size_t n = units.size();
 
     std::vector<OptColor> c(n), c0(n);
-    float wmax = 0.0f;
     double wsum = 0.0;
-    for (const Unit& u : units) { wmax = MAX(wmax, u.weight); wsum += u.weight; }
-    if (wmax <= 0.0f) wmax = 1.0f;
-    std::vector<float> wq(n);   // The weights, normalized and flattened: a rare color may come closer, not much closer
-    for (size_t i = 0; i < n; ++i) wq[i] = powf(CLAMP(units[i].weight / wmax, 1.0e-6f, 1.0f), 0.25f);
+    for (const Unit& u : units) wsum += u.weight;
 
     // The band of each free color: one of a large share of the weight is held lighter and calmer
     std::vector<float> lo_L(n, Lmin), hi_C(n, Cmax);
@@ -488,8 +484,9 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
         set_lch(c[i], L, C, h);
     }
 
-    // Each pair, unless both are fixed, has a term exp(-e / tau), e being its distance (normal vision and deuteranopia)
-    // over how much the pair matters. A free color moves when the sum of its terms goes down: -tau log of the sum is a
+    // Each pair, unless both are fixed, has a term exp(-e / tau), e being its distance (normal vision and deuteranopia).
+    // Every pair counts the same: a rare category (a heteroatom, a ligand) is told apart as much as a common one, and in
+    // a small area that takes no less of a difference. A free color moves when the sum of its terms goes down: -tau log of the sum is a
     // soft minimum of the e, which it pushes up. A pulled color is drawn back to where it started: it moves when the
     // soft minimum of the e which are not enough, -tau log(floor + sum of max(term - floor, 0)), goes up by more than
     // what the move costs, its pull times how much further it is from where it started. Nothing is gained when no pair
@@ -497,8 +494,7 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     const auto pair_term = [&](const OptColor& a, const OptColor& b, size_t i, size_t j) -> double {
         if (units[i].fixed && units[j].fixed) return 0.0;
         const float d = (distance(a.lab, b.lab) + wc * distance(a.cvd, b.cvd)) / (1.0f + wc);
-        const float importance = 0.5f + 0.5f * wq[i] * wq[j];
-        return exp(-(double)(d / importance) / (double)tau);
+        return exp(-(double)d / (double)tau);
     };
     const auto crowding = [&](double t) { return MAX(t - floor_term, 0.0); };
 

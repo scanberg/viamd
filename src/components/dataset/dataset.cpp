@@ -2497,8 +2497,8 @@ struct Dataset : viamd::EventHandler {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##atom_type_toolbar", show_filter, atom_type_filter, sizeof(atom_type_filter), "Filter by name or element",
                 num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", atom_type_optimize,
-                "Make the colors of the atom types in use as distinct as they can be, the more atoms of a type the further it is kept\n"
-                "from the others. Every type starts from its default: colors you set are replaced, and Reset undoes it.\n\n"
+                "Make the colors of the atom types in use as distinct as they can be. Every type starts from its default:\n"
+                "colors you set are replaced, and Reset undoes it.\n\n"
                 "Types of an element are pulled back to its color and move a little at most, where two are too close to tell apart.\n"
                 "Coarse grained beads and types without an element move freely.");
             if (reset_clicked) {
@@ -3176,8 +3176,8 @@ struct Dataset : viamd::EventHandler {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##comp_type_toolbar", show_filter, comp_type_filter, sizeof(comp_type_filter), "Filter by name, standard residue or kind",
                 num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", comp_type_optimize,
-                "Make the colors of the residue types in use as distinct as they can be, the more atoms of a type the further it is kept\n"
-                "from the others. Every type starts from its default: colors you set are replaced, and Reset undoes it.\n\n"
+                "Make the colors of the residue types in use as distinct as they can be. Every type starts from its default:\n"
+                "colors you set are replaced, and Reset undoes it.\n\n"
                 "Standard residues are pulled back to their palette color, and ions to the color of their element: they move a little\n"
                 "at most, where two are too close to tell apart. The rest (ligands, lipids, water) move freely.");
             if (reset_clicked) {

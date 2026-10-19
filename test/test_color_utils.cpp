@@ -264,6 +264,27 @@ UTEST(viamd_color, optimize_colors_pulled_drift) {
     EXPECT_LT(moved[1], moved[0]);
 }
 
+// Rare categories of one look are told apart as much as common ones: gold, sulfur and phosphorus among far more carbon
+// and hydrogen, as viamd shows them (linear input), come to the distance which is enough
+UTEST(viamd_color, optimize_colors_rare_pulled_apart) {
+    const md_atomic_number_t z[7] = {79, 16, 15, 6, 1, 8, 7};
+    const float count[7] = {144, 60, 12, 600, 900, 40, 10};
+    ColorOptimizeItem items[7];
+    uint32_t cpk[7];
+    for (int i = 0; i < 7; ++i) {
+        cpk[i] = items[i].color = md_atomic_number_cpk_color(z[i]);
+        items[i].weight = count[i];
+        items[i].pull = 0.5f;
+    }
+    ColorOptimizeDesc desc;
+    desc.linear_input = true;
+    EXPECT_LT(oklab_distance(cpk[0], cpk[1], true), 0.06f);     // Gold and sulfur, the closest
+    const ColorOptimizeResult r = optimize_colors(items, 7, desc);
+    EXPECT_GT(r.min_distance, desc.enough_distance - 0.005f);
+    for (int i = 0; i < 7; ++i) EXPECT_LE(oklab_distance(items[i].color, cpk[i], true), desc.max_drift + 0.005f);
+    for (int i = 3; i < 7; ++i) EXPECT_EQ(cpk[i], items[i].color);    // Carbon, hydrogen, oxygen and nitrogen stand apart already
+}
+
 // A category of most of the weight (the solvent) is lighter and calmer than the rare ones around it
 UTEST(viamd_color, optimize_colors_calm_dominant) {
     ColorOptimizeItem items[8];
