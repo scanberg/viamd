@@ -1674,6 +1674,7 @@ struct ApplicationState {
     bool show_script_reference_window = false;
     bool show_debug_window = false;
     bool show_profiler_window = false;
+    bool profiler_keep_isomeshes = false;   // Windows > Profiler: the isosurface meshes drawn every frame (isomesh::RenderDesc::keep_drawing)
     bool show_property_export_window = false;
 
     // --- LAZY RENDERING ---

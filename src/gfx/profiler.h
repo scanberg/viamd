@@ -18,6 +18,8 @@
 // Sections are for the thread of the GL context. Outside frame_begin() / frame_end() they are debug groups only, and
 // so are sections nested deeper than the profiler keeps.
 
+struct md_writer_i;
+
 namespace profiler {
 
 // The frame: its root section, around all that a frame does. frame_begin() also collects the times of the frames whose
@@ -60,6 +62,12 @@ float frame_cpu_ms();
 void draw_table();
 // The frame and the sections at its top, a few lines: what the tooltip of the frame time shows
 void draw_summary();
+
+// The published times as CSV, what Windows > Profiler exports: '#' lines on what they are of (when, the build, the GL
+// context's renderer, the frames averaged, then the caller's 'info', a line each, NULL for none), the header and a row
+// per section shown, in the order of the table: its path ("Frame/Render/..."), its GPU time with its sections' and
+// without, its CPU time, in ms per frame, and its calls per frame. Before anything is published, the header alone.
+void write_csv(md_writer_i* w, const char* info);
 
 }  // namespace profiler
 

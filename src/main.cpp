@@ -5109,6 +5109,46 @@ static void draw_distribution_window(ApplicationState* data) {
     ImGui::End();
 }
 
+// What the profiler's times were measured at, a line each, for the head of an export (profiler::write_csv)
+static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* state) {
+    md_str_writer_fmt(sw, "framebuffer: %u x %u\n", (unsigned)state->app.framebuffer.width, (unsigned)state->app.framebuffer.height);
+    md_str_writer_fmt(sw, "viewport: %u x %u shown, render scale %.3f, %u x %u rendered\n",
+                      (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
+                      (unsigned)state->gbuffer.width, (unsigned)state->gbuffer.height);
+    if (iso_mesh_target.width) {
+        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %llu triangles, ", iso_mesh_target.width,
+                          iso_mesh_target.height, (unsigned long long)iso_mesh_target.triangles);
+        if (state->profiler_keep_isomeshes) {
+            md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
+        } else {
+            md_str_writer_fmt(sw, "%u of %u frames in the mean\n", iso_mesh_target.frame, isomesh::MAX_FRAMES);
+        }
+    }
+}
+
+// The profiler's times (profiler::write_csv) as a CSV file
+static void profiler_export_csv(const ApplicationState* state, str_t path) {
+    md_file_t file = {};
+    if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+        VIAMD_LOG_ERROR("Failed to open '" STR_FMT "' to write the profiler's times", STR_ARG(path));
+        return;
+    }
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
+    profiler_export_info(&info, state);
+
+    md_file_writer_t fw = md_file_writer_create(file, NULL, 0);
+    profiler::write_csv(&fw.w, md_str_writer_to_cstr(&info));
+    const bool ok = md_file_writer_close(&fw);
+    md_file_close(&file);
+    if (ok) {
+        VIAMD_LOG_INFO("Exported the profiler's times to '" STR_FMT "'", STR_ARG(path));
+    } else {
+        VIAMD_LOG_ERROR("Failed to write the profiler's times to '" STR_FMT "'", STR_ARG(path));
+    }
+}
+
 // The frame's sections and their times (gfx/profiler.h)
 static void draw_profiler_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 36.0f, ImGui::GetFontSize() * 32.0f), ImGuiCond_FirstUseEver);
@@ -5120,6 +5160,33 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::TextDisabled("The scene was made in %d of the last 64 frames%s.", made,
                             data->settings.lazy_rendering ? "; shown again as it was in the others" : " (lazy rendering is off)");
         ImGui::PopTextWrapPos();
+
+        // The table as it is shown, with what it was measured at
+        ImGui::BeginDisabled(profiler::frame_cpu_ms() <= 0.0f);
+        if (ImGui::Button("Export...")) {
+            char path_buf[2048] = {};
+            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) {
+                profiler_export_csv(data, str_from_cstr(path_buf));
+            }
+        }
+        ImGui::SetItemTooltip("The times as CSV, with the renderer and the sizes they were measured at");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy")) {
+            md_temp_scope_t temp = md_temp_begin();
+            md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
+            profiler_export_info(&info, data);
+            md_str_writer_t csv = md_str_writer_create(md_temp_allocator(temp));
+            profiler::write_csv(&csv.w, md_str_writer_to_cstr(&info));
+            ImGui::SetClipboardText(md_str_writer_to_cstr(&csv));
+            md_temp_end(temp);
+        }
+        ImGui::SetItemTooltip("The same, to the clipboard");
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Checkbox("Isosurface meshes every frame", &data->profiler_keep_isomeshes);
+        ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
+                              "view kept still");
+
         profiler::draw_table();
     }
     ImGui::End();
@@ -7272,6 +7339,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
             .environment = state->visuals.shading.environment,
         },
         .scene_hash = scene_hash,
+        .keep_drawing = state->profiler_keep_isomeshes,
     };
     if (num_surfaces == 0) {
         isomesh::target_free(&iso_mesh_target);
