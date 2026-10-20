@@ -1401,15 +1401,11 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
     if (copy_offset) md_array_shrink(*copy_offset, 0);
     const md_assembly_data_t& a = sys.assembly;
     if (assembly < 0 || (size_t)assembly >= a.count) return;
-    const md_urange_t parts = md_assembly_part_range(&a, (size_t)assembly);
     if (copy_offset) md_array_push(*copy_offset, 0, alloc);
-    for (uint32_t p = parts.beg; p < parts.end; ++p) {
-        // The operators of the part from its offsets as they are, not from the md_urange_t of md_assembly_part_oper_range:
-        // MSVC 19.52 (/O2) compiled that loop to index oper on its first pass with the 64 bits that held both ends of
-        // the range, the end in the upper half, and read far out of bounds
-        const uint32_t* oper     = a.oper + a.part_oper_offset[p];
-        const uint32_t* oper_end = a.oper + a.part_oper_offset[p + 1];
-        for (const uint32_t* o = oper; o < oper_end; ++o) {
+    // The parts and their operators from the offsets as they are (assembly_part)
+    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
+        const AssemblyPart part = assembly_part(a, p);
+        for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
             md_array_push(*transforms, a.oper_transform[*o], alloc);
         }
         if (copy_offset) md_array_push(*copy_offset, (uint32_t)md_array_size(*transforms), alloc);
@@ -5490,29 +5486,29 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
         // nothing to say about an assembly. Of a large one (a virus) every k-th atom, at most about a million in all.
         const md_assembly_data_t& a = sys->assembly;
         const md_bitset_t* m = (mask && md_bitset_count(*mask) > 0) ? mask : nullptr;
-        const md_urange_t parts = md_assembly_part_range(&a, (size_t)assembly);
+        // The parts, their instances and operators from the offsets as they are (assembly_part)
+        const size_t part_beg = a.part_offset[assembly];
+        const size_t part_end = a.part_offset[assembly + 1];
         size_t total = 0;
-        for (uint32_t p = parts.beg; p < parts.end; ++p) {
-            const md_urange_t inst = md_assembly_part_inst_range(&a, p);
-            const md_urange_t ops  = md_assembly_part_oper_range(&a, p);
+        for (size_t p = part_beg; p < part_end; ++p) {
+            const AssemblyPart part = assembly_part(a, p);
             size_t atoms = 0;
-            for (uint32_t k = inst.beg; k < inst.end; ++k) {
-                const md_urange_t r = md_system_instance_atom_range(sys, (size_t)a.inst[k]);
+            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
                 atoms += r.end - r.beg;
             }
-            total += atoms * (ops.end - ops.beg);
+            total += atoms * (size_t)(part.oper_end - part.oper);
         }
         const size_t max_points = 1000000;
         const uint32_t stride = (uint32_t)MAX((size_t)1, DIV_UP(total, max_points));
         md_array(vec3_t) xyz = 0;
         md_array_ensure(xyz, MIN(total, max_points) + 1, md_temp_allocator(temp));
-        for (uint32_t p = parts.beg; p < parts.end; ++p) {
-            const md_urange_t inst = md_assembly_part_inst_range(&a, p);
-            const md_urange_t ops  = md_assembly_part_oper_range(&a, p);
-            for (uint32_t o = ops.beg; o < ops.end; ++o) {
-                const mat4_t M = a.oper_transform[a.oper[o]];
-                for (uint32_t k = inst.beg; k < inst.end; ++k) {
-                    const md_urange_t r = md_system_instance_atom_range(sys, (size_t)a.inst[k]);
+        for (size_t p = part_beg; p < part_end; ++p) {
+            const AssemblyPart part = assembly_part(a, p);
+            for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
+                const mat4_t M = a.oper_transform[*o];
+                for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                    const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
                     for (uint32_t i = r.beg; i < r.end; i += stride) {
                         if (m && !md_bitset_test(*m, i)) continue;
                         md_array_push(xyz, mat4_mul_vec3(M, state.xyz[i], 1.0f), md_temp_allocator(temp));

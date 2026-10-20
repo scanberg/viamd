@@ -2719,9 +2719,25 @@ static inline void reset_view(ViewTransform* transform, const md_system_state_t&
     reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
 
-// ASSEMBLIES (view.assembly). The transforms of the copies an assembly of the system makes, part by part, and with
-// copy_offset (optional) where the copies of each part begin, its end last. Empty for an assembly the system has not
-// (-1: none).
+// ASSEMBLIES (view.assembly). The parts of assembly asm_idx are [a.part_offset[asm_idx], a.part_offset[asm_idx + 1]),
+// and the instances and operators of part p those assembly_part gives, pointers into the arrays of a. Both read from the
+// offsets as they are, not through the md_urange_t of md_assembly_part_range and its kin: MSVC 19.52 (/O2) compiled
+// loops from the beg of such a range to index with the 64 bits that held both of its ends, the end in the upper half,
+// and read far out of bounds (assembly_transforms, reset_view).
+struct AssemblyPart {
+    const md_instance_idx_t* inst;
+    const md_instance_idx_t* inst_end;
+    const uint32_t* oper;
+    const uint32_t* oper_end;
+};
+
+static inline AssemblyPart assembly_part(const md_assembly_data_t& a, size_t p) {
+    ASSERT(p < a.part_count);
+    return {a.inst + a.part_inst_offset[p], a.inst + a.part_inst_offset[p + 1], a.oper + a.part_oper_offset[p], a.oper + a.part_oper_offset[p + 1]};
+}
+
+// The transforms of the copies an assembly of the system makes, part by part, and with copy_offset (optional) where the
+// copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
 void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
 
 // The segments of the molecule of the system for md_gl (md_gl_mol_set_segments): its instances, of which the parts of

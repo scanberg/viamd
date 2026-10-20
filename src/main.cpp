@@ -1847,15 +1847,13 @@ static void draw_main_menu(ApplicationState* data) {
                     // A chain of an assembly: a copy of a polymer instance
                     auto num_chains = [&](size_t asm_idx) {
                         size_t n = 0;
-                        const md_urange_t parts = md_assembly_part_range(&assemblies, asm_idx);
-                        for (uint32_t p = parts.beg; p < parts.end; ++p) {
-                            const md_urange_t inst = md_assembly_part_inst_range(&assemblies, p);
-                            const md_urange_t ops  = md_assembly_part_oper_range(&assemblies, p);
+                        for (size_t p = assemblies.part_offset[asm_idx]; p < assemblies.part_offset[asm_idx + 1]; ++p) {
+                            const AssemblyPart part = assembly_part(assemblies, p);
                             size_t polymers = 0;
-                            for (uint32_t k = inst.beg; k < inst.end; ++k) {
-                                polymers += md_entity_kind_is_polymer(md_system_instance_entity_kind(&data->mold.sys, (size_t)assemblies.inst[k])) ? 1 : 0;
+                            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                                polymers += md_entity_kind_is_polymer(md_system_instance_entity_kind(&data->mold.sys, (size_t)*k)) ? 1 : 0;
                             }
-                            n += polymers * (ops.end - ops.beg);
+                            n += polymers * (size_t)(part.oper_end - part.oper);
                         }
                         return n;
                     };
@@ -7203,24 +7201,27 @@ static md_gl_copies_t rep_copies(const ApplicationState& state, const Representa
 static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
     const size_t end = md_array_size(*ops);
     const md_assembly_data_t& a = state.mold.sys.assembly;
-    const md_urange_t parts = state.view.assembly >= 0 ? md_assembly_part_range(&a, (size_t)state.view.assembly) : md_urange_t{0, 0};
+    const bool shown = state.view.assembly >= 0 && (size_t)state.view.assembly < a.count;
+    const size_t part_beg = shown ? a.part_offset[state.view.assembly] : 0;
+    const size_t part_end = shown ? a.part_offset[state.view.assembly + 1] : 0;
     const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
     // Without an assembly, or its copies not of it (yet)
-    if (num_parts == 0 || num_parts != parts.end - parts.beg) {
+    if (num_parts == 0 || num_parts != part_end - part_beg) {
         const md_gl_copies_t copies = rep_copies(state, rep);
         for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
         return;
     }
     static_assert(sizeof(md_instance_idx_t) == sizeof(uint32_t), "The instances of a part are passed as the segments of md_gl");
     for (size_t p = 0; p < num_parts; ++p) {
-        const md_urange_t inst = md_assembly_part_inst_range(&a, parts.beg + p);
+        // The instances of the part from the offsets as they are (assembly_part)
+        const AssemblyPart part = assembly_part(a, part_beg + p);
         const uint32_t c0 = state.view.assembly_copy_offset[p];
         const uint32_t c1 = state.view.assembly_copy_offset[p + 1];
         for (size_t i = beg; i < end; ++i) {
             md_gl_draw_op_t op = (*ops)[i];
             op.copies = {&state.view.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
-            op.segments = (const uint32_t*)(a.inst + inst.beg);
-            op.segment_count = inst.end - inst.beg;
+            op.segments = (const uint32_t*)part.inst;
+            op.segment_count = (uint32_t)(part.inst_end - part.inst);
             if (p == 0) {
                 (*ops)[i] = op;
             } else {
