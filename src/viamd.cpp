@@ -1404,9 +1404,13 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
     const md_urange_t parts = md_assembly_part_range(&a, (size_t)assembly);
     if (copy_offset) md_array_push(*copy_offset, 0, alloc);
     for (uint32_t p = parts.beg; p < parts.end; ++p) {
-        const md_urange_t ops = md_assembly_part_oper_range(&a, p);
-        for (uint32_t o = ops.beg; o < ops.end; ++o) {
-            md_array_push(*transforms, a.oper_transform[a.oper[o]], alloc);
+        // The operators of the part from its offsets as they are, not from the md_urange_t of md_assembly_part_oper_range:
+        // MSVC 19.52 (/O2) compiled that loop to index oper on its first pass with the 64 bits that held both ends of
+        // the range, the end in the upper half, and read far out of bounds
+        const uint32_t* oper     = a.oper + a.part_oper_offset[p];
+        const uint32_t* oper_end = a.oper + a.part_oper_offset[p + 1];
+        for (const uint32_t* o = oper; o < oper_end; ++o) {
+            md_array_push(*transforms, a.oper_transform[*o], alloc);
         }
         if (copy_offset) md_array_push(*copy_offset, (uint32_t)md_array_size(*transforms), alloc);
     }
