@@ -5226,7 +5226,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r16), which every variant starts from
+// The library's defaults (r17), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5247,6 +5247,9 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"ordered off",             [](md_gto_iso_gpu_switches_t* s) { s->ordered = false; }},
     {"diag: no AO values",      [](md_gto_iso_gpu_switches_t* s) { s->diag = 1; }},
     {"diag: no multiply-adds",  [](md_gto_iso_gpu_switches_t* s) { s->diag = 2; }},
+    {"diag: lists only",        [](md_gto_iso_gpu_switches_t* s) { s->diag = 3; }},
+    {"diag: no C rows staged",  [](md_gto_iso_gpu_switches_t* s) { s->diag = 4; }},
+    {"diag: no shells staged, no AO values", [](md_gto_iso_gpu_switches_t* s) { s->diag = 5; }},
     {"newton_tol 1e-3 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 3; }},
     {"newton_tol 1e-4 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 4; }},
     {"corners_v4 off",          [](md_gto_iso_gpu_switches_t* s) { s->corners_v4 = false; }},
@@ -5255,8 +5258,6 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"dform eval on",           [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
     {"dform eval on, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 1; }},
     {"dform eval on, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 2; }},
-    {"dform eval on, kernel r9",[](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 0; }},
-    {"dform eval on, tiles 64", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 1; }},
     {"dform_octree off",        [](md_gto_iso_gpu_switches_t* s) { s->dform_octree = false; }},
     {"gemm off",                [](md_gto_iso_gpu_switches_t* s) { s->gemm = false; }},
     {"octree_small off",        [](md_gto_iso_gpu_switches_t* s) { s->octree_small = false; }},
@@ -5357,13 +5358,15 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                           "vertices may span distant bricks and list far more shells");
     ImGui::SameLine();
     {
-        static const char* diags[] = {"Diag: off", "Diag: no AO values", "Diag: no multiply-adds"};
+        static const char* diags[] = {"Diag: off", "Diag: no AO values", "Diag: no multiply-adds", "Diag: lists only",
+                                      "Diag: no C rows staged", "Diag: no shells, no AO"};
         int dg = sw.diag;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
         if (ImGui::Combo("##diag", &dg, diags, IM_ARRAYSIZE(diags))) { sw.diag = dg; changed = true; }
-        ImGui::SetItemTooltip("DIAGNOSTIC, the corner GEMM kernels only: the AO values not made (a constant), or no "
-                              "multiply-adds. The corners are then zeroed (no surface): only the corner kernel's time "
-                              "means anything");
+        ImGui::SetItemTooltip("DIAGNOSTIC, the corner GEMM kernels only: the AO values not made (a constant), no "
+                              "multiply-adds, the shell lists only, no rows of C staged, or no shells staged and no AO "
+                              "values. The corners are then zeroed (no surface): only the corner kernel's time means "
+                              "anything");
     }
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Coef screen", &sw.coef_screen);
