@@ -460,6 +460,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_list_add(&kind, order_names[order]);
     }
     if (flags & MD_BOND_FLAG_COORDINATE) tooltip_list_add(&kind, "coordinate");
+    if (flags & MD_BOND_FLAG_ELASTIC)    tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)");
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
     // Across a periodic boundary the bond is the short way round

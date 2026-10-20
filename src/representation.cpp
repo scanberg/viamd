@@ -1098,6 +1098,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_bool(rep->bond_orders, arg);
         } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
             viamd::extract_bool(rep->chain_gaps, arg);
+        } else if (str_eq(ident, STR_LIT("ElasticBonds"))) {
+            viamd::extract_bool(rep->elastic_bonds, arg);
         } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
             viamd::extract_bool(rep->two_head_spheres, arg);
         } else if (str_eq(ident, STR_LIT("NucleicBandRadius"))) {
@@ -1316,6 +1318,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
     viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
+    viamd::write_bool(state, STR_LIT("ElasticBonds"), rep.elastic_bonds);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
     viamd::write_flt(state,  STR_LIT("NucleicBandRadius"), rep.nucleic_band_radius);
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
@@ -2373,6 +2376,21 @@ static bool system_has_chain_breaks(const md_system_t& sys) {
     return false;
 }
 
+// Whether the system has elastic bonds (an elastic network, restraints), kept per topology: a system may have millions
+// of bonds, and the properties of a representation are drawn every frame
+static bool system_has_elastic_bonds(const md_system_t& sys) {
+    static uint64_t version = 0;
+    static bool     result  = false;
+    if (version != sys.topology_version || version == 0) {
+        version = sys.topology_version;
+        result = false;
+        for (size_t i = 0; i < sys.bond.count && sys.bond.flags && !result; ++i) {
+            result = (sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC) != 0;
+        }
+    }
+    return result;
+}
+
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
 static bool draw_geometry(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
@@ -2435,6 +2453,10 @@ static bool draw_geometry(ApplicationState* state, Representation& rep) {
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
+        if (system_has_elastic_bonds(state->mold.sys)) {
+            prop::row("elastic bonds", "The springs of the force field which are not bonds of the molecules: the elastic network of a coarse grained protein or nucleic acid, restraints. Drawn as plain bonds when shown");
+            update_rep |= ImGui::Checkbox("##elastic_bonds", &rep.elastic_bonds);
+        }
     }
     return update_rep;
 }

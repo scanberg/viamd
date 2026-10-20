@@ -977,6 +977,7 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
+    bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them

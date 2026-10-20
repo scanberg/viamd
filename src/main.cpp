@@ -7218,6 +7218,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
                         op.args.licorice.bond_orders = rep.bond_orders;
                         op.args.licorice.chain_gaps = rep.chain_gaps;
+                        op.args.licorice.elastic_bonds = rep.elastic_bonds;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -7230,6 +7231,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
                         op.args.ball_and_stick.bond_orders = rep.bond_orders;
                         op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
+                        op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
                         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
                             tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
                         }
@@ -7355,6 +7357,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
+        h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
         h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
         if (rep.type == RepresentationType::Cartoon) {
             h = md_hash64(&rep.two_head_spheres, sizeof(rep.two_head_spheres), h);
@@ -7583,9 +7586,11 @@ static void draw_representations_marks(ApplicationState* data) {
             if (rep.type == RepresentationType::Licorice) {
                 op.args.licorice.bond_orders = rep.bond_orders;
                 op.args.licorice.chain_gaps = rep.chain_gaps;
+                op.args.licorice.elastic_bonds = rep.elastic_bonds;
             } else if (rep.type == RepresentationType::BallAndStick) {
                 op.args.ball_and_stick.bond_orders = rep.bond_orders;
                 op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
+                op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
             } else if (rep.type == RepresentationType::Ribbons) {
                 op.args.ribbons.chain_gaps = rep.chain_gaps;
             } else if (rep.type == RepresentationType::Cartoon) {
