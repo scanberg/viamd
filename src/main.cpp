@@ -5226,7 +5226,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r17), which every variant starts from
+// The library's defaults (r21), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5234,13 +5234,18 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
-    s.ordered = true;      s.diag = 0;             s.gemm_wide = true;
+    s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = true;
+    s.wide_kernel = 1;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
+    {"octree8 off",             [](md_gto_iso_gpu_switches_t* s) { s->octree8 = false; }},
+    {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
+    {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
+    {"wide_kernel C ahead, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; s->diag = 2; }},
     {"gemm_wide off",           [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; }},
     {"gemm_wide off, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 1; }},
     {"gemm_wide off, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 2; }},
@@ -5347,10 +5352,26 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("Sets of densities: the octree bounds phi^T D phi, centred form over the AOs a node reaches, "
                           "no factors and no limit on the rank (iso_octree_dform), whichever evaluation");
     ImGui::SameLine();
+    changed |= ImGui::Checkbox("Octree 8", &sw.octree8);
+    ImGui::SetItemTooltip("The D-form octree below the root with a node's 8 children in one group (iso_octree_dform8): "
+                          "the shells reaching the parent listed once, each element of D loaded once for all 8 "
+                          "instead of once per child; the same bounds");
+    ImGui::SameLine();
     changed |= ImGui::Checkbox("GEMM wide", &sw.gemm_wide);
     ImGui::SetItemTooltip("Canonical sets of more than 64 functions: the GEMM in one pass of 128, 192 or 256 columns, "
                           "64 rows per group of 256 threads (iso_gcorners_w*, iso_geval_w*): the shells listed and staged and "
                           "the AO values made once instead of once per tile of 64");
+    ImGui::SameLine();
+    {
+        static const char* wks[] = {"Wide kernel: r16", "Wide kernel: listed once", "Wide kernel: + C ahead"};
+        int wk = sw.wide_kernel;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        if (ImGui::Combo("##wide_kernel", &wk, wks, IM_ARRAYSIZE(wks))) { sw.wide_kernel = wk; changed = true; }
+        ImGui::SetItemTooltip("The wide GEMM's kernels: r16 (iso_gcorners_w*, iso_geval_w*); the group's shells listed once "
+                              "and staged as they are listed, chunks of 16 consecutive AOs, a chunk staging only its rows of C "
+                              "(iso_gcorners_x*, iso_geval_x*); the same with the next chunk's rows of C loaded into registers "
+                              "during this chunk (iso_gcorners_y*, iso_geval_y*)");
+    }
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Ordered", &sw.ordered);
     ImGui::SetItemTooltip("The bricks in Morton order, the corner point list and the vertices in that order (counts, a "
