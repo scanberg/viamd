@@ -243,13 +243,29 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     md_array(TubeRoot) roots = nullptr;     // Of the heads of the lipid
     md_array(int32_t) anchors = nullptr;
+    md_array(int32_t) whole = nullptr;
     for (size_t l = 0; l < L.count; ++l) {
         const md_urange_t cr = L.comp_range[l];
         const uint32_t h0 = L.head_offset[l];
         const uint32_t h1 = L.head_offset[l + 1];
         const uint32_t t0 = L.tail_offset[l];
         const uint32_t t1 = L.tail_offset[l + 1];
-        if (h1 == h0) continue;
+        if (h1 == h0) {
+            // A lipid whose heads and tails are not known (no bonds to find them by, a molecule of the lipidomes whose
+            // beads tell no head from a tail: a hopanoid, a bile acid, a part of a lipid A on its own): one sphere for all
+            // of it, at the centre of its heavy atoms, so that it is not missing from the cartoon
+            md_array_shrink(whole, 0);
+            const uint32_t a0 = md_component_atom_range(&sys.component, cr.beg).beg;
+            const uint32_t a1 = md_component_atom_range(&sys.component, cr.end - 1).end;
+            for (uint32_t i = a0; i < a1; ++i) {
+                if (md_atom_atomic_number(&sys.atom, i) != MD_Z_H) md_array_push(whole, (int32_t)i, temp_alloc);
+            }
+            const size_t n = md_array_size(whole);
+            if (n == 0) continue;
+            const int32_t color = head_color_atom(sys, whole, n);
+            b.point(whole, n, whole[0], color, component_of_atom(sys, cr.beg, cr.end, color), head_radius(sys, whole, n), CartoonGlyph_LipidHead);
+            continue;
+        }
         md_array_shrink(roots, 0);
         // Every point of the lipid in the image of its first head atom
         const int32_t ref = md_index_range_beg(&L.head.atoms, h0)[0];

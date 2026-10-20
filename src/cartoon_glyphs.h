@@ -27,6 +27,7 @@ struct md_allocator_i;
 //              or on to the head a spanning chain joins (a bolalipid). An atomistic spine gets a control point per two
 //              of its atoms, which is on the axis of a chain in its all trans zigzag and so smooths it away; a coarse
 //              grained one a control point per bead. The skeleton of a sterol is a thicker tube. The tubes have round ends.
+//              A lipid whose heads and tails are not known (md_lipid_data_t has none for it) is one sphere for all of it.
 //   nucleic    After Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a flat band along each
 //              backbone (md_nucleic_backbone_data_t) through the C4' of its nucleotides, its flat faces towards the bases;
 //              the sugar ring a slab; a stick from its C1' to the base; each ring of the base a slab of its own (a purine
