@@ -870,6 +870,15 @@ void flag_dynamic_representations_as_dirty(ApplicationState* state) {
     }
 }
 
+// The nucleotides on a nucleic backbone, atomistic or coarse grained: those the cartoon shows
+static size_t num_nucleotides_on_backbone(const md_system_t& sys) {
+    size_t num = 0;
+    for (size_t i = 0; i < sys.nucleic_backbone.segment.count; ++i) {
+        num += sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
+    }
+    return num;
+}
+
 // What a system starts out shown with: by what is in it
 void create_default_representations(ApplicationState* state) {
     bool amino_acid_present = false;
@@ -938,15 +947,36 @@ void create_default_representations(ApplicationState* state) {
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
     // element to, should not take the protein, ligand and water representations from the rest.
     if (2 * num_coarse_grained > state->mold.sys.atom.count) {
-        // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon, the rest as beads
+        // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon. So do nucleic acids
+        // of beads where every nucleotide is on a backbone, their bases with the rings of ideal ones. The rest as
+        // beads.
         const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
+        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
+        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (protein_trace) {
             Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
-        const str_t rest = protein_trace ? (lipid_cartoon ? STR_LIT("not (protein or head or tail)") : STR_LIT("not protein"))
-                                         : (lipid_cartoon ? STR_LIT("not (head or tail)") : STR_LIT("all"));
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, rest);
+        if (nucleic_cartoon) {
+            Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("nucleic"));
+            snprintf(nucl->name, sizeof(nucl->name), "nucleic");
+        }
+        const char* shown[3];
+        int num_shown = 0;
+        if (protein_trace)   shown[num_shown++] = "protein";
+        if (nucleic_cartoon) shown[num_shown++] = "nucleic";
+        if (lipid_cartoon)   shown[num_shown++] = "head or tail";
+        char rest[64] = "all";
+        if (num_shown == 1 && !strchr(shown[0], ' ')) {
+            snprintf(rest, sizeof(rest), "not %s", shown[0]);
+        } else if (num_shown > 0) {
+            int len = snprintf(rest, sizeof(rest), "not (");
+            for (int i = 0; i < num_shown; ++i) {
+                len += snprintf(rest + len, sizeof(rest) - len, "%s%s", i > 0 ? " or " : "", shown[i]);
+            }
+            snprintf(rest + len, sizeof(rest) - len, ")");
+        }
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, str_from_cstr(rest));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -976,10 +1006,7 @@ void create_default_representations(ApplicationState* state) {
     if (nucleic_present) {
         // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
         // shows nothing of a nucleotide off a backbone
-        size_t num_on_backbone = 0;
-        for (size_t i = 0; i < state->mold.sys.nucleic_backbone.segment.count; ++i) {
-            num_on_backbone += state->mold.sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
-        }
+        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
         const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompType : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");

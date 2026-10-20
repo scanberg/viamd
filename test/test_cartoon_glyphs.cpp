@@ -9,6 +9,8 @@
 #include <md_gro.h>
 #include <core/md_arena_allocator.h>
 
+#include <float.h>
+
 /* The cartoon of the lipids is built on the CPU (the points, which atoms each stands for, the tubes through them) and
  * placed on the GPU. Without a GL molecule to derive the points from, cartoon_glyphs_init builds the first part and
  * stops, which is what these check: the anatomy of the lipids turned into spheres and tubes. */
@@ -182,4 +184,103 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
 
     cartoon_glyphs_free(&g);
     md_arena_allocator_destroy(alloc);
+}
+
+// Where a point is in a frame: the weighted sum of its atoms, each in its periodic image nearest to its reference
+static vec3_t point_position(const CartoonGlyphs& g, const md_system_state_t& st, uint32_t p) {
+    const vec3_t ref = st.xyz[g.point_ref[p]];
+    vec3_t pos = vec3_zero();
+    for (uint32_t j = g.point_offset[p]; j < g.point_offset[p + 1]; ++j) {
+        vec3_t d = vec3_sub(st.xyz[g.point_atom[j]], ref);
+        if (md_unitcell_flags(&st.unitcell)) md_util_min_image_vec3(&d, 1, &st.unitcell);
+        pos = vec3_add(pos, vec3_mul1(vec3_add(ref, d), g.point_weight[j]));
+    }
+    return pos;
+}
+
+// The nucleic acids of Martini: a band through the BB2 of each nucleotide, and its base with the rings of an ideal base
+// (two for a purine) and a stick from the band to it; no sugar. The rings come out where the beads of the frame put
+// them: their edges as long as the bonds of a ring, flat, the glycosidic N a corner of them.
+UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
+    static const char* names[] = { "martini2_dna", "martini2_rna", "martini3_rna" };
+    for (size_t n = 0; n < ARRAY_SIZE(names); ++n) {
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_system_t sys = { .alloc = alloc };
+        md_system_state_t st = { .alloc = alloc };
+        char path[256];
+        snprintf(path, sizeof(path), VIAMD_TEST_DATA_DIR "/martini/%s.gro", names[n]);
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path)));
+        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+        const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
+        ASSERT_EQ((size_t)2, bb.range.count);
+
+        uint32_t expected_slabs = 0;
+        for (size_t s = 0; s < bb.segment.count; ++s) {
+            const str_t name = md_component_name(&sys.component, bb.segment.comp_idx[s]);
+            const bool purine = str_find_char(NULL, name, 'A') || str_find_char(NULL, name, 'G');
+            expected_slabs += purine ? 3 : 2;
+        }
+
+        CartoonGlyphs g = {};
+        cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
+        EXPECT_EQ_MSG(expected_slabs, g.num_slabs, names[n]);
+        EXPECT_EQ(2u, g.num_tubes);
+        EXPECT_EQ((uint32_t)bb.segment.count, g.num_tube_points);
+        EXPECT_EQ(0u, g.num_spheres);
+
+        // Every point a weighted sum of its atoms: the weights sum to 1
+        for (uint32_t i = 0; i < g.num_points; ++i) {
+            float sum = 0.0f;
+            for (uint32_t j = g.point_offset[i]; j < g.point_offset[i + 1]; ++j) sum += g.point_weight[j];
+            EXPECT_NEAR(1.0f, sum, 1e-3f);
+        }
+        // The band through the BB2, facing the glycosidic N
+        for (uint32_t i = 0; i < g.num_tube_points; ++i) {
+            const uint32_t p = g.tube_point[i];
+            EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBackbone, g.point_kind[p]);
+            EXPECT_TRUE(point_has_atom_named(g, sys, p, "BB2"));
+            ASSERT_LT(g.tube_face[i], g.num_points);
+            EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.tube_face[i]]);
+        }
+
+        uint32_t sticks = 0;
+        float shortest_edge = FLT_MAX, longest_edge = 0.0f, worst_plane = 0.0f, longest_stick = 0.0f;
+        for (uint32_t s = 0; s < g.num_slabs; ++s) {
+            const uint32_t beg = g.slab_offset[s], m = g.slab_offset[s + 1] - beg;
+            ASSERT_TRUE(m == 2 || m == 5 || m == 6);
+            if (m == 2) {
+                // From the band to the glycosidic N, the corner of a ring
+                EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBackbone, g.point_kind[g.slab_point[beg]]);
+                EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.slab_point[beg + 1]]);
+                longest_stick = MAX(longest_stick, vec3_distance(point_position(g, st, g.slab_point[beg]), point_position(g, st, g.slab_point[beg + 1])));
+                sticks += 1;
+                continue;
+            }
+            vec3_t c[6];
+            vec3_t mid = vec3_zero();
+            for (uint32_t k = 0; k < m; ++k) {
+                EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.slab_point[beg + k]]);
+                c[k] = point_position(g, st, g.slab_point[beg + k]);
+                mid = vec3_add(mid, vec3_mul1(c[k], 1.0f / (float)m));
+            }
+            for (uint32_t k = 0; k < m; ++k) {
+                const float d = vec3_distance(c[k], c[(k + 1) % m]);
+                shortest_edge = MIN(shortest_edge, d);
+                longest_edge = MAX(longest_edge, d);
+            }
+            const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(c[0], mid), vec3_sub(c[1], mid)));
+            for (uint32_t k = 0; k < m; ++k) worst_plane = MAX(worst_plane, fabsf(vec3_dot(vec3_sub(c[k], mid), normal)));
+        }
+        EXPECT_EQ((uint32_t)bb.segment.count, sticks);
+        // The bonds of the rings of the ideal bases are 1.31 to 1.45 long; the purines of Martini 2 flex a little
+        EXPECT_GT(shortest_edge, 1.26f);
+        EXPECT_LT(longest_edge, 1.50f);
+        EXPECT_LT(worst_plane, 0.05f);
+        // Within the band and the base: shorter than the longest bond of a Martini nucleotide is drawn (md_gl culls a
+        // capsule longer than that as across the periodic boundary)
+        EXPECT_LT(longest_stick, 5.0f);
+
+        cartoon_glyphs_free(&g);
+        md_arena_allocator_destroy(alloc);
+    }
 }

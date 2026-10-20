@@ -189,10 +189,12 @@ struct GlyphBuilder {
     CartoonGlyphs* g;
     md_allocator_i* alloc;
 
-    uint32_t point(const int32_t* atoms, size_t n, int32_t ref, int32_t color_atom, int32_t comp, float radius, CartoonGlyphKind kind, CartoonGlyphVariant variant = CartoonGlyphVariant_Always) {
+    // The mean of the atoms, or their weighted sum with the weights (n of them)
+    uint32_t point(const int32_t* atoms, size_t n, int32_t ref, int32_t color_atom, int32_t comp, float radius, CartoonGlyphKind kind, CartoonGlyphVariant variant = CartoonGlyphVariant_Always, const float* weights = nullptr) {
         const uint32_t idx = (uint32_t)md_array_size(g->point_ref);
         md_array_push(g->point_variant, (uint8_t)variant, alloc);
         md_array_push_array(g->point_atom, atoms, n, alloc);
+        for (size_t k = 0; k < n; ++k) md_array_push(g->point_weight, weights ? weights[k] : 1.0f / (float)n, alloc);
         md_array_push(g->point_offset, (uint32_t)md_array_size(g->point_atom), alloc);
         md_array_push(g->point_ref, ref, alloc);
         md_array_push(g->point_color_atom, color_atom, alloc);
@@ -569,12 +571,88 @@ static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
     return false;
 }
 
+// The rings of the bases of the Martini nucleic acids, each ring atom a weighted sum of the real beads of its base
+// (cartoon_nucleobases.inl, which tools/gen_cartoon_nucleobases.py generates and checks): the atoms N1 C2 N3 C4 C5 C6,
+// then N7 C8 N9 for a purine. The bases of the models are told apart by the number of their beads, virtual sites
+// included (3 and 4 in Martini 2, 4 to 6 in Martini 3), which name the same.
+static constexpr uint32_t NUCLEOBASE_MAX_REAL = 4;
+static constexpr uint32_t NUCLEOBASE_MAX_CORNERS = 9;
+
+struct CartoonNucleobase {
+    char        base;           // A, C, G, T or U
+    uint8_t     num_beads;      // Of the base, real and virtual
+    uint8_t     num_real;       // The beads the ring atoms are weighted sums of
+    const char* real[NUCLEOBASE_MAX_REAL];
+    uint8_t     num_corners;    // 6 for a pyrimidine, 9 for a purine
+    float       weight[NUCLEOBASE_MAX_CORNERS][NUCLEOBASE_MAX_REAL];   // [corner][real bead]
+};
+
+#include "cartoon_nucleobases.inl"
+
+static constexpr uint32_t NUCLEOBASE_RING6[] = { 0, 1, 2, 3, 4, 5 };    // N1 C2 N3 C4 C5 C6
+static constexpr uint32_t NUCLEOBASE_RING5[] = { 3, 4, 6, 7, 8 };       // C4 C5 N7 C8 N9
+
+// The base of a nucleotide by its name: DA, A, RA, and those of a terminal one (DA5, A3). 0 for none.
+static char nucleotide_base(str_t name) {
+    while (name.len > 1 && (name.ptr[name.len - 1] == '3' || name.ptr[name.len - 1] == '5')) name.len -= 1;
+    char c = 0;
+    if (name.len == 1) c = name.ptr[0];
+    else if (name.len == 2 && (name.ptr[0] == 'D' || name.ptr[0] == 'R')) c = name.ptr[1];
+    return (c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == 'U') ? c : 0;
+}
+
+// The base of a coarse grained nucleotide with the rings of an ideal one: a point for each ring atom, a weighted sum of
+// the real beads of the base, taken whole about ref, and a slab for each ring. The point of the glycosidic N, or
+// UINT32_MAX for a base of none of the models (another name, number of beads, a bead missing), which is not drawn.
+static uint32_t coarse_grained_base(GlyphBuilder& b, const md_system_t& sys, int32_t comp, int32_t ref) {
+    const char base = nucleotide_base(md_component_name(&sys.component, comp));
+    if (!base) return UINT32_MAX;
+    const md_urange_t range = md_component_atom_range(&sys.component, comp);
+    uint32_t num_beads = 0;
+    for (uint32_t i = range.beg; i < range.end; ++i) {
+        num_beads += (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) ? 1 : 0;
+    }
+    const CartoonNucleobase* t = nullptr;
+    for (const CartoonNucleobase& e : cartoon_nucleobases) {
+        if (e.base == base && e.num_beads == num_beads) {
+            t = &e;
+            break;
+        }
+    }
+    if (!t) return UINT32_MAX;
+
+    int32_t real[NUCLEOBASE_MAX_REAL];
+    for (uint32_t k = 0; k < t->num_real; ++k) {
+        real[k] = -1;
+        for (uint32_t i = range.beg; i < range.end && real[k] < 0; ++i) {
+            if (str_eq_cstr(md_atom_name(&sys.atom, i), t->real[k])) real[k] = (int32_t)i;
+        }
+        if (real[k] < 0) return UINT32_MAX;
+    }
+
+    uint32_t corner[NUCLEOBASE_MAX_CORNERS];
+    for (uint32_t k = 0; k < t->num_corners; ++k) {
+        corner[k] = b.point(real, t->num_real, ref, real[0], comp, 0.0f, CartoonGlyph_NucleicBase, CartoonGlyphVariant_Always, t->weight[k]);
+    }
+    const bool purine = t->num_corners == 9;
+    uint32_t ring[6];
+    for (uint32_t k = 0; k < ARRAY_SIZE(NUCLEOBASE_RING6); ++k) ring[k] = corner[NUCLEOBASE_RING6[k]];
+    b.slab(ring, ARRAY_SIZE(NUCLEOBASE_RING6));
+    if (purine) {
+        for (uint32_t k = 0; k < ARRAY_SIZE(NUCLEOBASE_RING5); ++k) ring[k] = corner[NUCLEOBASE_RING5[k]];
+        b.slab(ring, ARRAY_SIZE(NUCLEOBASE_RING5));
+    }
+    return purine ? corner[8] : corner[0];
+}
+
 // The cartoon of the nucleic acids, after Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a
 // flat band along each backbone through the C4' of its nucleotides, its faces towards the bases; the sugar ring as a
 // slab; a stick from its C1' to the base; and each ring of the base as a slab of its own (a purine is two, side by side).
 // The rings are those of the system (its ring perception) which lie within the nucleotide: the sugar is the one with
 // its C1', and the glycosidic nitrogen the atom of a base ring bonded to it. Each corner of a slab is a point of its own
 // atom, without a sphere; the points of a nucleotide are taken whole about its C4'.
+// A coarse grained nucleotide has no rings in the system: its band goes through the sugar bead with the C4', its base
+// has the rings of an ideal one (coarse_grained_base), the stick goes from the band to it, and its sugar is not drawn.
 static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
     if (bb.range.count == 0) return;
@@ -590,6 +668,7 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
     md_array(uint32_t) corners = nullptr;
 
     for (size_t r = 0; r < bb.range.count; ++r) {
+        const bool beads = md_nucleic_backbone_range_is_coarse_grained(&bb, r);
         bool open = false;
         for (uint32_t s = bb.range.offset[r]; s < bb.range.offset[r + 1]; ++s) {
             const md_nucleic_acid_atoms_t& atoms = bb.segment.atoms[s];
@@ -613,6 +692,19 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
             };
 
             const uint32_t c4 = point_of(atoms.c4, CartoonGlyph_NucleicBackbone);
+            uint32_t base_n = UINT32_MAX;
+
+            if (beads) {
+                base_n = coarse_grained_base(b, sys, comp, ref);
+                if (base_n != UINT32_MAX) {
+                    // The stick from the band, whose colour it takes
+                    const uint32_t stick[2] = { c4, base_n };
+                    b.slab(stick, 2);
+                }
+                b.tube_point(c4, NUCLEIC_BACKBONE_RADIUS, NUCLEIC_BACKBONE_FLAT, base_n != UINT32_MAX ? base_n : point_of(atoms.c1, CartoonGlyph_NucleicSugar));
+                open = true;
+                continue;
+            }
 
             // The rings of the nucleotide: binary search for its first
             size_t lo = 0, hi = num_comp_rings;
@@ -622,7 +714,6 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
                 else hi = mid;
             }
             uint32_t sugar_c1 = UINT32_MAX;
-            uint32_t base_n   = UINT32_MAX;
             for (size_t i = lo; i < num_comp_rings && comp_rings[i].comp == comp; ++i) {
                 const uint32_t ring = comp_rings[i].ring;
                 const int32_t* ring_atoms = md_index_range_beg(&sys.ring, ring);
@@ -699,18 +790,8 @@ void cartoon_glyphs_init(CartoonGlyphs* g, const md_system_t& sys, md_gl_mol_t g
     g->gl_mol = md_gl_mol_create_particles(g->num_points);
     md_gl_mol_set_atom_radius(g->gl_mol, 0, g->num_points, g->point_radius, 0);
 
-    // Each point the mean of its atoms
-    md_temp_scope_t temp = md_temp_begin();
-    const size_t num_atoms = md_array_size(g->point_atom);
-    float* weight = (float*)md_temp_alloc(temp, MAX(num_atoms, 1) * sizeof(float));
-    for (uint32_t i = 0; i < g->num_points; ++i) {
-        const uint32_t beg = g->point_offset[i];
-        const uint32_t end = g->point_offset[i + 1];
-        for (uint32_t j = beg; j < end; ++j) weight[j] = 1.0f / (float)(end - beg);
-    }
     static_assert(sizeof(int32_t) == sizeof(uint32_t), "The atom indices are passed as unsigned");
-    md_gl_mol_set_derived(g->gl_mol, gl_mol, g->point_offset, (const uint32_t*)g->point_atom, weight, (const uint32_t*)g->point_ref);
-    md_temp_end(temp);
+    md_gl_mol_set_derived(g->gl_mol, gl_mol, g->point_offset, (const uint32_t*)g->point_atom, g->point_weight, (const uint32_t*)g->point_ref);
 
     if (g->num_tubes > 0) {
         const md_gl_tubes_t tubes = {
@@ -737,6 +818,7 @@ void cartoon_glyphs_free(CartoonGlyphs* g) {
     if (g->alloc) {
         md_array_free(g->point_offset, g->alloc);
         md_array_free(g->point_atom, g->alloc);
+        md_array_free(g->point_weight, g->alloc);
         md_array_free(g->point_ref, g->alloc);
         md_array_free(g->point_color_atom, g->alloc);
         md_array_free(g->point_comp, g->alloc);
