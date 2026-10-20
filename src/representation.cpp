@@ -672,6 +672,51 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
     return op;
 }
 
+// The draws of the glyphs of a Cartoon (see representation.h)
+void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
+    const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
+
+    // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
+    if (state.mold.cartoon_glyphs.num_spheres > 0) {
+        md_gl_draw_op_t spheres = {
+            .type = MD_GL_REP_SPACE_FILL,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        spheres.args.space_fill.radius_scale = scale;
+        md_array_push(*ops, spheres, alloc);
+    }
+
+    if (state.mold.cartoon_glyphs.num_tubes > 0) {
+        md_gl_draw_op_t tubes = {
+            .type = MD_GL_REP_TUBES,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        tubes.args.tubes.radius_scale = scale;
+        // The bands of the nucleic acids are made with the default radius, a representation has its own
+        tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
+        md_array_push(*ops, tubes, alloc);
+    }
+
+    if (state.mold.cartoon_glyphs.num_slabs > 0) {
+        md_gl_draw_op_t slabs = {
+            .type = MD_GL_REP_SLABS,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
+        // recessed to 60% of its thickness
+        slabs.args.slabs.radius = MAX(rep.nucleic_ring_radius, 0.01f) * scale;
+        slabs.args.slabs.plate  = 0.6f;
+        md_array_push(*ops, slabs, alloc);
+    }
+}
+
 // The colours of all atoms of the system for a representation which colours by atom, by its colour mapping, then towards
 // its tint and saturation (see representation.h)
 void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationState* state, Representation* rep, const md_bitset_t* shown) {
@@ -2468,7 +2513,7 @@ static bool system_has_elastic_bonds(const md_system_t& sys) {
 }
 
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
-bool draw_representation_geometry(ApplicationState* state, Representation& rep, bool glyphs) {
+bool draw_representation_geometry(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
     const char* scale_fmt = (const char*)u8"%.2f×";
     switch (rep.type) {
@@ -2499,7 +2544,7 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep, 
         update_rep |= ImGui::SliderFloat("##sheet", &rep.scale[1], 0.1f, 3.f, scale_fmt);
         prop::row("helix");
         update_rep |= ImGui::SliderFloat("##helix", &rep.scale[2], 0.1f, 3.f, scale_fmt);
-        if (glyphs && cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
+        if (cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
             prop::row("lipid, nucleic", "Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
             update_rep |= ImGui::SliderFloat("##lipid_nucleic", &rep.scale[3], 0.1f, 3.f, scale_fmt);
             if (state->mold.sys.nucleic_backbone.range.count > 0) {
@@ -2712,7 +2757,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::section_end();
         }
         if (prop::section("Geometry", false)) {
-            update_rep |= draw_representation_geometry(state, rep, true);
+            update_rep |= draw_representation_geometry(state, rep);
             prop::section_end();
         }
         break;

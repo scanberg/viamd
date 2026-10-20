@@ -7076,52 +7076,6 @@ static void render(ApplicationState* state) {
     }
 }
 
-// The draws of the glyphs of a Cartoon (the lipids and nucleic acids, see cartoon_glyphs.h): their spheres, tubes and
-// capsules, thickened by the w of the scale of the representation
-static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
-    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
-    const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
-
-    // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
-    if (state.mold.cartoon_glyphs.num_spheres > 0) {
-        md_gl_draw_op_t spheres = {
-            .type = MD_GL_REP_SPACE_FILL,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        spheres.args.space_fill.radius_scale = scale;
-        md_array_push(*ops, spheres, alloc);
-    }
-
-    if (state.mold.cartoon_glyphs.num_tubes > 0) {
-        md_gl_draw_op_t tubes = {
-            .type = MD_GL_REP_TUBES,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        tubes.args.tubes.radius_scale = scale;
-        // The bands of the nucleic acids are made with the default radius, a representation has its own
-        tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
-        md_array_push(*ops, tubes, alloc);
-    }
-
-    if (state.mold.cartoon_glyphs.num_slabs > 0) {
-        md_gl_draw_op_t slabs = {
-            .type = MD_GL_REP_SLABS,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
-        // recessed to 60% of its thickness
-        slabs.args.slabs.radius = MAX(rep.nucleic_ring_radius, 0.01f) * scale;
-        slabs.args.slabs.plate  = 0.6f;
-        md_array_push(*ops, slabs, alloc);
-    }
-}
-
 // The longest bond md_gl draws, covalent or weak (md_gl_draw_args_t max_bond_length): a longer one is taken to be across
 // a periodic boundary, from an atom to the far side of the cell, and is left out.
 //   In a cell: half its smallest width (the minimum image), at least 3 Å.
@@ -7373,7 +7327,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
-                cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+                representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
                 place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
@@ -7689,7 +7643,7 @@ static void draw_representations_marks(ApplicationState* data) {
         if (rep.type > RepresentationType::Cartoon) continue;
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
-            cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
+            representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
             place_ops(&glyph_ops, beg, *data, rep, true, frame_alloc);
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }

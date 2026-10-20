@@ -100,9 +100,14 @@ void recompute_atom_visibility_mask(ApplicationState* app);
 // Whether the system has what a type draws: atoms, bonds, a backbone
 bool representation_atom_type_valid(const ApplicationState& app, RepresentationType type);
 
-// The draw op of a representation of atoms: its type, arguments and colours (md_rep). The instances and the subset are
+// The draw op of a representation of atoms: its type, arguments and colours (md_rep). The copies and the subset are
 // the caller's.
 md_gl_draw_op_t representation_draw_op(const Representation& rep);
+// The draw ops of the glyphs of a Cartoon, the lipids and nucleic acids (cartoon_glyphs.h), pushed to ops: their
+// spheres, tubes and slabs, thickened by the w of its scale, in its colours of the glyphs (glyph_rep). None while it
+// shows none or their positions are not derived (cartoon_glyphs_update_positions). The copies and the subset (of the
+// glyphs) are the caller's.
+void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the
@@ -125,11 +130,10 @@ bool representations_deserialize(ApplicationState* app, str_t section, viamd::de
 void draw_representations_window(ApplicationState* app);
 // Rows of the properties of a representation, in a property grid (property_grid.h), as the Representations window
 // draws them: its type (atoms_only: SpaceFill to Cartoon), the rows of its Color section, those of its Geometry
-// section (glyphs: with those of the cartoon of the lipids and nucleic acids, where it is drawn). Each returns whether
-// it needs updating.
+// section. Each returns whether it needs updating.
 bool draw_representation_type(ApplicationState* app, Representation& rep, bool atoms_only);
 bool draw_representation_coloring(ApplicationState* app, Representation& rep);
-bool draw_representation_geometry(ApplicationState* app, Representation& rep, bool glyphs = true);
+bool draw_representation_geometry(ApplicationState* app, Representation& rep);
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);

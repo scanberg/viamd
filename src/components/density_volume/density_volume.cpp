@@ -38,11 +38,15 @@ constexpr size_t DENSITY_VOLUME_MAX_SHOWN_STRUCTURES = 256;
 // the Representations window: the same Representation, edited and drawn by the same code (representation.h). Its
 // filter is evaluated within each reference structure, which is its context as a group's filter is the context of what
 // is in the group: 'all' is the structure, residue(1) its first residue, and 'out' reaches outside of it. What it picks
-// within each structure shown is a subset of the molecule, drawn under the transform of that structure.
+// within each structure shown is a subset of the molecule, drawn under the transform of that structure. A Cartoon draws
+// the cartoon of the lipids and nucleic acids within it too: the glyphs whose molecule the subset holds the reference
+// atom of (md_gl_subset_set_derived).
 struct DensityVolumeRep {
     Representation rep = {};
-    md_array(md_gl_subset_t) subsets = nullptr;   // [structures shown] What the filter picks within each
-    md_gl_rep_t members = {};                     // The colours of the structures after the first, faded (ensemble_fade)
+    md_array(md_gl_subset_t) subsets = nullptr;       // [structures shown] What the filter picks within each
+    md_array(md_gl_subset_t) glyph_subsets = nullptr; // [structures shown] Of a Cartoon: the glyphs of what each subset holds
+    md_gl_rep_t members = {};                         // The colours of the structures after the first, faded (ensemble_fade)
+    md_gl_rep_t members_glyphs = {};                  // And of their glyphs
     bool dirty = true;                            // What its filter picks within the structures to be found again, then its colours
     bool colors_dirty = true;                     // Its colours to be made again
 
@@ -50,6 +54,7 @@ struct DensityVolumeRep {
     uint64_t built_version = 0;                   // DensityVolume::structures_version
     size_t   built_shown = 0;
     float    built_fade = 0.0f;
+    bool     built_cartoon = false;               // With the glyphs of a Cartoon
 };
 
 // An empty filter, or 'all', picks all of a structure: nothing to evaluate
@@ -184,13 +189,27 @@ struct DensityVolume : viamd::EventHandler {
         }
         md_array_free(r.subsets, md_get_heap_allocator());
         r.subsets = nullptr;
+        release_glyph_subsets(r);
         md_gl_rep_destroy(r.rep.md_rep);
         md_gl_rep_destroy(r.members);
+        md_gl_rep_destroy(r.rep.glyph_rep);
+        md_gl_rep_destroy(r.members_glyphs);
         r.rep.md_rep = {};
         r.members = {};
+        r.rep.glyph_rep = {};
+        r.members_glyphs = {};
+        r.rep.glyphs_shown = false;
         md_bitset_free(&r.rep.atom_mask, md_get_heap_allocator());
         r.dirty = true;
         r.colors_dirty = true;
+    }
+
+    static void release_glyph_subsets(DensityVolumeRep& r) {
+        for (size_t i = 0; i < md_array_size(r.glyph_subsets); ++i) {
+            md_gl_subset_destroy(r.glyph_subsets[i]);
+        }
+        md_array_free(r.glyph_subsets, md_get_heap_allocator());
+        r.glyph_subsets = nullptr;
     }
 
     void remove_rep(size_t idx) {
@@ -330,6 +349,25 @@ struct DensityVolume : viamd::EventHandler {
             md_gl_subset_set_atoms(r.subsets[i], indices, (uint32_t)count);
             picked_all = md_bitset_or(picked_all, picked, frame);
         }
+
+        // Of a Cartoon, the glyphs of the lipids and nucleic acids of each subset
+        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+        if (rep.type == RepresentationType::Cartoon && cartoon_glyphs_valid(glyphs)) {
+            while (md_array_size(r.glyph_subsets) < made) {
+                const md_gl_subset_t subset = md_gl_subset_create(glyphs.gl_mol);
+                if (!subset.id) break;
+                md_array_push(r.glyph_subsets, subset, heap);
+            }
+            while (md_array_size(r.glyph_subsets) > made) {
+                md_gl_subset_destroy(*md_array_last(r.glyph_subsets));
+                md_array_pop(r.glyph_subsets);
+            }
+            for (size_t i = 0; i < md_array_size(r.glyph_subsets); ++i) {
+                md_gl_subset_set_derived(r.glyph_subsets[i], r.subsets[i]);
+            }
+        } else {
+            release_glyph_subsets(r);
+        }
         if (all) {
             rep.filter.result = {};
             rep.filter.result.success = true;
@@ -348,6 +386,7 @@ struct DensityVolume : viamd::EventHandler {
 
         r.built_version = structures_version;
         r.built_shown = shown;
+        r.built_cartoon = rep.type == RepresentationType::Cartoon;
         r.dirty = false;
         r.colors_dirty = true;
     }
@@ -370,6 +409,15 @@ struct DensityVolume : viamd::EventHandler {
         }
         md_gl_rep_set_atom_colors(rep.md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
+        // Of a Cartoon, its glyphs in the colours of their atoms
+        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+        const bool with_glyphs = md_array_size(r.glyph_subsets) > 0;
+        rep.glyphs_shown = false;
+        if (with_glyphs) {
+            if (!rep.glyph_rep.id) rep.glyph_rep = cartoon_glyphs_rep_create(glyphs);
+            rep.glyphs_shown = cartoon_glyphs_rep_set_colors(glyphs, rep.glyph_rep, colors, num_atoms, rep.two_head_spheres);
+        }
+
         // The other structures of an ensemble, towards the background
         if (shown > 1 && fade > 0.0f) {
             if (!r.members.id) r.members = md_gl_rep_create(state->mold.gl_mol);
@@ -383,6 +431,10 @@ struct DensityVolume : viamd::EventHandler {
                 colors[i] = convert_color(c);
             }
             md_gl_rep_set_atom_colors(r.members, 0, (uint32_t)num_atoms, colors, 0);
+            if (rep.glyphs_shown) {
+                if (!r.members_glyphs.id) r.members_glyphs = cartoon_glyphs_rep_create(glyphs);
+                cartoon_glyphs_rep_set_colors(glyphs, r.members_glyphs, colors, num_atoms, rep.two_head_spheres);
+            }
         }
 
         r.built_fade = fade;
@@ -397,6 +449,7 @@ struct DensityVolume : viamd::EventHandler {
         for (size_t i = 0; i < md_array_size(reps); ++i) {
             DensityVolumeRep& r = reps[i];
             if (r.built_version != structures_version || r.built_shown != shown) r.dirty = true;
+            if (r.built_cartoon != (r.rep.type == RepresentationType::Cartoon)) r.dirty = true;
             if (r.built_fade != fade) r.colors_dirty = true;
             if (frame_changed) {
                 if (r.rep.filter.result.is_dynamic) r.dirty = true;
@@ -996,7 +1049,8 @@ struct DensityVolume : viamd::EventHandler {
         ImGui::SetItemTooltip("Remove");
 
         if (open) {
-            // Its type only says what is drawn of the subsets, its geometry how: neither is found again
+            // Its type only says what is drawn of the subsets, its geometry how: neither is found again, but for the
+            // glyphs of a Cartoon (update_reps)
             if (draw_representation_type(state, rep, true)) {
                 rep.type_is_valid = representation_atom_type_valid(*state, rep.type);
             }
@@ -1017,8 +1071,11 @@ struct DensityVolume : viamd::EventHandler {
                 prop::section_end();
             }
             if (prop::section("Geometry", false)) {
-                // The cartoon of the lipids and nucleic acids is not drawn here
-                draw_representation_geometry(state, rep, false);
+                // Only what the args of the draws take, but whether the head of a lipid is two spheres, which its glyphs'
+                // colours do
+                const bool two_heads = rep.two_head_spheres;
+                draw_representation_geometry(state, rep);
+                if (rep.two_head_spheres != two_heads) r.colors_dirty = true;
                 prop::section_end();
             }
             ImGui::Spacing();
@@ -1339,9 +1396,29 @@ struct DensityVolume : viamd::EventHandler {
                 // structure aligns with the reference (a rigid transform)
                 const bool has_backbone = state->mold.sys.protein_backbone.range.count > 0;
                 md_array(md_gl_draw_op_t) draw_ops = nullptr;
+                md_array(md_gl_draw_op_t) glyph_ops = nullptr;
+                CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
                 for (size_t i = 0; i < md_array_size(reps); ++i) {
                     const DensityVolumeRep& r = reps[i];
                     if (!r.rep.enabled || !r.rep.type_is_valid || r.dirty || !r.rep.md_rep.id) continue;
+                    if (r.rep.glyphs_shown && md_array_size(r.glyph_subsets) > 0) {
+                        // Derived from the positions of the atoms when a cartoon of the main view has not
+                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, state->mold.state);
+                        md_array(md_gl_draw_op_t) ops = nullptr;
+                        representation_glyph_draw_ops(&ops, *state, r.rep, temp_arena);
+                        const size_t n = MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
+                        for (size_t k = 0; k < md_array_size(ops); ++k) {
+                            for (size_t j = 0; j < n; ++j) {
+                                if (!r.glyph_subsets[j].id) continue;
+                                md_gl_draw_op_t op = ops[k];
+                                op.rep = (j > 0 && r.members_glyphs.id) ? r.members_glyphs : r.rep.glyph_rep;
+                                op.subset = r.glyph_subsets[j];
+                                op.copies.transforms = &structure_mats[j].elem[0][0];
+                                op.copies.count = 1;
+                                md_array_push(glyph_ops, op, temp_arena);
+                            }
+                        }
+                    }
                     if ((r.rep.type == RepresentationType::Ribbons || r.rep.type == RepresentationType::Cartoon) && !has_backbone) continue;
                     const md_gl_draw_op_t base = representation_draw_op(r.rep);
                     const size_t n = MIN(md_array_size(r.subsets), md_array_size(structure_mats));
@@ -1356,20 +1433,25 @@ struct DensityVolume : viamd::EventHandler {
                     }
                 }
 
+                md_gl_draw_args_t draw_args = {
+                    .shaders = state->gl.shaders,
+                    .draw_operations = {
+                        .count = md_array_size(draw_ops),
+                        .ops = draw_ops
+                    },
+                    .view_transform = {
+                        .view_matrix = &world_to_view.elem[0][0],
+                        .proj_matrix = &view_to_clip.elem[0][0],
+                    },
+                    .picking_offset = gl_picking_offset(*state),
+                };
                 if (md_array_size(draw_ops) > 0) {
-                    md_gl_draw_args_t draw_args = {
-                        .shaders = state->gl.shaders,
-                        .draw_operations = {
-                            .count = md_array_size(draw_ops),
-                            .ops = draw_ops
-                        },
-                        .view_transform = {
-                            .view_matrix = &world_to_view.elem[0][0],
-                            .proj_matrix = &view_to_clip.elem[0][0],
-                        },
-                        .picking_offset = gl_picking_offset(*state),
-                    };
-
+                    md_gl_draw(&draw_args);
+                }
+                // The glyphs, picked as those of the main view are
+                if (md_array_size(glyph_ops) > 0) {
+                    draw_args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
+                    draw_args.picking_offset = gl_picking_offset_glyphs(*state);
                     md_gl_draw(&draw_args);
                 }
 
