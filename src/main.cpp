@@ -5227,18 +5227,18 @@ struct IsoBenchVariant {
 };
 
 static const IsoBenchVariant iso_bench_variants[] = {
-    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list, canon_terms
-    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true,  true }},
-    {"all old (round 1)",           {false, false, false, false, false, false, 10, false, false}},
-    {"canon_terms off",             {true,  true,  true,  true,  false, true,  6,  true,  false}},
-    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false, true }},
-    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true,  true }},
-    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6,  false, true }},
-    {"relax_first off",             {false, true,  true,  true,  false, true,  6,  true,  true }},
-    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6,  true,  true }},
-    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true,  true }},
-    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true,  true }},
-    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true,  true }},
+    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list, canon_terms, gemm, octree_small
+    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  true }},
+    {"all old (round 1)",           {false, false, false, false, false, false, 10, false, false, false, false}},
+    {"gemm off",                    {true,  true,  true,  true,  false, true,  6,  true,  true,  false, true }},
+    {"octree_small off",            {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  false}},
+    {"canon_terms off",             {true,  true,  true,  true,  false, true,  6,  true,  false, true,  true }},
+    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false, true,  true,  true }},
+    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true,  true,  true,  true }},
+    {"relax_first off",             {false, true,  true,  true,  false, true,  6,  true,  true,  true,  true }},
+    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true,  true,  true,  true }},
+    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true,  true,  true,  true }},
+    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true,  true,  true,  true }},
 };
 
 static struct {
@@ -5290,6 +5290,14 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     changed |= ImGui::Checkbox("Canon terms", &sw.canon_terms);
     ImGui::SetItemTooltip("The register-form kernels apply the fields' terms from per-column weights in every thread "
                           "(when each term is w a, w a^2 or w a b of a pair); off: from the terms list, 64 points at a time");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("GEMM", &sw.gemm);
+    ImGui::SetItemTooltip("Corners (point list) and density vertices as a tiled GEMM, 4 rows x F/4 columns per thread "
+                          "(iso_gcorners_f*, iso_geval_f*); off: a row per thread (iso_corners_list_f*, iso_eval_f*)");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Octree small", &sw.octree_small);
+    ImGui::SetItemTooltip("Sets of at most 4 functions (orbitals): the octree with a thread per shell, its sums in registers "
+                          "(iso_octree_small); off: iso_octree");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Newton predict", &sw.newton_predict);
     ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
