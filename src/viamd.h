@@ -1210,6 +1210,14 @@ struct ApplicationState {
         // [assembly_copy_offset[p], assembly_copy_offset[p + 1]). Empty when none is shown.
         md_array(mat4_t)   assembly_transforms  = 0;
         md_array(uint32_t) assembly_copy_offset = 0;
+
+        // Of the assembly shown, the instances of each part as a subset of the molecule (md_gl_subset_t), which its
+        // copies draw, and the subset of the cartoon glyphs which that makes. A part of all instances has none (0): the
+        // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
+        md_array(md_gl_subset_t) assembly_subsets       = 0;
+        md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
+        int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
+        uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
     } view;
 
     struct {
@@ -2740,9 +2748,10 @@ static inline AssemblyPart assembly_part(const md_assembly_data_t& a, size_t p) 
 // copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
 void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
 
-// The segments of the molecule of the system for md_gl (md_gl_mol_set_segments): its instances, of which the parts of
-// its assemblies show some. Only a system with assemblies needs them.
-void set_gl_segments(ApplicationState* app);
+// The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
+// freed: before the molecule goes
+void assembly_subsets_update(ApplicationState* app);
+void assembly_subsets_free(ApplicationState* app);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the

@@ -1637,6 +1637,8 @@ static void update_view_param(ApplicationState* data) {
         data->view.assembly = -1;
     }
     assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, data->view.assembly, persistent_alloc);
+    // And the subsets of its parts, which its copies draw: made when another is shown
+    assembly_subsets_update(data);
 
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
@@ -7195,33 +7197,30 @@ static md_gl_copies_t rep_copies(const ApplicationState& state, const Representa
 }
 
 // The ops from beg on, of a representation, in the copies of the scene. With an assembly shown, each op once per part
-// of it: of the instances of the part (the segments of the molecule, set_gl_segments) in the copies its operators make.
-// Otherwise once, in the periodic images of the representation. Read from the system and the view state, which
-// outlive the draw.
-static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+// of it: of the instances of the part (its subset, of the molecule or of the glyphs of the cartoon, assembly_subsets_update)
+// in the copies its operators make. Otherwise once, in the periodic images of the representation. Read from the system
+// and the view state, which outlive the draw.
+static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, bool glyphs, md_allocator_i* alloc) {
     const size_t end = md_array_size(*ops);
     const md_assembly_data_t& a = state.mold.sys.assembly;
     const bool shown = state.view.assembly >= 0 && (size_t)state.view.assembly < a.count;
     const size_t part_beg = shown ? a.part_offset[state.view.assembly] : 0;
     const size_t part_end = shown ? a.part_offset[state.view.assembly + 1] : 0;
     const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
-    // Without an assembly, or its copies not of it (yet)
-    if (num_parts == 0 || num_parts != part_end - part_beg) {
+    const md_gl_subset_t* subsets = glyphs ? state.view.assembly_glyph_subsets : state.view.assembly_subsets;
+    // Without an assembly, or its copies or subsets not of it (yet)
+    if (num_parts == 0 || num_parts != part_end - part_beg || state.view.assembly_subsets_of != state.view.assembly || md_array_size(subsets) != num_parts) {
         const md_gl_copies_t copies = rep_copies(state, rep);
         for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
         return;
     }
-    static_assert(sizeof(md_instance_idx_t) == sizeof(uint32_t), "The instances of a part are passed as the segments of md_gl");
     for (size_t p = 0; p < num_parts; ++p) {
-        // The instances of the part from the offsets as they are (assembly_part)
-        const AssemblyPart part = assembly_part(a, part_beg + p);
         const uint32_t c0 = state.view.assembly_copy_offset[p];
         const uint32_t c1 = state.view.assembly_copy_offset[p + 1];
         for (size_t i = beg; i < end; ++i) {
             md_gl_draw_op_t op = (*ops)[i];
             op.copies = {&state.view.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
-            op.segments = (const uint32_t*)part.inst;
-            op.segment_count = (uint32_t)(part.inst_end - part.inst);
+            op.subset = subsets[p];
             if (p == 0) {
                 (*ops)[i] = op;
             } else {
@@ -7375,7 +7374,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
                 cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
-                place_ops(&glyph_ops, beg, *state, rep, frame_alloc);
+                place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
             }
@@ -7432,7 +7431,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                     }
                     const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
-                    place_ops(&draw_ops, beg, *state, rep, frame_alloc);
+                    place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 if (representation_shown(*state, rep)) {
@@ -7738,7 +7737,7 @@ static void draw_representations_marks(ApplicationState* data) {
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
             cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
-            place_ops(&glyph_ops, beg, *data, rep, frame_alloc);
+            place_ops(&glyph_ops, beg, *data, rep, true, frame_alloc);
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
@@ -7766,7 +7765,7 @@ static void draw_representations_marks(ApplicationState* data) {
             }
             const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
-            place_ops(&draw_ops, beg, *data, rep, frame_alloc);
+            place_ops(&draw_ops, beg, *data, rep, false, frame_alloc);
         }
     }
 

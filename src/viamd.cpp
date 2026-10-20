@@ -1412,22 +1412,61 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
     }
 }
 
-void set_gl_segments(ApplicationState* app) {
+void assembly_subsets_free(ApplicationState* app) {
     ASSERT(app);
+    for (size_t i = 0; i < md_array_size(app->view.assembly_subsets); ++i) {
+        if (app->view.assembly_subsets[i].id) md_gl_subset_destroy(app->view.assembly_subsets[i]);
+    }
+    for (size_t i = 0; i < md_array_size(app->view.assembly_glyph_subsets); ++i) {
+        if (app->view.assembly_glyph_subsets[i].id) md_gl_subset_destroy(app->view.assembly_glyph_subsets[i]);
+    }
+    md_array_shrink(app->view.assembly_subsets, 0);
+    md_array_shrink(app->view.assembly_glyph_subsets, 0);
+    app->view.assembly_subsets_of  = -1;
+    app->view.assembly_subsets_mol = 0;
+}
+
+void assembly_subsets_update(ApplicationState* app) {
+    ASSERT(app);
+    const int assembly = app->view.assembly;
+    const uint32_t mol_id = app->mold.gl_mol.id;
+    if (assembly == app->view.assembly_subsets_of && mol_id == app->view.assembly_subsets_mol) return;
+    assembly_subsets_free(app);
     const md_system_t& sys = app->mold.sys;
-    const size_t num_inst = sys.instance.count;
-    if (!app->mold.gl_mol.id || num_inst == 0 || sys.assembly.count == 0) return;
+    if (assembly < 0 || (size_t)assembly >= sys.assembly.count || !mol_id) return;
+    app->view.assembly_subsets_of  = assembly;
+    app->view.assembly_subsets_mol = mol_id;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
-    // Each instance a range of the atoms: the atoms of none (none in a deposited structure) with the one before
-    uint32_t* offset = md_temp_alloc_array(temp, uint32_t, num_inst + 1);
-    offset[0] = 0;
-    for (size_t i = 1; i < num_inst; ++i) {
-        offset[i] = MAX(offset[i - 1], md_system_instance_atom_range(&sys, i).beg);
+    md_allocator_i* alloc = app->allocator.persistent;
+    const md_assembly_data_t& a = sys.assembly;
+    const CartoonGlyphs& glyphs = app->mold.cartoon_glyphs;
+    const bool has_glyphs = cartoon_glyphs_valid(glyphs);
+    uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MAX(sys.atom.count, (size_t)1));
+    // The parts and their instances from the offsets as they are (assembly_part), not from a range of them
+    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
+        const AssemblyPart part = assembly_part(a, p);
+        md_gl_subset_t subset = {};
+        md_gl_subset_t glyph_subset = {};
+        // A part of all instances (each once) shows the whole molecule
+        if ((size_t)(part.inst_end - part.inst) < sys.instance.count) {
+            uint32_t count = 0;
+            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*k);
+                const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
+                for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
+            }
+            subset = md_gl_subset_create(app->mold.gl_mol);
+            md_gl_subset_set_atoms(subset, atoms, count);
+            if (has_glyphs) {
+                glyph_subset = md_gl_subset_create(glyphs.gl_mol);
+                md_gl_subset_set_derived(glyph_subset, subset);
+            }
+        }
+        md_array_push(app->view.assembly_subsets, subset, alloc);
+        md_array_push(app->view.assembly_glyph_subsets, glyph_subset, alloc);
     }
-    offset[num_inst] = (uint32_t)sys.atom.count;
-    md_gl_mol_set_segments(app->mold.gl_mol, (uint32_t)num_inst, offset);
 }
 
 void init_system_data(ApplicationState* data) {
@@ -1442,12 +1481,10 @@ void init_system_data(ApplicationState* data) {
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
-        // A new system is shown as it is; the instances are the segments its assemblies are drawn by, which the glyphs
-        // derived from its atoms take too
+        // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
         data->view.assembly = -1;
         md_array_shrink(data->view.assembly_transforms, 0);
         md_array_shrink(data->view.assembly_copy_offset, 0);
-        set_gl_segments(data);
         // Before the representations, which each make a representation of the glyphs
         cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
 
@@ -1522,6 +1559,8 @@ void free_system_data(ApplicationState* data) {
     data->operations.initial_frame.rel_xyzw = nullptr;
     data->operations.initial_frame.valid = false;
 
+    // The subsets of the parts of an assembly are of the molecule
+    assembly_subsets_free(data);
     md_gl_mol_destroy(data->mold.gl_mol);
     // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
     // representations, a frame after a load that failed) sees no molecule rather than a stale one
