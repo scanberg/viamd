@@ -5227,17 +5227,18 @@ struct IsoBenchVariant {
 };
 
 static const IsoBenchVariant iso_bench_variants[] = {
-    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list
-    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true }},
-    {"all old (round 1)",           {false, false, false, false, false, false, 10, false}},
-    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false}},
-    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true }},
-    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6,  false}},
-    {"relax_first off",             {false, true,  true,  true,  false, true,  6,  true }},
-    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6,  true }},
-    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true }},
-    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true }},
-    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true }},
+    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list, canon_terms
+    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true,  true }},
+    {"all old (round 1)",           {false, false, false, false, false, false, 10, false, false}},
+    {"canon_terms off",             {true,  true,  true,  true,  false, true,  6,  true,  false}},
+    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false, true }},
+    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true,  true }},
+    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6,  false, true }},
+    {"relax_first off",             {false, true,  true,  true,  false, true,  6,  true,  true }},
+    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6,  true,  true }},
+    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true,  true }},
+    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true,  true }},
+    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true,  true }},
 };
 
 static struct {
@@ -5285,6 +5286,10 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::EndDisabled();
     changed |= ImGui::Checkbox("Eval v2", &sw.eval_v2);
     ImGui::SetItemTooltip("Density values at the vertices in registers (iso_eval_f*); off: iso_eval");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Canon terms", &sw.canon_terms);
+    ImGui::SetItemTooltip("The register-form kernels apply the fields' terms from per-column weights in every thread "
+                          "(when each term is w a, w a^2 or w a b of a pair); off: from the terms list, 64 points at a time");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Newton predict", &sw.newton_predict);
     ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
