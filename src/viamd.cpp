@@ -631,7 +631,12 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     md_str_writer_t kind = md_str_writer_create(req->alloc);
     if (flags & MD_RING_FLAG_AROMATIC) tooltip_list_add(&kind, "aromatic");
     if (flags & MD_RING_FLAG_HETERO)   tooltip_list_add(&kind, "hetero");
-    if (flags & MD_RING_FLAG_FUSED)    tooltip_list_add(&kind, "fused");
+    // A ring of a fused aromatic system (its circle is dashed): its sextets are not assigned to particular rings
+    if ((flags & MD_RING_FLAG_AROMATIC) && (flags & MD_RING_FLAG_FUSED_AROMATIC)) {
+        tooltip_list_add(&kind, "fused aromatic system");
+    } else if (flags & MD_RING_FLAG_FUSED) {
+        tooltip_list_add(&kind, "fused");
+    }
     if (flags & MD_RING_FLAG_SUGAR)    tooltip_list_add(&kind, "sugar");
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
