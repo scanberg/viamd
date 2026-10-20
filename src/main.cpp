@@ -5233,13 +5233,15 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.skip_brick_test = false; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
-    s.gemm_pipe = 0;       s.corners_v4 = true;
+    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 4;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
-    {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; }},
+    {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
+    {"newton_tol 1e-3 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 3; }},
+    {"newton_tol 1e-2 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 2; }},
     {"corners_v4 off",          [](md_gto_iso_gpu_switches_t* s) { s->corners_v4 = false; }},
     {"gemm_pipe 1 (no unroll)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 1; }},
     {"gemm_pipe 2 (unroll 16)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 2; }},
@@ -5340,6 +5342,15 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     changed |= ImGui::Checkbox("GEMM tiles 32", &sw.gemm_t32);
     ImGui::SetItemTooltip("The GEMM kernels in tiles of 32 functions for sets of more (fewer registers and less "
                           "groupshared memory per group; the AO values made twice as often)");
+    ImGui::SameLine();
+    {
+        static const char* tols[] = {"Newton tol 1e-2 h", "Newton tol 1e-3 h", "Newton tol 1e-4 h"};
+        int ti = sw.newton_tol_exp <= 2 ? 0 : sw.newton_tol_exp == 3 ? 1 : 2;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+        if (ImGui::Combo("##newton_tol", &ti, tols, IM_ARRAYSIZE(tols))) { sw.newton_tol_exp = 2 + ti; changed = true; }
+        ImGui::SetItemTooltip("A vertex has converged within this distance of the surface (the facets' own deviation "
+                              "from the surface is about 3e-2 h rms)");
+    }
     ImGui::SameLine();
     {
         static const char* pipes[] = {"GEMM loop: compiler", "GEMM loop: no unroll", "GEMM loop: unroll 16"};
