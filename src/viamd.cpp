@@ -1442,14 +1442,13 @@ void init_system_data(ApplicationState* data) {
 
 #if EXPERIMENTAL_GFX_API
         const md_system_t& mol = data->mold.sys;
-        vec3_t& aabb_min = data->mold.sys_aabb_min;
-        vec3_t& aabb_max = data->mold.sys_aabb_max;
+        vec3_t aabb_min, aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
+        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
         if (mol.instance.count > 0) {
             md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
             md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
@@ -4105,8 +4104,6 @@ void interpolate_system_state(ApplicationState* app) {
         app->mold.last_interpolated_frame = time;
     }
 
-    const size_t num_threads = task_system::pool_num_threads();
-
     // The number of atoms to be processed per thread when divided into chunks
     const uint32_t grain_size = 1024;
 
@@ -4131,9 +4128,6 @@ void interpolate_system_state(ApplicationState* app) {
         md_secondary_structure_t*    dst_ss;
         md_gl_secondary_structure_t* ss_weights;
 
-        vec3_t* aabb_min;
-        vec3_t* aabb_max;
-
         mat4_t recenter_transform;
     };
 
@@ -4146,8 +4140,6 @@ void interpolate_system_state(ApplicationState* app) {
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
         .dst_state = &app->mold.state,
-        .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
-        .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
 
     // The cubic modes are a weighted sum of the four frames, the same for everything interpolated: coordinates, cell and
@@ -4327,27 +4319,6 @@ void interpolate_system_state(ApplicationState* app) {
         default:
             ASSERT(false);
             break;
-    }
-
-    {
-        // Calculate a global AABB for the molecule
-        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            size_t range_len = range_end - range_beg;
-            const vec3_t* xyz = data->dst_state->xyz + range_beg;
-
-            md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
-            float* r = md_temp_alloc_array(temp, float, range_len);
-            md_atom_extract_radii(r, range_beg, range_len, &data->app->mold.sys.atom);
-
-            vec3_t aabb_min = vec3_set1(FLT_MAX);
-            vec3_t aabb_max = vec3_set1(-FLT_MAX);
-            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, xyz, r, 0, range_len);
-
-            data->aabb_min[thread_num] = aabb_min;
-            data->aabb_max[thread_num] = aabb_max;
-        });
-        tasks[num_tasks++] = aabb_task;
     }
 
     if (payload.dst_angle) {
@@ -4540,15 +4511,6 @@ void interpolate_system_state(ApplicationState* app) {
     if (payload.ss_weights) {
         md_gl_mol_set_backbone_secondary_structure(app->mold.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
     }
-
-    vec3_t aabb_min = payload.aabb_min[0];
-    vec3_t aabb_max = payload.aabb_max[0];
-    for (size_t i = 1; i < task_system::pool_num_threads(); ++i) {
-        aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
-        aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
-    }
-    app->mold.sys_aabb_min = aabb_min;
-    app->mold.sys_aabb_max = aabb_max;
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     mat3_t A;

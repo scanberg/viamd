@@ -1190,6 +1190,12 @@ struct ApplicationState {
         // The periodic images shown: the scene again in the neighboring cells, this many each way along a, b and c, of
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
         int periodic_images[3] = {0, 0, 0};
+
+        // The copies of the scene those representations are drawn in, by instancing (md_gl_instances_t): its own first,
+        // then the periodic images, none without a cell or images. As of this frame and as of the last, so that an image
+        // which moves with the cell (a trajectory of changing cells) shows as moving. Set by update_view_param.
+        md_array(mat4_t) periodic_transforms      = 0;
+        md_array(mat4_t) periodic_transforms_prev = 0;
     } view;
 
     struct {
@@ -1243,8 +1249,9 @@ struct ApplicationState {
 
         FrameCache          frame_cache;
 
-        vec3_t              sys_aabb_min = {};
-        vec3_t              sys_aabb_max = {};
+        // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
+        float               bond_length_limit = 0.0f;
+        uint64_t            bond_length_limit_version = 0;
 
         bool                interpolate_system_state = false;
         // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
