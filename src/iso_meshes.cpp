@@ -485,6 +485,8 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
 static double bench_dense_ms(ApplicationState* state, const ElectronicStructureRepresentation& es, const float lo[3], const float hi[3], double h, int out_dim[3]) {
     if (!state->gpu_stream || !state->mold.gpu_basis) return -1.0;
     md_gpu_stream_t s = state->gpu_stream;
+    // made by the QM component at start; idempotent, and the kernels it lacks are made here
+    md_gto_gpu_initialize(state->gpu_device);
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
     const md_system_t& sys = state->mold.sys;
