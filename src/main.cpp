@@ -5203,6 +5203,149 @@ static void profiler_export_csv(const ApplicationState* state, str_t path) {
     }
 }
 
+#if MD_ENABLE_GPU
+// BENCHMARK (temporary, branch gto-iso-gpu-opt): the mesh extraction's profile, its experimental switches, and
+// a series that extracts the meshes shown once per variant of them into one report
+struct IsoBenchVariant {
+    const char* name;
+    md_gto_iso_gpu_switches_t sw;
+};
+
+static const IsoBenchVariant iso_bench_variants[] = {
+    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp
+    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6 }},
+    {"all old (round 1)",           {false, false, false, false, false, false, 10}},
+    {"relax_first off",             {false, true,  true,  true,  false, true,  6 }},
+    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6 }},
+    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6 }},
+    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6 }},
+    {"newton_predict off",          {true,  true,  true,  false, false, true,  6 }},
+    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6 }},
+    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10}},
+};
+
+static struct {
+    int      step = -1;             // the variant being extracted, -1 idle
+    uint64_t extractions = 0;       // the count before it
+    int      frames = 0;            // waited for it
+    md_gto_iso_gpu_switches_t saved = {};
+} iso_bench_series;
+
+static void draw_iso_mesh_bench(ApplicationState* data) {
+    ImGui::SeparatorText("Isosurface mesh extraction");
+    bool prof = iso_meshes_profile_enabled();
+    if (ImGui::Checkbox("Profile mesh extraction", &prof)) iso_meshes_profile_enable(prof);
+    ImGui::SetItemTooltip("Every GPU extraction of an isosurface mesh is also run step by step, and the steps are "
+                          "kept below, with a dense evaluation of the same field to compare with");
+    ImGui::SameLine();
+    if (ImGui::Button("Extract again")) {
+        iso_meshes_force_update();
+        data->render.image_valid = false;
+    }
+    ImGui::SetItemTooltip("Every isosurface mesh is extracted again (the fields are kept), and the report restarts");
+    ImGui::SameLine();
+    const char* report = iso_meshes_profile_report();
+    ImGui::BeginDisabled(!report[0]);
+    if (ImGui::Button("Copy report")) ImGui::SetClipboardText(report);
+    ImGui::EndDisabled();
+
+    // the switches: a change extracts the meshes again
+    md_gto_iso_gpu_switches_t sw = {};
+    md_gto_iso_gpu_switches(&sw);
+    bool changed = false;
+    ImGui::BeginDisabled(iso_bench_series.step >= 0);
+    changed |= ImGui::Checkbox("Relax first", &sw.relax_first);
+    ImGui::SetItemTooltip("Relax on the lattice surface, then project (off: project, then 3 x (relax, project))");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Corners v2", &sw.corners_v2);
+    ImGui::SetItemTooltip("Corner values in registers (iso_corners_f*); off: iso_corners / iso_corners_orbital");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!sw.corners_v2);
+    changed |= ImGui::Checkbox("Shared corners", &sw.shared_corners);
+    ImGui::SetItemTooltip("High-face corners taken from the neighbour brick that owns them (with corners v2)");
+    ImGui::EndDisabled();
+    changed |= ImGui::Checkbox("Eval v2", &sw.eval_v2);
+    ImGui::SetItemTooltip("Density values at the vertices in registers (iso_eval_f*); off: iso_eval");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Newton predict", &sw.newton_predict);
+    ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Skip brick test", &sw.skip_brick_test);
+    ImGui::SetItemTooltip("The octree's last level is not bounded: every child of a kept node is a brick");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+    const char* eps_items[] = {"1e-6", "1e-8", "1e-10"};
+    int eps_idx = sw.eval_eps_exp <= 6 ? 0 : sw.eval_eps_exp <= 8 ? 1 : 2;
+    if (ImGui::Combo("AO cutoff", &eps_idx, eps_items, IM_ARRAYSIZE(eps_items))) {
+        sw.eval_eps_exp = 6 + 2 * eps_idx;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("The AO cutoff of the evaluations and of the octree's culling (whose bound adds what is "
+                          "dropped). The volume path uses 1e-6");
+    ImGui::EndDisabled();
+    if (changed) {
+        md_gto_iso_gpu_switches_set(&sw);
+        iso_meshes_force_update(true);
+        data->render.image_valid = false;
+    }
+
+    // the series: one variant per extraction of the meshes shown
+    const int num_variants = (int)ARRAY_SIZE(iso_bench_variants);
+    if (iso_bench_series.step < 0) {
+        if (ImGui::Button("Run variant series")) {
+            iso_meshes_profile_enable(true);
+            md_gto_iso_gpu_switches(&iso_bench_series.saved);
+            iso_meshes_force_update(false);
+            iso_bench_series.step = 0;
+            iso_bench_series.extractions = UINT64_MAX;      // start the first at once
+            iso_bench_series.frames = 0;
+        }
+        ImGui::SetItemTooltip("The meshes shown are extracted once per variant of the switches (all new, all old, each "
+                              "switch flipped alone), all into one report. Keep the representations in mesh mode.");
+    } else {
+        ImGui::Text("Variant %d of %d: %s", MIN(iso_bench_series.step, num_variants), num_variants,
+                    iso_bench_variants[MIN(iso_bench_series.step, num_variants - 1)].name);
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            md_gto_iso_gpu_switches_set(&iso_bench_series.saved);
+            iso_bench_series.step = -1;
+        }
+    }
+    if (iso_bench_series.step >= 0) {
+        // the previous variant is done once an extraction has happened since it was set (all the meshes shown are
+        // extracted in the same frame); given up after a while when nothing is extracted
+        const uint64_t n = iso_meshes_extraction_count();
+        const bool done = iso_bench_series.extractions == UINT64_MAX || n > iso_bench_series.extractions || ++iso_bench_series.frames > 120;
+        if (done) {
+            if (iso_bench_series.step >= num_variants) {
+                md_gto_iso_gpu_switches_set(&iso_bench_series.saved);
+                iso_bench_series.step = -1;
+                iso_meshes_force_update(true);
+                data->render.image_valid = false;
+            } else {
+                const IsoBenchVariant& v = iso_bench_variants[iso_bench_series.step];
+                md_gto_iso_gpu_switches_set(&v.sw);
+                char line[256];
+                snprintf(line, sizeof(line), "\n==== variant %d of %d: %s ====\n", iso_bench_series.step + 1, num_variants, v.name);
+                iso_meshes_profile_note(line);
+                iso_meshes_force_update(true);
+                data->render.image_valid = false;
+                iso_bench_series.extractions = n;
+                iso_bench_series.frames = 0;
+                iso_bench_series.step++;
+            }
+        }
+    }
+
+    if (report[0] && ImGui::TreeNode("Mesh extraction report")) {
+        ImGui::TextUnformatted(report);
+        ImGui::TreePop();
+    }
+}
+#else
+static void draw_iso_mesh_bench(ApplicationState*) {}
+#endif
+
 // The frame's sections and their times (gfx/profiler.h)
 static void draw_profiler_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 36.0f, ImGui::GetFontSize() * 32.0f), ImGuiCond_FirstUseEver);
@@ -5242,24 +5385,7 @@ static void draw_profiler_window(ApplicationState* data) {
                               "view kept still");
 
         // BENCHMARK (temporary, branch gto-iso-gpu-opt): the GPU extraction of the isosurface meshes
-        {
-            bool prof = iso_meshes_profile_enabled();
-            if (ImGui::Checkbox("Profile mesh extraction", &prof)) iso_meshes_profile_enable(prof);
-            ImGui::SetItemTooltip("Every GPU extraction of an isosurface mesh is also run step by step, and the steps are "
-                                  "kept below");
-            ImGui::SameLine();
-            if (ImGui::Button("Extract again")) iso_meshes_force_update();
-            ImGui::SetItemTooltip("Every isosurface mesh is extracted again (the fields are kept), and the report restarts");
-            ImGui::SameLine();
-            const char* report = iso_meshes_profile_report();
-            ImGui::BeginDisabled(!report[0]);
-            if (ImGui::Button("Copy report")) ImGui::SetClipboardText(report);
-            ImGui::EndDisabled();
-            if (report[0] && ImGui::TreeNode("Mesh extraction report")) {
-                ImGui::TextUnformatted(report);
-                ImGui::TreePop();
-            }
-        }
+        draw_iso_mesh_bench(data);
 
         profiler::draw_table();
     }

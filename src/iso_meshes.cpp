@@ -33,11 +33,17 @@ void iso_meshes_profile_enable(bool on) { bench_profile = on; }
 bool iso_meshes_profile_enabled() { return bench_profile; }
 const char* iso_meshes_profile_report() { return bench_report; }
 
-void iso_meshes_force_update() {
+static uint64_t bench_extractions = 0;    // GPU extractions made
+
+void iso_meshes_force_update(bool keep_report) {
     bench_generation++;
-    bench_report_len = 0;
-    bench_report[0] = '\0';
+    if (!keep_report) {
+        bench_report_len = 0;
+        bench_report[0] = '\0';
+    }
 }
+
+uint64_t iso_meshes_extraction_count() { return bench_extractions; }
 
 // Appends to the report (Windows > Profiler shows it and copies it)
 static void bench_append(const char* text) {
@@ -47,6 +53,8 @@ static void bench_append(const char* text) {
         bench_report_len += n;
     }
 }
+
+void iso_meshes_profile_note(const char* text) { bench_append(text); }
 
 mat4_t iso_meshes_model_matrix() {
     const float s = (float)BOHR_TO_ANGSTROM;
@@ -246,6 +254,8 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         return false;
     }
     const double extract_ms = md_tick_to_milliseconds(md_tick_now() - t_extract);
+    bench_extractions++;
+    m->extract_ms = extract_ms;
 
     bool ok = false;
     const size_t nv = gm.vertex_count, ni = gm.index_count;
@@ -601,6 +611,9 @@ struct EsIsoMesh {
     uint64_t values_key = 0;        // of the mesh and the field the values are of
     ColorScaleSpan span = {};
     uint64_t bench_key = 0;         // BENCHMARK: the mesh the dense comparison was made for
+    uint64_t dense_key = 0;         // BENCHMARK: the field, spacing and isovalues the dense time is of
+    double   dense_ms = -1.0;
+    int      dense_dim[3] = {};
 };
 
 static md_gto_iso_field_t* electronic_structure_field_create(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
@@ -741,13 +754,20 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             }
         }
         for (int a = 0; a < 3; ++a) { lo[a] -= (float)h; hi[a] += (float)h; }
-        int dd[3] = {0, 0, 0};
-        const double ms = bench_dense_ms(state, es, lo, hi, h, dd);
+        // measured once per field, spacing and isovalues (a variant series extracts the same meshes again)
+        uint64_t dkey = md_hash64(&h, sizeof(h), em.field_key);
+        for (uint32_t k = 0; k < num_slots; ++k) dkey = md_hash64(&slots[k].iso, sizeof(slots[k].iso), dkey);
+        if (dkey != em.dense_key) {
+            em.dense_key = dkey;
+            em.dense_ms = bench_dense_ms(state, es, lo, hi, h, em.dense_dim);
+        }
+        const double ms = em.dense_ms;
+        const int* dd = em.dense_dim;
         char line[256];
         if (ms >= 0.0) {
             snprintf(line, sizeof(line), "   dense %s over the mesh's box (%d x %d x %d = %.2f M points): %.3f ms, %.2fx the extraction\n",
                      (es.source == ElectronicStructureSource::MolecularOrbital || es.source == ElectronicStructureSource::NaturalTransitionOrbital) ? "MO" : "density",
-                     dd[0], dd[1], dd[2], (double)dd[0] * dd[1] * dd[2] * 1e-6, ms, ms / MAX(1e-6, em.meshes.seconds * 1e3));
+                     dd[0], dd[1], dd[2], (double)dd[0] * dd[1] * dd[2] * 1e-6, ms, ms / MAX(1e-6, em.meshes.extract_ms));
         } else {
             snprintf(line, sizeof(line), "   dense: not available\n");
         }

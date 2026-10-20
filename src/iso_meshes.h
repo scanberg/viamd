@@ -54,6 +54,7 @@ struct IsoMeshes {
     uint32_t* tri_index = nullptr;  // the triangles on the host too, three per triangle, for the field's gradient
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
+    double   extract_ms = 0.0;  // BENCHMARK: the last GPU extraction alone
 
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;
@@ -79,9 +80,11 @@ mat4_t iso_meshes_model_matrix();
 void        iso_meshes_profile_enable(bool on);
 bool        iso_meshes_profile_enabled();
 const char* iso_meshes_profile_report();    // the reports since the last force_update, "" for none
+void        iso_meshes_profile_note(const char* text);    // appended to the report
 // Every mesh is extracted again at its next update (its fields and their GPU set are kept: the cost of a
-// new isovalue)
-void        iso_meshes_force_update();
+// new isovalue); the report starts over unless kept
+void        iso_meshes_force_update(bool keep_report = false);
+uint64_t    iso_meshes_extraction_count();  // GPU extractions so far
 
 // Lattice spacing in bohr for a volume resolution: the same three steps of detail as the volumes
 double iso_meshes_cell_size(VolumeResolution resolution);
