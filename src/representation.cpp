@@ -2433,7 +2433,7 @@ static bool draw_geometry(ApplicationState* state, Representation& rep) {
         update_rep |= ImGui::Checkbox("##chain_gaps", &rep.chain_gaps);
     }
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-        prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic and delocalized bonds with a dashed line");
+        prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
     }
     return update_rep;
