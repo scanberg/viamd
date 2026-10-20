@@ -5226,32 +5226,34 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r14), which every variant starts from
+// The library's defaults (r15), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
     s.skip_brick_test = false; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
-    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 4;  s.dform_kernel = 1;
+    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
+    s.ordered = true;      s.diag = 0;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
+    {"ordered off",             [](md_gto_iso_gpu_switches_t* s) { s->ordered = false; }},
+    {"diag: no AO values",      [](md_gto_iso_gpu_switches_t* s) { s->diag = 1; }},
+    {"diag: no multiply-adds",  [](md_gto_iso_gpu_switches_t* s) { s->diag = 2; }},
     {"newton_tol 1e-3 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 3; }},
-    {"newton_tol 1e-2 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 2; }},
+    {"newton_tol 1e-4 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 4; }},
     {"corners_v4 off",          [](md_gto_iso_gpu_switches_t* s) { s->corners_v4 = false; }},
-    {"gemm_pipe 1 (no unroll)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 1; }},
-    {"gemm_pipe 2 (unroll 16)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 2; }},
-    {"gemm_t32 on",             [](md_gto_iso_gpu_switches_t* s) { s->gemm_t32 = true; }},
     {"eval_list off",           [](md_gto_iso_gpu_switches_t* s) { s->eval_list = false; }},
     {"coef_screen off",         [](md_gto_iso_gpu_switches_t* s) { s->coef_screen = false; }},
     {"dform eval on",           [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
+    {"dform eval on, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 1; }},
+    {"dform eval on, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 2; }},
     {"dform eval on, kernel r9",[](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 0; }},
     {"dform eval on, tiles 64", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 1; }},
-    {"dform eval on, tiles 128",[](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 2; }},
     {"dform_octree off",        [](md_gto_iso_gpu_switches_t* s) { s->dform_octree = false; }},
     {"gemm off",                [](md_gto_iso_gpu_switches_t* s) { s->gemm = false; }},
     {"octree_small off",        [](md_gto_iso_gpu_switches_t* s) { s->octree_small = false; }},
@@ -5340,6 +5342,21 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     changed |= ImGui::Checkbox("D-form octree", &sw.dform_octree);
     ImGui::SetItemTooltip("Sets of densities: the octree bounds phi^T D phi, centred form over the AOs a node reaches, "
                           "no factors and no limit on the rank (iso_octree_dform), whichever evaluation");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Ordered", &sw.ordered);
+    ImGui::SetItemTooltip("The bricks in Morton order, the corner point list and the vertices in that order (counts, a "
+                          "prefix sum, offsets); off: the order the groups' atomics happen in, so a group of points or "
+                          "vertices may span distant bricks and list far more shells");
+    ImGui::SameLine();
+    {
+        static const char* diags[] = {"Diag: off", "Diag: no AO values", "Diag: no multiply-adds"};
+        int dg = sw.diag;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
+        if (ImGui::Combo("##diag", &dg, diags, IM_ARRAYSIZE(diags))) { sw.diag = dg; changed = true; }
+        ImGui::SetItemTooltip("DIAGNOSTIC, the corner GEMM kernels only: the AO values not made (a constant), or no "
+                              "multiply-adds. The corners are then zeroed (no surface): only the corner kernel's time "
+                              "means anything");
+    }
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Coef screen", &sw.coef_screen);
     ImGui::SetItemTooltip("Sets of orbitals: a shell is dropped where its largest coefficient times its AOs is below "
