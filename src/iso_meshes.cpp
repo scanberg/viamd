@@ -26,7 +26,7 @@ static constexpr uint32_t RELAX_ITERATIONS   = 3;
 
 static bool     bench_profile = false;
 static uint64_t bench_generation = 0;     // mixed into every mesh key: bumping it extracts every mesh again
-static char     bench_report[65536];
+static char     bench_report[1 << 20];      // a whole series (28 variants of every mesh) fits; 64 KB cut its last variants
 static size_t   bench_report_len = 0;
 
 void iso_meshes_profile_enable(bool on) { bench_profile = on; }
