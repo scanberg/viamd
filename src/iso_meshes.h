@@ -75,7 +75,7 @@ mat4_t iso_meshes_model_matrix();
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): Windows > Profiler drives these
 // With the profile on, every GPU extraction is first run once more step by step (md_gto_iso_gpu_profile_set)
-// and a report - that profile, then the plain extraction, its readback and its GL upload - is logged and kept.
+// and a report - that profile, then the plain extraction, its readback and its GL upload - is kept.
 void        iso_meshes_profile_enable(bool on);
 bool        iso_meshes_profile_enabled();
 const char* iso_meshes_profile_report();    // the reports since the last force_update, "" for none

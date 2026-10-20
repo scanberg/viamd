@@ -5246,7 +5246,7 @@ static void draw_profiler_window(ApplicationState* data) {
             bool prof = iso_meshes_profile_enabled();
             if (ImGui::Checkbox("Profile mesh extraction", &prof)) iso_meshes_profile_enable(prof);
             ImGui::SetItemTooltip("Every GPU extraction of an isosurface mesh is also run step by step, and the steps are "
-                                  "logged and kept below");
+                                  "kept below");
             ImGui::SameLine();
             if (ImGui::Button("Extract again")) iso_meshes_force_update();
             ImGui::SetItemTooltip("Every isosurface mesh is extracted again (the fields are kept), and the report restarts");

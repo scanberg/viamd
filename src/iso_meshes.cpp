@@ -38,19 +38,12 @@ void iso_meshes_force_update() {
     bench_report[0] = '\0';
 }
 
-// Appends to the report and logs it, a line at a time
+// Appends to the report (Windows > Profiler shows it and copies it)
 static void bench_append(const char* text) {
     const size_t n = strlen(text);
     if (bench_report_len + n + 1 < sizeof(bench_report)) {
         MEMCPY(bench_report + bench_report_len, text, n + 1);
         bench_report_len += n;
-    }
-    const char* p = text;
-    while (*p) {
-        const char* e = strchr(p, '\n');
-        const int len = e ? (int)(e - p) : (int)strlen(p);
-        MD_LOG_INFO("%.*s", len, p);
-        p += len + (e ? 1 : 0);
     }
 }
 
@@ -266,20 +259,37 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         ok = isomesh::mesh_upload(&m->mesh, pos, nrm, 4, gm.vertex_count, idx, gm.index_count);
         const double upload_ms = md_tick_to_milliseconds(md_tick_now() - t_upload);
         if (bench_profile) {
-            char head[1024];
-            uint32_t nfn = 0;
-            for (uint32_t k = 0; k < n; ++k) {
+            char head[4096];
+            int len = 0;
+            // what was measured: the data, the device, the fields
+            char files[1024] = "";
+            int flen = 0;
+            for (size_t i = 0; i < file_list_count(&state->files.list) && flen < (int)sizeof(files) - 2; ++i) {
+                const char* path = file_list_get(&state->files.list, i)->path;
+                const char* base = path;
+                for (const char* c = path; *c; ++c) if (*c == '/' || *c == '\\') base = c + 1;
+                flen += snprintf(files + flen, sizeof(files) - flen, "%s%s", i ? ", " : "", base);
+            }
+            md_gpu_device_info_t dev = {};
+            md_gpu_device_info(state->gpu_device, &dev);
+            len += snprintf(head + len, sizeof(head) - len, "-- %s | %s | %u atoms | %u AOs, h %.3f bohr | %s\n", files[0] ? files : "(no file)",
+                            dev.name, (uint32_t)state->mold.sys.atom.count, prof.num_ao, cell_size,
+                            md_gto_iso_gpu_profile_variant());
+            for (uint32_t k = 0; k < n && len < (int)sizeof(head); ++k) {
                 md_gto_iso_field_info_t fi = {};
                 md_gto_iso_field_info(&fi, slots[k].field);
-                nfn += fi.num_functions;
+                const char* sheets = slots[k].sheets == MD_GTO_ISO_SHEET_POSITIVE ? "+" : slots[k].sheets == MD_GTO_ISO_SHEET_NEGATIVE ? "-" : "+-";
+                len += snprintf(head + len, sizeof(head) - len, "   slot %u: %s, %u functions, %u terms, iso %s%g\n", k,
+                                fi.kind == MD_GTO_ISO_FIELD_ORBITAL ? "MO" : "density", fi.num_functions, fi.num_terms, sheets, slots[k].iso);
             }
             char set_text[64] = "";
             if (set_ms >= 0.0) snprintf(set_text, sizeof(set_text), ", GPU set made in %.3f ms", set_ms);
-            snprintf(head, sizeof(head),
-                     "-- isosurface meshes: %u slots (%u functions), h %.3f bohr, iso %g | %u bricks, %u slots, %u vertices, %u triangles\n"
-                     "   extract %.3f ms, read back %.3f ms, GL upload %.3f ms%s\n",
-                     n, nfn, cell_size, slots[0].iso, gm.num_bricks, gm.num_corner_slots, gm.vertex_count, gm.index_count / 3,
-                     extract_ms, read_ms, upload_ms, set_text);
+            if (len < (int)sizeof(head)) {
+                snprintf(head + len, sizeof(head) - len,
+                         "   %u bricks, %u corner slots, %u vertices, %u triangles\n"
+                         "   extract %.3f ms, read back %.3f ms, GL upload %.3f ms%s\n",
+                         gm.num_bricks, gm.num_corner_slots, gm.vertex_count, gm.index_count / 3, extract_ms, read_ms, upload_ms, set_text);
+            }
             bench_append(head);
             bench_append(prof_text);
         }
