@@ -5227,16 +5227,17 @@ struct IsoBenchVariant {
 };
 
 static const IsoBenchVariant iso_bench_variants[] = {
-    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp
-    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6 }},
-    {"all old (round 1)",           {false, false, false, false, false, false, 10}},
-    {"relax_first off",             {false, true,  true,  true,  false, true,  6 }},
-    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6 }},
-    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6 }},
-    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6 }},
-    {"newton_predict off",          {true,  true,  true,  false, false, true,  6 }},
-    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6 }},
-    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10}},
+    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list
+    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true }},
+    {"all old (round 1)",           {false, false, false, false, false, false, 10, false}},
+    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false}},
+    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true }},
+    {"corners_v2 off",              {true,  false, true,  true,  false, false, 6,  false}},
+    {"relax_first off",             {false, true,  true,  true,  false, true,  6,  true }},
+    {"eval_v2 off",                 {true,  true,  false, true,  false, true,  6,  true }},
+    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true }},
+    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true }},
+    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true }},
 };
 
 static struct {
@@ -5278,6 +5279,9 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::BeginDisabled(!sw.corners_v2);
     changed |= ImGui::Checkbox("Shared corners", &sw.shared_corners);
     ImGui::SetItemTooltip("High-face corners taken from the neighbour brick that owns them (with corners v2)");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Corners list", &sw.corners_list);
+    ImGui::SetItemTooltip("The corner points listed, 256 per group over neighbouring bricks (iso_corners_list_f*, with corners v2); off: a group per brick");
     ImGui::EndDisabled();
     changed |= ImGui::Checkbox("Eval v2", &sw.eval_v2);
     ImGui::SetItemTooltip("Density values at the vertices in registers (iso_eval_f*); off: iso_eval");
