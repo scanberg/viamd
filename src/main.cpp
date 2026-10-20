@@ -5226,14 +5226,14 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r12), which every variant starts from
+// The library's defaults (r14), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
     s.skip_brick_test = false; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
-    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 4;
+    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 4;  s.dform_kernel = 1;
     return s;
 }
 
@@ -5249,6 +5249,9 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"eval_list off",           [](md_gto_iso_gpu_switches_t* s) { s->eval_list = false; }},
     {"coef_screen off",         [](md_gto_iso_gpu_switches_t* s) { s->coef_screen = false; }},
     {"dform eval on",           [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
+    {"dform eval on, kernel r9",[](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 0; }},
+    {"dform eval on, tiles 64", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 1; }},
+    {"dform eval on, tiles 128",[](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->dform_kernel = 2; }},
     {"dform_octree off",        [](md_gto_iso_gpu_switches_t* s) { s->dform_octree = false; }},
     {"gemm off",                [](md_gto_iso_gpu_switches_t* s) { s->gemm = false; }},
     {"octree_small off",        [](md_gto_iso_gpu_switches_t* s) { s->octree_small = false; }},
@@ -5322,6 +5325,17 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("Sets of densities: corners (point list) and vertices as phi^T D phi over the AOs reaching each "
                           "group, upper block triangle (iso_dcorners, iso_deval); off: the factored functions (sets of "
                           "more than 1024 functions use it regardless)");
+    ImGui::SameLine();
+    {
+        static const char* dks[] = {"D-form kernel: r9", "D-form kernel: tiles 64", "D-form kernel: tiles 128"};
+        int dk = sw.dform_kernel;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        if (ImGui::Combo("##dform_kernel", &dk, dks, IM_ARRAYSIZE(dks))) { sw.dform_kernel = dk; changed = true; }
+        ImGui::SetItemTooltip("The D form's evaluation kernels: r9 (iso_dcorners, iso_deval); or D' upper triangular by "
+                              "chunks, Phi . T with no AO values made again, chunk shells from a table and staged ahead, "
+                              "in tiles of 64 columns (iso_dcorners2, iso_deval2) or of 128 in groups of 256 threads "
+                              "(iso_dcorners3, iso_deval3)");
+    }
     ImGui::SameLine();
     changed |= ImGui::Checkbox("D-form octree", &sw.dform_octree);
     ImGui::SetItemTooltip("Sets of densities: the octree bounds phi^T D phi, centred form over the AOs a node reaches, "
