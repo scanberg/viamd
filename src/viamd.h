@@ -1249,9 +1249,6 @@ struct ApplicationState {
 
         FrameCache          frame_cache;
 
-        vec3_t              sys_aabb_min = {};
-        vec3_t              sys_aabb_max = {};
-
         bool                interpolate_system_state = false;
         // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
         // interpolate_system_state skip redundant work when playback ticks without the displayed

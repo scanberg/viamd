@@ -6403,8 +6403,10 @@ static void update_md_buffers(ApplicationState* data) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
 #if EXPERIMENTAL_GFX_API
+        vec3_t aabb_min, aabb_max;
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, nullptr, state.num_atoms);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
+        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
 #endif
     }
 
@@ -7053,6 +7055,16 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     }
 }
 
+// The longest bond md_gl draws, covalent or weak (md_gl_draw_args_t max_bond_length). In a cell, a bond longer than half
+// its smallest width (the minimum image) is across the periodic boundary, from an atom to the far side of the cell, and
+// is left out; at least 3 Å. Without a cell nothing is across a boundary: any length (its square still a float).
+static float bond_length_limit(const md_unitcell_t& cell) {
+    if (md_unitcell_flags(&cell) == 0) return 1.0e18f;
+    vec3_t ext = {0};
+    md_unitcell_diag_extract_float(ext.elem, &cell);
+    return MAX(3.0f, vec3_reduce_min(ext) * 0.5f);
+}
+
 // The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
 // the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
 // None without a cell or images.
@@ -7342,18 +7354,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             }
         }
 
-		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-        float max_bond_length = 10.0f;
-        if (md_unitcell_flags(&state->mold.state.unitcell) == 0) {
-            vec3_t aabb_ext = vec3_sub(state->mold.sys_aabb_max, state->mold.sys_aabb_min);
-            max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
-        }
-        else {
-            vec3_t ext = { 0 };
-            md_unitcell_diag_extract_float(ext.elem, &state->mold.state.unitcell);
-            float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
-            max_bond_length = MAX(3.0, min_half_box_ext);
-        }
+        const float max_bond_length = bond_length_limit(state->mold.state.unitcell);
 
         md_gl_draw_args_t args = {
             .shaders = state->gl.shaders,
@@ -7638,18 +7639,7 @@ static void draw_representations_marks(ApplicationState* data) {
         }
     }
 
-    // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-    float max_bond_length = 10.0f;
-    if (md_unitcell_flags(&data->mold.state.unitcell) == 0) {
-        vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
-        max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
-    }
-    else {
-        vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, &data->mold.state.unitcell);
-        float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
-        max_bond_length = MAX(3.0, min_half_box_ext);
-    }
+    const float max_bond_length = bond_length_limit(data->mold.state.unitcell);
 
     // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still
     md_gl_draw_args_t args = {
