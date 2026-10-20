@@ -10,6 +10,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -476,6 +477,117 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
 // Electronic structure representations
 // ---------------------------------------------------------------------------------------------------------------
 
+#if MD_ENABLE_GPU
+// BENCHMARK (temporary): the dense GPU evaluation of a representation's field (md_gto_gpu_orbital_launch /
+// md_gto_gpu_density_launch, as the volume path does) over the box [lo, hi] at spacing h - here the mesh's own
+// bounding box, the least a volume must cover to hold the surface. Median of 3 after a warm-up, in ms; < 0 when
+// it cannot run. Writes the grid's dimensions.
+static double bench_dense_ms(ApplicationState* state, const ElectronicStructureRepresentation& es, const float lo[3], const float hi[3], double h, int out_dim[3]) {
+    if (!state->gpu_stream || !state->mold.gpu_basis) return -1.0;
+    md_gpu_stream_t s = state->gpu_stream;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    const md_system_t& sys = state->mold.sys;
+
+    const double* coeffs = nullptr;
+    const double* D = nullptr;
+    size_t dim_ao = 0;
+    switch (es.source) {
+    case ElectronicStructureSource::MolecularOrbital: {
+        const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.orbital_idx);
+        coeffs = orbital_coefficients_extract(&dim_ao, temp, sys, path, &slice);
+        break;
+    }
+    case ElectronicStructureSource::NaturalTransitionOrbital: {
+        const str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
+        const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.excited_state_idx, (uint32_t)es.nto_lambda_idx);
+        coeffs = orbital_coefficients_extract(&dim_ao, temp, sys, path, &slice);
+        break;
+    }
+    case ElectronicStructureSource::TransitionDensity: {
+        str_t path = es_path::attachment_density;
+        if (es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) path = es_path::detachment_density;
+        if (es.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) path = es_path::transition_diff;
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
+        D = density_matrix_extract(&dim_ao, temp, sys, path, &slice);
+        break;
+    }
+    case ElectronicStructureSource::ElectronDensity:
+        D = density_matrix_extract(&dim_ao, temp, sys, es_electron_density_path(es.spin), nullptr);
+        break;
+    case ElectronicStructureSource::DensityProperty: {
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.density_property_key);
+        if (attr) D = density_matrix_extract(&dim_ao, temp, sys, attr->path, nullptr);
+        break;
+    }
+    default: break;
+    }
+    if ((!coeffs && !D) || dim_ao != md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis)) return -1.0;
+
+    size_t num_atoms = 0;
+    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) return -1.0;
+
+    int dd[3];
+    for (int a = 0; a < 3; ++a) dd[a] = (int)ceil((hi[a] - lo[a]) / h) + 1;
+    MEMCPY(out_dim, dd, sizeof(dd));
+    if ((double)dd[0] * dd[1] * dd[2] > (double)(1u << 27)) return -1.0;
+
+    md_gpu_mem_t atoms = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms));
+    const size_t cbytes = D ? md_gto_gpu_coeff_size_density(dim_ao) : md_gto_gpu_coeff_size_mo(1, dim_ao);
+    md_gpu_mem_t coeff = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, cbytes);
+    md_gpu_texture_desc_t td = {};
+    td.type = MD_GPU_TEX_3D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.usage = MD_GPU_TEX_STORAGE;
+    td.width = (uint32_t)dd[0];
+    td.height = (uint32_t)dd[1];
+    td.depth_or_layers = (uint32_t)dd[2];
+    md_gpu_texture_t tex = md_gpu_texture_create(s, &td);
+    double ms = -1.0;
+    if (atoms.gpu && coeff.gpu && tex) {
+        float* p = (float*)md_gpu_upload_begin(s, atoms.gpu, md_gto_gpu_atom_buffer_size(num_atoms));
+        if (p) { md_gto_gpu_atom_pack(p, (const float*)xyz, sizeof(vec3_t), num_atoms); md_gpu_upload_end(s); }
+        p = (float*)md_gpu_upload_begin(s, coeff.gpu, cbytes);
+        if (p) {
+            if (D) md_gto_gpu_coeff_pack_density(p, D, dim_ao);
+            else { const double* rows[1] = {coeffs}; md_gto_gpu_coeff_pack_mo(p, rows, nullptr, 1, dim_ao); }
+            md_gpu_upload_end(s);
+        }
+        md_grid_t grid = {};
+        grid.orientation = mat3_ident();
+        grid.origin = vec3_set(lo[0], lo[1], lo[2]);
+        grid.spacing = vec3_set((float)h, (float)h, (float)h);
+        grid.dim[0] = dd[0]; grid.dim[1] = dd[1]; grid.dim[2] = dd[2];
+        double t[4];
+        for (int r = 0; r < 4; ++r) {
+            md_gpu_stream_sync(s);
+            const md_tick_t t0 = md_tick_now();
+            if (D) {
+                md_gto_gpu_density_desc_t desc = {};
+                desc.basis = state->mold.gpu_basis; desc.atom_xyz = atoms.gpu; desc.coeff = coeff.gpu; desc.out_tex = tex; desc.grid = &grid; desc.op = MD_GTO_OP_SET;
+                md_gto_gpu_density_launch(s, &desc);
+            } else {
+                md_gto_gpu_orbital_desc_t desc = {};
+                desc.basis = state->mold.gpu_basis; desc.atom_xyz = atoms.gpu; desc.coeff = coeff.gpu; desc.out_tex = tex; desc.grid = &grid;
+                desc.num_orbitals = 1; desc.eval_mode = MD_GTO_EVAL_MODE_PSI; desc.op = MD_GTO_OP_SET;
+                md_gto_gpu_orbital_launch(s, &desc);
+            }
+            md_gpu_stream_sync(s);
+            t[r] = md_tick_to_milliseconds(md_tick_now() - t0);
+        }
+        // the median of the three after the warm-up
+        double a = t[1], b = t[2], c = t[3];
+        ms = MAX(MIN(a, b), MIN(MAX(a, b), c));
+    }
+    if (tex) md_gpu_texture_destroy(tex);
+    md_gpu_free(s, atoms.gpu);
+    md_gpu_free(s, coeff.gpu);
+    return ms;
+}
+#endif
+
 struct EsIsoMesh {
     uint64_t field_key = 0;
     md_gto_iso_field_t* field = nullptr;
@@ -486,6 +598,7 @@ struct EsIsoMesh {
     SurfaceFieldPoints field_points = {};
     uint64_t values_key = 0;        // of the mesh and the field the values are of
     ColorScaleSpan span = {};
+    uint64_t bench_key = 0;         // BENCHMARK: the mesh the dense comparison was made for
 };
 
 static md_gto_iso_field_t* electronic_structure_field_create(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
@@ -613,6 +726,32 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     if (!iso_meshes_update(&em.meshes, state, slots, num_slots, iso_meshes_cell_size(es.resolution), field_key)) {
         return 0;
     }
+#if MD_ENABLE_GPU
+    // BENCHMARK: the dense evaluation of the same field at the same spacing, over the mesh's bounding box
+    if (bench_profile && em.meshes.on_gpu && em.meshes.key != em.bench_key && em.meshes.xyz_count > 0) {
+        em.bench_key = em.meshes.key;
+        const double h = iso_meshes_cell_size(es.resolution);
+        float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        for (uint32_t i = 0; i < em.meshes.xyz_count; ++i) {
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = MIN(lo[a], em.meshes.xyz[3 * i + a]);
+                hi[a] = MAX(hi[a], em.meshes.xyz[3 * i + a]);
+            }
+        }
+        for (int a = 0; a < 3; ++a) { lo[a] -= (float)h; hi[a] += (float)h; }
+        int dd[3] = {0, 0, 0};
+        const double ms = bench_dense_ms(state, es, lo, hi, h, dd);
+        char line[256];
+        if (ms >= 0.0) {
+            snprintf(line, sizeof(line), "   dense %s over the mesh's box (%d x %d x %d = %.2f M points): %.3f ms, %.2fx the extraction\n",
+                     (es.source == ElectronicStructureSource::MolecularOrbital || es.source == ElectronicStructureSource::NaturalTransitionOrbital) ? "MO" : "density",
+                     dd[0], dd[1], dd[2], (double)dd[0] * dd[1] * dd[2] * 1e-6, ms, ms / MAX(1e-6, em.meshes.seconds * 1e3));
+        } else {
+            snprintf(line, sizeof(line), "   dense: not available\n");
+        }
+        bench_append(line);
+    }
+#endif
 
     // Coloured by a field: the field at the vertices
     bool vertex_field = false;
