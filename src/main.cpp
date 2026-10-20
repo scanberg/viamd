@@ -5223,24 +5223,39 @@ static void profiler_export_csv(const ApplicationState* state, str_t path) {
 // a series that extracts the meshes shown once per variant of them into one report
 struct IsoBenchVariant {
     const char* name;
-    md_gto_iso_gpu_switches_t sw;
+    void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
+// The library's defaults (r12), which every variant starts from
+static md_gto_iso_gpu_switches_t iso_bench_defaults() {
+    md_gto_iso_gpu_switches_t s = {};
+    s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
+    s.skip_brick_test = false; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
+    s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
+    s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
+    s.gemm_pipe = 0;       s.corners_v4 = true;
+    return s;
+}
+
 static const IsoBenchVariant iso_bench_variants[] = {
-    // relax_first, corners_v2, eval_v2, newton_predict, skip_brick_test, shared_corners, eval_eps_exp, corners_list, canon_terms, gemm, octree_small, dform, dform_octree, coef_screen
-    {"all new (the defaults)",      {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  true,  false, true,  true }},
-    {"all old (round 1)",           {false, false, false, false, false, false, 10, false, false, false, false, false, false, false}},
-    {"coef_screen off",             {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  true,  false, true,  false}},
-    {"dform eval on",               {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  true,  true,  true,  true }},
-    {"dform_octree off",            {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  true,  false, false, true }},
-    {"gemm off",                    {true,  true,  true,  true,  false, true,  6,  true,  true,  false, true,  false, true,  true }},
-    {"octree_small off",            {true,  true,  true,  true,  false, true,  6,  true,  true,  true,  false, false, true,  true }},
-    {"canon_terms off",             {true,  true,  true,  true,  false, true,  6,  true,  false, true,  true,  false, true,  true }},
-    {"corners_list off",            {true,  true,  true,  true,  false, true,  6,  false, true,  true,  true,  false, true,  true }},
-    {"shared_corners off",          {true,  true,  true,  true,  false, false, 6,  true,  true,  true,  true,  false, true,  true }},
-    {"newton_predict off",          {true,  true,  true,  false, false, true,  6,  true,  true,  true,  true,  false, true,  true }},
-    {"skip_brick_test on",          {true,  true,  true,  true,  true,  true,  6,  true,  true,  true,  true,  false, true,  true }},
-    {"eval_eps 1e-10",              {true,  true,  true,  true,  false, true,  10, true,  true,  true,  true,  false, true,  true }},
+    {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
+    {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; }},
+    {"corners_v4 off",          [](md_gto_iso_gpu_switches_t* s) { s->corners_v4 = false; }},
+    {"gemm_pipe 1 (no unroll)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 1; }},
+    {"gemm_pipe 2 (unroll 16)", [](md_gto_iso_gpu_switches_t* s) { s->gemm_pipe = 2; }},
+    {"gemm_t32 on",             [](md_gto_iso_gpu_switches_t* s) { s->gemm_t32 = true; }},
+    {"eval_list off",           [](md_gto_iso_gpu_switches_t* s) { s->eval_list = false; }},
+    {"coef_screen off",         [](md_gto_iso_gpu_switches_t* s) { s->coef_screen = false; }},
+    {"dform eval on",           [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
+    {"dform_octree off",        [](md_gto_iso_gpu_switches_t* s) { s->dform_octree = false; }},
+    {"gemm off",                [](md_gto_iso_gpu_switches_t* s) { s->gemm = false; }},
+    {"octree_small off",        [](md_gto_iso_gpu_switches_t* s) { s->octree_small = false; }},
+    {"canon_terms off",         [](md_gto_iso_gpu_switches_t* s) { s->canon_terms = false; }},
+    {"corners_list off",        [](md_gto_iso_gpu_switches_t* s) { s->corners_list = false; }},
+    {"shared_corners off",      [](md_gto_iso_gpu_switches_t* s) { s->shared_corners = false; }},
+    {"newton_predict off",      [](md_gto_iso_gpu_switches_t* s) { s->newton_predict = false; }},
+    {"skip_brick_test on",      [](md_gto_iso_gpu_switches_t* s) { s->skip_brick_test = true; }},
+    {"eval_eps 1e-10",          [](md_gto_iso_gpu_switches_t* s) { s->eval_eps_exp = 10; }},
 };
 
 static struct {
@@ -5314,6 +5329,27 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("Sets of orbitals: a shell is dropped where its largest coefficient times its AOs is below "
                           "the cutoff (as the volume path), not where its AOs are");
     ImGui::SameLine();
+    changed |= ImGui::Checkbox("Corners x4", &sw.corners_v4);
+    ImGui::SetItemTooltip("One function: four corner points per thread, a shell's data read once for the four "
+                          "(iso_corners_list_f1v4); off: a point per thread (iso_corners_list_f1)");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Eval list", &sw.eval_list);
+    ImGui::SetItemTooltip("One orbital: the vertices' values from the shells listed for 128 vertices at a time "
+                          "(iso_eval_list_f1); off: every shell per vertex (iso_eval_orbital)");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("GEMM tiles 32", &sw.gemm_t32);
+    ImGui::SetItemTooltip("The GEMM kernels in tiles of 32 functions for sets of more (fewer registers and less "
+                          "groupshared memory per group; the AO values made twice as often)");
+    ImGui::SameLine();
+    {
+        static const char* pipes[] = {"GEMM loop: compiler", "GEMM loop: no unroll", "GEMM loop: unroll 16"};
+        int pp = sw.gemm_pipe;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
+        if (ImGui::Combo("##gemm_pipe", &pp, pipes, IM_ARRAYSIZE(pipes))) { sw.gemm_pipe = pp; changed = true; }
+        ImGui::SetItemTooltip("The F = 64 GEMM kernels' loop over a chunk's rows (EXPERIMENT: how the driver allocates "
+                              "registers for each; see the kernel lines of the report)");
+    }
+    ImGui::SameLine();
     changed |= ImGui::Checkbox("Newton predict", &sw.newton_predict);
     ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
     ImGui::SameLine();
@@ -5371,7 +5407,9 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                 data->render.image_valid = false;
             } else {
                 const IsoBenchVariant& v = iso_bench_variants[iso_bench_series.step];
-                md_gto_iso_gpu_switches_set(&v.sw);
+                md_gto_iso_gpu_switches_t vs = iso_bench_defaults();
+                v.apply(&vs);
+                md_gto_iso_gpu_switches_set(&vs);
                 char line[256];
                 snprintf(line, sizeof(line), "\n==== variant %d of %d: %s ====\n", iso_bench_series.step + 1, num_variants, v.name);
                 iso_meshes_profile_note(line);
