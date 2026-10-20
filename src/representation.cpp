@@ -2468,7 +2468,7 @@ static bool system_has_elastic_bonds(const md_system_t& sys) {
 }
 
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
-bool draw_representation_geometry(ApplicationState* state, Representation& rep) {
+bool draw_representation_geometry(ApplicationState* state, Representation& rep, bool glyphs) {
     bool update_rep = false;
     const char* scale_fmt = (const char*)u8"%.2f×";
     switch (rep.type) {
@@ -2499,7 +2499,7 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         update_rep |= ImGui::SliderFloat("##sheet", &rep.scale[1], 0.1f, 3.f, scale_fmt);
         prop::row("helix");
         update_rep |= ImGui::SliderFloat("##helix", &rep.scale[2], 0.1f, 3.f, scale_fmt);
-        if (cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
+        if (glyphs && cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
             prop::row("lipid, nucleic", "Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
             update_rep |= ImGui::SliderFloat("##lipid_nucleic", &rep.scale[3], 0.1f, 3.f, scale_fmt);
             if (state->mold.sys.nucleic_backbone.range.count > 0) {
@@ -2712,7 +2712,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::section_end();
         }
         if (prop::section("Geometry", false)) {
-            update_rep |= draw_representation_geometry(state, rep);
+            update_rep |= draw_representation_geometry(state, rep, true);
             prop::section_end();
         }
         break;

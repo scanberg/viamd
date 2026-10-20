@@ -125,10 +125,11 @@ bool representations_deserialize(ApplicationState* app, str_t section, viamd::de
 void draw_representations_window(ApplicationState* app);
 // Rows of the properties of a representation, in a property grid (property_grid.h), as the Representations window
 // draws them: its type (atoms_only: SpaceFill to Cartoon), the rows of its Color section, those of its Geometry
-// section. Each returns whether it needs updating.
+// section (glyphs: with those of the cartoon of the lipids and nucleic acids, where it is drawn). Each returns whether
+// it needs updating.
 bool draw_representation_type(ApplicationState* app, Representation& rep, bool atoms_only);
 bool draw_representation_coloring(ApplicationState* app, Representation& rep);
-bool draw_representation_geometry(ApplicationState* app, Representation& rep);
+bool draw_representation_geometry(ApplicationState* app, Representation& rep, bool glyphs = true);
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);
