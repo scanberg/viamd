@@ -1041,7 +1041,8 @@ int main(int argc, char** argv) {
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region);
+                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region,
+                           &state.mold.sys, state.view.assembly);
             }
             state.view.target = reset_transform;
         }
@@ -1463,7 +1464,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region);
+                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region, &state.mold.sys, state.view.assembly);
             }
         }
 
@@ -1631,6 +1632,11 @@ static void update_view_param(ApplicationState* data) {
             md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
         }
     }
+    // The copies of the assembly shown, which stand still
+    if (data->view.assembly >= 0 && (size_t)data->view.assembly >= data->mold.sys.assembly.count) {
+        data->view.assembly = -1;
+    }
+    assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, data->view.assembly, persistent_alloc);
 
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
@@ -1820,7 +1826,8 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Combo("##camera", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 ImGui::SameLine(0.0f, gap);
                 if (ImGui::Button(reset_label)) {
-                    reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
+                    reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region,
+                               &data->mold.sys, data->view.assembly);
                 }
                 ImGui::SetItemTooltip("Frame what is shown again, from the default direction");
                 if (data->view.mode == CameraMode::Perspective) {
@@ -1830,11 +1837,62 @@ static void draw_main_menu(ApplicationState* data) {
                         data->view.camera.fov_y = DEG_TO_RAD(fov);
                     }
                 }
+                const md_assembly_data_t& assemblies = data->mold.sys.assembly;
+                if (assemblies.count > 0) {
+                    prop::row("assembly", "The biological assembly the file describes (a dimer, the shell of a virus) in place of the\n"
+                                          "coordinates as they are: the copies of its chains its operators make, drawn by instancing.\n"
+                                          "The atoms of a copy are those of the file, and pick and select as them. The operators place\n"
+                                          "the coordinates as the file gives them: centering, wrapping and making whole (Operations)\n"
+                                          "are not applied while one is shown, and coordinates they moved before stay moved.");
+                    // A chain of an assembly: a copy of a polymer instance
+                    auto num_chains = [&](size_t asm_idx) {
+                        size_t n = 0;
+                        const md_urange_t parts = md_assembly_part_range(&assemblies, asm_idx);
+                        for (uint32_t p = parts.beg; p < parts.end; ++p) {
+                            const md_urange_t inst = md_assembly_part_inst_range(&assemblies, p);
+                            const md_urange_t ops  = md_assembly_part_oper_range(&assemblies, p);
+                            size_t polymers = 0;
+                            for (uint32_t k = inst.beg; k < inst.end; ++k) {
+                                polymers += md_entity_kind_is_polymer(md_system_instance_entity_kind(&data->mold.sys, (size_t)assemblies.inst[k])) ? 1 : 0;
+                            }
+                            n += polymers * (ops.end - ops.beg);
+                        }
+                        return n;
+                    };
+                    char preview[64] = "As deposited";
+                    if (data->view.assembly >= 0 && (size_t)data->view.assembly < assemblies.count) {
+                        const str_t id = md_assembly_id(&assemblies, (size_t)data->view.assembly);
+                        snprintf(preview, sizeof(preview), "Assembly " STR_FMT " (%zu chains)", STR_ARG(id), num_chains((size_t)data->view.assembly));
+                    }
+                    int chosen = data->view.assembly;
+                    ImGui::SetNextItemWidth(prop::control_width());
+                    if (ImGui::BeginCombo("##assembly", preview)) {
+                        if (ImGui::Selectable("As deposited", data->view.assembly < 0)) chosen = -1;
+                        for (size_t k = 0; k < assemblies.count; ++k) {
+                            char label[64];
+                            const str_t id = md_assembly_id(&assemblies, k);
+                            snprintf(label, sizeof(label), "Assembly " STR_FMT " (%zu chains)##%zu", STR_ARG(id), num_chains(k), k);
+                            if (ImGui::Selectable(label, data->view.assembly == (int)k)) chosen = (int)k;
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (chosen != data->view.assembly) {
+                        // Its copies at once (they are set every frame, update_view_param), and what is shown changes
+                        // its extent: the view frames it
+                        data->view.assembly = chosen;
+                        assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, chosen, persistent_alloc);
+                        reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, chosen);
+                        // Room to zoom out to all of it
+                        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.target.distance * 10.0f);
+                    }
+                }
                 if (md_unitcell_flags(&data->mold.state.unitcell) != 0) {
                     prop::row("periodic images", "The scene again in the neighboring cells, this many each way along a, b and c:\n"
                                                  "1 1 1 shows the 26 cells around it. A representation can leave itself out\n"
-                                                 "(its periodic images, under Representations).");
+                                                 "(its periodic images, under Representations). Not with an assembly shown.");
+                    ImGui::BeginDisabled(data->view.assembly >= 0);
                     ImGui::SliderInt3("##periodic_images", data->view.periodic_images, 0, PERIODIC_IMAGES_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::EndDisabled();
                 }
                 prop::section_end();
             }
@@ -2258,6 +2316,12 @@ static void draw_main_menu(ApplicationState* data) {
 
             // Each operation can be applied to the frame shown now, or to every frame as it is shown.
             // The labels say what happens to the atoms, not what the operation is called internally.
+            // Those which move the atoms are not, while an assembly is shown: its operators place the coordinates as
+            // the file gives them (view.assembly)
+            const bool assembly_shown = data->view.assembly >= 0;
+            if (assembly_shown) {
+                ImGui::TextDisabled("Centering, wrapping and making whole are not applied\nwhile an assembly is shown (View)");
+            }
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
                 if (ImGui::IsWindowHovered()) {
@@ -2267,6 +2331,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::TableSetupColumn("Every frame");
                 ImGui::TableSetupColumn("Options");
                 ImGui::TableHeadersRow();
+                ImGui::BeginDisabled(assembly_shown);
 
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 175.f;
                 const md_bitset_t& target_mask = recenter_get_active_target_mask(data);
@@ -2359,6 +2424,8 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Keep every molecule whole in every frame");
 
+                ImGui::EndDisabled();
+
                 // ## Bonds
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -2383,7 +2450,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // One pass, in the order that keeps them valid together, and in the lattice frame of the cell
             // even when the coordinates are turned (see apply_state_operations)
-            if (apply_state_operations(data, do_recenter, do_pbc, do_unwrap)) {
+            if (!assembly_shown && apply_state_operations(data, do_recenter, do_pbc, do_unwrap)) {
                 data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
@@ -7021,7 +7088,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_SPACE_FILL,
             .args = {},
             .rep = rep.glyph_rep,
-            .instances = {},
+            .copies = {},
         };
         spheres.args.space_fill.radius_scale = scale;
         md_array_push(*ops, spheres, alloc);
@@ -7032,7 +7099,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_TUBES,
             .args = {},
             .rep = rep.glyph_rep,
-            .instances = {},
+            .copies = {},
         };
         tubes.args.tubes.radius_scale = scale;
         // The bands of the nucleic acids are made with the default radius, a representation has its own
@@ -7045,7 +7112,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_SLABS,
             .args = {},
             .rep = rep.glyph_rep,
-            .instances = {},
+            .copies = {},
         };
         // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
         // recessed to 60% of its thickness
@@ -7099,7 +7166,7 @@ static void compute_periodic_transforms(md_array(mat4_t)* transforms, const Appl
     md_array_shrink(*transforms, 0);
     const md_unitcell_t& cell = state.mold.state.unitcell;
     const int* n = state.view.periodic_images;
-    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0) return;
+    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || state.view.assembly >= 0) return;
 
     mat3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
@@ -7116,23 +7183,50 @@ static void compute_periodic_transforms(md_array(mat4_t)* transforms, const Appl
     }
 }
 
-// The copies a representation is drawn in: the periodic images if it has them, by instancing. md_gl culls those out of
-// view on the CPU. Read from the view state, which outlives the draw.
-static md_gl_instances_t rep_instances(const ApplicationState& state, const Representation& rep) {
-    md_gl_instances_t instances = {};
+// The copies a representation is drawn in without an assembly: the periodic images if it has them, by instancing.
+// md_gl culls those out of view on the CPU. Read from the view state, which outlives the draw.
+static md_gl_copies_t rep_copies(const ApplicationState& state, const Representation& rep) {
+    md_gl_copies_t copies = {};
     const size_t n = md_array_size(state.view.periodic_transforms);
     if (rep.periodic_images && n > 1) {
-        instances.transforms = &state.view.periodic_transforms[0].elem[0][0];
-        instances.prev_transforms = md_array_size(state.view.periodic_transforms_prev) == n ? &state.view.periodic_transforms_prev[0].elem[0][0] : NULL;
-        instances.count = (uint32_t)n;
+        copies.transforms = &state.view.periodic_transforms[0].elem[0][0];
+        copies.prev_transforms = md_array_size(state.view.periodic_transforms_prev) == n ? &state.view.periodic_transforms_prev[0].elem[0][0] : NULL;
+        copies.count = (uint32_t)n;
     }
-    return instances;
+    return copies;
 }
 
-// The ops from beg on in the copies of the representation
-static void set_instances(md_array(md_gl_draw_op_t) ops, size_t beg, md_gl_instances_t instances) {
-    for (size_t i = beg; i < md_array_size(ops); ++i) {
-        ops[i].instances = instances;
+// The ops from beg on, of a representation, in the copies of the scene. With an assembly shown, each op once per part
+// of it: of the instances of the part (the segments of the molecule, set_gl_segments) in the copies its operators make.
+// Otherwise once, in the periodic images of the representation. Read from the system and the view state, which
+// outlive the draw.
+static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+    const size_t end = md_array_size(*ops);
+    const md_assembly_data_t& a = state.mold.sys.assembly;
+    const md_urange_t parts = state.view.assembly >= 0 ? md_assembly_part_range(&a, (size_t)state.view.assembly) : md_urange_t{0, 0};
+    const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
+    // Without an assembly, or its copies not of it (yet)
+    if (num_parts == 0 || num_parts != parts.end - parts.beg) {
+        const md_gl_copies_t copies = rep_copies(state, rep);
+        for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
+        return;
+    }
+    static_assert(sizeof(md_instance_idx_t) == sizeof(uint32_t), "The instances of a part are passed as the segments of md_gl");
+    for (size_t p = 0; p < num_parts; ++p) {
+        const md_urange_t inst = md_assembly_part_inst_range(&a, parts.beg + p);
+        const uint32_t c0 = state.view.assembly_copy_offset[p];
+        const uint32_t c1 = state.view.assembly_copy_offset[p + 1];
+        for (size_t i = beg; i < end; ++i) {
+            md_gl_draw_op_t op = (*ops)[i];
+            op.copies = {&state.view.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
+            op.segments = (const uint32_t*)(a.inst + inst.beg);
+            op.segment_count = inst.end - inst.beg;
+            if (p == 0) {
+                (*ops)[i] = op;
+            } else {
+                md_array_push(*ops, op, alloc);
+            }
+        }
     }
 }
 
@@ -7280,7 +7374,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
                 cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
-                set_instances(glyph_ops, beg, rep_instances(*state, rep));
+                place_ops(&glyph_ops, beg, *state, rep, frame_alloc);
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
             }
@@ -7291,7 +7385,6 @@ static void draw_representations_opaque(ApplicationState* state) {
                         .type = (md_gl_rep_type_t)rep.type,
                         .args = {},
                         .rep = state->representation.reps[i].md_rep,
-                        .instances = rep_instances(*state, rep),
                     };
                     switch (rep.type) {
                     case RepresentationType::SpaceFill:
@@ -7336,7 +7429,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                     default:
                         break;
                     }
+                    const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
+                    place_ops(&draw_ops, beg, *state, rep, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 if (representation_shown(*state, rep)) {
@@ -7420,6 +7515,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     h = md_hash64(&state->representation.visibility_mask_hash, sizeof(state->representation.visibility_mask_hash), h);
     h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
     h = md_hash64(state->view.periodic_images, sizeof(state->view.periodic_images), h);
+    h = md_hash64(&state->view.assembly, sizeof(state->view.assembly), h);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
         const bool shown = representation_shown(*state, rep) && rep.type_is_valid;
@@ -7632,7 +7728,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
 static void draw_representations_marks(ApplicationState* data) {
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
-    // In the periodic images as the opaque pass draws them, so the selected and highlighted atoms show in them too
+    // In the copies as the opaque pass draws them (the periodic images, an assembly), so the selected and highlighted
+    // atoms show in them too
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
 
@@ -7640,7 +7737,7 @@ static void draw_representations_marks(ApplicationState* data) {
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
             cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
-            set_instances(glyph_ops, beg, rep_instances(*data, rep));
+            place_ops(&glyph_ops, beg, *data, rep, frame_alloc);
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
@@ -7649,7 +7746,6 @@ static void draw_representations_marks(ApplicationState* data) {
                 .type = (md_gl_rep_type_t)rep.type,
                 .args = {},
                 .rep = data->representation.reps[i].md_rep,
-                .instances = rep_instances(*data, rep),
             };
             // The scales lead every struct of the args. The geometry has to be that of the opaque pass, whose depth
             // tells the marks in view from those behind it: the bond orders too.
@@ -7667,7 +7763,9 @@ static void draw_representations_marks(ApplicationState* data) {
             } else if (rep.type == RepresentationType::Cartoon) {
                 op.args.cartoon.chain_gaps = rep.chain_gaps;
             }
+            const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
+            place_ops(&draw_ops, beg, *data, rep, frame_alloc);
         }
     }
 

@@ -1395,6 +1395,41 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
     }
 }
 
+void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc) {
+    ASSERT(transforms);
+    md_array_shrink(*transforms, 0);
+    if (copy_offset) md_array_shrink(*copy_offset, 0);
+    const md_assembly_data_t& a = sys.assembly;
+    if (assembly < 0 || (size_t)assembly >= a.count) return;
+    const md_urange_t parts = md_assembly_part_range(&a, (size_t)assembly);
+    if (copy_offset) md_array_push(*copy_offset, 0, alloc);
+    for (uint32_t p = parts.beg; p < parts.end; ++p) {
+        const md_urange_t ops = md_assembly_part_oper_range(&a, p);
+        for (uint32_t o = ops.beg; o < ops.end; ++o) {
+            md_array_push(*transforms, a.oper_transform[a.oper[o]], alloc);
+        }
+        if (copy_offset) md_array_push(*copy_offset, (uint32_t)md_array_size(*transforms), alloc);
+    }
+}
+
+void set_gl_segments(ApplicationState* app) {
+    ASSERT(app);
+    const md_system_t& sys = app->mold.sys;
+    const size_t num_inst = sys.instance.count;
+    if (!app->mold.gl_mol.id || num_inst == 0 || sys.assembly.count == 0) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    // Each instance a range of the atoms: the atoms of none (none in a deposited structure) with the one before
+    uint32_t* offset = md_temp_alloc_array(temp, uint32_t, num_inst + 1);
+    offset[0] = 0;
+    for (size_t i = 1; i < num_inst; ++i) {
+        offset[i] = MAX(offset[i - 1], md_system_instance_atom_range(&sys, i).beg);
+    }
+    offset[num_inst] = (uint32_t)sys.atom.count;
+    md_gl_mol_set_segments(app->mold.gl_mol, (uint32_t)num_inst, offset);
+}
+
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
@@ -1407,6 +1442,12 @@ void init_system_data(ApplicationState* data) {
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
+        // A new system is shown as it is; the instances are the segments its assemblies are drawn by, which the glyphs
+        // derived from its atoms take too
+        data->view.assembly = -1;
+        md_array_shrink(data->view.assembly_transforms, 0);
+        md_array_shrink(data->view.assembly_copy_offset, 0);
+        set_gl_segments(data);
         // Before the representations, which each make a representation of the glyphs
         cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
 
@@ -1779,6 +1820,9 @@ struct WorkspacePending {
     bool has_recenter_target;
     md_bitset_t recenter_target;
 
+    // The id of the assembly shown, of the system the files hold (view.assembly)
+    char assembly_id[8];
+
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
     // filter is how a workspace from before the timeline's periods held it, and becomes one of them:
     // what was shown over the filter is shown over that period.
@@ -1839,6 +1883,7 @@ static void workspace_reset(ApplicationState* data) {
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
     data->view.periodic_images[0] = data->view.periodic_images[1] = data->view.periodic_images[2] = 0;
+    data->view.assembly = -1;
 
     data->selection.granularity = SelectionGranularity::Atom;
     md_bitmask_clear(&data->selection.selection_mask);
@@ -1985,6 +2030,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     if (viamd::extract_flt_vec(n, 3, arg)) {
                         for (int k = 0; k < 3; ++k) data->view.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
                     }
+                }
+                else if (str_eq(ident, STR_LIT("Assembly"))) {
+                    str_t id = {};
+                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
                 }
                 else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(pending.box_enabled, arg);
                 else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(pending.box_color, arg);
@@ -2217,9 +2266,24 @@ void load_workspace(ApplicationState* data, str_t filename) {
         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 
+    // The assembly shown, by its id in the files loaded
+    if (pending.assembly_id[0]) {
+        const md_assembly_data_t& a = data->mold.sys.assembly;
+        for (size_t i = 0; i < a.count; ++i) {
+            if (str_eq(md_assembly_id(&a, i), str_from_cstr(pending.assembly_id))) data->view.assembly = (int)i;
+        }
+        if (data->view.assembly < 0) {
+            VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", pending.assembly_id);
+        }
+    }
+
     // The camera flies in: from the whole system to where the workspace looked from. Without a
-    // stored camera, both are the whole system.
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
+    // stored camera, both are the whole system (or the assembly shown).
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->view.assembly);
+    if (data->view.assembly >= 0) {
+        // Room to zoom out to all of the assembly
+        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
+    }
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
@@ -2317,6 +2381,9 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         {
             const float n[3] = { (float)app_state->view.periodic_images[0], (float)app_state->view.periodic_images[1], (float)app_state->view.periodic_images[2] };
             viamd::write_flt_vec(state, STR_LIT("PeriodicImages"), n, 3);
+        }
+        if (app_state->view.assembly >= 0 && (size_t)app_state->view.assembly < app_state->mold.sys.assembly.count) {
+            viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&app_state->mold.sys.assembly, (size_t)app_state->view.assembly));
         }
         // The ambient occlusion and the anti-aliasing are the computer's settings (the .ini), the simulation box a
         // representation
@@ -5407,12 +5474,59 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
     ASSERT(transform);
     if (!state.num_atoms) return;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
+
+    if (sys && assembly >= 0 && (size_t)assembly < sys->assembly.count && sys->atom.count == state.num_atoms) {
+        // The atoms of the instances of each part where each of its operators puts them, framed as one: the cell has
+        // nothing to say about an assembly. Of a large one (a virus) every k-th atom, at most about a million in all.
+        const md_assembly_data_t& a = sys->assembly;
+        const md_bitset_t* m = (mask && md_bitset_count(*mask) > 0) ? mask : nullptr;
+        const md_urange_t parts = md_assembly_part_range(&a, (size_t)assembly);
+        size_t total = 0;
+        for (uint32_t p = parts.beg; p < parts.end; ++p) {
+            const md_urange_t inst = md_assembly_part_inst_range(&a, p);
+            const md_urange_t ops  = md_assembly_part_oper_range(&a, p);
+            size_t atoms = 0;
+            for (uint32_t k = inst.beg; k < inst.end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(sys, (size_t)a.inst[k]);
+                atoms += r.end - r.beg;
+            }
+            total += atoms * (ops.end - ops.beg);
+        }
+        const size_t max_points = 1000000;
+        const uint32_t stride = (uint32_t)MAX((size_t)1, DIV_UP(total, max_points));
+        md_array(vec3_t) xyz = 0;
+        md_array_ensure(xyz, MIN(total, max_points) + 1, md_temp_allocator(temp));
+        for (uint32_t p = parts.beg; p < parts.end; ++p) {
+            const md_urange_t inst = md_assembly_part_inst_range(&a, p);
+            const md_urange_t ops  = md_assembly_part_oper_range(&a, p);
+            for (uint32_t o = ops.beg; o < ops.end; ++o) {
+                const mat4_t M = a.oper_transform[a.oper[o]];
+                for (uint32_t k = inst.beg; k < inst.end; ++k) {
+                    const md_urange_t r = md_system_instance_atom_range(sys, (size_t)a.inst[k]);
+                    for (uint32_t i = r.beg; i < r.end; i += stride) {
+                        if (m && !md_bitset_test(*m, i)) continue;
+                        md_array_push(xyz, mat4_mul_vec3(M, state.xyz[i], 1.0f), md_temp_allocator(temp));
+                    }
+                }
+            }
+        }
+        const size_t n = md_array_size(xyz);
+        if (n > 0) {
+            mat3_t A = {};
+            md_unitcell_A_extract(A.elem, &state.unitcell);
+            const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
+            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+            transform->position = transform->position + cell_offset;
+            return;
+        }
+        // None of the atoms shown is in the assembly: those shown
+    }
 
     // A mask that selects nothing or everything is the whole system
     const int32_t* indices = nullptr;
@@ -5664,7 +5778,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // the coordinates that update_md_buffers uploads, and nothing else flags them: the synchronous
             // broadcasts of this event do not pass through the interpolation step that would otherwise
             // have set the bit.
-            if (apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
+            // Not while an assembly is shown, whose operators place the coordinates as the file gives them
+            if (app->view.assembly < 0 && apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
                 app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;

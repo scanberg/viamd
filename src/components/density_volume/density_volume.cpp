@@ -945,8 +945,8 @@ struct DensityVolume : viamd::EventHandler {
                 for (size_t i = 0; i < num_reps; ++i) {
                     op.rep = reps[i].gl_rep;
                     // Once, moved to where its structure aligns with the reference (a rigid transform)
-                    op.instances.transforms = &reps[i].model_mat.elem[0][0];
-                    op.instances.count = 1;
+                    op.copies.transforms = &reps[i].model_mat.elem[0][0];
+                    op.copies.count = 1;
                     draw_ops[i] = op;
                 }
 

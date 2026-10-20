@@ -1192,11 +1192,24 @@ struct ApplicationState {
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
         int periodic_images[3] = {0, 0, 0};
 
-        // The copies of the scene those representations are drawn in, by instancing (md_gl_instances_t): its own first,
-        // then the periodic images, none without a cell or images. As of this frame and as of the last, so that an image
-        // which moves with the cell (a trajectory of changing cells) shows as moving. Set by update_view_param.
+        // The copies of the scene those representations are drawn in, by instancing (md_gl_copies_t): its own first,
+        // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
+        // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
+        // update_view_param.
         md_array(mat4_t) periodic_transforms      = 0;
         md_array(mat4_t) periodic_transforms_prev = 0;
+
+        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
+        // they are. Shown in place of them and of the periodic images: each part of it the instances of the part, in the
+        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
+        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
+        // (centering, wrapping, making whole) are not applied while one is shown. The figure's: in the workspace.
+        int assembly = -1;
+
+        // Of the assembly shown, set by update_view_param: the transforms of its copies, part by part, those of part p
+        // [assembly_copy_offset[p], assembly_copy_offset[p + 1]). Empty when none is shown.
+        md_array(mat4_t)   assembly_transforms  = 0;
+        md_array(uint32_t) assembly_copy_offset = 0;
     } view;
 
     struct {
@@ -2698,12 +2711,22 @@ void file_queue_process(ApplicationState* state);
 
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
-// camera_compute_default_view). fov_y is that of the camera that looks through it.
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {});
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}) {
+// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (view.assembly,
+// -1 for none), of those atoms in the instances of each of its parts, in all of the copies of the part.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members, fov_y, region);
+    reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
+
+// ASSEMBLIES (view.assembly). The transforms of the copies an assembly of the system makes, part by part, and with
+// copy_offset (optional) where the copies of each part begin, its end last. Empty for an assembly the system has not
+// (-1: none).
+void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
+
+// The segments of the molecule of the system for md_gl (md_gl_mol_set_segments): its instances, of which the parts of
+// its assemblies show some. Only a system with assemblies needs them.
+void set_gl_segments(ApplicationState* app);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the
