@@ -1249,6 +1249,10 @@ struct ApplicationState {
 
         FrameCache          frame_cache;
 
+        // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
+        float               bond_length_limit = 0.0f;
+        uint64_t            bond_length_limit_version = 0;
+
         bool                interpolate_system_state = false;
         // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
         // interpolate_system_state skip redundant work when playback ticks without the displayed

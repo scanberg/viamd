@@ -7055,14 +7055,41 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     }
 }
 
-// The longest bond md_gl draws, covalent or weak (md_gl_draw_args_t max_bond_length). In a cell, a bond longer than half
-// its smallest width (the minimum image) is across the periodic boundary, from an atom to the far side of the cell, and
-// is left out; at least 3 Å. Without a cell nothing is across a boundary: any length (its square still a float).
-static float bond_length_limit(const md_unitcell_t& cell) {
-    if (md_unitcell_flags(&cell) == 0) return 1.0e18f;
-    vec3_t ext = {0};
-    md_unitcell_diag_extract_float(ext.elem, &cell);
-    return MAX(3.0f, vec3_reduce_min(ext) * 0.5f);
+// The longest bond md_gl draws, covalent or weak (md_gl_draw_args_t max_bond_length): a longer one is taken to be across
+// a periodic boundary, from an atom to the far side of the cell, and is left out.
+//   In a cell: half its smallest width (the minimum image), at least 3 Å.
+//   Without a cell the boundary is not known, but the coordinates may still be wrapped (a periodic trajectory without
+//   its cell). Then: BOND_LENGTH_MARGIN times the longest bond of the system in the frame where its topology last
+//   changed (where its bonds were made, read or edited), at least BOND_LENGTH_MIN for the weak bonds, which are not of
+//   the topology. A bond stays near the length it had, one wrapped across a cell since is about as long as the cell.
+//   A bond already wrapped in that frame cannot be told from a long one, and lifts the limit with it.
+static constexpr float BOND_LENGTH_MARGIN = 1.5f;
+static constexpr float BOND_LENGTH_MIN    = 5.0f;
+
+static float bond_length_limit(ApplicationState* state) {
+    const md_unitcell_t& cell = state->mold.state.unitcell;
+    if (md_unitcell_flags(&cell) != 0) {
+        vec3_t ext = {0};
+        md_unitcell_diag_extract_float(ext.elem, &cell);
+        return MAX(3.0f, vec3_reduce_min(ext) * 0.5f);
+    }
+
+    const md_system_t& sys = state->mold.sys;
+    if (state->mold.bond_length_limit_version != sys.topology_version || !(state->mold.bond_length_limit > 0.0f)) {
+        const md_system_state_t& frame = state->mold.state;
+        float max_d2 = 0.0f;
+        if (frame.xyz && frame.num_atoms == sys.atom.count) {
+            for (size_t i = 0; i < sys.bond.count; ++i) {
+                const md_atom_pair_t pair = sys.bond.pairs[i];
+                if ((size_t)pair.idx[0] < frame.num_atoms && (size_t)pair.idx[1] < frame.num_atoms) {
+                    max_d2 = MAX(max_d2, vec3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
+                }
+            }
+        }
+        state->mold.bond_length_limit = MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
+        state->mold.bond_length_limit_version = sys.topology_version;
+    }
+    return state->mold.bond_length_limit;
 }
 
 // The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
@@ -7354,7 +7381,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             }
         }
 
-        const float max_bond_length = bond_length_limit(state->mold.state.unitcell);
+        const float max_bond_length = bond_length_limit(state);
 
         md_gl_draw_args_t args = {
             .shaders = state->gl.shaders,
@@ -7639,7 +7666,7 @@ static void draw_representations_marks(ApplicationState* data) {
         }
     }
 
-    const float max_bond_length = bond_length_limit(data->mold.state.unitcell);
+    const float max_bond_length = bond_length_limit(data);
 
     // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still
     md_gl_draw_args_t args = {
