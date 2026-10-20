@@ -26,7 +26,9 @@ struct md_allocator_i;
 //              (md_lipid_data_t) from the centre of its head over the atom it hangs off and along its spine to its tip,
 //              or on to the head a spanning chain joins (a bolalipid). An atomistic spine gets a control point per two
 //              of its atoms, which is on the axis of a chain in its all trans zigzag and so smooths it away; a coarse
-//              grained one a control point per bead. The skeleton of a sterol is a thicker tube. The tubes have round ends.
+//              grained one a control point per bead. The ring system of a sterol is a slab: a tube flat in the plane
+//              of its rings, wider than a chain and as thick, through the middle of the rings in sections along it, and
+//              its side chain a tube as a chain is. The tubes have round ends.
 //              A lipid whose heads and tails are not known (md_lipid_data_t has none for it) is one sphere for all of it.
 //   nucleic    After Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a flat band along each
 //              backbone (md_nucleic_backbone_data_t) through the C4' of its nucleotides, its flat faces towards the bases;
@@ -100,6 +102,7 @@ struct CartoonGlyphs {
     md_array(float)    tube_radius = nullptr;        // [num_tube_points] Å, before the scale of the representation
     md_array(float)    tube_flat = nullptr;          // [num_tube_points] Half the length of the flat sides of the profile, Å: 0 is round
     md_array(uint32_t) tube_face = nullptr;          // [num_tube_points] The point the flat sides face, UINT32_MAX for none
+    md_array(uint32_t) tube_side = nullptr;          // [num_tube_points] The point the long axis of the profile points at, UINT32_MAX for none
     md_array(uint8_t)  tube_through = nullptr;       // [num_tubes] It passes through its control points rather than near them
 
     // Slab s has the corners slab_point[slab_offset[s] .. slab_offset[s + 1]), points in order around the ring, or the

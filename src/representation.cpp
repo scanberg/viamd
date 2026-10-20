@@ -925,7 +925,7 @@ void create_default_representations(ApplicationState* state) {
             num_lipid_comps += md_component_kind(&state->mold.sys.component, i) == MD_COMPONENT_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
-            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += lipids.comp_range[i].end - lipids.comp_range[i].beg;
+            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.comps, i);
         }
         lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
