@@ -7381,54 +7381,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 
             if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
                 if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    md_gl_draw_op_t op = {
-                        .type = (md_gl_rep_type_t)rep.type,
-                        .args = {},
-                        .rep = state->representation.reps[i].md_rep,
-                    };
-                    switch (rep.type) {
-                    case RepresentationType::SpaceFill:
-                        op.args.space_fill.radius_scale = rep.scale.x;
-                        break;
-                    case RepresentationType::Licorice:
-                        op.args.licorice.radius = rep.scale.x;
-                        op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-                        op.args.licorice.sharpness = rep.bond_sharpness;
-                        op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
-                        op.args.licorice.bond_orders = rep.bond_orders;
-                        op.args.licorice.chain_gaps = rep.chain_gaps;
-                        op.args.licorice.elastic_bonds = rep.elastic_bonds;
-                        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-                            tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-                        }
-                        break;
-                    case RepresentationType::BallAndStick:
-                        op.args.ball_and_stick.ball_scale = rep.scale.x;
-                        op.args.ball_and_stick.stick_radius = rep.scale.y;
-                        op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-                        op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-                        op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
-                        op.args.ball_and_stick.bond_orders = rep.bond_orders;
-                        op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
-                        op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
-                        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-                            tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-                        }
-                        break;
-                    case RepresentationType::Ribbons:
-                        op.args.ribbons.width_scale = rep.scale.x;
-                        op.args.ribbons.thickness_scale = rep.scale.y;
-                        op.args.ribbons.chain_gaps = rep.chain_gaps;
-                        break;
-                    case RepresentationType::Cartoon:
-                        op.args.cartoon.coil_scale = rep.scale.x;
-                        op.args.cartoon.sheet_scale = rep.scale.y;
-                        op.args.cartoon.helix_scale = rep.scale.z;
-                        op.args.cartoon.chain_gaps = rep.chain_gaps;
-                        break;
-                    default:
-                        break;
-                    }
+                    const md_gl_draw_op_t op = representation_draw_op(rep);
                     const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
                     place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
@@ -7742,27 +7695,9 @@ static void draw_representations_marks(ApplicationState* data) {
         }
 
         if (representation_shown(*data, rep) && rep.type_is_valid) {
-            md_gl_draw_op_t op = {
-                .type = (md_gl_rep_type_t)rep.type,
-                .args = {},
-                .rep = data->representation.reps[i].md_rep,
-            };
-            // The scales lead every struct of the args. The geometry has to be that of the opaque pass, whose depth
-            // tells the marks in view from those behind it: the bond orders too.
-            MEMCPY(&op.args, &rep.scale, MIN(sizeof(op.args), sizeof(rep.scale)));
-            if (rep.type == RepresentationType::Licorice) {
-                op.args.licorice.bond_orders = rep.bond_orders;
-                op.args.licorice.chain_gaps = rep.chain_gaps;
-                op.args.licorice.elastic_bonds = rep.elastic_bonds;
-            } else if (rep.type == RepresentationType::BallAndStick) {
-                op.args.ball_and_stick.bond_orders = rep.bond_orders;
-                op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
-                op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
-            } else if (rep.type == RepresentationType::Ribbons) {
-                op.args.ribbons.chain_gaps = rep.chain_gaps;
-            } else if (rep.type == RepresentationType::Cartoon) {
-                op.args.cartoon.chain_gaps = rep.chain_gaps;
-            }
+            // The op of the opaque pass: its depth tells the marks in view from those behind it, so the geometry must
+            // be the same, the bond orders too
+            const md_gl_draw_op_t op = representation_draw_op(rep);
             const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
             place_ops(&draw_ops, beg, *data, rep, false, frame_alloc);

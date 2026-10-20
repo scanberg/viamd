@@ -92,16 +92,43 @@ bool representation_uses_atom_colors(const Representation& rep);
 // The union of the atoms of the shown representations, visibility_mask
 void recompute_atom_visibility_mask(ApplicationState* app);
 
+// --- Representations of atoms, wherever they are drawn ---
+// What the Representations window and others (the reference structures of the Density Volume window) share of the
+// representations md_gl draws, SpaceFill to Cartoon: whether one can be drawn, its draw op, its colours, its
+// properties in the window and in a workspace.
+
+// Whether the system has what a type draws: atoms, bonds, a backbone
+bool representation_atom_type_valid(const ApplicationState& app, RepresentationType type);
+
+// The draw op of a representation of atoms: its type, arguments and colours (md_rep). The instances and the subset are
+// the caller's.
+md_gl_draw_op_t representation_draw_op(const Representation& rep);
+
+// The colours of all num_atoms atoms of the system for a representation which colours by atom
+// (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the
+// atoms a colour scale of an attribute spans the values of (NULL for all), whose span it keeps (atom_attribute).
+void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationState* app, Representation* rep, const md_bitset_t* shown);
+
 // --- Workspace ---
 
 // [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it
 void representations_serialize(viamd::serialization_state_t& state, const ApplicationState* app);
+// The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
+// when it is not one of them
+void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app, const Representation& rep);
+bool representation_read_entry(Representation* rep, str_t ident, str_t arg);
 // True when the section was one of the above, which it has then read
 bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state);
 
 // --- UI ---
 
 void draw_representations_window(ApplicationState* app);
+// Rows of the properties of a representation, in a property grid (property_grid.h), as the Representations window
+// draws them: its type (atoms_only: SpaceFill to Cartoon), the rows of its Color section, those of its Geometry
+// section. Each returns whether it needs updating.
+bool draw_representation_type(ApplicationState* app, Representation& rep, bool atoms_only);
+bool draw_representation_coloring(ApplicationState* app, Representation& rep);
+bool draw_representation_geometry(ApplicationState* app, Representation& rep);
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);
