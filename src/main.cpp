@@ -5241,6 +5241,26 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
                               "view kept still");
 
+        // BENCHMARK (temporary, branch gto-iso-gpu-opt): the GPU extraction of the isosurface meshes
+        {
+            bool prof = iso_meshes_profile_enabled();
+            if (ImGui::Checkbox("Profile mesh extraction", &prof)) iso_meshes_profile_enable(prof);
+            ImGui::SetItemTooltip("Every GPU extraction of an isosurface mesh is also run step by step, and the steps are "
+                                  "logged and kept below");
+            ImGui::SameLine();
+            if (ImGui::Button("Extract again")) iso_meshes_force_update();
+            ImGui::SetItemTooltip("Every isosurface mesh is extracted again (the fields are kept), and the report restarts");
+            ImGui::SameLine();
+            const char* report = iso_meshes_profile_report();
+            ImGui::BeginDisabled(!report[0]);
+            if (ImGui::Button("Copy report")) ImGui::SetClipboardText(report);
+            ImGui::EndDisabled();
+            if (report[0] && ImGui::TreeNode("Mesh extraction report")) {
+                ImGui::TextUnformatted(report);
+                ImGui::TreePop();
+            }
+        }
+
         profiler::draw_table();
     }
     ImGui::End();

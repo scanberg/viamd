@@ -11,11 +11,48 @@
 #include <core/md_os.h>
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 // Newton steps onto the surface and tangential relaxation passes: display quality (md_gto_iso_mesh_desc_t)
 static constexpr uint32_t PROJECT_ITERATIONS = 8;
 static constexpr uint32_t RELAX_ITERATIONS   = 3;
+
+// ---------------------------------------------------------------------------------------------------------------
+// BENCHMARK (temporary, branch gto-iso-gpu-opt)
+// ---------------------------------------------------------------------------------------------------------------
+
+static bool     bench_profile = false;
+static uint64_t bench_generation = 0;     // mixed into every mesh key: bumping it extracts every mesh again
+static char     bench_report[65536];
+static size_t   bench_report_len = 0;
+
+void iso_meshes_profile_enable(bool on) { bench_profile = on; }
+bool iso_meshes_profile_enabled() { return bench_profile; }
+const char* iso_meshes_profile_report() { return bench_report; }
+
+void iso_meshes_force_update() {
+    bench_generation++;
+    bench_report_len = 0;
+    bench_report[0] = '\0';
+}
+
+// Appends to the report and logs it, a line at a time
+static void bench_append(const char* text) {
+    const size_t n = strlen(text);
+    if (bench_report_len + n + 1 < sizeof(bench_report)) {
+        MEMCPY(bench_report + bench_report_len, text, n + 1);
+        bench_report_len += n;
+    }
+    const char* p = text;
+    while (*p) {
+        const char* e = strchr(p, '\n');
+        const int len = e ? (int)(e - p) : (int)strlen(p);
+        MD_LOG_INFO("%.*s", len, p);
+        p += len + (e ? 1 : 0);
+    }
+}
 
 mat4_t iso_meshes_model_matrix() {
     const float s = (float)BOHR_TO_ANGSTROM;
@@ -165,6 +202,7 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
     if (!state->gpu_device || !state->gpu_stream) return false;
     md_gpu_stream_t stream = state->gpu_stream;
 
+    double set_ms = -1.0;   // BENCHMARK: made in this update
     if (!m->gpu_set) {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
@@ -172,7 +210,12 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         if (!field_context(&ctx, temp, state)) return false;
         const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS];
         for (uint32_t k = 0; k < n; ++k) fields[k] = slots[k].field;
+        const md_tick_t ts = md_tick_now();
         m->gpu_set = md_gto_iso_gpu_set_create(stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), fields, n, md_get_heap_allocator());
+        if (bench_profile) {
+            md_gpu_stream_sync(stream);
+            set_ms = md_tick_to_milliseconds(md_tick_now() - ts);
+        }
         if (!m->gpu_set) {
             MD_LOG_DEBUG("Isosurface meshes: no GPU set for these fields, extracting on the CPU");
             return false;
@@ -188,18 +231,58 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         desc.sheets[k] = slots[k].sheets;
     }
 
+    // BENCHMARK: the step by step profile, from an extra extraction run first
+    static md_gto_iso_gpu_profile_t prof;
+    static char prof_text[32768];
+    prof_text[0] = '\0';
+    if (bench_profile) {
+        md_gto_iso_gpu_mesh_t pm = {};
+        md_gto_iso_gpu_profile_set(&prof);
+        const bool pok = md_gto_iso_gpu_extract(stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc, &pm);
+        md_gto_iso_gpu_profile_set(nullptr);
+        if (pok) {
+            md_gto_iso_gpu_mesh_free(stream, &pm);
+            md_gto_iso_gpu_profile_print(&prof, prof_text, sizeof(prof_text));
+        }
+    }
+
+    const md_tick_t t_extract = md_tick_now();
     md_gto_iso_gpu_mesh_t gm = {};
     if (!md_gto_iso_gpu_extract(stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc, &gm)) {
         return false;
     }
+    const double extract_ms = md_tick_to_milliseconds(md_tick_now() - t_extract);
 
     bool ok = false;
     const size_t nv = gm.vertex_count, ni = gm.index_count;
     float*    pos = (float*)malloc(sizeof(float) * 4 * (nv + 1));
     float*    nrm = (float*)malloc(sizeof(float) * 4 * (nv + 1));
     uint32_t* idx = (uint32_t*)malloc(sizeof(uint32_t) * (ni + 1));
-    if (pos && nrm && idx && md_gto_iso_gpu_mesh_read_all(stream, &gm, pos, nrm, idx)) {
+    const md_tick_t t_read = md_tick_now();
+    const bool read = pos && nrm && idx && md_gto_iso_gpu_mesh_read_all(stream, &gm, pos, nrm, idx);
+    const double read_ms = md_tick_to_milliseconds(md_tick_now() - t_read);
+    if (read) {
+        const md_tick_t t_upload = md_tick_now();
         ok = isomesh::mesh_upload(&m->mesh, pos, nrm, 4, gm.vertex_count, idx, gm.index_count);
+        const double upload_ms = md_tick_to_milliseconds(md_tick_now() - t_upload);
+        if (bench_profile) {
+            char head[1024];
+            uint32_t nfn = 0;
+            for (uint32_t k = 0; k < n; ++k) {
+                md_gto_iso_field_info_t fi = {};
+                md_gto_iso_field_info(&fi, slots[k].field);
+                nfn += fi.num_functions;
+            }
+            char set_text[64] = "";
+            if (set_ms >= 0.0) snprintf(set_text, sizeof(set_text), ", GPU set made in %.3f ms", set_ms);
+            snprintf(head, sizeof(head),
+                     "-- isosurface meshes: %u slots (%u functions), h %.3f bohr, iso %g | %u bricks, %u slots, %u vertices, %u triangles\n"
+                     "   extract %.3f ms, read back %.3f ms, GL upload %.3f ms%s\n",
+                     n, nfn, cell_size, slots[0].iso, gm.num_bricks, gm.num_corner_slots, gm.vertex_count, gm.index_count / 3,
+                     extract_ms, read_ms, upload_ms, set_text);
+            bench_append(head);
+            bench_append(prof_text);
+        }
         if (ok) {
             set_ranges(m, n, gm.index_offset, gm.index_count_of);
             keep_xyz(m, pos, 4, gm.vertex_count);
@@ -328,6 +411,7 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
 
     uint64_t fkey = md_hash64(&n, sizeof(n), fields_key);
     uint64_t key  = md_hash64(&cell_size, sizeof(cell_size), fields_key);
+    key = md_hash64(&bench_generation, sizeof(bench_generation), key);   // BENCHMARK
     for (uint32_t k = 0; k < n; ++k) {
         fkey = md_hash64(&slots[k].field, sizeof(slots[k].field), fkey);
         key  = md_hash64(&slots[k].field, sizeof(slots[k].field), key);
@@ -470,7 +554,17 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         // the set holds the old field: dropped before the field goes
         iso_meshes_free(&em.meshes, state);
         md_gto_iso_field_destroy(em.field);
+        const md_tick_t t_field = md_tick_now();
         em.field = electronic_structure_field_create(state, es);
+        if (bench_profile && em.field) {    // BENCHMARK
+            md_gto_iso_field_info_t fi = {};
+            md_gto_iso_field_info(&fi, em.field);
+            char line[256];
+            snprintf(line, sizeof(line), "-- field '%s' made in %.3f ms: %s, %u functions, %u terms\n", rep->name,
+                     md_tick_to_milliseconds(md_tick_now() - t_field), fi.kind == MD_GTO_ISO_FIELD_ORBITAL ? "orbital" : "density",
+                     fi.num_functions, fi.num_terms);
+            bench_append(line);
+        }
         em.field_key = field_key;
         em.field_failed = em.field == nullptr;
         if (em.field_failed) {

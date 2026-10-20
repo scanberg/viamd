@@ -73,6 +73,16 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state);
 
 mat4_t iso_meshes_model_matrix();
 
+// BENCHMARK (temporary, branch gto-iso-gpu-opt): Windows > Profiler drives these
+// With the profile on, every GPU extraction is first run once more step by step (md_gto_iso_gpu_profile_set)
+// and a report - that profile, then the plain extraction, its readback and its GL upload - is logged and kept.
+void        iso_meshes_profile_enable(bool on);
+bool        iso_meshes_profile_enabled();
+const char* iso_meshes_profile_report();    // the reports since the last force_update, "" for none
+// Every mesh is extracted again at its next update (its fields and their GPU set are kept: the cost of a
+// new isovalue)
+void        iso_meshes_force_update();
+
 // Lattice spacing in bohr for a volume resolution: the same three steps of detail as the volumes
 double iso_meshes_cell_size(VolumeResolution resolution);
 
