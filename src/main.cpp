@@ -372,6 +372,8 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 }
 
 static void update_view_param(ApplicationState* state);
+// The transforms of the copies of the scene the periodic images show (view.periodic_transforms)
+static void compute_periodic_transforms(md_array(mat4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc);
 
 // The lowest render scale offered: below half, too little of the detail is left to rebuild
 static constexpr float RENDER_SCALE_MIN = 0.5f;
@@ -1616,6 +1618,19 @@ static void update_view_param(ApplicationState* data) {
     ViewParam& param = data->view.param;
     param.matrix.prev = param.matrix.curr;
     param.jitter.prev = param.jitter.curr;
+
+    // The copies of the scene, as of this frame and the last: as many as before, or they did not move
+    {
+        md_array(mat4_t)& curr = data->view.periodic_transforms;
+        md_array(mat4_t)& prev = data->view.periodic_transforms_prev;
+        md_array_shrink(prev, 0);
+        md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
+        compute_periodic_transforms(&curr, *data, persistent_alloc);
+        if (md_array_size(prev) != md_array_size(curr)) {
+            md_array_shrink(prev, 0);
+            md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
+        }
+    }
 
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
@@ -7004,7 +7019,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_SPACE_FILL,
             .args = {},
             .rep = rep.glyph_rep,
-            .model_matrix = NULL,
+            .instances = {},
         };
         spheres.args.space_fill.radius_scale = scale;
         md_array_push(*ops, spheres, alloc);
@@ -7015,7 +7030,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_TUBES,
             .args = {},
             .rep = rep.glyph_rep,
-            .model_matrix = NULL,
+            .instances = {},
         };
         tubes.args.tubes.radius_scale = scale;
         // The bands of the nucleic acids are made with the default radius, a representation has its own
@@ -7028,7 +7043,7 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
             .type = MD_GL_REP_SLABS,
             .args = {},
             .rep = rep.glyph_rep,
-            .model_matrix = NULL,
+            .instances = {},
         };
         // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
         // recessed to 60% of its thickness
@@ -7038,39 +7053,47 @@ static void cartoon_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
     }
 }
 
-// The periodic images shown (view.periodic_images): the translations of the scene into the neighboring cells, all but its
-// own, through the turn the coordinates carry if the orientation is kept (as the box). None without a cell.
-static md_array(mat4_t) periodic_images(const ApplicationState& state, md_allocator_i* alloc) {
-    md_array(mat4_t) images = 0;
+// The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
+// the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
+// None without a cell or images.
+static void compute_periodic_transforms(md_array(mat4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc) {
+    md_array_shrink(*transforms, 0);
     const md_unitcell_t& cell = state.mold.state.unitcell;
     const int* n = state.view.periodic_images;
-    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0) return images;
+    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0) return;
 
     mat3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
     const mat4_t M = state.operations.state_rotation * mat4_from_mat3(A);
+    md_array_push(*transforms, mat4_ident(), alloc);
     for (int k = -n[2]; k <= n[2]; ++k) {
         for (int j = -n[1]; j <= n[1]; ++j) {
             for (int i = -n[0]; i <= n[0]; ++i) {
                 if (i == 0 && j == 0 && k == 0) continue;
                 const vec3_t t = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)i, (float)j, (float)k, 0.0f)));
-                md_array_push(images, mat4_translate(t.x, t.y, t.z), alloc);
+                md_array_push(*transforms, mat4_translate(t.x, t.y, t.z), alloc);
             }
         }
     }
-    return images;
 }
 
-// The ops from beg on again, once in each periodic image (their model matrix: md_gl takes it into the transforms, the
-// culling and level of detail of the backbone, and the velocities). The images must outlive the draw.
-static void push_periodic_images(md_array(md_gl_draw_op_t)* ops, size_t beg, const mat4_t* images, size_t num_images, md_allocator_i* alloc) {
-    const size_t end = md_array_size(*ops);
-    for (size_t m = 0; m < num_images; ++m) {
-        for (size_t i = beg; i < end; ++i) {
-            md_gl_draw_op_t op = (*ops)[i];
-            op.model_matrix = &images[m].elem[0][0];
-            md_array_push(*ops, op, alloc);
-        }
+// The copies a representation is drawn in: the periodic images if it has them, by instancing. md_gl culls those out of
+// view on the CPU. Read from the view state, which outlives the draw.
+static md_gl_instances_t rep_instances(const ApplicationState& state, const Representation& rep) {
+    md_gl_instances_t instances = {};
+    const size_t n = md_array_size(state.view.periodic_transforms);
+    if (rep.periodic_images && n > 1) {
+        instances.transforms = &state.view.periodic_transforms[0].elem[0][0];
+        instances.prev_transforms = md_array_size(state.view.periodic_transforms_prev) == n ? &state.view.periodic_transforms_prev[0].elem[0][0] : NULL;
+        instances.count = (uint32_t)n;
+    }
+    return instances;
+}
+
+// The ops from beg on in the copies of the representation
+static void set_instances(md_array(md_gl_draw_op_t) ops, size_t beg, md_gl_instances_t instances) {
+    for (size_t i = beg; i < md_array_size(ops); ++i) {
+        ops[i].instances = instances;
     }
 }
 
@@ -7078,7 +7101,8 @@ static void push_periodic_images(md_array(md_gl_draw_op_t)* ops, size_t beg, con
 // carry if the orientation is kept (the cell itself cannot hold one). Capsules of the thickness, shaded as the rest of
 // the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
 // does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
-static void draw_simulation_box(ApplicationState* state, const Representation& rep, const mat4_t* images, size_t num_images) {
+// The cells out of view are left out.
+static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
 
@@ -7103,10 +7127,35 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     const bool    ortho = P.elem[3][3] == 1.0f;
     const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
 
+    // The planes of the view volume, inward, and the sphere of a cell about its center: a cell wholly outside of one is
+    // out of view. The capsules are at most a few pixels thick, a margin of a hundredth of the cell covers them.
+    const mat4_t PV = P * V;
+    vec4_t plane[6];
+    for (int p = 0; p < 6; ++p) {
+        const int r = p / 2;
+        const float s = (p & 1) ? -1.0f : 1.0f;
+        const vec4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
+        const vec4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
+        plane[p] = vec4_add(row_w, vec4_mul1(row_r, s));
+        const float len = vec3_length(vec3_from_vec4(plane[p]));
+        plane[p] = len > 0.0f ? vec4_mul1(plane[p], 1.0f / len) : vec4_t{0, 0, 0, 1};
+    }
+    const vec3_t cell_center = (corner[0] + corner[7]) * 0.5f;
+    float cell_radius = 0.0f;
+    for (int i = 0; i < 8; ++i) cell_radius = MAX(cell_radius, vec3_length(corner[i] - cell_center));
+    cell_radius = cell_radius * 1.01f + 0.5f * rep.box.thickness;
+
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const size_t num_cells = 1 + (rep.periodic_images ? num_images : 0);
+    const md_array(mat4_t) transforms = state->view.periodic_transforms;
+    const size_t num_cells = rep.periodic_images ? MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
-        const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(images[c - 1].col[3]);
+        const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
+        const vec4_t center = vec4_from_vec3(cell_center + t, 1.0f);
+        bool out_of_view = false;
+        for (int p = 0; p < 6 && !out_of_view; ++p) {
+            out_of_view = vec4_dot(plane[p], center) < -cell_radius;
+        }
+        if (out_of_view) continue;
         for (int i = 0; i < 8; ++i) {
             for (int k = 0; k < 3; ++k) {
                 const int bit = 1 << k;
@@ -7186,15 +7235,13 @@ static void draw_representations_opaque(ApplicationState* state) {
         md_array(md_gl_draw_op_t) draw_ops = 0;
         // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
         md_array(md_gl_draw_op_t) glyph_ops = 0;
-        const md_array(mat4_t) images = periodic_images(*state, frame_alloc);
-        const size_t num_images = md_array_size(images);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
 
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
                 cartoon_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
-                if (rep.periodic_images) push_periodic_images(&glyph_ops, beg, images, num_images, frame_alloc);
+                set_instances(glyph_ops, beg, rep_instances(*state, rep));
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
             }
@@ -7205,7 +7252,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                         .type = (md_gl_rep_type_t)rep.type,
                         .args = {},
                         .rep = state->representation.reps[i].md_rep,
-                        .model_matrix = NULL,
+                        .instances = rep_instances(*state, rep),
                     };
                     switch (rep.type) {
                     case RepresentationType::SpaceFill:
@@ -7248,9 +7295,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                     default:
                         break;
                     }
-                    const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
-                    if (rep.periodic_images) push_periodic_images(&draw_ops, beg, images, num_images, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 if (representation_shown(*state, rep)) {
@@ -7292,7 +7337,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 }
             } else if (rep.type == RepresentationType::SimulationBox) {
                 if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    draw_simulation_box(state, rep, images, num_images);
+                    draw_simulation_box(state, rep);
                 }
             }
         }
@@ -7556,9 +7601,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 static void draw_representations_marks(ApplicationState* data) {
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
-    // The periodic images as the opaque pass draws them, so the selected and highlighted atoms show in them too
-    const md_array(mat4_t) images = periodic_images(*data, frame_alloc);
-    const size_t num_images = md_array_size(images);
+    // In the periodic images as the opaque pass draws them, so the selected and highlighted atoms show in them too
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
 
@@ -7566,7 +7609,7 @@ static void draw_representations_marks(ApplicationState* data) {
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
             cartoon_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
-            if (rep.periodic_images) push_periodic_images(&glyph_ops, beg, images, num_images, frame_alloc);
+            set_instances(glyph_ops, beg, rep_instances(*data, rep));
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
@@ -7575,7 +7618,7 @@ static void draw_representations_marks(ApplicationState* data) {
                 .type = (md_gl_rep_type_t)rep.type,
                 .args = {},
                 .rep = data->representation.reps[i].md_rep,
-                .model_matrix = NULL,
+                .instances = rep_instances(*data, rep),
             };
             // The scales lead every struct of the args. The geometry has to be that of the opaque pass, whose depth
             // tells the marks in view from those behind it: the bond orders too.
@@ -7591,9 +7634,7 @@ static void draw_representations_marks(ApplicationState* data) {
             } else if (rep.type == RepresentationType::Cartoon) {
                 op.args.cartoon.chain_gaps = rep.chain_gaps;
             }
-            const size_t beg = md_array_size(draw_ops);
             md_array_push(draw_ops, op, frame_alloc);
-            if (rep.periodic_images) push_periodic_images(&draw_ops, beg, images, num_images, frame_alloc);
         }
     }
 
