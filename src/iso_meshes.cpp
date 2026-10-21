@@ -233,10 +233,24 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
         desc.sheets[k] = slots[k].sheets;
     }
 
-    // BENCHMARK: the step by step profile, from an extra extraction run first
+    // BENCHMARK: the extraction timed several times first (a GPU that lowers its clocks between bursts, as
+    // the RTX 3080 does, gives single timings that vary several times over: the median, min and max are
+    // reported), then the step by step profile from one more run
     static md_gto_iso_gpu_profile_t prof;
     static char prof_text[32768];
     prof_text[0] = '\0';
+    enum { BENCH_RUNS = 5 };
+    double bench_ms[BENCH_RUNS + 1] = {};
+    int bench_n = 0;
+    if (bench_profile) {
+        for (int r = 0; r < BENCH_RUNS; ++r) {
+            md_gto_iso_gpu_mesh_t tm = {};
+            const md_tick_t t0 = md_tick_now();
+            if (!md_gto_iso_gpu_extract(stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc, &tm)) break;
+            bench_ms[bench_n++] = md_tick_to_milliseconds(md_tick_now() - t0);
+            md_gto_iso_gpu_mesh_free(stream, &tm);
+        }
+    }
     if (bench_profile) {
         md_gto_iso_gpu_mesh_t pm = {};
         md_gto_iso_gpu_profile_set(&prof);
@@ -253,8 +267,16 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
     if (!md_gto_iso_gpu_extract(stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc, &gm)) {
         return false;
     }
-    const double extract_ms = md_tick_to_milliseconds(md_tick_now() - t_extract);
+    double extract_ms = md_tick_to_milliseconds(md_tick_now() - t_extract);
     bench_extractions++;
+    double ext_min = extract_ms, ext_max = extract_ms;
+    if (bench_profile && bench_n > 0) {     // the median of the timed runs and this one
+        bench_ms[bench_n++] = extract_ms;
+        for (int i = 1; i < bench_n; ++i) for (int j = i; j > 0 && bench_ms[j - 1] > bench_ms[j]; --j) { const double t = bench_ms[j]; bench_ms[j] = bench_ms[j - 1]; bench_ms[j - 1] = t; }
+        ext_min = bench_ms[0];
+        ext_max = bench_ms[bench_n - 1];
+        extract_ms = bench_ms[bench_n / 2];
+    }
     m->extract_ms = extract_ms;
 
     bool ok = false;
@@ -298,8 +320,9 @@ static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
             if (len < (int)sizeof(head)) {
                 snprintf(head + len, sizeof(head) - len,
                          "   %u bricks, %u corner slots, %u vertices, %u triangles\n"
-                         "   extract %.3f ms, read back %.3f ms, GL upload %.3f ms%s\n",
-                         gm.num_bricks, gm.num_corner_slots, gm.vertex_count, gm.index_count / 3, extract_ms, read_ms, upload_ms, set_text);
+                         "   extract %.3f ms (median of %d: min %.3f, max %.3f), read back %.3f ms, GL upload %.3f ms%s\n",
+                         gm.num_bricks, gm.num_corner_slots, gm.vertex_count, gm.index_count / 3, extract_ms, bench_n > 0 ? bench_n : 1,
+                         ext_min, ext_max, read_ms, upload_ms, set_text);
             }
             bench_append(head);
             bench_append(prof_text);
