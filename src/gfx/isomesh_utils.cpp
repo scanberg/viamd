@@ -53,9 +53,9 @@ static constexpr int   BLUE_NOISE_SIZE = 64;    // BLUE_NOISE_SIZE in isomesh.fr
 // The parameters of the caller's geometry (geometry_snippet's geom_param): texels of RGBA32F
 enum GeometryParam {
     GeometryParam_Frame    = 0,     // the frame, -, -, whether there is an opaque scene's depth
-    GeometryParam_Draw     = 1,     // the draw's opacity, its id's low and high 16 bits (geometry_set_draw)
+    GeometryParam_Draw     = 1,     // the draw's opacity, its id's low and high 16 bits, its F0 (geometry_set_draw)
     GeometryParam_Light    = 2,     // the direction toward the key light (view space), the roughness
-    GeometryParam_Radiance = 3,     // the key light's radiance, F0
+    GeometryParam_Radiance = 3,     // the key light's radiance, -
     GeometryParam_Sky      = 4,     // the sky's radiance, the basic model (> 0.5)
     GeometryParam_Ground   = 5,     // the ground's, the basic model's ambient
     GeometryParam_Basic    = 6,     // its specular, linear colours (> 0.5), the light's strength
@@ -71,6 +71,7 @@ struct GeometrySlot {
     GLuint   tex[GEOMETRY_FRAMES]    = {};
     uint64_t serial[GEOMETRY_FRAMES] = {};      // the frame (geom.serial) it was written for
     float    opacity[GEOMETRY_FRAMES] = {};
+    float    ior[GEOMETRY_FRAMES] = {};
 };
 static struct {
     GeometrySlot* slots = nullptr;
@@ -830,7 +831,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 {(float)t->frame, 0.0f, 0.0f, use_depth ? 1.0f : 0.0f},
                 {1.0f, 0.0f, 0.0f, 0.0f},
                 {light.light_dir.x, light.light_dir.y, light.light_dir.z, desc.shading.roughness},
-                {light.light_irradiance.x, light.light_irradiance.y, light.light_irradiance.z, F0},
+                {light.light_irradiance.x, light.light_irradiance.y, light.light_irradiance.z, 0.0f},
                 {sky.x, sky.y, sky.z, desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f},
                 {ground.x, ground.y, ground.z, CLAMP(desc.shading.ambient, 0.0f, 1.0f)},
                 {MAX(desc.shading.specular, 0.0f), desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
@@ -1162,7 +1163,7 @@ const float GEOM_PI              = 3.1415926535;
 #define geom_light_dir       (geom_param(2).xyz)
 #define geom_roughness       (geom_param(2).w)
 #define geom_dir_radiance    (geom_param(3).xyz)
-#define geom_F0              (geom_param(3).w)
+#define geom_F0              (geom_param(1).w)     // the draw's
 #define geom_sky_radiance    (geom_param(4).xyz)
 #define geom_basic           (geom_param(4).w)
 #define geom_ground_radiance (geom_param(5).xyz)
@@ -1332,7 +1333,7 @@ bool geometry_drawn_in(Pass pass) {
     return pass == Pass_Peel0 || pass == Pass_Peel1 || pass == Pass_Depth || pass == Pass_Accumulate;
 }
 
-void geometry_set_draw(float opacity, uint32_t id) {
+void geometry_set_draw(float opacity, float ior, uint32_t id) {
     if (!gl.ok) return;
     if (id >= geom.count) {
         const uint32_t count = MAX(id + 1, geom.count * 2);
@@ -1345,6 +1346,7 @@ void geometry_set_draw(float opacity, uint32_t id) {
     GeometrySlot& s = geom.slots[id];
     const uint32_t f = (uint32_t)(geom.serial % GEOMETRY_FRAMES);
     opacity = CLAMP(opacity, 0.0f, 1.0f);
+    ior = MAX(ior, 1.0f);
 
     GLint active = 0;
     glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
@@ -1360,16 +1362,17 @@ void geometry_set_draw(float opacity, uint32_t id) {
     }
     glBindTexture(GL_TEXTURE_2D, s.tex[f]);
     // Once per frame (the same in its every pass): the frame's parameters and the draw's
-    if (s.serial[f] != geom.serial || s.opacity[f] != opacity) {
+    if (s.serial[f] != geom.serial || s.opacity[f] != opacity || s.ior[f] != ior) {
         float params[GeometryParam_Count][4];
         MEMCPY(params, geom.params, sizeof(params));
         params[GeometryParam_Draw][0] = opacity;
         params[GeometryParam_Draw][1] = (float)(id & 0xFFFFu);
         params[GeometryParam_Draw][2] = (float)(id >> 16);
-        params[GeometryParam_Draw][3] = 0.0f;
+        params[GeometryParam_Draw][3] = powf((1.0f - ior) / (1.0f + ior), 2.0f);     // F0
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GeometryParam_Count, 1, GL_RGBA, GL_FLOAT, params);
         s.serial[f]  = geom.serial;
         s.opacity[f] = opacity;
+        s.ior[f]     = ior;
     }
     glActiveTexture((GLenum)active);
 }

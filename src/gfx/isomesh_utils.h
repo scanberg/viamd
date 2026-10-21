@@ -201,10 +201,11 @@ bool geometry_drawn_in(Pass pass);
 // (1 by default), as the G-buffer's snippet has it.
 str_t geometry_snippet(Pass pass);
 
-// Before each draw of the caller's geometry in a pass: the opacity of what it draws (its colours' alpha times this) and
-// an id that tells its thresholds from those of another draw of the same atoms (another representation's), the same
-// in every pass of a frame. Binds its parameters for the snippets (MD_GL_USER_TEXTURE_UNIT + 1), written once per
-// frame and id, never while queued draws may still read them.
-void geometry_set_draw(float opacity, uint32_t id);
+// Before each draw of the caller's geometry in a pass: the opacity of what it draws (its colours' alpha times this), its
+// index of refraction (the reflection that adds to the opacity toward its silhouette, as RenderDesc::shading.ior is the
+// surfaces'; 1 none), and an id that tells its thresholds from those of another draw of the same atoms (another
+// representation's), the same in every pass of a frame. Binds its parameters for the snippets (MD_GL_USER_TEXTURE_UNIT
+// + 1), written once per frame and id, never while queued draws may still read them.
+void geometry_set_draw(float opacity, float ior, uint32_t id);
 
 }  // namespace isomesh

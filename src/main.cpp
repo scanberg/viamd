@@ -7316,7 +7316,7 @@ static void draw_representations_transparent_geometry(isomesh::Pass pass, void* 
             place_ops(&ops, 0, *state, rep, false, frame_alloc);
         }
 
-        isomesh::geometry_set_draw(rep.opacity, (uint32_t)i);
+        isomesh::geometry_set_draw(rep.opacity, rep.ior, (uint32_t)i);
         md_gl_draw_args_t args = {
             .shaders = state->gl.shaders_transparent[pass],
             .draw_operations = {
@@ -7518,6 +7518,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         if (!shown) continue;
         h = md_hash64(&rep.type, sizeof(rep.type), h);
         h = md_hash64(&rep.opacity, sizeof(rep.opacity), h);
+        h = md_hash64(&rep.ior, sizeof(rep.ior), h);
         h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);

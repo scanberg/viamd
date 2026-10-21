@@ -1206,6 +1206,8 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_flt(rep->saturation, arg);
     } else if (str_eq(ident, STR_LIT("Opacity"))) {
         viamd::extract_flt(rep->opacity, arg);
+    } else if (str_eq(ident, STR_LIT("IOR"))) {
+        viamd::extract_flt(rep->ior, arg);
     } else if (str_eq(ident, STR_LIT("TintColor"))) {
         viamd::extract_vec4(rep->tint_color, arg);
     } else if (str_eq(ident, STR_LIT("TintScale"))) {
@@ -1451,6 +1453,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     viamd::write_vec4(state, STR_LIT("BaseColor"), rep.base_color);
     viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
     viamd::write_flt(state,  STR_LIT("Opacity"), rep.opacity);
+    viamd::write_flt(state,  STR_LIT("IOR"), rep.ior);
     viamd::write_vec4(state, STR_LIT("TintColor"), rep.tint_color);
     viamd::write_flt(state,  STR_LIT("TintScale"), rep.tint_scale);
     viamd::write_vec4(state, STR_LIT("SecondaryStructureColorUnknown"), rep.secondary_structure.color_unknown);
@@ -2520,6 +2523,13 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
         prop::row("opacity", "How much of what lies behind it it hides: 1 opaque. Below that it is drawn transparent, with "
                              "the isosurfaces, and is then not picked and casts no ambient occlusion or shadows");
         update_rep |= ImGui::SliderFloat("##opacity", &rep.opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        // Only while transparent
+        ImGui::BeginDisabled(rep.opacity >= 1.0f);
+        prop::row("refraction", "Index of refraction: how much of the light the transparent surface reflects, the more toward its\n"
+                                "silhouette, which it outlines (Fresnel). 1: none, an even veil. 1.33 water, 1.5 glass (the isosurfaces'),\n"
+                                "higher a brighter rim and more of the surroundings mirrored.");
+        update_rep |= ImGui::SliderFloat("##ior", &rep.ior, 1.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
     }
 
     return update_rep;

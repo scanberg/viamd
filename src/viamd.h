@@ -971,6 +971,9 @@ struct Representation {
     // How much of what lies behind it it hides, of md_gl's representations (SpaceFill to Cartoon): below 1 drawn
     // transparent, with the isosurface meshes (representation_transparent in main.cpp), rather than into the G-buffer
     float opacity = 1.0f;
+    // And while transparent, its index of refraction: how much of the light it reflects, the more toward its silhouette
+    // (Fresnel). 1 none (an even veil), 1.5 glass; the isosurfaces' is 1.5
+    float ior = 1.5f;
 
     // scaling parameter (radius, width, height, etc depending on type). Cartoon: coil, sheet, helix, and the thickness of
     // the lipids and nucleic acids (w)
