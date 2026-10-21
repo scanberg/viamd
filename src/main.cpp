@@ -5272,11 +5272,14 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
 // still, in two parts, to the clipboard as one text:
 // - times: the meshes drawn every frame, each step timed over a window of the profiler's of its own (the second after
 //   it was set, which the one before does not reach into): the rows of their ISOSURFACE MESHES;
-// - noise: per step (but the last, the first again for the drift of the times) two means of their own, of seeds 0 and 1
-//   (isomesh::target_set_seed) and of render()'s own jitter rather than the view's, read back after 1, 2, 4 ... 128
-//   frames. The RMS of their difference over sqrt(2) is the error of a mean of that many frames; the difference of a
-//   step's mean of 128 frames to the first step's, less the noise of the two, its bias. With the times of the first
-//   part, what each step takes to the error the first has after 32 and after 128 frames.
+// - noise: per step (but the last, the first again for the drift of the times) means of their own, of render()'s own
+//   jitter rather than the view's and seeds of their own (isomesh::target_set_seed): first a reference, the average of
+//   six means of 128 frames (seeds 1 to 6), then two means (seeds 0, the jitter and thresholds as they are without a
+//   seed, and 7) read back after 1, 2, 4 ... 128 frames, whose RMS difference to the reference is the error of a mean
+//   of that many frames. Not the difference of two means of their own: their jitters are the one sequence shifted, and
+//   their errors partly cancel at some numbers of frames and not at others (as 8 to 16 did, on every machine). The
+//   difference of a step's reference to the first step's, less the noise of the two, its bias. With the times of the
+//   first part, what each step takes to the error the first has after 32 and after 128 frames.
 struct ProfilerSweepStep {
     isomesh::Experiment experiment;
     uint32_t samples;       // isomesh::set_experiment_samples
@@ -5311,6 +5314,7 @@ static constexpr int PROFILER_SWEEP_STEPS = 8;      // at most, of a set
 static constexpr int PROFILER_SWEEP_NOISE_STEPS = PROFILER_SWEEP_STEPS - 1;
 static constexpr uint32_t profiler_sweep_frames[] = {1, 2, 4, 8, 16, 32, 64, 128};
 static constexpr int PROFILER_SWEEP_CHECKPOINTS = (int)ARRAY_SIZE(profiler_sweep_frames);
+static constexpr int PROFILER_SWEEP_REF_ROUNDS = 3;     // of two means each: the reference of six
 
 static struct {
     int  set = 1;               // of profiler_sweep_sets
@@ -5319,6 +5323,7 @@ static struct {
     int  step = -1;             // times: the step being timed, -1: none
     int  publish_at = 0;        // the profiler's publish its times are taken from
     int  noise_step = -1;       // noise: the step being measured, -1: none
+    int  round = 0;             // < PROFILER_SWEEP_REF_ROUNDS: two means of the reference; then the two measured
     int  checkpoint = 0;        // the next of profiler_sweep_frames
     uint32_t last_frames = 0;   // in the means at the last frame, to see them restart
     bool keep_before = false;
@@ -5336,7 +5341,8 @@ static struct {
     uint32_t tex_color = 0;     // what the two means are put over: not the view
     uint32_t width = 0, height = 0;
     float* mean[2] = {};        // the two, read back
-    float* reference = nullptr; // the first step's mean of 128 frames (seed 0)
+    float* reference = nullptr; // the step's: the sum of the means of the reference, then their average
+    float* reference0 = nullptr;    // the first step's
     md_str_writer_t table = {};
     bool has_table = false;
 } profiler_sweep;
@@ -5353,8 +5359,10 @@ static void profiler_sweep_free_noise() {
         if (m) md_free(md_get_heap_allocator(), m, bytes);
         m = nullptr;
     }
-    if (s.reference) md_free(md_get_heap_allocator(), s.reference, bytes);
-    s.reference = nullptr;
+    for (float** r : {&s.reference, &s.reference0}) {
+        if (*r) md_free(md_get_heap_allocator(), *r, bytes);
+        *r = nullptr;
+    }
     s.width = s.height = 0;
 }
 
@@ -5363,13 +5371,22 @@ static void profiler_sweep_set_step(int step) {
     isomesh::set_experiment_samples(profiler_sweep.steps[step].samples);
 }
 
-// The noise of a step from its start: two new means
+// The round of the noise from its start: two new means, of the seeds of the round
 static void profiler_sweep_noise_restart() {
     auto& s = profiler_sweep;
-    isomesh::target_set_seed(&s.targets[0], 0);
-    isomesh::target_set_seed(&s.targets[1], 1);
+    const bool measured = s.round >= PROFILER_SWEEP_REF_ROUNDS;
+    isomesh::target_set_seed(&s.targets[0], measured ? 0u : (uint32_t)(1 + 2 * s.round));
+    isomesh::target_set_seed(&s.targets[1], measured ? 7u : (uint32_t)(2 + 2 * s.round));
     s.checkpoint = 0;
     s.last_frames = 0;
+}
+
+// The noise of a step from its start: its reference first
+static void profiler_sweep_noise_begin_step() {
+    auto& s = profiler_sweep;
+    s.round = 0;
+    if (s.reference) MEMSET(s.reference, 0, sizeof(float) * 4 * (size_t)s.width * s.height);
+    profiler_sweep_noise_restart();
 }
 
 // The RMS difference of two composites (premultiplied RGBA) in units of 1/255, over the pixels either covers; with
@@ -5441,12 +5458,13 @@ static void profiler_sweep_finish(ApplicationState* state, bool copy) {
     auto& s = profiler_sweep;
     if (copy) {
         md_str_writer_t& w = s.table;
-        md_str_writer_fmt(&w, "\n# noise: per experiment two means of their own (seeds 0 and 1, render()'s own jitter), read back "
-                              "after k frames. err_k: the RMS of their difference / sqrt(2), the error of a mean of k frames, "
-                              "in the composite's premultiplied linear radiance x 255 over the pixels either covers\n");
-        md_str_writer_fmt(&w, "# diff_128: the RMS difference of the mean of 128 frames (seed 0) to the first experiment's; bias: "
-                              "that less the noise of the two; _interior: away from the edges of the coverage; _p99: the 99th "
-                              "percentile of a pixel's largest difference\n");
+        md_str_writer_fmt(&w, "\n# noise: per experiment a reference, the average of six means of 128 frames (seeds 1-6, render()'s "
+                              "own jitter), and two means (seeds 0 and 7) read back after k frames. err_k: their RMS difference "
+                              "to the reference (less its own error, ~err_128 / sqrt(7)), the error of a mean of k frames, in "
+                              "the composite's premultiplied linear radiance x 255 over the pixels either covers\n");
+        md_str_writer_fmt(&w, "# diff_128: the RMS difference of the reference to the first experiment's; bias: that less the noise "
+                              "of the two; _interior: away from the edges of the coverage; _p99: the 99th percentile of a "
+                              "pixel's largest difference\n");
         md_str_writer_fmt(&w, "# ms: ISOSURFACE MESHES on the GPU per frame (the times above), rel: of the rest of the frame; "
                               "ms_to_q32, ms_to_q128: frames to the error the first experiment has after 32, 128 frames "
                               "(log-log between the k, beyond 128 along the last two) times ms\n");
@@ -5460,7 +5478,8 @@ static void profiler_sweep_finish(ApplicationState* state, bool copy) {
             md_str_writer_fmt(&w, "%d %s,%u,%.4f,%.4f", i + 1, isomesh::experiment_name(s.steps[i].experiment),
                               s.spp[i], s.ms[i], rest > 0.0 ? (double)s.ms[i] / rest : 0.0);
             for (int k = 0; k < PROFILER_SWEEP_CHECKPOINTS; ++k) md_str_writer_fmt(&w, ",%.4f", s.err[i][k]);
-            auto bias = [](double d, double e0, double e1) { return sqrt(MAX(0.0, d * d - e0 * e0 - e1 * e1)); };
+            // The references' own noise: a mean of 128 frames' error over sqrt(6)
+            auto bias = [](double d, double e0, double e1) { return sqrt(MAX(0.0, d * d - (e0 * e0 + e1 * e1) / 6.0)); };
             const double b  = bias(s.diff_ref[i], s.err[i][last], s.err[0][last]);
             const double bi = bias(s.diff_ref_interior[i], s.err_interior[i], s.err_interior[0]);
             md_str_writer_fmt(&w, ",%.4f,%.4f,%.4f,%.4f,%.4f,%.2f", s.diff_ref[i], b, s.err_interior[i], s.diff_ref_interior[i], bi,
@@ -5536,32 +5555,35 @@ static void profiler_sweep_update(ApplicationState* state) {
         s.step = -1;
         s.noise_step = 0;
         profiler_sweep_set_step(s.noise_step);
-        profiler_sweep_noise_restart();
+        profiler_sweep_noise_begin_step();
     }
     (void)state;
 }
 
-// Noise: the two means of the step, drawn with the view's desc and read back at profiler_sweep_frames
+// Noise: the means of the step two at a time, drawn with the view's desc: those of the reference read back when they
+// have 128 frames, the two measured at profiler_sweep_frames
 static void profiler_sweep_render(ApplicationState* state, const isomesh::RenderDesc& view_desc) {
     auto& s = profiler_sweep;
     if (s.noise_step < 0) return;
     const uint32_t w = view_desc.render_target.width, h = view_desc.render_target.height;
     if (w == 0 || h == 0) return;
+    const size_t n = (size_t)w * h;
     if (s.width != w || s.height != h) {
-        // Of another size: the reference with it, so all of the noise again
-        const bool restart_all = s.reference != nullptr;
+        // Of another size: the references with it, so all of the noise again
+        const bool restart_all = s.reference0 != nullptr;
         profiler_sweep_free_noise();
         s.width = w;
         s.height = h;
         gl::init_texture_2D(&s.tex_color, (int)w, (int)h, GL_RGBA16F);
-        const size_t bytes = sizeof(float) * 4 * (size_t)w * h;
+        const size_t bytes = sizeof(float) * 4 * n;
         for (float*& m : s.mean) m = (float*)md_alloc(md_get_heap_allocator(), bytes);
-        s.reference = (float*)md_alloc(md_get_heap_allocator(), bytes);
+        s.reference  = (float*)md_alloc(md_get_heap_allocator(), bytes);
+        s.reference0 = (float*)md_alloc(md_get_heap_allocator(), bytes);
         if (restart_all) {
             s.noise_step = 0;
             profiler_sweep_set_step(s.noise_step);
         }
-        profiler_sweep_noise_restart();
+        profiler_sweep_noise_begin_step();
     }
 
     isomesh::RenderDesc desc = view_desc;
@@ -5571,32 +5593,58 @@ static void profiler_sweep_render(ApplicationState* state, const isomesh::Render
     desc.keep_drawing = true;
     for (auto& t : s.targets) isomesh::render(&t, desc);
 
+    const bool measured = s.round >= PROFILER_SWEEP_REF_ROUNDS;
     const uint32_t frames = s.targets[0].frame;
-    if (frames != s.targets[1].frame || frames < s.last_frames || frames > profiler_sweep_frames[s.checkpoint]) {
-        profiler_sweep_noise_restart();     // a mean restarted (the view moved), or a frame was missed
+    const uint32_t due = measured ? profiler_sweep_frames[s.checkpoint] : profiler_sweep_frames[PROFILER_SWEEP_CHECKPOINTS - 1];
+    if (frames != s.targets[1].frame || frames < s.last_frames || frames > due) {
+        profiler_sweep_noise_restart();     // a mean restarted (the view moved), or a frame was missed: the round again
         return;
     }
     s.last_frames = frames;
-    if (frames < profiler_sweep_frames[s.checkpoint]) return;
+    if (frames < due) return;
 
     if (!isomesh::target_read_mean(&s.targets[0], s.mean[0]) || !isomesh::target_read_mean(&s.targets[1], s.mean[1])) {
         profiler_sweep_noise_restart();
         return;
     }
+
+    // The reference: its sum, then, after the last of its rounds, the average
+    if (!measured) {
+        for (size_t k = 0; k < 4 * n; ++k) s.reference[k] += s.mean[0][k] + s.mean[1][k];
+        s.round += 1;
+        if (s.round == PROFILER_SWEEP_REF_ROUNDS) {
+            const float inv = 1.0f / (float)(2 * PROFILER_SWEEP_REF_ROUNDS);
+            for (size_t k = 0; k < 4 * n; ++k) s.reference[k] *= inv;
+        }
+        profiler_sweep_noise_restart();
+        return;
+    }
+
+    // The two measured: their mean square error to the reference, less the reference's own (done in finish)
     const int i = s.noise_step;
-    s.err[i][s.checkpoint] = profiler_sweep_rms(s.mean[0], s.mean[1], w, h) / sqrt(2.0);
+    auto err2 = [&](const float* edges) {
+        const double e0 = profiler_sweep_rms(s.mean[0], s.reference, w, h, edges);
+        const double e1 = profiler_sweep_rms(s.mean[1], s.reference, w, h, edges);
+        return 0.5 * (e0 * e0 + e1 * e1);
+    };
+    s.err[i][s.checkpoint] = sqrt(err2(nullptr));
     s.checkpoint += 1;
     if (s.checkpoint < PROFILER_SWEEP_CHECKPOINTS) return;
 
-    if (i == 0) MEMCPY(s.reference, s.mean[0], sizeof(float) * 4 * (size_t)w * h);
-    s.err_interior[i] = profiler_sweep_rms(s.mean[0], s.mean[1], w, h, s.reference) / sqrt(2.0);
-    s.diff_ref[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h);
-    s.diff_ref_interior[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h, s.reference);
-    s.diff_ref_p99[i] = profiler_sweep_p99(s.mean[0], s.reference, w, h);
+    if (i == 0) MEMCPY(s.reference0, s.reference, sizeof(float) * 4 * n);
+    s.err_interior[i] = sqrt(err2(s.reference0));
+    // Less the reference's own error, ~ that of a mean of 128 frames over sqrt(6): err^2 = true^2 + err_128^2 / 7
+    const double ref2 = s.err[i][PROFILER_SWEEP_CHECKPOINTS - 1] * s.err[i][PROFILER_SWEEP_CHECKPOINTS - 1] / 7.0;
+    const double ref2_interior = s.err_interior[i] * s.err_interior[i] / 7.0;
+    for (int k = 0; k < PROFILER_SWEEP_CHECKPOINTS; ++k) s.err[i][k] = sqrt(MAX(0.0, s.err[i][k] * s.err[i][k] - ref2));
+    s.err_interior[i] = sqrt(MAX(0.0, s.err_interior[i] * s.err_interior[i] - ref2_interior));
+    s.diff_ref[i] = profiler_sweep_rms(s.reference, s.reference0, w, h);
+    s.diff_ref_interior[i] = profiler_sweep_rms(s.reference, s.reference0, w, h, s.reference0);
+    s.diff_ref_p99[i] = profiler_sweep_p99(s.reference, s.reference0, w, h);
     s.noise_step += 1;
     if (s.noise_step < s.num_steps - 1) {
         profiler_sweep_set_step(s.noise_step);
-        profiler_sweep_noise_restart();
+        profiler_sweep_noise_begin_step();
     } else {
         profiler_sweep_finish(state, true);
     }
@@ -5692,15 +5740,17 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::SameLine();
         if (ImGui::Button("Sweep")) profiler_sweep_start(data);
         ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. Their times, "
-                              "then their noise (two means of each, 128 frames). The table goes to the clipboard");
+                              "then their noise (eight means of each, 128 frames, two at a time). The table goes to the "
+                              "clipboard");
         ImGui::EndDisabled();
         if (sweeping) {
             ImGui::SameLine();
             if (profiler_sweep.step >= 0) {
                 ImGui::Text("times %d / %d", profiler_sweep.step + 1, profiler_sweep.num_steps);
             } else {
-                ImGui::Text("noise %d / %d, %u frames", profiler_sweep.noise_step + 1, profiler_sweep.num_steps - 1,
-                            profiler_sweep.targets[0].frame);
+                ImGui::Text("noise %d / %d, %s %d, %u frames", profiler_sweep.noise_step + 1, profiler_sweep.num_steps - 1,
+                            profiler_sweep.round < PROFILER_SWEEP_REF_ROUNDS ? "reference" : "measured",
+                            MIN(profiler_sweep.round + 1, PROFILER_SWEEP_REF_ROUNDS), profiler_sweep.targets[0].frame);
             }
             ImGui::SameLine();
             if (ImGui::Button("Stop")) profiler_sweep_finish(data, false);
