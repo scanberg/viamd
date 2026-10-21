@@ -132,8 +132,63 @@ md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_
 // Meshes
 // ---------------------------------------------------------------------------------------------------------------
 
+#if MD_ENABLE_GPU
+// The jobs under way, for iso_meshes_progress: a job and when it began
+static constexpr uint32_t MAX_JOBS = 64;
+static md_gto_iso_gpu_job_t* active_job[MAX_JOBS];
+static md_tick_t             active_t0[MAX_JOBS];
+static uint32_t              num_active = 0;
+
+static void job_register(md_gto_iso_gpu_job_t* job) {
+    if (num_active < MAX_JOBS) {
+        active_job[num_active] = job;
+        active_t0[num_active] = md_tick_now();
+        num_active++;
+    }
+}
+
+static void job_unregister(md_gto_iso_gpu_job_t* job) {
+    for (uint32_t i = 0; i < num_active; ++i) {
+        if (active_job[i] == job) {
+            num_active--;
+            active_job[i] = active_job[num_active];
+            active_t0[i] = active_t0[num_active];
+            return;
+        }
+    }
+}
+
+// Drops the job under way, if any: what it made is lost, the mesh shown stays
+static void job_cancel(IsoMeshes* m) {
+    if (!m->job) return;
+    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
+    job_unregister(job);
+    md_gto_iso_gpu_job_end(job, nullptr);
+    m->job = nullptr;
+    m->job_key = 0;
+    m->job_slots = 0;
+}
+#endif
+
+size_t iso_meshes_progress(float* fraction, size_t cap) {
+    size_t n = 0;
+#if MD_ENABLE_GPU
+    const md_tick_t now = md_tick_now();
+    for (uint32_t i = 0; i < num_active && n < cap; ++i) {
+        // a job done within a few frames shows nothing
+        if (md_tick_to_seconds(now - active_t0[i]) < 0.25) continue;
+        fraction[n++] = md_gto_iso_gpu_job_progress(active_job[i]);
+    }
+#else
+    (void)fraction;
+    (void)cap;
+#endif
+    return n;
+}
+
 static void release_extraction_state(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
+    job_cancel(m);      // it holds the set
     if (m->gpu_set) {
         md_gto_iso_gpu_set_destroy(state->gpu_stream, (md_gto_iso_gpu_set_t*)m->gpu_set);
     }
@@ -200,6 +255,85 @@ static void set_ranges(IsoMeshes* m, uint32_t num_slots, const uint32_t offset[]
 }
 
 #if MD_ENABLE_GPU
+// How long an update waits for a job's GPU work at most: a job of a few milliseconds is done within the frame
+// that began it or the next, a longer one goes on over frames
+static constexpr double JOB_POLL_MS = 3.0;
+
+// Starts the extraction of the slots as a job on the GPU; false when it cannot be (no device, no set for these
+// fields)
+static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key) {
+    if (!state->gpu_device || !state->gpu_stream) return false;
+    if (!m->gpu_set) {
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        FieldContext ctx;
+        if (!field_context(&ctx, temp, state)) return false;
+        const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS];
+        for (uint32_t k = 0; k < n; ++k) fields[k] = slots[k].field;
+        m->gpu_set = md_gto_iso_gpu_set_create(state->gpu_stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), fields, n, md_get_heap_allocator());
+        if (!m->gpu_set) {
+            MD_LOG_DEBUG("Isosurface meshes: no GPU set for these fields, extracting on the CPU");
+            return false;
+        }
+    }
+    md_gto_iso_gpu_desc_t desc = {};
+    desc.cell_size = cell_size;
+    desc.project_iterations = PROJECT_ITERATIONS;
+    desc.relax_iterations = RELAX_ITERATIONS;
+    desc.read_back = true;      // the mesh comes to the host with the job, for GL
+    for (uint32_t k = 0; k < n; ++k) {
+        desc.iso[k] = slots[k].iso;
+        desc.sheets[k] = slots[k].sheets;
+    }
+    md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(state->gpu_stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc);
+    if (!job) return false;
+    m->job = job;
+    m->job_key = key;
+    m->job_slots = n;
+    job_register(job);
+    return true;
+}
+
+// Advances the job. Done: its mesh replaces the one shown (m->key becomes the job's). Returns 1 while it runs,
+// 2 when it is done, 0 when it failed (the mesh shown is kept)
+static int job_poll(IsoMeshes* m, ApplicationState* state) {
+    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
+    if (md_gto_iso_gpu_job_poll(job, JOB_POLL_MS) == MD_GTO_ISO_GPU_JOB_RUNNING) return 1;
+    job_unregister(job);
+    md_gto_iso_gpu_mesh_t gm = {};
+    const bool done = md_gto_iso_gpu_job_end(job, &gm);
+    const uint64_t key = m->job_key;
+    const uint32_t n = m->job_slots;
+    m->job = nullptr;
+    m->job_key = 0;
+    m->job_slots = 0;
+    if (!done) return 0;
+    drop_gpu_xyz(m, state);
+    const bool ok = isomesh::mesh_upload(&m->mesh, gm.host_position, gm.host_normal, 4, gm.vertex_count, gm.host_index, gm.index_count);
+    if (ok) {
+        set_ranges(m, n, gm.index_offset, gm.index_count_of);
+        keep_xyz(m, gm.host_position, 4, gm.vertex_count);
+        keep_index(m, gm.host_index, gm.index_count);
+        // the positions stay on the device for what is evaluated at them
+        m->gpu_xyz = gm.position;
+        gm.position = 0;
+    }
+    m->extract_ms = gm.seconds_total * 1.0e3;
+    m->seconds = gm.seconds_total;
+    md_gto_iso_gpu_mesh_free(state->gpu_stream, &gm);
+    bench_extractions++;
+    m->key = key;
+    m->ok = ok;
+    m->on_gpu = true;
+    if (ok) {
+        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (GPU, over frames)", n, m->mesh.vertex_count,
+                     m->mesh.index_count / 3, m->seconds * 1.0e3);
+    } else {
+        MD_LOG_ERROR("Isosurface meshes: the upload failed");
+    }
+    return 2;
+}
+
 static bool extract_gpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size) {
     if (!state->gpu_device || !state->gpu_stream) return false;
     md_gpu_stream_t stream = state->gpu_stream;
@@ -448,6 +582,8 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
     return ok;
 }
 
+static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key, bool with_gpu);
+
 bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key) {
     ASSERT(m);
     ASSERT(state);
@@ -465,18 +601,46 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
     key = md_hash64(&n, sizeof(n), key);
     fkey = fkey ? fkey : 1;
     key  = key ? key : 1;
+#if MD_ENABLE_GPU
+    // A job under way: on with it if it makes what is wanted, else dropped (the mesh shown stays until the
+    // next one is done)
+    if (m->job && m->job_key != key) job_cancel(m);
+    if (m->job) {
+        if (job_poll(m, state) != 0) return m->ok;
+        // it failed: extracted now (the CPU path)
+        return extract_now(m, state, slots, n, cell_size, key, false);
+    }
+#endif
     if (key == m->key) return m->ok;
-    m->key = key;
-    m->ok  = false;
-    drop_gpu_xyz(m, state);
 
     for (uint32_t k = 0; k < n; ++k) {
-        if (!slots[k].field || !(slots[k].iso > 0.0)) return false;
+        if (!slots[k].field || !(slots[k].iso > 0.0)) {
+            m->key = key;
+            m->ok  = false;
+            drop_gpu_xyz(m, state);
+            return false;
+        }
     }
     if (fkey != m->fields_key) {
         release_extraction_state(m, state);
         m->fields_key = fkey;
     }
+#if MD_ENABLE_GPU
+    // on the GPU as a job, over frames if it takes long (the profile's extractions block: they are timed)
+    if (n > 0 && !bench_profile && job_start(m, state, slots, n, cell_size, key)) {
+        if (job_poll(m, state) != 0) return m->ok;
+        return extract_now(m, state, slots, n, cell_size, key, false);
+    }
+#endif
+    return extract_now(m, state, slots, n, cell_size, key, true);
+}
+
+// Extracts the slots before it returns: on the GPU (with_gpu) or else on the CPU. The mesh becomes the slots'
+// (m->key = key) whatever comes of it.
+static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key, bool with_gpu) {
+    m->key = key;
+    m->ok  = false;
+    drop_gpu_xyz(m, state);
 
     const md_tick_t t0 = md_tick_now();
     bool ok = false;
@@ -488,7 +652,9 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
         keep_index(m, nullptr, 0);
     } else {
 #if MD_ENABLE_GPU
-        ok = on_gpu = extract_gpu(m, state, slots, n, cell_size);
+        if (with_gpu) ok = on_gpu = extract_gpu(m, state, slots, n, cell_size);
+#else
+        (void)with_gpu;
 #endif
         if (!ok) {
             ok = extract_cpu(m, slots, n, cell_size);
