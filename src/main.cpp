@@ -5234,7 +5234,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r27), which every variant starts from
+// The library's defaults (r30), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5244,6 +5244,7 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
     s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
     s.wide_kernel = 3;     s.octree_start = 2;     s.dform_corners = false; s.flood = 1;
+    s.fused_project = true;
     return s;
 }
 
@@ -5254,6 +5255,7 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"brick test on",           [](md_gto_iso_gpu_switches_t* s) { s->skip_brick_test = false; }},
     {"flood off, brick test on",[](md_gto_iso_gpu_switches_t* s) { s->flood = 0; s->skip_brick_test = false; }},
     {"flood: every field",      [](md_gto_iso_gpu_switches_t* s) { s->flood = 2; }},
+    {"fused projection off",    [](md_gto_iso_gpu_switches_t* s) { s->fused_project = false; }},
     {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
     {"wide_kernel listed once", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 1; }},
     {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
@@ -5374,6 +5376,11 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                               "every field: MOs too, to see what it misses");
     }
 
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Fused projection", &sw.fused_project);
+    ImGui::SetItemTooltip("One orbital: the Newton projection in one launch, every iteration of a group of 128 vertices "
+                          "until it has converged (iso_project_list_f1), instead of an evaluation and a step launched per "
+                          "iteration over every vertex");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("D-form corners", &sw.dform_corners);
     ImGui::SetItemTooltip("Sets of densities: the corners in the D form (the D-form kernel chosen), the vertices as "
