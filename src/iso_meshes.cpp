@@ -293,6 +293,7 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     m->job = job;
     m->job_key = key;
     m->job_slots = n;
+    m->job_start = md_tick_now();
     job_register(job);
     return true;
 }
@@ -301,7 +302,10 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
 // 2 when it is done, 0 when it failed (the mesh shown is kept)
 static int job_poll(IsoMeshes* m, ApplicationState* state) {
     md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
-    if (md_gto_iso_gpu_job_poll(job, JOB_POLL_MS) == MD_GTO_ISO_GPU_JOB_RUNNING) return 1;
+    // waited for in its first frames only: a short job then ends within them, and a long one costs the frame
+    // nothing more than a look
+    const double age_ms = md_tick_to_milliseconds(md_tick_now() - m->job_start);
+    if (md_gto_iso_gpu_job_poll(job, age_ms < 4.0 * JOB_POLL_MS ? JOB_POLL_MS : 0.0) == MD_GTO_ISO_GPU_JOB_RUNNING) return 1;
     job_unregister(job);
     md_gto_iso_gpu_mesh_t gm = {};
     const bool done = md_gto_iso_gpu_job_end(job, &gm);

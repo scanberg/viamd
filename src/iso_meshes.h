@@ -64,6 +64,7 @@ struct IsoMeshes {
     void*    job = nullptr;
     uint64_t job_key = 0;
     uint32_t job_slots = 0;
+    int64_t  job_start = 0;     // md_tick_t: when it began
 
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;
