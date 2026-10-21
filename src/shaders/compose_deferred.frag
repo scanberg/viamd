@@ -4,7 +4,7 @@ layout (std140) uniform UniformData {
     vec4  u_proj_info;
     float u_linear_colors;      // 1: the colours are linear reflectances (ColorSpace_Linear), 0: sRGB
     float u_light_strength;     // of the directional light, relative to u_dir_radiance (and to the basic light)
-    float u_pad1;
+    float u_use_shadow;         // 1: u_texture_shadow holds the visibility of the key light
     float u_time;
     vec3  u_sky_radiance;       // the environment above the horizon of the view (y > 0)
     float u_roughness;
@@ -22,7 +22,8 @@ layout (std140) uniform UniformData {
 uniform sampler2D u_texture_depth;
 uniform sampler2D u_texture_color;
 uniform sampler2D u_texture_normal;
-uniform sampler2D u_texture_ao;
+uniform sampler2D u_texture_ao;        // the visibility of the surroundings (ambient occlusion)
+uniform sampler2D u_texture_shadow;    // the visibility of the key light (shadows)
 
 in vec2 tc;
 out vec4 out_frag;
@@ -125,14 +126,15 @@ vec3 environment_radiance(vec3 R, float roughness) {
     return mix(u_ground_radiance, u_sky_radiance, smoothstep(-w, w, R.y));
 }
 
-// The ambient occlusion is a visibility of the environment, so it applies to the environment's light only: to its
-// diffuse part as it is, and to its specular part as the visibility of the specular lobe (Lagarde and de Rousiers,
-// "Moving Frostbite to PBR", 2014). The key light is not occluded: that would take shadows.
+// Each light has its own visibility. The ambient occlusion is the visibility of the environment, so it applies to the
+// environment's light only: to its diffuse part as it is, and to its specular part as the visibility of the specular
+// lobe (Lagarde and de Rousiers, "Moving Frostbite to PBR", 2014). The shadows are the visibility of the key light, and
+// apply to it, diffuse and specular.
 float specular_occlusion(float N_dot_V, float ao, float roughness) {
     return clamp(pow(N_dot_V + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);    // roughness: alpha
 }
 
-vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
+vec3 shade(vec3 color, vec3 V, vec3 N, float ao, float shadow) {
     vec3  L = normalize(u_light_dir);
     vec3  H = normalize(L + V);
     float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
@@ -154,7 +156,7 @@ vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
         float numerator   = NDF * G * F;
         float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
         vec3 specular     = vec3(numerator / denominator);
-        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * (u_dir_radiance * u_light_strength) * N_dot_L;
+        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * (u_dir_radiance * u_light_strength) * (N_dot_L * shadow);
     }
 
     // Environment
@@ -177,14 +179,15 @@ vec3 shade(vec3 color, vec3 V, vec3 N, float ao) {
 // transform of the basic mode is the exact sRGB encoding, which takes it back to those values.
 const float BASIC_SHININESS = 48.0;
 
-vec3 shade_basic(vec3 color, vec3 V, vec3 N) {
+vec3 shade_basic(vec3 color, vec3 V, vec3 N, float shadow) {
     vec3  L = normalize(u_light_dir);
     float w = 0.5 + 0.5 * dot(N, L);
-    // The light strength scales what the light adds over the ambient, and its highlight
-    vec3  c = clamp(color, 0.0, 1.0) * (u_basic_ambient + u_light_strength * (1.0 - u_basic_ambient) * w * w);
+    // The light strength scales what the light adds over the ambient, and its highlight; the shadow takes both away
+    float light = u_light_strength * shadow;
+    vec3  c = clamp(color, 0.0, 1.0) * (u_basic_ambient + light * (1.0 - u_basic_ambient) * w * w);
     c /= max(1.0, max(c.r, max(c.g, c.b)));     // brighter than the colour (light above 1): keep its hue, not clip per channel
     vec3  H = normalize(L + V);
-    float s = u_light_strength * u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
+    float s = light * u_basic_specular * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
     return (u_linear_colors > 0.5) ? c : srgb_to_linear(c);     // linear colours are lit as they are
 }
@@ -209,8 +212,9 @@ void main() {
         vec3 V = vec3(0, 0, 1);     // every ray runs along the view axis
 #endif
         float ao = (u_use_ao > 0.5) ? texelFetch(u_texture_ao, pixel, 0).r : 1.0;
+        float shadow = (u_use_shadow > 0.5) ? texelFetch(u_texture_shadow, pixel, 0).r : 1.0;
         // Basic: the occlusion darkens all of it, as the depth cue it is there
-        color.rgb = (u_basic > 0.5) ? shade_basic(color.rgb, V, N) * ao : shade(color.rgb, V, N, ao);
+        color.rgb = (u_basic > 0.5) ? shade_basic(color.rgb, V, N, shadow) * ao : shade(color.rgb, V, N, ao, shadow);
         result = color.rgb;
     }
 

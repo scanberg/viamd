@@ -10,11 +10,7 @@ namespace postprocessing {
 
 void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
 
-void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
-
 void blit_texture(GLuint tex);
-// Writes the colour premultiplied by its alpha, (rgb * a, a): meant for the transparency buffer
-void blit_color(vec4_t color);
 
 }  // namespace postprocessing
 
@@ -72,11 +68,16 @@ struct Inputs {
     GLuint color = 0;
     GLuint normal = 0;
     GLuint velocity = 0;
-    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
+    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, DVR)
     GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces); its alpha is part of the coverage that puts the scene over the background
-    bool   transparency_under_hdr = false;  // transparency lies under transparency_hdr (a selection tint under isosurfaces): it is covered by its alpha
     GLuint history = 0;         // TAA history target, written this frame, at the size of the image made
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
+    // optional: the marks of the selection and the highlight at the size of the image made, put over it as it is presented
+    // (Settings::marks), filtered linearly: the selection in view (r), there at all (g), the highlight the same (b, a)
+    GLuint marks = 0;
+    // with marks: the group of the highlight (Settings::marks.groups) at the same size, R8 in units of 1/255: 1 + the
+    // group, 8 more where it is in view, 0 none
+    GLuint marks_group = 0;
 };
 
 struct Settings {
@@ -107,6 +108,16 @@ struct Settings {
         float gamma = 2.2f;
     } tonemap;
 
+    // Shadows of the directional light (both modes), found in screen space: the visibility of the light, as the
+    // ambient occlusion is the visibility of the surroundings. Scale-free as it is, with a longer reach. The light is
+    // a disk: softness is its angular radius (degrees), which sets how the shadows soften with distance.
+    struct {
+        bool enabled = true;
+        float softness = 10.0f;
+        bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
+    } shadows;
+
+    // The visibility of the surroundings, which darkens their light (physically based) or all of it (basic).
     // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
     struct {
         bool enabled = true;
@@ -139,12 +150,35 @@ struct Settings {
         bool enabled = true;
         float weight = 1.0f;
     } sharpen;
+
+    // The image made presented as it is made (dithered to 8 bits, with the marks), or kept as it is, to be presented
+    // later (present())
+    bool present = true;
+
+    // The marks (Inputs::marks), put over the finished image as it is presented, in display colours: [0] of the
+    // selection, [1] of the highlight. A tint where they are in view, a fill where they are behind something, and the
+    // outline of where they are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours,
+    // group k > 0 the colour groups[k - 1] with their alphas.
+    struct {
+        vec4_t visible[2] = {};
+        vec4_t hidden[2]  = {};
+        vec4_t outline[2] = {};
+        vec3_t groups[7]  = {};
+        float highlight   = 1.0f;   // how much of the highlight shows: it fades in
+        int   outline_step = 1;     // pixels between the taps that find the outline, which is about twice as wide
+    } marks;
 };
 
 
 // width / height: the G-buffer's size; out_width / out_height: the image made, when it is upscaled to it (0: the same)
 void initialize(int width, int height, int out_width = 0, int out_height = 0);
+// Makes the image into the framebuffer bound, over the viewport (the size of the image made): presented (dithered to
+// 8 bits, with the marks) or, without Settings::present, as it is, to be presented later
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
+// Presents an image execute() made without presenting it (its size: the viewport's) into the framebuffer bound:
+// dithered, with the marks of the selection and the highlight over it when there are any (Inputs::marks,
+// Settings::marks). For showing the image again while nothing in it has changed.
+void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings);
 void shutdown();
 
 // The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces

@@ -23,6 +23,10 @@ struct md_bitset_t;
 // Readers are forgiving and writers are exact: numbers are written with the digits it takes to read
 // back the same value, an extract_* that cannot parse its argument returns false and leaves the
 // destination untouched, and an entry nobody reads is skipped.
+//
+// The decimal point is '.', in every locale. A vector is read only when it has exactly the components
+// asked for: one written with decimal commas has more, and is logged and left unread rather than
+// read as other values.
 
 namespace viamd {
 

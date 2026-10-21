@@ -75,9 +75,6 @@
 // One colour per script property (by its place in the script), shared by every view of it
 inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
-#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
-#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
-
 #define INVALID_PICKING_IDX (~0U)
 
 constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
@@ -131,17 +128,19 @@ enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
 // TAA: each frame blended with the ones before; FXAA: each frame on its own (nothing carried over time)
 enum class AntiAliasingMode { TAA, FXAA, Count };
 
+// Stored in workspaces by value: append, never insert or reorder. The order shown is color_mapping_order.
 enum class ColorMapping {
     Uniform,
-    Type,
-    Serial,
-    CompName,
+    Type,               // the colour of the atom type
+    Serial,             // one per atom index
+    CompName,           // one per component name, of no meaning
     CompSeqId,
     CompIndex,
     InstId,
     InstIndex,
     SecondaryStructure,
     Attribute,          // a per atom attribute of the system, through a colour scale
+    CompType,           // the colour of the component type, from its standard monomer unless overridden (md_component_type_data_t)
     Count
 };
 
@@ -190,7 +189,16 @@ enum AtomBit_ {
     AtomBit_Highlighted = 1u << 0,
     AtomBit_Selected    = 1u << 1,
     AtomBit_Visible     = 1u << 2,
+    AtomBit_Marked      = 1u << 3,  // Highlighted or selected: the atoms the mark pass draws (md_gl's atom mask takes all its bits)
+    AtomBit_Dimmed      = 1u << 4,  // Not selected while something is: drawn with less of its colour (selection.color.saturation)
+    // The group of the highlight an atom is in, of HIGHLIGHT_GROUP_COLORS (selection.highlight_groups): which colour it
+    // is marked in. 0 when the highlight has no groups.
+    AtomBit_GroupShift  = 5,
+    AtomBit_GroupMask   = 7u << AtomBit_GroupShift,
 };
+
+// The colours the groups of the highlight are marked in, in turn: two groups fewer than this apart differ in colour
+#define HIGHLIGHT_GROUP_COLORS 8
 
 enum MolBit_ {
     MolBit_None                     = 0,
@@ -238,17 +246,34 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Simulation Box",
 };
 
+// What a component (residue) and an instance (chain) are, is said in the words of the files: residue and chain
 inline const char* color_mapping_str[(int)ColorMapping::Count] = {
-    "Uniform Color",
-    "Type",
-    "Serial",
+    "Uniform",
+    "Atom Type",
+    "Atom Index",
     "Res Name",
-    "Seq Id",
-    "Res Idx",
+    "Res Id",
+    "Res Index",
     "Chain Id",
-    "Chain Idx",
+    "Chain Index",
     "Secondary Structure",
     "Attribute",
+    "Res Type",
+};
+
+// The order the colour mappings are listed in
+inline const ColorMapping color_mapping_order[(int)ColorMapping::Count] = {
+    ColorMapping::Uniform,
+    ColorMapping::Type,
+    ColorMapping::Serial,
+    ColorMapping::CompName,
+    ColorMapping::CompType,
+    ColorMapping::CompSeqId,
+    ColorMapping::CompIndex,
+    ColorMapping::InstId,
+    ColorMapping::InstIndex,
+    ColorMapping::SecondaryStructure,
+    ColorMapping::Attribute,
 };
 
 
@@ -952,6 +977,7 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
+    bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
@@ -1165,6 +1191,33 @@ struct ApplicationState {
         // The periodic images shown: the scene again in the neighboring cells, this many each way along a, b and c, of
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
         int periodic_images[3] = {0, 0, 0};
+
+        // The copies of the scene those representations are drawn in, by instancing (md_gl_copies_t): its own first,
+        // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
+        // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
+        // update_view_param.
+        md_array(mat4_t) periodic_transforms      = 0;
+        md_array(mat4_t) periodic_transforms_prev = 0;
+
+        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
+        // they are. Shown in place of them and of the periodic images: each part of it the instances of the part, in the
+        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
+        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
+        // (centering, wrapping, making whole) are not applied while one is shown. The figure's: in the workspace.
+        int assembly = -1;
+
+        // Of the assembly shown, set by update_view_param: the transforms of its copies, part by part, those of part p
+        // [assembly_copy_offset[p], assembly_copy_offset[p + 1]). Empty when none is shown.
+        md_array(mat4_t)   assembly_transforms  = 0;
+        md_array(uint32_t) assembly_copy_offset = 0;
+
+        // Of the assembly shown, the instances of each part as a subset of the molecule (md_gl_subset_t), which its
+        // copies draw, and the subset of the cartoon glyphs which that makes. A part of all instances has none (0): the
+        // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
+        md_array(md_gl_subset_t) assembly_subsets       = 0;
+        md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
+        int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
+        uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
     } view;
 
     struct {
@@ -1179,7 +1232,7 @@ struct ApplicationState {
 
     struct {
         md_gl_shaders_t shaders = {};
-        md_gl_shaders_t shaders_lean_and_mean = {};
+        md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
     } gl;
 
     // --- MDLIB DATA ---
@@ -1218,8 +1271,9 @@ struct ApplicationState {
 
         FrameCache          frame_cache;
 
-        vec3_t              sys_aabb_min = {};
-        vec3_t              sys_aabb_max = {};
+        // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
+        float               bond_length_limit = 0.0f;
+        uint64_t            bond_length_limit_version = 0;
 
         bool                interpolate_system_state = false;
         // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
@@ -1237,6 +1291,10 @@ struct ApplicationState {
         int                 last_interpolated_stride = 1;
         uint32_t            dirty_gpu_buffers = 0;
         uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
+        uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
+                                                        // alone: the image of the scene depends on them only through the
+                                                        // visible and the selected atoms (representation.visibility_mask_hash,
+                                                        // render.selection_hash), not through the highlighted
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -1279,19 +1337,50 @@ struct ApplicationState {
         md_bitmask_t highlight_mask {};
         Selection* stored_selections = NULL;
 
+        // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
+        // tint where they are in view, a fainter fill where they are behind something else, and the outline of their
+        // silhouette, in view or not. The alpha is how much of the colour. While something is selected, the atoms that
+        // are not keep 'saturation' of their colour (AtomBit_Dimmed): the scene, not what is drawn over it.
         struct {
             struct {
-                vec4_t visible = {0.0f, 0.0f, 1.0f,  0.3f};
-                vec4_t hidden  = {0.0f, 0.0f, 0.25f, 0.4f};
+                vec4_t visible = {0.15f, 0.40f, 1.00f, 0.35f};
+                vec4_t hidden  = {0.15f, 0.40f, 1.00f, 0.15f};
+                vec4_t outline = {0.25f, 0.55f, 1.00f, 0.90f};
             } selection;
 
             struct {
-                vec4_t visible = {1.0f, 1.0f, 0.0f, 0.3f};
-                vec4_t hidden  = {0.5f, 0.5f, 0.0f, 0.4f};
+                vec4_t visible = {1.00f, 0.85f, 0.10f, 0.35f};
+                vec4_t hidden  = {1.00f, 0.85f, 0.10f, 0.15f};
+                vec4_t outline = {1.00f, 0.85f, 0.10f, 0.90f};
             } highlight;
 
-            float saturation = 0.3f;
+            // The colours of the groups of the highlight after the first, which has the highlight's own; with the
+            // alphas of its colours. In an order in which each differs much from the one before it, and the last
+            // from the highlight's yellow.
+            vec3_t highlight_groups[HIGHLIGHT_GROUP_COLORS - 1] = {
+                {0.25f, 0.85f, 0.35f},  // green
+                {0.95f, 0.30f, 0.80f},  // magenta
+                {0.15f, 0.85f, 0.95f},  // cyan
+                {1.00f, 0.50f, 0.05f},  // orange
+                {0.60f, 0.40f, 1.00f},  // violet
+                {0.70f, 0.95f, 0.15f},  // lime
+                {0.95f, 0.20f, 0.20f},  // red
+            };
+
+            float saturation = 0.3f;        // Taken into the G-buffer's shaders as they are made (output_snippet)
         } color;
+
+        double highlight_time = 0.0;        // when a highlight last appeared where there was none (ImGui::GetTime()): it fades in from there
+
+        // The groups of the highlight, when what set it has them: the elements of the expression hovered, residue(:) a
+        // group per residue. Group i is marked in colour i % HIGHLIGHT_GROUP_COLORS (AtomBit_GroupMask): 0 is the
+        // highlight's own, k > 0 color.highlight_groups[k - 1]. Not owned: set with the highlight every frame
+        // (script_vis_update), cleared at its start. key: what they are, 0 for none.
+        struct {
+            const md_bitset_t* sets = nullptr;
+            size_t count = 0;
+            uint64_t key = 0;
+        } highlight_groups;
 
         struct {
             AtomFilter filter;
@@ -1398,12 +1487,20 @@ struct ApplicationState {
             float specular = 0.25f;     // basic
         } shading;
 
+        // The visibilities of the two lights, found in screen space: the shadows of the directional light and the
+        // ambient occlusion of the surroundings. They share a temporal filter.
+        struct {
+            bool enabled = true;
+            float softness = 10.0f;     // the light's angular radius, degrees
+        } shadows;
+
         struct { 
             bool enabled = true;
             float intensity = 5.0f;
-            bool temporal = true;
             postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Performance;
         } ssao;
+
+        bool occlusion_temporal = true; // accumulate the shadows and the ambient occlusion over frames
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
         struct {
@@ -1543,6 +1640,9 @@ struct ApplicationState {
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
         // which rebuilds the detail over frames, else a frame on its own. Screenshots are at the full resolution.
         float render_scale = 1.0f;
+        // The scene rendered only while something in it changes, and settles; else the image made last is shown again
+        // (render: lazy rendering)
+        bool lazy_rendering = true;
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
@@ -1633,6 +1733,26 @@ struct ApplicationState {
     bool profiler_keep_isomeshes = false;   // Windows > Profiler: the isosurface meshes drawn every frame (isomesh::RenderDesc::keep_drawing)
     bool show_property_export_window = false;
 
+    // --- LAZY RENDERING ---
+    // The main view's image is made again only when what it is made from changes (scene_key), and for as many frames
+    // after as it takes to settle (the TAA's history, the temporal ambient occlusion, the meshed isosurfaces); else the
+    // image made last (gbuffer.tex.image) is shown again. Input (a click, a drag, a key, the wheel) counts as a change:
+    // what it edits need not be in the key. The marks are drawn again when they change, the scene or not.
+    struct {
+        uint64_t scene_key = 0;         // of the image kept
+        uint64_t marks_key = 0;         // of the marks kept, 0 for none
+        uint32_t settle_frames = 0;     // still to make after the last change
+        bool image_valid = false;       // gbuffer.tex.image holds the scene (not after the G-buffer is made anew)
+        uint64_t version = 0;           // render_invalidate()
+
+        // Of the main loop's: for the keys
+        uint64_t selection_hash = 0;
+        uint64_t highlight_hash = 0;
+
+        // Of the last frames, whether the scene was made in each (bit i: i frames ago), for the profiler
+        uint64_t history = 0;
+    } render;
+
     TextEditor editor = {};
     script_editor::Markers editor_markers = {};
     bool editor_focused = false;    // the script editor had keyboard focus when it was last drawn
@@ -1685,6 +1805,12 @@ enum ViewFitRound {
     ViewFitRound_Highlight = 0,
     ViewFitRound_Selection,
     ViewFitRound_Visible,
+};
+
+// The payload of EventType_ViamdRenderKey: what a handler draws into the main view from, folded into key
+struct RenderKey {
+    const ApplicationState* state = nullptr;
+    uint64_t key = 0;
 };
 
 // This is the supplied event payload for requesting a view fit.
@@ -2435,6 +2561,24 @@ static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationS
     };
 }
 
+// The marks of the selection and the highlight as post-processing puts them over the image (Settings::marks, from
+// selection.color). highlight: how much of the highlight shows; outline_step: the outline's width, about half of it
+static inline void marks_settings(postprocess_pipeline::Settings* settings, const ApplicationState& state, float highlight, int outline_step) {
+    const auto& c = state.selection.color;
+    settings->marks.visible[0] = c.selection.visible;
+    settings->marks.hidden[0]  = c.selection.hidden;
+    settings->marks.outline[0] = c.selection.outline;
+    settings->marks.visible[1] = c.highlight.visible;
+    settings->marks.hidden[1]  = c.highlight.hidden;
+    settings->marks.outline[1] = c.highlight.outline;
+    static_assert(sizeof(settings->marks.groups) == sizeof(c.highlight_groups), "A colour for each group after the first");
+    for (int i = 0; i < HIGHLIGHT_GROUP_COLORS - 1; ++i) {
+        settings->marks.groups[i] = c.highlight_groups[i];
+    }
+    settings->marks.highlight = highlight;
+    settings->marks.outline_step = outline_step;
+}
+
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);
 
@@ -2575,12 +2719,39 @@ void file_queue_process(ApplicationState* state);
 
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
-// camera_compute_default_view). fov_y is that of the camera that looks through it.
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {});
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}) {
+// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (view.assembly,
+// -1 for none), of those atoms in the instances of each of its parts, in all of the copies of the part.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members, fov_y, region);
+    reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
+
+// ASSEMBLIES (view.assembly). The parts of assembly asm_idx are [a.part_offset[asm_idx], a.part_offset[asm_idx + 1]),
+// and the instances and operators of part p those assembly_part gives, pointers into the arrays of a. Both read from the
+// offsets as they are, not through the md_urange_t of md_assembly_part_range and its kin: MSVC 19.52 (/O2) compiled
+// loops from the beg of such a range to index with the 64 bits that held both of its ends, the end in the upper half,
+// and read far out of bounds (assembly_transforms, reset_view).
+struct AssemblyPart {
+    const md_instance_idx_t* inst;
+    const md_instance_idx_t* inst_end;
+    const uint32_t* oper;
+    const uint32_t* oper_end;
+};
+
+static inline AssemblyPart assembly_part(const md_assembly_data_t& a, size_t p) {
+    ASSERT(p < a.part_count);
+    return {a.inst + a.part_inst_offset[p], a.inst + a.part_inst_offset[p + 1], a.oper + a.part_oper_offset[p], a.oper + a.part_oper_offset[p + 1]};
+}
+
+// The transforms of the copies an assembly of the system makes, part by part, and with copy_offset (optional) where the
+// copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
+void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
+
+// The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
+// freed: before the molecule goes
+void assembly_subsets_update(ApplicationState* app);
+void assembly_subsets_free(ApplicationState* app);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the
@@ -2611,6 +2782,10 @@ void script_vis_begin_frame(ApplicationState* state);
 // Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
 // shown (script.vis_shown), highlighting its atoms. After everything which sets one, before drawing.
 void script_vis_update(ApplicationState* state);
+// What is shown of the script (script.vis_shown), for the key of what the main view draws: 0 when nothing is
+uint64_t script_vis_shown_key(const ApplicationState* state);
+// The main view is made again (lazy rendering): for a change to what it draws that is not in its key
+static inline void render_invalidate(ApplicationState* state) { state->render.version += 1; }
 // Drops every result, waiting for a running computation. Before the system goes.
 void script_vis_reset(ApplicationState* state);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

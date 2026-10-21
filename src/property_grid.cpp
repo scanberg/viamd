@@ -77,8 +77,9 @@ float control_width_before(const char* text) {
 
 // The header of a section: dimmed, unframed, with a rule from its name to the right edge - a divider that folds,
 // beneath the rows of whatever the grid is the properties of. With 'enabled', the name is a checkbox that turns
-// what the section is about on and off. As high as a row, so that the checkbox fits it.
-static bool header(const char* name, bool default_open, bool* enabled, bool* toggled, const char* tooltip) {
+// what the section is about on and off ('mixed': shown as neither, for what is on in part). As high as a row, so that
+// the checkbox fits it.
+static bool header(const char* name, bool default_open, bool* enabled, bool* toggled, const char* tooltip, bool mixed = false) {
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (default_open) flags |= ImGuiTreeNodeFlags_DefaultOpen;
@@ -93,7 +94,9 @@ static bool header(const char* name, bool default_open, bool* enabled, bool* tog
     if (enabled) {
         ImGui::SameLine();
         ImGui::SetCursorScreenPos(ImVec2(mn.x + ImGui::GetTreeNodeToLabelSpacing(), mn.y));
+        if (mixed) ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
         const bool t = ImGui::Checkbox(name, enabled);
+        if (mixed) ImGui::PopItemFlag();
         if (toggled) *toggled = t;
         if (tooltip && tooltip[0]) ImGui::SetItemTooltip("%s", tooltip);
         x0 = ImGui::GetItemRectMax().x + style.ItemInnerSpacing.x * 2.0f;
@@ -130,6 +133,27 @@ bool section_toggle(const char* name, bool* enabled, bool* toggled, bool default
     ImGui::PushID(name);
     const bool open = header(name, default_open, enabled, toggled, tooltip);
     if (!open || !*enabled) {
+        ImGui::PopID();
+        return false;
+    }
+    section_open();
+    return true;
+}
+
+bool section_toggle_all(const char* name, bool* const* enabled, int count, bool* toggled, bool default_open, const char* tooltip) {
+    IM_ASSERT(g.active && enabled && count > 0);
+    if (toggled) *toggled = false;
+    int on = 0;
+    for (int i = 0; i < count; ++i) on += *enabled[i] ? 1 : 0;
+    bool all = on == count;
+    bool clicked = false;
+    ImGui::PushID(name);
+    const bool open = header(name, default_open, &all, &clicked, tooltip, on > 0 && on < count);
+    if (clicked) {
+        for (int i = 0; i < count; ++i) *enabled[i] = on == 0;
+        if (toggled) *toggled = true;
+    }
+    if (!open) {
         ImGui::PopID();
         return false;
     }

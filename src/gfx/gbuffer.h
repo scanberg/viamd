@@ -32,9 +32,14 @@ struct GBuffer {
         uint32_t transparency_hdr = 0;  // RGBA16F, premultiplied linear radiance blended over the scene before tone mapping (isosurfaces). Not attached to fbo.
         uint32_t history = 0;       // TAA history written this frame, at the output size
         uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
+        uint32_t marks = 0;         // RGBA8 at the output size, of fbo_marks: 1 where the selection is in view (r), there at all (g), the highlight the same (b, a)
+        uint32_t marks_group = 0;   // R8 at the output size, of fbo_marks: of the highlight, 1 + the group it is in, 8 more in view, 0 none (in units of 1/255)
+        uint32_t image = 0;         // RGB10_A2 at the output size, of fbo_image: the image made of the G-buffer, before it is presented
     } tex;
 
     uint32_t fbo = 0;
+    uint32_t fbo_marks = 0;
+    uint32_t fbo_image = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t out_width = 0;         // what post-processing makes of it: the size of the image shown, and of the history
@@ -46,3 +51,10 @@ struct GBuffer {
 void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width = 0, int out_height = 0);
 void gbuffer_clear(GBuffer* gbuf);
 void gbuffer_free(GBuffer* gbuf);
+
+// The mark pass: begin binds the marks targets (tex.marks, tex.marks_group, cleared) at their size, blending by max, with neither depth
+// test nor depth write nor scissor test, and the G-buffer's depth to md_gl's first user texture unit, where the marks
+// snippet samples it (MD_GL_USER_TEXTURE_UNIT). end undoes the blending and the binding and turns the depth test back
+// on; the framebuffer and viewport are left for the caller to set.
+void gbuffer_marks_begin(GBuffer* gbuf);
+void gbuffer_marks_end(GBuffer* gbuf);

@@ -275,7 +275,6 @@ if (NOT VIAMD_ENABLE_QM)
 endif()
 
 set(SHADER_FILES 
-    src/shaders/scale_hsv.frag
     src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
     src/shaders/luma.frag
@@ -310,6 +309,7 @@ set(SHADER_FILES
     src/shaders/ssao/ssao_bitmask.frag
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
+    src/shaders/shadows/screen_space.frag
 )
 
 # Bake shaders into a single header file

@@ -226,6 +226,11 @@ inline vec3_t oklch_to_srgb(vec3_t oklch) {
     return vec3_clamp_f(rgb, 0.0f, 1.0f);
 }
 
+// The color of the given lightness, chroma and hue (in turns, [0,1)) of OKLCH, brought into the sRGB gamut by lowering
+// its chroma, which keeps its lightness and hue. oklch_to_srgb clamps the channels instead, which shifts the hue of a
+// color out of gamut and brightens it.
+vec3_t oklch_to_srgb_mapped(float L, float C, float h);
+
 inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
@@ -278,6 +283,8 @@ void color_atoms_cpk                (uint32_t* colors, size_t count, const md_sy
 void color_atoms_type               (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_idx                (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_name          (uint32_t* colors, size_t count, const md_system_t& sys);
+// The colour of the type of each component (sys.component.type), white before the types are inferred
+void color_atoms_comp_type          (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_system_t& sys);
@@ -331,3 +338,48 @@ void scale_saturation(uint32_t* colors, md_bitset_t mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
 void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation = 1.0f);
+
+// ## Optimized categorical colors
+//
+// Colors for the categories a system uses (its atom or residue types) which are as distinct as they can be. They are
+// told apart by their distance in OKLab, as they are shown, and how they look to a deuteranope counts too. Every pair
+// counts the same, a rare category as much as a common one. The same input gives the same colors.
+//
+// A category with a color of meaning (an element, a standard residue) is pulled: it is drawn back to that color, as by
+// a spring of constant force, and moves only for a pair too close to tell apart where that buys a clearly larger
+// distance. It never moves far and keeps a grey or a strong color it has. Pulled categories of one color are meant
+// alike and move as one. The others are free: they move easily, within a band of lightness and chroma which keeps them
+// of one look, and one of a large share of the weight (the solvent, the bulk lipid) is kept calm.
+
+struct ColorOptimizeItem {
+    uint32_t color = 0;         // In: the color it starts from (stored, RGBA as convert_color), for one which is pulled
+                                // the color it is drawn back to. Out: the optimized color.
+    float weight = 1.0f;        // Its share of the atoms, say: one of a large share is kept calm (calm_dominant). > 0
+    float pull = 0.0f;          // 0: free. Above: how hard it is drawn back to its color, what a unit of distance from it
+                                // costs against a unit of the smallest distance gained (about 0.5: moves when that pays
+                                // twice over; 2 or more: hardly moves)
+    bool fixed = false;         // Keeps its color
+};
+
+struct ColorOptimizeDesc {
+    bool linear_input = false;  // The colors are shown as linear reflectances (ColorSpace_Linear): the band and the
+                                // distances are of the colors as they are shown
+    float lightness_min = 0.64f;    // The band of the free colors shown (OKLab), about that of the default residue palette
+    float lightness_max = 0.92f;    // as viamd shows it: light enough to read under the lighting, and of a moderate chroma
+    float chroma_min = 0.05f;       // No greys, which mean 'nothing in particular'
+    float chroma_max = 0.13f;
+    float max_drift = 0.06f;        // How far (OKLab) a pulled color may move from where it started
+    float enough_distance = 0.10f;  // A pulled color moves only for a pair closer than this (OKLab)
+    float cvd_weight = 0.4f;        // How much the distances seen with deuteranopia count, against those of normal vision
+    bool calm_dominant = true;      // A free category of a large share of the weight is kept lighter and of a lower
+                                    // chroma: large areas in calm colors, small ones in vivid colors
+    uint32_t seed = 1;
+    uint32_t moves_per_item = 600;  // Trials per color which moves, at most 120000 in all
+};
+
+struct ColorOptimizeResult {
+    float min_distance = 0.0f;  // The smallest distance (OKLab, as shown) between two colors, unless both are fixed
+    size_t num_moved = 0;       // Items whose color changed
+};
+
+ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, const ColorOptimizeDesc& desc = ColorOptimizeDesc());

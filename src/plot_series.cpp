@@ -1076,7 +1076,25 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
 
 // ## Volumes
 
-bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key) {
+// A volume is {x, y, z}, an array of n of them {n, x, y, z}: the member is a slice of the first axis. 0 for anything else.
+static uint32_t volume_shape(uint32_t dim[3], const md_attribute_t* attr) {
+    if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_F32 || attr->format.components != 1) return 0;
+    const uint32_t rank = attr->format.rank;
+    if (rank != 3 && rank != 4) return 0;
+    const uint32_t* shape = attr->format.shape + (rank - 3);
+    for (int i = 0; i < 3; ++i) {
+        if (dim) dim[i] = shape[i];
+    }
+    return rank == 4 ? attr->format.shape[0] : 1;
+}
+
+uint32_t series_volume_count(const ApplicationState* app, const SeriesKey& key) {
+    if (!is_script(key.source)) return 0;
+    const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
+    return volume_shape(nullptr, table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr);
+}
+
+bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key, uint32_t member) {
     ASSERT(out && app);
     *out = SeriesVolumeView{};
     series_label(out->label, sizeof(out->label), app, key);
@@ -1088,23 +1106,34 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
 
     const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
-    if (!attr || !attr->data || attr->format.rank != 3 || attr->format.type != MD_ATTRIBUTE_TYPE_F32) return false;
-    for (int i = 0; i < 3; ++i) {
-        out->dim[i] = attr->format.shape[i];
+    if (!attr || !attr->data) return false;
+    out->count = volume_shape(out->dim, attr);
+    if (out->count == 0) return false;
+    out->member = MIN(member, out->count - 1);
+    if (out->count > 1) {
+        // As the script names it: v[2]
+        if (key.period != 0) {
+            snprintf(out->label, sizeof(out->label), STR_FMT "[%u] (%s)", STR_ARG(ident), out->member + 1, series_period_name(app, key.period));
+        } else {
+            snprintf(out->label, sizeof(out->label), STR_FMT "[%u]", STR_ARG(ident), out->member + 1);
+        }
     }
+    const size_t member_values = (size_t)out->dim[0] * out->dim[1] * out->dim[2];
 
+    const float* values = nullptr;
     if (key.period != 0) {
-        // Over the period's frames: as its slot holds it
+        // Over the period's frames: as its slot holds it, all of the volumes
         uint32_t beg, end;
         if (!key_period_frames(&beg, &end, app, key)) return false;
         const SlotEntry* slot = series_period_slot(app, ident, key.period, beg, end);
         if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
-        out->data = slot->values;
+        values = slot->values;
         out->version = slot->version;
     } else {
-        out->data = (const float*)attr->data;
+        values = (const float*)attr->data;
         out->version = attr->version;
     }
+    out->data = values + out->member * member_values;
     return true;
 }
 

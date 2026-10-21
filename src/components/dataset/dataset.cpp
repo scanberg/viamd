@@ -1,6 +1,7 @@
-#include <viamd_event.h>
+﻿#include <viamd_event.h>
 #include <viamd.h>
 #include <representation.h>
+#include <color_utils.h>
 #include <event.h>
 #include <serialization_utils.h>
 #include <display_units.h>
@@ -24,56 +25,6 @@
 #include <algorithm>
 
 namespace dataset {
-
-// Helper function to convert amino acids and nucleotides from three-letter to single-letter codes
-static str_t convert_to_short(str_t in_str) {
-    
-    // Standard amino acids
-    if (str_eq_cstr(in_str, "ALA")) return STR_LIT("A");
-    if (str_eq_cstr(in_str, "ARG")) return STR_LIT("R");
-    if (str_eq_cstr(in_str, "ASN")) return STR_LIT("N");
-    if (str_eq_cstr(in_str, "ASP")) return STR_LIT("D");
-    if (str_eq_cstr(in_str, "CYS")) return STR_LIT("C");
-    if (str_eq_cstr(in_str, "GLU")) return STR_LIT("E");
-    if (str_eq_cstr(in_str, "GLN")) return STR_LIT("Q");
-    if (str_eq_cstr(in_str, "GLY")) return STR_LIT("G");
-    if (str_eq_cstr(in_str, "HIS")) return STR_LIT("H");
-    if (str_eq_cstr(in_str, "ILE")) return STR_LIT("I");
-    if (str_eq_cstr(in_str, "LEU")) return STR_LIT("L");
-    if (str_eq_cstr(in_str, "LYS")) return STR_LIT("K");
-    if (str_eq_cstr(in_str, "MET")) return STR_LIT("M");
-    if (str_eq_cstr(in_str, "PHE")) return STR_LIT("F");
-    if (str_eq_cstr(in_str, "PRO")) return STR_LIT("P");
-    if (str_eq_cstr(in_str, "SER")) return STR_LIT("S");
-    if (str_eq_cstr(in_str, "THR")) return STR_LIT("T");
-    if (str_eq_cstr(in_str, "TRP")) return STR_LIT("W");
-    if (str_eq_cstr(in_str, "TYR")) return STR_LIT("Y");
-    if (str_eq_cstr(in_str, "VAL")) return STR_LIT("V");
-
-    // Standard nucleotides
-    if (str_eq_cstr(in_str, "DA")) return STR_LIT("A");
-    if (str_eq_cstr(in_str, "DC")) return STR_LIT("C");
-    if (str_eq_cstr(in_str, "DG")) return STR_LIT("G");
-    if (str_eq_cstr(in_str, "DT")) return STR_LIT("T");
-    if (str_eq_cstr(in_str, "DU")) return STR_LIT("U");
-    
-    // Failed to map it, return itself
-    return in_str;
-}
-
-// Essentially a bswap to go from RGBA to ABGR
-#define RGBA_HEX(x) BSWAP32(x)
-
-// Helper function to assign colors to components based on their type
-static uint32_t component_color(str_t str) {
-    if (str_eq_cstr(str, "DG")) return RGBA_HEX(0xD5B3EFAA); // Purple
-    if (str_eq_cstr(str, "DT")) return RGBA_HEX(0x9FF3A0AA); // Green
-    if (str_eq_cstr(str, "DC")) return RGBA_HEX(0xF8EE5CAA); // Yellow
-    if (str_eq_cstr(str, "DU")) return RGBA_HEX(0xFE9D2DAA); // Orange
-    if (str_eq_cstr(str, "DA")) return RGBA_HEX(0xFC697AAA); // Red
-
-    return 0;
-}
 
 struct AtomElementMapping {
     char lbl[31] = "";
@@ -143,7 +94,6 @@ struct DatasetItem {
     // Extended metadata for popups
     uint64_t key = 0;            // Unique key of the type
     md_array(int) indices = 0;   // Indices into the corresponding structures which are represented by this item: i.e. chain or residue indices (for highlighting)
-    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
 
     // Atom type only
     bool use_defaults = true; // Flag if this particular atom type should be linked to the default values stemming for the element (only applicable to atom types with an element, i.e. not coarse grained)
@@ -168,6 +118,48 @@ struct ElementDefaultDelta {
     explicit operator bool() const { return color || radius || mass; }
 };
 
+// ## Component types
+//
+// Two tiers, as for the atom types: the component types of the system (sys.component.type) are linked to the defaults of
+// their standard monomer (md_monomer_t, as an atom type is to its element) and follow them, or carry a color of their own.
+// A type which is no form of a standard monomer (a ligand, water, an ion) always carries its own.
+
+// The defaults of a standard monomer, mdlib's built in ones until the user edits them
+struct MonomerDefault {
+    vec4_t color;
+};
+
+struct ComponentTypeItem {
+    char label[32] = "";
+    uint32_t count = 0;             // Components of the type
+    uint32_t atom_count = 0;
+    float fraction = 0;             // Of all atoms
+    md_array(int) comp_indices = 0; // The components of the type (for highlighting)
+    bool use_defaults = false;      // Linked to the defaults of its monomer, only possible for a type with one
+    uint32_t load_color = 0;        // The color it was given when it was inferred, the baseline modifications are stored against
+};
+
+// A single deserialized [ComponentType] section, buffered until the system is loaded (as AtomTypeOverride)
+struct ComponentTypeOverride {
+    char name[16] = "";
+    md_component_kind_t kind = MD_COMPONENT_KIND_OTHER;  // Name and kind identify the type
+    bool has_color = false;
+    bool has_use_defaults = false;
+    uint32_t color = 0;
+    bool use_defaults = true;
+};
+
+struct ComponentTypeDelta {
+    bool color    = false;
+    bool defaults = false;
+
+    explicit operator bool() const { return color || defaults; }
+};
+
+static inline bool comp_type_has_monomer(const md_component_type_data_t& type, size_t i) {
+    return md_component_type_monomer(&type, i) != MD_MONOMER_NONE;
+}
+
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
     char series_filter[64] = "";
@@ -178,9 +170,8 @@ struct Dataset : viamd::EventHandler {
     
     // Dataset data (moved from ApplicationState.dataset)
     md_array(AtomElementMapping) atom_element_remappings = 0;
-    md_array(DatasetItem) inst_types = 0;
-    md_array(DatasetItem) comp_types = 0;
     md_array(DatasetItem) atom_types = 0;
+    md_array(ComponentTypeItem) comp_types = 0;     // One per type of sys.component.type
     md_allocator_i* arena = 0;
 
     char atom_type_filter[64] = "";
@@ -191,9 +182,27 @@ struct Dataset : viamd::EventHandler {
 
     ElementDefault element_defaults[MD_Z_Count] = {};
 
+    char comp_type_filter[64] = "";
+    md_array(int) comp_type_order = 0;      // Display order of the component types as sorted by the table, allocated in `arena`
+    bool comp_type_resort   = false;
+    int  comp_type_selected = -1;           // Component type selected in the table, edited below it
+    int  monomer_popup      = -1;           // Monomer whose defaults are being edited
+
+    MonomerDefault monomer_defaults[MD_MONOMER_COUNT] = {};
+
+    // What the last Optimize colors of the atom and residue types did, shown under the button
+    struct ColorOptimizePanel {
+        bool has_result = false;
+        size_t num_changed = 0;     // Types whose color it changed
+        float min_distance = 0.0f;  // optimize_colors
+    };
+    ColorOptimizePanel atom_type_optimize;
+    ColorOptimizePanel comp_type_optimize;
+
     // Atom type overrides read from a workspace, waiting for a system to be applied to.
     // Deliberately heap allocated: `arena` is reset by init_dataset_items, which runs after these are parsed.
     md_array(AtomTypeOverride) pending_overrides = 0;
+    md_array(ComponentTypeOverride) pending_comp_type_overrides = 0;
     char pending_workspace[1024] = "";  // Workspace the pending overrides stem from, used to discard stale ones
 
     Dataset() { 
@@ -213,12 +222,21 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    void init_monomer_defaults() {
+        for (int m = 0; m < MD_MONOMER_COUNT; ++m) {
+            monomer_defaults[m].color = vec4_from_u32(md_monomer_color((md_monomer_t)m));
+        }
+    }
+
     void clear_dataset_items() {
-        inst_types = 0;
         comp_types = 0;
         atom_types = 0;
+        atom_type_optimize = {};
+        comp_type_optimize = {};
         atom_type_order = 0;
         atom_type_selected = -1;
+        comp_type_order = 0;
+        comp_type_selected = -1;
         if (arena) {
             md_arena_allocator_reset(arena);
         }
@@ -234,15 +252,9 @@ struct Dataset : viamd::EventHandler {
 
         size_t type_count = md_system_atom_type_count(&sys);
         size_t atom_count = md_system_atom_count(&sys);
-        size_t comp_count = md_system_component_count(&sys);
-        size_t inst_count = md_system_instance_count(&sys);
 
         if (atom_count == 0) return;
 
-        md_temp_scope_t temp_scope = md_temp_begin();
-        md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-        defer { md_temp_end(temp_scope); };
-        
         md_array_resize(atom_types, type_count, arena);
 
         // Map atom types into dataset items
@@ -283,91 +295,36 @@ struct Dataset : viamd::EventHandler {
             atom_types[i].fraction = atom_types[i].count / (float)atom_count;
         }
 
-        md_array(int) sequence = 0;
-        md_array(int) comp_idx_type = 0;
+        init_component_type_items(data);
+    }
 
-        if (comp_count > 0) {
-			md_array_resize(comp_idx_type, comp_count, temp_arena);
-			MEMSET(comp_idx_type, -1, md_array_bytes(comp_idx_type));
+    void init_component_type_items(ApplicationState& data) {
+        const md_system_t& sys = data.mold.sys;
+        const md_component_type_data_t& type = sys.component.type;
+        const size_t type_count = md_component_type_count(&type);
+        const size_t comp_count = md_system_component_count(&sys);
+        const size_t atom_count = md_system_atom_count(&sys);
+        if (type_count == 0 || !sys.component.type_idx || atom_count == 0) return;
+
+        md_array_resize(comp_types, type_count, arena);
+        for (size_t i = 0; i < type_count; ++i) {
+            ComponentTypeItem item = {};
+            snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(md_component_type_name(&type, i)));
+            item.load_color   = md_component_type_color(&type, i);
+            item.use_defaults = comp_type_has_monomer(type, i);
+            comp_types[i] = item;
         }
-
-        // Process components - group by name + atom type sequence
-        for (size_t i = 0; i < comp_count; ++i) {
-            str_t comp_name = md_component_name(&sys.component, i);
-
-            md_array_shrink(sequence, 0);
-            md_urange_t range = md_component_atom_range(&sys.component, i);
-            for (uint32_t j = range.beg; j < range.end; ++j) {
-                int ai = sys.atom.type_idx[j];
-                md_array_push(sequence, ai, temp_arena);
-            }
-
-            // Create combined string for hash (label + sequence of atom types)
-            uint64_t hash = md_hash64_str(comp_name, md_hash64(sequence, md_array_bytes(sequence), 0));
-
-            // Check if we already have this chain type
-            DatasetItem* item = nullptr;
-            for (size_t j = 0; j < md_array_size(comp_types); ++j) {
-                if (comp_types[j].key == hash) {
-                    item = &comp_types[j];
-                    md_array_push(comp_idx_type, (int)j, temp_arena);
-                    break;
-                }
-            }
-            if (!item) {
-                DatasetItem it = { .key = hash };
-                snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(comp_name));
-                md_array_push(comp_idx_type, (int)md_array_size(comp_types), temp_arena);
-                md_array_push(comp_types, it, arena);
-                item = md_array_last(comp_types);
-                md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
-            }
-
-            size_t comp_atom_count = md_component_atom_count(&sys.component, i);
-
-            item->count += 1;
-            item->fraction += (float)(comp_atom_count / (double)atom_count);
-            md_array_push(item->indices, (int)i, arena);
+        for (size_t c = 0; c < comp_count; ++c) {
+            const md_component_type_idx_t t = md_component_type_idx(&sys.component, c);
+            if (t < 0 || (size_t)t >= type_count) continue;
+            ComponentTypeItem& item = comp_types[t];
+            item.count += 1;
+            item.atom_count += (uint32_t)md_component_atom_count(&sys.component, c);
+            md_array_push(item.comp_indices, (int)c, arena);
         }
-
-        // Process chains - key = residue type sequence
-        if (comp_count > 0 && inst_count > 0) {
-            for (size_t i = 0; i < inst_count; ++i) {
-                md_array_shrink(sequence, 0);
-                md_urange_t range = md_instance_component_range(&sys.instance, i);
-                for (uint32_t j = range.beg; j < range.end; ++j) {
-                    int res_type_idx = (int)comp_idx_type[j];
-                    md_array_push(sequence, res_type_idx, temp_arena);
-                }
-
-                // Create combined string for hash (label + sequence of residue types)
-                uint64_t hash = md_hash64(sequence, md_array_bytes(sequence), 0);
-
-                // Check if we already have this chain type
-                DatasetItem* item = nullptr;
-                for (size_t j = 0; j < md_array_size(inst_types); ++j) {
-                    if (inst_types[j].key == hash) {
-                        item = &inst_types[j];
-                        break;
-                    }
-                }
-                if (!item) {
-					int c_idx = (int)md_array_size(inst_types);
-                    DatasetItem it = { .key = hash };
-                    snprintf(it.label, sizeof(it.label), "Type %i", c_idx + 1);
-                    md_array_push(inst_types, it, arena);
-                    item = md_array_last(inst_types);
-                    md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
-                }
-
-                size_t chain_atom_count = md_system_instance_atom_count(&sys, i);
-
-                item->count += 1;
-                item->fraction += (float)(chain_atom_count / (double)atom_count);
-                md_array_push(item->indices, (int)i, arena);
-            }
+        for (size_t i = 0; i < type_count; ++i) {
+            comp_types[i].fraction = comp_types[i].atom_count / (float)atom_count;
         }
-
     }
 
     ElementDefaultDelta compute_element_default_delta(md_atomic_number_t z) const {
@@ -503,6 +460,171 @@ struct Dataset : viamd::EventHandler {
         return delta;
     }
 
+    // ## Component types: their monomer defaults, what the user changed, and the workspace
+
+    bool compute_monomer_default_delta(int m) const {
+        return u32_from_vec4(monomer_defaults[m].color) != md_monomer_color((md_monomer_t)m);
+    }
+
+    uint32_t monomer_default_color(md_monomer_t m) const {
+        return u32_from_vec4(monomer_defaults[m].color);
+    }
+
+    // The color a component type is restored to: that of the defaults of its monomer when it is linked to them, else
+    // the one it was inferred with. Diffing against it keeps an edit of the defaults in [MonomerDefault], instead of
+    // duplicated in every type which follows them.
+    uint32_t comp_type_base_color(const md_component_type_data_t& type, size_t i) const {
+        return comp_types[i].use_defaults ? monomer_default_color(md_component_type_monomer(&type, i)) : comp_types[i].load_color;
+    }
+
+    ComponentTypeDelta compute_comp_type_delta(const md_component_type_data_t& type, size_t i) const {
+        ComponentTypeDelta delta;
+        delta.color    = md_component_type_color(&type, i) != comp_type_base_color(type, i);
+        // use_defaults is not stored in the system, its implicit default follows whether the type has a monomer
+        delta.defaults = comp_types[i].use_defaults != comp_type_has_monomer(type, i);
+        return delta;
+    }
+
+    // Push the defaults of its monomer onto a component type which is linked to them
+    void link_comp_type_to_monomer(md_component_type_data_t& type, size_t i, bool& color_changed) {
+        if (!comp_type_has_monomer(type, i)) return;
+        const uint32_t color = monomer_default_color(md_component_type_monomer(&type, i));
+        color_changed |= type.color[i] != color;
+        type.color[i] = color;
+    }
+
+    // Restore a component type to its state right after loading: linked when it has a monomer
+    void reset_comp_type(md_component_type_data_t& type, size_t i, bool& color_changed) {
+        ComponentTypeItem& item = comp_types[i];
+        item.use_defaults = comp_type_has_monomer(type, i);
+        const uint32_t color = comp_type_base_color(type, i);
+        color_changed |= type.color[i] != color;
+        type.color[i] = color;
+    }
+
+    void apply_monomer_defaults_to_comp_types(ApplicationState& data, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t type_count = md_component_type_count(&type);
+        if (type_count == 0 || md_array_size(comp_types) != type_count) return;
+        for (size_t i = 0; i < type_count; ++i) {
+            if (comp_types[i].use_defaults) link_comp_type_to_monomer(type, i, color_changed);
+        }
+    }
+
+    // Apply the buffered [ComponentType] sections onto the freshly inferred types, identified by name and kind
+    void apply_pending_comp_type_overrides(ApplicationState& data, bool& color_changed) {
+        const size_t num_overrides = md_array_size(pending_comp_type_overrides);
+        if (num_overrides == 0) return;
+
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t type_count = md_component_type_count(&type);
+        if (type_count == 0 || md_array_size(comp_types) != type_count) return;
+
+        for (size_t j = 0; j < num_overrides; ++j) {
+            const ComponentTypeOverride& ovr = pending_comp_type_overrides[j];
+            const md_component_type_idx_t t = md_component_type_find(&type, str_from_cstr(ovr.name), ovr.kind);
+            if (t < 0) {
+                MD_LOG_INFO("Dataset: workspace contains overrides for component type '%s' (%s) which is not present in the loaded system", ovr.name, md_component_kind_name(ovr.kind));
+                continue;
+            }
+            if (ovr.has_use_defaults) {
+                comp_types[t].use_defaults = ovr.use_defaults && comp_type_has_monomer(type, t);
+            }
+            if (ovr.has_color) {
+                color_changed |= type.color[t] != ovr.color;
+                type.color[t] = ovr.color;
+            }
+        }
+    }
+
+    // One [MonomerDefault] section per monomer whose defaults the user changed, identified by its id ("HIS")
+    void serialize_monomer_defaults(viamd::serialization_state_t& state) {
+        for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
+            if (!compute_monomer_default_delta(m)) continue;
+            viamd::write_section_header(state, STR_LIT("MonomerDefault"));
+            viamd::write_str(state, STR_LIT("Monomer"), md_monomer_id((md_monomer_t)m));
+            viamd::write_vec4(state, STR_LIT("Color"), monomer_defaults[m].color);
+        }
+    }
+
+    // Applied the moment it is parsed: the defaults do not depend on the loaded system
+    void deserialize_monomer_default(viamd::deserialization_state_t& state) {
+        md_monomer_t m = MD_MONOMER_NONE;
+        bool has_color = false;
+        vec4_t color = {};
+
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "Monomer")) {
+                m = md_monomer_from_id(arg);
+            } else if (str_eq_cstr(ident, "Color")) {
+                has_color = viamd::extract_flt_vec(color.elem, 4, arg);
+            }
+        }
+        if (m == MD_MONOMER_NONE) {
+            MD_LOG_INFO("Dataset: skipping [MonomerDefault] section without a known Monomer entry");
+            return;
+        }
+        if (has_color) monomer_defaults[m].color = color;
+    }
+
+    // One [ComponentType] section per component type the user modified: its name and kind, then what differs
+    void serialize_component_types(viamd::serialization_state_t& state) {
+        if (!app_state) return;
+        const md_component_type_data_t& type = app_state->mold.sys.component.type;
+        const size_t type_count = md_component_type_count(&type);
+        if (type_count == 0 || md_array_size(comp_types) != type_count) return;
+
+        for (size_t i = 0; i < type_count; ++i) {
+            const ComponentTypeDelta delta = compute_comp_type_delta(type, i);
+            if (!delta) continue;
+            viamd::write_section_header(state, STR_LIT("ComponentType"));
+            viamd::write_str(state, STR_LIT("Name"), md_component_type_name(&type, i));
+            viamd::write_int(state, STR_LIT("Kind"), (int)md_component_type_kind(&type, i));
+            if (delta.color)    viamd::write_vec4(state, STR_LIT("Color"), vec4_from_u32(type.color[i]));
+            if (delta.defaults) viamd::write_bool(state, STR_LIT("UseDefaults"), comp_types[i].use_defaults);
+        }
+    }
+
+    // Overrides are buffered per workspace. Sections of another workspace than the one buffered never made it onto a
+    // system (it failed to load) and are stale.
+    void begin_pending_overrides(const viamd::deserialization_state_t& state) {
+        if (!str_eq_cstr(state.filename, pending_workspace)) {
+            free_pending_overrides();
+            str_copy_to_char_buf(pending_workspace, sizeof(pending_workspace), state.filename);
+        }
+    }
+
+    void deserialize_component_type(viamd::deserialization_state_t& state) {
+        begin_pending_overrides(state);
+        ComponentTypeOverride ovr = {};
+
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "Name")) {
+                viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
+            } else if (str_eq_cstr(ident, "Kind")) {
+                int kind = 0;
+                if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)MD_COMPONENT_FLAG_KIND_MASK) {
+                    ovr.kind = (md_component_kind_t)kind;
+                }
+            } else if (str_eq_cstr(ident, "Color")) {
+                vec4_t color = {};
+                if (viamd::extract_flt_vec(color.elem, 4, arg)) {
+                    ovr.color = u32_from_vec4(color);
+                    ovr.has_color = true;
+                }
+            } else if (str_eq_cstr(ident, "UseDefaults")) {
+                ovr.has_use_defaults = viamd::extract_bool(ovr.use_defaults, arg);
+            }
+        }
+        if (ovr.name[0] == '\0') {
+            MD_LOG_INFO("Dataset: skipping [ComponentType] section without a Name entry");
+            return;
+        }
+        md_array_push(pending_comp_type_overrides, ovr, md_get_heap_allocator());
+    }
+
     // Write one [AtomType] section per atom type the user has modified, containing the identifying name +
     // loaded element followed by only those properties which actually differ from what was loaded.
     void serialize_atom_types(viamd::serialization_state_t& state) {
@@ -543,12 +665,7 @@ struct Dataset : viamd::EventHandler {
 
     // Parse a single [AtomType] section. The system is not loaded at this point, so we only buffer it.
     void deserialize_atom_type(viamd::deserialization_state_t& state) {
-        // Overrides are buffered per workspace. If this section stems from another workspace than the one
-        // currently buffered, then those never made it onto a system (the molecule failed to load) and are stale.
-        if (!str_eq_cstr(state.filename, pending_workspace)) {
-            free_pending_overrides();
-            str_copy_to_char_buf(pending_workspace, sizeof(pending_workspace), state.filename);
-        }
+        begin_pending_overrides(state);
 
         AtomTypeOverride ovr = {};
 
@@ -597,6 +714,8 @@ struct Dataset : viamd::EventHandler {
     void free_pending_overrides() {
         md_array_free(pending_overrides, md_get_heap_allocator());
         pending_overrides = 0;
+        md_array_free(pending_comp_type_overrides, md_get_heap_allocator());
+        pending_comp_type_overrides = 0;
         pending_workspace[0] = '\0';
     }
 
@@ -606,7 +725,6 @@ struct Dataset : viamd::EventHandler {
     void apply_pending_atom_type_overrides(ApplicationState& data, bool& radius_changed, bool& color_changed) {
         size_t num_overrides = md_array_size(pending_overrides);
         if (num_overrides == 0) return;
-        defer { free_pending_overrides(); };
 
         md_system_t& sys = data.mold.sys;
         md_atom_type_data_t& type = sys.atom.type;
@@ -671,6 +789,13 @@ struct Dataset : viamd::EventHandler {
         apply_pending_atom_type_overrides(data, radius_changed, color_changed);
         apply_element_defaults_to_atom_types(data, radius_changed, color_changed);
 
+        // The same for the component types and the defaults of their monomers
+        apply_pending_comp_type_overrides(data, color_changed);
+        apply_monomer_defaults_to_comp_types(data, color_changed);
+
+        // Applied, or for a system they do not belong to
+        free_pending_overrides();
+
         if (radius_changed) {
             data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
         }
@@ -687,12 +812,14 @@ struct Dataset : viamd::EventHandler {
                 // Initialize component
                 app_state = (ApplicationState*)e.payload;
                 init_element_defaults();
+                init_monomer_defaults();
                 workspace_register_window("System", &show_window);
                 break;
             }
             case viamd::EventType_ViamdDeserializeBegin:
-                // A workspace without [ElementDefault] or [AtomType] sections has the built in ones
+                // A workspace without [ElementDefault], [AtomType], [MonomerDefault] or [ComponentType] sections has the built in ones
                 init_element_defaults();
+                init_monomer_defaults();
                 free_pending_overrides();
                 break;
             case viamd::EventType_ViamdShutdown:
@@ -718,6 +845,8 @@ struct Dataset : viamd::EventHandler {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 serialize_element_defaults(state);
                 serialize_atom_types(state);
+                serialize_monomer_defaults(state);
+                serialize_component_types(state);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
@@ -727,6 +856,10 @@ struct Dataset : viamd::EventHandler {
                     deserialize_element_default(state);
                 } else if (str_eq_cstr(section, "AtomType")) {
                     deserialize_atom_type(state);
+                } else if (str_eq_cstr(section, "MonomerDefault")) {
+                    deserialize_monomer_default(state);
+                } else if (str_eq_cstr(section, "ComponentType")) {
+                    deserialize_component_type(state);
                 }
                 break;
             }
@@ -1026,6 +1159,7 @@ struct Dataset : viamd::EventHandler {
         size_t bonds_inferred = 0;
         size_t bonds_user = 0;
         size_t bonds_file = 0;
+        size_t bonds_elastic = 0;   // Not bonds of the molecules, and so in none of the above
 
         size_t atoms_without_element = 0;   // neither an element nor a coarse grained bead, and with mass
         size_t unresolved_amino = 0;        // named like amino acids, backbone not found
@@ -1185,6 +1319,10 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t b = 0; b < sys.bond.count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
+            if (f & MD_BOND_FLAG_ELASTIC) {
+                c.bonds_elastic += 1;
+                continue;
+            }
             switch (md_bond_origin((md_bond_flags_t)f)) {
             case MD_BOND_ORIGIN_USER:     c.bonds_user     += 1; break;
             case MD_BOND_ORIGIN_TOPOLOGY: c.bonds_topology += 1; break;
@@ -1244,13 +1382,25 @@ struct Dataset : viamd::EventHandler {
         for (uint32_t comp_idx = range.beg; comp_idx < end; ++comp_idx) {
             str_t comp_name = md_component_name(&sys.component, comp_idx);
             const md_component_kind_t comp_kind = md_component_kind(&sys.component, comp_idx);
-            const bool short_label = short_labels && (comp_kind == MD_COMPONENT_KIND_AMINO_ACID || comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE);
+            const bool residue = comp_kind == MD_COMPONENT_KIND_AMINO_ACID || comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+
+            // The one letter code of the standard monomer of its type (M for MSE), the full name of one none is known of
+            const md_component_type_idx_t type_idx = md_component_type_idx(&sys.component, comp_idx);
+            const md_monomer_t monomer = type_idx >= 0 ? md_component_type_monomer(&sys.component.type, (size_t)type_idx) : MD_MONOMER_NONE;
+            const char letter[2] = { md_monomer_letter(monomer), '\0' };
+            const bool short_label = short_labels && residue && monomer != MD_MONOMER_NONE && monomer != MD_MONOMER_UNK && monomer != MD_MONOMER_N;
             if (short_label) {
-                const uint32_t color = component_color(comp_name);
-                comp_name = convert_to_short(comp_name);
+                comp_name = str_from_cstr(letter);
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
-                ImGui::PushStyleColor(ImGuiCol_Header, color);
-                ImGui::PushStyleColor(ImGuiCol_HeaderActive, color);
+            }
+            // In the color of its type, as the Res Type coloring of the representations shows it
+            const bool colored = residue && type_idx >= 0;
+            if (colored) {
+                const uint32_t rgb = md_component_type_color(&sys.component.type, (size_t)type_idx) & 0x00FFFFFFU;
+                const uint32_t bg  = rgb | 0xAA000000U;
+                ImGui::PushStyleColor(ImGuiCol_Header, bg);
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive, bg);
+                ImGui::PushStyleColor(ImGuiCol_Text, color_is_light(rgb) ? IM_COL32(0, 0, 0, 255) : IM_COL32(255, 255, 255, 255));
             }
             const ImVec2 text_sz = ImGui::CalcTextSize(str_beg(comp_name), str_end(comp_name));
             const ImVec2 item_sz(text_sz.x + style.ItemSpacing.x * 2.0f, text_sz.y + style.ItemSpacing.x * 2.0f);
@@ -1269,7 +1419,9 @@ struct Dataset : viamd::EventHandler {
             ImGui::PopID();
             if (short_label) {
                 ImGui::PopStyleVar();
-                ImGui::PopStyleColor(2);
+            }
+            if (colored) {
+                ImGui::PopStyleColor(3);
             }
             if (ImGui::IsItemHovered()) {
                 const str_t full = md_component_name(&sys.component, comp_idx);
@@ -1460,6 +1612,11 @@ struct Dataset : viamd::EventHandler {
             part(c.bonds_user,     "added by you");
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", buf);
+        }
+        if (c.bonds_elastic > 0) {
+            ImGui::Text("%zu elastic bonds", c.bonds_elastic);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(springs of the force field: shown by licorice and ball and stick when asked to)");
         }
 
         const md_unitcell_t& uc = cell;
@@ -1950,12 +2107,85 @@ struct Dataset : viamd::EventHandler {
         return buf;
     }
 
+    // Whether black text reads better than white on the color (RGBA, R in the lowest byte, sRGB)
+    static bool color_is_light(uint32_t rgba) {
+        const float r = (float)((rgba >>  0) & 0xFF) / 255.0f;
+        const float g = (float)((rgba >>  8) & 0xFF) / 255.0f;
+        const float b = (float)((rgba >> 16) & 0xFF) / 255.0f;
+        return 0.2126f * r + 0.7152f * g + 0.0722f * b > 0.55f;
+    }
+
     // Key value row for the tooltip tables
     static void info_row(const char* key) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
         ImGui::TextDisabled("%s", key);
         ImGui::TableSetColumnIndex(1);
+    }
+
+    // ## Optimized colors
+    //
+    // A button for the atom types and one for the residue types: the colors of the types the system uses made as
+    // distinct as they can be (optimize_colors). Every type in use is recolored, starting from its default, so that the
+    // result depends on the types the system uses only. A type with a color of meaning (an element, a standard residue,
+    // the element of an ion) is pulled back to it and moves a little at most, the others move freely. What comes out
+    // are ordinary colors of the types, unlinked from their defaults where they moved: stored in the workspace and
+    // restored by Reset like any edit.
+
+    static constexpr float color_optimize_pull = 0.5f;
+
+    static ColorOptimizeDesc color_optimize_desc(const ApplicationState& data) {
+        ColorOptimizeDesc desc;
+        desc.linear_input = data.visuals.shading.colors == postprocess_pipeline::ColorSpace_Linear;
+        return desc;
+    }
+
+    // The row of the table with the filter, Reset and Optimize colors, and under it what the last optimization did.
+    // Returns true when the colors are to be optimized.
+    static bool draw_type_table_toolbar(const char* id, bool show_filter, char* filter, size_t filter_cap, const char* filter_hint,
+                                        size_t num_modified, bool& reset_clicked, const char* reset_tip,
+                                        ColorOptimizePanel& panel, const char* optimize_tip) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        char reset_lbl[48] = "";
+        float reset_w = 0;
+        if (num_modified) {
+            snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
+            reset_w = ImGui::CalcTextSize(reset_lbl).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
+        }
+        const char* opt_lbl = "Optimize colors";
+        const float opt_w = ImGui::CalcTextSize(opt_lbl).x + style.FramePadding.x * 2;
+
+        ImGui::PushID(id);
+        defer { ImGui::PopID(); };
+        if (show_filter) {
+            ImGui::SetNextItemWidth(-(reset_w + opt_w + style.ItemSpacing.x));
+            ImGui::InputTextWithHint("##filter", filter_hint, filter, filter_cap);
+            ImGui::SameLine();
+        }
+        reset_clicked = false;
+        if (num_modified) {
+            reset_clicked = ImGui::Button(reset_lbl);
+            ImGui::SetItemTooltip("%s", reset_tip);
+            ImGui::SameLine();
+        }
+        const bool run = ImGui::Button(opt_lbl);
+        ImGui::SetItemTooltip("%s", optimize_tip);
+
+        if (reset_clicked) panel.has_result = false;
+        if (panel.has_result && !run) {
+            char changed[48];
+            if (panel.num_changed == 0) snprintf(changed, sizeof(changed), "No color changed");
+            else snprintf(changed, sizeof(changed), "%zu type%s recolored", panel.num_changed, panel.num_changed == 1 ? "" : "s");
+            if (panel.min_distance > 0.0f) {
+                ImGui::TextDisabled("%s, closest pair %.3f apart (OKLab)", changed, panel.min_distance);
+            } else {
+                ImGui::TextDisabled("%s", changed);     // Fewer than two colors
+            }
+            if (panel.min_distance > 0.0f && panel.min_distance < 0.03f) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Too many types to tell apart by color alone");
+            }
+        }
+        return run;
     }
 
     // ## Atom types
@@ -2208,6 +2438,50 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    void optimize_atom_type_colors(ApplicationState& data, bool& color_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        const size_t num_types = md_system_atom_type_count(&data.mold.sys);
+        if (num_types == 0 || md_array_size(atom_types) != num_types) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(ColorOptimizeItem) items = 0;
+        md_array(size_t) index = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            if (atom_types[i].count == 0) continue;     // Only the types in use
+            // A type of an element is pulled to the color of its defaults, a bead or a type without an element starts
+            // from the color it was loaded with and is free
+            const bool has_element = !type_is_bead(type.flags[i]) && type.z[i] != 0;
+            ColorOptimizeItem it;
+            it.color  = has_element ? u32_from_vec4(element_defaults[type.z[i]].color) : atom_types[i].load.color;
+            it.pull   = has_element ? color_optimize_pull : 0.0f;
+            it.weight = (float)atom_types[i].count;
+            md_array_push(items, it, md_temp_allocator(temp));
+            md_array_push(index, i, md_temp_allocator(temp));
+        }
+        const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        atom_type_optimize.has_result   = true;
+        atom_type_optimize.min_distance = res.min_distance;
+        atom_type_optimize.num_changed  = 0;
+
+        for (size_t k = 0; k < md_array_size(items); ++k) {
+            const size_t i = index[k];
+            DatasetItem& item = atom_types[i];
+            if (items[k].pull > 0.0f) {
+                const ElementDefault& def = element_defaults[type.z[i]];
+                if (items[k].color == u32_from_vec4(def.color)) {
+                    // It kept the color of its element: linked again, when that changes nothing else
+                    if (!item.use_defaults && type.radius[i] == def.radius && type.mass[i] == def.mass) item.use_defaults = true;
+                } else {
+                    item.use_defaults = false;  // A color of its own now
+                }
+            }
+            atom_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            color_changed |= type.color[i] != items[k].color;
+            type.color[i] = items[k].color;
+        }
+    }
+
     void draw_atom_types(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
         md_system_t& sys = data.mold.sys;
         md_atom_type_data_t& type = sys.atom.type;
@@ -2229,27 +2503,23 @@ struct Dataset : viamd::EventHandler {
         }
 
         const bool show_filter = num_types - first > 8;
-        if (show_filter || num_modified) {
-            char reset_lbl[48] = "";
-            float reset_w = 0;
-            if (num_modified) {
-                snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
-                reset_w = ImGui::CalcTextSize(reset_lbl).x + ImGui::GetStyle().FramePadding.x * 2;
-            }
-            if (show_filter) {
-                ImGui::SetNextItemWidth(num_modified ? -(reset_w + ImGui::GetStyle().ItemSpacing.x) : -FLT_MIN);
-                ImGui::InputTextWithHint("##atom_type_filter", "Filter by name or element", atom_type_filter, sizeof(atom_type_filter));
-                if (num_modified) ImGui::SameLine();
-            }
-            if (num_modified) {
-                if (ImGui::Button(reset_lbl)) {
-                    for (size_t i = first; i < num_types; ++i) {
-                        if (compute_atom_type_delta(type, atom_types[i], i)) {
-                            reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
-                        }
+        {
+            bool reset_clicked = false;
+            const bool optimize = draw_type_table_toolbar("##atom_type_toolbar", show_filter, atom_type_filter, sizeof(atom_type_filter), "Filter by name or element",
+                num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", atom_type_optimize,
+                "Make the colors of the atom types in use as distinct as they can be. Every type starts from its default:\n"
+                "colors you set are replaced, and Reset undoes it.\n\n"
+                "Types of an element are pulled back to its color and move a little at most, where two are too close to tell apart.\n"
+                "Coarse grained beads and types without an element move freely.");
+            if (reset_clicked) {
+                for (size_t i = first; i < num_types; ++i) {
+                    if (compute_atom_type_delta(type, atom_types[i], i)) {
+                        reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
                     }
                 }
-                ImGui::SetItemTooltip("Restore the modified atom types (marked *) to what was loaded");
+            }
+            if (optimize) {
+                optimize_atom_type_colors(data, color_changed);
             }
         }
         const str_t filter = show_filter ? str_trim(str_from_cstr(atom_type_filter)) : STR_LIT("");
@@ -2555,6 +2825,523 @@ struct Dataset : viamd::EventHandler {
         draw_element_mappings();
     }
 
+    // ## Component types (residue types)
+
+    void highlight_comp_type(ApplicationState& data, size_t i) {
+        const md_system_t& sys = data.mold.sys;
+        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_clear(hb);
+        const ComponentTypeItem& item = comp_types[i];
+        for (size_t k = 0; k < md_array_size(item.comp_indices); ++k) {
+            const md_urange_t r = md_system_component_atom_range(&sys, (size_t)item.comp_indices[k]);
+            md_bitmask_set_range(hb, r.beg, r.end);
+        }
+    }
+
+    void comp_type_tooltip(const ApplicationState& data, size_t i) const {
+        const md_component_type_data_t& type = data.mold.sys.component.type;
+        const ComponentTypeItem& item = comp_types[i];
+        const md_monomer_t m = md_component_type_monomer(&type, i);
+        char num[32];
+
+        ImGui::BeginTooltip();
+        ImGui::Text(STR_FMT, STR_ARG(md_component_type_name(&type, i)));
+        ImGui::Separator();
+        if (ImGui::BeginTable("##comp_type_info", 2, ImGuiTableFlags_SizingFixedFit)) {
+            info_row("Kind");
+            ImGui::TextUnformatted(md_component_kind_name(md_component_type_kind(&type, i)));
+            info_row("Standard");
+            if (m != MD_MONOMER_NONE) {
+                ImGui::Text(STR_FMT " (" STR_FMT ", %c)", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
+            } else {
+                ImGui::TextDisabled("None");
+            }
+            info_row("Residues");
+            ImGui::TextUnformatted(fmt_count(num, sizeof(num), item.count));
+            info_row("Atoms");
+            ImGui::Text("%s (%.2f%%)", fmt_count(num, sizeof(num), item.atom_count), item.fraction * 100.0f);
+            info_row("Color");
+            ImGui::TextUnformatted(m == MD_MONOMER_NONE ? "Custom (no standard residue)" : item.use_defaults ? "From the residue defaults" : "Custom");
+            const ComponentTypeDelta delta = compute_comp_type_delta(type, i);
+            if (delta) {
+                info_row("Modified");
+                ImGui::TextUnformatted(delta.color && delta.defaults ? "color, linking" : delta.color ? "color" : "linking");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Shift + click to select, Shift + right click to deselect");
+        ImGui::EndTooltip();
+    }
+
+    // Columns of the component type table, used as the column user IDs
+    enum CompTypeColumn {
+        CompTypeCol_Type,
+        CompTypeCol_Kind,
+        CompTypeCol_Standard,
+        CompTypeCol_Residues,
+        CompTypeCol_Count
+    };
+
+    int compare_comp_types(const md_component_type_data_t& type, int a, int b, ImGuiID column) const {
+        switch (column) {
+        case CompTypeCol_Type:     return strcmp(comp_types[a].label, comp_types[b].label);
+        case CompTypeCol_Kind:     return compare3((int)md_component_type_kind(&type, a), (int)md_component_type_kind(&type, b));
+        case CompTypeCol_Standard: {
+            // Those without a standard residue go last
+            const int ma = md_component_type_monomer(&type, a), mb = md_component_type_monomer(&type, b);
+            return compare3(ma ? ma : (int)MD_MONOMER_COUNT, mb ? mb : (int)MD_MONOMER_COUNT);
+        }
+        case CompTypeCol_Residues: return compare3(comp_types[a].count, comp_types[b].count);
+        default: return 0;
+        }
+    }
+
+    void sort_comp_types(const md_component_type_data_t& type, const ImGuiTableSortSpecs* specs) {
+        const size_t n = md_array_size(comp_type_order);
+        for (size_t k = 0; k < n; ++k) comp_type_order[k] = (int)k;
+        if (!specs || specs->SpecsCount == 0) return;
+
+        std::stable_sort(comp_type_order, comp_type_order + n, [&](int a, int b) {
+            for (int s = 0; s < specs->SpecsCount; ++s) {
+                const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
+                const int c = compare_comp_types(type, a, b, spec.ColumnUserID);
+                if (c) return spec.SortDirection == ImGuiSortDirection_Descending ? c > 0 : c < 0;
+            }
+            return false;
+        });
+    }
+
+    // Editor of the selected component type, shown below the table
+    void draw_comp_type_editor(ApplicationState& data, size_t i, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        ComponentTypeItem& item = comp_types[i];
+        const md_monomer_t m = md_component_type_monomer(&type, i);
+
+        ImGui::PushID("##comp_type_editor");
+        ImGui::PushID((int)i);
+        defer { ImGui::PopID(); ImGui::PopID(); };
+
+        {
+            char title[64];
+            snprintf(title, sizeof(title), "%s%s", item.label, compute_comp_type_delta(type, i) ? " *" : "");
+            ImGui::SeparatorText(title);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                comp_type_tooltip(data, i);
+            }
+        }
+
+        if (m != MD_MONOMER_NONE) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Standard residue " STR_FMT " (" STR_FMT ")", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)));
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Use residue defaults", &item.use_defaults) && item.use_defaults) {
+                // Relinking takes the defaults as they currently are, including the user's edits of them
+                link_comp_type_to_monomer(type, i, color_changed);
+            }
+            ImGui::SetItemTooltip("Take the color from the defaults of the standard residue, and follow them when those are edited");
+        } else {
+            item.use_defaults = false;
+            ImGui::TextDisabled("No standard residue: the type carries a color of its own");
+        }
+
+        // Editing the color of a linked type unlinks it, as it no longer follows the defaults
+        ImVec4 color = ImColor(type.color[i]);
+        if (ImGui::ColorEdit3("Color", &color.x)) {
+            color.w = 1.0f;
+            type.color[i] = ImColor(color);
+            color_changed = true;
+            item.use_defaults = false;
+        }
+        if (item.use_defaults) {
+            ImGui::TextDisabled("The color follows the residue defaults, editing it unlinks the type");
+        }
+
+        if (compute_comp_type_delta(type, i)) {
+            if (ImGui::Button("Reset")) {
+                reset_comp_type(type, i, color_changed);
+            }
+            ImGui::SetItemTooltip("Restore what was loaded");
+        }
+    }
+
+    template <typename Filter>
+    void draw_comp_type_table(ApplicationState& data, size_t num_rows, const Filter& passes_filter, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t num_types = md_component_type_count(&type);
+
+        if (md_array_size(comp_type_order) != num_types) {
+            md_array_resize(comp_type_order, num_types, arena);
+            for (size_t k = 0; k < num_types; ++k) comp_type_order[k] = (int)k;
+            comp_type_resort = true;
+        }
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float  frame_h  = ImGui::GetFrameHeight();
+        const float  row_h    = frame_h + style.CellPadding.y * 2.0f;
+        const float  header_h = ImGui::GetFontSize() + style.CellPadding.y * 2.0f;
+        const size_t max_rows = 12;
+        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MIN(num_rows, max_rows) + 2.0f);
+
+        const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
+            ImGuiTableFlags_SizingFixedFit;
+        if (!ImGui::BeginTable("##comp_types", CompTypeCol_Count, table_flags, outer_size)) return;
+
+        const float swatch  = floorf(ImGui::GetTextLineHeight() * 0.75f);
+        const float std_w   = swatch + style.ItemSpacing.x + ImGui::CalcTextSize("WWW (W)").x;
+        const float kind_w  = ImGui::CalcTextSize("amino acid").x;
+
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Type",     ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoHide, 0.0f, CompTypeCol_Type);
+        ImGui::TableSetupColumn("Kind",     ImGuiTableColumnFlags_WidthFixed, kind_w, CompTypeCol_Kind);
+        ImGui::TableSetupColumn("Standard", ImGuiTableColumnFlags_WidthFixed, std_w,  CompTypeCol_Standard);
+        ImGui::TableSetupColumn("Residues", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending, 0.0f, CompTypeCol_Residues);
+
+        static const char* header_tips[CompTypeCol_Count] = {
+            "Name of the residue type, * marks modified types\nClick a row to edit the type, right click for more options",
+            "What the residues of the type are",
+            "Color, and the standard residue (one letter code) the type is a form of, whose defaults it can follow",
+            "Number of residues of the type (share of all atoms)",
+        };
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int c = 0; c < CompTypeCol_Count; ++c) {
+            if (!ImGui::TableSetColumnIndex(c)) continue;
+            ImGui::TableHeader(ImGui::TableGetColumnName(c));
+            ImGui::SetItemTooltip("%s", header_tips[c]);
+        }
+
+        if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
+            if (specs->SpecsDirty || comp_type_resort) {
+                sort_comp_types(type, specs);
+                specs->SpecsDirty = false;
+                comp_type_resort  = false;
+            }
+        }
+
+        if (ImGui::IsWindowHovered()) {
+            md_bitmask_clear(&data.selection.highlight_mask);
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(int) rows = 0;
+        md_array_ensure(rows, num_rows, md_temp_allocator(temp));
+        for (size_t k = 0; k < num_types; ++k) {
+            const int i = comp_type_order[k];
+            if (passes_filter((size_t)i)) md_array_push(rows, i, md_temp_allocator(temp));
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)md_array_size(rows), row_h);
+        while (clipper.Step()) {
+            for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                const size_t i = (size_t)rows[r];
+                ComponentTypeItem& item = comp_types[i];
+                const md_monomer_t m = md_component_type_monomer(&type, i);
+                const bool modified = (bool)compute_comp_type_delta(type, i);
+                const bool selected = comp_type_selected == (int)i;
+
+                ImGui::PushID((int)i);
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
+
+                ImGui::TableSetColumnIndex(CompTypeCol_Type);
+                {
+                    char lbl[48];
+                    snprintf(lbl, sizeof(lbl), "%s%s", item.label, modified ? " *" : "");
+                    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+                    if (ImGui::Selectable(lbl, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, frame_h)) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                        comp_type_selected = selected ? -1 : (int)i;
+                    }
+                    ImGui::PopStyleVar();
+
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem)) {
+                        highlight_comp_type(data, i);
+                        handle_item_click(data);
+                        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                            ImGui::OpenPopup("##comp_type_menu");
+                        }
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                        comp_type_tooltip(data, i);
+                    }
+                    if (ImGui::BeginPopup("##comp_type_menu")) {
+                        ImGui::TextUnformatted(item.label);
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Reset", nullptr, false, modified)) {
+                            reset_comp_type(type, i, color_changed);
+                        }
+                        ImGui::SetItemTooltip("Restore what was loaded");
+                        if (ImGui::MenuItem("Link to residue defaults", nullptr, false, m != MD_MONOMER_NONE && !item.use_defaults)) {
+                            item.use_defaults = true;
+                            link_comp_type_to_monomer(type, i, color_changed);
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
+
+                if (ImGui::TableSetColumnIndex(CompTypeCol_Kind)) {
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextDisabled("%s", md_component_kind_name(md_component_type_kind(&type, i)));
+                }
+
+                // Standard: swatch in the color of the type, the monomer dimmed when the color follows its defaults
+                if (ImGui::TableSetColumnIndex(CompTypeCol_Standard)) {
+                    const ImVec2 p  = ImGui::GetCursorScreenPos();
+                    const float off = floorf((frame_h - swatch) * 0.5f);
+                    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + off), ImVec2(p.x + swatch, p.y + off + swatch), type.color[i] | IM_COL32_A_MASK, 2.0f);
+                    ImGui::Dummy(ImVec2(swatch, frame_h));
+                    ImGui::SameLine();
+                    ImGui::AlignTextToFramePadding();
+                    if (m != MD_MONOMER_NONE) {
+                        if (item.use_defaults) ImGui::TextDisabled(STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
+                        else                   ImGui::Text(STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
+                    } else {
+                        ImGui::TextDisabled("-");
+                    }
+                }
+
+                if (ImGui::TableSetColumnIndex(CompTypeCol_Residues)) {
+                    char buf[48], num[32];
+                    snprintf(buf, sizeof(buf), "%s (%.1f%%)", fmt_count(num, sizeof(num), item.count), item.fraction * 100.0f);
+                    cell_text_right(buf, false);
+                }
+
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    void optimize_comp_type_colors(ApplicationState& data, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t num_types = md_component_type_count(&type);
+        if (num_types == 0 || md_array_size(comp_types) != num_types) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(ColorOptimizeItem) items = 0;
+        md_array(size_t) index = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            if (comp_types[i].count == 0) continue;     // Only the types in use
+            // A form of a standard residue is pulled to the color of its defaults, a monatomic ion to that of its element
+            // (which it was inferred with), unless it is a bead without one. The others start from the color they were
+            // inferred with and are free.
+            const bool has_monomer = comp_type_has_monomer(type, i);
+            bool element_ion = false;
+            if (!has_monomer && md_component_type_kind(&type, i) == MD_COMPONENT_KIND_ION) {
+                const md_urange_t atoms = md_system_component_atom_range(&data.mold.sys, (size_t)comp_types[i].comp_indices[0]);
+                element_ion = atoms.end > atoms.beg && md_atom_atomic_number(&data.mold.sys.atom, atoms.beg) != 0;
+            }
+            ColorOptimizeItem it;
+            it.color  = has_monomer ? monomer_default_color(md_component_type_monomer(&type, i)) : comp_types[i].load_color;
+            it.pull   = has_monomer || element_ion ? color_optimize_pull : 0.0f;
+            it.weight = (float)comp_types[i].atom_count;
+            md_array_push(items, it, md_temp_allocator(temp));
+            md_array_push(index, i, md_temp_allocator(temp));
+        }
+        const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
+        comp_type_optimize.has_result   = true;
+        comp_type_optimize.min_distance = res.min_distance;
+        comp_type_optimize.num_changed  = 0;
+
+        for (size_t k = 0; k < md_array_size(items); ++k) {
+            const size_t i = index[k];
+            if (comp_type_has_monomer(type, i)) {
+                // Linked to its defaults as long as it kept their color
+                comp_types[i].use_defaults = items[k].color == monomer_default_color(md_component_type_monomer(&type, i));
+            }
+            comp_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            color_changed |= type.color[i] != items[k].color;
+            type.color[i] = items[k].color;
+        }
+    }
+
+    void draw_comp_types(ApplicationState& data, bool& color_changed) {
+        md_system_t& sys = data.mold.sys;
+        md_component_type_data_t& type = sys.component.type;
+        const size_t num_types = md_component_type_count(&type);
+        if (num_types == 0 || md_array_size(comp_types) != num_types) {
+            ImGui::TextDisabled("No residues in this system");
+            return;
+        }
+
+        // Types no residue is of any more (reclassified when the system was inferred again) are not listed
+        auto in_use = [&](size_t i) { return comp_types[i].count > 0; };
+        size_t num_used = 0;
+        size_t num_modified = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            num_used     += in_use(i) ? 1 : 0;
+            num_modified += compute_comp_type_delta(type, i) ? 1 : 0;
+        }
+
+        char header[64];
+        snprintf(header, sizeof(header), "Residue Types (%zu)###ResidueTypes", num_used);
+        if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+        if (comp_type_selected >= (int)num_types) comp_type_selected = -1;
+
+        const bool show_filter = num_used > 8;
+        {
+            bool reset_clicked = false;
+            const bool optimize = draw_type_table_toolbar("##comp_type_toolbar", show_filter, comp_type_filter, sizeof(comp_type_filter), "Filter by name, standard residue or kind",
+                num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", comp_type_optimize,
+                "Make the colors of the residue types in use as distinct as they can be. Every type starts from its default:\n"
+                "colors you set are replaced, and Reset undoes it.\n\n"
+                "Standard residues are pulled back to their palette color, and ions to the color of their element: they move a little\n"
+                "at most, where two are too close to tell apart. The rest (ligands, lipids, water) move freely.");
+            if (reset_clicked) {
+                for (size_t i = 0; i < num_types; ++i) {
+                    if (compute_comp_type_delta(type, i)) reset_comp_type(type, i, color_changed);
+                }
+            }
+            if (optimize) {
+                optimize_comp_type_colors(data, color_changed);
+            }
+        }
+        const str_t filter = show_filter ? str_trim(str_from_cstr(comp_type_filter)) : STR_LIT("");
+
+        auto passes_filter = [&](size_t i) {
+            if (!in_use(i)) return false;
+            if (str_empty(filter)) return true;
+            const md_monomer_t m = md_component_type_monomer(&type, i);
+            return contains_ignore_case(str_from_cstr(comp_types[i].label), filter) ||
+                   (m != MD_MONOMER_NONE && str_eq_ignore_case(md_monomer_id(m), filter)) ||
+                   contains_ignore_case(str_from_cstr(md_component_kind_name(md_component_type_kind(&type, i))), filter);
+        };
+
+        size_t num_rows = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            num_rows += passes_filter(i) ? 1 : 0;
+        }
+
+        if (num_rows == 0) {
+            ImGui::TextDisabled("No residue type matches the filter");
+        } else {
+            draw_comp_type_table(data, num_rows, passes_filter, color_changed);
+        }
+
+        if (comp_type_selected >= 0) {
+            draw_comp_type_editor(data, (size_t)comp_type_selected, color_changed);
+        } else {
+            ImGui::TextDisabled("Select a residue type to edit it");
+        }
+        ImGui::Spacing();
+    }
+
+    // A button in the color of a monomer, labeled with its id
+    static bool monomer_button(const char* lbl, vec4_t color, float width) {
+        const vec4_t color_hover  = vec4_clamp(color + vec4_set1(0.2f), vec4_set1(0.0f), vec4_set1(1.0f));
+        const vec4_t color_active = color * vec4_set(0.8f, 0.8f, 0.8f, 1.0f);
+        const bool light = color_is_light(u32_from_vec4(color));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(color.x, color.y, color.z, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0, 0, 0, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(color_hover.x,  color_hover.y,  color_hover.z,  1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(color_active.x, color_active.y, color_active.z, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          light ? ImVec4(0, 0, 0, 1) : ImVec4(1, 1, 1, 1));
+        const bool clicked = ImGui::Button(lbl, ImVec2(width, ImGui::GetFrameHeight()));
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar();
+        return clicked;
+    }
+
+    // The defaults of the standard monomers (tier 1), which the residue types linked to them follow
+    void draw_monomer_defaults(ApplicationState& data, bool& color_changed) {
+        md_component_type_data_t& type = data.mold.sys.component.type;
+        const size_t num_types = md_component_type_count(&type);
+        if (num_types == 0 || md_array_size(comp_types) != num_types) return;
+
+        // Monomers of residue types linked to the defaults, the others are shown disabled
+        bool used[MD_MONOMER_COUNT] = {};
+        bool any = false;
+        for (size_t i = 0; i < num_types; ++i) {
+            if (comp_types[i].use_defaults && comp_types[i].count > 0) {
+                used[md_component_type_monomer(&type, i)] = true;
+                any = true;
+            }
+        }
+        if (!any) return;
+        if (!ImGui::CollapsingHeader("Residue Defaults")) return;
+
+        ImGui::Indent();
+        defer { ImGui::Unindent(); };
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float spacing = style.ItemSpacing.x * 0.25f;
+        const float width   = ImGui::CalcTextSize("WWW").x + style.FramePadding.x * 2.0f;
+        const float max_x   = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+
+        auto draw_group = [&](const char* label, int beg, int end) {
+            ImGui::TextDisabled("%s", label);
+            for (int m = beg; m < end; ++m) {
+                if (m != beg) {
+                    if (ImGui::GetItemRectMax().x + spacing + width <= max_x) ImGui::SameLine(0, spacing);
+                }
+                char lbl[16];
+                snprintf(lbl, sizeof(lbl), STR_FMT "##monomer", STR_ARG(md_monomer_id((md_monomer_t)m)));
+                ImGui::BeginDisabled(!used[m]);
+                if (monomer_button(lbl, monomer_defaults[m].color, width) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                    monomer_popup = m;
+                    ImGui::OpenPopup("##monomer_default_popup");
+                }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered()) {
+                    // The atoms of the residue types which follow these defaults
+                    md_bitmask_t* hb = &data.selection.highlight_mask;
+                    md_bitmask_clear(hb);
+                    for (size_t i = 0; i < num_types; ++i) {
+                        if (!comp_types[i].use_defaults || md_component_type_monomer(&type, i) != m) continue;
+                        for (size_t k = 0; k < md_array_size(comp_types[i].comp_indices); ++k) {
+                            const md_urange_t r = md_system_component_atom_range(&data.mold.sys, (size_t)comp_types[i].comp_indices[k]);
+                            md_bitmask_set_range(hb, r.beg, r.end);
+                        }
+                    }
+                    handle_item_click(data);
+                    ImGui::SetTooltip(STR_FMT " (%c)", STR_ARG(md_monomer_name((md_monomer_t)m)), md_monomer_letter((md_monomer_t)m));
+                }
+            }
+        };
+        draw_group("Amino acids", MD_MONOMER_ALA, MD_MONOMER_DA);
+        draw_group("Nucleotides", MD_MONOMER_DA, MD_MONOMER_COUNT);
+        ImGui::TextDisabled("Click a residue to edit its defaults, which apply to all residue types linked to them");
+
+        if (monomer_popup > MD_MONOMER_NONE && monomer_popup < MD_MONOMER_COUNT && ImGui::BeginPopup("##monomer_default_popup")) {
+            const md_monomer_t m = (md_monomer_t)monomer_popup;
+            ImGui::Text(STR_FMT ": " STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
+            ImGui::Separator();
+
+            MonomerDefault& def = monomer_defaults[m];
+            bool edited = ImGui::ColorEdit3("Color", def.color.elem);
+            if (compute_monomer_default_delta(m)) {
+                if (ImGui::Button("Reset")) {
+                    def.color = vec4_from_u32(md_monomer_color(m));
+                    edited = true;
+                }
+                ImGui::SetItemTooltip("Restore the built in color");
+            }
+            if (edited) {
+                def.color.w = 1.0f;
+                for (size_t i = 0; i < num_types; ++i) {
+                    if (comp_types[i].use_defaults && md_component_type_monomer(&type, i) == m) {
+                        link_comp_type_to_monomer(type, i, color_changed);
+                    }
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    void draw_comp_types_tab(ApplicationState& data) {
+        bool color_changed = false;
+        draw_comp_types(data, color_changed);
+        draw_monomer_defaults(data, color_changed);
+        if (color_changed) {
+            flag_all_representations_as_dirty(&data);
+        }
+    }
+
     void draw(ApplicationState& data) {
         if (!show_window) return;
 
@@ -2573,6 +3360,10 @@ struct Dataset : viamd::EventHandler {
                 }
                 if (ImGui::BeginTabItem("Atom Types")) {
                     draw_atom_types_tab(data);
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Residue Types")) {
+                    draw_comp_types_tab(data);
                     ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar();

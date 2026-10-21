@@ -1015,8 +1015,6 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     vec4_t selection_color = state.selection.color.selection.visible;
                     vec4_t highlight_color = state.selection.color.highlight.visible;
-                    highlight_color.w += (float)(sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE);
-                    highlight_color.w = CLAMP(highlight_color.w, 0.0f, 1.0f);
 
                     float saturation_scale = md_bitmask_count(&critical_points.selection_mask) > 0 ? state.selection.color.saturation : 1.0f;
 
@@ -1049,6 +1047,23 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;
                 //draw_orb_volume(state);
+                break;
+            }
+            case viamd::EventType_ViamdRenderKey: {
+                // What the critical points are drawn from (RenderTransparent): they are selected and highlighted
+                // by hovering and clicking them
+                ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
+                RenderKey* rk = (RenderKey*)e.payload;
+                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+                    const md_topo_extremum_graph_t& g = critical_points.simp_graph;
+                    const uint64_t counts[2] = {(uint64_t)g.num_vertices, (uint64_t)g.num_edges};
+                    uint64_t h = md_hash64(counts, sizeof(counts), rk->key);
+                    h = md_hash64(&g.vertices, sizeof(g.vertices), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.selection_mask), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.highlight_mask), h);
+                    h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
+                    rk->key = h;
+                }
                 break;
             }
             case viamd::EventType_ViamdInteractionSurface: {
@@ -6766,6 +6781,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
                 postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                postprocess_settings.shadows.enabled = false;
                 postprocess_settings.ssao.enabled = false;
                 postprocess_settings.dof.enabled = false;
                 postprocess_settings.fxaa.enabled = true;
@@ -8191,97 +8207,24 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
+                    // The marks of the selection and the highlight, put over each panel as it is presented
+                    const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+                    if (draw_marks) {
+                        PUSH_GPU_SECTION("Marks")
+                        gbuffer_marks_begin(&gbuf);
+                        draw_rep(nto.gl_rep, state.gl.shaders_marks, view_mat, proj_mat, AtomBit_Marked);
+                        gbuffer_marks_end(&gbuf);
+                        POP_GPU_SECTION()
+                    }
+
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                    glViewport(0, 0, gbuf.width, gbuf.height);
                     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
                     glClearColor(0, 0, 0, 0);   // premultiplied: nothing
                     glClear(GL_COLOR_BUFFER_BIT);
-
-                    if (true) {
-                        PUSH_GPU_SECTION("Selection")
-                        const bool atom_selection_empty = md_bitmask_empty(&state.selection.selection_mask);
-                        const bool atom_highlight_empty = md_bitmask_empty(&state.selection.highlight_mask);
-
-                        glDepthMask(0);
-
-                        // @NOTE(Robin): This is a b*tch to get right, What we want is to separate in a single pass, the visible selected from the
-                        // non visible selected. In order to achieve this, we start with a cleared stencil of value 1 then either set it to zero selected and not visible
-                        // and to two if it is selected and visible. But the visible atoms should always be able to write over a non visible 0, but not the other way around.
-                        // Hence the GL_GREATER stencil test against the reference value of 2.
-
-                        if (!atom_selection_empty) {
-                            glColorMask(0, 0, 0, 0);
-
-                            glEnable(GL_DEPTH_TEST);
-                            glDepthFunc(GL_EQUAL);
-
-                            glEnable(GL_STENCIL_TEST);
-                            glStencilMask(0xFF);
-
-                            glClearStencil(1);
-                            glClear(GL_STENCIL_BUFFER_BIT);
-
-                            glStencilFunc(GL_GREATER, 0x02, 0xFF);
-                            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                            draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Selected);
-
-                            glDisable(GL_DEPTH_TEST);
-
-                            glStencilMask(0x0);
-                            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                            glColorMask(1, 1, 1, 1);
-
-                            glStencilFunc(GL_EQUAL, 2, 0xFF);
-                            postprocessing::blit_color(state.selection.color.selection.visible);
-
-                            glStencilFunc(GL_EQUAL, 0, 0xFF);
-                            postprocessing::blit_color(state.selection.color.selection.hidden);
-                        }
-
-                        if (!atom_highlight_empty) {
-                            glColorMask(0, 0, 0, 0);
-
-                            glEnable(GL_DEPTH_TEST);
-                            glDepthFunc(GL_EQUAL);
-
-                            glEnable(GL_STENCIL_TEST);
-                            glStencilMask(0xFF);
-
-                            glClearStencil(1);
-                            glClear(GL_STENCIL_BUFFER_BIT);
-
-                            glStencilFunc(GL_GREATER, 0x02, 0xFF);
-                            glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                            draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Highlighted);
-
-                            glDisable(GL_DEPTH_TEST);
-
-                            glStencilMask(0x0);
-                            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                            glColorMask(1, 1, 1, 1);
-
-                            glStencilFunc(GL_EQUAL, 2, 0xFF);
-                            postprocessing::blit_color(state.selection.color.highlight.visible);
-
-                            glStencilFunc(GL_EQUAL, 0, 0xFF);
-                            postprocessing::blit_color(state.selection.color.highlight.hidden);
-                        }
-
-                        glDisable(GL_STENCIL_TEST);
-
-                        /*
-                        if (!atom_selection_empty) {
-                        PUSH_GPU_SECTION("Desaturate") {
-                        glColorMask(1, 1, 1, 1);
-                        glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-                        postprocessing::scale_hsv(nto.gbuf.tex.color, vec3_t{1, state.selection.color.saturation, 1});
-                        } POP_GPU_SECTION()
-                        }
-                        */
-
-                        glDepthFunc(GL_LESS);
-                        glDepthMask(0);
-                        glColorMask(1,1,1,1);
-                        POP_GPU_SECTION()
-                    }
+                    glDepthFunc(GL_LESS);
+                    glDepthMask(0);
+                    glColorMask(1,1,1,1);
 
                     PUSH_GPU_SECTION("Postprocessing")
                     postprocess_pipeline::Settings postprocess_settings = {};
@@ -8298,6 +8241,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                     postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
                     postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                    postprocess_settings.shadows.enabled = false;
                     postprocess_settings.ssao.enabled = false;
                     postprocess_settings.dof.enabled = false;
                     postprocess_settings.fxaa.enabled = true;
@@ -8309,6 +8253,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     postprocess_inputs.normal = nto.gbuf.tex.normal;
                     postprocess_inputs.velocity = nto.gbuf.tex.velocity;
                     postprocess_inputs.transparency = nto.gbuf.tex.transparency;
+                    if (draw_marks) {
+                        postprocess_inputs.marks = nto.gbuf.tex.marks;
+                        postprocess_inputs.marks_group = nto.gbuf.tex.marks_group;
+                        marks_settings(&postprocess_settings, state, 1.0f, MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
+                    }
 
                     ViewParam view_param = {
                         .matrix = {
@@ -8437,7 +8386,6 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
 
                         postprocess_inputs.transparency_hdr = iso_written ? nto.iso_tex[i] : 0;
-                        postprocess_inputs.transparency_under_hdr = true;   // the selection tint is under the surfaces
                         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.out_fbo);
                         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nto.out_tex[i], 0);
                         glDrawBuffer(GL_COLOR_ATTACHMENT0);

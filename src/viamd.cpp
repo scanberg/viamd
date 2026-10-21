@@ -460,6 +460,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_list_add(&kind, order_names[order]);
     }
     if (flags & MD_BOND_FLAG_COORDINATE) tooltip_list_add(&kind, "coordinate");
+    if (flags & MD_BOND_FLAG_ELASTIC)    tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)");
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
     // Across a periodic boundary the bond is the short way round
@@ -631,7 +632,12 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     md_str_writer_t kind = md_str_writer_create(req->alloc);
     if (flags & MD_RING_FLAG_AROMATIC) tooltip_list_add(&kind, "aromatic");
     if (flags & MD_RING_FLAG_HETERO)   tooltip_list_add(&kind, "hetero");
-    if (flags & MD_RING_FLAG_FUSED)    tooltip_list_add(&kind, "fused");
+    // A ring of a fused aromatic system (its circle is dashed): its sextets are not assigned to particular rings
+    if ((flags & MD_RING_FLAG_AROMATIC) && (flags & MD_RING_FLAG_FUSED_AROMATIC)) {
+        tooltip_list_add(&kind, "fused aromatic system");
+    } else if (flags & MD_RING_FLAG_FUSED) {
+        tooltip_list_add(&kind, "fused");
+    }
     if (flags & MD_RING_FLAG_SUGAR)    tooltip_list_add(&kind, "sugar");
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
@@ -1389,6 +1395,80 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
     }
 }
 
+void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc) {
+    ASSERT(transforms);
+    md_array_shrink(*transforms, 0);
+    if (copy_offset) md_array_shrink(*copy_offset, 0);
+    const md_assembly_data_t& a = sys.assembly;
+    if (assembly < 0 || (size_t)assembly >= a.count) return;
+    if (copy_offset) md_array_push(*copy_offset, 0, alloc);
+    // The parts and their operators from the offsets as they are (assembly_part)
+    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
+        const AssemblyPart part = assembly_part(a, p);
+        for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
+            md_array_push(*transforms, a.oper_transform[*o], alloc);
+        }
+        if (copy_offset) md_array_push(*copy_offset, (uint32_t)md_array_size(*transforms), alloc);
+    }
+}
+
+void assembly_subsets_free(ApplicationState* app) {
+    ASSERT(app);
+    for (size_t i = 0; i < md_array_size(app->view.assembly_subsets); ++i) {
+        if (app->view.assembly_subsets[i].id) md_gl_subset_destroy(app->view.assembly_subsets[i]);
+    }
+    for (size_t i = 0; i < md_array_size(app->view.assembly_glyph_subsets); ++i) {
+        if (app->view.assembly_glyph_subsets[i].id) md_gl_subset_destroy(app->view.assembly_glyph_subsets[i]);
+    }
+    md_array_shrink(app->view.assembly_subsets, 0);
+    md_array_shrink(app->view.assembly_glyph_subsets, 0);
+    app->view.assembly_subsets_of  = -1;
+    app->view.assembly_subsets_mol = 0;
+}
+
+void assembly_subsets_update(ApplicationState* app) {
+    ASSERT(app);
+    const int assembly = app->view.assembly;
+    const uint32_t mol_id = app->mold.gl_mol.id;
+    if (assembly == app->view.assembly_subsets_of && mol_id == app->view.assembly_subsets_mol) return;
+    assembly_subsets_free(app);
+    const md_system_t& sys = app->mold.sys;
+    if (assembly < 0 || (size_t)assembly >= sys.assembly.count || !mol_id) return;
+    app->view.assembly_subsets_of  = assembly;
+    app->view.assembly_subsets_mol = mol_id;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_allocator_i* alloc = app->allocator.persistent;
+    const md_assembly_data_t& a = sys.assembly;
+    const CartoonGlyphs& glyphs = app->mold.cartoon_glyphs;
+    const bool has_glyphs = cartoon_glyphs_valid(glyphs);
+    uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MAX(sys.atom.count, (size_t)1));
+    // The parts and their instances from the offsets as they are (assembly_part), not from a range of them
+    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
+        const AssemblyPart part = assembly_part(a, p);
+        md_gl_subset_t subset = {};
+        md_gl_subset_t glyph_subset = {};
+        // A part of all instances (each once) shows the whole molecule
+        if ((size_t)(part.inst_end - part.inst) < sys.instance.count) {
+            uint32_t count = 0;
+            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*k);
+                const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
+                for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
+            }
+            subset = md_gl_subset_create(app->mold.gl_mol);
+            md_gl_subset_set_atoms(subset, atoms, count);
+            if (has_glyphs) {
+                glyph_subset = md_gl_subset_create(glyphs.gl_mol);
+                md_gl_subset_set_derived(glyph_subset, subset);
+            }
+        }
+        md_array_push(app->view.assembly_subsets, subset, alloc);
+        md_array_push(app->view.assembly_glyph_subsets, glyph_subset, alloc);
+    }
+}
+
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
@@ -1401,6 +1481,10 @@ void init_system_data(ApplicationState* data) {
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
+        // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
+        data->view.assembly = -1;
+        md_array_shrink(data->view.assembly_transforms, 0);
+        md_array_shrink(data->view.assembly_copy_offset, 0);
         // Before the representations, which each make a representation of the glyphs
         cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
 
@@ -1437,14 +1521,13 @@ void init_system_data(ApplicationState* data) {
 
 #if EXPERIMENTAL_GFX_API
         const md_system_t& mol = data->mold.sys;
-        vec3_t& aabb_min = data->mold.sys_aabb_min;
-        vec3_t& aabb_max = data->mold.sys_aabb_max;
+        vec3_t aabb_min, aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
+        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
         if (mol.instance.count > 0) {
             md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
             md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
@@ -1476,6 +1559,8 @@ void free_system_data(ApplicationState* data) {
     data->operations.initial_frame.rel_xyzw = nullptr;
     data->operations.initial_frame.valid = false;
 
+    // The subsets of the parts of an assembly are of the molecule
+    assembly_subsets_free(data);
     md_gl_mol_destroy(data->mold.gl_mol);
     // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
     // representations, a frame after a load that failed) sees no molecule rather than a stale one
@@ -1774,6 +1859,9 @@ struct WorkspacePending {
     bool has_recenter_target;
     md_bitset_t recenter_target;
 
+    // The id of the assembly shown, of the system the files hold (view.assembly)
+    char assembly_id[8];
+
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
     // filter is how a workspace from before the timeline's periods held it, and becomes one of them:
     // what was shown over the filter is shown over that period.
@@ -1834,6 +1922,7 @@ static void workspace_reset(ApplicationState* data) {
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
     data->view.periodic_images[0] = data->view.periodic_images[1] = data->view.periodic_images[2] = 0;
+    data->view.assembly = -1;
 
     data->selection.granularity = SelectionGranularity::Atom;
     md_bitmask_clear(&data->selection.selection_mask);
@@ -1980,6 +2069,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     if (viamd::extract_flt_vec(n, 3, arg)) {
                         for (int k = 0; k < 3; ++k) data->view.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
                     }
+                }
+                else if (str_eq(ident, STR_LIT("Assembly"))) {
+                    str_t id = {};
+                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
                 }
                 else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(pending.box_enabled, arg);
                 else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(pending.box_color, arg);
@@ -2212,9 +2305,24 @@ void load_workspace(ApplicationState* data, str_t filename) {
         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 
+    // The assembly shown, by its id in the files loaded
+    if (pending.assembly_id[0]) {
+        const md_assembly_data_t& a = data->mold.sys.assembly;
+        for (size_t i = 0; i < a.count; ++i) {
+            if (str_eq(md_assembly_id(&a, i), str_from_cstr(pending.assembly_id))) data->view.assembly = (int)i;
+        }
+        if (data->view.assembly < 0) {
+            VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", pending.assembly_id);
+        }
+    }
+
     // The camera flies in: from the whole system to where the workspace looked from. Without a
-    // stored camera, both are the whole system.
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
+    // stored camera, both are the whole system (or the assembly shown).
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->view.assembly);
+    if (data->view.assembly >= 0) {
+        // Room to zoom out to all of the assembly
+        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
+    }
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
@@ -2312,6 +2420,9 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         {
             const float n[3] = { (float)app_state->view.periodic_images[0], (float)app_state->view.periodic_images[1], (float)app_state->view.periodic_images[2] };
             viamd::write_flt_vec(state, STR_LIT("PeriodicImages"), n, 3);
+        }
+        if (app_state->view.assembly >= 0 && (size_t)app_state->view.assembly < app_state->mold.sys.assembly.count) {
+            viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&app_state->mold.sys.assembly, (size_t)app_state->view.assembly));
         }
         // The ambient occlusion and the anti-aliasing are the computer's settings (the .ini), the simulation box a
         // representation
@@ -4100,8 +4211,6 @@ void interpolate_system_state(ApplicationState* app) {
         app->mold.last_interpolated_frame = time;
     }
 
-    const size_t num_threads = task_system::pool_num_threads();
-
     // The number of atoms to be processed per thread when divided into chunks
     const uint32_t grain_size = 1024;
 
@@ -4126,9 +4235,6 @@ void interpolate_system_state(ApplicationState* app) {
         md_secondary_structure_t*    dst_ss;
         md_gl_secondary_structure_t* ss_weights;
 
-        vec3_t* aabb_min;
-        vec3_t* aabb_max;
-
         mat4_t recenter_transform;
     };
 
@@ -4141,8 +4247,6 @@ void interpolate_system_state(ApplicationState* app) {
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
         .dst_state = &app->mold.state,
-        .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
-        .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
 
     // The cubic modes are a weighted sum of the four frames, the same for everything interpolated: coordinates, cell and
@@ -4322,27 +4426,6 @@ void interpolate_system_state(ApplicationState* app) {
         default:
             ASSERT(false);
             break;
-    }
-
-    {
-        // Calculate a global AABB for the molecule
-        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            size_t range_len = range_end - range_beg;
-            const vec3_t* xyz = data->dst_state->xyz + range_beg;
-
-            md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
-            float* r = md_temp_alloc_array(temp, float, range_len);
-            md_atom_extract_radii(r, range_beg, range_len, &data->app->mold.sys.atom);
-
-            vec3_t aabb_min = vec3_set1(FLT_MAX);
-            vec3_t aabb_max = vec3_set1(-FLT_MAX);
-            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, xyz, r, 0, range_len);
-
-            data->aabb_min[thread_num] = aabb_min;
-            data->aabb_max[thread_num] = aabb_max;
-        });
-        tasks[num_tasks++] = aabb_task;
     }
 
     if (payload.dst_angle) {
@@ -4535,15 +4618,6 @@ void interpolate_system_state(ApplicationState* app) {
     if (payload.ss_weights) {
         md_gl_mol_set_backbone_secondary_structure(app->mold.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
     }
-
-    vec3_t aabb_min = payload.aabb_min[0];
-    vec3_t aabb_max = payload.aabb_max[0];
-    for (size_t i = 1; i < task_system::pool_num_threads(); ++i) {
-        aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
-        aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
-    }
-    app->mold.sys_aabb_min = aabb_min;
-    app->mold.sys_aabb_max = aabb_max;
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     mat3_t A;
@@ -5439,12 +5513,59 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
     ASSERT(transform);
     if (!state.num_atoms) return;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
+
+    if (sys && assembly >= 0 && (size_t)assembly < sys->assembly.count && sys->atom.count == state.num_atoms) {
+        // The atoms of the instances of each part where each of its operators puts them, framed as one: the cell has
+        // nothing to say about an assembly. Of a large one (a virus) every k-th atom, at most about a million in all.
+        const md_assembly_data_t& a = sys->assembly;
+        const md_bitset_t* m = (mask && md_bitset_count(*mask) > 0) ? mask : nullptr;
+        // The parts, their instances and operators from the offsets as they are (assembly_part)
+        const size_t part_beg = a.part_offset[assembly];
+        const size_t part_end = a.part_offset[assembly + 1];
+        size_t total = 0;
+        for (size_t p = part_beg; p < part_end; ++p) {
+            const AssemblyPart part = assembly_part(a, p);
+            size_t atoms = 0;
+            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
+                atoms += r.end - r.beg;
+            }
+            total += atoms * (size_t)(part.oper_end - part.oper);
+        }
+        const size_t max_points = 1000000;
+        const uint32_t stride = (uint32_t)MAX((size_t)1, DIV_UP(total, max_points));
+        md_array(vec3_t) xyz = 0;
+        md_array_ensure(xyz, MIN(total, max_points) + 1, md_temp_allocator(temp));
+        for (size_t p = part_beg; p < part_end; ++p) {
+            const AssemblyPart part = assembly_part(a, p);
+            for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
+                const mat4_t M = a.oper_transform[*o];
+                for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                    const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
+                    for (uint32_t i = r.beg; i < r.end; i += stride) {
+                        if (m && !md_bitset_test(*m, i)) continue;
+                        md_array_push(xyz, mat4_mul_vec3(M, state.xyz[i], 1.0f), md_temp_allocator(temp));
+                    }
+                }
+            }
+        }
+        const size_t n = md_array_size(xyz);
+        if (n > 0) {
+            mat3_t A = {};
+            md_unitcell_A_extract(A.elem, &state.unitcell);
+            const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
+            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+            transform->position = transform->position + cell_offset;
+            return;
+        }
+        // None of the atoms shown is in the assembly: those shown
+    }
 
     // A mask that selects nothing or everything is the whole system
     const int32_t* indices = nullptr;
@@ -5696,7 +5817,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // the coordinates that update_md_buffers uploads, and nothing else flags them: the synchronous
             // broadcasts of this event do not pass through the interpolation step that would otherwise
             // have set the bit.
-            if (apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
+            // Not while an assembly is shown, whose operators place the coordinates as the file gives them
+            if (app->view.assembly < 0 && apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
                 app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;
@@ -5873,6 +5995,7 @@ void script_vis_begin_frame(ApplicationState* state) {
     ASSERT(state);
     state->script.vis_target = {};
     state->script.vis_shown = nullptr;
+    state->selection.highlight_groups = {};
 }
 
 void script_vis_update(ApplicationState* state) {
@@ -5906,8 +6029,23 @@ void script_vis_update(ApplicationState* state) {
         sc.vis_shown = &sc.vis_result->vis;
         if (!md_bitset_empty(sc.vis_shown->atom_mask)) {
             md_bitmask_assign(&state->selection.highlight_mask, sc.vis_shown->atom_mask);
+            // Its elements, a colour each, when there is more than one. Known by what is visualized, not where the
+            // atoms are: playing, the atoms' flags are not made again every frame for them
+            const size_t num_groups = md_array_size(sc.vis_shown->groups);
+            if (num_groups > 1) {
+                const uint64_t key = md_hash64(&num_groups, sizeof(num_groups), sc.vis_result->key);
+                state->selection.highlight_groups = {sc.vis_shown->groups, num_groups, key ? key : 1};
+            }
         }
     }
+}
+
+uint64_t script_vis_shown_key(const ApplicationState* state) {
+    ASSERT(state);
+    const auto& sc = state->script;
+    if (!sc.vis_shown || !sc.vis_result) return 0;
+    const uint64_t key = md_hash64(&sc.vis_result->state_key, sizeof(sc.vis_result->state_key), sc.vis_result->key);
+    return key ? key : 1;
 }
 
 str_t script_vis_value_text(ApplicationState* state) {
