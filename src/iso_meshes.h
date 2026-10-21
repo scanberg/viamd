@@ -9,7 +9,7 @@
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
 // job (md_gto_iso_gpu_job_t) advanced by every update for a few milliseconds at most: the mesh shown stays the
 // previous one until the job is done, so a long extraction never stalls the frame (iso_meshes_progress tells how
-// far it is). The CPU path, and the GPU path with the profile on, block.
+// far it is). The CPU path blocks.
 //
 // Positions are in bohr, at the atoms of the current frame: the meshes go to world space by a scale of
 // BOHR_TO_ANGSTROM (iso_meshes_model_matrix).
@@ -57,7 +57,6 @@ struct IsoMeshes {
     uint32_t* tri_index = nullptr;  // the triangles on the host too, three per triangle, for the field's gradient
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
-    double   extract_ms = 0.0;  // BENCHMARK: the last GPU extraction alone
 
     // The GPU extraction under way (md_gto_iso_gpu_job_t), of the slots whose key is job_key: until it is done
     // the mesh above is the previous one
@@ -87,19 +86,6 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state);
 size_t iso_meshes_progress(float* fraction, size_t cap);
 
 mat4_t iso_meshes_model_matrix();
-
-// BENCHMARK (temporary, branch gto-iso-gpu-opt): Windows > Profiler drives these
-// With the profile on, every GPU extraction is first run once more step by step (md_gto_iso_gpu_profile_set)
-// and a report - that profile, then the plain extraction, its readback and its GL upload - is kept.
-void        iso_meshes_profile_enable(bool on);
-bool        iso_meshes_profile_enabled();
-const char* iso_meshes_profile_report();    // the reports since the last force_update, "" for none
-void        iso_meshes_profile_note(const char* text);    // appended to the report
-void        iso_meshes_profile_redo_dense();              // the dense comparison measured again at the next extraction
-// Every mesh is extracted again at its next update (its fields and their GPU set are kept: the cost of a
-// new isovalue); the report starts over unless kept
-void        iso_meshes_force_update(bool keep_report = false);
-uint64_t    iso_meshes_extraction_count();  // GPU extractions so far
 
 // Lattice spacing in bohr for a volume resolution: the same three steps of detail as the volumes
 double iso_meshes_cell_size(VolumeResolution resolution);
