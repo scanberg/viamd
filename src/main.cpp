@@ -7499,9 +7499,9 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
             }
         }
         // The contents of the colour volume (the vertex values are in the mesh's version)
-        if (use_colors) {
-            scene_hash = md_hash64(&es.col_hash, sizeof(es.col_hash), scene_hash);
-        }
+        if (use_colors) scene_hash = md_hash64(&es.col_hash, sizeof(es.col_hash), scene_hash);
+        if (use_field) scene_hash = md_hash64(&es.field_map.colormap, sizeof(es.field_map.colormap), scene_hash);
+        
         num_surfaces += n;
     }
 
