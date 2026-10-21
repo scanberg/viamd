@@ -5227,69 +5227,30 @@ static void profiler_export_csv(const ApplicationState* state, str_t path) {
 }
 
 #if MD_ENABLE_GPU
-// BENCHMARK (temporary, branch gto-iso-gpu-opt): the mesh extraction's profile, its experimental switches, and
-// a series that extracts the meshes shown once per variant of them into one report
+// BENCHMARK (temporary, branch gto-iso-gpu-opt): the mesh extraction's profile, its switches, and a series that
+// extracts the meshes shown once per variant of them into one report
 struct IsoBenchVariant {
     const char* name;
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r30), which every variant starts from
+// The library's defaults (r32), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
-    s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
-    s.skip_brick_test = true; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
-    s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
-    s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
-    s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
-    s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
-    s.wide_kernel = 3;     s.octree_start = 2;     s.dform_corners = false; s.flood = 1;
-    s.fused_project = true;
+    s.eval_eps_exp = 6;
+    s.dform = false;
+    s.flood = 1;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
-    {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
-    {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
+    {"defaults",                [](md_gto_iso_gpu_switches_t*) {}},
     {"flood off",               [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; }},
-    {"brick test on",           [](md_gto_iso_gpu_switches_t* s) { s->skip_brick_test = false; }},
-    {"flood off, brick test on",[](md_gto_iso_gpu_switches_t* s) { s->flood = 0; s->skip_brick_test = false; }},
     {"flood: every field",      [](md_gto_iso_gpu_switches_t* s) { s->flood = 2; }},
-    {"fused projection off",    [](md_gto_iso_gpu_switches_t* s) { s->fused_project = false; }},
-    {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
-    {"wide_kernel listed once", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 1; }},
-    {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
-    {"dform corners: dcorners3",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 2; }},
-    {"dform corners, flood off",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 2; s->flood = 0; }},
-    {"octree from the root",    [](md_gto_iso_gpu_switches_t* s) { s->octree_start = 0; }},
-    {"octree8 on",              [](md_gto_iso_gpu_switches_t* s) { s->octree8 = true; }},
-    {"gemm_wide off",           [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; }},
-    {"gemm_wide off, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 1; }},
-    {"gemm_wide off, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 2; }},
-    {"ordered off",             [](md_gto_iso_gpu_switches_t* s) { s->ordered = false; }},
-    {"diag: no AO values",      [](md_gto_iso_gpu_switches_t* s) { s->diag = 1; }},
-    {"diag: no multiply-adds",  [](md_gto_iso_gpu_switches_t* s) { s->diag = 2; }},
-    {"diag: lists only",        [](md_gto_iso_gpu_switches_t* s) { s->diag = 3; }},
-    {"diag: no C rows staged",  [](md_gto_iso_gpu_switches_t* s) { s->diag = 4; }},
-    {"diag: no shells staged, no AO values", [](md_gto_iso_gpu_switches_t* s) { s->diag = 5; }},
-    {"newton_tol 1e-3 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 3; }},
-    {"newton_tol 1e-4 h",       [](md_gto_iso_gpu_switches_t* s) { s->newton_tol_exp = 4; }},
-    {"corners_v4 off",          [](md_gto_iso_gpu_switches_t* s) { s->corners_v4 = false; }},
-    {"eval_list off",           [](md_gto_iso_gpu_switches_t* s) { s->eval_list = false; }},
-    {"coef_screen off",         [](md_gto_iso_gpu_switches_t* s) { s->coef_screen = false; }},
-    {"dform eval on",           [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
-    {"dform eval on, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 1; }},
-    {"dform eval on, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->dform = true; s->diag = 2; }},
-    {"dform_octree off",        [](md_gto_iso_gpu_switches_t* s) { s->dform_octree = false; }},
-    {"gemm off",                [](md_gto_iso_gpu_switches_t* s) { s->gemm = false; }},
-    {"octree_small off",        [](md_gto_iso_gpu_switches_t* s) { s->octree_small = false; }},
-    {"canon_terms off",         [](md_gto_iso_gpu_switches_t* s) { s->canon_terms = false; }},
-    {"corners_list off",        [](md_gto_iso_gpu_switches_t* s) { s->corners_list = false; }},
-    {"shared_corners off",      [](md_gto_iso_gpu_switches_t* s) { s->shared_corners = false; }},
-    {"newton_predict off",      [](md_gto_iso_gpu_switches_t* s) { s->newton_predict = false; }},
-    {"eval_eps 1e-10",          [](md_gto_iso_gpu_switches_t* s) { s->eval_eps_exp = 10; }},
+    {"D form on",               [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
+    {"AO cutoff 1e-10",         [](md_gto_iso_gpu_switches_t* s) { s->eval_eps_exp = 10; }},
     // the defaults again, last: how far the first row was off (a GPU still raising its clocks, caches cold)
-    {"all new, again (drift check)", [](md_gto_iso_gpu_switches_t*) {}},
+    {"defaults, again (drift check)", [](md_gto_iso_gpu_switches_t*) {}},
 };
 
 static struct {
@@ -5323,50 +5284,6 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     md_gto_iso_gpu_switches(&sw);
     bool changed = false;
     ImGui::BeginDisabled(iso_bench_series.step >= 0);
-    changed |= ImGui::Checkbox("Relax first", &sw.relax_first);
-    ImGui::SetItemTooltip("Relax on the lattice surface, then project (off: project, then 3 x (relax, project))");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Corners v2", &sw.corners_v2);
-    ImGui::SetItemTooltip("Corner values in registers (iso_corners_f*); off: iso_corners / iso_corners_orbital");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!sw.corners_v2);
-    changed |= ImGui::Checkbox("Shared corners", &sw.shared_corners);
-    ImGui::SetItemTooltip("High-face corners taken from the neighbour brick that owns them (with corners v2)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Corners list", &sw.corners_list);
-    ImGui::SetItemTooltip("The corner points listed, 256 per group over neighbouring bricks (iso_corners_list_f*, with corners v2); off: a group per brick");
-    ImGui::EndDisabled();
-    changed |= ImGui::Checkbox("Eval v2", &sw.eval_v2);
-    ImGui::SetItemTooltip("Density values at the vertices in registers (iso_eval_f*); off: iso_eval");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Canon terms", &sw.canon_terms);
-    ImGui::SetItemTooltip("The register-form kernels apply the fields' terms from per-column weights in every thread "
-                          "(when each term is w a, w a^2 or w a b of a pair); off: from the terms list, 64 points at a time");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("GEMM", &sw.gemm);
-    ImGui::SetItemTooltip("Corners (point list) and density vertices as a tiled GEMM, 4 rows x F/4 columns per thread "
-                          "(iso_gcorners_f*, iso_geval_f*); off: a row per thread (iso_corners_list_f*, iso_eval_f*)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Octree small", &sw.octree_small);
-    ImGui::SetItemTooltip("Sets of at most 4 functions (orbitals): the octree with a thread per shell, its sums in registers "
-                          "(iso_octree_small); off: iso_octree");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("D-form eval", &sw.dform);
-    ImGui::SetItemTooltip("Sets of densities: corners (point list) and vertices as phi^T D phi over the AOs reaching each "
-                          "group, upper block triangle (iso_dcorners, iso_deval); off: the factored functions (sets of "
-                          "more than 1024 functions use it regardless)");
-    ImGui::SameLine();
-    {
-        static const char* dks[] = {"D-form kernel: r9", "D-form kernel: tiles 64", "D-form kernel: tiles 128"};
-        int dk = sw.dform_kernel;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-        if (ImGui::Combo("##dform_kernel", &dk, dks, IM_ARRAYSIZE(dks))) { sw.dform_kernel = dk; changed = true; }
-        ImGui::SetItemTooltip("The D form's evaluation kernels: r9 (iso_dcorners, iso_deval); or D' upper triangular by "
-                              "chunks, Phi . T with no AO values made again, chunk shells from a table and staged ahead, "
-                              "in tiles of 64 columns (iso_dcorners2, iso_deval2) or of 128 in groups of 256 threads "
-                              "(iso_dcorners3, iso_deval3)");
-    }
-    ImGui::SameLine();
     {
         static const char* fls[] = {"Flood: off", "Flood: densities", "Flood: every field"};
         int fl = sw.flood;
@@ -5375,109 +5292,14 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
         ImGui::SetItemTooltip("APPROXIMATE: the corners from seeds and a flood. The bricks' corners first; a brick whose "
                               "corners straddle the iso value is evaluated, then round by round the bricks across faces with "
                               "a sign change. Only bricks with surface are evaluated, but a piece no seed reaches is missed. "
-                              "The bricks holding an atom are seeds too. Densities: those with weights >= 0 (total, alpha, beta); "
-                              "every field: MOs too, to see what it misses");
-    }
-
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Fused projection", &sw.fused_project);
-    ImGui::SetItemTooltip("One orbital: the Newton projection in one launch, every iteration of a group of 128 vertices "
-                          "until it has converged (iso_project_list_f1), instead of an evaluation and a step launched per "
-                          "iteration over every vertex");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("D-form corners", &sw.dform_corners);
-    ImGui::SetItemTooltip("Sets of densities: the corners in the D form (the D-form kernel chosen), the vertices as "
-                          "without it (the canonical GEMM where there are canonical terms)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("D-form octree", &sw.dform_octree);
-    ImGui::SetItemTooltip("Sets of densities: the octree bounds phi^T D phi, centred form over the AOs a node reaches, "
-                          "no factors and no limit on the rank (iso_octree_dform), whichever evaluation");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Octree 8", &sw.octree8);
-    ImGui::SetItemTooltip("The D-form octree below the root with a node's 8 children in one group (iso_octree_dform8): "
-                          "the shells reaching the parent listed once, each element of D loaded once for all 8 "
-                          "instead of once per child; the same bounds");
-    ImGui::SameLine();
-    {
-        int st = sw.octree_start;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
-        if (ImGui::SliderInt("Octree start", &st, 0, 3)) { sw.octree_start = st; changed = true; }
-    }
-    ImGui::SetItemTooltip("The first level the octree tests; the levels above keep every node (their few nodes reach "
-                          "every AO, a group each, and the root box holds the surfaces anyway)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("GEMM wide", &sw.gemm_wide);
-    ImGui::SetItemTooltip("Canonical sets of more than 64 functions: the GEMM in one pass of 128, 192 or 256 columns, "
-                          "64 rows per group of 256 threads (iso_gcorners_w*, iso_geval_w*): the shells listed and staged and "
-                          "the AO values made once instead of once per tile of 64");
-    ImGui::SameLine();
-    {
-        static const char* wks[] = {"Wide kernel: r16", "Wide kernel: listed once", "Wide kernel: + C ahead", "Wide kernel: auto"};
-        int wk = sw.wide_kernel;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-        if (ImGui::Combo("##wide_kernel", &wk, wks, IM_ARRAYSIZE(wks))) { sw.wide_kernel = wk; changed = true; }
-        ImGui::SetItemTooltip("The wide GEMM's kernels: r16 (iso_gcorners_w*, iso_geval_w*); the group's shells listed once "
-                              "and staged as they are listed, chunks of 16 consecutive AOs, a chunk staging only its rows of C "
-                              "(iso_gcorners_x*, iso_geval_x*); the same with the next chunk's rows of C loaded into registers "
-                              "during this chunk (iso_gcorners_y*, iso_geval_y*); auto: r16's to 192 columns, C ahead at 256");
+                              "The bricks holding an atom are seeds too. Densities: those whose maxima are at the atoms, with "
+                              "weights >= 0 (total, alpha, beta; the default); every field: MOs too, to see what it misses");
     }
     ImGui::SameLine();
-    changed |= ImGui::Checkbox("Ordered", &sw.ordered);
-    ImGui::SetItemTooltip("The bricks in Morton order, the corner point list and the vertices in that order (counts, a "
-                          "prefix sum, offsets); off: the order the groups' atomics happen in, so a group of points or "
-                          "vertices may span distant bricks and list far more shells");
-    ImGui::SameLine();
-    {
-        static const char* diags[] = {"Diag: off", "Diag: no AO values", "Diag: no multiply-adds", "Diag: lists only",
-                                      "Diag: no C rows staged", "Diag: no shells, no AO"};
-        int dg = sw.diag;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
-        if (ImGui::Combo("##diag", &dg, diags, IM_ARRAYSIZE(diags))) { sw.diag = dg; changed = true; }
-        ImGui::SetItemTooltip("DIAGNOSTIC, the corner GEMM kernels only: the AO values not made (a constant), no "
-                              "multiply-adds, the shell lists only, no rows of C staged, or no shells staged and no AO "
-                              "values. The corners are then zeroed (no surface): only the corner kernel's time means "
-                              "anything");
-    }
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Coef screen", &sw.coef_screen);
-    ImGui::SetItemTooltip("Sets of orbitals: a shell is dropped where its largest coefficient times its AOs is below "
-                          "the cutoff (as the volume path), not where its AOs are");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Corners x4", &sw.corners_v4);
-    ImGui::SetItemTooltip("One function: four corner points per thread, a shell's data read once for the four "
-                          "(iso_corners_list_f1v4); off: a point per thread (iso_corners_list_f1)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Eval list", &sw.eval_list);
-    ImGui::SetItemTooltip("One orbital: the vertices' values from the shells listed for 128 vertices at a time "
-                          "(iso_eval_list_f1); off: every shell per vertex (iso_eval_orbital)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("GEMM tiles 32", &sw.gemm_t32);
-    ImGui::SetItemTooltip("The GEMM kernels in tiles of 32 functions for sets of more (fewer registers and less "
-                          "groupshared memory per group; the AO values made twice as often)");
-    ImGui::SameLine();
-    {
-        static const char* tols[] = {"Newton tol 1e-2 h", "Newton tol 1e-3 h", "Newton tol 1e-4 h"};
-        int ti = sw.newton_tol_exp <= 2 ? 0 : sw.newton_tol_exp == 3 ? 1 : 2;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-        if (ImGui::Combo("##newton_tol", &ti, tols, IM_ARRAYSIZE(tols))) { sw.newton_tol_exp = 2 + ti; changed = true; }
-        ImGui::SetItemTooltip("A vertex has converged within this distance of the surface (the facets' own deviation "
-                              "from the surface is about 3e-2 h rms)");
-    }
-    ImGui::SameLine();
-    {
-        static const char* pipes[] = {"GEMM loop: compiler", "GEMM loop: no unroll", "GEMM loop: unroll 16"};
-        int pp = sw.gemm_pipe;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
-        if (ImGui::Combo("##gemm_pipe", &pp, pipes, IM_ARRAYSIZE(pipes))) { sw.gemm_pipe = pp; changed = true; }
-        ImGui::SetItemTooltip("The F = 64 GEMM kernels' loop over a chunk's rows (EXPERIMENT: how the driver allocates "
-                              "registers for each; see the kernel lines of the report)");
-    }
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Newton predict", &sw.newton_predict);
-    ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Skip brick test", &sw.skip_brick_test);
-    ImGui::SetItemTooltip("The octree's last level is not bounded: every child of a kept node is a brick, the corners deciding (the default)");
+    changed |= ImGui::Checkbox("D form", &sw.dform);
+    ImGui::SetItemTooltip("Sets of densities: corners and vertices as phi^T D phi over the AOs reaching each group, D' upper "
+                          "triangular (iso_dcorners, iso_deval); off: the factored functions (sets of more than 1024 "
+                          "functions use it regardless)");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
     const char* eps_items[] = {"1e-6", "1e-8", "1e-10"};
@@ -5507,8 +5329,8 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
             iso_bench_series.extractions = UINT64_MAX;      // start the first at once
             iso_bench_series.frames = 0;
         }
-        ImGui::SetItemTooltip("The meshes shown are extracted once per variant of the switches (all new, all old, each "
-                              "switch flipped alone), all into one report. Keep the representations in mesh mode.");
+        ImGui::SetItemTooltip("The meshes shown are extracted once per variant of the switches (the defaults, each switch "
+                              "changed alone, the defaults again), all into one report. Keep the representations in mesh mode.");
     } else {
         ImGui::Text("Variant %d of %d: %s", MIN(iso_bench_series.step, num_variants), num_variants,
                     iso_bench_variants[MIN(iso_bench_series.step, num_variants - 1)].name);
