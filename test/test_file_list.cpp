@@ -277,8 +277,9 @@ UTEST(viamd_file_list, version_1_files_load_in_their_slots_order) {
         "CoarseGrained=1\n");
     Read r(text, STR_LIT("/ws/"));
     { const std::string got_ = r.str(); EXPECT_STREQ("a.gro:System:-1 a.xtc:Trajectory:0 a.edr:Series:0 b.xvg:Series:0 c.csv:Series:0", got_.c_str()); }
-    EXPECT_STREQ(resolved("/ws/traj/a.xtc").c_str(), r.plan.inputs[1].entry.path);
-    EXPECT_STREQ(resolved("/abs/c.csv").c_str(), r.plan.inputs[4].entry.path);
+    const std::string traj = resolved("/ws/traj/a.xtc"), csv = resolved("/abs/c.csv");   // kept: the checks take pointers
+    EXPECT_STREQ(traj.c_str(), r.plan.inputs[1].entry.path);
+    EXPECT_STREQ(csv.c_str(), r.plan.inputs[4].entry.path);
     EXPECT_FALSE(r.plan.inputs[0].opens_own_run);   // it has a trajectory of its own
 
     // Without a trajectory the structure file's own frames were the run, and the series were along them
