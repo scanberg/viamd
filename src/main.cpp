@@ -5226,7 +5226,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r25), which every variant starts from
+// The library's defaults (r26), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5235,22 +5235,25 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
     s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
-    s.wide_kernel = 1;     s.octree_start = 2;     s.dform_corners = false; s.flood = 0;
+    s.wide_kernel = 3;     s.octree_start = 2;     s.dform_corners = false; s.flood = 1;
+    s.flood_brick_test = false;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
-    {"flood: densities",        [](md_gto_iso_gpu_switches_t* s) { s->flood = 1; }},
-    {"flood: densities, skip_brick_test on", [](md_gto_iso_gpu_switches_t* s) { s->flood = 1; s->skip_brick_test = true; }},
+    {"flood off",               [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; }},
+    {"flood off, skip_brick_test on", [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; s->skip_brick_test = true; }},
+    {"flood with the brick test",[](md_gto_iso_gpu_switches_t* s) { s->flood_brick_test = true; }},
     {"flood: every field",      [](md_gto_iso_gpu_switches_t* s) { s->flood = 2; }},
+    {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
+    {"wide_kernel listed once", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 1; }},
+    {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
     {"dform corners: dcorners3",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 2; }},
+    {"dform corners, flood off",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 2; s->flood = 0; }},
     {"octree from the root",    [](md_gto_iso_gpu_switches_t* s) { s->octree_start = 0; }},
     {"octree8 on",              [](md_gto_iso_gpu_switches_t* s) { s->octree8 = true; }},
-    {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
-    {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
-    {"wide_kernel C ahead, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; s->diag = 2; }},
     {"gemm_wide off",           [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; }},
     {"gemm_wide off, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 1; }},
     {"gemm_wide off, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->gemm_wide = false; s->diag = 2; }},
@@ -5361,8 +5364,13 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
         ImGui::SetItemTooltip("APPROXIMATE: the corners from seeds and a flood. The bricks' corners first; a brick whose "
                               "corners straddle the iso value is evaluated, then round by round the bricks across faces with "
                               "a sign change. Only bricks with surface are evaluated, but a piece no seed reaches is missed. "
-                              "Densities: those with weights >= 0 (total, alpha, beta); every field: MOs too, to see what it misses");
+                              "The bricks holding an atom are seeds too. Densities: those with weights >= 0 (total, alpha, beta); "
+                              "every field: MOs too, to see what it misses");
     }
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Flood: brick test", &sw.flood_brick_test);
+    ImGui::SetItemTooltip("With the flood, the octree's last level (the bricks) bounded as well; by default the brick "
+                          "corners reject the empty bricks instead, for less than the bound costs");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("D-form corners", &sw.dform_corners);
     ImGui::SetItemTooltip("Sets of densities: the corners in the D form (the D-form kernel chosen), the vertices as "
@@ -5391,14 +5399,14 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                           "the AO values made once instead of once per tile of 64");
     ImGui::SameLine();
     {
-        static const char* wks[] = {"Wide kernel: r16", "Wide kernel: listed once", "Wide kernel: + C ahead"};
+        static const char* wks[] = {"Wide kernel: r16", "Wide kernel: listed once", "Wide kernel: + C ahead", "Wide kernel: auto"};
         int wk = sw.wide_kernel;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
         if (ImGui::Combo("##wide_kernel", &wk, wks, IM_ARRAYSIZE(wks))) { sw.wide_kernel = wk; changed = true; }
         ImGui::SetItemTooltip("The wide GEMM's kernels: r16 (iso_gcorners_w*, iso_geval_w*); the group's shells listed once "
                               "and staged as they are listed, chunks of 16 consecutive AOs, a chunk staging only its rows of C "
                               "(iso_gcorners_x*, iso_geval_x*); the same with the next chunk's rows of C loaded into registers "
-                              "during this chunk (iso_gcorners_y*, iso_geval_y*)");
+                              "during this chunk (iso_gcorners_y*, iso_geval_y*); auto: r16's to 192 columns, C ahead at 256");
     }
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Ordered", &sw.ordered);

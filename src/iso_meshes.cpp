@@ -662,8 +662,12 @@ static md_gto_iso_field_t* electronic_structure_field_create(const ApplicationSt
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
         return iso_field_create_density(state, path, &slice);
     }
-    case ElectronicStructureSource::ElectronDensity:
-        return iso_field_create_density(state, es_electron_density_path(es.spin), nullptr);
+    case ElectronicStructureSource::ElectronDensity: {
+        // its maxima are at the nuclei: the GPU extraction evaluates it only around the surface (the flood)
+        md_gto_iso_field_t* f = iso_field_create_density(state, es_electron_density_path(es.spin), nullptr);
+        md_gto_iso_field_set_maxima_at_atoms(f, true);
+        return f;
+    }
     case ElectronicStructureSource::DensityProperty: {
         const md_attribute_t* attr = md_attributes_get(&state->mold.sys.attributes, es.density_property_key);
         return attr ? iso_field_create_density(state, attr->path, nullptr) : nullptr;
