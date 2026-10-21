@@ -21,8 +21,8 @@
 // per pixel, and one pass into the mean that also puts it over the caller's target (once the mean is kept, that
 // alone), both over the pixels the surfaces' bounds cover. The mean antialiases the edges: it is of the caller's
 // jittered projections, or when there are none (proj as proj_no_jitter) of a jitter of its own over the pixel. A
-// Target holds 28 bytes per pixel of the frame and 24 of history (Experiment_Multisampled: 28 per sample, the
-// samples per pixel (4, 2 or 1) as many as fit MEMORY_BUDGET).
+// Target holds 28 bytes per pixel for the frame and 24 for the history (the multisampled experiments: 28 per sample of
+// the frame, the samples per pixel (4, 2 or 1) as many as fit MEMORY_BUDGET unless set_experiment_samples says).
 
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
@@ -33,12 +33,12 @@
 
 namespace isomesh {
 
-// Frames averaged before the image is kept as it is. A frame of a sample per pixel is about twice the noise of one of
-// two samples per pixel, and on an M4 Pro a fifth of its time: more of them
+// Frames averaged before the image is kept as it is. With a sample per pixel a frame is about twice as noisy as one of
+// two samples was, and (on an M4 Pro) a fifth of its time: 128 rather than 64
 static constexpr uint32_t MAX_FRAMES = 128;
 
-// Bytes of multisampled storage a Target may take: 4 samples per pixel up to about 1920 x 1200, 2 up to about
-// 2560 x 1600, 1 above
+// Bytes of multisampled storage a Target may take in the multisampled experiments: 4 samples per pixel up to about
+// 1920 x 1200, 2 up to about 2560 x 1600, 1 above
 static constexpr size_t MEMORY_BUDGET = (size_t)272 << 20;
 
 void initialize();
@@ -73,26 +73,28 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
 void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count);
 void mesh_free(Mesh* mesh);
 
-// What one view keeps between frames: the multisampled frame, the running mean, and the state it belongs to
+// What one view keeps between frames: the frame, the running mean, and the state it belongs to
 struct Target {
     uint32_t width = 0, height = 0;
-    uint32_t samples = 0;
-    uint32_t tex_ms_color = 0;      // radiance and opacity times visibility (RGBA16F)
-    uint32_t tex_ms_tod   = 0;      // log transmittance and optical depth (RG16F)
-    uint32_t tex_ms_depth = 0;      // the stochastic depth
-    uint32_t tex_ms_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
-    uint32_t tex_ms_peel_opacity  = 0;    // and their opacities (RG16F)
-    uint32_t fbo_color = 0;         // tex_ms_color + tex_ms_depth
-    uint32_t fbo_tod   = 0;         // tex_ms_tod
-    uint32_t fbo_peel[2] = {};      // tex_ms_peel_opacity + tex_ms_peel_depth[i]
+    uint32_t samples = 0;           // of the frame's textures, per pixel: 1 but in the multisampled experiments
+    uint32_t tex_frame_color = 0;      // radiance and opacity times visibility (RGBA16F)
+    uint32_t tex_frame_tod   = 0;      // log transmittance and optical depth (RG16F)
+    uint32_t tex_frame_depth = 0;      // the stochastic depth
+    uint32_t tex_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
+    uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F)
+    uint32_t fbo_color = 0;         // tex_frame_color + tex_frame_depth
+    uint32_t fbo_tod   = 0;         // tex_frame_tod
+    uint32_t fbo_peel[2] = {};      // tex_peel_opacity + tex_peel_depth[i]
     uint32_t fbo       = 0;         // the history being written
     uint32_t tex_history_color[2] = {};
     uint32_t tex_history_t[2]     = {};
     uint32_t cur = 0;           // which history holds the mean
     uint32_t frame = 0;         // frames in the mean
     uint64_t hash = 0;          // of what the mean is of
-    uint32_t tex_target = 0;    // of the frame's textures: GL_TEXTURE_2D, or GL_TEXTURE_2D_MULTISAMPLE (Experiment_Multisampled)
     uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
+    uint32_t tex_target = 0;    // of the frame's textures: GL_TEXTURE_2D, or GL_TEXTURE_2D_MULTISAMPLE (the experiments)
+    uint32_t samples_asked = 0; // the samples per pixel asked for (an implementation may give more)
+    uint32_t seed = 0;          // target_set_seed
 };
 
 void target_free(Target* target);
@@ -169,17 +171,48 @@ struct RenderDesc {
 bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
 
 // EXPERIMENTS
-// For timing the passes (Windows > Profiler): what render() does differently, for every Target, until it is set back.
-// Those marked 'timing only' do not draw the right image.
+// For timing the passes and measuring their noise (Windows > Profiler, Sweep): what render() does differently, for
+// every Target, until it is set back. Those marked 'timing only' do not draw the right image.
+//
+// The multisampled ones: per sample into a multisampled target (the transmittance at pixel rate, MSAA coverage putting
+// it into the samples). Under sample shading Apple's OpenGL gives gl_FragCoord.z at the pixel's centre, not at the
+// sample the depth buffer holds, so there the passes have to write the depth they compare (gl_FragDepth), which takes
+// the depth test from before the shading to after it. The spec, Mesa, NVIDIA and AMD give the sample's depth: there
+// the rasterizer's will do (fragcoord_z_per_sample tells which), and the first peel, which compares with nothing, runs at
+// pixel rate as plain MSAA.
 enum Experiment {
     Experiment_None = 0,
-    Experiment_Multisampled,    // as it was: per sample into a multisampled target, one program for the passes after
-                                // the transmittance, writing gl_FragDepth
-    Experiment_SeparateResolve, // the mean and the composite in passes of their own, over all of the target
+    Experiment_Multisampled,            // as it was: one program for the passes after the transmittance, writing
+                                        // gl_FragDepth
+    Experiment_MultisampledPerPass,     // a program per pass, writing gl_FragDepth
+    Experiment_MultisampledNoFragDepth, // a program per pass, the rasterizer's depth, the first peel at pixel rate:
+                                        // timing only where fragcoord_z_per_sample is false (Apple's OpenGL)
+    Experiment_SeparateResolve,         // the mean and the composite in passes of their own, over all of the target
     Experiment_Count
 };
 void set_experiment(Experiment e);
 Experiment experiment();
 const char* experiment_name(Experiment e);     // a short one, for tables
+bool experiment_multisampled(Experiment e);
+
+// The samples per pixel of the multisampled experiments: 0 as many as fit MEMORY_BUDGET (at most 4), or n (at most what
+// the implementation has)
+void set_experiment_samples(uint32_t n);
+uint32_t experiment_samples();
+
+// Two Targets of different seeds draw independent frames: the thresholds of the stochastic depth and the jitter of
+// render()'s own (proj as proj_no_jitter) are offset by it (Cranley-Patterson rotations; 0 leaves them as they are).
+// The mean restarts.
+void target_set_seed(Target* target, uint32_t seed);
+
+// The composite of the mean as it is (what render() puts over the caller's target): premultiplied linear radiance and
+// coverage, width x height RGBA floats from the bottom row up. False when there is no mean.
+bool target_read_mean(const Target* target, float* rgba);
+
+// Whether gl_FragCoord.z under sample shading is the depth of the sample (as the rasterizer writes it into the depth
+// buffer) rather than of the pixel's centre: tested once, a steep triangle into four samples, gl_FragCoord.z written
+// as a colour and compared with the depth buffer sample by sample. 'max_diff' (optional) gets the largest difference
+// found. False also when it could not be tested ('max_diff' then negative).
+bool fragcoord_z_per_sample(float* max_diff = nullptr);
 
 }  // namespace isomesh

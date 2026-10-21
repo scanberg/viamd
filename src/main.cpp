@@ -5263,25 +5263,174 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
     if (isomesh::experiment() != isomesh::Experiment_None) {
         md_str_writer_fmt(sw, "isosurface mesh experiment: %s\n", isomesh::experiment_name(isomesh::experiment()));
     }
+    if (isomesh::experiment_samples() > 0) {
+        md_str_writer_fmt(sw, "isosurface mesh experiments: %u samples per pixel asked for\n", isomesh::experiment_samples());
+    }
 }
 
-// The isosurface mesh experiments in turn (isomesh::Experiment), the meshes drawn every frame and each experiment timed
-// over a window of the profiler's of its own (the second after it was set, which the one before does not reach into):
-// the rows of their ISOSURFACE MESHES in one table, to the clipboard
-static const isomesh::Experiment profiler_sweep_steps[] = {
-    isomesh::Experiment_None,
-    isomesh::Experiment_SeparateResolve,    // the mean and the composite as they were
-    isomesh::Experiment_None,               // again: how far the times drift over the sweep
+// THE SWEEP (Windows > Profiler, Sweep): the isosurface mesh experiments (isomesh::Experiment) in turn, the view kept
+// still, in two parts, to the clipboard as one text:
+// - times: the meshes drawn every frame, each step timed over a window of the profiler's of its own (the second after
+//   it was set, which the one before does not reach into): the rows of their ISOSURFACE MESHES;
+// - noise: per step (but the last, the first again for the drift of the times) two means of their own, of seeds 0 and 1
+//   (isomesh::target_set_seed) and of render()'s own jitter rather than the view's, read back after 1, 2, 4 ... 128
+//   frames. The RMS of their difference over sqrt(2) is the error of a mean of that many frames; the difference of a
+//   step's mean of 128 frames to the first step's, less the noise of the two, its bias. With the times of the first
+//   part, what each step takes to the error the first has after 32 and after 128 frames.
+struct ProfilerSweepStep {
+    isomesh::Experiment experiment;
+    uint32_t samples;       // isomesh::set_experiment_samples
 };
 
+static const ProfilerSweepStep profiler_sweep_steps[] = {
+    {isomesh::Experiment_None, 0},
+    {isomesh::Experiment_Multisampled, 2},              // as it was
+    {isomesh::Experiment_MultisampledPerPass, 2},
+    {isomesh::Experiment_MultisampledNoFragDepth, 2},   // a right image only where gl_FragCoord.z is the sample's
+    {isomesh::Experiment_MultisampledNoFragDepth, 4},
+    {isomesh::Experiment_None, 0},                      // again: how far the times drift over the sweep
+};
+static constexpr int PROFILER_SWEEP_STEPS = (int)ARRAY_SIZE(profiler_sweep_steps);
+static constexpr int PROFILER_SWEEP_NOISE_STEPS = PROFILER_SWEEP_STEPS - 1;
+static constexpr uint32_t profiler_sweep_frames[] = {1, 2, 4, 8, 16, 32, 64, 128};
+static constexpr int PROFILER_SWEEP_CHECKPOINTS = (int)ARRAY_SIZE(profiler_sweep_frames);
+
 static struct {
-    int  step = -1;             // the step being timed (profiler_sweep_steps), -1: none
+    int  step = -1;             // times: the step being timed, -1: none
     int  publish_at = 0;        // the profiler's publish its times are taken from
+    int  noise_step = -1;       // noise: the step being measured, -1: none
+    int  checkpoint = 0;        // the next of profiler_sweep_frames
+    uint32_t last_frames = 0;   // in the means at the last frame, to see them restart
     bool keep_before = false;
     isomesh::Experiment experiment_before = isomesh::Experiment_None;
+    uint32_t samples_before = 0;
+    uint32_t spp[PROFILER_SWEEP_STEPS] = {};        // the samples per pixel each step had
+    float ms[PROFILER_SWEEP_STEPS] = {};            // ISOSURFACE MESHES on the GPU, ms per frame
+    float frame_ms[PROFILER_SWEEP_STEPS] = {};      // the frame on the GPU
+    double err[PROFILER_SWEEP_NOISE_STEPS][PROFILER_SWEEP_CHECKPOINTS] = {};
+    double err_interior[PROFILER_SWEEP_NOISE_STEPS] = {};      // of 128 frames, away from the edges
+    double diff_ref[PROFILER_SWEEP_NOISE_STEPS] = {};          // the mean of 128 frames to the first step's
+    double diff_ref_interior[PROFILER_SWEEP_NOISE_STEPS] = {};
+    isomesh::Target targets[2];
+    uint32_t tex_color = 0;     // what the two means are put over: not the view
+    uint32_t width = 0, height = 0;
+    float* mean[2] = {};        // the two, read back
+    float* reference = nullptr; // the first step's mean of 128 frames (seed 0)
     md_str_writer_t table = {};
     bool has_table = false;
 } profiler_sweep;
+
+static void profiler_sweep_free_noise() {
+    auto& s = profiler_sweep;
+    for (auto& t : s.targets) {
+        isomesh::target_free(&t);
+    }
+    if (s.tex_color) glDeleteTextures(1, &s.tex_color);
+    s.tex_color = 0;
+    const size_t bytes = sizeof(float) * 4 * (size_t)s.width * s.height;
+    for (float*& m : s.mean) {
+        if (m) md_free(md_get_heap_allocator(), m, bytes);
+        m = nullptr;
+    }
+    if (s.reference) md_free(md_get_heap_allocator(), s.reference, bytes);
+    s.reference = nullptr;
+    s.width = s.height = 0;
+}
+
+static void profiler_sweep_set_step(int step) {
+    isomesh::set_experiment(profiler_sweep_steps[step].experiment);
+    isomesh::set_experiment_samples(profiler_sweep_steps[step].samples);
+}
+
+// The noise of a step from its start: two new means
+static void profiler_sweep_noise_restart() {
+    auto& s = profiler_sweep;
+    isomesh::target_set_seed(&s.targets[0], 0);
+    isomesh::target_set_seed(&s.targets[1], 1);
+    s.checkpoint = 0;
+    s.last_frames = 0;
+}
+
+// The RMS difference of two composites (premultiplied RGBA) in units of 1/255, over the pixels either covers; with
+// 'edges' only those away from the edges of its coverage (alpha within 0.05 of its four neighbours')
+static double profiler_sweep_rms(const float* a, const float* b, uint32_t w, uint32_t h, const float* edges = nullptr) {
+    double sum = 0.0;
+    size_t n = 0;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            const size_t i = (size_t)y * w + x;
+            const float* p = a + 4 * i;
+            const float* q = b + 4 * i;
+            if (MAX(p[3], q[3]) < 1.0f / 255.0f) continue;
+            if (edges) {
+                if (x == 0 || y == 0 || x + 1 >= w || y + 1 >= h) continue;
+                const float c = edges[4 * i + 3];
+                const size_t nb[4] = {i - 1, i + 1, i - w, i + w};
+                bool edge = false;
+                for (size_t j : nb) edge |= fabsf(edges[4 * j + 3] - c) > 0.05f;
+                if (edge) continue;
+            }
+            for (int k = 0; k < 3; ++k) {
+                const double d = (double)p[k] - (double)q[k];
+                sum += d * d;
+            }
+            n += 3;
+        }
+    }
+    return n ? sqrt(sum / (double)n) * 255.0 : 0.0;
+}
+
+// The frames a step takes to an error of q: log-log between the frames measured, beyond them along the last two
+static double profiler_sweep_frames_to(const double* err, double q) {
+    if (q <= 0.0) return 0.0;
+    if (err[0] <= q) return 1.0;
+    int i = 0;
+    while (i + 2 < PROFILER_SWEEP_CHECKPOINTS && err[i + 1] > q) ++i;
+    const double x0 = log((double)profiler_sweep_frames[i]), x1 = log((double)profiler_sweep_frames[i + 1]);
+    const double y0 = log(MAX(err[i], 1.0e-12)), y1 = log(MAX(err[i + 1], 1.0e-12));
+    if (y1 >= y0) return 0.0;   // not falling: never
+    return exp(x0 + (log(q) - y0) * (x1 - x0) / (y1 - y0));
+}
+
+static void profiler_sweep_finish(ApplicationState* state, bool copy) {
+    auto& s = profiler_sweep;
+    if (copy) {
+        md_str_writer_t& w = s.table;
+        md_str_writer_fmt(&w, "\n# noise: per experiment two means of their own (seeds 0 and 1, render()'s own jitter), read back "
+                              "after k frames. err_k: the RMS of their difference / sqrt(2), the error of a mean of k frames, "
+                              "in the composite's premultiplied linear radiance x 255 over the pixels either covers\n");
+        md_str_writer_fmt(&w, "# diff_128: the RMS difference of the mean of 128 frames (seed 0) to the first experiment's; bias: "
+                              "that less the noise of the two; _interior: away from the edges of the coverage\n");
+        md_str_writer_fmt(&w, "# ms: ISOSURFACE MESHES on the GPU per frame (the times above), rel: of the rest of the frame; "
+                              "ms_to_q32, ms_to_q128: frames to the error the first experiment has after 32, 128 frames "
+                              "(log-log between the k, beyond 128 along the last two) times ms\n");
+        md_str_writer_fmt(&w, "experiment,spp,ms,rel");
+        for (uint32_t k : profiler_sweep_frames) md_str_writer_fmt(&w, ",err_%u", k);
+        md_str_writer_fmt(&w, ",diff_128,bias,err_128_interior,diff_128_interior,bias_interior,ms_to_q32,ms_to_q128\n");
+        const int last = PROFILER_SWEEP_CHECKPOINTS - 1;
+        const double q32 = s.err[0][5], q128 = s.err[0][last];
+        for (int i = 0; i < PROFILER_SWEEP_NOISE_STEPS; ++i) {
+            const double rest = (double)s.frame_ms[i] - (double)s.ms[i];
+            md_str_writer_fmt(&w, "%d %s,%u,%.4f,%.4f", i + 1, isomesh::experiment_name(profiler_sweep_steps[i].experiment),
+                              s.spp[i], s.ms[i], rest > 0.0 ? (double)s.ms[i] / rest : 0.0);
+            for (int k = 0; k < PROFILER_SWEEP_CHECKPOINTS; ++k) md_str_writer_fmt(&w, ",%.4f", s.err[i][k]);
+            auto bias = [](double d, double e0, double e1) { return sqrt(MAX(0.0, d * d - e0 * e0 - e1 * e1)); };
+            const double b  = bias(s.diff_ref[i], s.err[i][last], s.err[0][last]);
+            const double bi = bias(s.diff_ref_interior[i], s.err_interior[i], s.err_interior[0]);
+            md_str_writer_fmt(&w, ",%.4f,%.4f,%.4f,%.4f,%.4f", s.diff_ref[i], b, s.err_interior[i], s.diff_ref_interior[i], bi);
+            md_str_writer_fmt(&w, ",%.3f,%.3f\n", profiler_sweep_frames_to(s.err[i], q32) * s.ms[i],
+                              profiler_sweep_frames_to(s.err[i], q128) * s.ms[i]);
+        }
+        ImGui::SetClipboardText(md_str_writer_to_cstr(&s.table));
+        VIAMD_LOG_INFO("Profiler: the sweep's times and noise are on the clipboard");
+    }
+    s.step = -1;
+    s.noise_step = -1;
+    profiler_sweep_free_noise();
+    isomesh::set_experiment(s.experiment_before);
+    isomesh::set_experiment_samples(s.samples_before);
+    state->profiler_keep_isomeshes = s.keep_before;
+}
 
 static void profiler_sweep_start(ApplicationState* state) {
     auto& s = profiler_sweep;
@@ -5293,6 +5442,15 @@ static void profiler_sweep_start(ApplicationState* state) {
     md_temp_scope_t temp = md_temp_begin();
     md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
     profiler_export_info(&info, state);
+    float diff = -1.0f;
+    const bool per_sample = isomesh::fragcoord_z_per_sample(&diff);
+    if (diff < 0.0f) {
+        md_str_writer_fmt(&info, "gl_FragCoord.z under sample shading: not tested (no multisampled depth)\n");
+    } else {
+        md_str_writer_fmt(&info, "gl_FragCoord.z under sample shading: %s (largest difference to the depth buffer %.3g); "
+                                 "ms-nofragdepth is %s\n", per_sample ? "the sample's" : "not the sample's", diff,
+                          per_sample ? "a right image" : "timing only");
+    }
     md_str_writer_fmt(&info, "sweep: each experiment over the profiler's second window after it was set, the last "
                              "the first again (the drift); a row's experiment with the samples per pixel it had");
     profiler::write_csv_header(&s.table.w, md_str_writer_to_cstr(&info), "experiment");
@@ -5300,29 +5458,96 @@ static void profiler_sweep_start(ApplicationState* state) {
 
     s.keep_before = state->profiler_keep_isomeshes;
     s.experiment_before = isomesh::experiment();
+    s.samples_before = isomesh::experiment_samples();
     state->profiler_keep_isomeshes = true;
     s.step = 0;
-    isomesh::set_experiment(profiler_sweep_steps[s.step]);
+    s.noise_step = -1;
+    profiler_sweep_set_step(s.step);
     s.publish_at = profiler::publish_count() + 2;
 }
 
+// Times: a step at a time, as the profiler publishes them
 static void profiler_sweep_update(ApplicationState* state) {
     auto& s = profiler_sweep;
     if (s.step < 0 || profiler::publish_count() < s.publish_at) return;
     char first[96];
-    snprintf(first, sizeof(first), "%d %s %uspp", s.step + 1, isomesh::experiment_name(profiler_sweep_steps[s.step]),
+    snprintf(first, sizeof(first), "%d %s %uspp", s.step + 1, isomesh::experiment_name(profiler_sweep_steps[s.step].experiment),
              iso_mesh_target.samples);
     profiler::write_csv_rows(&s.table.w, "ISOSURFACE MESHES", first);
+    s.spp[s.step] = iso_mesh_target.samples;
+    s.ms[s.step] = profiler::gpu_ms("ISOSURFACE MESHES");
+    s.frame_ms[s.step] = profiler::frame_gpu_ms();
     s.step += 1;
-    if (s.step < (int)ARRAY_SIZE(profiler_sweep_steps)) {
-        isomesh::set_experiment(profiler_sweep_steps[s.step]);
+    if (s.step < PROFILER_SWEEP_STEPS) {
+        profiler_sweep_set_step(s.step);
         s.publish_at = profiler::publish_count() + 2;
     } else {
+        // then the noise, drawn along with the view (profiler_sweep_render)
         s.step = -1;
-        isomesh::set_experiment(s.experiment_before);
-        state->profiler_keep_isomeshes = s.keep_before;
-        ImGui::SetClipboardText(md_str_writer_to_cstr(&s.table));
-        VIAMD_LOG_INFO("Profiler: the sweep's times are on the clipboard");
+        s.noise_step = 0;
+        profiler_sweep_set_step(s.noise_step);
+        profiler_sweep_noise_restart();
+    }
+    (void)state;
+}
+
+// Noise: the two means of the step, drawn with the view's desc and read back at profiler_sweep_frames
+static void profiler_sweep_render(ApplicationState* state, const isomesh::RenderDesc& view_desc) {
+    auto& s = profiler_sweep;
+    if (s.noise_step < 0) return;
+    const uint32_t w = view_desc.render_target.width, h = view_desc.render_target.height;
+    if (w == 0 || h == 0) return;
+    if (s.width != w || s.height != h) {
+        // Of another size: the reference with it, so all of the noise again
+        const bool restart_all = s.reference != nullptr;
+        profiler_sweep_free_noise();
+        s.width = w;
+        s.height = h;
+        gl::init_texture_2D(&s.tex_color, (int)w, (int)h, GL_RGBA16F);
+        const size_t bytes = sizeof(float) * 4 * (size_t)w * h;
+        for (float*& m : s.mean) m = (float*)md_alloc(md_get_heap_allocator(), bytes);
+        s.reference = (float*)md_alloc(md_get_heap_allocator(), bytes);
+        if (restart_all) {
+            s.noise_step = 0;
+            profiler_sweep_set_step(s.noise_step);
+        }
+        profiler_sweep_noise_restart();
+    }
+
+    isomesh::RenderDesc desc = view_desc;
+    desc.render_target.color = s.tex_color;
+    desc.render_target.clear_color = true;
+    desc.matrix.proj = desc.matrix.proj_no_jitter;     // render()'s own jitter, of the seed
+    desc.keep_drawing = true;
+    for (auto& t : s.targets) isomesh::render(&t, desc);
+
+    const uint32_t frames = s.targets[0].frame;
+    if (frames != s.targets[1].frame || frames < s.last_frames || frames > profiler_sweep_frames[s.checkpoint]) {
+        profiler_sweep_noise_restart();     // a mean restarted (the view moved), or a frame was missed
+        return;
+    }
+    s.last_frames = frames;
+    if (frames < profiler_sweep_frames[s.checkpoint]) return;
+
+    if (!isomesh::target_read_mean(&s.targets[0], s.mean[0]) || !isomesh::target_read_mean(&s.targets[1], s.mean[1])) {
+        profiler_sweep_noise_restart();
+        return;
+    }
+    const int i = s.noise_step;
+    s.err[i][s.checkpoint] = profiler_sweep_rms(s.mean[0], s.mean[1], w, h) / sqrt(2.0);
+    s.checkpoint += 1;
+    if (s.checkpoint < PROFILER_SWEEP_CHECKPOINTS) return;
+
+    if (i == 0) MEMCPY(s.reference, s.mean[0], sizeof(float) * 4 * (size_t)w * h);
+    s.err_interior[i] = profiler_sweep_rms(s.mean[0], s.mean[1], w, h, s.reference) / sqrt(2.0);
+    s.diff_ref[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h);
+    s.diff_ref_interior[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h, s.reference);
+    s.noise_step += 1;
+    if (s.noise_step < PROFILER_SWEEP_NOISE_STEPS) {
+        profiler_sweep_set_step(s.noise_step);
+        profiler_sweep_noise_restart();
+    } else {
+        profiler_sweep_finish(state, true);
     }
 }
 
@@ -5389,7 +5614,7 @@ static void draw_profiler_window(ApplicationState* data) {
                               "view kept still");
 
         // The isosurface mesh experiments (isomesh::Experiment): one at a time, or all in turn
-        const bool sweeping = profiler_sweep.step >= 0;
+        const bool sweeping = profiler_sweep.step >= 0 || profiler_sweep.noise_step >= 0;
         ImGui::BeginDisabled(sweeping);
         const char* names[isomesh::Experiment_Count];
         for (int i = 0; i < isomesh::Experiment_Count; ++i) names[i] = isomesh::experiment_name((isomesh::Experiment)i);
@@ -5397,15 +5622,28 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
         if (ImGui::Combo("Experiment", &e, names, isomesh::Experiment_Count)) isomesh::set_experiment((isomesh::Experiment)e);
         ImGui::SetItemTooltip("What the isosurface meshes are drawn with: multisampled and separate-resolve are how they "
-                              "were, to compare with");
+                              "were, to compare with; ms-nofragdepth is a right image only where gl_FragCoord.z is the "
+                              "sample's (not on macOS)");
+        ImGui::SameLine();
+        int spp = (int)isomesh::experiment_samples();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+        if (ImGui::Combo("Samples", &spp, "auto\0" "1\0" "2\0" "3\0" "4\0" "\0")) isomesh::set_experiment_samples((uint32_t)spp);
+        ImGui::SetItemTooltip("Of the multisampled experiments: auto as many as fit their memory budget");
         ImGui::SameLine();
         if (ImGui::Button("Sweep")) profiler_sweep_start(data);
-        ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. The times "
-                              "go to the clipboard");
+        ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. Their times, "
+                              "then their noise (two means of each, 128 frames). The table goes to the clipboard");
         ImGui::EndDisabled();
         if (sweeping) {
             ImGui::SameLine();
-            ImGui::Text("%d / %d", profiler_sweep.step + 1, (int)ARRAY_SIZE(profiler_sweep_steps));
+            if (profiler_sweep.step >= 0) {
+                ImGui::Text("times %d / %d", profiler_sweep.step + 1, PROFILER_SWEEP_STEPS);
+            } else {
+                ImGui::Text("noise %d / %d, %u frames", profiler_sweep.noise_step + 1, PROFILER_SWEEP_NOISE_STEPS,
+                            profiler_sweep.targets[0].frame);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop")) profiler_sweep_finish(data, false);
         } else if (profiler_sweep.has_table && !md_str_writer_empty(&profiler_sweep.table)) {
             ImGui::SameLine();
             if (ImGui::Button("Copy sweep")) ImGui::SetClipboardText(md_str_writer_to_cstr(&profiler_sweep.table));
@@ -7625,7 +7863,9 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         isomesh::target_free(&iso_mesh_target);
         return false;
     }
-    return isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
+    const bool drawn = isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
+    profiler_sweep_render(state, desc);
+    return drawn;
 }
 
 static bool draw_representations_transparent(ApplicationState* state) {

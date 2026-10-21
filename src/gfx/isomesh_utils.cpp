@@ -57,13 +57,13 @@ enum Pass {     // isomesh.frag
     Pass_Accumulate    = 4,
 };
 
-// isomesh.frag, built twice: PASS_TRANSMITTANCE at pixel rate (ISOMESH_TRANSMITTANCE) and the other passes per
-// sample. A uniform one of them has not got is at -1, which glUniform ignores, so both are set up alike.
+// isomesh.frag, built for each pass (ISOMESH_TRANSMITTANCE, ISOMESH_PASS), and for the multisampled experiments. A
+// uniform a program has not got is at -1, which glUniform ignores, so all of them are set up alike.
 struct MeshProgram {
     GLuint program = 0;
     GLint model, view, proj;
     GLint color, coloring, world_to_volume, tex_color_volume, tex_field, tex_field_colormap, field_beg, field_inv_ext;
-    GLint tex_depth, use_depth, pass, frame, samples, surface_id;
+    GLint tex_depth, use_depth, pass, frame, samples, surface_id, seed, r2_offset;
     GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise;
     GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
     GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
@@ -77,11 +77,14 @@ struct AccumulateProgram {
 };
 
 static struct {
-    MeshProgram mesh;       // Experiment_Multisampled: PASS_PEEL0 .. PASS_ACCUMULATE in one, per sample
-    MeshProgram mesh_tod;   // PASS_TRANSMITTANCE, at pixel rate
-    MeshProgram pass[5];                // PASS_PEEL0 .. PASS_ACCUMULATE, a program each (by Pass), a sample per pixel
+    MeshProgram mesh_tod;   // PASS_TRANSMITTANCE
+    MeshProgram pass[5];    // PASS_PEEL0 .. PASS_ACCUMULATE, by Pass
     AccumulateProgram accumulate;
-    AccumulateProgram accumulate_ms;    // of multisampled textures (Experiment_Multisampled)
+    // The multisampled experiments (isomesh_utils.h): the passes after the transmittance, per sample
+    MeshProgram ms_one;         // Experiment_Multisampled: all of them in one (u_pass), writing gl_FragDepth
+    MeshProgram ms_pass[5];     // Experiment_MultisampledPerPass: by Pass, writing gl_FragDepth
+    MeshProgram ms_pass_nfd[5]; // Experiment_MultisampledNoFragDepth: by Pass, the rasterizer's depth
+    AccumulateProgram accumulate_ms;
     struct {
         GLuint program = 0;
         GLint tex_color, tex_t;
@@ -211,6 +214,7 @@ static void mesh_locations(MeshProgram* mp) {
     m.field_beg = LOC(p, "u_field_beg"); m.field_inv_ext = LOC(p, "u_field_inv_ext");
     m.tex_depth = LOC(p, "u_tex_depth"); m.use_depth = LOC(p, "u_use_depth"); m.pass = LOC(p, "u_pass"); m.frame = LOC(p, "u_frame");
     m.samples = LOC(p, "u_samples"); m.surface_id = LOC(p, "u_surface_id");
+    m.seed = LOC(p, "u_seed"); m.r2_offset = LOC(p, "u_r2_offset");
     m.tex_tod = LOC(p, "u_tex_tod"); m.tau = LOC(p, "u_tau"); m.od_ref = LOC(p, "u_od_ref");
     m.inv_proj = LOC(p, "u_inv_proj"); m.inv_res = LOC(p, "u_inv_res"); m.ortho = LOC(p, "u_ortho");
     m.tex_blue_noise = LOC(p, "u_tex_blue_noise");
@@ -246,18 +250,31 @@ void initialize() {
         gl.pass[p].program = link(vert, frag, "pass", str_from_cstr(pass_defines[p]));
     }
     gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
-    gl.mesh.program       = link(vert, frag, "multisampled", STR_LIT("#define ISOMESH_MULTISAMPLE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
-    gl.accumulate_ms.program = link(v_shader_src_fs_triangle, acc, "multisampled accumulate", STR_LIT("#define ISOMESH_MULTISAMPLE"));
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
     gl.ok = gl.pass[Pass_Peel0].program && gl.pass[Pass_Peel1].program && gl.pass[Pass_Depth].program &&
             gl.pass[Pass_Accumulate].program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
     if (!gl.ok) return;
 
+    // The multisampled experiments: without them render() draws a sample per pixel whatever the experiment
+    gl.ms_one.program = link(vert, frag, "multisampled", STR_LIT("#define ISOMESH_MULTISAMPLE\n#define ISOMESH_FRAGDEPTH"));
+    for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
+        char defines[96];
+        snprintf(defines, sizeof(defines), "#define ISOMESH_MULTISAMPLE\n#define ISOMESH_FRAGDEPTH\n%s", pass_defines[p]);
+        gl.ms_pass[p].program = link(vert, frag, "multisampled pass", str_from_cstr(defines));
+        snprintf(defines, sizeof(defines), "#define ISOMESH_MULTISAMPLE\n%s", pass_defines[p]);
+        gl.ms_pass_nfd[p].program = link(vert, frag, "multisampled pass without gl_FragDepth", str_from_cstr(defines));
+    }
+    gl.accumulate_ms.program = link(v_shader_src_fs_triangle, acc, "multisampled accumulate", STR_LIT("#define ISOMESH_MULTISAMPLE"));
+
 #define LOC(prog, name) glGetUniformLocation(prog, name)
-    MeshProgram* const mesh_programs[] = {&gl.mesh, &gl.mesh_tod, &gl.pass[Pass_Peel0], &gl.pass[Pass_Peel1], &gl.pass[Pass_Depth],
-                                          &gl.pass[Pass_Accumulate]};
-    for (MeshProgram* mp : mesh_programs) mesh_locations(mp);
+    mesh_locations(&gl.mesh_tod);
+    mesh_locations(&gl.ms_one);
+    for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
+        mesh_locations(&gl.pass[p]);
+        mesh_locations(&gl.ms_pass[p]);
+        mesh_locations(&gl.ms_pass_nfd[p]);
+    }
     accumulate_locations(&gl.accumulate);
     accumulate_locations(&gl.accumulate_ms);
     gl.composite.tex_color = LOC(gl.composite.program, "u_tex_color");
@@ -282,12 +299,18 @@ void initialize() {
 }
 
 void shutdown() {
-    GLuint* programs[] = {&gl.mesh.program, &gl.mesh_tod.program, &gl.pass[Pass_Peel0].program, &gl.pass[Pass_Peel1].program,
-                          &gl.pass[Pass_Depth].program, &gl.pass[Pass_Accumulate].program, &gl.accumulate.program,
-                          &gl.accumulate_ms.program, &gl.composite.program};
+    GLuint* programs[] = {&gl.mesh_tod.program, &gl.accumulate.program, &gl.composite.program, &gl.ms_one.program,
+                          &gl.accumulate_ms.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
+    }
+    for (int i = Pass_Peel0; i <= Pass_Accumulate; ++i) {
+        GLuint* by_pass[] = {&gl.pass[i].program, &gl.ms_pass[i].program, &gl.ms_pass_nfd[i].program};
+        for (GLuint* p : by_pass) {
+            if (*p) glDeleteProgram(*p);
+            *p = 0;
+        }
     }
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     if (gl.fbo) glDeleteFramebuffers(1, &gl.fbo);
@@ -436,8 +459,8 @@ void target_free(Target* t) {
     for (GLuint* f : fbos) {
         if (*f) glDeleteFramebuffers(1, f);
     }
-    GLuint* textures[] = {&t->tex_ms_color, &t->tex_ms_tod, &t->tex_ms_depth, &t->tex_ms_peel_depth[0], &t->tex_ms_peel_depth[1],
-                          &t->tex_ms_peel_opacity, &t->tex_history_color[0], &t->tex_history_color[1],
+    GLuint* textures[] = {&t->tex_frame_color, &t->tex_frame_tod, &t->tex_frame_depth, &t->tex_peel_depth[0], &t->tex_peel_depth[1],
+                          &t->tex_peel_opacity, &t->tex_history_color[0], &t->tex_history_color[1],
                           &t->tex_history_t[0], &t->tex_history_t[1]};
     for (GLuint* tex : textures) {
         if (*tex) glDeleteTextures(1, tex);
@@ -465,24 +488,88 @@ static bool fbo_complete(GLuint fbo, const char* name) {
 }
 
 static Experiment g_experiment = Experiment_None;
+static uint32_t   g_samples    = 0;     // set_experiment_samples
 
 void set_experiment(Experiment e) { g_experiment = (e >= 0 && e < Experiment_Count) ? e : Experiment_None; }
 Experiment experiment() { return g_experiment; }
+void set_experiment_samples(uint32_t n) { g_samples = MIN(n, 64u); }
+uint32_t experiment_samples() { return g_samples; }
 
 const char* experiment_name(Experiment e) {
     switch (e) {
-        case Experiment_None:         return "one-sample";
-        case Experiment_Multisampled: return "multisampled";
-        case Experiment_SeparateResolve: return "separate-resolve";
-        default:                      return "?";
+        case Experiment_None:                    return "one-sample";
+        case Experiment_Multisampled:            return "multisampled";
+        case Experiment_MultisampledPerPass:     return "ms-per-pass";
+        case Experiment_MultisampledNoFragDepth: return "ms-nofragdepth";
+        case Experiment_SeparateResolve:         return "separate-resolve";
+        default:                                 return "?";
     }
 }
 
-// The program of a pass: its own, or under Experiment_Multisampled the one of the passes after the transmittance
+bool experiment_multisampled(Experiment e) {
+    return e == Experiment_Multisampled || e == Experiment_MultisampledPerPass || e == Experiment_MultisampledNoFragDepth;
+}
+
+// The programs of the passes after the transmittance under the experiment, by Pass; NULL when they are a sample per
+// pixel (the experiment's did not build, or it has none)
+static const MeshProgram* multisampled_programs(Experiment e, Pass pass) {
+    if (!gl.accumulate_ms.program) return nullptr;
+    const MeshProgram* m = nullptr;
+    switch (e) {
+        case Experiment_Multisampled:            m = &gl.ms_one; break;
+        case Experiment_MultisampledPerPass:     m = &gl.ms_pass[pass]; break;
+        case Experiment_MultisampledNoFragDepth: m = &gl.ms_pass_nfd[pass]; break;
+        default: return nullptr;
+    }
+    return m->program ? m : nullptr;
+}
+
+static bool multisampled_now() {
+    if (!experiment_multisampled(g_experiment)) return false;
+    for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
+        if (!multisampled_programs(g_experiment, (Pass)p)) return false;
+    }
+    return true;
+}
+
+// The program of a pass: its own, or the experiment's
 static const MeshProgram& mesh_program(Pass pass) {
     if (pass == Pass_Transmittance) return gl.mesh_tod;
-    if (g_experiment == Experiment_Multisampled && gl.mesh.program) return gl.mesh;
+    if (multisampled_now()) return *multisampled_programs(g_experiment, pass);
     return gl.pass[pass];
+}
+
+// The rotations of a seed (target_set_seed): of the threshold map's offset per frame (2) and of the jitter (2), in
+// [0, 1), and what the thresholds' offsets per layer are XORed with; all 0 for seed 0
+struct SeedRotation {
+    float r2[2] = {0, 0};
+    float jitter[2] = {0, 0};
+    uint32_t bits = 0;
+};
+
+static uint32_t hash_u32(uint32_t v) {     // pcg, as isomesh.frag's
+    const uint32_t s = v * 747796405u + 2891336453u;
+    const uint32_t w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+static SeedRotation seed_rotation(uint32_t seed) {
+    SeedRotation r;
+    if (seed == 0) return r;
+    uint32_t h = hash_u32(seed);
+    r.bits = h;
+    float* f[4] = {&r.r2[0], &r.r2[1], &r.jitter[0], &r.jitter[1]};
+    for (float* x : f) {
+        h = hash_u32(h);
+        *x = (float)(h >> 8) * (1.0f / 16777216.0f);
+    }
+    return r;
+}
+
+void target_set_seed(Target* t, uint32_t seed) {
+    if (!t) return;
+    t->seed = seed;
+    t->hash = 0;    // a new mean
 }
 
 // The radical inverse of i in base b: Halton's sequence, in [0, 1)
@@ -496,9 +583,9 @@ static float halton(uint32_t i, uint32_t b) {
     return r;
 }
 
-// A texture of a sample per pixel. A multisampled texture of one sample is not that everywhere (an implementation may
-// give it more), so a plain one.
-static GLuint texture_plain(GLenum format, uint32_t width, uint32_t height) {
+// A texture of the frame's, a value per pixel (a multisampled texture of one sample is not that everywhere: an
+// implementation may give it more)
+static GLuint texture_frame(GLenum format, uint32_t width, uint32_t height) {
     const bool depth  = format == GL_DEPTH_COMPONENT24 || format == GL_DEPTH_COMPONENT32F;
     const GLenum base = depth ? GL_DEPTH_COMPONENT : (format == GL_RG16F ? GL_RG : GL_RGBA);
     const GLenum type = depth ? GL_FLOAT : GL_HALF_FLOAT;
@@ -514,45 +601,57 @@ static GLuint texture_plain(GLenum format, uint32_t width, uint32_t height) {
 }
 
 static bool target_init(Target* t, uint32_t width, uint32_t height) {
-    const bool   plain  = g_experiment != Experiment_Multisampled;
+    const bool   plain  = !multisampled_now();
     const GLenum target = plain ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
-    if (t->fbo && t->width == width && t->height == height && t->tex_target == (uint32_t)target) return true;
+    GLsizei samples = 1;
+    if (!plain) {
+        GLint max_color = 1, max_depth = 1;
+        glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES, &max_color);
+        glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &max_depth);
+        const GLsizei max_samples = MAX(1, MIN(max_color, max_depth));
+        if (g_samples > 0) {
+            samples = MIN((GLsizei)g_samples, max_samples);
+        } else {
+            // As many samples as the budget allows: colour 8, transmittance 4, three depths 12, peeled opacities 4 bytes
+            const size_t bytes_per_sample = 28;
+            samples = MIN(max_samples, MAX_SAMPLES);
+            while (samples > 1 && (size_t)width * height * samples * bytes_per_sample > MEMORY_BUDGET) samples /= 2;
+        }
+    }
+    if (t->fbo && t->width == width && t->height == height && t->tex_target == (uint32_t)target &&
+        t->samples_asked == (uint32_t)samples) {
+        return true;
+    }
+    const uint32_t seed = t->seed;
     target_free(t);
+    t->seed = seed;
 
-    GLint max_color = 1, max_depth = 1;
-    glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES, &max_color);
-    glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &max_depth);
-    // As many samples as the budget allows: colour 8, transmittance 4, three depths 12, peeled opacities 4 bytes
-    const size_t bytes_per_sample = 28;
-    GLsizei samples = CLAMP(MIN(max_color, max_depth), 1, MAX_SAMPLES);
-    while (samples > 1 && (size_t)width * height * samples * bytes_per_sample > MEMORY_BUDGET) samples /= 2;
-
-    auto tex = [&](GLenum format) { return plain ? texture_plain(format, width, height) : texture_ms(samples, format, width, height); };
-    t->tex_ms_color = tex(GL_RGBA16F);
-    t->tex_ms_tod   = tex(GL_RG16F);
-    t->tex_ms_depth = tex(GL_DEPTH_COMPONENT24);
-    t->tex_ms_peel_depth[0] = tex(GL_DEPTH_COMPONENT32F);
-    t->tex_ms_peel_depth[1] = tex(GL_DEPTH_COMPONENT32F);
-    t->tex_ms_peel_opacity  = tex(GL_RG16F);
+    auto tex = [&](GLenum format) { return plain ? texture_frame(format, width, height) : texture_ms(samples, format, width, height); };
+    t->tex_frame_color = tex(GL_RGBA16F);
+    t->tex_frame_tod   = tex(GL_RG16F);
+    t->tex_frame_depth = tex(GL_DEPTH_COMPONENT24);
+    t->tex_peel_depth[0] = tex(GL_DEPTH_COMPONENT32F);
+    t->tex_peel_depth[1] = tex(GL_DEPTH_COMPONENT32F);
+    t->tex_peel_opacity  = tex(GL_RG16F);
     GLint actual = 1;
     if (!plain) {
-        glBindTexture(target, t->tex_ms_color);
+        glBindTexture(target, t->tex_frame_color);
         glGetTexLevelParameteriv(GL_TEXTURE_2D_MULTISAMPLE, 0, GL_TEXTURE_SAMPLES, &actual);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
     }
 
     glGenFramebuffers(1, &t->fbo_color);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_color, 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_ms_depth, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_frame_color, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_frame_depth, 0);
     glGenFramebuffers(1, &t->fbo_tod);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_tod, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_frame_tod, 0);
     for (int i = 0; i < 2; ++i) {
         glGenFramebuffers(1, &t->fbo_peel[i]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[i]);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_ms_peel_opacity, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_ms_peel_depth[i], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_peel_opacity, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_peel_depth[i], 0);
     }
 
     for (int i = 0; i < 2; ++i) {
@@ -564,12 +663,13 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
     t->width   = width;
     t->height  = height;
     t->samples = (uint32_t)MAX(actual, 1);
+    t->samples_asked = (uint32_t)samples;
     t->tex_target = (uint32_t)target;
     t->frame   = 0;
     t->hash    = 0;
     t->cur     = 0;
 
-    if (!fbo_complete(t->fbo_color, "multisampled colour") || !fbo_complete(t->fbo_tod, "multisampled transmittance") ||
+    if (!fbo_complete(t->fbo_color, "colour") || !fbo_complete(t->fbo_tod, "transmittance") ||
         !fbo_complete(t->fbo_peel[0], "first peel") || !fbo_complete(t->fbo_peel[1], "second peel")) {
         target_free(t);
         return false;
@@ -668,6 +768,7 @@ static void attach(GLuint fbo, GLuint tex0, GLuint tex1) {
 static uint64_t desc_hash(const RenderDesc& desc) {
     uint64_t h = md_hash64(&desc.render_target.width, sizeof(desc.render_target.width), desc.scene_hash);
     h = md_hash64(&g_experiment, sizeof(g_experiment), h);
+    h = md_hash64(&g_samples, sizeof(g_samples), h);
     h = md_hash64(&desc.render_target.height, sizeof(desc.render_target.height), h);
     h = md_hash64(&desc.render_target.depth, sizeof(desc.render_target.depth), h);
     h = md_hash64(&desc.matrix.view, sizeof(desc.matrix.view), h);
@@ -801,11 +902,13 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         // The caller's projection, or when it is not jittered (proj as proj_no_jitter) one of its own jittered over the
         // pixel by the frame (Halton 2, 3): the mean is then of the pixel's area, the edges antialiased
         mat4_t P = desc.matrix.proj;
+        const SeedRotation rot = seed_rotation(t->seed);
         if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(mat4_t)) == 0) {
             const uint32_t n = t->frame + 1;
+            const float jx = halton(n, 2) + rot.jitter[0], jy = halton(n, 3) + rot.jitter[1];
             mat4_t J = mat4_ident();
-            J.elem[3][0] = 2.0f * (halton(n, 2) - 0.5f) / (float)w;
-            J.elem[3][1] = 2.0f * (halton(n, 3) - 0.5f) / (float)h;
+            J.elem[3][0] = 2.0f * (jx - floorf(jx) - 0.5f) / (float)w;
+            J.elem[3][1] = 2.0f * (jy - floorf(jy) - 0.5f) / (float)h;
             P = J * P;
         }
         const bool use_depth = desc.render_target.depth != 0;
@@ -831,7 +934,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
         bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
 
-        // What the draws of the frame share, in both programs
+        // What the draws of the frame share, in each pass's program
         auto set_frame_uniforms = [&](const MeshProgram& m) {
             glUseProgram(m.program);
             glUniform1i(m.tex_depth, 0);
@@ -846,6 +949,8 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1i(m.use_depth, use_depth ? 1 : 0);
             glUniform1ui(m.frame, t->frame);
             glUniform1i(m.samples, (GLint)t->samples);
+            glUniform1ui(m.seed, rot.bits);
+            glUniform2fv(m.r2_offset, 1, rot.r2);
             glUniformMatrix4fv(m.view, 1, GL_FALSE, V.elem[0]);
             glUniformMatrix4fv(m.proj, 1, GL_FALSE, P.elem[0]);
             glUniformMatrix4fv(m.inv_proj, 1, GL_FALSE, inv_proj.elem[0]);
@@ -865,8 +970,20 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
         };
 
-        // Each pass with its program: the experiment's, if it has one of its own
+        // Each pass with its program: the experiment's, if it has one of its own. Multisampled, per sample where the
+        // pass compares per sample: said with GL_SAMPLE_SHADING rather than left to gl_SampleID in the shader, which a
+        // compiler that drops dead code first may find no use of (Peel 0 of a program per pass: its gl_FragDepth then the
+        // pixel's in every sample). Not the transmittance, nor Peel 0 of the rasterizer's depth (plain MSAA).
+        const bool multisampled = ms_target == GL_TEXTURE_2D_MULTISAMPLE;
         auto draw_surfaces = [&](Pass pass) {
+            const bool per_sample = multisampled && pass != Pass_Transmittance &&
+                                    !(pass == Pass_Peel0 && g_experiment == Experiment_MultisampledNoFragDepth);
+            if (per_sample) {
+                glEnable(GL_SAMPLE_SHADING);
+                glMinSampleShading(1.0f);
+            } else {
+                glDisable(GL_SAMPLE_SHADING);
+            }
             const MeshProgram& m = mesh_program(pass);
             set_frame_uniforms(m);
             glUniform1i(m.pass, (GLint)pass);
@@ -940,7 +1057,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             }
             glClear(GL_DEPTH_BUFFER_BIT);
             glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
-            if (k == 1) bind_texture(6, ms_target, t->tex_ms_peel_depth[0]);
+            if (k == 1) bind_texture(6, ms_target, t->tex_peel_depth[0]);
             draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()
         }
@@ -952,7 +1069,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
         glDrawBuffer(GL_NONE);
         glClear(GL_DEPTH_BUFFER_BIT);
-        bind_texture(7, ms_target, t->tex_ms_peel_depth[1]);
+        bind_texture(7, ms_target, t->tex_peel_depth[1]);
         draw_surfaces(Pass_Depth);
         POP_GPU_SECTION()
 
@@ -967,11 +1084,12 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glDepthFunc(GL_LEQUAL);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        bind_texture(1, ms_target, t->tex_ms_tod);
-        bind_texture(8, ms_target, t->tex_ms_peel_opacity);
+        bind_texture(1, ms_target, t->tex_frame_tod);
+        bind_texture(8, ms_target, t->tex_peel_opacity);
         draw_surfaces(Pass_Accumulate);
-        const int ms_units[4] = {1, 6, 7, 8};
-        for (int unit : ms_units) bind_texture(unit, ms_target, 0);
+        glDisable(GL_SAMPLE_SHADING);
+        const int frame_units[4] = {1, 6, 7, 8};
+        for (int unit : frame_units) bind_texture(unit, ms_target, 0);
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDisable(GL_BLEND);
@@ -1004,9 +1122,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         auto& a = (ms_target == GL_TEXTURE_2D_MULTISAMPLE && gl.accumulate_ms.program) ? gl.accumulate_ms : gl.accumulate;
         glUseProgram(a.program);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(ms_target, t->tex_ms_color);
+        glBindTexture(ms_target, t->tex_frame_color);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(ms_target, t->tex_ms_tod);
+        glBindTexture(ms_target, t->tex_frame_tod);
         bind_texture(2, GL_TEXTURE_2D, t->tex_history_color[t->cur]);
         bind_texture(3, GL_TEXTURE_2D, t->tex_history_t[t->cur]);
         glUniform1i(a.tex_color, 0);
@@ -1078,6 +1196,199 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
     if (converged) *converged = !any || (t->frame >= MAX_FRAMES && !desc.keep_drawing);
     return done;
+}
+
+bool target_read_mean(const Target* t, float* rgba) {
+    if (!t || !t->fbo || t->frame == 0 || !rgba) return false;
+    const size_t n = (size_t)t->width * t->height;
+    float* tt = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 2 * n);
+    if (!tt) return false;
+
+    GLint pack_alignment = 4, pack_buffer = 0, active = 0, bound = 0;
+    glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindTexture(GL_TEXTURE_2D, t->tex_history_color[t->cur]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, rgba);
+    glBindTexture(GL_TEXTURE_2D, t->tex_history_t[t->cur]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RG, GL_FLOAT, tt);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
+    glActiveTexture((GLenum)active);
+    glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, (GLuint)pack_buffer);
+
+    // As the composite (f_shader_src_composite)
+    for (size_t i = 0; i < n; ++i) {
+        float* c = rgba + 4 * i;
+        const float coverage = 1.0f - tt[2 * i];
+        const float scale = (c[3] > 1.0e-4f) ? coverage / c[3] : 1.0f;
+        c[0] *= scale;
+        c[1] *= scale;
+        c[2] *= scale;
+        c[3] = 1.0f - tt[2 * i + 1];
+    }
+    md_free(md_get_heap_allocator(), tt, sizeof(float) * 2 * n);
+    return true;
+}
+
+// FRAGCOORD Z PER SAMPLE
+// A triangle over a target of four samples, its depth steep in x and y (about 0.007 of the depth range per pixel, so a
+// sample a third of a pixel from the centre is ~0.002 off it), drawn per sample (it reads gl_SampleID) with the
+// rasterizer's depth; it writes gl_FragCoord.z as its colour. A second pass gives per pixel the largest difference of
+// the two over the samples, and how far the depths of the samples spread (that they are of the samples at all).
+
+static constexpr str_t v_shader_src_probe = STR_LIT(R"(
+#version 410 core
+void main() {
+    uint idx = uint(gl_VertexID) % 3U;
+    vec2 p = vec2(float(idx & 1U) * 4.0 - 1.0, float((idx >> 1U) & 1U) * 4.0 - 1.0);
+    gl_Position = vec4(p, -0.9 + 0.45 * (p.x + 1.0) + 0.2 * (p.y + 1.0), 1.0);
+}
+)");
+
+static constexpr str_t f_shader_src_probe = STR_LIT(R"(
+#version 410 core
+layout(location = 0) out vec4 out_z;
+void main() {
+    out_z = vec4(gl_FragCoord.z, float(gl_SampleID), 0.0, 1.0);
+}
+)");
+
+static constexpr str_t f_shader_src_probe_compare = STR_LIT(R"(
+#version 410 core
+uniform sampler2DMS u_tex_z;
+uniform sampler2DMS u_tex_depth;
+uniform int u_samples;
+layout(location = 0) out vec4 out_diff;
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    float d0 = texelFetch(u_tex_depth, px, 0).r;
+    float diff = 0.0, spread = 0.0;
+    for (int s = 0; s < u_samples; ++s) {
+        float d = texelFetch(u_tex_depth, px, s).r;
+        diff   = max(diff, abs(texelFetch(u_tex_z, px, s).r - d));
+        spread = max(spread, abs(d - d0));
+    }
+    out_diff = vec4(diff, spread, 0.0, 1.0);
+}
+)");
+
+static float probe_fragcoord_z(void) {
+    const int size = 64;
+    GLint max_color = 1, max_depth = 1;
+    glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES, &max_color);
+    glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &max_depth);
+    const GLsizei samples = MIN(4, MIN(max_color, max_depth));
+    if (samples < 2) return -1.0f;
+
+    const GLuint draw    = link(v_shader_src_probe, f_shader_src_probe, "fragcoord.z probe");
+    const GLuint compare = link(v_shader_src_fs_triangle, f_shader_src_probe_compare, "fragcoord.z probe comparison");
+    const GLuint tex_z     = texture_ms(samples, GL_R32F, size, size);
+    const GLuint tex_depth = texture_ms(samples, GL_DEPTH_COMPONENT32F, size, size);
+    GLuint tex_diff = 0;
+    glGenTextures(1, &tex_diff);
+    glBindTexture(GL_TEXTURE_2D, tex_diff);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, size, size, 0, GL_RG, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    GLuint fbo[2] = {};
+    glGenFramebuffers(2, fbo);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+
+    float result = -1.0f;
+    const SavedState saved = save_state();
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[0]);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, tex_z, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D_MULTISAMPLE, tex_depth, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    const bool ok0 = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex_diff, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    const bool ok1 = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+
+    if (draw && compare && ok0 && ok1) {
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glViewport(0, 0, size, size);
+        glEnable(GL_MULTISAMPLE);
+        glBindVertexArray(vao);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[0]);
+        glClearColor(0, 0, 0, 0);
+        glClearDepth(1.0);
+        glDepthMask(GL_TRUE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glUseProgram(draw);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+        glUseProgram(compare);
+        bind_texture(0, GL_TEXTURE_2D_MULTISAMPLE, tex_z);
+        bind_texture(1, GL_TEXTURE_2D_MULTISAMPLE, tex_depth);
+        glUniform1i(glGetUniformLocation(compare, "u_tex_z"), 0);
+        glUniform1i(glGetUniformLocation(compare, "u_tex_depth"), 1);
+        glUniform1i(glGetUniformLocation(compare, "u_samples"), samples);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        bind_texture(0, GL_TEXTURE_2D_MULTISAMPLE, 0);
+        bind_texture(1, GL_TEXTURE_2D_MULTISAMPLE, 0);
+
+        float* px = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 2 * size * size);
+        GLint pack_alignment = 4, pack_buffer = 0;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &pack_alignment);
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, size, size, GL_RG, GL_FLOAT, px);
+        glPixelStorei(GL_PACK_ALIGNMENT, pack_alignment);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, (GLuint)pack_buffer);
+        float diff = 0.0f, spread = 0.0f;
+        for (int i = 0; i < size * size; ++i) {
+            diff   = MAX(diff, px[2 * i + 0]);
+            spread = MAX(spread, px[2 * i + 1]);
+        }
+        md_free(md_get_heap_allocator(), px, sizeof(float) * 2 * size * size);
+        // The depths of the samples of a pixel ~0.002 apart: if they are not, the test says nothing
+        result = (spread > 1.0e-4f) ? diff : -1.0f;
+        MD_LOG_INFO("Isosurface meshes: gl_FragCoord.z under sample shading, %d samples: largest difference to the depth "
+                    "buffer %.3g (the depths of a pixel's samples spread over %.3g)", (int)samples, diff, spread);
+    }
+    restore_state(saved);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(2, fbo);
+    GLuint textures[] = {tex_z, tex_depth, tex_diff};
+    glDeleteTextures(3, textures);
+    if (draw) glDeleteProgram(draw);
+    if (compare) glDeleteProgram(compare);
+    return result;
+}
+
+bool fragcoord_z_per_sample(float* max_diff) {
+    static bool  tested = false;
+    static float diff = -1.0f;
+    if (!tested) {
+        diff = probe_fragcoord_z();
+        tested = true;
+    }
+    if (max_diff) *max_diff = diff;
+    // gl_FragCoord.z and the depth buffer both of the sample: equal to within the rounding of 32 bit floats
+    return diff >= 0.0f && diff < 1.0e-5f;
 }
 
 }  // namespace isomesh

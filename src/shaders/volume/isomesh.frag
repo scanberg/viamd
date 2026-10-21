@@ -5,27 +5,36 @@
 // (isomesh_utils.cpp):
 //
 //   PASS_TRANSMITTANCE  every fragment, no depth test: sum log(1 - opacity) (the exact coverage of all of them
-//                       together) and the optical depth of the regions they enclose (below), additively. A program
-//                       of its own (ISOMESH_TRANSMITTANCE), at pixel rate: it compares with nothing, so what it
-//                       writes into a sample needs nothing per sample but the sample's coverage
-//   PASS_PEEL0          the nearest fragment of every sample (depth test), and its opacity
-//   PASS_PEEL1          the nearest one behind that (per sample), and its opacity
-//   PASS_DEPTH          the stochastic depth of the fragments behind those two: each covers a sample with
+//                       together) and the optical depth of the regions they enclose (below), additively
+//                       (ISOMESH_TRANSMITTANCE: the opacity alone, not the colour)
+//   PASS_PEEL0          the nearest fragment of every pixel (depth test), and its opacity
+//   PASS_PEEL1          the nearest one behind that, and its opacity
+//   PASS_DEPTH          the stochastic depth of the fragments behind those two: each covers the pixel with
 //                       probability = its opacity, and the depth test keeps the nearest covering one
-//   PASS_ACCUMULATE     every fragment adds its radiance times its visibility in each sample: 1 for the
-//                       nearest, 1 - o0 for the second, (1 - o0)(1 - o1) where it is not behind the stochastic
-//                       depth (test LEQUAL) for the rest
+//   PASS_ACCUMULATE     every fragment adds its radiance times its visibility: 1 for the nearest, 1 - o0 for the
+//                       second, (1 - o0)(1 - o1) where it is not behind the stochastic depth (test LEQUAL) for
+//                       the rest
 //
 // The two nearest layers and the one behind them are exact; only the visibility of the layers behind those
 // is estimated, from the layers in between. Without the peeling the nearest layer alone is exact, and where
 // surfaces lie behind nearer ones (the back of a lobe, a lobe behind another) the estimate of their
 // visibility depends on two or more random thresholds: the speckle that takes long to converge. Simulated per
-// pixel, four layers of opacity ~0.8: the error after 64 frames goes from ~2/255 to ~0.04/255. The target has a
-// sample per pixel, in plain textures: the depth the passes compare with the peeled ones is the rasterizer's, which
-// with one sample is the pixel's, so nothing writes gl_FragDepth and the depth tests run before the shading. Each
-// pass is a program of its own, with none of the others' discards and registers. On an M4 Pro the four passes cost
-// a tenth of what they did per sample into a multisampled target (two samples), which ISOMESH_MULTISAMPLE still
-// builds (isomesh::Experiment_Multisampled: one program for the four, writing the depth it compares, below).
+// pixel (the thresholds below), four layers of opacity ~0.8: the error after 128 frames goes from ~3/255 to
+// ~0.1/255.
+//
+// A sample per pixel, in plain textures: the depth the passes compare with the peeled ones is the rasterizer's,
+// which with one sample is the pixel's, so nothing writes gl_FragDepth and the depth tests run before the shading.
+// Each pass is a program of its own (ISOMESH_PASS), without the others' discards and registers. On an M4 Pro the
+// four passes cost a tenth of what they did per sample into a multisampled target of two, in one program writing
+// the depth it compared (under sample shading Apple's OpenGL gives gl_FragCoord.z at the pixel's centre, not at
+// the sample the depth buffer holds). The edges are antialiased by the mean of the frames (isomesh_utils.h).
+//
+// The multisampled experiments (isomesh::Experiment, ISOMESH_MULTISAMPLE): the same per sample of a multisampled target,
+// the thresholds of PASS_DEPTH stratified over the samples of a pixel (u + i/n for sample i); without ISOMESH_PASS one
+// program for all the passes after the transmittance (u_pass), as it was. ISOMESH_FRAGDEPTH writes the depth the passes
+// compare (below); without it the depth is the rasterizer's, and PASS_PEEL0, which compares with nothing, runs at pixel
+// rate (its program has no gl_SampleID). u_seed and u_r2_offset (isomesh::target_set_seed) rotate the thresholds, for
+// runs independent of each other.
 //
 // Every fragment is shaded like a hit of the isosurface raycaster (isosurface.frag, the model of the deferred
 // compose pass): a surface reflects L = a * diffuse + specular and lets 1 - opacity through, opacity =
@@ -35,9 +44,9 @@
 // surface is seen; isomesh_accumulate.frag scales the sum to the exact coverage (Enderton's alpha correction)
 // and averages the frames, which converges to the composite.
 //
-// The coverage thresholds (PASS_DEPTH): stratified over the samples of a pixel (u + i/n for sample i), u from a
-// blue noise threshold map (a void and cluster ordering, isomesh_utils.cpp) tiled over the screen, read at an
-// offset per frame (the R2 sequence, so a pixel goes through the values of the map evenly) and per layer. A layer is a
+// The coverage thresholds (PASS_DEPTH): from a blue noise threshold map (a void and cluster ordering,
+// isomesh_utils.cpp) tiled over the screen, read at an offset per frame (the R2 sequence, so a pixel goes through
+// the values of the map evenly) and per layer. A layer is a
 // triangle - the finest there is, so two sheets that overlap in a pixel never share their thresholds (the
 // draws told apart by u_surface_id, as gl_PrimitiveID starts from 0 in each) - and its offset is drawn again
 // every few frames, so no two layers stay at one relative offset for long. Thresholds correlated between the
@@ -58,9 +67,9 @@
 // the field takes given values are painted into its colour before it is shaded, so every pass sees the same
 // opacity. Their width in pixels comes from ray differentials, as in the raycaster (isosurface.frag): the rays
 // of the next pixel along x and y meet the tangent plane, and the field changes along that by its gradient
-// along the surface, which the vertices carry (v_grad). No screen space derivatives: this shader runs per
-// sample and depends on discard and gl_FragDepth in every pass, and on Metal (Apple's OpenGL) a shader that
-// takes derivatives does not stop at a discard, the invocation carries on for the derivatives' sake.
+// along the surface, which the vertices carry (v_grad). No screen space derivatives: the passes depend on discard,
+// and on Metal (Apple's OpenGL) a shader that takes derivatives does not stop at a discard, the invocation carries on
+// for the derivatives' sake.
 
 in vec3 v_world;
 in vec3 v_view_pos;
@@ -90,24 +99,40 @@ uniform float u_isoline_width;
 uniform sampler2D u_tex_depth;      // the opaque scene, single sampled
 uniform int   u_use_depth;
 
-uniform int   u_pass;               // PASS_*
 uniform uint  u_frame;              // index of the frame being accumulated
-uniform int   u_samples;            // samples per pixel of the target
 uniform uint  u_surface_id;         // tells the draws apart (gl_PrimitiveID starts from 0 in each)
+uniform uint  u_seed;               // isomesh::target_set_seed: 0, or a rotation of the thresholds
+uniform vec2  u_r2_offset;          // of the threshold map's offset per frame, by the seed
 
-// A sample per pixel in plain textures, or per sample in multisampled ones (ISOMESH_MULTISAMPLE, as it was); a program
-// per pass (ISOMESH_PASS, its PASS_*), or one for all of them (u_pass)
-#ifdef ISOMESH_MULTISAMPLE
-#define SAMPLER_MS   sampler2DMS
-#define SAMPLE_INDEX gl_SampleID
-#else
-#define SAMPLER_MS   sampler2D
-#define SAMPLE_INDEX 0
+// A program per pass: ISOMESH_TRANSMITTANCE, or ISOMESH_PASS the number of one of the others (PASS_*), or for the
+// multisampled experiment as it was one for all the others (u_pass)
+#if !defined(ISOMESH_TRANSMITTANCE) && !defined(ISOMESH_PASS) && !defined(ISOMESH_MULTISAMPLE)
+#error "isomesh.frag is built for a pass: ISOMESH_TRANSMITTANCE or ISOMESH_PASS"
 #endif
 #ifdef ISOMESH_PASS
 #define CUR_PASS ISOMESH_PASS
 #else
+uniform int u_pass;                 // PASS_*
 #define CUR_PASS u_pass
+#endif
+
+// A sample per pixel in plain textures, or per sample in multisampled ones (ISOMESH_MULTISAMPLE; render() sets
+// GL_SAMPLE_SHADING for the passes that compare per sample). PASS_PEEL0 without ISOMESH_FRAGDEPTH reads no gl_SampleID
+// and runs at pixel rate: MSAA puts what it writes into the samples it covers, with the rasterizer's depth of each
+#ifdef ISOMESH_MULTISAMPLE
+uniform int u_samples;              // samples per pixel of the target
+#define SAMPLER_MS sampler2DMS
+#if defined(ISOMESH_PASS) && !defined(ISOMESH_FRAGDEPTH)
+#if ISOMESH_PASS == 1
+#define SAMPLE_INDEX 0
+#endif
+#endif
+#ifndef SAMPLE_INDEX
+#define SAMPLE_INDEX gl_SampleID
+#endif
+#else
+#define SAMPLER_MS sampler2D
+#define SAMPLE_INDEX 0
 #endif
 
 uniform SAMPLER_MS  u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
@@ -138,7 +163,6 @@ uniform float u_light_strength;
 layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth
 #else
 layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity
-layout(location = 1) out vec4 out_tod;      // PASS_TRANSMITTANCE, not drawn with this program: it has its own
 #endif
 
 const int PASS_TRANSMITTANCE = 0;
@@ -410,26 +434,26 @@ void main() {
     float od = (gl_FrontFacing ? -u_tau : u_tau) * (ray_distance(p) - u_od_ref);
     out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), od, 0.0, 0.0);
 #else
-    // ISOMESH_MULTISAMPLE only (with a sample per pixel the rasterizer's depth is the pixel's):
-    // The depth the depth tests see is the one the passes compare with the peeled depths: written, not left to
-    // the rasterizer. Under sample shading gl_FragCoord.z is not everywhere the depth at the sample - Apple's
-    // OpenGL (on Metal) gives the depth at the pixel's centre, while the depth buffer holds the sample's - and a
-    // fragment then misses its own peeled depth by its slope times the offset of the sample, far beyond
-    // PEEL_EPS: the layers of whole triangles misclassified, bands of them where the slope turns. Where
-    // gl_FragCoord.z is the sample's (Mesa, NVIDIA, AMD) this is the depth the rasterizer writes, bit for bit.
-#ifdef ISOMESH_MULTISAMPLE
+    // ISOMESH_FRAGDEPTH (multisampled, Apple's OpenGL): the depth the depth tests see is the one the passes compare
+    // with the peeled depths: written, not left to the rasterizer. Under sample shading gl_FragCoord.z is not
+    // everywhere the depth at the sample - Apple's OpenGL (on Metal) gives the depth at the pixel's centre, while the
+    // depth buffer holds the sample's - and a fragment then misses its own peeled depth by its slope times the offset
+    // of the sample, far beyond PEEL_EPS: the layers of whole triangles misclassified, bands of them where the slope
+    // turns. Where gl_FragCoord.z is the sample's (isomesh::fragcoord_z_per_sample) this is the depth the rasterizer
+    // writes, bit for bit, and only keeps the depth test from running before the shading.
+#ifdef ISOMESH_FRAGDEPTH
     gl_FragDepth = gl_FragCoord.z;
 #endif
 
     ivec2 px = ivec2(gl_FragCoord.xy);
     float z_opaque = (u_use_depth != 0) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
-    bool  occluded = gl_FragCoord.z >= z_opaque;
-    if (occluded && CUR_PASS != PASS_TRANSMITTANCE) discard;
+    if (gl_FragCoord.z >= z_opaque) discard;       // behind the opaque scene
 
     vec3 V = normalize(-v_view_pos);
     vec3 N = normalize(v_view_nrm);
     if (dot(N, V) < 0.0) N = -N;
 
+    // The passes before PASS_ACCUMULATE use the opacity alone: the compiler leaves the rest out of their programs
     vec4  c = surface_color();
     if (u_coloring == 3 && (u_isoline_count > 0 || u_isoline_hover != 0)) {
         c = apply_isolines(c, v_value, isoline_change_per_pixel(v_view_pos, N, v_grad));
@@ -438,19 +462,6 @@ void main() {
     float opacity;
     shade_surface(c.rgb, c.a, N, V, L, opacity);
     opacity = clamp(opacity, 0.0, MAX_OPACITY);
-
-    if (CUR_PASS == PASS_TRANSMITTANCE) {
-        // Behind the opaque scene: hides nothing, and the ray through the enclosed regions ends at the scene
-        vec3 p = v_view_pos;
-        if (occluded) {
-            vec4 v = u_inv_proj * vec4(gl_FragCoord.xy * u_inv_res * 2.0 - 1.0, z_opaque * 2.0 - 1.0, 1.0);
-            p = v.xyz / v.w;
-        }
-        float od = (gl_FrontFacing ? -u_tau : u_tau) * (ray_distance(p) - u_od_ref);
-        out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), od, 0.0, 0.0);
-        return;
-    }
-
     if (opacity <= 0.0) discard;
 
     if (CUR_PASS == PASS_PEEL0) {
@@ -458,7 +469,7 @@ void main() {
         return;
     }
 
-    // Per sample from here on
+    // The peeled layers of the pixel (of the sample, multisampled) from here on
     float z  = gl_FragCoord.z;
     float z0 = texelFetch(u_tex_peel_depth0, px, SAMPLE_INDEX).r;
     if (CUR_PASS == PASS_PEEL1) {
@@ -470,18 +481,21 @@ void main() {
 
     if (CUR_PASS == PASS_DEPTH) {
         if (z <= z1 + PEEL_EPS) discard;
-        // stratified thresholds over the samples, from the blue noise at an offset per layer and frame
+        // the threshold, from the blue noise at an offset per layer and frame
         uint  layer = pcg(pcg(uint(gl_PrimitiveID)) ^ (u_surface_id * 0x9E3779B9u));
-        uint  shift = pcg(layer ^ ((u_frame / LAYER_FRAMES + 1u) * 0x68E31DA4u));
-        vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(u_frame) + 0.5);
+        uint  shift = pcg(layer ^ ((u_frame / LAYER_FRAMES + 1u) * 0x68E31DA4u) ^ u_seed);
+        vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(u_frame) + 0.5 + u_r2_offset);
         ivec2 q     = (px + ivec2(int(shift & 0xFFFFu), int(shift >> 16u)) + ivec2(r2 * float(BLUE_NOISE_SIZE))) & (BLUE_NOISE_SIZE - 1);
         float u0    = texelFetch(u_tex_blue_noise, q, 0).r;
-        if (fract(u0 + float(SAMPLE_INDEX) / float(u_samples)) >= opacity) discard;
+#ifdef ISOMESH_MULTISAMPLE
+        u0 = fract(u0 + float(SAMPLE_INDEX) / float(u_samples));    // stratified over the samples
+#endif
+        if (u0 >= opacity) discard;
         out_color = vec4(0.0);
         return;
     }
 
-    // PASS_ACCUMULATE: the transmittance in front of this fragment in this sample
+    // PASS_ACCUMULATE: the transmittance in front of this fragment (in this sample, multisampled)
     vec2  o01 = texelFetch(u_tex_peel_opacity, px, SAMPLE_INDEX).rg;
     float vis = (z <= z0 + PEEL_EPS) ? 1.0 : (z <= z1 + PEEL_EPS) ? (1.0 - o01.r) : (1.0 - o01.r) * (1.0 - o01.g);
     // Seen from inside (the back faces): behind the absorption of what the surfaces enclose

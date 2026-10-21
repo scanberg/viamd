@@ -1,6 +1,7 @@
 #version 410 core
 
-// One frame of the isosurface meshes (isomesh.frag) resolved and added to the running mean of the frames: frame
+// One frame of the isosurface meshes (isomesh.frag) added to the running mean of the frames (multisampled: its samples
+// resolved first, ISOMESH_MULTISAMPLE): frame
 // n (from 0) enters with weight 1 / (n + 1), so after N frames the result is the plain average of N estimates.
 //
 // out_color: the radiance of the surfaces times their visibility, and their opacity times their visibility
@@ -10,14 +11,14 @@
 // out_composite: the new mean as the composite (isomesh_utils.cpp) puts it over the caller's target, blended there
 //            (ONE, ONE_MINUS_SRC_ALPHA): in the same pass, so the mean is not read again for it
 
-#ifdef ISOMESH_MULTISAMPLE     // as it was (isomesh::Experiment_Multisampled)
+#ifdef ISOMESH_MULTISAMPLE     // the multisampled experiments (isomesh::Experiment)
 uniform sampler2DMS u_tex_color;
 uniform sampler2DMS u_tex_tod;
-#else                           // a sample per pixel: plain textures, texelFetch of level s (0)
+uniform int         u_samples;
+#else
 uniform sampler2D   u_tex_color;
 uniform sampler2D   u_tex_tod;
 #endif
-uniform int         u_samples;
 uniform sampler2D   u_tex_history_color;
 uniform sampler2D   u_tex_history_t;
 uniform float       u_weight;           // 1 / (n + 1); 1 discards the history
@@ -28,6 +29,7 @@ layout(location = 2) out vec4 out_composite;
 
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
+#ifdef ISOMESH_MULTISAMPLE
     vec4 color = vec4(0.0);
     vec2 t = vec2(0.0);
     for (int s = 0; s < u_samples; ++s) {
@@ -39,6 +41,12 @@ void main() {
     float inv = 1.0 / float(u_samples);
     color *= inv;
     t *= inv;
+#else
+    vec4  color = texelFetch(u_tex_color, px, 0);
+    vec2  tod   = texelFetch(u_tex_tod, px, 0).rg;
+    float T     = exp(tod.r);
+    vec2  t     = vec2(T, T * exp(-max(tod.g, 0.0)));
+#endif
 
     if (u_weight >= 1.0) {
         out_color = color;
