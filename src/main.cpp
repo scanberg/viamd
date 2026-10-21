@@ -7389,11 +7389,11 @@ static void draw_representations_transparent_geometry(isomesh::Pass pass, void* 
             .picking_offset = gl_picking_offset(*state),
             .max_bond_length = max_bond_length,
         };
-        if (md_array_size(ops) > 0) md_gl_draw(&args);
+        // A profiler section each kind, as the G-buffer's, within the pass's
+        draw_ops_timed(args, ops, md_array_size(ops), false, frame_alloc);
         if (md_array_size(glyph_ops) > 0) {
-            args.draw_operations = {.count = (uint32_t)md_array_size(glyph_ops), .ops = glyph_ops};
             args.picking_offset = gl_picking_offset_glyphs(*state);
-            md_gl_draw(&args);
+            draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
     }
 }
