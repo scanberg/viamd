@@ -46,8 +46,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA (at the full resolution: a screenshot's)
-#define JITTER_SEQUENCE_MAX 32  // Upscaling: a pixel of the G-buffer covers several shown, so more positions (jitter_count)
+#define JITTER_SEQUENCE_MAX 128 // The jitter's positions at most: temporal_aa.jitter_samples, or more when upscaling (jitter_count)
 #define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
 #define FRAME_CACHE_SIZE 4      // Number of frames used in the frame cache
 #define PERIODIC_IMAGES_MAX 3   // Periodic images each way along a cell vector: (2 n + 1)^3 - 1 copies of the scene at most
@@ -1533,6 +1532,8 @@ struct ApplicationState {
         // The temporal resolve's settings, used in TAA mode
         struct {
             bool jitter = true;
+            // The jitter's positions at the full resolution (a screenshot's): one of jitter_samples_options (main.cpp)
+            int jitter_samples = 32;
             float feedback_min = 0.80f;
             float feedback_max = 0.95f;
 

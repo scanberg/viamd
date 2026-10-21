@@ -389,13 +389,35 @@ static void render_size(const ApplicationState* state, uint32_t out_w, uint32_t 
     *h = MAX((uint32_t)(out_h * s + 0.5f), 1U);
 }
 
-// The jitter's positions: JITTER_SEQUENCE_SIZE at the full resolution, and as many per pixel shown when a pixel of
-// the G-buffer covers several (1 / scale^2 of them), up to JITTER_SEQUENCE_MAX
+// The lengths of the jitter offered (Visuals > Anti-Aliasing): powers of two, so that each divides the isosurface
+// meshes' mean of isomesh::MAX_FRAMES frames (every position weighs the same in it) and the sequence's x (Halton, base
+// 2) is stratified. The TAA's history of a still view (feedback_max 0.95) weighs about the last 30 frames: of the
+// positions of a cycle it averages about 8 at 8, 15 at 16, 26 at 32, 36 at 64, and 39 at most. The meshes' mean gains
+// up to 128.
+static const int jitter_samples_options[] = {8, 16, 32, 64, 128};
+static const char* jitter_samples_names[] = {"8 samples", "16 samples", "32 samples", "64 samples", "128 samples"};
+static_assert(isomesh::MAX_FRAMES % JITTER_SEQUENCE_MAX == 0, "Each length divides the meshes' mean");
+
+// The option nearest to n (a file can hold anything), by its index
+static int jitter_samples_index(int n) {
+    int best = 0;
+    for (int i = 1; i < (int)ARRAY_SIZE(jitter_samples_options); ++i) {
+        if (abs(jitter_samples_options[i] - n) < abs(jitter_samples_options[best] - n)) best = i;
+    }
+    return best;
+}
+
+// The jitter's positions: temporal_aa.jitter_samples at the full resolution, and as many per pixel shown when a pixel
+// of the G-buffer covers several (1 / scale^2 of them), rounded up to a power of two as the options are, up to
+// JITTER_SEQUENCE_MAX
 static uint32_t jitter_count(const ApplicationState* state) {
+    const uint32_t base = (uint32_t)jitter_samples_options[jitter_samples_index(state->visuals.temporal_aa.jitter_samples)];
     const float sx = (float)state->gbuffer.width  / (float)MAX(state->gbuffer.out_width, 1U);
     const float sy = (float)state->gbuffer.height / (float)MAX(state->gbuffer.out_height, 1U);
-    const float n  = (float)JITTER_SEQUENCE_SIZE / MAX(sx * sy, 1.0e-3f);
-    return CLAMP((uint32_t)ceilf(n), (uint32_t)JITTER_SEQUENCE_SIZE, (uint32_t)JITTER_SEQUENCE_MAX);
+    const float n  = (float)base / MAX(sx * sy, 1.0e-3f);
+    uint32_t count = base;
+    while ((float)count < n && count < JITTER_SEQUENCE_MAX) count *= 2;
+    return MIN(count, (uint32_t)JITTER_SEQUENCE_MAX);
 }
 
 // Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
@@ -422,7 +444,7 @@ static inline bool occlusion_temporal_active(const ApplicationState* state) {
 // the ambient occlusion take to settle. A screenshot at another resolution than the window's starts their histories
 // again: with fewer frames it would show their first estimates, unfiltered over time.
 static uint32_t screenshot_samples(const ApplicationState* state) {
-    uint32_t n = taa_active(state) ? JITTER_SEQUENCE_SIZE : 1;
+    uint32_t n = taa_active(state) ? (uint32_t)jitter_samples_options[jitter_samples_index(state->visuals.temporal_aa.jitter_samples)] : 1;
     if (occlusion_temporal_active(state)) n = MAX(n, OCCLUSION_SETTLE_FRAMES);
     return n;
 }
@@ -576,6 +598,7 @@ static void apply_visual_settings(void* user_data) {
     auto& look = state->settings.look;
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
     if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
+    v.temporal_aa.jitter_samples = jitter_samples_options[jitter_samples_index(v.temporal_aa.jitter_samples)];
     state->settings.render_scale = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
     v.shadows.softness = CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
@@ -734,6 +757,7 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
     app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
     app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
+    app_settings::bind(STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
     app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
@@ -2061,6 +2085,14 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 if (taa_active(data)) {
                     // The temporal resolve's settings
+                    prop::row("jitter", "The positions the view is shifted through, a frame each, that the edges of a still view are smoothed over.\n"
+                                        "The image keeps a history of about its last 30 frames, so it gains little past 32; the isosurface meshes and\n"
+                                        "transparent representations average 128 frames and gain up to 128. A screenshot takes a frame per position.");
+                    int jitter = jitter_samples_index(data->visuals.temporal_aa.jitter_samples);
+                    if (ImGui::Combo("##jitter_samples", &jitter, jitter_samples_names, IM_ARRAYSIZE(jitter_samples_names))) {
+                        data->visuals.temporal_aa.jitter_samples = jitter_samples_options[jitter];
+                        machine_dirty = true;
+                    }
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
@@ -6692,7 +6724,7 @@ static uint32_t settle_frames(const ApplicationState* state) {
     if (occlusion_temporal_active(state)) {
         n = MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
-    return CLAMP(n, 1u, 240u);
+    return CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
 }
 
 // What the image of the scene is made from (render_scene), but for the marks, and for what input changes (input_activity):
