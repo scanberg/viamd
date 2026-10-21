@@ -56,6 +56,9 @@ static void bench_append(const char* text) {
 
 void iso_meshes_profile_note(const char* text) { bench_append(text); }
 
+static uint64_t bench_dense_generation = 0;   // mixed into the dense comparison's key: bumping it measures it again
+void iso_meshes_profile_redo_dense() { bench_dense_generation++; }
+
 mat4_t iso_meshes_model_matrix() {
     const float s = (float)BOHR_TO_ANGSTROM;
     return mat4_scale(s, s, s);
@@ -949,6 +952,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         for (int a = 0; a < 3; ++a) { lo[a] -= (float)h; hi[a] += (float)h; }
         // measured once per field, spacing and isovalues (a variant series extracts the same meshes again)
         uint64_t dkey = md_hash64(&h, sizeof(h), em.field_key);
+        dkey = md_hash64(&bench_dense_generation, sizeof(bench_dense_generation), dkey);
         for (uint32_t k = 0; k < num_slots; ++k) dkey = md_hash64(&slots[k].iso, sizeof(slots[k].iso), dkey);
         if (dkey != em.dense_key) {
             em.dense_key = dkey;

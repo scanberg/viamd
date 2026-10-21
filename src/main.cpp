@@ -5294,6 +5294,7 @@ static const IsoBenchVariant iso_bench_variants[] = {
 
 static struct {
     int      step = -1;             // the variant being extracted, -1 idle
+    int      warm = 0;              // 2: the warm-up extraction is to be made, 1: it is under way (not reported)
     uint64_t extractions = 0;       // the count before it
     int      frames = 0;            // waited for it
     md_gto_iso_gpu_switches_t saved = {};
@@ -5502,6 +5503,7 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
             md_gto_iso_gpu_switches(&iso_bench_series.saved);
             iso_meshes_force_update(false);
             iso_bench_series.step = 0;
+            iso_bench_series.warm = 2;
             iso_bench_series.extractions = UINT64_MAX;      // start the first at once
             iso_bench_series.frames = 0;
         }
@@ -5521,7 +5523,24 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
         // extracted in the same frame); given up after a while when nothing is extracted
         const uint64_t n = iso_meshes_extraction_count();
         const bool done = iso_bench_series.extractions == UINT64_MAX || n > iso_bench_series.extractions || ++iso_bench_series.frames > 120;
-        if (done) {
+        if (done && iso_bench_series.warm == 2) {
+            // a warm-up extraction with the defaults first, not reported: the first variant measured with the GPU
+            // still raising its clocks came out far slower than the same variant later (M4 Pro mm HOMO: 4.5 ms
+            // against 2.5)
+            md_gto_iso_gpu_switches_t vs = iso_bench_defaults();
+            md_gto_iso_gpu_switches_set(&vs);
+            iso_meshes_force_update(true);
+            data->render.image_valid = false;
+            iso_bench_series.warm = 1;
+            iso_bench_series.extractions = n;
+            iso_bench_series.frames = 0;
+        } else if (done) {
+            if (iso_bench_series.warm == 1) {
+                iso_bench_series.warm = 0;
+                iso_meshes_force_update(false);     // the warm-up's report dropped
+                iso_meshes_profile_redo_dense();
+            }
+            if (iso_bench_series.step == num_variants - 1) iso_meshes_profile_redo_dense();   // the drift check measures it again
             if (iso_bench_series.step >= num_variants) {
                 md_gto_iso_gpu_switches_set(&iso_bench_series.saved);
                 iso_bench_series.step = -1;

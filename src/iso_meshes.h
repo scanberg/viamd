@@ -94,6 +94,7 @@ void        iso_meshes_profile_enable(bool on);
 bool        iso_meshes_profile_enabled();
 const char* iso_meshes_profile_report();    // the reports since the last force_update, "" for none
 void        iso_meshes_profile_note(const char* text);    // appended to the report
+void        iso_meshes_profile_redo_dense();              // the dense comparison measured again at the next extraction
 // Every mesh is extracted again at its next update (its fields and their GPU set are kept: the cost of a
 // new isovalue); the report starts over unless kept
 void        iso_meshes_force_update(bool keep_report = false);
