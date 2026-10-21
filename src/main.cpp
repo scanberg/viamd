@@ -5307,6 +5307,22 @@ static void draw_distribution_window(ApplicationState* data) {
 
 // What the profiler's times were measured at, a line each, for the head of an export (profiler::write_csv)
 static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* state) {
+    // Whether md_gl's impostors keep the early depth test while they write their depth (layout (depth_greater), core
+    // only from GL 4.2): without it every fragment of every layer is shaded, in each pass that draws them
+    {
+        GLint count = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+        bool conservative_depth = false;
+        for (GLint i = 0; i < count && !conservative_depth; ++i) {
+            const char* ext = (const char*)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+            conservative_depth = ext && strcmp(ext, "GL_ARB_conservative_depth") == 0;
+        }
+        GLint major = 0, minor = 0;
+        glGetIntegerv(GL_MAJOR_VERSION, &major);
+        glGetIntegerv(GL_MINOR_VERSION, &minor);
+        conservative_depth |= major * 10 + minor >= 42;
+        md_str_writer_fmt(sw, "conservative depth: %s\n", conservative_depth ? "yes" : "no (impostors without early depth test)");
+    }
     md_str_writer_fmt(sw, "framebuffer: %u x %u\n", (unsigned)state->app.framebuffer.width, (unsigned)state->app.framebuffer.height);
     md_str_writer_fmt(sw, "viewport: %u x %u shown, render scale %.3f, %u x %u rendered\n",
                       (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
