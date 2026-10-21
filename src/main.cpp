@@ -5234,19 +5234,17 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r33), which every variant starts from
+// The library's defaults (r32), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.eval_eps_exp = 6;
     s.dform = false;
     s.flood = 1;
-    s.vshare = true;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"defaults",                [](md_gto_iso_gpu_switches_t*) {}},
-    {"vertex radial parts per channel (r32)", [](md_gto_iso_gpu_switches_t* s) { s->vshare = false; }},
     {"flood off",               [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; }},
     {"flood: every field",      [](md_gto_iso_gpu_switches_t* s) { s->flood = 2; }},
     {"D form on",               [](md_gto_iso_gpu_switches_t* s) { s->dform = true; }},
@@ -5302,11 +5300,6 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("Sets of densities: corners and vertices as phi^T D phi over the AOs reaching each group, D' upper "
                           "triangular (iso_dcorners, iso_deval); off: the factored functions (sets of more than 1024 "
                           "functions use it regardless)");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Vertex radial once", &sw.vshare);
-    ImGui::SetItemTooltip("EXPERIMENT (r33): the vertices' value and gradient with each shell's radial part (its "
-                          "exponentials) made once per vertex, one thread making the vertex's four channels "
-                          "(iso_geval_*_sr); off: once per channel, by each of the vertex's four threads (r32)");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
     const char* eps_items[] = {"1e-6", "1e-8", "1e-10"};
@@ -5376,8 +5369,7 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                 const md_gto_iso_gpu_switches_t& sv = iso_bench_series.saved;
                 md_gto_iso_gpu_switches_t last = iso_bench_defaults();
                 iso_bench_variants[num_variants - 1].apply(&last);
-                const bool same = sv.eval_eps_exp == last.eval_eps_exp && sv.dform == last.dform && sv.flood == last.flood &&
-                                  sv.vshare == last.vshare;
+                const bool same = sv.eval_eps_exp == last.eval_eps_exp && sv.dform == last.dform && sv.flood == last.flood;
                 md_gto_iso_gpu_switches_set(&sv);
                 iso_bench_series.step = -1;
                 if (!same) {
