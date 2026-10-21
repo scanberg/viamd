@@ -1237,8 +1237,9 @@ bool target_read_mean(const Target* t, float* rgba) {
 
 // FRAGCOORD Z PER SAMPLE
 // A triangle over a target of four samples, its depth steep in x and y (about 0.007 of the depth range per pixel, so a
-// sample a third of a pixel from the centre is ~0.002 off it), drawn per sample (it reads gl_SampleID) with the
-// rasterizer's depth; it writes gl_FragCoord.z as its colour. A second pass gives per pixel the largest difference of
+// sample a third of a pixel from the centre is ~0.002 off it), drawn per sample (GL_SAMPLE_SHADING: its gl_SampleID
+// alone goes into a channel the R32F target drops, which NVIDIA compiles away, and the probe ran at pixel rate) with
+// the rasterizer's depth; it writes gl_FragCoord.z as its colour. A second pass gives per pixel the largest difference of
 // the two over the samples, and how far the depths of the samples spread (that they are of the samples at all).
 
 static constexpr str_t v_shader_src_probe = STR_LIT(R"(
@@ -1331,7 +1332,10 @@ static float probe_fragcoord_z(void) {
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_ALWAYS);
         glUseProgram(draw);
+        glEnable(GL_SAMPLE_SHADING);
+        glMinSampleShading(1.0f);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_SAMPLE_SHADING);
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
 
