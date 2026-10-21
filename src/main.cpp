@@ -3224,18 +3224,14 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     static const BondKind kinds[] = {
                         {"Bond",          MD_BOND_FLAG_NONE,
                          "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal.\nIt joins the molecules of its atoms."},
-                        {"Hydrogen Bond", MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN,
+                        {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
                          "Non-covalent, drawn dashed. bond(kind='hydrogen') in the script."},
-                        {"Salt Bridge",   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC | MD_BOND_FLAG_KIND_GIVEN,
-                         "Non-covalent, of ionic character, drawn dashed. bond(kind='ionic') in the script."},
-                        {"Halogen Bond",  MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE | MD_BOND_FLAG_KIND_GIVEN,
-                         "Non-covalent, to a sigma hole (halogen, chalcogen and pnictogen bonds), drawn dashed.\nbond(kind='sigma_hole') in the script."},
-                        {"Interaction",   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_KIND_GIVEN,
-                         "Non-covalent, of no particular kind, drawn dashed. bond(kind='noncovalent') in the script."},
+                        {"Interaction",   md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION),
+                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn dashed.\nbond(kind='interaction') in the script."},
                     };
                     for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
-                            const bool graph = !(kinds[k].flags & MD_BOND_FLAG_NONCOVALENT);
+                            const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
                             system_bonds_edit_begin(state);
                             md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
                             if (graph) md_util_system_infer_coordination(&sys);
