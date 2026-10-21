@@ -401,17 +401,39 @@ static void render_size(const ApplicationState* state, uint32_t out_w, uint32_t 
     *h = MAX((uint32_t)(out_h * s + 0.5f), 1U);
 }
 
-// The jitter's positions: JITTER_SEQUENCE_SIZE at the full resolution, and as many per pixel shown when a pixel of
-// the G-buffer covers several (1 / scale^2 of them), up to JITTER_SEQUENCE_MAX
+// The lengths of the jitter offered (Visuals > Anti-Aliasing): powers of two, so that each divides the isosurface
+// meshes' mean of isomesh::MAX_FRAMES frames (every position weighs the same in it) and the sequence's x (Halton, base
+// 2) is stratified. The TAA's history of a still view (feedback_max 0.95) weighs about the last 30 frames: of the
+// positions of a cycle it averages about 8 at 8, 15 at 16, 26 at 32, 36 at 64, and 39 at most. The meshes' mean gains
+// up to 128.
+static const int jitter_samples_options[] = {8, 16, 32, 64, 128};
+static const char* jitter_samples_names[] = {"8 samples", "16 samples", "32 samples", "64 samples", "128 samples"};
+static_assert(isomesh::MAX_FRAMES % JITTER_SEQUENCE_MAX == 0, "Each length divides the meshes' mean");
+
+// The option nearest to n (a file can hold anything), by its index
+static int jitter_samples_index(int n) {
+    int best = 0;
+    for (int i = 1; i < (int)ARRAY_SIZE(jitter_samples_options); ++i) {
+        if (abs(jitter_samples_options[i] - n) < abs(jitter_samples_options[best] - n)) best = i;
+    }
+    return best;
+}
+
+// The jitter's positions: temporal_aa.jitter_samples at the full resolution, and as many per pixel shown when a pixel
+// of the G-buffer covers several (1 / scale^2 of them), rounded up to a power of two as the options are, up to
+// JITTER_SEQUENCE_MAX
 static uint32_t jitter_count(const ApplicationState* state) {
+    const uint32_t base = (uint32_t)jitter_samples_options[jitter_samples_index(state->visuals.temporal_aa.jitter_samples)];
     const float sx = (float)state->gbuffer.width  / (float)MAX(state->gbuffer.out_width, 1U);
     const float sy = (float)state->gbuffer.height / (float)MAX(state->gbuffer.out_height, 1U);
-    const float n  = (float)JITTER_SEQUENCE_SIZE / MAX(sx * sy, 1.0e-3f);
-    return CLAMP((uint32_t)ceilf(n), (uint32_t)JITTER_SEQUENCE_SIZE, (uint32_t)JITTER_SEQUENCE_MAX);
+    const float n  = (float)base / MAX(sx * sy, 1.0e-3f);
+    uint32_t count = base;
+    while ((float)count < n && count < JITTER_SEQUENCE_MAX) count *= 2;
+    return MIN(count, (uint32_t)JITTER_SEQUENCE_MAX);
 }
 
 // Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
-// motion blur, sharpening, the samples a screenshot gathers), all of it off with it.
+// motion blur, sharpening), all of it off with it.
 static inline bool fxaa_active(const ApplicationState* state) {
     const auto& aa = state->visuals.anti_aliasing;
     return aa.enabled && aa.mode == AntiAliasingMode::FXAA;
@@ -430,13 +452,20 @@ static inline bool occlusion_temporal_active(const ApplicationState* state) {
     return (shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal;
 }
 
-// The frames a screenshot (without the GUI) is made over: the TAA's jitter once through, and as many as the shadows and
-// the ambient occlusion take to settle. A screenshot at another resolution than the window's starts their histories
-// again: with fewer frames it would show their first estimates, unfiltered over time.
-static uint32_t screenshot_samples(const ApplicationState* state) {
-    uint32_t n = taa_active(state) ? JITTER_SEQUENCE_SIZE : 1;
-    if (occlusion_temporal_active(state)) n = MAX(n, OCCLUSION_SETTLE_FRAMES);
-    return n;
+// A screenshot is the image as lazy rendering leaves it once it has settled (render()): with the GUI, the window as it
+// is shown; without, the image alone at the screenshot's size (the window's or another), the view not moved over for
+// the windows. Either way it is made as the view is, frame by frame, until it has settled.
+static inline bool screenshot_pending(const ApplicationState* state) {
+    return !str_empty(state->screenshot.path_to_file);
+}
+static inline bool screenshot_offscreen(const ApplicationState* state) {
+    return screenshot_pending(state) && state->screenshot.hide_gui;
+}
+
+// Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
+// in a screenshot without the windows, which shows it in the middle.
+static inline vec2_t view_shift(const ApplicationState* state) {
+    return screenshot_offscreen(state) ? vec2_t{0, 0} : state->view.shift;
 }
 
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
@@ -588,6 +617,7 @@ static void apply_visual_settings(void* user_data) {
     auto& look = state->settings.look;
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
     if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
+    v.temporal_aa.jitter_samples = jitter_samples_options[jitter_samples_index(v.temporal_aa.jitter_samples)];
     state->settings.render_scale = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
     v.shadows.softness = CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
@@ -746,6 +776,7 @@ int main(int argc, char** argv) {
     app_settings::bind(STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
     app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
     app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
+    app_settings::bind(STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
     app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
     app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
@@ -1121,7 +1152,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (state.animation.mode == PlaybackMode::Playing) {
+        // Not while a screenshot is pending: it is of the frame shown, made until it has settled
+        if (state.animation.mode == PlaybackMode::Playing && !screenshot_pending(&state)) {
             state.animation.frame += state.app.timing.delta_s * state.animation.fps;
             state.animation.frame = CLAMP(state.animation.frame, 0.0, max_frame);
             if (state.animation.frame >= max_frame) {
@@ -1700,10 +1732,8 @@ static void update_view_param(ApplicationState* data) {
         param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
 
-    // What the view is focused on is seen where the windows leave it uncovered (see ViewRegion): the picture is moved
-    // over in clip space. Not in a screenshot without the windows, which shows it in the middle.
-    const bool windows_shown = str_empty(data->screenshot.path_to_file) || !data->screenshot.hide_gui;
-    const vec2_t shift = windows_shown ? data->view.shift : vec2_t{0, 0};
+    // What the view is focused on is seen where the windows leave it uncovered (view_shift)
+    const vec2_t shift = view_shift(data);
     if (shift != vec2_t{0, 0}) {
         const mat4_t to_shifted   = mat4_translate( shift.x,  shift.y, 0.0f);
         const mat4_t from_shifted = mat4_translate(-shift.x, -shift.y, 0.0f);
@@ -2068,7 +2098,7 @@ static void draw_main_menu(ApplicationState* data) {
                                      "Smooth jagged edges.\nOff: screenshots are a single sample.")) {
                 const char* modes[(int)AntiAliasingMode::Count] = {"TAA", "FXAA"};
                 int mode = (int)data->visuals.anti_aliasing.mode;
-                prop::row("mode", "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image; screenshots gather a sample per shift.\n"
+                prop::row("mode", "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image.\n"
                                   "FXAA: one pass over each frame on its own. Nothing is carried over from frame to frame, but edges crawl in motion and detail finer than a pixel flickers.");
                 if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
                     data->visuals.anti_aliasing.mode = (AntiAliasingMode)mode;
@@ -2076,6 +2106,14 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 if (taa_active(data)) {
                     // The temporal resolve's settings
+                    prop::row("jitter", "The positions the view is shifted through, a frame each, that the edges of a still view are smoothed over.\n"
+                                        "The image keeps a history of about its last 30 frames, so it gains little past 32; the isosurface meshes and\n"
+                                        "transparent representations average 128 frames and gain up to 128. A still view takes longer to settle past 32.");
+                    int jitter = jitter_samples_index(data->visuals.temporal_aa.jitter_samples);
+                    if (ImGui::Combo("##jitter_samples", &jitter, jitter_samples_names, IM_ARRAYSIZE(jitter_samples_names))) {
+                        data->visuals.temporal_aa.jitter_samples = jitter_samples_options[jitter];
+                        machine_dirty = true;
+                    }
                     prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
                     machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                     prop::row("history max", "How much of the previous frames is kept where the image is still");
@@ -2303,16 +2341,15 @@ static void draw_main_menu(ApplicationState* data) {
                 data->screenshot.res_y = data->app.framebuffer.height;
             }
             if (ImGui::MenuItem("Take Screenshot")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,png,bmp"))) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,jpeg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
                     str_t ext;
                     if (!extract_ext(&ext, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
                         ext = STR_LIT("jpg");
                     }
-                    if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
+                    if (image_format_from_ext(ext) != ImageFormat_Unknown) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
-                        data->screenshot.sample_target = (int)screenshot_samples(data);
                     }
                     else {
                         VIAMD_LOG_ERROR("Supplied image extension is not supported");
@@ -3625,6 +3662,10 @@ static void draw_async_task_window(ApplicationState* data) {
         if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
         any_task_label_visible = true;
     }
+    // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
+    float iso_fraction[8];
+    const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
+    any_task_label_visible |= num_iso > 0;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3656,6 +3697,10 @@ static void draw_async_task_window(ApplicationState* data) {
                     md_script_eval_interrupt(data->script.eval);
                 }
             }
+        }
+        for (size_t i = 0; i < num_iso; i++) {
+            snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
+            ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
         }
 
         ImGui::End();
@@ -6629,15 +6674,26 @@ void create_screenshot(str_t path) {
     str_t ext = {};
     extract_ext(&ext, path);
 
-    if (str_eq_cstr_ignore_case(ext, "jpg")) {
+    bool written = false;
+    switch (image_format_from_ext(ext)) {
+    case ImageFormat_JPG: {
         const int quality = 95;
-        image_write_jpg(path, rgba, width, height, quality);
-    } else if (str_eq_cstr_ignore_case(ext, "png")) {
-        image_write_png(path, rgba, width, height);
-    } else if (str_eq_cstr_ignore_case(ext, "bmp")) {
-        image_write_bmp(path, rgba, width, height);
-    } else {
+        written = image_write_jpg(path, rgba, width, height, quality);
+        break;
+    }
+    case ImageFormat_PNG:
+        written = image_write_png(path, rgba, width, height);
+        break;
+    case ImageFormat_BMP:
+        written = image_write_bmp(path, rgba, width, height);
+        break;
+    default:
         VIAMD_LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
+        return;
+    }
+
+    if (!written) {
+        VIAMD_LOG_ERROR("Failed to save screenshot to: '" STR_FMT "'", STR_ARG(path));
         return;
     }
 
@@ -6707,7 +6763,7 @@ static uint32_t settle_frames(const ApplicationState* state) {
     if (occlusion_temporal_active(state)) {
         n = MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
-    return CLAMP(n, 1u, 240u);
+    return CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
 }
 
 // What the image of the scene is made from (render_scene), but for the marks, and for what input changes (input_activity):
@@ -6724,7 +6780,8 @@ static uint64_t scene_key(const ApplicationState* state) {
                               c.distance, c.near_plane, c.far_plane, c.fov_y};
     h = md_hash64(camera, sizeof(camera), h);
     h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
-    h = md_hash64(&state->view.shift, sizeof(state->view.shift), h);
+    const vec2_t shift = view_shift(state);
+    h = md_hash64(&shift, sizeof(shift), h);
     h = md_hash64(&state->mold.unitcell_transform, sizeof(state->mold.unitcell_transform), h);
 
     // How it looks
@@ -6956,16 +7013,25 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     }
 }
 
+// Saves the screenshot from the framebuffer bound (create_screenshot), and it is no longer pending
+static void screenshot_save(ApplicationState* state) {
+    create_screenshot(state->screenshot.path_to_file);
+    str_free(state->screenshot.path_to_file, state->allocator.persistent);
+    state->screenshot.path_to_file = {};
+}
+
 static void render(ApplicationState* state) {
-    bool do_screenshot = !str_empty(state->screenshot.path_to_file);
+    // A screenshot pending (screenshot_pending): saved below once the image has settled, without the GUI at its own size
+    const bool screenshot = screenshot_pending(state);
+    const bool offscreen  = screenshot_offscreen(state);
 
     // The image shown, and the G-buffer it is made from: the render scale of it, upscaled in post-processing.
-    // A screenshot is at its own resolution, in full.
+    // A screenshot without the GUI is at its own resolution, in full.
     uint32_t out_width  = state->app.framebuffer.width;
     uint32_t out_height = state->app.framebuffer.height;
     uint32_t gbuffer_target_width  = out_width;
     uint32_t gbuffer_target_height = out_height;
-    if (do_screenshot) {
+    if (offscreen) {
         out_width  = gbuffer_target_width  = state->screenshot.res_x;
         out_height = gbuffer_target_height = state->screenshot.res_y;
     } else {
@@ -6981,25 +7047,27 @@ static void render(ApplicationState* state) {
         state->render.image_valid = false;
     }
 
-    // The scene is made when something in it changed, until it settles; else the image kept is shown again. Always for a
-    // screenshot, and without lazy rendering.
+    // The scene is made when something in it changed, until it settles (and the isosurface meshes' mean has converged);
+    // else the image kept is shown again. Always without lazy rendering. Input may change what the key does not show, so
+    // it starts the settling again, but not while a screenshot waits for it.
     auto& lazy = state->render;
     const uint64_t key = scene_key(state);
-    if (key != lazy.scene_key || !lazy.image_valid || input_activity()) {
+    if (key != lazy.scene_key || !lazy.image_valid || (!screenshot && input_activity())) {
         lazy.scene_key = key;
         lazy.settle_frames = settle_frames(state);
     }
-    const bool scene = do_screenshot || !state->settings.lazy_rendering || lazy.settle_frames > 0 || !lazy.image_valid;
+    const bool scene = !state->settings.lazy_rendering || lazy.settle_frames > 0 || !lazy.image_valid || !iso_mesh_converged;
     lazy.history = (lazy.history << 1) | (scene ? 1 : 0);
     if (scene) {
         PUSH_GPU_SECTION("Scene")
-        render_scene(state, do_screenshot);
+        render_scene(state, offscreen);
         POP_GPU_SECTION()
-        lazy.image_valid = !do_screenshot;
+        lazy.image_valid = true;
         if (lazy.settle_frames > 0) lazy.settle_frames -= 1;
-        // The meshed isosurfaces average frames until they have converged
-        if (!iso_mesh_converged) lazy.settle_frames = MAX(lazy.settle_frames, 1u);
     }
+    // Settled: as made as it gets. The meshes' mean that the profiler keeps drawing never converges: then its frames.
+    const bool meshes_settled = iso_mesh_converged || iso_mesh_target.frame >= isomesh::MAX_FRAMES;
+    const bool settled = lazy.image_valid && lazy.settle_frames == 0 && meshes_settled;
 
     // The marks of the selection and the highlight: the selected and highlighted atoms drawn once, both, into a target
     // of the size of the image made, unjittered, each fragment marked in view or behind the scene (its depth, from the
@@ -7025,20 +7093,8 @@ static void render(ApplicationState* state) {
         lazy.marks_key = 0;
     }
 
-    if (do_screenshot && state->screenshot.hide_gui) {
-        // Activate gbuffer to store screenshot
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    } else {
-        // Activate backbuffer
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
-        glDrawBuffer(GL_BACK);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
-
-    {
+    // The image kept, the marks over it, into the framebuffer bound
+    auto present = [&]() {
         PUSH_GPU_SECTION("Present")
         postprocess_pipeline::Settings settings = {};
         if (draw_marks) {
@@ -7050,44 +7106,45 @@ static void render(ApplicationState* state) {
         }
         postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings);
         POP_GPU_SECTION()
+    };
+
+    // Without the GUI: once settled, the image presented into the G-buffer's target (its size) and saved from there
+    if (offscreen && settled) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
+        glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        present();
+        screenshot_save(state);
     }
 
-    if (do_screenshot && state->screenshot.hide_gui) {
-        state->screenshot.sample_count += 1;
-
-        ImGui::OpenPopup("Capturing Frame");
+    // The window: the image, or while a screenshot without the GUI is made (at a size of its own), how far it has come
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
+    glDrawBuffer(GL_BACK);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (!offscreen) {
+        present();
+    } else {
+        const uint32_t total = MAX(settle_frames(state), 1u);
+        float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
+        if (!meshes_settled) fraction = MIN(fraction, (float)iso_mesh_target.frame / (float)isomesh::MAX_FRAMES);
+        if (screenshot_pending(state)) ImGui::OpenPopup("Capturing Frame");
         ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
         ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
         if (ImGui::BeginPopupModal("Capturing Frame", 0, ImGuiWindowFlags_NoResize)) {
-            float fraction = (float)state->screenshot.sample_count / (float)state->screenshot.sample_target;
-            ImGui::ProgressBar(fraction);
+            ImGui::ProgressBar(CLAMP(fraction, 0.0f, 1.0f));
+            if (!screenshot_pending(state)) ImGui::CloseCurrentPopup();     // saved this frame
             ImGui::EndPopup();
         }
-
-        if (state->screenshot.sample_count == state->screenshot.sample_target) {
-            create_screenshot(state->screenshot.path_to_file);
-            str_free(state->screenshot.path_to_file, state->allocator.persistent);
-            state->screenshot.path_to_file = {};
-            state->screenshot.sample_count  = 0;
-            state->screenshot.sample_target = 0;
-            ImGui::CloseCurrentPopup();
-        }
-
-        // Activate backbuffer
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
-        glDrawBuffer(GL_BACK);
-        glClear(GL_COLOR_BUFFER_BIT);
     }
 
     PUSH_GPU_SECTION("Imgui render")
     application::render_imgui(&state->app);
     POP_GPU_SECTION()
 
-    if (do_screenshot && !state->screenshot.hide_gui) {
-        create_screenshot(state->screenshot.path_to_file);
-        str_free(state->screenshot.path_to_file, state->allocator.persistent);
-        state->screenshot.path_to_file = {};
+    // With the GUI: the window as shown, once settled
+    if (screenshot && !offscreen && settled) {
+        screenshot_save(state);
     }
 }
 

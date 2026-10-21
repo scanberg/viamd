@@ -6,7 +6,10 @@
 // A set of meshes is up to ISO_MESHES_MAX_SLOTS slots, each a field at an isovalue (one or both sheets), all in
 // one GL mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
 // a field in several slots costs its functions once - and the result is read back once; without a GPU device
-// the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. Extraction blocks.
+// the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
+// job (md_gto_iso_gpu_job_t) advanced by every update for a few milliseconds at most: the mesh shown stays the
+// previous one until the job is done, so a long extraction never stalls the frame (iso_meshes_progress tells how
+// far it is). The CPU path blocks.
 //
 // Positions are in bohr, at the atoms of the current frame: the meshes go to world space by a scale of
 // BOHR_TO_ANGSTROM (iso_meshes_model_matrix).
@@ -55,6 +58,13 @@ struct IsoMeshes {
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
 
+    // The GPU extraction under way (md_gto_iso_gpu_job_t), of the slots whose key is job_key: until it is done
+    // the mesh above is the previous one
+    void*    job = nullptr;
+    uint64_t job_key = 0;
+    uint32_t job_slots = 0;
+    int64_t  job_start = 0;     // md_tick_t: when it began
+
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;
     void*    gpu_set = nullptr;     // md_gto_iso_gpu_set_t
@@ -70,6 +80,10 @@ struct IsoMeshes {
 // contents of the fields (a field can be freed and another made at the same address). Returns m->ok.
 bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key);
 void iso_meshes_free(IsoMeshes* m, ApplicationState* state);
+
+// The GPU extractions under way for longer than a moment, for a progress display: how far each is (0 to 1).
+// Returns how many (at most cap).
+size_t iso_meshes_progress(float* fraction, size_t cap);
 
 mat4_t iso_meshes_model_matrix();
 

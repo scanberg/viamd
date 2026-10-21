@@ -162,6 +162,14 @@ struct Read {
     }
 };
 
+// A path as the workspace reader resolves it: canonical (on Windows a path from the root gets the current drive),
+// or as given where it cannot be made so
+std::string resolved(const char* path) {
+    char buf[1024];
+    const size_t len = md_path_write_canonical(buf, sizeof(buf), str_from_cstr(path));
+    return len ? std::string(buf, len) : std::string(path);
+}
+
 bool contains(str_t text, const char* what) {
     size_t loc;
     return str_find_str(&loc, text, str_from_cstr(what));
@@ -269,8 +277,8 @@ UTEST(viamd_file_list, version_1_files_load_in_their_slots_order) {
         "CoarseGrained=1\n");
     Read r(text, STR_LIT("/ws/"));
     { const std::string got_ = r.str(); EXPECT_STREQ("a.gro:System:-1 a.xtc:Trajectory:0 a.edr:Series:0 b.xvg:Series:0 c.csv:Series:0", got_.c_str()); }
-    EXPECT_STREQ("/ws/traj/a.xtc", r.plan.inputs[1].entry.path);
-    EXPECT_STREQ("/abs/c.csv", r.plan.inputs[4].entry.path);
+    EXPECT_STREQ(resolved("/ws/traj/a.xtc").c_str(), r.plan.inputs[1].entry.path);
+    EXPECT_STREQ(resolved("/abs/c.csv").c_str(), r.plan.inputs[4].entry.path);
     EXPECT_FALSE(r.plan.inputs[0].opens_own_run);   // it has a trajectory of its own
 
     // Without a trajectory the structure file's own frames were the run, and the series were along them
