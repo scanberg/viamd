@@ -5364,10 +5364,19 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
             }
             if (iso_bench_series.step == num_variants - 1) iso_meshes_profile_redo_dense();   // the drift check measures it again
             if (iso_bench_series.step >= num_variants) {
-                md_gto_iso_gpu_switches_set(&iso_bench_series.saved);
+                // the switches as before the series; the meshes extracted again only when they differ from the last
+                // variant's, that extraction labelled in the report (it is not a variant)
+                const md_gto_iso_gpu_switches_t& sv = iso_bench_series.saved;
+                md_gto_iso_gpu_switches_t last = iso_bench_defaults();
+                iso_bench_variants[num_variants - 1].apply(&last);
+                const bool same = sv.eval_eps_exp == last.eval_eps_exp && sv.dform == last.dform && sv.flood == last.flood;
+                md_gto_iso_gpu_switches_set(&sv);
                 iso_bench_series.step = -1;
-                iso_meshes_force_update(true);
-                data->render.image_valid = false;
+                if (!same) {
+                    iso_meshes_profile_note("\n==== after the series: the switches as before it ====\n");
+                    iso_meshes_force_update(true);
+                    data->render.image_valid = false;
+                }
             } else {
                 const IsoBenchVariant& v = iso_bench_variants[iso_bench_series.step];
                 md_gto_iso_gpu_switches_t vs = iso_bench_defaults();
