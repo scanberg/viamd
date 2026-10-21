@@ -1159,6 +1159,7 @@ struct Dataset : viamd::EventHandler {
         size_t bonds_inferred = 0;
         size_t bonds_user = 0;
         size_t bonds_file = 0;
+        size_t bonds_elastic = 0;   // Not bonds of the molecules, and so in none of the above
 
         size_t atoms_without_element = 0;   // neither an element nor a coarse grained bead, and with mass
         size_t unresolved_amino = 0;        // named like amino acids, backbone not found
@@ -1318,6 +1319,10 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t b = 0; b < sys.bond.count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
+            if (f & MD_BOND_FLAG_ELASTIC) {
+                c.bonds_elastic += 1;
+                continue;
+            }
             switch (md_bond_origin((md_bond_flags_t)f)) {
             case MD_BOND_ORIGIN_USER:     c.bonds_user     += 1; break;
             case MD_BOND_ORIGIN_TOPOLOGY: c.bonds_topology += 1; break;
@@ -1607,6 +1612,11 @@ struct Dataset : viamd::EventHandler {
             part(c.bonds_user,     "added by you");
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", buf);
+        }
+        if (c.bonds_elastic > 0) {
+            ImGui::Text("%zu elastic bonds", c.bonds_elastic);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(springs of the force field: shown by licorice and ball and stick when asked to)");
         }
 
         const md_unitcell_t& uc = cell;

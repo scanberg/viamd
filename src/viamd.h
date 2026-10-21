@@ -977,6 +977,7 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
+    bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
@@ -1191,11 +1192,32 @@ struct ApplicationState {
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
         int periodic_images[3] = {0, 0, 0};
 
-        // The copies of the scene those representations are drawn in, by instancing (md_gl_instances_t): its own first,
-        // then the periodic images, none without a cell or images. As of this frame and as of the last, so that an image
-        // which moves with the cell (a trajectory of changing cells) shows as moving. Set by update_view_param.
+        // The copies of the scene those representations are drawn in, by instancing (md_gl_copies_t): its own first,
+        // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
+        // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
+        // update_view_param.
         md_array(mat4_t) periodic_transforms      = 0;
         md_array(mat4_t) periodic_transforms_prev = 0;
+
+        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
+        // they are. Shown in place of them and of the periodic images: each part of it the instances of the part, in the
+        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
+        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
+        // (centering, wrapping, making whole) are not applied while one is shown. The figure's: in the workspace.
+        int assembly = -1;
+
+        // Of the assembly shown, set by update_view_param: the transforms of its copies, part by part, those of part p
+        // [assembly_copy_offset[p], assembly_copy_offset[p + 1]). Empty when none is shown.
+        md_array(mat4_t)   assembly_transforms  = 0;
+        md_array(uint32_t) assembly_copy_offset = 0;
+
+        // Of the assembly shown, the instances of each part as a subset of the molecule (md_gl_subset_t), which its
+        // copies draw, and the subset of the cartoon glyphs which that makes. A part of all instances has none (0): the
+        // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
+        md_array(md_gl_subset_t) assembly_subsets       = 0;
+        md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
+        int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
+        uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
     } view;
 
     struct {
@@ -2697,12 +2719,39 @@ void file_queue_process(ApplicationState* state);
 
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
-// camera_compute_default_view). fov_y is that of the camera that looks through it.
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {});
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}) {
+// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (view.assembly,
+// -1 for none), of those atoms in the instances of each of its parts, in all of the copies of the part.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members, fov_y, region);
+    reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
+
+// ASSEMBLIES (view.assembly). The parts of assembly asm_idx are [a.part_offset[asm_idx], a.part_offset[asm_idx + 1]),
+// and the instances and operators of part p those assembly_part gives, pointers into the arrays of a. Both read from the
+// offsets as they are, not through the md_urange_t of md_assembly_part_range and its kin: MSVC 19.52 (/O2) compiled
+// loops from the beg of such a range to index with the 64 bits that held both of its ends, the end in the upper half,
+// and read far out of bounds (assembly_transforms, reset_view).
+struct AssemblyPart {
+    const md_instance_idx_t* inst;
+    const md_instance_idx_t* inst_end;
+    const uint32_t* oper;
+    const uint32_t* oper_end;
+};
+
+static inline AssemblyPart assembly_part(const md_assembly_data_t& a, size_t p) {
+    ASSERT(p < a.part_count);
+    return {a.inst + a.part_inst_offset[p], a.inst + a.part_inst_offset[p + 1], a.oper + a.part_oper_offset[p], a.oper + a.part_oper_offset[p + 1]};
+}
+
+// The transforms of the copies an assembly of the system makes, part by part, and with copy_offset (optional) where the
+// copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
+void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
+
+// The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
+// freed: before the molecule goes
+void assembly_subsets_update(ApplicationState* app);
+void assembly_subsets_free(ApplicationState* app);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the

@@ -606,6 +606,215 @@ bool representation_uses_atom_colors(const Representation& rep) {
     }
 }
 
+bool representation_atom_type_valid(const ApplicationState& state, RepresentationType type) {
+    const md_system_t& sys = state.mold.sys;
+    switch (type) {
+    case RepresentationType::SpaceFill:     return sys.atom.count > 0;
+    case RepresentationType::Licorice:      return sys.bond.count > 0;
+    case RepresentationType::BallAndStick:  return sys.atom.count > 0;
+    case RepresentationType::Ribbons:       return sys.protein_backbone.range.count > 0;
+    // Proteins, and the lipids and nucleic acids of the glyphs
+    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(state.mold.cartoon_glyphs);
+    default:                                return false;
+    }
+}
+
+md_gl_draw_op_t representation_draw_op(const Representation& rep) {
+    md_gl_draw_op_t op = {
+        .type = (md_gl_rep_type_t)rep.type,
+        .args = {},
+        .rep = rep.md_rep,
+    };
+    switch (rep.type) {
+    case RepresentationType::SpaceFill:
+        op.args.space_fill.radius_scale = rep.scale.x;
+        break;
+    case RepresentationType::Licorice:
+        op.args.licorice.radius = rep.scale.x;
+        op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+        op.args.licorice.sharpness = rep.bond_sharpness;
+        op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+        op.args.licorice.bond_orders = rep.bond_orders;
+        op.args.licorice.chain_gaps = rep.chain_gaps;
+        op.args.licorice.elastic_bonds = rep.elastic_bonds;
+        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+            tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+        }
+        break;
+    case RepresentationType::BallAndStick:
+        op.args.ball_and_stick.ball_scale = rep.scale.x;
+        op.args.ball_and_stick.stick_radius = rep.scale.y;
+        op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+        op.args.ball_and_stick.sharpness = rep.bond_sharpness;
+        op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+        op.args.ball_and_stick.bond_orders = rep.bond_orders;
+        op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
+        op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
+        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+            tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+        }
+        break;
+    case RepresentationType::Ribbons:
+        op.args.ribbons.width_scale = rep.scale.x;
+        op.args.ribbons.thickness_scale = rep.scale.y;
+        op.args.ribbons.chain_gaps = rep.chain_gaps;
+        break;
+    case RepresentationType::Cartoon:
+        op.args.cartoon.coil_scale = rep.scale.x;
+        op.args.cartoon.sheet_scale = rep.scale.y;
+        op.args.cartoon.helix_scale = rep.scale.z;
+        op.args.cartoon.chain_gaps = rep.chain_gaps;
+        break;
+    default:
+        ASSERT(false);
+        break;
+    }
+    return op;
+}
+
+// The draws of the glyphs of a Cartoon (see representation.h)
+void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
+    const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
+
+    // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
+    if (state.mold.cartoon_glyphs.num_spheres > 0) {
+        md_gl_draw_op_t spheres = {
+            .type = MD_GL_REP_SPACE_FILL,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        spheres.args.space_fill.radius_scale = scale;
+        md_array_push(*ops, spheres, alloc);
+    }
+
+    if (state.mold.cartoon_glyphs.num_tubes > 0) {
+        md_gl_draw_op_t tubes = {
+            .type = MD_GL_REP_TUBES,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        tubes.args.tubes.radius_scale = scale;
+        // The bands of the nucleic acids are made with the default radius, a representation has its own
+        tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
+        md_array_push(*ops, tubes, alloc);
+    }
+
+    if (state.mold.cartoon_glyphs.num_slabs > 0) {
+        md_gl_draw_op_t slabs = {
+            .type = MD_GL_REP_SLABS,
+            .args = {},
+            .rep = rep.glyph_rep,
+            .copies = {},
+        };
+        // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
+        // recessed to 60% of its thickness
+        slabs.args.slabs.radius = MAX(rep.nucleic_ring_radius, 0.01f) * scale;
+        slabs.args.slabs.plate  = 0.6f;
+        md_array_push(*ops, slabs, alloc);
+    }
+}
+
+// The colours of all atoms of the system for a representation which colours by atom, by its colour mapping, then towards
+// its tint and saturation (see representation.h)
+void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationState* state, Representation* rep, const md_bitset_t* shown) {
+    const md_system_t& sys = state->mold.sys;
+    md_allocator_i* frame_alloc = state->allocator.frame;
+    const size_t bytes = num_atoms * sizeof(uint32_t);
+
+    switch (rep->color_mapping) {
+    case ColorMapping::Uniform:
+        color_atoms_uniform(colors, num_atoms, convert_color(rep->base_color));
+        break;
+    case ColorMapping::Type:
+        color_atoms_type(colors, num_atoms, sys);
+        break;
+    case ColorMapping::Serial:
+        color_atoms_idx(colors, num_atoms, sys);
+        break;
+    case ColorMapping::CompName:
+        color_atoms_comp_name(colors, num_atoms, sys);
+        break;
+    case ColorMapping::CompType:
+        color_atoms_comp_type(colors, num_atoms, sys);
+        break;
+    case ColorMapping::CompSeqId:
+        color_atoms_comp_seq_id(colors, num_atoms, sys);
+        break;
+    case ColorMapping::CompIndex:
+        color_atoms_comp_idx(colors, num_atoms, sys);
+        break;
+    case ColorMapping::InstId:
+        color_atoms_inst_id(colors, num_atoms, sys);
+        break;
+    case ColorMapping::InstIndex:
+        color_atoms_inst_idx(colors, num_atoms, sys);
+        break;
+    case ColorMapping::SecondaryStructure: {
+        SecondaryStructurePalette palette = {
+            .coil  = convert_color(rep->secondary_structure.color_coil),
+            .helix = convert_color(rep->secondary_structure.color_helix),
+            .sheet = convert_color(rep->secondary_structure.color_sheet),
+        };
+        color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state), palette);
+        break;
+    }
+    case ColorMapping::Attribute: {
+        AtomAttributeColoring& coloring = rep->atom_attribute;
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, coloring.key);
+        size_t num_extracted = 0;
+        float* values = nullptr;
+
+        if (attr) {
+            values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
+
+            // Fixing the variant axis hands back exactly the atom axis, so there is no
+            // offset arithmetic here to get wrong. A field with no variant axis is rank 1
+            // and takes no indices at all.
+            const uint32_t variant = (uint32_t)CLAMP(coloring.variant_idx, 0, MAX(atom_attribute_variant_count(attr) - 1, 0));
+            const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
+            num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
+        }
+
+        if (num_extracted == num_atoms) {
+            // The span of the atoms shown, measured again only when the values or the atoms
+            // changed: it scans every variant of the attribute
+            uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
+            const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
+            span_hash = md_hash64(&version, sizeof(version), span_hash);
+            span_hash = shown ? md_bitset_hash64(*shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
+            if (span_hash != coloring.span_hash) {
+                coloring.span = atom_attribute_span(attr, shown);
+                coloring.span_hash = span_hash;
+            }
+            color_scale_update_range(&coloring.scale, coloring.span);
+
+            for (size_t i = 0; i < num_atoms; ++i) {
+                // An atom without a value is not a point on the ramp: NAN would reach the
+                // colormap lookup as an index, so it gets a neutral grey of its own instead
+                colors[i] = atom_attribute_value_absent(values[i]) ? IM_COL32(128, 128, 128, 255) : color_scale_color_u32(coloring.scale, values[i]);
+            }
+        } else {
+            if (attr) {
+                MD_LOG_DEBUG("Failed to extract values for the selected atom attribute");
+            }
+            MEMSET(colors, 0xFFFFFFFFu, bytes);
+        }
+        break;
+    }
+    default:
+        ASSERT(false);
+        break;
+    }
+
+    if (rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
+        uint32_t tint_color = convert_color(rep->tint_color);
+        tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
+    }
+}
+
 static void update_representation(ApplicationState* state, Representation* rep) {
     ASSERT(state);
     ASSERT(rep);
@@ -620,8 +829,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     md_allocator_i* frame_alloc = state->allocator.frame;
     md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
     defer { md_temp_end(temp); };
-
-    const size_t bytes = num_atoms * sizeof(uint32_t);
 
     uint32_t* colors = 0;
     if (representation_uses_atom_colors(*rep)) {
@@ -650,114 +857,17 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             state->representation.atom_visibility_mask_dirty = true;
         }
 
-        switch (rep->color_mapping) {
-        case ColorMapping::Uniform:
-            color_atoms_uniform(colors, num_atoms, convert_color(rep->base_color));
-            break;
-        case ColorMapping::Type:
-            color_atoms_type(colors, num_atoms, sys);
-            break;
-        case ColorMapping::Serial:
-            color_atoms_idx(colors, num_atoms, sys);
-            break;
-        case ColorMapping::CompName:
-            color_atoms_comp_name(colors, num_atoms, sys);
-            break;
-        case ColorMapping::CompType:
-            color_atoms_comp_type(colors, num_atoms, sys);
-            break;
-        case ColorMapping::CompSeqId:
-            color_atoms_comp_seq_id(colors, num_atoms, sys);
-            break;
-        case ColorMapping::CompIndex:
-            color_atoms_comp_idx(colors, num_atoms, sys);
-            break;
-        case ColorMapping::InstId:
-            color_atoms_inst_id(colors, num_atoms, sys);
-            break;
-        case ColorMapping::InstIndex:
-            color_atoms_inst_idx(colors, num_atoms, sys);
-            break;
-        case ColorMapping::SecondaryStructure: {
-            SecondaryStructurePalette palette = {
-                .coil  = convert_color(rep->secondary_structure.color_coil),
-                .helix = convert_color(rep->secondary_structure.color_helix),
-                .sheet = convert_color(rep->secondary_structure.color_sheet),
-            };
-            color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state), palette);
-            break;
-        }
-        case ColorMapping::Attribute: {
-            AtomAttributeColoring& coloring = rep->atom_attribute;
-            const md_attribute_t* attr = md_attributes_get(&sys.attributes, coloring.key);
-            size_t num_extracted = 0;
-            float* values = nullptr;
-
-            if (attr) {
-                values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-
-                // Fixing the variant axis hands back exactly the atom axis, so there is no
-                // offset arithmetic here to get wrong. A field with no variant axis is rank 1
-                // and takes no indices at all.
-                const uint32_t variant = (uint32_t)CLAMP(coloring.variant_idx, 0, MAX(atom_attribute_variant_count(attr) - 1, 0));
-                const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
-                num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
-            }
-
-            if (num_extracted == num_atoms) {
-                // The span of the atoms shown, measured again only when the values or the atoms
-                // changed: it scans every variant of the attribute
-                const md_bitset_t* shown = rep->filter.result.success ? &rep->atom_mask : nullptr;
-                uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
-                const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
-                span_hash = md_hash64(&version, sizeof(version), span_hash);
-                span_hash = shown ? md_bitset_hash64(*shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
-                if (span_hash != coloring.span_hash) {
-                    coloring.span = atom_attribute_span(attr, shown);
-                    coloring.span_hash = span_hash;
-                }
-                color_scale_update_range(&coloring.scale, coloring.span);
-
-                for (size_t i = 0; i < num_atoms; ++i) {
-                    // An atom without a value is not a point on the ramp: NAN would reach the
-                    // colormap lookup as an index, so it gets a neutral grey of its own instead
-                    colors[i] = atom_attribute_value_absent(values[i]) ? IM_COL32(128, 128, 128, 255) : color_scale_color_u32(coloring.scale, values[i]);
-                }
-            } else {
-                if (attr) {
-                    MD_LOG_DEBUG("Failed to extract values for the selected atom attribute");
-                }
-                MEMSET(colors, 0xFFFFFFFFu, bytes);
-            }
-            break;
-        }
-        default:
-            ASSERT(false);
-            break;
-        }
-    }
-
-    if (colors && (rep->tint_scale > 0.0f || rep->saturation < 1.0f)) {
-        uint32_t tint_color = convert_color(rep->tint_color);
-        tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
+        // Of the atoms shown, for a colour scale which spans their values
+        representation_atom_colors(colors, num_atoms, state, rep, rep->filter.result.success ? &rep->atom_mask : nullptr);
     }
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
-        rep->type_is_valid = sys.atom.count > 0;
-        break;
     case RepresentationType::Licorice:
-        rep->type_is_valid = sys.bond.count > 0;
-        break;
     case RepresentationType::BallAndStick:
-        rep->type_is_valid = sys.atom.count > 0;
-        break;
     case RepresentationType::Ribbons:
-        rep->type_is_valid = sys.protein_backbone.range.count > 0;
-        break;
     case RepresentationType::Cartoon:
-        // Proteins, and the lipids and nucleic acids of the glyphs
-        rep->type_is_valid = sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        rep->type_is_valid = representation_atom_type_valid(*state, rep->type);
         break;
     case RepresentationType::ElectronicStructure:
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
@@ -870,6 +980,15 @@ void flag_dynamic_representations_as_dirty(ApplicationState* state) {
     }
 }
 
+// The nucleotides on a nucleic backbone, atomistic or coarse grained: those the cartoon shows
+static size_t num_nucleotides_on_backbone(const md_system_t& sys) {
+    size_t num = 0;
+    for (size_t i = 0; i < sys.nucleic_backbone.segment.count; ++i) {
+        num += sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
+    }
+    return num;
+}
+
 // What a system starts out shown with: by what is in it
 void create_default_representations(ApplicationState* state) {
     bool amino_acid_present = false;
@@ -925,7 +1044,7 @@ void create_default_representations(ApplicationState* state) {
             num_lipid_comps += md_component_kind(&state->mold.sys.component, i) == MD_COMPONENT_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
-            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += lipids.comp_range[i].end - lipids.comp_range[i].beg;
+            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.comps, i);
         }
         lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
@@ -938,15 +1057,36 @@ void create_default_representations(ApplicationState* state) {
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
     // element to, should not take the protein, ligand and water representations from the rest.
     if (2 * num_coarse_grained > state->mold.sys.atom.count) {
-        // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon, the rest as beads
+        // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon. So do nucleic acids
+        // of beads where every nucleotide is on a backbone, their bases with the rings of ideal ones. The rest as
+        // beads.
         const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
+        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
+        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (protein_trace) {
             Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
-        const str_t rest = protein_trace ? (lipid_cartoon ? STR_LIT("not (protein or head or tail)") : STR_LIT("not protein"))
-                                         : (lipid_cartoon ? STR_LIT("not (head or tail)") : STR_LIT("all"));
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, rest);
+        if (nucleic_cartoon) {
+            Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("nucleic"));
+            snprintf(nucl->name, sizeof(nucl->name), "nucleic");
+        }
+        const char* shown[3];
+        int num_shown = 0;
+        if (protein_trace)   shown[num_shown++] = "protein";
+        if (nucleic_cartoon) shown[num_shown++] = "nucleic";
+        if (lipid_cartoon)   shown[num_shown++] = "head or tail";
+        char rest[64] = "all";
+        if (num_shown == 1 && !strchr(shown[0], ' ')) {
+            snprintf(rest, sizeof(rest), "not %s", shown[0]);
+        } else if (num_shown > 0) {
+            int len = snprintf(rest, sizeof(rest), "not (");
+            for (int i = 0; i < num_shown; ++i) {
+                len += snprintf(rest + len, sizeof(rest) - len, "%s%s", i > 0 ? " or " : "", shown[i]);
+            }
+            snprintf(rest + len, sizeof(rest) - len, ")");
+        }
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, str_from_cstr(rest));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -976,10 +1116,7 @@ void create_default_representations(ApplicationState* state) {
     if (nucleic_present) {
         // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
         // shows nothing of a nucleotide off a backbone
-        size_t num_on_backbone = 0;
-        for (size_t i = 0; i < state->mold.sys.nucleic_backbone.segment.count; ++i) {
-            num_on_backbone += state->mold.sys.nucleic_backbone.segment.atoms[i].c4 >= 0;
-        }
+        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
         const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompType : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
@@ -1052,252 +1189,258 @@ done:
 // Workspace
 // ---------------------------------------------------------------------------------------------------------
 
+bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
+    if (str_eq(ident, STR_LIT("Name"))) {
+        viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
+    } else if (str_eq(ident, STR_LIT("Filter"))) {
+        viamd::extract_to_char_buf(rep->filter.text, sizeof(rep->filter.text), arg);
+    } else if (str_eq(ident, STR_LIT("Enabled"))) {
+        viamd::extract_bool(rep->enabled, arg);
+    } else if (str_eq(ident, STR_LIT("Type"))) {
+        viamd::extract_enum(rep->type, arg, (int)RepresentationType::Count);
+    } else if (str_eq(ident, STR_LIT("ColorMapping"))) {
+        viamd::extract_enum(rep->color_mapping, arg, (int)ColorMapping::Count);
+    } else if (str_eq(ident, STR_LIT("StaticColor")) || str_eq(ident, STR_LIT("BaseColor"))) {
+        viamd::extract_vec4(rep->base_color, arg);
+    } else if (str_eq(ident, STR_LIT("Saturation"))) {
+        viamd::extract_flt(rep->saturation, arg);
+    } else if (str_eq(ident, STR_LIT("TintColor"))) {
+        viamd::extract_vec4(rep->tint_color, arg);
+    } else if (str_eq(ident, STR_LIT("TintScale"))) {
+        viamd::extract_flt(rep->tint_scale, arg);
+    } else if (str_eq(ident, STR_LIT("SecondaryStructureColorUnknown"))) {
+        viamd::extract_vec4(rep->secondary_structure.color_unknown, arg);
+    } else if (str_eq(ident, STR_LIT("SecondaryStructureColorCoil"))) {
+        viamd::extract_vec4(rep->secondary_structure.color_coil, arg);
+    } else if (str_eq(ident, STR_LIT("SecondaryStructureColorHelix"))) {
+        viamd::extract_vec4(rep->secondary_structure.color_helix, arg);
+    } else if (str_eq(ident, STR_LIT("SecondaryStructureColorSheet"))) {
+        viamd::extract_vec4(rep->secondary_structure.color_sheet, arg);
+    } else if (str_eq(ident, STR_LIT("BondColor"))) {
+        viamd::extract_enum(rep->bond_color, arg, (int)BondColorMode::Count);
+    } else if (str_eq(ident, STR_LIT("BondSharpness"))) {
+        viamd::extract_flt(rep->bond_sharpness, arg);
+    } else if (str_eq(ident, STR_LIT("BondBaseColor"))) {
+        viamd::extract_vec4(rep->bond_base_color, arg);
+    } else if (str_eq(ident, STR_LIT("BondOrders"))) {
+        viamd::extract_bool(rep->bond_orders, arg);
+    } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
+        viamd::extract_bool(rep->chain_gaps, arg);
+    } else if (str_eq(ident, STR_LIT("ElasticBonds"))) {
+        viamd::extract_bool(rep->elastic_bonds, arg);
+    } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
+        viamd::extract_bool(rep->two_head_spheres, arg);
+    } else if (str_eq(ident, STR_LIT("NucleicBandRadius"))) {
+        viamd::extract_flt(rep->nucleic_band_radius, arg);
+    } else if (str_eq(ident, STR_LIT("NucleicRingRadius"))) {
+        viamd::extract_flt(rep->nucleic_ring_radius, arg);
+    } else if (str_eq(ident, STR_LIT("Radius"))) {
+        // DEPRECATED
+        viamd::extract_flt(rep->scale.x, arg);
+    } else if (str_eq(ident, STR_LIT("Tension"))) {
+        // DEPRECATED
+    } else if (str_eq(ident, STR_LIT("Width"))) {
+        viamd::extract_flt(rep->scale.x, arg);
+    } else if (str_eq(ident, STR_LIT("Thickness"))) {
+        viamd::extract_flt(rep->scale.y, arg);
+    } else if (str_eq(ident, STR_LIT("Param"))) {
+        viamd::extract_vec4(rep->scale, arg);
+    } else if (str_eq(ident, STR_LIT("AutoUpdate"))) {
+        viamd::extract_bool(rep->dynamic_evaluation, arg);
+    } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
+        // DEPRECATED, and not read: the window used to clear it whenever it drew a representation whose filter
+        // did not depend on the frame, so a stored 0 mostly says nothing about what the user chose. Read, it
+        // would keep a representation from following a context that does (a group within(...)) without a word.
+        // AutoUpdate is the choice alone.
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyPath"))) {
+        // Ids are a function of the path: this resolves before the dataset is loaded
+        rep->atom_attribute.key = md_attributes_id_from_path(arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyVariant"))) {
+        viamd::extract_int(rep->atom_attribute.variant_idx, arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyColormap"))) {
+        viamd::extract_int(rep->atom_attribute.scale.colormap, arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyRange"))) {
+        // A range that was written is one somebody set: a workspace from before the range could
+        // follow the values has no AtomicPropertyAutoRange, and keeps it. One that has, has it
+        // after this line and says for itself.
+        float r[2];
+        if (viamd::extract_flt_vec(r, 2, arg)) {
+            rep->atom_attribute.scale.range_beg = r[0];
+            rep->atom_attribute.scale.range_end = r[1];
+            rep->atom_attribute.scale.auto_range = false;
+        }
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyAutoRange"))) {
+        viamd::extract_bool(rep->atom_attribute.scale.auto_range, arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertySymmetric"))) {
+        viamd::extract_bool(rep->atom_attribute.scale.symmetric, arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyLegend"))) {
+        viamd::extract_bool(rep->atom_attribute.scale.show_legend, arg);
+    } else if (str_eq(ident, STR_LIT("AtomicPropertyDataRange")) || str_eq(ident, STR_LIT("AtomicPropertySymmetricZero"))) {
+        // Written by earlier versions: the span is measured from the data now, and the old
+        // symmetric flag never reached the colours
+    } else if (str_eq(ident, STR_LIT("DipolePath"))) {
+        rep->dipole.dipole_key = md_attributes_id_from_path(arg);
+    } else if (str_eq(ident, STR_LIT("DipoleIndex"))) {
+        int i;
+        if (viamd::extract_int(i, arg) && i >= 0) rep->dipole.dipole_index = (uint32_t)i;
+    } else if (str_eq(ident, STR_LIT("DipoleColor"))) {
+        viamd::extract_vec4(rep->dipole.color, arg);
+    } else if (str_eq(ident, STR_LIT("DipoleOffset"))) {
+        viamd::extract_vec3(rep->dipole.offset, arg);
+    } else if (str_eq(ident, STR_LIT("DipoleScale"))) {
+        viamd::extract_dbl(rep->dipole.scale, arg);
+    } else if (str_eq(ident, STR_LIT("DipoleRadius"))) {
+        viamd::extract_flt(rep->dipole.radius, arg);
+    } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
+        viamd::extract_bool(rep->periodic_images, arg);
+    } else if (str_eq(ident, STR_LIT("BoxColor"))) {
+        viamd::extract_vec4(rep->box.color, arg);
+    } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
+        viamd::extract_flt(rep->box.thickness, arg);
+    } else if (str_eq(ident, STR_LIT("BoxAxes"))) {
+        viamd::extract_bool(rep->box.axes, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureOrbitalIdx"))) {
+        viamd::extract_int(rep->electronic_structure.orbital_idx, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureExcitedStateIdx"))) {
+        viamd::extract_int(rep->electronic_structure.excited_state_idx, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoLambdaIdx"))) {
+        viamd::extract_int(rep->electronic_structure.nto_lambda_idx, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyPath"))) {
+        // The id is a function of the path, so this resolves without the dataset being
+        // loaded yet - and names the same property after a reload, which the index it
+        // replaces did not.
+        rep->electronic_structure.density_property_key = md_attributes_id_from_path(arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIdx"))) {
+        // DEPRECATED. A position in a list that only existed while a particular file was
+        // open; there is nothing to resolve it against. Workspaces written before the
+        // path was stored fall back to the first property available.
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
+        int res;
+        if (viamd::extract_int(res, arg)) rep->electronic_structure.resolution = (VolumeResolution)res;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureType"))) {
+        int type;
+        if (viamd::extract_int(type, arg)) electronic_structure_set_legacy_type(&rep->electronic_structure, type);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureSource"))) {
+        int source;
+        if (viamd::extract_int(source, arg)) {
+            rep->electronic_structure.source = (ElectronicStructureSource)source;
+            electronic_structure_set_source_defaults(&rep->electronic_structure);
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureField"))) {
+        int field;
+        if (viamd::extract_int(field, arg)) electronic_structure_set_legacy_field(&rep->electronic_structure, field);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureUseMagnitude"))) {
+        viamd::extract_bool(rep->electronic_structure.use_magnitude, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureSpin"))) {
+        int spin;
+        if (viamd::extract_int(spin, arg)) rep->electronic_structure.spin = (ElectronicStructureSpin)spin;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoComponent"))) {
+        int component;
+        if (viamd::extract_int(component, arg)) rep->electronic_structure.nto_component = (ElectronicStructureNtoComponent)component;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureTransitionDensityComponent"))) {
+        int component;
+        if (viamd::extract_int(component, arg)) rep->electronic_structure.transition_density_component = (ElectronicStructureTransitionDensityComponent)component;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureIso"))) {
+        viamd::extract_dbl(rep->electronic_structure.iso_value, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColoring"))) {
+        int c;
+        if (viamd::extract_int(c, arg) && c >= 0 && c < (int)SurfaceColoring::Count) rep->electronic_structure.coloring = (SurfaceColoring)c;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldKind"))) {
+        int k;
+        if (viamd::extract_int(k, arg) && k >= 0 && k < (int)SurfaceFieldKind::Count) rep->electronic_structure.field_kind = (SurfaceFieldKind)k;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldColormap"))) {
+        viamd::extract_int(rep->electronic_structure.field_map.colormap, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldRange"))) {
+        float r[2];
+        if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.field_map.range_beg = r[0]; rep->electronic_structure.field_map.range_end = r[1]; }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldSymmetric"))) {
+        viamd::extract_bool(rep->electronic_structure.field_map.symmetric, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldAutoRange"))) {
+        viamd::extract_bool(rep->electronic_structure.field_map.auto_range, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldLegend"))) {
+        viamd::extract_bool(rep->electronic_structure.field_map.show_legend, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolinesShow"))) {
+        viamd::extract_bool(rep->electronic_structure.field_isolines.show, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineWidth"))) {
+        viamd::extract_flt(rep->electronic_structure.field_isolines.width, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) {
+            rep->electronic_structure.field_isolines.count = CLAMP(n, 0, ISOLINES_MAX);
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
+        viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureTintNeg"))) {
+        viamd::extract_vec4(rep->electronic_structure.tint_psi_neg, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureTintDen"))) {
+        viamd::extract_vec4(rep->electronic_structure.tint_den, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColPos"))) {
+        viamd::extract_vec4(rep->electronic_structure.col_psi_pos, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColNeg"))) {
+        viamd::extract_vec4(rep->electronic_structure.col_psi_neg, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColDen"))) {
+        viamd::extract_vec4(rep->electronic_structure.col_den, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColAtt"))) {
+        viamd::extract_vec4(rep->electronic_structure.col_att, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureColDet"))) {
+        viamd::extract_vec4(rep->electronic_structure.col_det, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIsoCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) {
+            rep->electronic_structure.density_property.num_isos = CLAMP(n, 0, (int)ARRAY_SIZE(rep->electronic_structure.density_property.values));
+        }
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureFieldIsoline"))) {
+        // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
+        const str_t num = str_substr(ident, STR_LIT("ElectronicStructureFieldIsoline").len, SIZE_MAX);
+        int i = 0;
+        bool ok = num.len > 0;
+        for (size_t k = 0; k < num.len; ++k) {
+            if (num.ptr[k] < '0' || num.ptr[k] > '9') { ok = false; break; }
+            i = i * 10 + (num.ptr[k] - '0');
+        }
+        if (ok && i < ISOLINES_MAX) {
+            viamd::extract_flt(rep->electronic_structure.field_isolines.values[i], arg);
+        }
+    } else {
+        for (int i = 0; i < (int)ARRAY_SIZE(rep->electronic_structure.density_property.values); ++i) {
+            char key[64];
+            snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
+            if (str_eq(ident, str_from_cstr(key))) {
+                viamd::extract_dbl(rep->electronic_structure.density_property.values[i], arg);
+                return true;
+            }
+            snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", i);
+            if (str_eq(ident, str_from_cstr(key))) {
+                viamd::extract_vec4(rep->electronic_structure.density_property.colors[i], arg);
+                return true;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
 static void deserialize_representation(ApplicationState* data, viamd::deserialization_state_t& state) {
     Representation* rep = create_representation(data);
     str_t ident, arg;
     while (viamd::next_entry(ident, arg, state)) {
-        if (str_eq(ident, STR_LIT("Name"))) {
-            viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
-        } else if (str_eq(ident, STR_LIT("Group"))) {
+        if (str_eq(ident, STR_LIT("Group"))) {
             // By the id of a [RepresentationGroup] before it. One that names nothing leaves it at the top level.
             int group = 0;
             if (viamd::extract_int(group, arg) && group > 0 && find_representation_group(data, (uint32_t)group)) {
                 rep->node.parent = (uint32_t)group;
             }
-        } else if (str_eq(ident, STR_LIT("Filter"))) {
-            viamd::extract_to_char_buf(rep->filter.text, sizeof(rep->filter.text), arg);
-        } else if (str_eq(ident, STR_LIT("Enabled"))) {
-            viamd::extract_bool(rep->enabled, arg);
-        } else if (str_eq(ident, STR_LIT("Type"))) {
-            viamd::extract_enum(rep->type, arg, (int)RepresentationType::Count);
-        } else if (str_eq(ident, STR_LIT("ColorMapping"))) {
-            viamd::extract_enum(rep->color_mapping, arg, (int)ColorMapping::Count);
-        } else if (str_eq(ident, STR_LIT("StaticColor")) || str_eq(ident, STR_LIT("BaseColor"))) {
-            viamd::extract_vec4(rep->base_color, arg);
-        } else if (str_eq(ident, STR_LIT("Saturation"))) {
-            viamd::extract_flt(rep->saturation, arg);
-        } else if (str_eq(ident, STR_LIT("TintColor"))) {
-            viamd::extract_vec4(rep->tint_color, arg);
-        } else if (str_eq(ident, STR_LIT("TintScale"))) {
-            viamd::extract_flt(rep->tint_scale, arg);
-        } else if (str_eq(ident, STR_LIT("SecondaryStructureColorUnknown"))) {
-            viamd::extract_vec4(rep->secondary_structure.color_unknown, arg);
-        } else if (str_eq(ident, STR_LIT("SecondaryStructureColorCoil"))) {
-            viamd::extract_vec4(rep->secondary_structure.color_coil, arg);
-        } else if (str_eq(ident, STR_LIT("SecondaryStructureColorHelix"))) {
-            viamd::extract_vec4(rep->secondary_structure.color_helix, arg);
-        } else if (str_eq(ident, STR_LIT("SecondaryStructureColorSheet"))) {
-            viamd::extract_vec4(rep->secondary_structure.color_sheet, arg);
-        } else if (str_eq(ident, STR_LIT("BondColor"))) {
-            viamd::extract_enum(rep->bond_color, arg, (int)BondColorMode::Count);
-        } else if (str_eq(ident, STR_LIT("BondSharpness"))) {
-            viamd::extract_flt(rep->bond_sharpness, arg);
-        } else if (str_eq(ident, STR_LIT("BondBaseColor"))) {
-            viamd::extract_vec4(rep->bond_base_color, arg);
-        } else if (str_eq(ident, STR_LIT("BondOrders"))) {
-            viamd::extract_bool(rep->bond_orders, arg);
-        } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
-            viamd::extract_bool(rep->chain_gaps, arg);
-        } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
-            viamd::extract_bool(rep->two_head_spheres, arg);
-        } else if (str_eq(ident, STR_LIT("NucleicBandRadius"))) {
-            viamd::extract_flt(rep->nucleic_band_radius, arg);
-        } else if (str_eq(ident, STR_LIT("NucleicRingRadius"))) {
-            viamd::extract_flt(rep->nucleic_ring_radius, arg);
-        } else if (str_eq(ident, STR_LIT("Radius"))) {
-            // DEPRECATED
-            viamd::extract_flt(rep->scale.x, arg);
-        } else if (str_eq(ident, STR_LIT("Tension"))) {
-            // DEPRECATED
-        } else if (str_eq(ident, STR_LIT("Width"))) {
-            viamd::extract_flt(rep->scale.x, arg);
-        } else if (str_eq(ident, STR_LIT("Thickness"))) {
-            viamd::extract_flt(rep->scale.y, arg);
-        } else if (str_eq(ident, STR_LIT("Param"))) {
-            viamd::extract_vec4(rep->scale, arg);
-        } else if (str_eq(ident, STR_LIT("AutoUpdate"))) {
-            viamd::extract_bool(rep->dynamic_evaluation, arg);
-        } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
-            // DEPRECATED, and not read: the window used to clear it whenever it drew a representation whose filter
-            // did not depend on the frame, so a stored 0 mostly says nothing about what the user chose. Read, it
-            // would keep a representation from following a context that does (a group within(...)) without a word.
-            // AutoUpdate is the choice alone.
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyPath"))) {
-            // Ids are a function of the path: this resolves before the dataset is loaded
-            rep->atom_attribute.key = md_attributes_id_from_path(arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyVariant"))) {
-            viamd::extract_int(rep->atom_attribute.variant_idx, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyColormap"))) {
-            viamd::extract_int(rep->atom_attribute.scale.colormap, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyRange"))) {
-            // A range that was written is one somebody set: a workspace from before the range could
-            // follow the values has no AtomicPropertyAutoRange, and keeps it. One that has, has it
-            // after this line and says for itself.
-            float r[2];
-            if (viamd::extract_flt_vec(r, 2, arg)) {
-                rep->atom_attribute.scale.range_beg = r[0];
-                rep->atom_attribute.scale.range_end = r[1];
-                rep->atom_attribute.scale.auto_range = false;
-            }
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyAutoRange"))) {
-            viamd::extract_bool(rep->atom_attribute.scale.auto_range, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertySymmetric"))) {
-            viamd::extract_bool(rep->atom_attribute.scale.symmetric, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyLegend"))) {
-            viamd::extract_bool(rep->atom_attribute.scale.show_legend, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyDataRange")) || str_eq(ident, STR_LIT("AtomicPropertySymmetricZero"))) {
-            // Written by earlier versions: the span is measured from the data now, and the old
-            // symmetric flag never reached the colours
-        } else if (str_eq(ident, STR_LIT("DipolePath"))) {
-            rep->dipole.dipole_key = md_attributes_id_from_path(arg);
-        } else if (str_eq(ident, STR_LIT("DipoleIndex"))) {
-            int i;
-            if (viamd::extract_int(i, arg) && i >= 0) rep->dipole.dipole_index = (uint32_t)i;
-        } else if (str_eq(ident, STR_LIT("DipoleColor"))) {
-            viamd::extract_vec4(rep->dipole.color, arg);
-        } else if (str_eq(ident, STR_LIT("DipoleOffset"))) {
-            viamd::extract_vec3(rep->dipole.offset, arg);
-        } else if (str_eq(ident, STR_LIT("DipoleScale"))) {
-            viamd::extract_dbl(rep->dipole.scale, arg);
-        } else if (str_eq(ident, STR_LIT("DipoleRadius"))) {
-            viamd::extract_flt(rep->dipole.radius, arg);
-        } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
-            viamd::extract_bool(rep->periodic_images, arg);
-        } else if (str_eq(ident, STR_LIT("BoxColor"))) {
-            viamd::extract_vec4(rep->box.color, arg);
-        } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
-            viamd::extract_flt(rep->box.thickness, arg);
-        } else if (str_eq(ident, STR_LIT("BoxAxes"))) {
-            viamd::extract_bool(rep->box.axes, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureOrbitalIdx"))) {
-            viamd::extract_int(rep->electronic_structure.orbital_idx, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureExcitedStateIdx"))) {
-            viamd::extract_int(rep->electronic_structure.excited_state_idx, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoLambdaIdx"))) {
-            viamd::extract_int(rep->electronic_structure.nto_lambda_idx, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyPath"))) {
-            // The id is a function of the path, so this resolves without the dataset being
-            // loaded yet - and names the same property after a reload, which the index it
-            // replaces did not.
-            rep->electronic_structure.density_property_key = md_attributes_id_from_path(arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIdx"))) {
-            // DEPRECATED. A position in a list that only existed while a particular file was
-            // open; there is nothing to resolve it against. Workspaces written before the
-            // path was stored fall back to the first property available.
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
-            int res;
-            if (viamd::extract_int(res, arg)) rep->electronic_structure.resolution = (VolumeResolution)res;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureType"))) {
-            int type;
-            if (viamd::extract_int(type, arg)) electronic_structure_set_legacy_type(&rep->electronic_structure, type);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureSource"))) {
-            int source;
-            if (viamd::extract_int(source, arg)) {
-                rep->electronic_structure.source = (ElectronicStructureSource)source;
-                electronic_structure_set_source_defaults(&rep->electronic_structure);
-            }
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureField"))) {
-            int field;
-            if (viamd::extract_int(field, arg)) electronic_structure_set_legacy_field(&rep->electronic_structure, field);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureUseMagnitude"))) {
-            viamd::extract_bool(rep->electronic_structure.use_magnitude, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureSpin"))) {
-            int spin;
-            if (viamd::extract_int(spin, arg)) rep->electronic_structure.spin = (ElectronicStructureSpin)spin;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoComponent"))) {
-            int component;
-            if (viamd::extract_int(component, arg)) rep->electronic_structure.nto_component = (ElectronicStructureNtoComponent)component;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureTransitionDensityComponent"))) {
-            int component;
-            if (viamd::extract_int(component, arg)) rep->electronic_structure.transition_density_component = (ElectronicStructureTransitionDensityComponent)component;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureIso"))) {
-            viamd::extract_dbl(rep->electronic_structure.iso_value, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColoring"))) {
-            int c;
-            if (viamd::extract_int(c, arg) && c >= 0 && c < (int)SurfaceColoring::Count) rep->electronic_structure.coloring = (SurfaceColoring)c;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldKind"))) {
-            int k;
-            if (viamd::extract_int(k, arg) && k >= 0 && k < (int)SurfaceFieldKind::Count) rep->electronic_structure.field_kind = (SurfaceFieldKind)k;
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldColormap"))) {
-            viamd::extract_int(rep->electronic_structure.field_map.colormap, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldRange"))) {
-            float r[2];
-            if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.field_map.range_beg = r[0]; rep->electronic_structure.field_map.range_end = r[1]; }
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldSymmetric"))) {
-            viamd::extract_bool(rep->electronic_structure.field_map.symmetric, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldAutoRange"))) {
-            viamd::extract_bool(rep->electronic_structure.field_map.auto_range, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldLegend"))) {
-            viamd::extract_bool(rep->electronic_structure.field_map.show_legend, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolinesShow"))) {
-            viamd::extract_bool(rep->electronic_structure.field_isolines.show, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineWidth"))) {
-            viamd::extract_flt(rep->electronic_structure.field_isolines.width, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineCount"))) {
-            int n;
-            if (viamd::extract_int(n, arg)) {
-                rep->electronic_structure.field_isolines.count = CLAMP(n, 0, ISOLINES_MAX);
-            }
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
-            viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintNeg"))) {
-            viamd::extract_vec4(rep->electronic_structure.tint_psi_neg, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintDen"))) {
-            viamd::extract_vec4(rep->electronic_structure.tint_den, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColPos"))) {
-            viamd::extract_vec4(rep->electronic_structure.col_psi_pos, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColNeg"))) {
-            viamd::extract_vec4(rep->electronic_structure.col_psi_neg, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColDen"))) {
-            viamd::extract_vec4(rep->electronic_structure.col_den, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColAtt"))) {
-            viamd::extract_vec4(rep->electronic_structure.col_att, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureColDet"))) {
-            viamd::extract_vec4(rep->electronic_structure.col_det, arg);
-        } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIsoCount"))) {
-            int n;
-            if (viamd::extract_int(n, arg)) {
-                rep->electronic_structure.density_property.num_isos = CLAMP(n, 0, (int)ARRAY_SIZE(rep->electronic_structure.density_property.values));
-            }
-        } else if (str_begins_with(ident, STR_LIT("ElectronicStructureFieldIsoline"))) {
-            // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
-            const str_t num = str_substr(ident, STR_LIT("ElectronicStructureFieldIsoline").len, SIZE_MAX);
-            int i = 0;
-            bool ok = num.len > 0;
-            for (size_t k = 0; k < num.len; ++k) {
-                if (num.ptr[k] < '0' || num.ptr[k] > '9') { ok = false; break; }
-                i = i * 10 + (num.ptr[k] - '0');
-            }
-            if (ok && i < ISOLINES_MAX) {
-                viamd::extract_flt(rep->electronic_structure.field_isolines.values[i], arg);
-            }
         } else {
-            for (int i = 0; i < (int)ARRAY_SIZE(rep->electronic_structure.density_property.values); ++i) {
-                char key[64];
-                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
-                if (str_eq(ident, str_from_cstr(key))) {
-                    viamd::extract_dbl(rep->electronic_structure.density_property.values[i], arg);
-                    break;
-                }
-                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", i);
-                if (str_eq(ident, str_from_cstr(key))) {
-                    viamd::extract_vec4(rep->electronic_structure.density_property.colors[i], arg);
-                    break;
-                }
-            }
+            representation_read_entry(rep, ident, arg);
         }
     }
     // Last in the group it says it is in: the sections are in the order of the window
     tree_normalize(data);
 }
 
-static void serialize_representation(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
+void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
     const md_attributes_t* attributes = &app_state->mold.sys.attributes;
 
-    viamd::write_section_header(state, STR_LIT("Representation"));
-    if (find_representation_group(*app_state, rep.node.parent)) {
-        viamd::write_int(state, STR_LIT("Group"), rep.node.parent);
-    }
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
     viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filter.text));
     viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
@@ -1316,6 +1459,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
     viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
+    viamd::write_bool(state, STR_LIT("ElasticBonds"), rep.elastic_bonds);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
     viamd::write_flt(state,  STR_LIT("NucleicBandRadius"), rep.nucleic_band_radius);
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
@@ -1407,6 +1551,14 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
             viamd::write_vec4(state, str_from_cstr(key), rep.electronic_structure.density_property.colors[j]);
         }
     }
+}
+
+static void serialize_representation(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
+    viamd::write_section_header(state, STR_LIT("Representation"));
+    if (find_representation_group(*app_state, rep.node.parent)) {
+        viamd::write_int(state, STR_LIT("Group"), rep.node.parent);
+    }
+    representation_write_entries(state, app_state, rep);
 }
 
 static void deserialize_group(ApplicationState* data, viamd::deserialization_state_t& state) {
@@ -1593,7 +1745,6 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     return update_rep;
 }
 
-static bool draw_atom_coloring(ApplicationState* state, Representation& rep);
 
 // The properties of an electronic structure representation: what the volume is of (Source), the surfaces drawn from
 // it (Surface) and how they are coloured (Color)
@@ -1973,7 +2124,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         const bool density_property = electronic_structure_is_density_property(es);
         update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
         if (es.coloring == SurfaceColoring::AtomColors) {
-            update_rep |= draw_atom_coloring(state, rep);
+            update_rep |= draw_representation_coloring(state, rep);
         }
 
         // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
@@ -2251,7 +2402,7 @@ static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uin
 // How the atoms of a representation are coloured, as rows of its Color section: the mapping and what it takes - a
 // colour, an attribute through a colour scale, the colours of the secondary structures - and for sticks the bonds.
 // Also what an electronic structure coloured by its atoms takes its colours from.
-static bool draw_atom_coloring(ApplicationState* state, Representation& rep) {
+bool draw_representation_coloring(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
 
     prop::row("coloring");
@@ -2373,8 +2524,23 @@ static bool system_has_chain_breaks(const md_system_t& sys) {
     return false;
 }
 
+// Whether the system has elastic bonds (an elastic network, restraints), kept per topology: a system may have millions
+// of bonds, and the properties of a representation are drawn every frame
+static bool system_has_elastic_bonds(const md_system_t& sys) {
+    static uint64_t version = 0;
+    static bool     result  = false;
+    if (version != sys.topology_version || version == 0) {
+        version = sys.topology_version;
+        result = false;
+        for (size_t i = 0; i < sys.bond.count && sys.bond.flags && !result; ++i) {
+            result = (sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC) != 0;
+        }
+    }
+    return result;
+}
+
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
-static bool draw_geometry(ApplicationState* state, Representation& rep) {
+bool draw_representation_geometry(ApplicationState* state, Representation& rep) {
     bool update_rep = false;
     const char* scale_fmt = (const char*)u8"%.2f×";
     switch (rep.type) {
@@ -2435,21 +2601,22 @@ static bool draw_geometry(ApplicationState* state, Representation& rep) {
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
+        if (system_has_elastic_bonds(state->mold.sys)) {
+            prop::row("elastic bonds", "The springs of the force field which are not bonds of the molecules: the elastic network of a coarse grained protein or nucleic acid, restraints. Drawn as plain bonds when shown");
+            update_rep |= ImGui::Checkbox("##elastic_bonds", &rep.elastic_bonds);
+        }
     }
     return update_rep;
 }
 
-// The properties of a representation, below its row when it is open: what it is and what it shows on rows of their
-// own, then its sections. Returns whether it needs updating.
-static bool draw_representation_properties(ApplicationState* state, Representation& rep) {
+bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
     bool update_rep = false;
-    prop::begin("representation");
-
     // @TODO: Only display the representations which can be used for the current dataset
     prop::row("type");
     if (!rep.type_is_valid) ImGui::PushInvalid();
     if (ImGui::BeginCombo("##type", representation_type_str[(int)rep.type])) {
-        for (int i = 0; i < (int)RepresentationType::Count; ++i) {
+        const int count = atoms_only ? (int)RepresentationType::Cartoon + 1 : (int)RepresentationType::Count;
+        for (int i = 0; i < count; ++i) {
             if (i == (int)RepresentationType::ElectronicStructure) {
                 // Enlisted when the system carries ANY electronic structure source - orbitals are
                 // one, and a file without an SCF block can still carry density properties
@@ -2467,6 +2634,16 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         ImGui::EndCombo();
     }
     if (!rep.type_is_valid) ImGui::PopInvalid();
+    return update_rep;
+}
+
+// The properties of a representation, below its row when it is open: what it is and what it shows on rows of their
+// own, then its sections. Returns whether it needs updating.
+static bool draw_representation_properties(ApplicationState* state, Representation& rep) {
+    bool update_rep = false;
+    prop::begin("representation");
+
+    update_rep |= draw_representation_type(state, rep, false);
 
     // Of what md_gl draws and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
     const bool periodic = ((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox) &&
@@ -2603,11 +2780,11 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         break;
     default:
         if (prop::section("Color")) {
-            update_rep |= draw_atom_coloring(state, rep);
+            update_rep |= draw_representation_coloring(state, rep);
             prop::section_end();
         }
         if (prop::section("Geometry", false)) {
-            update_rep |= draw_geometry(state, rep);
+            update_rep |= draw_representation_geometry(state, rep);
             prop::section_end();
         }
         break;

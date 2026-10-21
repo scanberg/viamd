@@ -26,7 +26,10 @@ struct md_allocator_i;
 //              (md_lipid_data_t) from the centre of its head over the atom it hangs off and along its spine to its tip,
 //              or on to the head a spanning chain joins (a bolalipid). An atomistic spine gets a control point per two
 //              of its atoms, which is on the axis of a chain in its all trans zigzag and so smooths it away; a coarse
-//              grained one a control point per bead. The skeleton of a sterol is a thicker tube. The tubes have round ends.
+//              grained one a control point per bead. The ring system of a sterol is a slab: a tube flat in the plane
+//              of its rings, wider than a chain and as thick, through the middle of the rings in sections along it, and
+//              its side chain a tube as a chain is. The tubes have round ends.
+//              A lipid whose heads and tails are not known (md_lipid_data_t has none for it) is one sphere for all of it.
 //   nucleic    After Lindow et al. (Interactive Visualization of RNA and DNA Structures, 2019): a flat band along each
 //              backbone (md_nucleic_backbone_data_t) through the C4' of its nucleotides, its flat faces towards the bases;
 //              the sugar ring a slab; a stick from its C1' to the base; each ring of the base a slab of its own (a purine
@@ -35,17 +38,23 @@ struct md_allocator_i;
 //              slab of two corners, the C1' and the glycosidic N: one capsule, as thick as the rims of the rings it joins
 //              and as round where it meets them. A representation sets the radius of the band (half its thickness, the
 //              width stays) and that of the rims (CARTOON_NUCLEIC_BAND_RADIUS, CARTOON_NUCLEIC_RING_RADIUS).
+//              A coarse grained nucleic acid (Martini, md_nucleic_backbone_range_is_coarse_grained) holds no more of a
+//              base than where it is: its beads are a rigid body in the plane of its rings. Its base is drawn with the
+//              rings of an ideal base where its beads are, each ring atom a fixed weighted sum of them (the one which
+//              gives it from the beads of the ideal base, cartoon_nucleobases.inl); the band goes through the sugar
+//              bead with the C4' (BB2), and the stick from it to the glycosidic N. Its sugar is not drawn: two beads
+//              tell neither the pucker of the ring nor how it lies.
 //
-// The points (the centres of the spheres, the control points of the tubes, the ends of the capsules) are the particles of
-// a molecule of their own (md_gl_mol_create_particles). Each is the mean of the atoms it stands for, derived on the GPU
-// from the positions of the atoms of the system (md_gl_mol_set_derived, md_gl_mol_compute_derived), each atom in its
-// periodic image nearest to the first head atom of its lipid, so a lipid stays whole across the periodic boundary. The
-// spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a tube or a corner of a slab has no sphere: a
-// radius of 0), the tubes as the splines of md_gl through the control points with a stadium profile, round or flat
-// (md_gl_mol_set_tubes, MD_GL_REP_TUBES) and the slabs raycast through their corners (md_gl_mol_set_slabs,
-// MD_GL_REP_SLABS). A point stands for a component, which is what picking it resolves to, takes its colour from one of
-// its atoms, and is shown when any of its atoms is shown. A part of a tube is that of its control point, a slab that of
-// its first corner.
+// The points (the centres of the spheres, the control points of the tubes, the ends of the capsules) are the particles
+// of a molecule of their own (md_gl_mol_create_particles). Each is a weighted sum of the atoms it stands for, most of
+// them the mean, derived on the GPU from the positions of the atoms of the system (md_gl_mol_set_derived,
+// md_gl_mol_compute_derived), each atom in its periodic image nearest to the first head atom of its lipid, so a lipid
+// stays whole across the periodic boundary. The spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a
+// tube or a corner of a slab has no sphere: a radius of 0), the tubes as the splines of md_gl through the control
+// points with a stadium profile, round or flat (md_gl_mol_set_tubes, MD_GL_REP_TUBES) and the slabs raycast through
+// their corners (md_gl_mol_set_slabs, MD_GL_REP_SLABS). A point stands for a component, which is what picking it
+// resolves to, takes its colour from one of its atoms, and is shown when any of its atoms is shown. A part of a tube is
+// that of its control point, a slab that of its first corner.
 
 // The radii of the cartoon of a nucleic acid, Å, by default (Representation): of the band of its backbone, which its
 // tubes are made with (a representation scales them to its own, md_gl_draw_op_t args.tubes.band_scale), and of the rims
@@ -81,11 +90,13 @@ struct CartoonGlyphs {
     uint32_t num_source_atoms = 0;  // Of the system the points are derived from
     uint32_t num_split_heads = 0;   // Lipid heads which are two spheres (or more) in a representation which asks for that
 
-    // A point is the mean of its atoms, point_atom[point_offset[i] .. point_offset[i + 1]), each atom taken at its
-    // image nearest to point_ref[i]. The points of one lipid share their reference, so a lipid stays whole across the
-    // periodic boundary.
+    // A point is the weighted sum of its atoms, point_atom[point_offset[i] .. point_offset[i + 1]) with the weights
+    // point_weight[...] of the same range (their mean, but for the ring atoms of a coarse grained base), each atom
+    // taken at its image nearest to point_ref[i]. The points of one lipid share their reference, so a lipid stays whole
+    // across the periodic boundary.
     md_array(uint32_t) point_offset = nullptr;       // [num_points + 1]
     md_array(int32_t)  point_atom = nullptr;
+    md_array(float)    point_weight = nullptr;       // Of point_atom
     md_array(int32_t)  point_ref = nullptr;          // [num_points]
     md_array(int32_t)  point_color_atom = nullptr;   // [num_points] The atom whose colour it takes
     md_array(int32_t)  point_comp = nullptr;         // [num_points] The component it stands for
@@ -99,6 +110,7 @@ struct CartoonGlyphs {
     md_array(float)    tube_radius = nullptr;        // [num_tube_points] Å, before the scale of the representation
     md_array(float)    tube_flat = nullptr;          // [num_tube_points] Half the length of the flat sides of the profile, Å: 0 is round
     md_array(uint32_t) tube_face = nullptr;          // [num_tube_points] The point the flat sides face, UINT32_MAX for none
+    md_array(uint32_t) tube_side = nullptr;          // [num_tube_points] The point the long axis of the profile points at, UINT32_MAX for none
     md_array(uint8_t)  tube_through = nullptr;       // [num_tubes] It passes through its control points rather than near them
 
     // Slab s has the corners slab_point[slab_offset[s] .. slab_offset[s + 1]), points in order around the ring, or the
