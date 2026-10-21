@@ -2326,14 +2326,14 @@ static void draw_main_menu(ApplicationState* data) {
                 data->screenshot.res_y = data->app.framebuffer.height;
             }
             if (ImGui::MenuItem("Take Screenshot")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,png,bmp"))) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,jpeg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
                     str_t ext;
                     if (!extract_ext(&ext, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
                         ext = STR_LIT("jpg");
                     }
-                    if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
+                    if (image_format_from_ext(ext) != ImageFormat_Unknown) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
                     }
                     else {
@@ -6659,15 +6659,26 @@ void create_screenshot(str_t path) {
     str_t ext = {};
     extract_ext(&ext, path);
 
-    if (str_eq_cstr_ignore_case(ext, "jpg")) {
+    bool written = false;
+    switch (image_format_from_ext(ext)) {
+    case ImageFormat_JPG: {
         const int quality = 95;
-        image_write_jpg(path, rgba, width, height, quality);
-    } else if (str_eq_cstr_ignore_case(ext, "png")) {
-        image_write_png(path, rgba, width, height);
-    } else if (str_eq_cstr_ignore_case(ext, "bmp")) {
-        image_write_bmp(path, rgba, width, height);
-    } else {
+        written = image_write_jpg(path, rgba, width, height, quality);
+        break;
+    }
+    case ImageFormat_PNG:
+        written = image_write_png(path, rgba, width, height);
+        break;
+    case ImageFormat_BMP:
+        written = image_write_bmp(path, rgba, width, height);
+        break;
+    default:
         VIAMD_LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
+        return;
+    }
+
+    if (!written) {
+        VIAMD_LOG_ERROR("Failed to save screenshot to: '" STR_FMT "'", STR_ARG(path));
         return;
     }
 

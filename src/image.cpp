@@ -27,6 +27,13 @@ static inline md_file_t open_file(str_t filename) {
     return file;
 }
 
+ImageFormat image_format_from_ext(str_t ext) {
+    if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "jpeg")) return ImageFormat_JPG;
+    if (str_eq_cstr_ignore_case(ext, "png")) return ImageFormat_PNG;
+    if (str_eq_cstr_ignore_case(ext, "bmp")) return ImageFormat_BMP;
+    return ImageFormat_Unknown;
+}
+
 bool image_write_jpg(str_t filename, const void* rgba, int width, int height, int quality) {
     md_file_t file = open_file(filename);
     bool result = false;
