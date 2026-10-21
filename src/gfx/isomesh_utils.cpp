@@ -1201,11 +1201,17 @@ uint geom_pcg(uint v) {
 }
 
 void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {
-    // The depth the passes compare, and the one the depth tests see, the same whatever the representation: written
-    // (md_gl's impostors write the same, its meshes would leave the rasterizer's)
+    // The depth the passes compare must be the one the depth tests see. md_gl's impostors write theirs, from the view
+    // position as here (written again, so that it is this one). Its meshes, the backbone's (REP_RIBBONS, REP_TUBES:
+    // cartoon, ribbons, tubes), leave the rasterizer's: writing one would turn off the early depth test in the passes
+    // that have one.
+#if defined(REP_RIBBONS) || defined(REP_TUBES)
+    float z = gl_FragCoord.z;
+#else
     vec4  clip = u_view_to_clip * vec4(view_coord, 1.0);
     float z = clip.z / clip.w * 0.5 + 0.5;
     gl_FragDepth = z;
+#endif
 
     ivec2 px = ivec2(gl_FragCoord.xy);
     bool  occluded = geom_param(0).w > 0.5 && z >= texelFetch(md_user_texture_0, px, 0).r;
