@@ -442,7 +442,8 @@ static inline bool occlusion_temporal_active(const ApplicationState* state) {
 
 // The frames a screenshot (without the GUI) is made over: the TAA's jitter once through, and as many as the shadows and
 // the ambient occlusion take to settle. A screenshot at another resolution than the window's starts their histories
-// again: with fewer frames it would show their first estimates, unfiltered over time.
+// again: with fewer frames it would show their first estimates, unfiltered over time. (The isosurface meshes' mean
+// starts again too: the screenshot waits for it as well.)
 static uint32_t screenshot_samples(const ApplicationState* state) {
     uint32_t n = taa_active(state) ? (uint32_t)jitter_samples_options[jitter_samples_index(state->visuals.temporal_aa.jitter_samples)] : 1;
     if (occlusion_temporal_active(state)) n = MAX(n, OCCLUSION_SETTLE_FRAMES);
@@ -7072,16 +7073,21 @@ static void render(ApplicationState* state) {
     if (do_screenshot && state->screenshot.hide_gui) {
         state->screenshot.sample_count += 1;
 
+        // And the isosurface meshes' mean, which a screenshot at another size than the window's starts again: until it
+        // has converged (or has all its frames, when it is kept drawing for the profiler)
+        const bool meshes_done = iso_mesh_converged || iso_mesh_target.frame >= isomesh::MAX_FRAMES;
+
         ImGui::OpenPopup("Capturing Frame");
         ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
         ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
         if (ImGui::BeginPopupModal("Capturing Frame", 0, ImGuiWindowFlags_NoResize)) {
             float fraction = (float)state->screenshot.sample_count / (float)state->screenshot.sample_target;
+            if (!meshes_done) fraction = MIN(fraction, (float)iso_mesh_target.frame / (float)isomesh::MAX_FRAMES);
             ImGui::ProgressBar(fraction);
             ImGui::EndPopup();
         }
 
-        if (state->screenshot.sample_count == state->screenshot.sample_target) {
+        if (state->screenshot.sample_count >= state->screenshot.sample_target && meshes_done) {
             create_screenshot(state->screenshot.path_to_file);
             str_free(state->screenshot.path_to_file, state->allocator.persistent);
             state->screenshot.path_to_file = {};
