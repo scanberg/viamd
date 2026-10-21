@@ -1224,9 +1224,7 @@ struct ApplicationState {
         ScreenshotResolution resolution = ScreenshotResolution::Window;
         int   res_x = 1920;
         int   res_y = 1080;
-        int   sample_count = 0;
-        int   sample_target = 0;
-        str_t path_to_file = {};
+        str_t path_to_file = {};    // Being made: saved once the image has settled (render())
     } screenshot;
 
     struct {
