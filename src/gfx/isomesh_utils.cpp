@@ -1294,11 +1294,15 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
     out_color = vec4(opacity, opacity, z, z);
 #elif GEOMETRY_PASS == 3
     if (z <= texelFetch(md_user_texture_2, px, 0).r + GEOM_PEEL_EPS) discard;
-    // the threshold, from the blue noise at an offset per layer (an atom of a draw) and frame
+    // The threshold, from the blue noise at an offset per layer and frame. A layer is a primitive of an atom of a draw:
+    // the quad (the pair of triangles, gl_PrimitiveID / 2) and the face. Layers that share a threshold cover a pixel
+    // together or not at all, and the visibility behind two of them came out as one minus the larger opacity rather
+    // than the product: an atom's sphere and its bond, the front and the back faces of the cartoon's tube.
     vec4  p0    = geom_param(0);
     uint  frame = uint(p0.x);
     uint  id    = uint(geom_param(1).y) | (uint(geom_param(1).z) << 16u);
-    uint  layer = geom_pcg(geom_pcg(atom_index) ^ ((id + 1u) * 0x9E3779B9u));
+    uint  prim  = (uint(gl_PrimitiveID) >> 1u) * 0x85EBCA6Bu ^ (gl_FrontFacing ? 0u : 0xC2B2AE35u);
+    uint  layer = geom_pcg(geom_pcg(atom_index ^ prim) ^ ((id + 1u) * 0x9E3779B9u));
     uint  shift = geom_pcg(layer ^ ((frame / GEOM_LAYER_FRAMES + 1u) * 0x68E31DA4u));
     vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(frame) + 0.5);
     ivec2 q     = (px + ivec2(int(shift & 0xFFFFu), int(shift >> 16u)) + ivec2(r2 * float(GEOM_BLUE_NOISE_SIZE))) & (GEOM_BLUE_NOISE_SIZE - 1);
