@@ -5282,20 +5282,40 @@ struct ProfilerSweepStep {
     uint32_t samples;       // isomesh::set_experiment_samples
 };
 
-static const ProfilerSweepStep profiler_sweep_steps[] = {
+// The sets of steps (Windows > Profiler, the combo before Sweep), each the first again at the end: how far the times
+// drift over the sweep (times only)
+static const ProfilerSweepStep profiler_sweep_steps_multisampled[] = {
     {isomesh::Experiment_None, 0},
     {isomesh::Experiment_Multisampled, 2},              // as it was
     {isomesh::Experiment_MultisampledPerPass, 2},
     {isomesh::Experiment_MultisampledNoFragDepth, 2},   // a right image only where gl_FragCoord.z is the sample's
     {isomesh::Experiment_MultisampledNoFragDepth, 4},
-    {isomesh::Experiment_None, 0},                      // again: how far the times drift over the sweep
+    {isomesh::Experiment_None, 0},
 };
-static constexpr int PROFILER_SWEEP_STEPS = (int)ARRAY_SIZE(profiler_sweep_steps);
+static const ProfilerSweepStep profiler_sweep_steps_moments[] = {
+    {isomesh::Experiment_None, 0},
+    {isomesh::Experiment_Moments, 0},
+    {isomesh::Experiment_MomentsPeel, 0},
+    {isomesh::Experiment_None, 0},
+};
+struct ProfilerSweepSet {
+    const char* name;
+    const ProfilerSweepStep* steps;
+    int count;
+};
+static const ProfilerSweepSet profiler_sweep_sets[] = {
+    {"multisampled", profiler_sweep_steps_multisampled, (int)ARRAY_SIZE(profiler_sweep_steps_multisampled)},
+    {"moments", profiler_sweep_steps_moments, (int)ARRAY_SIZE(profiler_sweep_steps_moments)},
+};
+static constexpr int PROFILER_SWEEP_STEPS = 8;      // at most, of a set
 static constexpr int PROFILER_SWEEP_NOISE_STEPS = PROFILER_SWEEP_STEPS - 1;
 static constexpr uint32_t profiler_sweep_frames[] = {1, 2, 4, 8, 16, 32, 64, 128};
 static constexpr int PROFILER_SWEEP_CHECKPOINTS = (int)ARRAY_SIZE(profiler_sweep_frames);
 
 static struct {
+    int  set = 1;               // of profiler_sweep_sets
+    const ProfilerSweepStep* steps = nullptr;  // of the set, while sweeping
+    int  num_steps = 0;
     int  step = -1;             // times: the step being timed, -1: none
     int  publish_at = 0;        // the profiler's publish its times are taken from
     int  noise_step = -1;       // noise: the step being measured, -1: none
@@ -5311,6 +5331,7 @@ static struct {
     double err_interior[PROFILER_SWEEP_NOISE_STEPS] = {};      // of 128 frames, away from the edges
     double diff_ref[PROFILER_SWEEP_NOISE_STEPS] = {};          // the mean of 128 frames to the first step's
     double diff_ref_interior[PROFILER_SWEEP_NOISE_STEPS] = {};
+    double diff_ref_p99[PROFILER_SWEEP_NOISE_STEPS] = {};      // the 99th percentile of a pixel's largest difference
     isomesh::Target targets[2];
     uint32_t tex_color = 0;     // what the two means are put over: not the view
     uint32_t width = 0, height = 0;
@@ -5338,8 +5359,8 @@ static void profiler_sweep_free_noise() {
 }
 
 static void profiler_sweep_set_step(int step) {
-    isomesh::set_experiment(profiler_sweep_steps[step].experiment);
-    isomesh::set_experiment_samples(profiler_sweep_steps[step].samples);
+    isomesh::set_experiment(profiler_sweep.steps[step].experiment);
+    isomesh::set_experiment_samples(profiler_sweep.steps[step].samples);
 }
 
 // The noise of a step from its start: two new means
@@ -5380,6 +5401,30 @@ static double profiler_sweep_rms(const float* a, const float* b, uint32_t w, uin
     return n ? sqrt(sum / (double)n) * 255.0 : 0.0;
 }
 
+// The 99th percentile, over the pixels either covers, of the largest difference of a pixel's channels (in units of 1/255):
+// where the RMS hides errors that gather in a few places (the halos of an approximation)
+static double profiler_sweep_p99(const float* a, const float* b, uint32_t w, uint32_t h) {
+    constexpr int BINS = 1024;              // of 1/20 of a unit, the last all above
+    uint32_t hist[BINS] = {};
+    size_t n = 0;
+    for (size_t i = 0; i < (size_t)w * h; ++i) {
+        const float* p = a + 4 * i;
+        const float* q = b + 4 * i;
+        if (MAX(p[3], q[3]) < 1.0f / 255.0f) continue;
+        const float d = MAX(fabsf(p[0] - q[0]), MAX(fabsf(p[1] - q[1]), fabsf(p[2] - q[2]))) * 255.0f;
+        hist[MIN((int)(d * 20.0f), BINS - 1)] += 1;
+        n += 1;
+    }
+    if (n == 0) return 0.0;
+    const size_t target = (size_t)ceil(0.99 * (double)n);
+    size_t sum = 0;
+    for (int i = 0; i < BINS; ++i) {
+        sum += hist[i];
+        if (sum >= target) return (i + 1) / 20.0;
+    }
+    return BINS / 20.0;
+}
+
 // The frames a step takes to an error of q: log-log between the frames measured, beyond them along the last two
 static double profiler_sweep_frames_to(const double* err, double q) {
     if (q <= 0.0) return 0.0;
@@ -5400,24 +5445,26 @@ static void profiler_sweep_finish(ApplicationState* state, bool copy) {
                               "after k frames. err_k: the RMS of their difference / sqrt(2), the error of a mean of k frames, "
                               "in the composite's premultiplied linear radiance x 255 over the pixels either covers\n");
         md_str_writer_fmt(&w, "# diff_128: the RMS difference of the mean of 128 frames (seed 0) to the first experiment's; bias: "
-                              "that less the noise of the two; _interior: away from the edges of the coverage\n");
+                              "that less the noise of the two; _interior: away from the edges of the coverage; _p99: the 99th "
+                              "percentile of a pixel's largest difference\n");
         md_str_writer_fmt(&w, "# ms: ISOSURFACE MESHES on the GPU per frame (the times above), rel: of the rest of the frame; "
                               "ms_to_q32, ms_to_q128: frames to the error the first experiment has after 32, 128 frames "
                               "(log-log between the k, beyond 128 along the last two) times ms\n");
         md_str_writer_fmt(&w, "experiment,spp,ms,rel");
         for (uint32_t k : profiler_sweep_frames) md_str_writer_fmt(&w, ",err_%u", k);
-        md_str_writer_fmt(&w, ",diff_128,bias,err_128_interior,diff_128_interior,bias_interior,ms_to_q32,ms_to_q128\n");
+        md_str_writer_fmt(&w, ",diff_128,bias,err_128_interior,diff_128_interior,bias_interior,diff_128_p99,ms_to_q32,ms_to_q128\n");
         const int last = PROFILER_SWEEP_CHECKPOINTS - 1;
         const double q32 = s.err[0][5], q128 = s.err[0][last];
-        for (int i = 0; i < PROFILER_SWEEP_NOISE_STEPS; ++i) {
+        for (int i = 0; i < s.num_steps - 1; ++i) {
             const double rest = (double)s.frame_ms[i] - (double)s.ms[i];
-            md_str_writer_fmt(&w, "%d %s,%u,%.4f,%.4f", i + 1, isomesh::experiment_name(profiler_sweep_steps[i].experiment),
+            md_str_writer_fmt(&w, "%d %s,%u,%.4f,%.4f", i + 1, isomesh::experiment_name(s.steps[i].experiment),
                               s.spp[i], s.ms[i], rest > 0.0 ? (double)s.ms[i] / rest : 0.0);
             for (int k = 0; k < PROFILER_SWEEP_CHECKPOINTS; ++k) md_str_writer_fmt(&w, ",%.4f", s.err[i][k]);
             auto bias = [](double d, double e0, double e1) { return sqrt(MAX(0.0, d * d - e0 * e0 - e1 * e1)); };
             const double b  = bias(s.diff_ref[i], s.err[i][last], s.err[0][last]);
             const double bi = bias(s.diff_ref_interior[i], s.err_interior[i], s.err_interior[0]);
-            md_str_writer_fmt(&w, ",%.4f,%.4f,%.4f,%.4f,%.4f", s.diff_ref[i], b, s.err_interior[i], s.diff_ref_interior[i], bi);
+            md_str_writer_fmt(&w, ",%.4f,%.4f,%.4f,%.4f,%.4f,%.2f", s.diff_ref[i], b, s.err_interior[i], s.diff_ref_interior[i], bi,
+                              s.diff_ref_p99[i]);
             md_str_writer_fmt(&w, ",%.3f,%.3f\n", profiler_sweep_frames_to(s.err[i], q32) * s.ms[i],
                               profiler_sweep_frames_to(s.err[i], q128) * s.ms[i]);
         }
@@ -5451,8 +5498,9 @@ static void profiler_sweep_start(ApplicationState* state) {
                                  "ms-nofragdepth is %s\n", per_sample ? "the sample's" : "not the sample's", diff,
                           per_sample ? "a right image" : "timing only");
     }
-    md_str_writer_fmt(&info, "sweep: each experiment over the profiler's second window after it was set, the last "
-                             "the first again (the drift); a row's experiment with the samples per pixel it had");
+    md_str_writer_fmt(&info, "sweep (%s): each experiment over the profiler's second window after it was set, the last "
+                             "the first again (the drift); a row's experiment with the samples per pixel it had",
+                      profiler_sweep_sets[s.set].name);
     profiler::write_csv_header(&s.table.w, md_str_writer_to_cstr(&info), "experiment");
     md_temp_end(temp);
 
@@ -5460,6 +5508,8 @@ static void profiler_sweep_start(ApplicationState* state) {
     s.experiment_before = isomesh::experiment();
     s.samples_before = isomesh::experiment_samples();
     state->profiler_keep_isomeshes = true;
+    s.steps = profiler_sweep_sets[s.set].steps;
+    s.num_steps = MIN(profiler_sweep_sets[s.set].count, PROFILER_SWEEP_STEPS);
     s.step = 0;
     s.noise_step = -1;
     profiler_sweep_set_step(s.step);
@@ -5471,14 +5521,14 @@ static void profiler_sweep_update(ApplicationState* state) {
     auto& s = profiler_sweep;
     if (s.step < 0 || profiler::publish_count() < s.publish_at) return;
     char first[96];
-    snprintf(first, sizeof(first), "%d %s %uspp", s.step + 1, isomesh::experiment_name(profiler_sweep_steps[s.step].experiment),
+    snprintf(first, sizeof(first), "%d %s %uspp", s.step + 1, isomesh::experiment_name(s.steps[s.step].experiment),
              iso_mesh_target.samples);
     profiler::write_csv_rows(&s.table.w, "ISOSURFACE MESHES", first);
     s.spp[s.step] = iso_mesh_target.samples;
     s.ms[s.step] = profiler::gpu_ms("ISOSURFACE MESHES");
     s.frame_ms[s.step] = profiler::frame_gpu_ms();
     s.step += 1;
-    if (s.step < PROFILER_SWEEP_STEPS) {
+    if (s.step < s.num_steps) {
         profiler_sweep_set_step(s.step);
         s.publish_at = profiler::publish_count() + 2;
     } else {
@@ -5542,8 +5592,9 @@ static void profiler_sweep_render(ApplicationState* state, const isomesh::Render
     s.err_interior[i] = profiler_sweep_rms(s.mean[0], s.mean[1], w, h, s.reference) / sqrt(2.0);
     s.diff_ref[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h);
     s.diff_ref_interior[i] = profiler_sweep_rms(s.mean[0], s.reference, w, h, s.reference);
+    s.diff_ref_p99[i] = profiler_sweep_p99(s.mean[0], s.reference, w, h);
     s.noise_step += 1;
-    if (s.noise_step < PROFILER_SWEEP_NOISE_STEPS) {
+    if (s.noise_step < s.num_steps - 1) {
         profiler_sweep_set_step(s.noise_step);
         profiler_sweep_noise_restart();
     } else {
@@ -5630,6 +5681,15 @@ static void draw_profiler_window(ApplicationState* data) {
         if (ImGui::Combo("Samples", &spp, "auto\0" "1\0" "2\0" "3\0" "4\0" "\0")) isomesh::set_experiment_samples((uint32_t)spp);
         ImGui::SetItemTooltip("Of the multisampled experiments: auto as many as fit their memory budget");
         ImGui::SameLine();
+        {
+            const char* sets[ARRAY_SIZE(profiler_sweep_sets)];
+            for (size_t i = 0; i < ARRAY_SIZE(profiler_sweep_sets); ++i) sets[i] = profiler_sweep_sets[i].name;
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+            ImGui::Combo("##sweep set", &profiler_sweep.set, sets, (int)ARRAY_SIZE(profiler_sweep_sets));
+            ImGui::SetItemTooltip("What the sweep runs: one-sample against the multisampled experiments, or against the "
+                                  "moment-based ones");
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Sweep")) profiler_sweep_start(data);
         ImGui::SetItemTooltip("Every experiment in turn, the meshes drawn every frame: keep the view still. Their times, "
                               "then their noise (two means of each, 128 frames). The table goes to the clipboard");
@@ -5637,9 +5697,9 @@ static void draw_profiler_window(ApplicationState* data) {
         if (sweeping) {
             ImGui::SameLine();
             if (profiler_sweep.step >= 0) {
-                ImGui::Text("times %d / %d", profiler_sweep.step + 1, PROFILER_SWEEP_STEPS);
+                ImGui::Text("times %d / %d", profiler_sweep.step + 1, profiler_sweep.num_steps);
             } else {
-                ImGui::Text("noise %d / %d, %u frames", profiler_sweep.noise_step + 1, PROFILER_SWEEP_NOISE_STEPS,
+                ImGui::Text("noise %d / %d, %u frames", profiler_sweep.noise_step + 1, profiler_sweep.num_steps - 1,
                             profiler_sweep.targets[0].frame);
             }
             ImGui::SameLine();

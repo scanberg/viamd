@@ -64,7 +64,7 @@ struct MeshProgram {
     GLint model, view, proj;
     GLint color, coloring, world_to_volume, tex_color_volume, tex_field, tex_field_colormap, field_beg, field_inv_ext;
     GLint tex_depth, use_depth, pass, frame, samples, surface_id, seed, r2_offset;
-    GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise;
+    GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise, tex_moments, moment_range;
     GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
     GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
     GLint basic, basic_ambient, basic_specular, linear_colors, light_strength;
@@ -85,6 +85,9 @@ static struct {
     MeshProgram ms_pass[5];     // Experiment_MultisampledPerPass: by Pass, writing gl_FragDepth
     MeshProgram ms_pass_nfd[5]; // Experiment_MultisampledNoFragDepth: by Pass, the rasterizer's depth
     AccumulateProgram accumulate_ms;
+    // The moment-based experiments: the transmittance with the moments, and the accumulation from them (_peel: of
+    // Experiment_MomentsPeel, the moments of what lies behind the first layer)
+    MeshProgram mom_tod, mom_acc, mom_tod_peel, mom_acc_peel;
     struct {
         GLuint program = 0;
         GLint tex_color, tex_t;
@@ -218,6 +221,7 @@ static void mesh_locations(MeshProgram* mp) {
     m.tex_tod = LOC(p, "u_tex_tod"); m.tau = LOC(p, "u_tau"); m.od_ref = LOC(p, "u_od_ref");
     m.inv_proj = LOC(p, "u_inv_proj"); m.inv_res = LOC(p, "u_inv_res"); m.ortho = LOC(p, "u_ortho");
     m.tex_blue_noise = LOC(p, "u_tex_blue_noise");
+    m.tex_moments = LOC(p, "u_tex_moments"); m.moment_range = LOC(p, "u_moment_range");
     m.tex_peel_depth0 = LOC(p, "u_tex_peel_depth0"); m.tex_peel_depth1 = LOC(p, "u_tex_peel_depth1");
     m.tex_peel_opacity = LOC(p, "u_tex_peel_opacity");
     m.light_dir = LOC(p, "u_light_dir"); m.dir_radiance = LOC(p, "u_dir_radiance"); m.sky_radiance = LOC(p, "u_sky_radiance");
@@ -266,10 +270,19 @@ void initialize() {
         gl.ms_pass_nfd[p].program = link(vert, frag, "multisampled pass without gl_FragDepth", str_from_cstr(defines));
     }
     gl.accumulate_ms.program = link(v_shader_src_fs_triangle, acc, "multisampled accumulate", STR_LIT("#define ISOMESH_MULTISAMPLE"));
+    // The moment-based experiments: without them render() draws as it does without an experiment
+    gl.mom_tod.program = link(vert, frag, "moments", STR_LIT("#define ISOMESH_TRANSMITTANCE\n#define ISOMESH_MOMENTS"));
+    gl.mom_acc.program = link(vert, frag, "accumulation from moments", STR_LIT("#define ISOMESH_PASS 4\n#define ISOMESH_MOMENTS"));
+    gl.mom_tod_peel.program = link(vert, frag, "moments behind a peel",
+                                   STR_LIT("#define ISOMESH_TRANSMITTANCE\n#define ISOMESH_MOMENTS\n#define ISOMESH_MOMENTS_PEEL"));
+    gl.mom_acc_peel.program = link(vert, frag, "accumulation from moments behind a peel",
+                                   STR_LIT("#define ISOMESH_PASS 4\n#define ISOMESH_MOMENTS\n#define ISOMESH_MOMENTS_PEEL"));
 
 #define LOC(prog, name) glGetUniformLocation(prog, name)
     mesh_locations(&gl.mesh_tod);
     mesh_locations(&gl.ms_one);
+    MeshProgram* const moment_programs[] = {&gl.mom_tod, &gl.mom_acc, &gl.mom_tod_peel, &gl.mom_acc_peel};
+    for (MeshProgram* mp : moment_programs) mesh_locations(mp);
     for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
         mesh_locations(&gl.pass[p]);
         mesh_locations(&gl.ms_pass[p]);
@@ -300,7 +313,8 @@ void initialize() {
 
 void shutdown() {
     GLuint* programs[] = {&gl.mesh_tod.program, &gl.accumulate.program, &gl.composite.program, &gl.ms_one.program,
-                          &gl.accumulate_ms.program};
+                          &gl.accumulate_ms.program, &gl.mom_tod.program, &gl.mom_acc.program, &gl.mom_tod_peel.program,
+                          &gl.mom_acc_peel.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
@@ -461,7 +475,7 @@ void target_free(Target* t) {
     }
     GLuint* textures[] = {&t->tex_frame_color, &t->tex_frame_tod, &t->tex_frame_depth, &t->tex_peel_depth[0], &t->tex_peel_depth[1],
                           &t->tex_peel_opacity, &t->tex_history_color[0], &t->tex_history_color[1],
-                          &t->tex_history_t[0], &t->tex_history_t[1]};
+                          &t->tex_history_t[0], &t->tex_history_t[1], &t->tex_moments};
     for (GLuint* tex : textures) {
         if (*tex) glDeleteTextures(1, tex);
     }
@@ -502,6 +516,8 @@ const char* experiment_name(Experiment e) {
         case Experiment_MultisampledPerPass:     return "ms-per-pass";
         case Experiment_MultisampledNoFragDepth: return "ms-nofragdepth";
         case Experiment_SeparateResolve:         return "separate-resolve";
+        case Experiment_Moments:                 return "moments";
+        case Experiment_MomentsPeel:             return "moments-peel";
         default:                                 return "?";
     }
 }
@@ -524,6 +540,13 @@ static const MeshProgram* multisampled_programs(Experiment e, Pass pass) {
     return m->program ? m : nullptr;
 }
 
+// Whether render() draws with moments: a moment-based experiment, its programs built
+static bool moments_now() {
+    if (g_experiment == Experiment_Moments) return gl.mom_tod.program && gl.mom_acc.program;
+    if (g_experiment == Experiment_MomentsPeel) return gl.mom_tod_peel.program && gl.mom_acc_peel.program;
+    return false;
+}
+
 static bool multisampled_now() {
     if (!experiment_multisampled(g_experiment)) return false;
     for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
@@ -534,6 +557,12 @@ static bool multisampled_now() {
 
 // The program of a pass: its own, or the experiment's
 static const MeshProgram& mesh_program(Pass pass) {
+    if (moments_now()) {
+        const bool peel = g_experiment == Experiment_MomentsPeel;
+        if (pass == Pass_Transmittance) return peel ? gl.mom_tod_peel : gl.mom_tod;
+        if (pass == Pass_Accumulate)    return peel ? gl.mom_acc_peel : gl.mom_acc;
+        return gl.pass[pass];
+    }
     if (pass == Pass_Transmittance) return gl.mesh_tod;
     if (multisampled_now()) return *multisampled_programs(g_experiment, pass);
     return gl.pass[pass];
@@ -587,8 +616,9 @@ static float halton(uint32_t i, uint32_t b) {
 // implementation may give it more)
 static GLuint texture_frame(GLenum format, uint32_t width, uint32_t height) {
     const bool depth  = format == GL_DEPTH_COMPONENT24 || format == GL_DEPTH_COMPONENT32F;
-    const GLenum base = depth ? GL_DEPTH_COMPONENT : (format == GL_RG16F ? GL_RG : GL_RGBA);
-    const GLenum type = depth ? GL_FLOAT : GL_HALF_FLOAT;
+    const bool f32    = format == GL_RG32F || format == GL_RGBA32F;
+    const GLenum base = depth ? GL_DEPTH_COMPONENT : ((format == GL_RG16F || format == GL_RG32F) ? GL_RG : GL_RGBA);
+    const GLenum type = (depth || f32) ? GL_FLOAT : GL_HALF_FLOAT;
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -618,8 +648,9 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
             while (samples > 1 && (size_t)width * height * samples * bytes_per_sample > MEMORY_BUDGET) samples /= 2;
         }
     }
+    const bool moments = moments_now();
     if (t->fbo && t->width == width && t->height == height && t->tex_target == (uint32_t)target &&
-        t->samples_asked == (uint32_t)samples) {
+        t->samples_asked == (uint32_t)samples && (t->tex_moments != 0) == moments) {
         return true;
     }
     const uint32_t seed = t->seed;
@@ -628,7 +659,10 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
 
     auto tex = [&](GLenum format) { return plain ? texture_frame(format, width, height) : texture_ms(samples, format, width, height); };
     t->tex_frame_color = tex(GL_RGBA16F);
-    t->tex_frame_tod   = tex(GL_RG16F);
+    // The moment-based experiments: the absorbance the moments are of in the third channel, and all of it in 32 bits, as
+    // the moments are normalized by it
+    t->tex_frame_tod   = moments ? texture_frame(GL_RGBA32F, width, height) : tex(GL_RG16F);
+    t->tex_moments     = moments ? texture_frame(GL_RGBA32F, width, height) : 0;
     t->tex_frame_depth = tex(GL_DEPTH_COMPONENT24);
     t->tex_peel_depth[0] = tex(GL_DEPTH_COMPONENT32F);
     t->tex_peel_depth[1] = tex(GL_DEPTH_COMPONENT32F);
@@ -647,6 +681,7 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
     glGenFramebuffers(1, &t->fbo_tod);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_frame_tod, 0);
+    if (t->tex_moments) glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, t->tex_moments, 0);
     for (int i = 0; i < 2; ++i) {
         glGenFramebuffers(1, &t->fbo_peel[i]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[i]);
@@ -921,6 +956,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         const float radius = vec3_length(hi - lo) * 0.5f;
         const vec3_t center_view = vec3_from_vec4(V * vec4_from_vec3(center, 1.0f));
         const float od_ref = MAX(0.0f, (ortho ? -center_view.z : vec3_length(center_view)) - radius);
+        // The moment-based experiments: the distances over the bounds warped to [-1, 1], the nearest to -1
+        const float moment_far = (ortho ? -center_view.z : vec3_length(center_view)) + radius;
+        const float moment_range[2] = {od_ref, 2.0f / MAX(moment_far - od_ref, 1.0e-6f)};
 
         const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);
         const float env = MAX(desc.shading.environment, 0.0f);
@@ -957,6 +995,8 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform2fv(m.inv_res, 1, inv_res);
             glUniform1i(m.ortho, ortho ? 1 : 0);
             glUniform1f(m.od_ref, od_ref);
+            glUniform1i(m.tex_moments, 9);
+            glUniform2fv(m.moment_range, 1, moment_range);
             glUniform3fv(m.light_dir, 1, light.light_dir.elem);
             glUniform3fv(m.dir_radiance, 1, light.light_irradiance.elem);
             glUniform3fv(m.sky_radiance, 1, sky.elem);
@@ -1023,65 +1063,98 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             }
         };
 
+        // The moment-based experiments: the passes after the transmittance but Peel 0 (moments-peel) left out
+        const bool moments      = t->tex_moments != 0;
+        const bool moments_peel = moments && g_experiment == Experiment_MomentsPeel;
+
         // The coverage of all the surfaces together and the optical depth of what they enclose, at pixel rate (its
-        // own program): it compares with nothing per sample, so the coverage of the samples is all it needs of them
-        PUSH_GPU_SECTION("Transmittance")
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        {
+        // own program): it compares with nothing per sample, so the coverage of the samples is all it needs of them.
+        // The moment-based experiments: and the moments
+        auto pass_transmittance = [&]() {
+            PUSH_GPU_SECTION("Transmittance")
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_tod);
+            const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            glDrawBuffers(moments ? 2 : 1, bufs);
             const GLfloat zero[4] = {0, 0, 0, 0};
             glClearBufferfv(GL_COLOR, 0, zero);
-        }
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        draw_surfaces(Pass_Transmittance);
-        POP_GPU_SECTION()
+            if (moments) glClearBufferfv(GL_COLOR, 1, zero);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            if (moments_peel) bind_texture(6, GL_TEXTURE_2D, t->tex_peel_depth[0]);
+            draw_surfaces(Pass_Transmittance);
+            POP_GPU_SECTION()
+        };
 
-        // The two nearest layers, exactly: their depths and opacities in each sample
-        PUSH_GPU_SECTION("Peel")
-        glDisable(GL_BLEND);
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glDepthMask(GL_TRUE);
-        glClearDepth(1.0);
-        for (int k = 0; k < 2; ++k) {
-            PUSH_GPU_SECTION(k == 0 ? "Peel 0" : "Peel 1")
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k]);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            if (k == 0) {
-                const GLfloat zero[4] = {0, 0, 0, 0};
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glClearBufferfv(GL_COLOR, 0, zero);     // opacity 0: no layer
+        // The nearest layers, exactly: their depths and opacities in each sample
+        auto pass_peel = [&](int layers) {
+            PUSH_GPU_SECTION("Peel")
+            glDisable(GL_BLEND);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glClearDepth(1.0);
+            for (int k = 0; k < layers; ++k) {
+                PUSH_GPU_SECTION(k == 0 ? "Peel 0" : "Peel 1")
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k]);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                if (k == 0) {
+                    const GLfloat zero[4] = {0, 0, 0, 0};
+                    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    glClearBufferfv(GL_COLOR, 0, zero);     // opacity 0: no layer
+                }
+                glClear(GL_DEPTH_BUFFER_BIT);
+                glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
+                if (k == 1) bind_texture(6, ms_target, t->tex_peel_depth[0]);
+                draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
+                POP_GPU_SECTION()
             }
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDisable(GL_DEPTH_TEST);
+            POP_GPU_SECTION()
+        };
+
+        if (moments_peel) {
+            pass_peel(1);   // the moments are of what lies behind its layer
+            pass_transmittance();
+        } else if (moments) {
+            pass_transmittance();
+        } else {
+            pass_transmittance();
+            pass_peel(2);
+
+            // The stochastic depth of the layers behind them
+            PUSH_GPU_SECTION("Stochastic depth")
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
+            glDrawBuffer(GL_NONE);
             glClear(GL_DEPTH_BUFFER_BIT);
-            glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
-            if (k == 1) bind_texture(6, ms_target, t->tex_peel_depth[0]);
-            draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
+            bind_texture(7, ms_target, t->tex_peel_depth[1]);
+            draw_surfaces(Pass_Depth);
             POP_GPU_SECTION()
         }
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        POP_GPU_SECTION()
 
-        // The stochastic depth of the layers behind them
-        PUSH_GPU_SECTION("Stochastic depth")
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
-        glDrawBuffer(GL_NONE);
-        glClear(GL_DEPTH_BUFFER_BIT);
-        bind_texture(7, ms_target, t->tex_peel_depth[1]);
-        draw_surfaces(Pass_Depth);
-        POP_GPU_SECTION()
-
-        // Every surface times its visibility
+        // Every surface times its visibility: where it is not behind the stochastic depth (test LEQUAL), or, in the
+        // moment-based experiments, all of them
         PUSH_GPU_SECTION("Accumulate")
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
         {
             const GLfloat zero[4] = {0, 0, 0, 0};
             glClearBufferfv(GL_COLOR, 0, zero);
         }
         glDepthMask(GL_FALSE);
-        glDepthFunc(GL_LEQUAL);
+        if (moments) {
+            glDisable(GL_DEPTH_TEST);
+            bind_texture(6, GL_TEXTURE_2D, t->tex_peel_depth[0]);
+            bind_texture(9, GL_TEXTURE_2D, t->tex_moments);
+        } else {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+        }
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
         bind_texture(1, ms_target, t->tex_frame_tod);
@@ -1090,6 +1163,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glDisable(GL_SAMPLE_SHADING);
         const int frame_units[4] = {1, 6, 7, 8};
         for (int unit : frame_units) bind_texture(unit, ms_target, 0);
+        bind_texture(9, GL_TEXTURE_2D, 0);
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDisable(GL_BLEND);

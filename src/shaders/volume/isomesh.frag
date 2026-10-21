@@ -36,6 +36,12 @@
 // rate (its program has no gl_SampleID). u_seed and u_r2_offset (isomesh::target_set_seed) rotate the thresholds, for
 // runs independent of each other.
 //
+// The moment-based experiments (ISOMESH_MOMENTS, isomesh_utils.h): PASS_TRANSMITTANCE also sums the absorbance of the
+// fragments, -log(1 - opacity), times the powers 1 to 4 of their depth warped to [-1, 1] (moment_depth), and
+// PASS_ACCUMULATE takes the transmittance in front of a fragment from those moments (moments_transmittance) rather than
+// from the peels and the stochastic depth, which are not drawn. ISOMESH_MOMENTS_PEEL: PASS_PEEL0 is, and the moments are
+// of the fragments behind its layer, which is exact.
+//
 // Every fragment is shaded like a hit of the isosurface raycaster (isosurface.frag, the model of the deferred
 // compose pass): a surface reflects L = a * diffuse + specular and lets 1 - opacity through, opacity =
 // 1 - (1 - a)(1 - Fe) (the basic model: L = a * colour, opacity = a). The sum of L times visibility is in
@@ -143,6 +149,8 @@ uniform float u_tau;                // optical density of the surface times the 
 uniform float u_od_ref;             // distance subtracted from d, so the sums stay small (half floats)
 uniform mat4  u_inv_proj;
 uniform sampler2D u_tex_blue_noise; // BLUE_NOISE_SIZE^2 thresholds
+uniform sampler2D u_tex_moments;    // ISOMESH_MOMENTS: the absorbance times the warped depth's powers 1 to 4, summed
+uniform vec2  u_moment_range;       // the distance warped to -1, and 2 / the distances' extent
 uniform vec2  u_inv_res;
 uniform int   u_ortho;
 
@@ -160,7 +168,10 @@ uniform float u_linear_colors;
 uniform float u_light_strength;
 
 #ifdef ISOMESH_TRANSMITTANCE
-layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth
+layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth (ISOMESH_MOMENTS: absorbance of the moments)
+#ifdef ISOMESH_MOMENTS
+layout(location = 1) out vec4 out_moments;
+#endif
 #else
 layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity
 #endif
@@ -413,6 +424,78 @@ float ray_distance(vec3 p) {
     return (u_ortho != 0) ? -p.z : length(p);
 }
 
+#ifdef ISOMESH_MOMENTS
+// MOMENT-BASED ORDER-INDEPENDENT TRANSPARENCY (Muenstermann, Kolb, Kolb and Peters 2018), four power moments in 32 bit
+// floats, with their bias and overestimation
+const float MOMENT_BIAS           = 5.0e-7;
+const float MOMENT_OVERESTIMATION = 0.25;   // of a fragment's own absorbance, counted as in front of it: between the
+                                            // lower (0) and the upper (1) bound
+const vec4  MOMENT_BIAS_VECTOR    = vec4(0.0, 0.375, 0.0, 0.375);
+
+// The depth of view position p warped to [-1, 1] over the surfaces' bounds
+float moment_depth(vec3 p) {
+    return clamp((ray_distance(p) - u_moment_range.x) * u_moment_range.y - 1.0, -1.0, 1.0);
+}
+
+// The transmittance in front of 'depth' from b_0 (the absorbance in all) and the moments normalized by it (b_odd: the
+// first and third, b_even: the second and fourth). Their reference implementation's (computeTransmittanceAtDepthFrom4
+// PowerMoments): of the three-point distribution with these moments that has a point at 'depth', the weights of the
+// points in front, that at 'depth' counting MOMENT_OVERESTIMATION. Guarded where 32 bit rounding beats the bias: the
+// moments of a single fragment (a back face hidden by the opaque scene) are of a single point, the Hankel matrix singular
+// but for the bias, and in float32 a sixth of them came out NaN or negative (speckles); the pivots kept positive, the
+// discriminant not negative, the absorbance in [0, 1].
+float moments_transmittance(float b_0, vec2 b_even, vec2 b_odd, float depth) {
+    vec4 b = mix(vec4(b_odd.x, b_even.x, b_odd.y, b_even.y), MOMENT_BIAS_VECTOR, MOMENT_BIAS);
+    vec3 z;
+    z[0] = depth;
+
+    // A Cholesky factorization of the Hankel matrix B, its non-trivial entries
+    float L21D11 = fma(-b[0], b[1], b[2]);
+    float D11    = max(fma(-b[0], b[0], b[1]), 1.0e-7);
+    float InvD11 = 1.0 / D11;
+    float L21    = L21D11 * InvD11;
+    float SquaredDepthVariance = fma(-b[1], b[1], b[3]);
+    float D22    = max(fma(-L21D11, L21, SquaredDepthVariance), 1.0e-9);
+
+    // A scaled inverse image of (1, z0, z0^2)
+    vec3 c = vec3(1.0, z[0], z[0] * z[0]);
+    c[1] -= b.x;
+    c[2] -= b.y + L21 * c[1];
+    c[1] *= InvD11;
+    c[2] /= D22;
+    c[1] -= L21 * c[2];
+    c[0] -= dot(c.yz, b.xy);
+
+    // The roots of c0 + c1 z + c2 z^2: the two other points
+    float InvC2 = 1.0 / c[2];
+    float p = c[1] * InvC2;
+    float q = c[0] * InvC2;
+    float D = max((p * p * 0.25) - q, 0.0);
+    float r = sqrt(D);
+    z[1] = -p * 0.5 - r;
+    z[2] = -p * 0.5 + r;
+
+    // The absorbance in front, as the weights of the points in front
+    vec3 polynomial;
+    vec3 weight_factor = vec3(MOMENT_OVERESTIMATION, (z[1] < z[0]) ? 1.0 : 0.0, (z[2] < z[0]) ? 1.0 : 0.0);
+    float f0 = weight_factor[0];
+    float f1 = weight_factor[1];
+    float f2 = weight_factor[2];
+    float f01  = (f1 - f0) / (z[1] - z[0]);
+    float f12  = (f2 - f1) / (z[2] - z[1]);
+    float f012 = (f12 - f01) / (z[2] - z[0]);
+    polynomial[0] = f012;
+    polynomial[1] = polynomial[0];
+    polynomial[0] = f01 - polynomial[0] * z[1];
+    polynomial[2] = polynomial[1];
+    polynomial[1] = polynomial[0] - polynomial[1] * z[0];
+    polynomial[0] = f0 - polynomial[0] * z[0];
+    float absorbance = polynomial[0] + dot(b.xy, polynomial.yz);
+    absorbance = isnan(absorbance) ? MOMENT_OVERESTIMATION : clamp(absorbance, 0.0, 1.0);
+    return exp(-b_0 * absorbance);
+}
+#endif
+
 void main() {
 #ifdef ISOMESH_TRANSMITTANCE
     ivec2 px = ivec2(gl_FragCoord.xy);
@@ -433,6 +516,17 @@ void main() {
     }
     float od = (gl_FrontFacing ? -u_tau : u_tau) * (ray_distance(p) - u_od_ref);
     out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), od, 0.0, 0.0);
+#ifdef ISOMESH_MOMENTS
+    // The moments, of the fragments in front of the opaque scene (ISOMESH_MOMENTS_PEEL: behind the first layer)
+    float a = occluded ? 0.0 : -log(1.0 - opacity);
+#ifdef ISOMESH_MOMENTS_PEEL
+    if (gl_FragCoord.z <= texelFetch(u_tex_peel_depth0, px, 0).r + PEEL_EPS) a = 0.0;
+#endif
+    float zm = moment_depth(v_view_pos);
+    float z2 = zm * zm;
+    out_tod.b = a;
+    out_moments = a * vec4(zm, z2, z2 * zm, z2 * z2);
+#endif
 #else
     // ISOMESH_FRAGDEPTH (multisampled, Apple's OpenGL): the depth the depth tests see is the one the passes compare
     // with the peeled depths: written, not left to the rasterizer. Under sample shading gl_FragCoord.z is not
@@ -468,6 +562,35 @@ void main() {
         out_color = vec4(opacity);
         return;
     }
+
+#ifdef ISOMESH_MOMENTS
+    // PASS_ACCUMULATE of the moment-based experiments: the transmittance in front, from the moments (ISOMESH_MOMENTS_PEEL:
+    // the first layer's exact transmittance times the moments' for those behind it). The moments count a fragment's own
+    // absorbance as MOMENT_OVERESTIMATION in front of it, which the normalization by the exact coverage takes out when
+    // every fragment is counted so; the first layer counts it too, or the layers behind it come out too dim against it
+    // (on Mesa an RMS error of 1.7 / 255 to the stochastic image instead of 0.2).
+    {
+        vec3  tm  = texelFetch(u_tex_tod, px, 0).rgb;     // b: the absorbance the moments are of
+        vec4  bm  = texelFetch(u_tex_moments, px, 0);
+        float vis = 1.0;
+#ifdef ISOMESH_MOMENTS_PEEL
+        bool  first = gl_FragCoord.z <= texelFetch(u_tex_peel_depth0, px, 0).r + PEEL_EPS;
+        if (first) {
+            vis = pow(1.0 - opacity, MOMENT_OVERESTIMATION);
+        } else {
+            vis = 1.0 - texelFetch(u_tex_peel_opacity, px, 0).r;
+            if (tm.b > 1.0e-6) vis *= moments_transmittance(tm.b, bm.yw / tm.b, bm.xz / tm.b, moment_depth(v_view_pos));
+        }
+#else
+        if (tm.b > 1.0e-6) vis = moments_transmittance(tm.b, bm.yw / tm.b, bm.xz / tm.b, moment_depth(v_view_pos));
+#endif
+        if (!gl_FrontFacing) {
+            L *= exp(-max(tm.g, 0.0));
+        }
+        out_color = vec4(L, opacity) * vis;
+        return;
+    }
+#endif
 
     // The peeled layers of the pixel (of the sample, multisampled) from here on
     float z  = gl_FragCoord.z;

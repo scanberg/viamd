@@ -93,6 +93,7 @@ struct Target {
     uint64_t hash = 0;          // of what the mean is of
     uint64_t triangles = 0;     // drawn in its last frame, of all the surfaces
     uint32_t tex_target = 0;    // of the frame's textures: GL_TEXTURE_2D, or GL_TEXTURE_2D_MULTISAMPLE (the experiments)
+    uint32_t tex_moments = 0;   // the moment-based experiments: the moments of the absorbance over depth (RGBA32F)
     uint32_t samples_asked = 0; // the samples per pixel asked for (an implementation may give more)
     uint32_t seed = 0;          // target_set_seed
 };
@@ -174,6 +175,12 @@ bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
 // For timing the passes and measuring their noise (Windows > Profiler, Sweep): what render() does differently, for
 // every Target, until it is set back. Those marked 'timing only' do not draw the right image.
 //
+// The moment-based ones (Muenstermann, Kolb, Kolb and Peters, "Moment-Based Order-Independent Transparency", 2018):
+// the transmittance pass also sums, per pixel, the absorbance -log(1 - opacity) of the fragments times the powers 1 to 4
+// of their depth (warped to [-1, 1] over the surfaces' bounds); the accumulation takes the transmittance in front of
+// each fragment from the bound those moments give, instead of from the peels and the stochastic depth. Deterministic,
+// so the frames differ by their jitter alone; approximate where few, opaque layers lie close in depth.
+//
 // The multisampled ones: per sample into a multisampled target (the transmittance at pixel rate, MSAA coverage putting
 // it into the samples). Under sample shading Apple's OpenGL gives gl_FragCoord.z at the pixel's centre, not at the
 // sample the depth buffer holds, so there the passes have to write the depth they compare (gl_FragDepth), which takes
@@ -188,6 +195,10 @@ enum Experiment {
     Experiment_MultisampledNoFragDepth, // a program per pass, the rasterizer's depth, the first peel at pixel rate:
                                         // timing only where fragcoord_z_per_sample is false (Apple's OpenGL)
     Experiment_SeparateResolve,         // the mean and the composite in passes of their own, over all of the target
+    Experiment_Moments,                 // moment-based: the transmittance in front of a fragment reconstructed from four
+                                        // moments of the absorbance over depth, gathered with the transmittance; no
+                                        // peels, no stochastic depth: two passes over the meshes
+    Experiment_MomentsPeel,             // the nearest layer peeled exactly, the moments of those behind it: three passes
     Experiment_Count
 };
 void set_experiment(Experiment e);
