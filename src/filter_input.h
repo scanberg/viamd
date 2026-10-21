@@ -19,6 +19,7 @@
 #include <imgui.h>
 
 struct md_allocator_i;
+struct md_atom_pair_t;
 struct md_bitset_t;
 
 struct AtomFilter {
@@ -33,6 +34,8 @@ struct AtomFilter {
 bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, const md_filter_context_t& ctx, md_allocator_i* alloc);
 // The same, one set for each structure it gives (see md_filter_sets)
 bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, const md_filter_context_t& ctx, md_allocator_i* alloc);
+// The bonds it picks (see md_filter_bonds), pushed to bonds once it is cleared, allocated with alloc
+bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, const md_filter_context_t& ctx, md_allocator_i* alloc);
 
 // The input of a filter. ctx is what it is completed against: its system, the script whose names it may use, and the
 // atoms it is evaluated within, if any. Returns true when the text changes. With confirmed given, it is set when Enter

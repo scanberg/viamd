@@ -548,6 +548,7 @@ static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
 
 static void update_md_buffers(ApplicationState* state);
+static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_allocator_i* alloc);
 
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
@@ -1378,6 +1379,9 @@ int main(int argc, char** argv) {
         }
 
         recenter_update(&state);
+
+        // The bonds formed and broken in the frame shown, before they are uploaded
+        bond_tracking_update(&state);
 
 		// Perform once per-frame updates of representations (if required)
 		update_all_representations(&state);
@@ -2350,6 +2354,7 @@ static void draw_main_menu(ApplicationState* data) {
             bool do_unwrap = false;
             bool do_bonds = false;
             bool redo_every_frame = false;
+            auto& tracking = data->operations.bond_tracking;
 
             // Each operation can be applied to the frame shown now, or to every frame as it is shown.
             // The labels say what happens to the atoms, not what the operation is called internally.
@@ -2469,14 +2474,109 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Recompute Bonds", ImVec2(button_width, 0))) {
                     do_bonds = true;
                 }
-                ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame,\nfor when bonds form or break, or the file's bonds are wrong");
+                ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame, for when\n"
+                                      "the file's bonds are wrong or a reaction should be the topology from here on.\n"
+                                      "Changes the bonds of the system: the bonds a file, a topology or you gave stay.");
 
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##bonds", &data->operations.recalc_bonds) && data->operations.recalc_bonds) {
-                    do_bonds = true;
+                if (ImGui::Checkbox("##track-bonds", &tracking.enabled)) {
+                    tracking.scope_dirty = true;
                 }
-                ImGui::SetItemTooltip("Guess the covalent bonds from the distances in every frame (slower)");
+                ImGui::SetItemTooltip("Track bond changes: in every frame, show the bonds that form and break against the bonds\n"
+                                      "of the system. The bonds of the system stay as they are.");
+
+                ImGui::TableSetColumnIndex(2);
+                if (tracking.enabled) {
+                    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+                    if (filter_input("##track-bonds-scope", &tracking.scope, filter_context(data), 0, nullptr, "all atoms")) {
+                        tracking.scope_dirty = true;
+                    }
+                    if (ImGui::IsItemHovered() && !filter_completions_open() && tracking.scope.result.success) {
+                        ImGui::SetTooltip("Where bonds are tracked: the bonds with an atom among those it picks.\nEmpty for every atom; a smaller scope is faster.");
+                    }
+                }
                 ImGui::EndTable();
+            }
+
+            if (tracking.enabled) {
+                const md_bond_delta_t* delta = bond_tracking_delta(data);
+                if (delta) {
+                    const size_t num_broken = md_bitset_count(delta->broken);
+                    ImGui::Text("%zu formed, %zu broken in this frame (%.1f ms)", delta->num_formed, num_broken, tracking.time_ms);
+                    if (ImGui::IsItemHovered()) {
+                        // The atoms of the bonds that changed
+                        md_bitmask_clear(&data->selection.highlight_mask);
+                        for (size_t i = 0; i < delta->num_formed; ++i) {
+                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[0]);
+                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[1]);
+                        }
+                        md_bitset_iter_t it = md_bitset_iter(delta->broken);
+                        while (md_bitset_iter_next(&it)) {
+                            if (it.idx >= data->mold.sys.bond.count) break;
+                            const md_atom_pair_t p = data->mold.sys.bond.pairs[it.idx];
+                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)p.idx[0]);
+                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)p.idx[1]);
+                        }
+                        ImGui::SetTooltip("The bonds formed are drawn as sticks and the broken ones are not drawn.\n"
+                                          "Their atoms are highlighted.");
+                    }
+                } else if (!tracking.scope.result.success) {
+                    ImGui::TextDisabled("The scope does not pick atoms: nothing is tracked");
+                } else {
+                    ImGui::TextDisabled("Nothing to track in this system");
+                }
+
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Copy to Script")) {
+                    // The same as a script value, to count or plot: formed(d), broken(d), bonds(d)
+                    char args[512] = "";
+                    int len = 0;
+                    const str_t scope = str_trim(str_from_cstr(tracking.scope.text));
+                    if (!str_empty(scope)) len += snprintf(args + len, sizeof(args) - len, STR_FMT, STR_ARG(scope));
+                    if (tracking.tolerance != MD_BOND_DELTA_TOLERANCE && len < (int)sizeof(args)) {
+                        len += snprintf(args + len, sizeof(args) - len, "%stolerance=%.3g", len ? ", " : "", tracking.tolerance);
+                    }
+                    if (tracking.breakable != MD_BOND_DELTA_BREAKABLE && len < (int)sizeof(args)) {
+                        len += snprintf(args + len, sizeof(args) - len, "%sbreakable={", len ? ", " : "");
+                        bool first = true;
+                        for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED && len < (int)sizeof(args); ++o) {
+                            if (!(tracking.breakable & (1u << o))) continue;
+                            len += snprintf(args + len, sizeof(args) - len, "%s'%s'", first ? "" : ", ", md_bond_origin_name((md_bond_origin_t)o));
+                            first = false;
+                        }
+                        if (len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, "}");
+                    }
+                    const str_t ident = create_unique_identifier(data->script.ir, STR_LIT("bonds_delta"), data->allocator.frame);
+                    char line[640];
+                    snprintf(line, sizeof(line), STR_FMT " = bond_delta(%s);", STR_ARG(ident), args);
+                    script_editor::append_line(data->editor, str_from_cstr(line));
+                }
+                ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
+                                      "(count(formed(d))) or select them (bonds(d) is the bonds of each frame)");
+
+                if (ImGui::TreeNode("Advanced##track-bonds")) {
+                    float tolerance = tracking.tolerance;
+                    if (ImGui::SliderFloat("tolerance", &tolerance, 0.0f, 0.45f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+                        tracking.tolerance = tolerance;
+                    }
+                    ImGui::SetItemTooltip("A bond breaks beyond (1 + tolerance) times its cutoff and forms within (1 - tolerance) times it,\n"
+                                          "so that it does not flicker as it vibrates around the cutoff");
+                    ImGui::TextUnformatted("breakable:");
+                    for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) {
+                        ImGui::SameLine();
+                        bool on = (tracking.breakable & (1u << o)) != 0;
+                        if (ImGui::Checkbox(md_bond_origin_name((md_bond_origin_t)o), &on)) {
+                            tracking.breakable = on ? (tracking.breakable | (1u << o)) : (tracking.breakable & ~(1u << o));
+                        }
+                    }
+                    ImGui::SetItemTooltip("The bonds of which origins may break. A force field topology holds throughout a\n"
+                                          "classical simulation, and bonds you added stay unless you say otherwise.");
+                    if (ImGui::SmallButton("Defaults")) {
+                        tracking.tolerance = MD_BOND_DELTA_TOLERANCE;
+                        tracking.breakable = MD_BOND_DELTA_BREAKABLE;
+                    }
+                    ImGui::TreePop();
+                }
             }
 
             if (redo_every_frame) {
@@ -2492,12 +2592,8 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_bonds) {
-                if (!task_system::task_is_running(data->tasks.evaluate) && !task_system::task_is_running(data->script.vis_task)) {
-                    // The whole frame nearest the animation time, or the coordinates shown when there is no run
-                    recompute_covalent_bonds(data, (int64_t)(data->animation.frame + 0.5));
-                } else {
-                    MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
-                }
+                // The whole frame nearest the animation time, or the coordinates shown when there is no run
+                recompute_bonds(data, (int64_t)(data->animation.frame + 0.5));
             }
 
             ImGui::EndMenu();
@@ -3107,34 +3203,93 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
     if (ImGui::BeginPopup("Context Popup")) {
         if (num_atoms_selected == 2) {
-            // Suggest construction of covalent bond
+            // A bond between the two, of a kind, or the removal of the one a user made
             int idx[2];
             md_bitset_iter_extract_indices(idx, 2, md_bitmask_iter(&state->selection.selection_mask));
 
-            md_bond_idx_t bond_idx = md_system_bond_find(&state->mold.sys, idx[0], idx[1]);
+            md_system_t& sys = state->mold.sys;
+            md_bond_idx_t bond_idx = md_system_bond_find(&sys, idx[0], idx[1]);
+            if (bond_idx == -1) bond_idx = md_bond_find_noncovalent(&sys.bond, idx[0], idx[1]);
             if (bond_idx == -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
-                if (ImGui::MenuItem(buf)) {
-                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
-                    md_util_system_infer_coordination(&state->mold.sys);
-                    md_system_bond_build_connectivity(&state->mold.sys);
-                    state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                    ImGui::CloseCurrentPopup();
+                if (ImGui::BeginMenu(buf)) {
+                    // Of the bond graph, or a non-covalent bond: those are drawn dashed, and are not followed by the
+                    // structures, the rings or the bonds tracked. A kind chosen is kept as given.
+                    struct BondKind {
+                        const char* label;
+                        md_bond_flags_t flags;
+                        const char* tip;
+                    };
+                    static const BondKind kinds[] = {
+                        {"Bond",          MD_BOND_FLAG_NONE,
+                         "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal.\nIt joins the molecules of its atoms."},
+                        {"Hydrogen Bond", MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_HYDROGEN | MD_BOND_FLAG_KIND_GIVEN,
+                         "Non-covalent, drawn dashed. bond(kind='hydrogen') in the script."},
+                        {"Salt Bridge",   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_IONIC | MD_BOND_FLAG_KIND_GIVEN,
+                         "Non-covalent, of ionic character, drawn dashed. bond(kind='ionic') in the script."},
+                        {"Halogen Bond",  MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_SIGMA_HOLE | MD_BOND_FLAG_KIND_GIVEN,
+                         "Non-covalent, to a sigma hole (halogen, chalcogen and pnictogen bonds), drawn dashed.\nbond(kind='sigma_hole') in the script."},
+                        {"Interaction",   MD_BOND_FLAG_NONCOVALENT | MD_BOND_FLAG_KIND_GIVEN,
+                         "Non-covalent, of no particular kind, drawn dashed. bond(kind='noncovalent') in the script."},
+                    };
+                    for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
+                        if (ImGui::MenuItem(kinds[k].label)) {
+                            const bool graph = !(kinds[k].flags & MD_BOND_FLAG_NONCOVALENT);
+                            system_bonds_edit_begin(state);
+                            md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
+                            if (graph) md_util_system_infer_coordination(&sys);
+                            system_bonds_changed(state, graph);
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SetItemTooltip("%s", kinds[k].tip);
+                    }
+                    ImGui::EndMenu();
                 }
             } else {
-				md_bond_flags_t flags = md_system_bond_flags(&state->mold.sys, bond_idx);
+				md_bond_flags_t flags = md_system_bond_flags(&sys, bond_idx);
                 if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
                     char buf[256];
                     snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                     if (ImGui::MenuItem(buf)) {
-                        md_system_bond_remove(&state->mold.sys, bond_idx);
-                        md_system_bond_build_connectivity(&state->mold.sys);
-                        state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                        const bool graph = (size_t)bond_idx < sys.bond.count;
+                        system_bonds_edit_begin(state);
+                        md_system_bond_remove(&sys, bond_idx);
+                        system_bonds_changed(state, graph);
                         ImGui::CloseCurrentPopup();
                     }
                 }
             }
+        }
+        if (num_atoms_selected >= 1 && run_num_frames(state) > 0) {
+            // The bond changes of the selection, written as the scope of the tracking: "x = <expression>;" of the
+            // suggestions of the script. Written when it is asked for, it can take long for a large selection.
+            auto selection_scope = [state]() -> str_t {
+                const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+                const md_array(str_t) suggestions = generate_script_selection_suggestions(STR_LIT("x"), sel, &state->mold.sys);
+                for (size_t i = 0; i < md_array_size(suggestions); ++i) {
+                    str_t expr = suggestions[i];
+                    if (!str_begins_with(expr, STR_LIT("x = "))) continue;
+                    expr = str_trim(str_substr(expr, 4));
+                    if (str_ends_with(expr, STR_LIT(";"))) expr = str_trim(str_substr(expr, 0, expr.len - 1));
+                    if (!str_empty(expr) && expr.len < sizeof(state->operations.bond_tracking.scope.text)) return expr;
+                }
+                return {};
+            };
+            if (ImGui::MenuItem("Track Bond Changes Here")) {
+                const str_t scope = selection_scope();
+                if (!str_empty(scope)) {
+                    auto& tracking = state->operations.bond_tracking;
+                    tracking.enabled = true;
+                    str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
+                    tracking.scope_dirty = true;
+                } else {
+                    VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one in Operations");
+                }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SetItemTooltip("Show the bonds that form and break in every frame, for the bonds with an atom selected\n"
+                                  "(Operations > Track bond changes, with the selection as its scope)");
         }
         if (ImGui::BeginMenu("Script")) {
             bool any_suggestions = false;
@@ -6651,8 +6806,28 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
-        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
+        // The bonds of the graph, then those formed in the frame shown while tracking them. A broken one is set to one
+        // atom twice, which is not drawn, so that the bonds keep their indices: the orders and the picking go by them.
+        const md_bond_delta_t* delta = bond_tracking_delta(data);
+        if (delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken))) {
+            const size_t count = sys.bond.count + delta->num_formed;
+            md_atom_pair_t* pairs = (md_atom_pair_t*)md_vm_arena_push(data->allocator.frame, sizeof(md_atom_pair_t) * count);
+            if (sys.bond.count) MEMCPY(pairs, sys.bond.pairs, sizeof(md_atom_pair_t) * sys.bond.count);
+            md_bitset_iter_t it = md_bitset_iter(delta->broken);
+            while (md_bitset_iter_next(&it)) {
+                if (it.idx < sys.bond.count) pairs[it.idx].idx[1] = pairs[it.idx].idx[0];
+            }
+            if (delta->num_formed) MEMCPY(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
+            md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)count, pairs, sizeof(md_atom_pair_t));
+        } else {
+            md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
+        }
         md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
+
+        // The non-covalent bonds of the system are drawn dashed by the licorice and ball and stick representations
+        for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+            representation_set_weak_bonds(data, &data->representation.reps[i]);
+        }
     }
 
     // The glyphs of the cartoon of the lipids and nucleic acids are derived on the GPU from the positions and velocities
@@ -7451,6 +7626,14 @@ static void draw_representations_opaque(ApplicationState* state) {
                     const md_gl_draw_op_t op = representation_draw_op(rep);
                     const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
+                    // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
+                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
+                    place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
+                }
+            } else if (rep.type == RepresentationType::Bonds) {
+                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                    const size_t beg = md_array_size(draw_ops);
+                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
                     place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
@@ -7753,7 +7936,7 @@ static void draw_representations_marks(ApplicationState* data) {
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
 
-        if (rep.type > RepresentationType::Cartoon) continue;
+        if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
@@ -7764,9 +7947,11 @@ static void draw_representations_marks(ApplicationState* data) {
         if (representation_shown(*data, rep) && rep.type_is_valid) {
             // The op of the opaque pass: its depth tells the marks in view from those behind it, so the geometry must
             // be the same, the bond orders too
-            const md_gl_draw_op_t op = representation_draw_op(rep);
             const size_t beg = md_array_size(draw_ops);
-            md_array_push(draw_ops, op, frame_alloc);
+            if (rep.type != RepresentationType::Bonds) {
+                md_array_push(draw_ops, representation_draw_op(rep), frame_alloc);
+            }
+            representation_weak_bond_draw_ops(&draw_ops, *data, rep, frame_alloc);
             place_ops(&draw_ops, beg, *data, rep, false, frame_alloc);
         }
     }

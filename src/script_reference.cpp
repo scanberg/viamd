@@ -509,7 +509,7 @@ bool is_keyword(str_t w) {
 }
 
 bool is_type_name(str_t w) {
-    static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "bitfield", "position",
+    static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "atomset", "bondset", "position",
                                         "distribution", "volume", "vec2", "vec3", "vec4", "mat3", "mat4", "any"};
     return is_one_of(w, types, ARRAY_SIZE(types));
 }

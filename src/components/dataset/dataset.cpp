@@ -1160,6 +1160,7 @@ struct Dataset : viamd::EventHandler {
         size_t bonds_user = 0;
         size_t bonds_file = 0;
         size_t bonds_elastic = 0;   // Not bonds of the molecules, and so in none of the above
+        size_t bonds_noncovalent = 0; // Of those above, the ones after the bond graph (md_bond_data_t)
 
         size_t atoms_without_element = 0;   // neither an element nor a coarse grained bead, and with mass
         size_t unresolved_amino = 0;        // named like amino acids, backbone not found
@@ -1204,7 +1205,7 @@ struct Dataset : viamd::EventHandler {
 
     static uint64_t composition_key(const ApplicationState& data) {
         const md_system_t& sys = data.mold.sys;
-        const size_t counts[] = { sys.atom.count, sys.entity.count, sys.instance.count, sys.component.count, sys.bond.count, sys.structure.count };
+        const size_t counts[] = { sys.atom.count, sys.entity.count, sys.instance.count, sys.component.count, sys.bond.count, sys.bond.noncovalent_count, sys.structure.count };
         uint64_t key = md_hash64(counts, sizeof(counts), 0);
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
         const uint64_t charge_version = charge ? charge->version : 0;
@@ -1317,7 +1318,9 @@ struct Dataset : viamd::EventHandler {
             c.charge += row.charge;
         }
 
-        for (size_t b = 0; b < sys.bond.count; ++b) {
+        // Both ranges: the bond graph, then the non-covalent bonds
+        c.bonds_noncovalent = sys.bond.noncovalent_count;
+        for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
             if (f & MD_BOND_FLAG_ELASTIC) {
                 c.bonds_elastic += 1;
@@ -1610,6 +1613,7 @@ struct Dataset : viamd::EventHandler {
             part(c.bonds_file,     "from the file");
             part(c.bonds_inferred, "guessed from distances");
             part(c.bonds_user,     "added by you");
+            part(c.bonds_noncovalent, "of them non-covalent");
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", buf);
         }
@@ -1684,7 +1688,7 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsItemHovered()) {
                 md_bitmask_t* hb = &data.selection.highlight_mask;
                 md_bitmask_clear(hb);
-                for (size_t b = 0; b < sys.bond.count; ++b) {
+                for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
                     if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
                         md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[0]);
                         md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[1]);
