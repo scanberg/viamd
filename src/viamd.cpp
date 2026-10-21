@@ -458,13 +458,12 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     } else if (0 < order && order < (int)ARRAY_SIZE(order_names)) {
         tooltip_list_add(&kind, order_names[order]);
     }
-    if (flags & MD_BOND_FLAG_COORDINATE) tooltip_list_add(&kind, "coordinate");
-    if (flags & MD_BOND_FLAG_ELASTIC)    tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)");
-    if (flags & MD_BOND_FLAG_NONCOVALENT) {
-        if (flags & MD_BOND_FLAG_HYDROGEN)   tooltip_list_add(&kind, "hydrogen bond");
-        if (flags & MD_BOND_FLAG_IONIC)      tooltip_list_add(&kind, "ionic");
-        if (flags & MD_BOND_FLAG_SIGMA_HOLE) tooltip_list_add(&kind, "sigma hole");
-        if (!(flags & MD_BOND_FLAG_CHARACTER_MASK)) tooltip_list_add(&kind, "non-covalent");
+    switch (md_bond_kind(flags)) {
+    case MD_BOND_KIND_COORDINATE:  tooltip_list_add(&kind, "coordinate"); break;
+    case MD_BOND_KIND_ELASTIC:     tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)"); break;
+    case MD_BOND_KIND_INTERACTION: tooltip_list_add(&kind, "non-covalent interaction"); break;
+    case MD_BOND_KIND_HYDROGEN:    tooltip_list_add(&kind, "hydrogen bond"); break;
+    default: break;
     }
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
@@ -1799,53 +1798,32 @@ static bool next_list_name(str_t* tok, str_t* list) {
     return true;
 }
 
-// The kind a bond was given, by the names of md_bond_kind_names: the most specific of those it is of ("coordinate",
-// "hydrogen,ionic"), as a workspace stores it
-const char* bond_kind_str(char* buf, size_t cap, md_bond_flags_t flags) {
-    ASSERT(buf && cap > 0);
+// The kinds proper of md_bond_kind_names, one per md_bond_kind_t: every name but 'noncovalent', which is two of them
+static bool bond_kind_proper(const md_bond_kind_name_t& name) {
+    return name.mask == MD_BOND_FLAG_KIND_MASK;
+}
+
+const char* bond_kind_str(md_bond_flags_t flags) {
     size_t count = 0;
     const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
-    buf[0] = '\0';
-    size_t len = 0;
     for (size_t i = 0; i < count; ++i) {
-        if ((flags & kinds[i].mask) != kinds[i].value) continue;
-        // Left out when a more specific one says it too: 'noncovalent' of a hydrogen bond
-        bool implied = false;
-        for (size_t j = 0; j < count && !implied; ++j) {
-            implied = j != i && (flags & kinds[j].mask) == kinds[j].value && (kinds[j].mask & kinds[i].mask) == kinds[i].mask &&
-                      kinds[j].mask != kinds[i].mask && (kinds[j].value & kinds[i].mask) == kinds[i].value;
-        }
-        if (implied) continue;
-        const int n = snprintf(buf + len, cap - len, "%s%s", len ? "," : "", kinds[i].name);
-        if (n < 0 || (size_t)n >= cap - len) break;
-        len += (size_t)n;
+        if (bond_kind_proper(kinds[i]) && (flags & kinds[i].mask) == kinds[i].value) return kinds[i].name;
     }
-    return buf;
+    return "";
 }
 
 bool bond_kind_parse(md_bond_flags_t* out, str_t str) {
     ASSERT(out);
+    str = str_trim(str);
     size_t count = 0;
     const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
-    md_bond_flags_t flags = MD_BOND_FLAG_NONE;
-    str_t tok;
-    bool any = false;
-    while (next_list_name(&tok, &str)) {
-        if (str_empty(tok)) continue;
-        bool found = false;
-        for (size_t i = 0; i < count && !found; ++i) {
-            if (str_eq_cstr(tok, kinds[i].name)) {
-                flags |= kinds[i].value;
-                found = true;
-            }
+    for (size_t i = 0; i < count; ++i) {
+        if (bond_kind_proper(kinds[i]) && str_eq_cstr(str, kinds[i].name)) {
+            *out = kinds[i].value;
+            return true;
         }
-        if (!found) return false;
-        any = true;
     }
-    // A bond is of one kind proper: covalent, coordinate or non-covalent
-    if (!any || ((flags & MD_BOND_FLAG_NONCOVALENT) && (flags & MD_BOND_FLAG_COORDINATE))) return false;
-    *out = flags;
-    return true;
+    return false;
 }
 
 // Origins (a mask of 1 << md_bond_origin_t) by name, "file,inferred"
@@ -2269,12 +2247,13 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("kind")) && last_taken) {
                     str_t str;
                     md_bond_flags_t kind = MD_BOND_FLAG_NONE;
-                    if (viamd::extract_str(str, arg) && bond_kind_parse(&kind, str)) {
-                        md_bond_flags_t* flags = md_array_last(pending.user_bond_flags);
-                        *flags = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
-                    } else {
-                        VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as a bond of no particular kind");
+                    if (!viamd::extract_str(str, arg) || !bond_kind_parse(&kind, str)) {
+                        // An interaction, which is no particular kind and leaves the molecules as they are
+                        VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as an interaction");
+                        kind = (md_bond_flags_t)MD_BOND_KIND_INTERACTION;
                     }
+                    md_bond_flags_t* flags = md_array_last(pending.user_bond_flags);
+                    *flags = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
                 }
             }
         } else if (str_eq(section, STR_LIT("Script"))) {
@@ -2458,10 +2437,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
             const md_atom_pair_t& pair = pending.user_bonds[i];
             if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms && pair.idx[0] != pair.idx[1]) {
                 const md_bond_flags_t flags = pending.user_bond_flags[i];
-                graph |= !(flags & MD_BOND_FLAG_NONCOVALENT);
+                graph |= !md_bond_is_noncovalent(flags);
                 md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], flags);
                 // The next one finds this one, should the workspace have it twice
-                if (!(flags & MD_BOND_FLAG_NONCOVALENT)) md_system_bond_build_connectivity(&sys);
+                if (!md_bond_is_noncovalent(flags)) md_system_bond_build_connectivity(&sys);
             }
         }
         if (graph) {
@@ -2655,8 +2634,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
             }
             viamd::write_int_vec(state, STR_LIT("atoms"), bonds.pairs[i].idx, 2);
             if (flags & MD_BOND_FLAG_KIND_GIVEN) {
-                char kind[64];
-                viamd::write_str(state, STR_LIT("kind"), str_from_cstr(bond_kind_str(kind, sizeof(kind), flags)));
+                viamd::write_str(state, STR_LIT("kind"), str_from_cstr(bond_kind_str(flags)));
             }
         }
     }

@@ -2628,7 +2628,7 @@ static bool system_has_elastic_bonds(const md_system_t& sys) {
         version = sys.topology_version;
         result = false;
         for (size_t i = 0; i < sys.bond.count && sys.bond.flags && !result; ++i) {
-            result = (sys.bond.flags[i] & MD_BOND_FLAG_ELASTIC) != 0;
+            result = md_bond_kind(sys.bond.flags[i]) == MD_BOND_KIND_ELASTIC;
         }
     }
     return result;

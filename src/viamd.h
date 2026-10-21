@@ -979,7 +979,7 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
-    bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
+    bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and whether they are dashed
     md_array(md_atom_pair_t) bond_pairs = nullptr;
     bool   bonds_dashed = false;
@@ -2129,9 +2129,9 @@ void system_bonds_edit_begin(ApplicationState* app);
 // added or removed by hand: its connectivity, the structures and the rings are built again.
 void system_bonds_changed(ApplicationState* app, bool graph_edited);
 
-// The kind a bond was given by the names of md_bond_kind_names, the most specific of those it is of: "coordinate",
-// "hydrogen,ionic". bond_kind_parse reads it back (flags of the kind alone), false for a name it does not know.
-const char* bond_kind_str(char* buf, size_t cap, md_bond_flags_t flags);
+// The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
+// bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.
+const char* bond_kind_str(md_bond_flags_t flags);
 bool        bond_kind_parse(md_bond_flags_t* out, str_t str);
 // Origins of bonds, a mask of 1 << md_bond_origin_t, by name: "file,inferred"
 const char* bond_origins_str(char* buf, size_t cap, uint32_t origins);

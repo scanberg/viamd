@@ -1322,7 +1322,7 @@ struct Dataset : viamd::EventHandler {
         c.bonds_noncovalent = sys.bond.noncovalent_count;
         for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
-            if (f & MD_BOND_FLAG_ELASTIC) {
+            if (md_bond_kind((md_bond_flags_t)f) == MD_BOND_KIND_ELASTIC) {
                 c.bonds_elastic += 1;
                 continue;
             }
