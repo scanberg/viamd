@@ -424,11 +424,10 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
-static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t bond_idx) {
+// A bond of the system, or one formed in the frame shown (picked_bond)
+static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, md_atom_pair_t pair, md_bond_flags_t flags, bool formed) {
     const md_system_t& sys = state.mold.sys;
     const md_system_state_t& sys_state = state.mold.state;
-    const md_atom_pair_t  pair  = sys.bond.pairs[bond_idx];
-    const md_bond_flags_t flags = sys.bond.flags[bond_idx];
     const int order = md_bond_order(flags);
 
     char symbol = '-';
@@ -461,6 +460,12 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     }
     if (flags & MD_BOND_FLAG_COORDINATE) tooltip_list_add(&kind, "coordinate");
     if (flags & MD_BOND_FLAG_ELASTIC)    tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)");
+    if (flags & MD_BOND_FLAG_NONCOVALENT) {
+        if (flags & MD_BOND_FLAG_HYDROGEN)   tooltip_list_add(&kind, "hydrogen bond");
+        if (flags & MD_BOND_FLAG_IONIC)      tooltip_list_add(&kind, "ionic");
+        if (flags & MD_BOND_FLAG_SIGMA_HOLE) tooltip_list_add(&kind, "sigma hole");
+        if (!(flags & MD_BOND_FLAG_CHARACTER_MASK)) tooltip_list_add(&kind, "non-covalent");
+    }
     tooltip_row_list(req, STR_LIT("kind"), kind);
 
     // Across a periodic boundary the bond is the short way round
@@ -469,8 +474,13 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row(req, STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, vec3_length(d));
 
     md_str_writer_t source = md_str_writer_create(req->alloc);
-    tooltip_list_add(&source, md_bond_origin_name(md_bond_origin(flags)));
-    if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&source, "order perceived");
+    if (formed) {
+        // Not a bond of the system: tracked, of this frame alone
+        tooltip_list_add(&source, "formed in this frame");
+    } else {
+        tooltip_list_add(&source, md_bond_origin_name(md_bond_origin(flags)));
+        if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&source, "order perceived");
+    }
     tooltip_row_list(req, STR_LIT("source"), source);
 
     tooltip_row(req, STR_LIT("index"), "atom(%d) atom(%d)", pair.idx[0] + 1, pair.idx[1] + 1);
@@ -760,7 +770,10 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
     if (hit.domain == PickingDomain_Atom) {
         if (hit.local_idx < sys.atom.count) tooltip_atom(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Bond) {
-        if (hit.local_idx < sys.bond.count) tooltip_bond(req, state, hit.local_idx);
+        md_atom_pair_t pair;
+        md_bond_flags_t flags;
+        bool formed;
+        if (picked_bond(state, hit.local_idx, &pair, &flags, &formed)) tooltip_bond(req, state, pair, flags, formed);
     } else if (hit.domain == PickingDomain_BackboneSegment) {
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
@@ -1479,6 +1492,16 @@ void init_system_data(ApplicationState* data) {
         data->operations.initial_frame.valid = false;
         data->operations.state_rotation = mat4_ident();
         recenter_mark_query_dirty(data);
+        {
+            // Of the bonds of another system
+            auto& bt = data->operations.bond_tracking;
+            md_bond_delta_free(&bt.delta, data->allocator.persistent);
+            bt.delta = {};
+            bt.key = 0;
+            md_bitset_free(&bt.scope_mask, data->allocator.persistent);
+            bt.scope.result = {};
+            bt.scope_dirty = true;
+        }
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
@@ -1762,6 +1785,102 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
     return result;
 }
 
+// The next name of a list of them separated by commas, trimmed. False at the end.
+static bool next_list_name(str_t* tok, str_t* list) {
+    if (str_empty(*list)) return false;
+    size_t loc = 0;
+    if (str_find_char(&loc, *list, ',')) {
+        *tok  = str_trim(str_substr(*list, 0, loc));
+        *list = str_substr(*list, loc + 1);
+    } else {
+        *tok  = str_trim(*list);
+        *list = str_t{};
+    }
+    return true;
+}
+
+// The kind a bond was given, by the names of md_bond_kind_names: the most specific of those it is of ("coordinate",
+// "hydrogen,ionic"), as a workspace stores it
+const char* bond_kind_str(char* buf, size_t cap, md_bond_flags_t flags) {
+    ASSERT(buf && cap > 0);
+    size_t count = 0;
+    const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
+    buf[0] = '\0';
+    size_t len = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if ((flags & kinds[i].mask) != kinds[i].value) continue;
+        // Left out when a more specific one says it too: 'noncovalent' of a hydrogen bond
+        bool implied = false;
+        for (size_t j = 0; j < count && !implied; ++j) {
+            implied = j != i && (flags & kinds[j].mask) == kinds[j].value && (kinds[j].mask & kinds[i].mask) == kinds[i].mask &&
+                      kinds[j].mask != kinds[i].mask && (kinds[j].value & kinds[i].mask) == kinds[i].value;
+        }
+        if (implied) continue;
+        const int n = snprintf(buf + len, cap - len, "%s%s", len ? "," : "", kinds[i].name);
+        if (n < 0 || (size_t)n >= cap - len) break;
+        len += (size_t)n;
+    }
+    return buf;
+}
+
+bool bond_kind_parse(md_bond_flags_t* out, str_t str) {
+    ASSERT(out);
+    size_t count = 0;
+    const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
+    md_bond_flags_t flags = MD_BOND_FLAG_NONE;
+    str_t tok;
+    bool any = false;
+    while (next_list_name(&tok, &str)) {
+        if (str_empty(tok)) continue;
+        bool found = false;
+        for (size_t i = 0; i < count && !found; ++i) {
+            if (str_eq_cstr(tok, kinds[i].name)) {
+                flags |= kinds[i].value;
+                found = true;
+            }
+        }
+        if (!found) return false;
+        any = true;
+    }
+    // A bond is of one kind proper: covalent, coordinate or non-covalent
+    if (!any || ((flags & MD_BOND_FLAG_NONCOVALENT) && (flags & MD_BOND_FLAG_COORDINATE))) return false;
+    *out = flags;
+    return true;
+}
+
+// Origins (a mask of 1 << md_bond_origin_t) by name, "file,inferred"
+const char* bond_origins_str(char* buf, size_t cap, uint32_t origins) {
+    ASSERT(buf && cap > 0);
+    buf[0] = '\0';
+    size_t len = 0;
+    for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) {
+        if (!(origins & (1u << o))) continue;
+        const int n = snprintf(buf + len, cap - len, "%s%s", len ? "," : "", md_bond_origin_name((md_bond_origin_t)o));
+        if (n < 0 || (size_t)n >= cap - len) break;
+        len += (size_t)n;
+    }
+    return buf;
+}
+
+bool bond_origins_parse(uint32_t* out, str_t str) {
+    ASSERT(out);
+    uint32_t mask = 0;
+    str_t tok;
+    while (next_list_name(&tok, &str)) {
+        if (str_empty(tok)) continue;
+        bool found = false;
+        for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED && !found; ++o) {
+            if (str_eq_cstr(tok, md_bond_origin_name((md_bond_origin_t)o))) {
+                mask |= 1u << o;
+                found = true;
+            }
+        }
+        if (!found) return false;
+    }
+    *out = mask;
+    return true;
+}
+
 // #workspace
 //
 // A workspace is everything that makes up one analysis, as opposed to the settings that follow the
@@ -1851,7 +1970,8 @@ struct WorkspacePending {
     bool          has_camera;
     ViewTransform camera;
 
-    md_array(md_atom_pair_t) user_bonds;
+    md_array(md_atom_pair_t)  user_bonds;
+    md_array(md_bond_flags_t) user_bond_flags;    // [user_bonds] Origin user, and the kind when one was given
 
     bool has_selection_mask;
     md_bitset_t selection_mask;
@@ -1932,7 +2052,15 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.fixate_orientation = false;
     data->operations.apply_pbc = false;
     data->operations.unwrap_structures = false;
-    data->operations.recalc_bonds = false;
+    {
+        auto& bt = data->operations.bond_tracking;
+        bt.enabled = false;
+        bt.scope.text[0] = '\0';
+        bt.scope.result = {};
+        bt.scope_dirty = true;
+        bt.tolerance = MD_BOND_DELTA_TOLERANCE;
+        bt.breakable = MD_BOND_DELTA_BREAKABLE;
+    }
     data->operations.recenter_query.enabled = false;
     data->operations.recenter_query.filter.text[0] = '\0';
     recenter_mark_query_dirty(data);
@@ -2102,7 +2230,22 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("FixateOrientation")))   viamd::extract_bool(op.fixate_orientation, arg);
                 else if (str_eq(ident, STR_LIT("ApplyPbc")))            viamd::extract_bool(op.apply_pbc, arg);
                 else if (str_eq(ident, STR_LIT("UnwrapStructures")))    viamd::extract_bool(op.unwrap_structures, arg);
-                else if (str_eq(ident, STR_LIT("RecalcBonds")))         viamd::extract_bool(op.recalc_bonds, arg);
+                // What a workspace from before the bond changes were tracked had: the bonds of every frame guessed anew
+                else if (str_eq(ident, STR_LIT("RecalcBonds")))         viamd::extract_bool(op.bond_tracking.enabled, arg);
+                else if (str_eq(ident, STR_LIT("TrackBonds")))          viamd::extract_bool(op.bond_tracking.enabled, arg);
+                else if (str_eq(ident, STR_LIT("TrackBondsScope"))) {
+                    viamd::extract_to_char_buf(op.bond_tracking.scope.text, sizeof(op.bond_tracking.scope.text), arg);
+                    op.bond_tracking.scope_dirty = true;
+                }
+                else if (str_eq(ident, STR_LIT("TrackBondsTolerance"))) {
+                    float tolerance = MD_BOND_DELTA_TOLERANCE;
+                    if (viamd::extract_flt(tolerance, arg)) op.bond_tracking.tolerance = CLAMP(tolerance, 0.0f, 0.45f);
+                }
+                else if (str_eq(ident, STR_LIT("TrackBondsBreakable"))) {
+                    str_t str;
+                    uint32_t mask = 0;
+                    if (viamd::extract_str(str, arg) && bond_origins_parse(&mask, str)) op.bond_tracking.breakable = mask;
+                }
                 else if (str_eq(ident, STR_LIT("RecenterQueryEnabled"))) viamd::extract_bool(op.recenter_query.enabled, arg);
                 else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
                     viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
@@ -2112,12 +2255,25 @@ void load_workspace(ApplicationState* data, str_t filename) {
             }
         } else if (representations_deserialize(data, section, state)) {
         } else if (str_eq(section, STR_LIT("UserBonds"))) {
+            // Each bond its atoms, and the kind it was given after them, if one was
+            bool last_taken = false;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("atoms"))) {
                     int atom_indices[2] = {-1, -1};
-                    if (viamd::extract_int_vec(atom_indices, 2, arg) && atom_indices[0] >= 0 && atom_indices[1] >= 0) {
+                    last_taken = viamd::extract_int_vec(atom_indices, 2, arg) && atom_indices[0] >= 0 && atom_indices[1] >= 0;
+                    if (last_taken) {
                         md_atom_pair_t pair = { atom_indices[0], atom_indices[1] };
                         md_array_push(pending.user_bonds, pair, temp_alloc);
+                        md_array_push(pending.user_bond_flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), temp_alloc);
+                    }
+                } else if (str_eq(ident, STR_LIT("kind")) && last_taken) {
+                    str_t str;
+                    md_bond_flags_t kind = MD_BOND_FLAG_NONE;
+                    if (viamd::extract_str(str, arg) && bond_kind_parse(&kind, str)) {
+                        md_bond_flags_t* flags = md_array_last(pending.user_bond_flags);
+                        *flags = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
+                    } else {
+                        VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as a bond of no particular kind");
                     }
                 }
             }
@@ -2295,14 +2451,23 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     const size_t num_user_bonds = atoms_as_saved ? md_array_size(pending.user_bonds) : 0;
     if (num_user_bonds > 0) {
+        md_system_t& sys = data->mold.sys;
+        system_bonds_edit_begin(data);
+        bool graph = false;
         for (size_t i = 0; i < num_user_bonds; ++i) {
             const md_atom_pair_t& pair = pending.user_bonds[i];
-            if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms) {
-                md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+            if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms && pair.idx[0] != pair.idx[1]) {
+                const md_bond_flags_t flags = pending.user_bond_flags[i];
+                graph |= !(flags & MD_BOND_FLAG_NONCOVALENT);
+                md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], flags);
+                // The next one finds this one, should the workspace have it twice
+                if (!(flags & MD_BOND_FLAG_NONCOVALENT)) md_system_bond_build_connectivity(&sys);
             }
         }
-        md_util_system_infer_coordination(&data->mold.sys);
-        data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+        if (graph) {
+            md_util_system_infer_coordination(&sys);
+        }
+        system_bonds_changed(data, graph);
     }
 
     // The assembly shown, by its id in the files loaded
@@ -2444,7 +2609,11 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("FixateOrientation"), op.fixate_orientation);
         viamd::write_bool(state, STR_LIT("ApplyPbc"), op.apply_pbc);
         viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
-        viamd::write_bool(state, STR_LIT("RecalcBonds"), op.recalc_bonds);
+        viamd::write_bool(state, STR_LIT("TrackBonds"), op.bond_tracking.enabled);
+        viamd::write_str(state,  STR_LIT("TrackBondsScope"), str_from_cstr(op.bond_tracking.scope.text));
+        viamd::write_flt(state,  STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
+        char origins[64];
+        viamd::write_str(state,  STR_LIT("TrackBondsBreakable"), str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
         viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
         viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
         if (!md_bitset_empty(op.selection_mask)) {
@@ -2474,15 +2643,21 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bitset(state, STR_LIT("Mask"), &selection);
     }
 
-    // Save user defined bonds
+    // Save user defined bonds, of the graph and non-covalent, with the kind they were given
     bool has_user_bonds = false;
-    for (size_t i = 0; i < app_state->mold.sys.bond.count; ++i) {
-        if (md_bond_origin(app_state->mold.sys.bond.flags[i]) == MD_BOND_ORIGIN_USER) {
+    const md_bond_data_t& bonds = app_state->mold.sys.bond;
+    for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
+        const md_bond_flags_t flags = bonds.flags[i];
+        if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
             if (!has_user_bonds) {
                 viamd::write_section_header(state, STR_LIT("UserBonds"));
                 has_user_bonds = true;
             }
-            viamd::write_int_vec(state, STR_LIT("atoms"), app_state->mold.sys.bond.pairs[i].idx, 2);
+            viamd::write_int_vec(state, STR_LIT("atoms"), bonds.pairs[i].idx, 2);
+            if (flags & MD_BOND_FLAG_KIND_GIVEN) {
+                char kind[64];
+                viamd::write_str(state, STR_LIT("kind"), str_from_cstr(bond_kind_str(kind, sizeof(kind), flags)));
+            }
         }
     }
 
@@ -4914,42 +5089,188 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     return true;
 }
 
-bool recompute_covalent_bonds(ApplicationState* app, int64_t frame) {
+// The coordinates bonds are found in: the whole frame of the run nearest frame, or the coordinates shown when there is
+// no run, taken back out of any turn from keeping the orientation. The bond search takes its minimum images in the cell,
+// so they have to be in the lattice frame of the cell, which a frame of the run always is.
+static bool bond_coordinates(md_system_state_t* state, const ApplicationState* app, int64_t frame) {
+    const size_t num_atoms = app->mold.sys.atom.count;
+    if (!md_system_state_init(state, num_atoms)) return false;
+
+    const size_t num_frames = run_num_frames(app);
+    if (num_frames > 0) {
+        if (!extract_frame(app, CLAMP(frame, (int64_t)0, (int64_t)num_frames - 1), state)) {
+            MD_LOG_ERROR("Failed to extract frame data");
+            return false;
+        }
+        return true;
+    }
+    const md_system_state_t& shown = app->mold.state;
+    if (!shown.xyz || shown.num_atoms != num_atoms) return false;
+    MEMCPY(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
+    state->unitcell = shown.unitcell;
+    if (!is_identity(app->operations.state_rotation)) {
+        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
+    }
+    return true;
+}
+
+bool recompute_bonds(ApplicationState* app, int64_t frame) {
     ASSERT(app);
     md_system_t& sys = app->mold.sys;
-    const size_t num_atoms = sys.atom.count;
-    if (num_atoms == 0) return false;
+    if (sys.atom.count == 0) return false;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
     md_system_state_t state = { .alloc = temp.arena };
-    if (!md_system_state_init(&state, num_atoms)) return false;
+    if (!bond_coordinates(&state, app, frame)) return false;
 
-    // The bond search takes its minimum images in the cell, so its coordinates have to be in the cell's
-    // lattice frame. A frame of the run always is.
-    const size_t num_frames = run_num_frames(app);
-    if (num_frames > 0) {
-        if (!extract_frame(app, CLAMP(frame, (int64_t)0, (int64_t)num_frames - 1), &state)) {
-            MD_LOG_ERROR("Failed to extract frame data");
-            return false;
-        }
-    } else {
-        // The coordinates shown, taken back out of any turn from keeping the orientation
-        const md_system_state_t& shown = app->mold.state;
-        if (!shown.xyz || shown.num_atoms != num_atoms) return false;
-        MEMCPY(state.xyz, shown.xyz, num_atoms * sizeof(vec3_t));
-        state.unitcell = shown.unitcell;
-        if (!is_identity(app->operations.state_rotation)) {
-            mat4_batch_transform_inplace(state.xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
-        }
+    system_bonds_edit_begin(app);
+    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
+    md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
+    md_system_topology_changed(&sys);
+    // What follows from the bonds, from the same coordinates, which md_util_system_infer records as the reference
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_STRUCTURE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT);
+    system_bonds_changed(app, false);
+    return true;
+}
+
+void system_bonds_edit_begin(ApplicationState* app) {
+    ASSERT(app);
+    if (app->script.eval) md_script_eval_interrupt(app->script.eval);
+    task_system::pool_wait_for_completion();
+}
+
+void system_bonds_changed(ApplicationState* app, bool graph_edited) {
+    ASSERT(app);
+    md_system_t& sys = app->mold.sys;
+    if (graph_edited) {
+        md_system_bond_build_connectivity(&sys);
+        // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
+        // are what they were, and a bond added by hand has none.
+        md_util_system_infer_structures(&sys);
+        md_util_system_infer_rings(&sys);
+    }
+    app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+    // The properties of a script are of the topology they were evaluated with (md_script_ir_compile), and the bond sets
+    // it holds are indices of the bonds there were. Compiled in this frame, before the representations which name them
+    // are evaluated, rather than once the delay for typing has passed.
+    app->script.compile_ir = true;
+    app->script.time_since_last_change = 1.0e9;
+    flag_all_representations_as_dirty(app);
+}
+
+const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app) {
+    ASSERT(app);
+    const auto& bt = app->operations.bond_tracking;
+    return bt.enabled && bt.key != 0 ? &bt.delta : nullptr;
+}
+
+static void bond_tracking_clear(ApplicationState* app) {
+    auto& bt = app->operations.bond_tracking;
+    if (bt.key != 0) {
+        md_bond_delta_free(&bt.delta, app->allocator.persistent);
+        bt.delta = {};
+        bt.key = 0;
+        bt.formed_capacity = 0;
+        app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+    }
+}
+
+void bond_tracking_update(ApplicationState* app) {
+    ASSERT(app);
+    auto& bt = app->operations.bond_tracking;
+    const md_system_t& sys = app->mold.sys;
+    if (!bt.enabled || sys.atom.count == 0) {
+        bond_tracking_clear(app);
+        return;
     }
 
-    MD_LOG_DEBUG("RECALCULATING BONDS");
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
-    md_bond_build_connectivity(&sys.bond, num_atoms, sys.alloc);
-    app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-    return true;
+    // The scope, evaluated again when the script whose names it may use changes, and in every frame when what it picks
+    // depends on the frame. Empty for every atom.
+    const bool has_scope = !str_empty(str_trim(str_from_cstr(bt.scope.text)));
+    const uint64_t ir_fingerprint = app->script.ir ? app->script.ir_fingerprint : 0;
+    if (bt.scope_ir_fingerprint != ir_fingerprint) {
+        bt.scope_ir_fingerprint = ir_fingerprint;
+        bt.scope_dirty = true;
+    }
+    if (bt.scope.result.is_dynamic) {
+        bt.scope_dirty = true;
+    }
+    if (bt.scope_dirty) {
+        if (has_scope) {
+            filter_evaluate(&bt.scope, &bt.scope_mask, filter_context(app), app->allocator.persistent);
+        } else {
+            md_bitset_free(&bt.scope_mask, app->allocator.persistent);
+            bt.scope.result = {};
+            bt.scope.result.success = true;
+        }
+        bt.scope_dirty = false;
+    }
+    // A scope that does not evaluate tracks nothing, rather than everything
+    if (!bt.scope.result.success) {
+        bond_tracking_clear(app);
+        return;
+    }
+
+    // What the delta is of. The frame and nothing finer: the bonds of a state between two frames are those of the
+    // nearest one, as the script has them.
+    const int64_t frame = run_num_frames(app) > 0 ? (int64_t)(app->animation.frame + 0.5) : -1;
+    uint64_t key = md_hash64(&frame, sizeof(frame), sys.topology_version);
+    key = md_hash64(&bt.tolerance, sizeof(bt.tolerance), key);
+    key = md_hash64(&bt.breakable, sizeof(bt.breakable), key);
+    key = has_scope ? md_bitset_hash64(bt.scope_mask, key) : md_hash64(&has_scope, sizeof(has_scope), key);
+    // Without a run the coordinates shown are those of the system, which the operations move only as a whole or into
+    // other images: the minimum images the delta is found in are the same
+    key = key ? key : 1;
+    if (key == bt.key) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_system_state_t state = { .alloc = temp.arena };
+    md_bond_delta_t delta = {};
+    const md_tick_t t0 = md_tick_now();
+    if (bond_coordinates(&state, app, frame)) {
+        const md_bond_delta_desc_t desc = {
+            .scope = has_scope ? &bt.scope_mask : nullptr,
+            .tolerance = bt.tolerance,
+            .breakable = bt.breakable,
+        };
+        md_util_bond_delta(&delta, &sys, &state, &desc, app->allocator.persistent);
+    }
+    const double time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
+
+    // Uploaded again only when it changed: most frames of most runs have the bonds of the one before
+    const bool same = bt.key != 0 && delta.num_formed == bt.delta.num_formed && md_bitset_equal(delta.broken, bt.delta.broken) &&
+        (delta.num_formed == 0 || (MEMCMP(delta.formed_pair, bt.delta.formed_pair, delta.num_formed * sizeof(md_atom_pair_t)) == 0 &&
+                                   MEMCMP(delta.formed_flags, bt.delta.formed_flags, delta.num_formed * sizeof(md_bond_flags_t)) == 0));
+    md_bond_delta_free(&bt.delta, app->allocator.persistent);
+    bt.delta = delta;
+    bt.key = key;
+    bt.time_ms = time_ms;
+    bt.formed_capacity = MAX(bt.formed_capacity, delta.num_formed);
+    if (!same) {
+        app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+    }
+}
+
+bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed) {
+    const md_system_t& sys = app.mold.sys;
+    if (idx < sys.bond.count) {
+        *pair = sys.bond.pairs[idx];
+        *flags = sys.bond.flags[idx];
+        *formed = false;
+        return true;
+    }
+    const md_bond_delta_t* delta = bond_tracking_delta(&app);
+    idx -= sys.bond.count;
+    if (delta && idx < delta->num_formed) {
+        *pair = delta->formed_pair[idx];
+        *flags = delta->formed_flags[idx];
+        *formed = true;
+        return true;
+    }
+    return false;
 }
 
 bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key) {
@@ -5615,7 +5936,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			ASSERT(event.payload_type == viamd::EventPayloadType_PickingSpace);
 			PickingSpace* space = (PickingSpace*)event.payload;
             size_t num_atoms = state->mold.sys.atom.count;
-            size_t num_bonds = state->mold.sys.bond.count;
+            // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
+            // frame that is is not settled yet: as many as have formed in any frame are reserved for.
+            const md_bond_delta_t* delta = bond_tracking_delta(state);
+            size_t num_bonds = state->mold.sys.bond.count + (delta ? MAX(delta->num_formed, state->operations.bond_tracking.formed_capacity) : 0);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
@@ -5657,10 +5981,11 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)atom_idx, state->selection.granularity, state->mold.sys);
                         }
                     } else if (surf->hit.domain == PickingDomain_Bond) {
-                        size_t bond_idx = surf->hit.local_idx;
-                        if (bond_idx < state->mold.sys.bond.count) {
+                        md_atom_pair_t pair;
+                        md_bond_flags_t flags;
+                        bool formed;
+                        if (picked_bond(*state, surf->hit.local_idx, &pair, &flags, &formed)) {
                             // Grow both bond atoms by the current granularity, same as for atom hits
-                            const md_atom_pair_t& pair = state->mold.sys.bond.pairs[bond_idx];
                             mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[0], state->selection.granularity, state->mold.sys);
                             mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[1], state->selection.granularity, state->mold.sys);
                         }
@@ -5779,39 +6104,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             ASSERT(event.payload_type == viamd::EventPayloadType_ApplicationState);
             ApplicationState* app = (ApplicationState*)event.payload;
 
-            int num_tasks = 0;
-            task_system::ID tasks[16];
-            
             // The event means mold.state was just written from its source, in the lattice frame of its
             // cell: whatever turn the previous coordinates carried went with them.
             app->operations.state_rotation = mat4_ident();
 
-            if (app->operations.recalc_bonds) {
-                static int64_t cur_nearest_frame = -1;
-
-                // We cannot recalculate bonds while the evaluation is running
-                // because it would overwrite the bond data while we are reading it
-                int64_t nearest_frame = (int64_t)(app->animation.frame + 0.5);
-                if (!task_system::task_is_running(app->tasks.evaluate) && !task_system::task_is_running(app->script.vis_task)) {
-                    const bool has_frames = run_num_frames(app) > 0;
-                    if (!has_frames || (cur_nearest_frame != nearest_frame)) {
-                        cur_nearest_frame = nearest_frame;
-                        // From the whole frame nearest the animation time, not the interpolated state shown
-                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [app, nearest_frame]() {
-                            recompute_covalent_bonds(app, nearest_frame);
-                        });
-                        tasks[num_tasks++] = recalc_bond_task;
-                    }
-                }
-            }
-
-            if (num_tasks > 0) {
-                for (int j = 1; j < num_tasks; ++j) {
-                    task_system::set_task_dependency(tasks[j], tasks[j-1]);
-                }
-                task_system::enqueue_task(tasks[0]);
-                task_system::task_wait_for(tasks[num_tasks - 1]);
-            }
+            // The bond changes of the frame are not here: bond_tracking_update keeps them up to date with the frame
+            // shown once a frame, and they leave the bonds of the system as they are
 
             // Recenter, wrap, make whole and turn, in that order (see apply_state_operations). They rewrite
             // the coordinates that update_md_buffers uploads, and nothing else flags them: the synchronous

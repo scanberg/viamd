@@ -78,6 +78,11 @@ void init_all_representations(ApplicationState* app);
 void update_all_representations(ApplicationState* app);
 
 void flag_representation_as_dirty(Representation* rep);
+
+// The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds): of a licorice or a ball and stick, the
+// non-covalent bonds of the system, dashed among its atoms; of a Bonds representation, the bonds its filter picked.
+// Set again whenever the bonds of the system change.
+void representation_set_weak_bonds(ApplicationState* app, Representation* rep);
 // The representations and the contexts of the groups: what they are evaluated against changed (the script, the system)
 void flag_all_representations_as_dirty(ApplicationState* app);
 // The frame changed: what follows it is evaluated again. That is a filter or a context which depends on the
@@ -108,6 +113,10 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 // shows none or their positions are not derived (cartoon_glyphs_update_positions). The copies and the subset (of the
 // glyphs) are the caller's.
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
+// The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
+// solid or dashed, and the non-covalent bonds of the system, dashed, over the sticks of a licorice or a ball and stick.
+// Nothing for the others. The copies and the subset are the caller's.
+void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the

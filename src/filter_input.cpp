@@ -24,6 +24,11 @@ bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, const
     return filter->result.success;
 }
 
+bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, const md_filter_context_t& ctx, md_allocator_i* alloc) {
+    filter->result = md_filter_bonds(bonds, str_from_cstr(filter->text), &ctx, alloc);
+    return filter->result.success;
+}
+
 namespace {
 
 struct Suggestion {

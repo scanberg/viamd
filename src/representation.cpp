@@ -285,6 +285,7 @@ static void clear_owned(Representation* rep) {
     rep->md_rep = {};
     rep->glyph_rep = {};
     rep->atom_mask = {};
+    rep->bond_pairs = nullptr;
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
@@ -350,6 +351,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
+    md_array_free(rep.bond_pairs, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
     md_gl_rep_destroy(rep.glyph_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
@@ -843,12 +845,24 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             // Within the context of the groups it is in. A context that is not valid leaves nothing to
             // evaluate within, which is what an invalid filter of its own leaves too.
             const RepresentationContext ctx = representation_context(*state, rep->node.parent);
-            if (ctx.valid) {
+            if (ctx.valid && rep->type == RepresentationType::Bonds) {
+                // The bonds, and the atoms at their ends: those are what is coloured, and shown
+                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, representation_filter_context(*state, ctx), state->allocator.persistent);
+                md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
+                for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
+                    md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
+                    md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[1]);
+                }
+                md_bitset_free(&rep->atom_mask, state->allocator.persistent);
+                rep->atom_mask = md_bitmask_extract(&ends, state->allocator.persistent);
+                rep->filter.result.is_dynamic |= ctx.dynamic;
+            } else if (ctx.valid) {
                 filter_evaluate(&rep->filter, &rep->atom_mask, representation_filter_context(*state, ctx), state->allocator.persistent);
                 // What it picks follows the frame if the context it picks within does
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else {
                 md_bitset_free(&rep->atom_mask, state->allocator.persistent);
+                md_array_shrink(rep->bond_pairs, 0);
                 rep->filter.result = {};
                 rep->filter.result.is_dynamic = ctx.dynamic;     // it may come back valid in another frame
                 snprintf(rep->filter.result.error, sizeof(rep->filter.result.error), "The filter of the group '%s', the context of this one, is not valid", ctx.group ? ctx.group->name : "");
@@ -881,6 +895,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::SimulationBox:
         rep->type_is_valid = md_unitcell_flags(&state->mold.state.unitcell) != 0;
         break;
+    case RepresentationType::Bonds:
+        rep->type_is_valid = sys.atom.count > 0;
+        break;
     default:
         ASSERT(false);
         break;
@@ -891,6 +908,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             filter_colors(colors, num_atoms, rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
+            representation_set_weak_bonds(state, rep);
             rep->glyphs_shown = false;
             if (rep->type == RepresentationType::Cartoon) {
                 rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
@@ -907,6 +925,78 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     }
 
     rep->needs_update = false;
+}
+
+void representation_set_weak_bonds(ApplicationState* state, Representation* rep) {
+    ASSERT(state && rep);
+    if (!rep->md_rep.id) return;
+    const md_system_t& sys = state->mold.sys;
+
+    const md_atom_pair_t* pairs = nullptr;
+    size_t count = 0;
+    if (rep->type == RepresentationType::Licorice || rep->type == RepresentationType::BallAndStick) {
+        pairs = sys.bond.pairs ? sys.bond.pairs + sys.bond.count : nullptr;
+        count = sys.bond.noncovalent_count;
+    } else if (rep->type == RepresentationType::Bonds) {
+        pairs = rep->bond_pairs;
+        count = md_array_size(rep->bond_pairs);
+    }
+
+    md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+    defer { md_temp_end(temp); };
+    uint32_t* atom_a = count ? (uint32_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint32_t) * count) : nullptr;
+    uint32_t* atom_b = count ? (uint32_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint32_t) * count) : nullptr;
+    for (size_t i = 0; i < count; ++i) {
+        atom_a[i] = (uint32_t)pairs[i].idx[0];
+        atom_b[i] = (uint32_t)pairs[i].idx[1];
+    }
+    md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr);
+}
+
+// The dashes of a weak bond drawn dashed, and the gaps between them, as multiples of its radius
+#define WEAK_BOND_DASH_LENGTH 2.0f
+#define WEAK_BOND_GAP_LENGTH  1.5f
+
+void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+    ASSERT(ops);
+    md_gl_draw_op_t op = {
+        .type = MD_GL_REP_WEAK_BONDS,
+        .args = {},
+        .rep = rep.md_rep,
+    };
+    bool dashed = true;
+    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+        // The non-covalent bonds of the system among its atoms, thinner than its sticks, in their colours
+        if (state.mold.sys.bond.noncovalent_count == 0) return;
+        const md_gl_draw_op_t sticks = representation_draw_op(rep);
+        const bool licorice = rep.type == RepresentationType::Licorice;
+        op.args.weak_bonds.radius = 0.5f * 0.2f * (licorice ? rep.scale.x : rep.scale.y);
+        op.args.weak_bonds.color_mode    = licorice ? sticks.args.licorice.color_mode    : sticks.args.ball_and_stick.color_mode;
+        op.args.weak_bonds.sharpness     = licorice ? sticks.args.licorice.sharpness     : sticks.args.ball_and_stick.sharpness;
+        op.args.weak_bonds.uniform_color = licorice ? sticks.args.licorice.uniform_color : sticks.args.ball_and_stick.uniform_color;
+    } else if (rep.type == RepresentationType::Bonds) {
+        if (md_array_size(rep.bond_pairs) == 0) return;
+        // As thick as the sticks of a licorice of the same scale
+        op.args.weak_bonds.radius = 0.2f * rep.scale.x;
+        op.args.weak_bonds.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+        op.args.weak_bonds.sharpness = rep.bond_sharpness;
+        op.args.weak_bonds.uniform_color = convert_color(rep.bond_base_color);
+        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+            tint_colors(&op.args.weak_bonds.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+        }
+        dashed = rep.bonds_dashed;
+    } else {
+        return;
+    }
+    if (dashed) {
+        op.args.weak_bonds.dash_length = WEAK_BOND_DASH_LENGTH * op.args.weak_bonds.radius;
+        op.args.weak_bonds.gap_length  = WEAK_BOND_GAP_LENGTH  * op.args.weak_bonds.radius;
+    } else {
+        // Solid: md_gl draws two dashes at least, so one too long for any bond with a gap too small to see
+        op.args.weak_bonds.dash_length = 1.0e6f;
+        op.args.weak_bonds.gap_length  = 1.0e-6f;
+    }
+    md_array_push(*ops, op, alloc);
 }
 
 void update_all_representations(ApplicationState* state) {
@@ -1224,6 +1314,8 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_vec4(rep->bond_base_color, arg);
     } else if (str_eq(ident, STR_LIT("BondOrders"))) {
         viamd::extract_bool(rep->bond_orders, arg);
+    } else if (str_eq(ident, STR_LIT("BondsDashed"))) {
+        viamd::extract_bool(rep->bonds_dashed, arg);
     } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
         viamd::extract_bool(rep->chain_gaps, arg);
     } else if (str_eq(ident, STR_LIT("ElasticBonds"))) {
@@ -1458,6 +1550,9 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     viamd::write_flt(state,  STR_LIT("BondSharpness"), rep.bond_sharpness);
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
+    if (rep.type == RepresentationType::Bonds) {
+        viamd::write_bool(state, STR_LIT("BondsDashed"), rep.bonds_dashed);
+    }
     viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
     viamd::write_bool(state, STR_LIT("ElasticBonds"), rep.elastic_bonds);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
@@ -2484,7 +2579,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
         update_rep |= prop::color("##ss_sheet", rep.secondary_structure.color_sheet.elem);
     }
 
-    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick || rep.type == RepresentationType::Bonds) {
         // How the bonds are coloured, and what that takes
         prop::row("bonds");
         update_rep |= ImGui::Combo("##bond_color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
@@ -2551,6 +2646,12 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     case RepresentationType::Licorice:
         prop::row("radius");
         update_rep |= ImGui::SliderFloat("##radius", &rep.scale[0], 0.1f, 4.0f, scale_fmt);
+        break;
+    case RepresentationType::Bonds:
+        prop::row("radius", "As the sticks of a licorice of the same scale");
+        update_rep |= ImGui::SliderFloat("##radius", &rep.scale[0], 0.1f, 4.0f, scale_fmt);
+        prop::row("dashed", "Drawn as dashes rather than sticks, as weak bonds often are");
+        update_rep |= ImGui::Checkbox("##bonds_dashed", &rep.bonds_dashed);
         break;
     case RepresentationType::BallAndStick:
         prop::row("balls");
@@ -2646,20 +2747,29 @@ static bool draw_representation_properties(ApplicationState* state, Representati
     update_rep |= draw_representation_type(state, rep, false);
 
     // Of what md_gl draws and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
-    const bool periodic = ((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox) &&
+    const bool bonds = rep.type == RepresentationType::Bonds;
+    const bool periodic = ((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox || bonds) &&
                           md_unitcell_flags(&state->mold.state.unitcell) != 0;
     const bool atoms = RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon;
 
-    if (atoms) {
-        // Completed within the context it is evaluated in: what is not there would not match
+    if (atoms || bonds) {
+        // Completed within the context it is evaluated in: what is not there would not match. A filter of bonds is
+        // completed with the bond sets as well.
         const RepresentationContext ctx = representation_context(*state, rep.node.parent);
+        md_filter_context_t fctx = representation_filter_context(*state, ctx);
+        fctx.bonds = bonds;
         prop::row("filter");
-        if (filter_input("##filter", &rep.filter, representation_filter_context(*state, ctx))) {
+        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "bonds, or atoms: the bonds among them" : nullptr)) {
             rep.filt_is_dirty = true;
             update_rep = true;
         }
-        if (ctx.group && rep.filter.result.success && ImGui::IsItemHovered() && !filter_completions_open()) {
-            ImGui::SetTooltip("Within the context of the group '%s': %s", ctx.group->name, ctx.group->filter.text);
+        if (rep.filter.result.success && ImGui::IsItemHovered() && !filter_completions_open()) {
+            if (ctx.group) {
+                ImGui::SetTooltip("Within the context of the group '%s': %s", ctx.group->name, ctx.group->filter.text);
+            } else if (bonds) {
+                ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bonds(bond_delta()).\n"
+                                  "A set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
+            }
         }
 
         if (periodic) {

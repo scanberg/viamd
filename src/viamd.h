@@ -11,6 +11,7 @@
 #include <core/md_grid.h>
 #include <md_script.h>
 #include <md_gl.h>
+#include <md_util.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -218,6 +219,7 @@ enum class RepresentationType {
     ElectronicStructure,
     DipoleMoment,
     SimulationBox,
+    Bonds,              // The bonds its filter picks (md_filter_bonds), as sticks or dashed, without the atoms
     Count
 };
 
@@ -243,6 +245,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Electronic Structure",
     "Dipole Moment",
     "Simulation Box",
+    "Bonds",
 };
 
 // What a component (residue) and an instance (chain) are, is said in the words of the files: residue and chain
@@ -977,6 +980,9 @@ struct Representation {
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_FLAG_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
+    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and whether they are dashed
+    md_array(md_atom_pair_t) bond_pairs = nullptr;
+    bool   bonds_dashed = false;
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
@@ -1600,7 +1606,28 @@ struct ApplicationState {
         // External state which user controls
         bool apply_pbc = false;
         bool unwrap_structures = false;
-        bool recalc_bonds = false;
+
+        // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
+        // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
+        // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
+        struct {
+            bool enabled = false;
+            AtomFilter scope = {};                      // Empty for every atom
+            float tolerance = MD_BOND_DELTA_TOLERANCE;
+            uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
+
+            md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
+            bool scope_dirty = true;                    // To be evaluated again
+            uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
+
+            md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
+            // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
+            // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
+            // forms more than any before it has the indices of the ones beyond run into those of the next domain.
+            size_t formed_capacity = 0;
+            uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+            double time_ms = 0.0;                       // How long that took
+        } bond_tracking;
 
         // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
         // This is populated by assigning a user defined selection.
@@ -2086,9 +2113,40 @@ md_unit_t             run_time_unit(const ApplicationState* app);
 // its own (md_system_extract_begin) so the files stay open across them.
 bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);
 
-// Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run,
-// or in the coordinates shown when there is no run. Inferred bonds are replaced, others are kept.
-bool recompute_covalent_bonds(ApplicationState* app, int64_t frame);
+// Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
+// coordinates shown when there is no run. Inferred bonds are replaced, those of a file, a topology or a user are kept,
+// and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
+// the reference of the topology (md_system_t::reference).
+bool recompute_bonds(ApplicationState* app, int64_t frame);
+
+// To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
+// threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the
+// pool finish.
+void system_bonds_edit_begin(ApplicationState* app);
+
+// What follows the bonds of the system, after they changed (created, removed, inferred again): what is drawn of them,
+// the script (whose properties are of the topology) and the representations. graph_edited when bonds of the graph were
+// added or removed by hand: its connectivity, the structures and the rings are built again.
+void system_bonds_changed(ApplicationState* app, bool graph_edited);
+
+// The kind a bond was given by the names of md_bond_kind_names, the most specific of those it is of: "coordinate",
+// "hydrogen,ionic". bond_kind_parse reads it back (flags of the kind alone), false for a name it does not know.
+const char* bond_kind_str(char* buf, size_t cap, md_bond_flags_t flags);
+bool        bond_kind_parse(md_bond_flags_t* out, str_t str);
+// Origins of bonds, a mask of 1 << md_bond_origin_t, by name: "file,inferred"
+const char* bond_origins_str(char* buf, size_t cap, uint32_t origins);
+bool        bond_origins_parse(uint32_t* out, str_t str);
+
+// Brings the bond changes tracked (operations.bond_tracking) up to date with the frame shown, the topology, the scope
+// and the parameters. Once a frame, before the bonds are uploaded.
+void bond_tracking_update(ApplicationState* app);
+
+// The bond changes drawn, those of the frame shown: NULL when they are not tracked
+const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app);
+
+// The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
+// come after them as they are drawn (formed is set for those)
+bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
