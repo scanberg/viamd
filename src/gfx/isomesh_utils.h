@@ -42,7 +42,7 @@
 namespace isomesh {
 
 // The layers peeled exactly, at most (RenderDesc::peels)
-static constexpr uint32_t PEELS_MAX = 2;
+static constexpr uint32_t PEELS_MAX = 3;
 
 // Frames averaged before the image is kept as it is. With a sample per pixel a frame is about twice as noisy as one of
 // two samples was, and (on an M4 Pro) a fifth of its time: 128 rather than 64
@@ -96,15 +96,18 @@ struct Target {
     uint32_t tex_frame_color = 0;      // radiance and opacity times visibility (RGBA16F)
     uint32_t tex_frame_tod   = 0;      // log transmittance and optical depth (RG16F)
     uint32_t tex_frame_depth = 0;      // the stochastic depth (32F with the caller's geometry, which reads it)
-    uint32_t tex_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
-    uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F), and with the caller's geometry their depths too
-                                       // (RGBA32F: o0, o1, z0, z1; RenderDesc::geometry)
+    uint32_t tex_peel_depth[2] = {};   // the depth tests of the peels, a pass each in turn (32F): pass k tests against
+                                       // [k % 2] and reads the one before from the other
+    uint32_t tex_peel_z = 0;           // the peeled layers' depths (RGBA32F: z0, z1, z2, a layer not peeled the depth of
+                                       // the one in front), and with the caller's geometry their opacities packed in a
+    uint32_t tex_peel_o = 0;           // their opacities (RGBA16F: o0, o1, o2)
     uint32_t fbo_color = 0;         // tex_frame_color + tex_frame_depth
     uint32_t fbo_tod   = 0;         // tex_frame_tod
-    uint32_t fbo_peel[2] = {};      // tex_peel_opacity + tex_peel_depth[i]
+    uint32_t fbo_peel[2] = {};      // tex_peel_z + tex_peel_o + tex_peel_depth[i]
+    uint32_t fbo_pack = 0;          // tex_peel_z: the opacities packed into its a (the caller's geometry)
     uint32_t fbo_geometry = 0;      // tex_frame_color + tex_frame_tod: the caller's geometry's accumulation (peel_depths)
     uint32_t fbo       = 0;         // the history being written
-    bool     peel_depths = false;   // tex_peel_opacity holds the depths (RGBA32F)
+    bool     peel_depths = false;   // made for the caller's geometry (fbo_geometry, the stochastic depth 32F)
     uint32_t tex_history_color[2] = {};
     uint32_t tex_history_t[2]     = {};
     uint32_t cur = 0;           // which history holds the mean
@@ -181,10 +184,10 @@ struct RenderDesc {
     // MAX_FRAMES frames (each new one weighs 1 / MAX_FRAMES). It never converges.
     bool keep_drawing = false;
 
-    // The layers peeled exactly in front of the stochastic ones (PEELS_MAX at most): each fewer is a pass over all of the
-    // surfaces and the geometry fewer a frame, and leaves more of the layers to the stochastic estimate, noisier. With
-    // one the second peel is the first's (no layer between); with none every layer is stochastic.
-    uint32_t peels = PEELS_MAX;
+    // The layers peeled exactly in front of the stochastic ones (PEELS_MAX at most): each is a pass over all of the
+    // surfaces and the geometry a frame, and takes a layer from the stochastic estimate, the noisy part. With none every
+    // layer is stochastic.
+    uint32_t peels = 2;
 
     // The stochastic thresholds of another seed: the same mean in expectation, its frames other independent estimates
     // (for measuring the noise against a reference, as the profiler's sweep does)

@@ -46,6 +46,29 @@ void main() {
 }
 )");
 
+// The peels' opacities (tex_peel_o) packed into the a of their depths' target for the caller's geometry, which reads one
+// texture of them: 8 bits each, o0 + 256 o1 + 65536 o2, a float exactly. Rounded at random (a hash of the pixel and the
+// frame), so that the mean of the frames has no rounding bias.
+static constexpr str_t f_shader_src_pack = STR_LIT(R"(
+#version 410 core
+uniform sampler2D u_tex_o;
+uniform uint u_frame;
+layout(location = 0) out vec4 out_packed;
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+void main() {
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec3  o  = texelFetch(u_tex_o, px, 0).rgb;
+    uint  h  = pcg(uint(px.x) * 0x8DA6B343u ^ uint(px.y) * 0xD8163841u ^ (u_frame + 1u) * 0xCB1AB31Fu);
+    vec3  d  = vec3(float(h & 1023u), float((h >> 10u) & 1023u), float((h >> 20u) & 1023u)) * (1.0 / 1024.0);
+    uvec3 q  = uvec3(clamp(floor(o * 255.0 + d), 0.0, 255.0));
+    out_packed = vec4(0.0, 0.0, 0.0, float(q.x + q.y * 256u + q.z * 65536u));
+}
+)");
+
 // Extinction per world unit (Ångström) of unit optical density, as the raycaster's (ISO_OPTICAL_SCALE)
 static constexpr float OPTICAL_SCALE = 150.0f;
 static constexpr int   BLUE_NOISE_SIZE = 64;    // BLUE_NOISE_SIZE in isomesh.frag
@@ -99,7 +122,7 @@ struct MeshProgram {
     GLint color, coloring, world_to_volume, tex_color_volume, tex_field, tex_field_colormap, field_beg, field_inv_ext;
     GLint tex_depth, use_depth, frame, surface_id;
     GLint tex_tod, tau, od_ref, inv_proj, inv_res, ortho, tex_blue_noise;
-    GLint tex_peel_depth0, tex_peel_depth1, tex_peel_opacity;
+    GLint tex_peel_depth0, tex_peel, tex_peel_opacity;
     GLint light_dir, dir_radiance, sky_radiance, ground_radiance, roughness, F0;
     GLint basic, basic_ambient, basic_specular, linear_colors, light_strength;
     GLint isoline_count, isoline_values, isoline_hover, isoline_hover_value, isoline_width;
@@ -118,6 +141,10 @@ static struct {
         GLuint program = 0;
         GLint tex_color, tex_t;
     } composite;
+    struct {
+        GLuint program = 0;
+        GLint tex_o, frame;
+    } pack;
     GLuint tex_blue_noise = 0;
     GLuint vao = 0;     // empty, for the fullscreen triangle
     GLuint fbo = 0;     // onto the caller's colour target
@@ -246,7 +273,7 @@ static void mesh_locations(MeshProgram* mp) {
     m.tex_tod = LOC(p, "u_tex_tod"); m.tau = LOC(p, "u_tau"); m.od_ref = LOC(p, "u_od_ref");
     m.inv_proj = LOC(p, "u_inv_proj"); m.inv_res = LOC(p, "u_inv_res"); m.ortho = LOC(p, "u_ortho");
     m.tex_blue_noise = LOC(p, "u_tex_blue_noise");
-    m.tex_peel_depth0 = LOC(p, "u_tex_peel_depth0"); m.tex_peel_depth1 = LOC(p, "u_tex_peel_depth1");
+    m.tex_peel_depth0 = LOC(p, "u_tex_peel_depth0"); m.tex_peel = LOC(p, "u_tex_peel");
     m.tex_peel_opacity = LOC(p, "u_tex_peel_opacity");
     m.light_dir = LOC(p, "u_light_dir"); m.dir_radiance = LOC(p, "u_dir_radiance"); m.sky_radiance = LOC(p, "u_sky_radiance");
     m.ground_radiance = LOC(p, "u_ground_radiance"); m.roughness = LOC(p, "u_roughness"); m.F0 = LOC(p, "u_F0");
@@ -280,8 +307,10 @@ void initialize() {
     gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
+    gl.pack.program       = link(v_shader_src_fs_triangle, f_shader_src_pack, "pack");
     gl.ok = gl.pass[Pass_Peel0].program && gl.pass[Pass_Peel1].program && gl.pass[Pass_Depth].program &&
-            gl.pass[Pass_Accumulate].program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program;
+            gl.pass[Pass_Accumulate].program && gl.mesh_tod.program && gl.accumulate.program && gl.composite.program &&
+            gl.pack.program;
     if (!gl.ok) return;
 
 #define LOC(prog, name) glGetUniformLocation(prog, name)
@@ -291,6 +320,8 @@ void initialize() {
     accumulate_locations(&gl.accumulate);
     gl.composite.tex_color = LOC(gl.composite.program, "u_tex_color");
     gl.composite.tex_t     = LOC(gl.composite.program, "u_tex_t");
+    gl.pack.tex_o = LOC(gl.pack.program, "u_tex_o");
+    gl.pack.frame = LOC(gl.pack.program, "u_frame");
 #undef LOC
 
     glGenVertexArrays(1, &gl.vao);
@@ -313,7 +344,7 @@ void initialize() {
 void shutdown() {
     GLuint* programs[] = {&gl.mesh_tod.program, &gl.pass[Pass_Peel0].program, &gl.pass[Pass_Peel1].program,
                           &gl.pass[Pass_Depth].program, &gl.pass[Pass_Accumulate].program, &gl.accumulate.program,
-                          &gl.composite.program};
+                          &gl.composite.program, &gl.pack.program};
     for (GLuint* p : programs) {
         if (*p) glDeleteProgram(*p);
         *p = 0;
@@ -462,12 +493,12 @@ void mesh_free(Mesh* mesh) {
 
 void target_free(Target* t) {
     ASSERT(t);
-    GLuint* fbos[] = {&t->fbo_color, &t->fbo_tod, &t->fbo, &t->fbo_peel[0], &t->fbo_peel[1], &t->fbo_geometry};
+    GLuint* fbos[] = {&t->fbo_color, &t->fbo_tod, &t->fbo, &t->fbo_peel[0], &t->fbo_peel[1], &t->fbo_geometry, &t->fbo_pack};
     for (GLuint* f : fbos) {
         if (*f) glDeleteFramebuffers(1, f);
     }
     GLuint* textures[] = {&t->tex_frame_color, &t->tex_frame_tod, &t->tex_frame_depth, &t->tex_peel_depth[0], &t->tex_peel_depth[1],
-                          &t->tex_peel_opacity, &t->tex_history_color[0], &t->tex_history_color[1],
+                          &t->tex_peel_z, &t->tex_peel_o, &t->tex_history_color[0], &t->tex_history_color[1],
                           &t->tex_history_t[0], &t->tex_history_t[1]};
     for (GLuint* tex : textures) {
         if (*tex) glDeleteTextures(1, tex);
@@ -530,7 +561,8 @@ static bool target_init(Target* t, uint32_t width, uint32_t height, bool peel_de
     t->tex_frame_depth = texture_frame(peel_depths ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24, width, height);   // read by the geometry (32F)
     t->tex_peel_depth[0] = texture_frame(GL_DEPTH_COMPONENT32F, width, height);
     t->tex_peel_depth[1] = texture_frame(GL_DEPTH_COMPONENT32F, width, height);
-    t->tex_peel_opacity  = texture_frame(peel_depths ? GL_RGBA32F : GL_RG16F, width, height);   // o0, o1 (, z0, z1)
+    t->tex_peel_z = texture_frame(GL_RGBA32F, width, height);     // z0, z1, z2 (, the opacities packed)
+    t->tex_peel_o = texture_frame(GL_RGBA16F, width, height);     // o0, o1, o2
 
     glGenFramebuffers(1, &t->fbo_color);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
@@ -548,9 +580,13 @@ static bool target_init(Target* t, uint32_t width, uint32_t height, bool peel_de
     for (int i = 0; i < 2; ++i) {
         glGenFramebuffers(1, &t->fbo_peel[i]);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[i]);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_peel_opacity, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_peel_z, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, target, t->tex_peel_o, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  target, t->tex_peel_depth[i], 0);
     }
+    glGenFramebuffers(1, &t->fbo_pack);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_pack);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, t->tex_peel_z, 0);
 
     for (int i = 0; i < 2; ++i) {
         gl::init_texture_2D(&t->tex_history_color[i], (int)width, (int)height, GL_RGBA16F);
@@ -567,6 +603,7 @@ static bool target_init(Target* t, uint32_t width, uint32_t height, bool peel_de
 
     if (!fbo_complete(t->fbo_color, "colour") || !fbo_complete(t->fbo_tod, "transmittance") ||
         !fbo_complete(t->fbo_peel[0], "first peel") || !fbo_complete(t->fbo_peel[1], "second peel") ||
+        !fbo_complete(t->fbo_pack, "pack") ||
         (peel_depths && !fbo_complete(t->fbo_geometry, "geometry"))) {
         target_free(t);
         return false;
@@ -811,10 +848,10 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
         // The frame the stochastic thresholds are of: of another seed, frames far from those of the mean's
         const uint32_t noise_frame = t->frame + desc.seed * 4096u;
-        // The layers peeled, and the target the second peel's depth is read from: with one peel the first's (no layer
-        // between them), with none the first's cleared to 0 (nothing in front of any layer)
+        // The layers peeled. The peel pass k reads the depth of the one before (prev_depth), the depth tests of the
+        // two in turn; the passes after read the depths and the opacities of all of them (tex_peel_z, tex_peel_o)
         const uint32_t peels = MIN(desc.peels, PEELS_MAX);
-        const GLuint peel_depth1 = peels >= 2 ? t->tex_peel_depth[1] : t->tex_peel_depth[0];
+        GLuint prev_depth = 0;
 
         // Distances along the rays are taken from the nearest point of the bounds (or the eye, inside them)
         const bool  ortho = P.elem[3][3] == 1.0f;
@@ -857,11 +894,11 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         auto bind_pass_textures = [&](Pass pass) {
             bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
             bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
-            bind_texture(6, GL_TEXTURE_2D, pass >= Pass_Peel1 ? t->tex_peel_depth[0] : 0);
-            bind_texture(7, GL_TEXTURE_2D, pass >= Pass_Depth ? peel_depth1 : 0);
+            bind_texture(6, GL_TEXTURE_2D, pass == Pass_Peel1 ? prev_depth : 0);
+            bind_texture(7, GL_TEXTURE_2D, pass >= Pass_Depth ? t->tex_peel_z : 0);
+            bind_texture(8, GL_TEXTURE_2D, pass == Pass_Accumulate ? t->tex_peel_o : 0);
             if (!geometry) return;
-            const GLuint peel = pass == Pass_Peel1 ? t->tex_peel_depth[0] : pass == Pass_Depth ? peel_depth1 :
-                                pass == Pass_Accumulate ? t->tex_peel_opacity : 0;
+            const GLuint peel = pass == Pass_Peel1 ? prev_depth : pass >= Pass_Depth ? t->tex_peel_z : 0;
             bind_texture(MD_GL_USER_TEXTURE_UNIT + 0, GL_TEXTURE_2D, desc.render_target.depth);
             bind_texture(MD_GL_USER_TEXTURE_UNIT + 2, GL_TEXTURE_2D, peel);
             bind_texture(MD_GL_USER_TEXTURE_UNIT + 3, GL_TEXTURE_2D, pass == Pass_Depth ? gl.tex_blue_noise : 0);
@@ -877,7 +914,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1i(m.tex_field_colormap, 4);
             glUniform1i(m.tex_blue_noise, 5);
             glUniform1i(m.tex_peel_depth0, 6);
-            glUniform1i(m.tex_peel_depth1, 7);
+            glUniform1i(m.tex_peel, 7);
             glUniform1i(m.tex_peel_opacity, 8);
             glUniform1i(m.use_depth, use_depth ? 1 : 0);
             glUniform1ui(m.frame, noise_frame);
@@ -963,33 +1000,58 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         draw_surfaces(Pass_Transmittance);
         POP_GPU_SECTION()
 
-        // The nearest layers, exactly (peels of them): their depths and opacities in each sample. A layer not peeled
-        // has opacity 0 and the depth of the one in front (none in front: 0), so that nothing lies between them.
+        // The nearest layers, exactly (peels of them): their depths and opacities in each sample. Pass k writes its
+        // depth into z_k and the z after it (a layer not peeled has the depth of the one in front: nothing lies between
+        // them) and its opacity into o_k. None peeled: depths 0 (nothing in front of any layer), opacities 0.
         PUSH_GPU_SECTION("Peel")
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDepthMask(GL_TRUE);
-        for (uint32_t k = 0; k < MAX(peels, 1u); ++k) {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k]);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            if (k == 0) {
-                const GLfloat none[4] = {0, 0, peels > 0 ? 1.0f : 0.0f, peels > 0 ? 1.0f : 0.0f};
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glClearBufferfv(GL_COLOR, 0, none);     // opacity 0, depth 1: no layer (0 with none peeled)
-            }
-            glClearDepth(peels > 0 ? 1.0 : 0.0);
+        glClearDepth(1.0);
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[0]);
+            const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            glDrawBuffers(2, bufs);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            const GLfloat z_none[4] = {peels > 0 ? 1.0f : 0.0f, peels > 0 ? 1.0f : 0.0f, peels > 0 ? 1.0f : 0.0f, 0.0f};
+            const GLfloat o_none[4] = {0, 0, 0, 0};
+            glClearBufferfv(GL_COLOR, 0, z_none);
+            glClearBufferfv(GL_COLOR, 1, o_none);
+        }
+        static const char* const peel_names[PEELS_MAX] = {"Peel 0", "Peel 1", "Peel 2"};
+        for (uint32_t k = 0; k < peels; ++k) {
+            PUSH_GPU_SECTION(peel_names[k])
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k % 2]);
+            const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            glDrawBuffers(2, bufs);
             glClear(GL_DEPTH_BUFFER_BIT);
-            glClearDepth(1.0);
-            if (peels == 0) break;
-            PUSH_GPU_SECTION(k == 0 ? "Peel 0" : "Peel 1")
-            // The peel's opacity and depth, with one peel its depth as the second's too
-            glColorMask(k == 0, k == 1, k == 0, k == 1 || peels == 1);
+            glColorMaski(0, k == 0, k <= 1, k <= 2, GL_FALSE);
+            glColorMaski(1, k == 0, k == 1, k == 2, GL_FALSE);
+            prev_depth = k > 0 ? t->tex_peel_depth[(k - 1) % 2] : 0;
             draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             draw_geometry(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()
         }
+        prev_depth = 0;
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        // The opacities packed for the geometry's accumulation, which reads one texture of the peels
+        if (geometry && peels > 0) {
+            PUSH_GPU_SECTION("Pack")
+            glDisable(GL_DEPTH_TEST);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_pack);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+            glUseProgram(gl.pack.program);
+            bind_texture(0, GL_TEXTURE_2D, t->tex_peel_o);
+            glUniform1i(gl.pack.tex_o, 0);
+            glUniform1ui(gl.pack.frame, noise_frame);
+            glBindVertexArray(gl.vao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+            POP_GPU_SECTION()
+        }
         POP_GPU_SECTION()
 
         // The stochastic depth of the layers behind them
@@ -1013,7 +1075,6 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
         bind_texture(1, GL_TEXTURE_2D, t->tex_frame_tod);
-        bind_texture(8, GL_TEXTURE_2D, t->tex_peel_opacity);
         draw_surfaces(Pass_Accumulate);
         // The caller's geometry: its radiance times its visibility, and its log transmittance (which the Transmittance
         // pass took of the surfaces alone) of every fragment of it into the transmittance target, additively as there:
@@ -1153,12 +1214,13 @@ static constexpr str_t geometry_snippet_src = STR_LIT(R"(
 
 uniform sampler2D md_user_texture_0;    // the opaque scene's depth
 uniform sampler2D md_user_texture_1;    // the parameters (render(), geometry_set_draw): a row of RGBA32F
-uniform sampler2D md_user_texture_2;    // GEOMETRY_PASS 2: the first peel's depth; 3: the second's; 4: the peels'
-                                        // opacities and depths (o0, o1, z0, z1)
+uniform sampler2D md_user_texture_2;    // GEOMETRY_PASS 2: the depth of the peel before; 3, 4: the peels' depths and
+                                        // opacities (z0, z1, z2, the opacities packed: o0 + 256 o1 + 65536 o2, 8 bits)
 uniform sampler2D md_user_texture_3;    // GEOMETRY_PASS 3: the blue noise thresholds; 4: the stochastic depth
 
 #if GEOMETRY_PASS == 1 || GEOMETRY_PASS == 2
-layout(location = 0) out vec4 out_color;    // the peel's opacity and depth
+layout(location = 0) out vec4 out_z;        // the peel's depth (into z_k and the z after it)
+layout(location = 1) out vec4 out_o;        // its opacity (into o_k)
 #elif GEOMETRY_PASS == 4
 layout(location = 0) out vec4 out_color;    // radiance and opacity times visibility
 layout(location = 1) out vec4 out_tod;      // log transmittance (the Transmittance pass's, of the geometry)
@@ -1301,12 +1363,14 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
     // Behind the opaque scene it hides nothing (nor adds an optical depth: an impostor has no back face to close it)
     if (occluded || opacity <= 0.0) discard;
 #if GEOMETRY_PASS == 1
-    out_color = vec4(opacity, opacity, z, z);
+    out_z = vec4(z);
+    out_o = vec4(opacity);
 #elif GEOMETRY_PASS == 2
     if (z <= texelFetch(md_user_texture_2, px, 0).r + GEOM_PEEL_EPS) discard;
-    out_color = vec4(opacity, opacity, z, z);
+    out_z = vec4(z);
+    out_o = vec4(opacity);
 #elif GEOMETRY_PASS == 3
-    if (z <= texelFetch(md_user_texture_2, px, 0).r + GEOM_PEEL_EPS) discard;
+    if (z <= texelFetch(md_user_texture_2, px, 0).b + GEOM_PEEL_EPS) discard;       // behind the last peel
     // The threshold, from the blue noise at an offset per layer and frame. A layer is a primitive of an atom of a draw:
     // the quad (the pair of triangles, gl_PrimitiveID / 2) and the face. Layers that share a threshold cover a pixel
     // together or not at all, and the visibility behind two of them came out as one minus the larger opacity rather
@@ -1326,8 +1390,12 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
     out_tod = vec4(log(1.0 - opacity), 0.0, 0.0, 0.0);
     out_color = vec4(0.0);
     if (z <= texelFetch(md_user_texture_3, px, 0).r + GEOM_PEEL_EPS) {
-        vec4  peel = texelFetch(md_user_texture_2, px, 0);     // o0, o1, z0, z1
-        float vis  = (z <= peel.z + GEOM_PEEL_EPS) ? 1.0 : (z <= peel.w + GEOM_PEEL_EPS) ? (1.0 - peel.x) : (1.0 - peel.x) * (1.0 - peel.y);
+        vec4  peel = texelFetch(md_user_texture_2, px, 0);     // z0, z1, z2, the opacities packed
+        uint  op   = uint(peel.a);
+        vec3  o    = vec3(float(op & 255u), float((op >> 8u) & 255u), float(op >> 16u)) * (1.0 / 255.0);
+        float vis  = (z <= peel.x + GEOM_PEEL_EPS) ? 1.0 :
+                     (z <= peel.y + GEOM_PEEL_EPS) ? (1.0 - o.x) :
+                     (z <= peel.z + GEOM_PEEL_EPS) ? (1.0 - o.x) * (1.0 - o.y) : (1.0 - o.x) * (1.0 - o.y) * (1.0 - o.z);
         out_color = vec4(geom_radiance(color.rgb, alpha, N, V), opacity) * vis;
     }
 #endif

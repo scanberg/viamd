@@ -5401,8 +5401,9 @@ static void draw_profiler_window(ApplicationState* data) {
         {
             // An experiment: fewer layers peeled exactly, each a pass over everything fewer, the rest left to the
             // stochastic estimate
-            const char* peels[] = {"0 peels", "1 peel", "2 peels"};
-            int p = CLAMP(data->profiler_isomesh_peels, 0, 2);
+            const char* peels[] = {"0 peels", "1 peel", "2 peels", "3 peels"};
+            static_assert(IM_ARRAYSIZE(peels) == isomesh::PEELS_MAX + 1, "A name each");
+            int p = CLAMP(data->profiler_isomesh_peels, 0, (int)isomesh::PEELS_MAX);
             ImGui::SetNextItemWidth(ImGui::CalcTextSize("2 peels").x + ImGui::GetFrameHeight() * 2.0f);
             if (ImGui::Combo("##peels", &p, peels, IM_ARRAYSIZE(peels))) data->profiler_isomesh_peels = p;
             ImGui::SetItemTooltip("The layers of the isosurface meshes and the transparent representations peeled exactly in "

@@ -102,9 +102,9 @@ uniform uint  u_surface_id;         // tells the draws apart (gl_PrimitiveID sta
 #endif
 
 uniform sampler2D   u_tex_tod;      // PASS_ACCUMULATE: the transmittance and optical depth of this frame
-uniform sampler2D   u_tex_peel_depth0;  // the depth of the nearest layer (PASS_PEEL0)
-uniform sampler2D   u_tex_peel_depth1;  // and of the second (PASS_PEEL1)
-uniform sampler2D   u_tex_peel_opacity; // their opacities (r, g)
+uniform sampler2D   u_tex_peel_depth0;  // PASS_PEEL1: the depth of the layer peeled before
+uniform sampler2D   u_tex_peel;         // PASS_DEPTH, PASS_ACCUMULATE: the peeled layers' depths (z0, z1, z2)
+uniform sampler2D   u_tex_peel_opacity; // PASS_ACCUMULATE: their opacities (o0, o1, o2)
 uniform float u_tau;                // optical density of the surface times the extinction per world unit
 uniform float u_od_ref;             // distance subtracted from d, so the sums stay small (half floats)
 uniform mat4  u_inv_proj;
@@ -128,7 +128,10 @@ uniform float u_light_strength;
 #ifdef ISOMESH_TRANSMITTANCE
 layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth
 #else
-layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity and depth
+layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the depth (z_k and after)
+#if ISOMESH_PASS == 1 || ISOMESH_PASS == 2
+layout(location = 1) out vec4 out_opacity;  // PASS_PEEL*: the opacity (o_k)
+#endif
 #endif
 
 const int PASS_TRANSMITTANCE = 0;
@@ -419,23 +422,19 @@ void main() {
     opacity = clamp(opacity, 0.0, MAX_OPACITY);
     if (opacity <= 0.0) discard;
 
-    if (ISOMESH_PASS == PASS_PEEL0) {
-        out_color = vec4(opacity, opacity, gl_FragCoord.z, gl_FragCoord.z);     // r and b written
-        return;
-    }
-
-    // The peeled layers of the pixel from here on
-    float z  = gl_FragCoord.z;
-    float z0 = texelFetch(u_tex_peel_depth0, px, 0).r;
-    if (ISOMESH_PASS == PASS_PEEL1) {
-        if (z <= z0 + PEEL_EPS) discard;
-        out_color = vec4(opacity, opacity, z, z);                               // g and a written
-        return;
-    }
-    float z1 = texelFetch(u_tex_peel_depth1, px, 0).r;
+    float z = gl_FragCoord.z;
+#if ISOMESH_PASS == 1 || ISOMESH_PASS == 2
+    // A peel: the nearest layer (behind the one peeled before), its depth and opacity in the channels of the pass
+    if (ISOMESH_PASS == PASS_PEEL1 && z <= texelFetch(u_tex_peel_depth0, px, 0).r + PEEL_EPS) discard;
+    out_color   = vec4(z);
+    out_opacity = vec4(opacity);
+    return;
+#else
+    // The peeled layers of the pixel from here on (a layer not peeled has the depth of the one in front)
+    vec3 zp = texelFetch(u_tex_peel, px, 0).rgb;
 
     if (ISOMESH_PASS == PASS_DEPTH) {
-        if (z <= z1 + PEEL_EPS) discard;
+        if (z <= zp.z + PEEL_EPS) discard;      // behind the last peel
         // the threshold, from the blue noise at an offset per layer and frame
         uint  layer = pcg(pcg(uint(gl_PrimitiveID)) ^ (u_surface_id * 0x9E3779B9u));
         uint  shift = pcg(layer ^ ((u_frame / LAYER_FRAMES + 1u) * 0x68E31DA4u));
@@ -448,12 +447,15 @@ void main() {
     }
 
     // PASS_ACCUMULATE: the transmittance in front of this fragment
-    vec2  o01 = texelFetch(u_tex_peel_opacity, px, 0).rg;
-    float vis = (z <= z0 + PEEL_EPS) ? 1.0 : (z <= z1 + PEEL_EPS) ? (1.0 - o01.r) : (1.0 - o01.r) * (1.0 - o01.g);
+    vec3  o   = texelFetch(u_tex_peel_opacity, px, 0).rgb;
+    float vis = (z <= zp.x + PEEL_EPS) ? 1.0 :
+                (z <= zp.y + PEEL_EPS) ? (1.0 - o.x) :
+                (z <= zp.z + PEEL_EPS) ? (1.0 - o.x) * (1.0 - o.y) : (1.0 - o.x) * (1.0 - o.y) * (1.0 - o.z);
     // Seen from inside (the back faces): behind the absorption of what the surfaces enclose
     if (!gl_FrontFacing) {
         L *= exp(-max(texelFetch(u_tex_tod, px, 0).g, 0.0));
     }
     out_color = vec4(L, opacity) * vis;
+#endif
 #endif
 }

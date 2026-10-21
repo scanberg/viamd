@@ -1738,7 +1738,7 @@ struct ApplicationState {
     bool show_debug_window = false;
     bool show_profiler_window = false;
     bool profiler_keep_isomeshes = false;   // Windows > Profiler: the isosurface meshes drawn every frame (isomesh::RenderDesc::keep_drawing)
-    int  profiler_isomesh_peels = 2;        // Windows > Profiler: the layers peeled exactly, 0 to 2 (isomesh::RenderDesc::peels)
+    int  profiler_isomesh_peels = 2;        // Windows > Profiler: the layers peeled exactly, 0 to isomesh::PEELS_MAX (RenderDesc::peels)
     uint32_t isomesh_seed = 0;              // Of the stochastic thresholds (isomesh::RenderDesc::seed), for measuring noise
     bool show_property_export_window = false;
 
