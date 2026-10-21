@@ -5226,17 +5226,16 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r26), which every variant starts from
+// The library's defaults (r27), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
-    s.skip_brick_test = false; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
+    s.skip_brick_test = true; s.shared_corners = true; s.eval_eps_exp = 6; s.corners_list = true;
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
     s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
     s.wide_kernel = 3;     s.octree_start = 2;     s.dform_corners = false; s.flood = 1;
-    s.flood_brick_test = false;
     return s;
 }
 
@@ -5244,8 +5243,8 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
     {"flood off",               [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; }},
-    {"flood off, skip_brick_test on", [](md_gto_iso_gpu_switches_t* s) { s->flood = 0; s->skip_brick_test = true; }},
-    {"flood with the brick test",[](md_gto_iso_gpu_switches_t* s) { s->flood_brick_test = true; }},
+    {"brick test on",           [](md_gto_iso_gpu_switches_t* s) { s->skip_brick_test = false; }},
+    {"flood off, brick test on",[](md_gto_iso_gpu_switches_t* s) { s->flood = 0; s->skip_brick_test = false; }},
     {"flood: every field",      [](md_gto_iso_gpu_switches_t* s) { s->flood = 2; }},
     {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
     {"wide_kernel listed once", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 1; }},
@@ -5278,7 +5277,6 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"corners_list off",        [](md_gto_iso_gpu_switches_t* s) { s->corners_list = false; }},
     {"shared_corners off",      [](md_gto_iso_gpu_switches_t* s) { s->shared_corners = false; }},
     {"newton_predict off",      [](md_gto_iso_gpu_switches_t* s) { s->newton_predict = false; }},
-    {"skip_brick_test on",      [](md_gto_iso_gpu_switches_t* s) { s->skip_brick_test = true; }},
     {"eval_eps 1e-10",          [](md_gto_iso_gpu_switches_t* s) { s->eval_eps_exp = 10; }},
 };
 
@@ -5367,10 +5365,7 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                               "The bricks holding an atom are seeds too. Densities: those with weights >= 0 (total, alpha, beta); "
                               "every field: MOs too, to see what it misses");
     }
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Flood: brick test", &sw.flood_brick_test);
-    ImGui::SetItemTooltip("With the flood, the octree's last level (the bricks) bounded as well; by default the brick "
-                          "corners reject the empty bricks instead, for less than the bound costs");
+
     ImGui::SameLine();
     changed |= ImGui::Checkbox("D-form corners", &sw.dform_corners);
     ImGui::SetItemTooltip("Sets of densities: the corners in the D form (the D-form kernel chosen), the vertices as "
@@ -5464,7 +5459,7 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("Newton ends on a predicted error, without an evaluation to check it");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Skip brick test", &sw.skip_brick_test);
-    ImGui::SetItemTooltip("The octree's last level is not bounded: every child of a kept node is a brick");
+    ImGui::SetItemTooltip("The octree's last level is not bounded: every child of a kept node is a brick, the corners deciding (the default)");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
     const char* eps_items[] = {"1e-6", "1e-8", "1e-10"};
