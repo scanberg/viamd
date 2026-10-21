@@ -5226,7 +5226,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r22), which every variant starts from
+// The library's defaults (r23), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5235,13 +5235,17 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
     s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
-    s.wide_kernel = 1;     s.octree_start = 2;
+    s.wide_kernel = 1;     s.octree_start = 2;     s.dform_corners = false;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
+    {"dform corners: dcorners4",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 3; }},
+    {"dform corners: dcorners4, diag no AO values", [](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 3; s->diag = 1; }},
+    {"dform corners: dcorners4, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 3; s->diag = 2; }},
+    {"dform corners: dcorners3",[](md_gto_iso_gpu_switches_t* s) { s->dform_corners = true; s->dform_kernel = 2; }},
     {"octree from the root",    [](md_gto_iso_gpu_switches_t* s) { s->octree_start = 0; }},
     {"octree8 on",              [](md_gto_iso_gpu_switches_t* s) { s->octree8 = true; }},
     {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
@@ -5339,15 +5343,21 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
                           "more than 1024 functions use it regardless)");
     ImGui::SameLine();
     {
-        static const char* dks[] = {"D-form kernel: r9", "D-form kernel: tiles 64", "D-form kernel: tiles 128"};
+        static const char* dks[] = {"D-form kernel: r9", "D-form kernel: tiles 64", "D-form kernel: tiles 128",
+                                    "D-form kernel: corners one tile"};
         int dk = sw.dform_kernel;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
         if (ImGui::Combo("##dform_kernel", &dk, dks, IM_ARRAYSIZE(dks))) { sw.dform_kernel = dk; changed = true; }
         ImGui::SetItemTooltip("The D form's evaluation kernels: r9 (iso_dcorners, iso_deval); or D' upper triangular by "
                               "chunks, Phi . T with no AO values made again, chunk shells from a table and staged ahead, "
                               "in tiles of 64 columns (iso_dcorners2, iso_deval2) or of 128 in groups of 256 threads "
-                              "(iso_dcorners3, iso_deval3)");
+                              "(iso_dcorners3, iso_deval3); or the corners 64 points per group, one tile of up to 192 "
+                              "columns spread over the 8 waves (iso_dcorners4; vertices as tiles 128)");
     }
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("D-form corners", &sw.dform_corners);
+    ImGui::SetItemTooltip("Sets of densities: the corners in the D form (the D-form kernel chosen), the vertices as "
+                          "without it (the canonical GEMM where there are canonical terms)");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("D-form octree", &sw.dform_octree);
     ImGui::SetItemTooltip("Sets of densities: the octree bounds phi^T D phi, centred form over the AOs a node reaches, "
