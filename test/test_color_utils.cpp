@@ -265,14 +265,17 @@ UTEST(viamd_color, optimize_colors_pulled_drift) {
 }
 
 // Rare categories of one look are told apart as much as common ones: gold, sulfur and phosphorus among far more carbon
-// and hydrogen, as viamd shows them (linear input), come to the distance which is enough
+// and hydrogen, as viamd shows them (linear input), come to the distance which is enough. The colors are those of
+// mdlib's CPK table before it was tuned for separation (mdlib f7ee83e), where gold and sulfur were too close: the
+// table's own colors no longer make the case.
 UTEST(viamd_color, optimize_colors_rare_pulled_apart) {
-    const md_atomic_number_t z[7] = {79, 16, 15, 6, 1, 8, 7};
+    // Au, S, P, C, H, O, N (ABGR)
+    const uint32_t colors[7] = {0xFF23D1FFu, 0xFF0AF0F0u, 0xFF00A5FFu, 0xFF838383u, 0xFFFFFFFFu, 0xFF0000F0u, 0xFFF04646u};
     const float count[7] = {144, 60, 12, 600, 900, 40, 10};
     ColorOptimizeItem items[7];
     uint32_t cpk[7];
     for (int i = 0; i < 7; ++i) {
-        cpk[i] = items[i].color = md_atomic_number_cpk_color(z[i]);
+        cpk[i] = items[i].color = colors[i];
         items[i].weight = count[i];
         items[i].pull = 0.5f;
     }
