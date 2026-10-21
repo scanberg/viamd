@@ -41,6 +41,9 @@
 
 namespace isomesh {
 
+// The layers peeled exactly, at most (RenderDesc::peels)
+static constexpr uint32_t PEELS_MAX = 2;
+
 // Frames averaged before the image is kept as it is. With a sample per pixel a frame is about twice as noisy as one of
 // two samples was, and (on an M4 Pro) a fifth of its time: 128 rather than 64
 static constexpr uint32_t MAX_FRAMES = 128;
@@ -177,6 +180,15 @@ struct RenderDesc {
     // For profiling a still view: the meshes drawn every frame, past MAX_FRAMES too, the mean then of about the last
     // MAX_FRAMES frames (each new one weighs 1 / MAX_FRAMES). It never converges.
     bool keep_drawing = false;
+
+    // The layers peeled exactly in front of the stochastic ones (PEELS_MAX at most): each fewer is a pass over all of the
+    // surfaces and the geometry fewer a frame, and leaves more of the layers to the stochastic estimate, noisier. With
+    // one the second peel is the first's (no layer between); with none every layer is stochastic.
+    uint32_t peels = PEELS_MAX;
+
+    // The stochastic thresholds of another seed: the same mean in expectation, its frames other independent estimates
+    // (for measuring the noise against a reference, as the profiler's sweep does)
+    uint32_t seed = 0;
 
     // Geometry of the caller's in the same passes: in each it is drawn in (geometry_drawn_in), after the surfaces, with
     // the pass's targets bound and its state set, draw(pass, user), drawing with md_gl's shaders made of

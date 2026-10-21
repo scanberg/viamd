@@ -669,6 +669,8 @@ static uint64_t desc_hash(const RenderDesc& desc) {
     h = md_hash64(&desc.matrix.view, sizeof(desc.matrix.view), h);
     h = md_hash64(&desc.matrix.proj_no_jitter, sizeof(desc.matrix.proj_no_jitter), h);
     h = md_hash64(&desc.shading, sizeof(desc.shading), h);
+    h = md_hash64(&desc.peels, sizeof(desc.peels), h);
+    h = md_hash64(&desc.seed, sizeof(desc.seed), h);
     for (size_t i = 0; i < desc.num_surfaces; ++i) {
         const Surface& s = desc.surfaces[i];
         const uint64_t mesh_id[3] = {(uint64_t)(uintptr_t)s.mesh, s.mesh ? s.mesh->version : 0, s.mesh ? s.mesh->vao : 0};
@@ -807,6 +809,13 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         const bool use_depth = desc.render_target.depth != 0;
         glViewport(0, 0, (GLsizei)w, (GLsizei)h);
 
+        // The frame the stochastic thresholds are of: of another seed, frames far from those of the mean's
+        const uint32_t noise_frame = t->frame + desc.seed * 4096u;
+        // The layers peeled, and the target the second peel's depth is read from: with one peel the first's (no layer
+        // between them), with none the first's cleared to 0 (nothing in front of any layer)
+        const uint32_t peels = MIN(desc.peels, PEELS_MAX);
+        const GLuint peel_depth1 = peels >= 2 ? t->tex_peel_depth[1] : t->tex_peel_depth[0];
+
         // Distances along the rays are taken from the nearest point of the bounds (or the eye, inside them)
         const bool  ortho = P.elem[3][3] == 1.0f;
         const vec3_t center = any ? vec3_lerp(lo, hi, 0.5f) : vec3_t{0, 0, 0};
@@ -828,7 +837,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         if (geometry) {
             geom.serial += 1;
             const float params[GeometryParam_Count][4] = {
-                {(float)t->frame, 0.0f, 0.0f, use_depth ? 1.0f : 0.0f},
+                {(float)noise_frame, 0.0f, 0.0f, use_depth ? 1.0f : 0.0f},
                 {1.0f, 0.0f, 0.0f, 0.0f},
                 {light.light_dir.x, light.light_dir.y, light.light_dir.z, desc.shading.roughness},
                 {light.light_irradiance.x, light.light_irradiance.y, light.light_irradiance.z, 0.0f},
@@ -849,9 +858,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
             bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
             bind_texture(6, GL_TEXTURE_2D, pass >= Pass_Peel1 ? t->tex_peel_depth[0] : 0);
-            bind_texture(7, GL_TEXTURE_2D, pass >= Pass_Depth ? t->tex_peel_depth[1] : 0);
+            bind_texture(7, GL_TEXTURE_2D, pass >= Pass_Depth ? peel_depth1 : 0);
             if (!geometry) return;
-            const GLuint peel = pass == Pass_Peel1 ? t->tex_peel_depth[0] : pass == Pass_Depth ? t->tex_peel_depth[1] :
+            const GLuint peel = pass == Pass_Peel1 ? t->tex_peel_depth[0] : pass == Pass_Depth ? peel_depth1 :
                                 pass == Pass_Accumulate ? t->tex_peel_opacity : 0;
             bind_texture(MD_GL_USER_TEXTURE_UNIT + 0, GL_TEXTURE_2D, desc.render_target.depth);
             bind_texture(MD_GL_USER_TEXTURE_UNIT + 2, GL_TEXTURE_2D, peel);
@@ -871,7 +880,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1i(m.tex_peel_depth1, 7);
             glUniform1i(m.tex_peel_opacity, 8);
             glUniform1i(m.use_depth, use_depth ? 1 : 0);
-            glUniform1ui(m.frame, t->frame);
+            glUniform1ui(m.frame, noise_frame);
             glUniformMatrix4fv(m.view, 1, GL_FALSE, V.elem[0]);
             glUniformMatrix4fv(m.proj, 1, GL_FALSE, P.elem[0]);
             glUniformMatrix4fv(m.inv_proj, 1, GL_FALSE, inv_proj.elem[0]);
@@ -954,24 +963,28 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         draw_surfaces(Pass_Transmittance);
         POP_GPU_SECTION()
 
-        // The two nearest layers, exactly: their depths and opacities in each sample
+        // The nearest layers, exactly (peels of them): their depths and opacities in each sample. A layer not peeled
+        // has opacity 0 and the depth of the one in front (none in front: 0), so that nothing lies between them.
         PUSH_GPU_SECTION("Peel")
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDepthMask(GL_TRUE);
-        glClearDepth(1.0);
-        for (int k = 0; k < 2; ++k) {
-            PUSH_GPU_SECTION(k == 0 ? "Peel 0" : "Peel 1")
+        for (uint32_t k = 0; k < MAX(peels, 1u); ++k) {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k]);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
             if (k == 0) {
-                const GLfloat none[4] = {0, 0, 1, 1};
+                const GLfloat none[4] = {0, 0, peels > 0 ? 1.0f : 0.0f, peels > 0 ? 1.0f : 0.0f};
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glClearBufferfv(GL_COLOR, 0, none);     // opacity 0, depth 1: no layer
+                glClearBufferfv(GL_COLOR, 0, none);     // opacity 0, depth 1: no layer (0 with none peeled)
             }
+            glClearDepth(peels > 0 ? 1.0 : 0.0);
             glClear(GL_DEPTH_BUFFER_BIT);
-            glColorMask(k == 0, k == 1, k == 0, k == 1);    // the peel's opacity and depth
+            glClearDepth(1.0);
+            if (peels == 0) break;
+            PUSH_GPU_SECTION(k == 0 ? "Peel 0" : "Peel 1")
+            // The peel's opacity and depth, with one peel its depth as the second's too
+            glColorMask(k == 0, k == 1, k == 0, k == 1 || peels == 1);
             draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             draw_geometry(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()

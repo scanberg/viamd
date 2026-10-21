@@ -5330,6 +5330,7 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
     if (iso_mesh_target.width) {
         md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %llu triangles, ", iso_mesh_target.width,
                           iso_mesh_target.height, (unsigned long long)iso_mesh_target.triangles);
+        md_str_writer_fmt(sw, "%d peels, ", CLAMP(state->profiler_isomesh_peels, 0, (int)isomesh::PEELS_MAX));
         if (state->profiler_keep_isomeshes) {
             md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
         } else {
@@ -5396,6 +5397,18 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::Checkbox("Isosurface meshes every frame", &data->profiler_keep_isomeshes);
+        ImGui::SameLine();
+        {
+            // An experiment: fewer layers peeled exactly, each a pass over everything fewer, the rest left to the
+            // stochastic estimate
+            const char* peels[] = {"0 peels", "1 peel", "2 peels"};
+            int p = CLAMP(data->profiler_isomesh_peels, 0, 2);
+            ImGui::SetNextItemWidth(ImGui::CalcTextSize("2 peels").x + ImGui::GetFrameHeight() * 2.0f);
+            if (ImGui::Combo("##peels", &p, peels, IM_ARRAYSIZE(peels))) data->profiler_isomesh_peels = p;
+            ImGui::SetItemTooltip("The layers of the isosurface meshes and the transparent representations peeled exactly in "
+                                  "front of the stochastic ones (an experiment): each fewer is a pass over all of them fewer a "
+                                  "frame, and noisier frames");
+        }
         ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
                               "view kept still");
 
@@ -6803,6 +6816,9 @@ static uint64_t scene_key(const ApplicationState* state) {
     // How it looks
     h = md_hash64(&state->visuals, sizeof(state->visuals), h);
     h = md_hash64(&state->settings, sizeof(state->settings), h);
+    // The isosurface meshes' experiments (Windows > Profiler)
+    h = md_hash64(&state->profiler_isomesh_peels, sizeof(state->profiler_isomesh_peels), h);
+    h = md_hash64(&state->isomesh_seed, sizeof(state->isomesh_seed), h);
 
     // What it shows: the representations and the atoms (their visibility, the dimmed by the selection: not the
     // highlighted), the volumes, what the script shows, what the components draw
@@ -7702,6 +7718,8 @@ static bool draw_representations_transparent_mesh(ApplicationState* state, bool 
         },
         .scene_hash = scene_hash,
         .keep_drawing = state->profiler_keep_isomeshes,
+        .peels = (uint32_t)CLAMP(state->profiler_isomesh_peels, 0, (int)isomesh::PEELS_MAX),
+        .seed = state->isomesh_seed,
         .geometry = {
             .draw = geometry ? draw_representations_transparent_geometry : nullptr,
             .user = state,
