@@ -3643,6 +3643,10 @@ static void draw_async_task_window(ApplicationState* data) {
         if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
         any_task_label_visible = true;
     }
+    // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
+    float iso_fraction[8];
+    const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
+    any_task_label_visible |= num_iso > 0;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3674,6 +3678,10 @@ static void draw_async_task_window(ApplicationState* data) {
                     md_script_eval_interrupt(data->script.eval);
                 }
             }
+        }
+        for (size_t i = 0; i < num_iso; i++) {
+            snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
+            ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
         }
 
         ImGui::End();
