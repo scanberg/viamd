@@ -145,6 +145,7 @@ static str_t output_snippet(const ApplicationState& state) {
 static_assert(sizeof(((ApplicationState*)nullptr)->gl.shaders_transparent) / sizeof(md_gl_shaders_t) == isomesh::Pass_Count, "A pass each");
 static void transparent_shaders_create(ApplicationState& state) {
     for (int p = 0; p < isomesh::Pass_Count; ++p) {
+        if (!isomesh::geometry_drawn_in((isomesh::Pass)p)) continue;
         const str_t snippet = isomesh::geometry_snippet((isomesh::Pass)p);
         state.gl.shaders_transparent[p] = md_gl_shaders_create(str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s",
             CLAMP(state.selection.color.saturation, 0.0f, 1.0f), STR_ARG(snippet)));

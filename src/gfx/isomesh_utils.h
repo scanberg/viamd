@@ -26,8 +26,10 @@
 // The caller's geometry (RenderDesc::geometry) is drawn in the same passes, into the same targets and the same mean:
 // md_gl's representations drawn transparent, through output snippets of md_gl's shaders (geometry_snippet) that do in
 // each pass what isomesh.frag does, from the fragment md_gl hands them (its view position, normal, colour), shaded as
-// the surfaces are. With geometry the peels' colour target holds the opacities and the depths of both peels (o0, o1,
-// z0, z1), so that a snippet's pass reads no more than md_gl's four textures of the caller's.
+// the surfaces are. In four of the passes (geometry_drawn_in): its transmittance is written by its accumulation,
+// which compares the stochastic depth in its shader rather than in the depth test, so a pass over the geometry fewer.
+// With geometry the peels' colour target holds the opacities and the depths of both peels (o0, o1, z0, z1), so that a
+// snippet's pass reads no more than md_gl's four textures of the caller's, and the stochastic depth is 32F.
 
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
@@ -90,13 +92,14 @@ struct Target {
     uint32_t width = 0, height = 0;
     uint32_t tex_frame_color = 0;      // radiance and opacity times visibility (RGBA16F)
     uint32_t tex_frame_tod   = 0;      // log transmittance and optical depth (RG16F)
-    uint32_t tex_frame_depth = 0;      // the stochastic depth
+    uint32_t tex_frame_depth = 0;      // the stochastic depth (32F with the caller's geometry, which reads it)
     uint32_t tex_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
     uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F), and with the caller's geometry their depths too
                                        // (RGBA32F: o0, o1, z0, z1; RenderDesc::geometry)
     uint32_t fbo_color = 0;         // tex_frame_color + tex_frame_depth
     uint32_t fbo_tod   = 0;         // tex_frame_tod
     uint32_t fbo_peel[2] = {};      // tex_peel_opacity + tex_peel_depth[i]
+    uint32_t fbo_geometry = 0;      // tex_frame_color + tex_frame_tod: the caller's geometry's accumulation (peel_depths)
     uint32_t fbo       = 0;         // the history being written
     bool     peel_depths = false;   // tex_peel_opacity holds the depths (RGBA32F)
     uint32_t tex_history_color[2] = {};
@@ -175,9 +178,10 @@ struct RenderDesc {
     // MAX_FRAMES frames (each new one weighs 1 / MAX_FRAMES). It never converges.
     bool keep_drawing = false;
 
-    // Geometry of the caller's in the same passes: in each, after the surfaces, with the pass's targets bound and its state
-    // set, draw(pass, user), drawing with md_gl's shaders made of geometry_snippet(pass); what the snippets read is bound
-    // at MD_GL_USER_TEXTURE_UNIT + 0..3. With it the mean is of all of the target rather than of the surfaces' bounds, and
+    // Geometry of the caller's in the same passes: in each it is drawn in (geometry_drawn_in), after the surfaces, with
+    // the pass's targets bound and its state set, draw(pass, user), drawing with md_gl's shaders made of
+    // geometry_snippet(pass), and geometry_set_draw before each md_gl_draw; what the snippets read is bound at
+    // MD_GL_USER_TEXTURE_UNIT + 0..3. With it the mean is of all of the target rather than of the surfaces' bounds, and
     // render() draws without surfaces too. What it draws belongs in scene_hash.
     struct {
         void (*draw)(Pass pass, void* user) = nullptr;
@@ -189,13 +193,18 @@ struct RenderDesc {
 // says whether the image is final: nothing changes it until the desc does.
 bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
 
-// The output snippet of md_gl's shaders (md_gl_shaders_create) for the caller's geometry in a pass. A caller's defines
-// may come before it: DIMMED_SATURATION, the saturation kept by atoms dimmed while others are selected (1 by default),
-// as the G-buffer's snippet has it.
+// The passes the caller's geometry is drawn in: all but Pass_Transmittance, whose part its accumulation does
+bool geometry_drawn_in(Pass pass);
+
+// The output snippet of md_gl's shaders (md_gl_shaders_create) for the caller's geometry in a pass it is drawn in. A
+// caller's defines may come before it: DIMMED_SATURATION, the saturation kept by atoms dimmed while others are selected
+// (1 by default), as the G-buffer's snippet has it.
 str_t geometry_snippet(Pass pass);
 
 // Before each draw of the caller's geometry in a pass: the opacity of what it draws (its colours' alpha times this) and
-// an id that tells its thresholds from those of another draw of the same atoms (another representation's)
+// an id that tells its thresholds from those of another draw of the same atoms (another representation's), the same
+// in every pass of a frame. Binds its parameters for the snippets (MD_GL_USER_TEXTURE_UNIT + 1), written once per
+// frame and id, never while queued draws may still read them.
 void geometry_set_draw(float opacity, uint32_t id);
 
 }  // namespace isomesh
