@@ -968,6 +968,10 @@ struct Representation {
     float tint_scale = 0.0f;
     float saturation = 1.0f;
 
+    // How much of what lies behind it it hides, of md_gl's representations (SpaceFill to Cartoon): below 1 drawn
+    // transparent, with the isosurface meshes (representation_transparent in main.cpp), rather than into the G-buffer
+    float opacity = 1.0f;
+
     // scaling parameter (radius, width, height, etc depending on type). Cartoon: coil, sheet, helix, and the thickness of
     // the lipids and nucleic acids (w)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1233,6 +1237,7 @@ struct ApplicationState {
     struct {
         md_gl_shaders_t shaders = {};
         md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
+        md_gl_shaders_t shaders_transparent[5] = {};  // The representations drawn transparent, a pass each (isomesh::Pass)
     } gl;
 
     // --- MDLIB DATA ---

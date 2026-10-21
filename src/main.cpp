@@ -140,6 +140,17 @@ static str_t output_snippet(const ApplicationState& state) {
     return str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", CLAMP(state.selection.color.saturation, 0.0f, 1.0f), STR_ARG(shader_output_snippet));
 }
 
+// The shaders of the representations drawn transparent (representation_transparent), a pass each of the isosurface
+// meshes' (isomesh::geometry_snippet), with the saturation of the dimmed atoms as the G-buffer's
+static_assert(sizeof(((ApplicationState*)nullptr)->gl.shaders_transparent) / sizeof(md_gl_shaders_t) == isomesh::Pass_Count, "A pass each");
+static void transparent_shaders_create(ApplicationState& state) {
+    for (int p = 0; p < isomesh::Pass_Count; ++p) {
+        const str_t snippet = isomesh::geometry_snippet((isomesh::Pass)p);
+        state.gl.shaders_transparent[p] = md_gl_shaders_create(str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s",
+            CLAMP(state.selection.color.saturation, 0.0f, 1.0f), STR_ARG(snippet)));
+    }
+}
+
 // The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
 // where the fragment is in view and 1 in g where it is there at all, in view or behind the scene; of the highlighted
 // the same in b and a; and in the second target, of the highlighted, the group they are in (AtomBit_GroupMask) + 1,
@@ -838,6 +849,7 @@ int main(int argc, char** argv) {
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(output_snippet(state));
     state.gl.shaders_marks          = md_gl_shaders_create(shader_output_snippet_marks);
+    transparent_shaders_create(state);
 
     // Which of these are open is part of a workspace; the components register their own on initialize
     workspace_register_window("Timelines",       &state.timeline.show_window);
@@ -1076,6 +1088,8 @@ int main(int argc, char** argv) {
                 md_gl_shaders_destroy(state.gl.shaders_marks);
                 state.gl.shaders = md_gl_shaders_create(output_snippet(state));
                 state.gl.shaders_marks = md_gl_shaders_create(shader_output_snippet_marks);
+                for (md_gl_shaders_t& s : state.gl.shaders_transparent) md_gl_shaders_destroy(s);
+                transparent_shaders_create(state);
                 render_invalidate(&state);
             }
 
@@ -7264,6 +7278,78 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     }
 }
 
+// Whether a representation is drawn transparent: one of md_gl's of an opacity below 1, through the passes of the
+// isosurface meshes (isomesh::RenderDesc::geometry) rather than into the G-buffer, so not picked, and without ambient
+// occlusion or shadows
+static bool representation_transparent(const Representation& rep) {
+    return RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon && rep.opacity < 1.0f;
+}
+
+// Whether any is shown, transparent
+static bool any_representation_transparent(const ApplicationState& state) {
+    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+        const Representation& rep = state.representation.reps[i];
+        if (representation_transparent(rep) && representation_shown(state, rep) && rep.type_is_valid) return true;
+    }
+    return false;
+}
+
+// The representations drawn transparent in a pass of the isosurface meshes' (isomesh::RenderDesc::geometry), each by
+// itself: its opacity, and its index to tell its thresholds from another's of the same atoms. The ops as the G-buffer's
+// (draw_representations_opaque): the cartoon's glyphs, the copies.
+static void draw_representations_transparent_geometry(isomesh::Pass pass, void* user) {
+    ApplicationState* state = (ApplicationState*)user;
+    const float max_bond_length = bond_length_limit(state);
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        const Representation& rep = state->representation.reps[i];
+        if (!representation_transparent(rep) || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+
+        md_array(md_gl_draw_op_t) ops = 0;
+        md_array(md_gl_draw_op_t) glyph_ops = 0;
+        if (rep.type == RepresentationType::Cartoon) {
+            representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+            place_ops(&glyph_ops, 0, *state, rep, true, frame_alloc);
+        }
+        if (rep.type != RepresentationType::Cartoon || state->mold.sys.protein_backbone.range.count > 0) {
+            md_array_push(ops, representation_draw_op(rep), frame_alloc);
+            place_ops(&ops, 0, *state, rep, false, frame_alloc);
+        }
+
+        isomesh::geometry_set_draw(rep.opacity, (uint32_t)i);
+        md_gl_draw_args_t args = {
+            .shaders = state->gl.shaders_transparent[pass],
+            .draw_operations = {
+                .count = (uint32_t)md_array_size(ops),
+                .ops = ops,
+            },
+            .view_transform = {
+                .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
+                .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
+                .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
+                .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
+            },
+            .picking_offset = gl_picking_offset(*state),
+            .max_bond_length = max_bond_length,
+        };
+        if (md_array_size(ops) > 0) md_gl_draw(&args);
+        if (md_array_size(glyph_ops) > 0) {
+            args.draw_operations = {.count = (uint32_t)md_array_size(glyph_ops), .ops = glyph_ops};
+            args.picking_offset = gl_picking_offset_glyphs(*state);
+            md_gl_draw(&args);
+        }
+    }
+}
+
+// What the transparent representations' dimming depends on (AtomBit_Dimmed, while something is selected): the selection,
+// the words of its mask that are written
+static uint64_t selection_hash(const ApplicationState& state) {
+    const md_bitmask_t& m = state.selection.selection_mask;
+    if (!m.words || m.hi <= m.lo) return 0;
+    const uint32_t first = m.g0 + m.lo;
+    const uint64_t h = md_hash64(&first, sizeof(first), 0);
+    return md_hash64(m.words + m.lo, sizeof(uint64_t) * (m.hi - m.lo), h);
+}
+
 static void draw_representations_opaque(ApplicationState* state) {
     ASSERT(state);
 
@@ -7324,6 +7410,7 @@ static void draw_representations_opaque(ApplicationState* state) {
         md_array(md_gl_draw_op_t) glyph_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
+            if (representation_transparent(rep)) continue;     // in the isosurface meshes' passes
 
             if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
@@ -7429,6 +7516,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&shown, sizeof(shown), h);
         if (!shown) continue;
         h = md_hash64(&rep.type, sizeof(rep.type), h);
+        h = md_hash64(&rep.opacity, sizeof(rep.opacity), h);
         h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
@@ -7462,8 +7550,9 @@ static float isoline_px_per_point(const ApplicationState* state) {
     return h > 0.0f ? (float)state->gbuffer.height / h : 1.0f;
 }
 
-// The isosurfaces of every electronic structure representation as meshes, in one composite
-static bool draw_representations_transparent_mesh(ApplicationState* state) {
+// The isosurfaces of every electronic structure representation as meshes (unless not 'with_surfaces': the raycaster
+// draws them), and the representations drawn transparent, in one composite
+static bool draw_representations_transparent_mesh(ApplicationState* state, bool with_surfaces = true) {
     static constexpr size_t MAX_SURFACES = 256;
     isomesh::Surface surfaces[MAX_SURFACES];
     size_t num_surfaces = 0;
@@ -7471,7 +7560,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        if (!with_surfaces || rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
 
         IsoDesc iso;
@@ -7505,6 +7594,12 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         num_surfaces += n;
     }
 
+    const bool geometry = any_representation_transparent(*state);
+    if (geometry) {
+        const uint64_t selection = selection_hash(*state);
+        scene_hash = md_hash64(&selection, sizeof(selection), scene_hash);
+    }
+
     const isomesh::RenderDesc desc = {
         .render_target = {
             .depth = state->gbuffer.tex.depth,
@@ -7532,8 +7627,12 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         },
         .scene_hash = scene_hash,
         .keep_drawing = state->profiler_keep_isomeshes,
+        .geometry = {
+            .draw = geometry ? draw_representations_transparent_geometry : nullptr,
+            .user = state,
+        },
     };
-    if (num_surfaces == 0) {
+    if (num_surfaces == 0 && !geometry) {
         isomesh::target_free(&iso_mesh_target);
         return false;
     }
@@ -7551,9 +7650,15 @@ static bool draw_representations_transparent(ApplicationState* state) {
     if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
         return draw_representations_transparent_mesh(state);
     }
-    isomesh::target_free(&iso_mesh_target);
 
+    // The representations drawn transparent through the isosurface meshes' passes, without the meshes, and the raycast
+    // isosurfaces over them: two composites, the isosurfaces in front of them wherever both are
     bool written = false;
+    if (any_representation_transparent(*state)) {
+        written = draw_representations_transparent_mesh(state, false);
+    } else {
+        isomesh::target_free(&iso_mesh_target);
+    }
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];

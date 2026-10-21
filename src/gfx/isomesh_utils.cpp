@@ -10,11 +10,14 @@
 
 #include <math.h>
 #include <float.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <shaders.inl>
 
 #include <gfx/profiler.h>
+
+#include <md_gl.h>
 
 namespace isomesh {
 
@@ -47,12 +50,16 @@ void main() {
 static constexpr float OPTICAL_SCALE = 150.0f;
 static constexpr int   BLUE_NOISE_SIZE = 64;    // BLUE_NOISE_SIZE in isomesh.frag
 
-enum Pass {     // isomesh.frag
-    Pass_Transmittance = 0,
-    Pass_Peel0         = 1,
-    Pass_Peel1         = 2,
-    Pass_Depth         = 3,
-    Pass_Accumulate    = 4,
+// The parameters of the caller's geometry (geometry_snippet's geom_param): texels of RGBA32F
+enum GeometryParam {
+    GeometryParam_Frame    = 0,     // the frame, -, -, whether there is an opaque scene's depth
+    GeometryParam_Draw     = 1,     // the draw's opacity, its id's low and high 16 bits (geometry_set_draw)
+    GeometryParam_Light    = 2,     // the direction toward the key light (view space), the roughness
+    GeometryParam_Radiance = 3,     // the key light's radiance, F0
+    GeometryParam_Sky      = 4,     // the sky's radiance, the basic model (> 0.5)
+    GeometryParam_Ground   = 5,     // the ground's, the basic model's ambient
+    GeometryParam_Basic    = 6,     // its specular, linear colours (> 0.5), the light's strength
+    GeometryParam_Count    = 7,
 };
 
 // isomesh.frag, built for each pass (ISOMESH_TRANSMITTANCE, ISOMESH_PASS). A uniform a pass's program has not got is
@@ -83,6 +90,7 @@ static struct {
         GLint tex_color, tex_t;
     } composite;
     GLuint tex_blue_noise = 0;
+    GLuint tex_geometry_params = 0;    // the caller's geometry's parameters (GeometryParam), at MD_GL_USER_TEXTURE_UNIT + 1
     GLuint vao = 0;     // empty, for the fullscreen triangle
     GLuint fbo = 0;     // onto the caller's colour target
     bool   ok  = false;
@@ -260,6 +268,14 @@ void initialize() {
     glGenVertexArrays(1, &gl.vao);
     glGenFramebuffers(1, &gl.fbo);
 
+    glGenTextures(1, &gl.tex_geometry_params);
+    glBindTexture(GL_TEXTURE_2D, gl.tex_geometry_params);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, GeometryParam_Count, 1, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     {
         const int n = BLUE_NOISE_SIZE;
         float* bn = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * n * n);
@@ -285,6 +301,8 @@ void shutdown() {
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
     if (gl.fbo) glDeleteFramebuffers(1, &gl.fbo);
     if (gl.tex_blue_noise) glDeleteTextures(1, &gl.tex_blue_noise);
+    if (gl.tex_geometry_params) glDeleteTextures(1, &gl.tex_geometry_params);
+    gl.tex_geometry_params = 0;
     gl.vao = 0;
     gl.fbo = 0;
     gl.tex_blue_noise = 0;
@@ -468,8 +486,9 @@ static float halton(uint32_t i, uint32_t b) {
 // implementation may give it more)
 static GLuint texture_frame(GLenum format, uint32_t width, uint32_t height) {
     const bool depth  = format == GL_DEPTH_COMPONENT24 || format == GL_DEPTH_COMPONENT32F;
-    const GLenum base = depth ? GL_DEPTH_COMPONENT : (format == GL_RG16F ? GL_RG : GL_RGBA);
-    const GLenum type = depth ? GL_FLOAT : GL_HALF_FLOAT;
+    const bool   f32  = format == GL_RG32F || format == GL_RGBA32F;
+    const GLenum base = depth ? GL_DEPTH_COMPONENT : ((format == GL_RG16F || format == GL_RG32F) ? GL_RG : GL_RGBA);
+    const GLenum type = (depth || f32) ? GL_FLOAT : GL_HALF_FLOAT;
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -481,8 +500,9 @@ static GLuint texture_frame(GLenum format, uint32_t width, uint32_t height) {
     return tex;
 }
 
-static bool target_init(Target* t, uint32_t width, uint32_t height) {
-    if (t->fbo && t->width == width && t->height == height) return true;
+// 'peel_depths': the caller's geometry is drawn too, which reads the peels' depths from the opacities' target (RenderDesc::geometry)
+static bool target_init(Target* t, uint32_t width, uint32_t height, bool peel_depths) {
+    if (t->fbo && t->width == width && t->height == height && t->peel_depths == peel_depths) return true;
     target_free(t);
 
     const GLenum target = GL_TEXTURE_2D;
@@ -491,7 +511,7 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
     t->tex_frame_depth = texture_frame(GL_DEPTH_COMPONENT24, width, height);
     t->tex_peel_depth[0] = texture_frame(GL_DEPTH_COMPONENT32F, width, height);
     t->tex_peel_depth[1] = texture_frame(GL_DEPTH_COMPONENT32F, width, height);
-    t->tex_peel_opacity  = texture_frame(GL_RG16F, width, height);
+    t->tex_peel_opacity  = texture_frame(peel_depths ? GL_RGBA32F : GL_RG16F, width, height);   // o0, o1 (, z0, z1)
 
     glGenFramebuffers(1, &t->fbo_color);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
@@ -515,6 +535,7 @@ static bool target_init(Target* t, uint32_t width, uint32_t height) {
 
     t->width   = width;
     t->height  = height;
+    t->peel_depths = peel_depths;
     t->frame   = 0;
     t->hash    = 0;
     t->cur     = 0;
@@ -670,7 +691,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     if (!gl.ok || !desc.render_target.color || w == 0 || h == 0) return false;
 
     const SavedState saved = save_state();
-    if (!target_init(t, w, h)) {
+    if (!target_init(t, w, h, desc.geometry.draw != nullptr)) {
         restore_state(saved);
         return false;
     }
@@ -701,12 +722,14 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     }
 
     t->triangles = tris;
+    const bool geometry = desc.geometry.draw != nullptr;   // the caller's, in the same passes
+    const bool drawn = any || geometry;
 
     // The pixels the surfaces can cover: their bounds projected (as the mean is keyed on, unjittered), with a margin for
     // the jitter, or all of the target when the bounds reach behind the eye. The mean and the composite are of these
     // alone: what lies outside is not read, and a new view or new bounds is a new mean.
-    int rect[4] = {0, 0, (int)w, (int)h};  // x, y, width, height
-    if (any) {
+    int rect[4] = {0, 0, (int)w, (int)h};  // x, y, width, height (all of it with the caller's geometry)
+    if (any && !geometry) {
         const mat4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
         float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
         bool behind = false;
@@ -743,7 +766,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     glFrontFace(GL_CCW);
     glBlendEquation(GL_FUNC_ADD);
 
-    if (any && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
+    if (drawn && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
         const mat4_t& V = desc.matrix.view;
         // The caller's projection, or when it is not jittered (proj as proj_no_jitter) one of its own jittered over the
         // pixel by the frame (Halton 2, 3): the mean is then of the pixel's area, the edges antialiased
@@ -760,10 +783,10 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
         // Distances along the rays are taken from the nearest point of the bounds (or the eye, inside them)
         const bool  ortho = P.elem[3][3] == 1.0f;
-        const vec3_t center = vec3_lerp(lo, hi, 0.5f);
-        const float radius = vec3_length(hi - lo) * 0.5f;
+        const vec3_t center = any ? vec3_lerp(lo, hi, 0.5f) : vec3_t{0, 0, 0};
+        const float radius = any ? vec3_length(hi - lo) * 0.5f : 0.0f;
         const vec3_t center_view = vec3_from_vec4(V * vec4_from_vec3(center, 1.0f));
-        const float od_ref = MAX(0.0f, (ortho ? -center_view.z : vec3_length(center_view)) - radius);
+        const float od_ref = any ? MAX(0.0f, (ortho ? -center_view.z : vec3_length(center_view)) - radius) : 0.0f;
 
         const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);
         const float env = MAX(desc.shading.environment, 0.0f);
@@ -774,8 +797,40 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         const mat4_t inv_proj = mat4_inverse(P);
         const float inv_res[2] = {1.0f / (float)w, 1.0f / (float)h};
 
-        bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
-        bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
+        // The caller's geometry's parameters of the frame (GeometryParam), the light's direction in view space as the
+        // surfaces' (light.light_dir is)
+        if (geometry) {
+            const float params[GeometryParam_Count][4] = {
+                {(float)t->frame, 0.0f, 0.0f, use_depth ? 1.0f : 0.0f},
+                {1.0f, 0.0f, 0.0f, 0.0f},
+                {light.light_dir.x, light.light_dir.y, light.light_dir.z, desc.shading.roughness},
+                {light.light_irradiance.x, light.light_irradiance.y, light.light_irradiance.z, F0},
+                {sky.x, sky.y, sky.z, desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f},
+                {ground.x, ground.y, ground.z, CLAMP(desc.shading.ambient, 0.0f, 1.0f)},
+                {MAX(desc.shading.specular, 0.0f), desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
+                 MAX(desc.shading.light, 0.0f), 0.0f},
+            };
+            glBindTexture(GL_TEXTURE_2D, gl.tex_geometry_params);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GeometryParam_Count, 1, GL_RGBA, GL_FLOAT, params);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        // The textures of a pass, for the surfaces' program (bound again in every pass: md_gl binds its own on the
+        // units below MD_GL_USER_TEXTURE_UNIT) and for the caller's geometry (md_user_texture_0..3): the opaque scene's
+        // depth, the blue noise, and what the peels made, from the pass that reads it on
+        auto bind_pass_textures = [&](Pass pass) {
+            bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
+            bind_texture(5, GL_TEXTURE_2D, gl.tex_blue_noise);
+            bind_texture(6, GL_TEXTURE_2D, pass >= Pass_Peel1 ? t->tex_peel_depth[0] : 0);
+            bind_texture(7, GL_TEXTURE_2D, pass >= Pass_Depth ? t->tex_peel_depth[1] : 0);
+            if (!geometry) return;
+            const GLuint peel = pass == Pass_Peel1 ? t->tex_peel_depth[0] : pass == Pass_Depth ? t->tex_peel_depth[1] :
+                                pass == Pass_Accumulate ? t->tex_peel_opacity : 0;
+            bind_texture(MD_GL_USER_TEXTURE_UNIT + 0, GL_TEXTURE_2D, desc.render_target.depth);
+            bind_texture(MD_GL_USER_TEXTURE_UNIT + 1, GL_TEXTURE_2D, gl.tex_geometry_params);
+            bind_texture(MD_GL_USER_TEXTURE_UNIT + 2, GL_TEXTURE_2D, peel);
+            bind_texture(MD_GL_USER_TEXTURE_UNIT + 3, GL_TEXTURE_2D, pass == Pass_Depth ? gl.tex_blue_noise : 0);
+        };
 
         // What the draws of the frame share, in each pass's program
         auto set_frame_uniforms = [&](const MeshProgram& m) {
@@ -810,8 +865,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
         };
 
-        // A pass: its program, then the surfaces
+        // A pass: its textures, its program, the surfaces, then the caller's geometry
         auto draw_surfaces = [&](Pass pass) {
+            bind_pass_textures(pass);
             const MeshProgram& m = mesh_program(pass);
             set_frame_uniforms(m);
             for (size_t i = 0; i < desc.num_surfaces; ++i) {
@@ -848,6 +904,10 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glUniform1f(m.isoline_width, MAX(s.isolines.width, 0.0f));
                 draw_surface(s);
             }
+            if (geometry) {
+                desc.geometry.draw(pass, desc.geometry.user);
+                glBindVertexArray(0);
+            }
         };
 
         // The coverage of all the surfaces together and the optical depth of what they enclose
@@ -877,13 +937,12 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_peel[k]);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
             if (k == 0) {
-                const GLfloat zero[4] = {0, 0, 0, 0};
+                const GLfloat none[4] = {0, 0, 1, 1};
                 glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glClearBufferfv(GL_COLOR, 0, zero);     // opacity 0: no layer
+                glClearBufferfv(GL_COLOR, 0, none);     // opacity 0, depth 1: no layer
             }
             glClear(GL_DEPTH_BUFFER_BIT);
-            glColorMask(k == 0, k == 1, GL_FALSE, GL_FALSE);
-            if (k == 1) bind_texture(6, GL_TEXTURE_2D, t->tex_peel_depth[0]);
+            glColorMask(k == 0, k == 1, k == 0, k == 1);    // the peel's opacity and depth
             draw_surfaces(k == 0 ? Pass_Peel0 : Pass_Peel1);
             POP_GPU_SECTION()
         }
@@ -895,7 +954,6 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t->fbo_color);
         glDrawBuffer(GL_NONE);
         glClear(GL_DEPTH_BUFFER_BIT);
-        bind_texture(7, GL_TEXTURE_2D, t->tex_peel_depth[1]);
         draw_surfaces(Pass_Depth);
         POP_GPU_SECTION()
 
@@ -915,6 +973,9 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         draw_surfaces(Pass_Accumulate);
         const int frame_units[4] = {1, 6, 7, 8};
         for (int unit : frame_units) bind_texture(unit, GL_TEXTURE_2D, 0);
+        if (geometry) {
+            for (int i = 0; i < 4; ++i) bind_texture(MD_GL_USER_TEXTURE_UNIT + i, GL_TEXTURE_2D, 0);
+        }
         glDisable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDisable(GL_BLEND);
@@ -973,7 +1034,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         t->cur = next;
         t->frame += 1;
     }
-    if (!any) {
+    if (!drawn) {
         t->frame = 0;
     }
 
@@ -990,7 +1051,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glClearColor(0, 0, 0, 0);
                 glClear(GL_COLOR_BUFFER_BIT);
             }
-            if (any && t->frame > 0) {
+            if (drawn && t->frame > 0) {
                 glEnable(GL_SCISSOR_TEST);
                 glScissor(rect[0], rect[1], rect[2], rect[3]);
                 glEnable(GL_BLEND);
@@ -1018,8 +1079,207 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     POP_GPU_SECTION()
     restore_state(saved);
 
-    if (converged) *converged = !any || (t->frame >= MAX_FRAMES && !desc.keep_drawing);
+    if (converged) *converged = !drawn || (t->frame >= MAX_FRAMES && !desc.keep_drawing);
     return done;
+}
+
+// THE CALLER'S GEOMETRY
+
+static constexpr str_t geometry_snippet_src = STR_LIT(R"(
+// THE CALLER'S GEOMETRY (isomesh_utils.h): md_gl's representations in the passes of the isosurface meshes, as
+// isomesh.frag does them, for GEOMETRY_PASS (defined before this). md_gl's fragment shaders call write_fragment with what
+// they found (the view position, the normal, the colour of the atom, its index and flags); md_user_texture_i is at
+// MD_GL_USER_TEXTURE_UNIT + i, bound by render().
+#ifndef DIMMED_SATURATION
+#define DIMMED_SATURATION 1.0
+#endif
+
+uniform sampler2D md_user_texture_0;    // the opaque scene's depth
+uniform sampler2D md_user_texture_1;    // the parameters (render(), geometry_set_draw): a row of RGBA32F
+uniform sampler2D md_user_texture_2;    // GEOMETRY_PASS 2: the first peel's depth; 3: the second's; 4: the peels'
+                                        // opacities and depths (o0, o1, z0, z1)
+uniform sampler2D md_user_texture_3;    // GEOMETRY_PASS 3: the blue noise thresholds
+
+#if GEOMETRY_PASS == 0
+layout(location = 0) out vec4 out_tod;
+#elif GEOMETRY_PASS != 3
+layout(location = 0) out vec4 out_color;
+#endif
+
+vec4 geom_param(int i) { return texelFetch(md_user_texture_1, ivec2(i, 0), 0); }
+
+// As isomesh.frag's (its constants, its shading), but for the names: these are in md_gl's shaders
+const float GEOM_PEEL_EPS        = 2.0e-7;
+const int   GEOM_BLUE_NOISE_SIZE = 64;
+const uint  GEOM_LAYER_FRAMES    = 8u;
+const float GEOM_MAX_OPACITY     = 0.999;
+const float GEOM_PI              = 3.1415926535;
+
+#define geom_light_dir       (geom_param(2).xyz)
+#define geom_roughness       (geom_param(2).w)
+#define geom_dir_radiance    (geom_param(3).xyz)
+#define geom_F0              (geom_param(3).w)
+#define geom_sky_radiance    (geom_param(4).xyz)
+#define geom_basic           (geom_param(4).w)
+#define geom_ground_radiance (geom_param(5).xyz)
+#define geom_basic_ambient   (geom_param(5).w)
+#define geom_basic_specular  (geom_param(6).x)
+#define geom_linear_colors   (geom_param(6).y)
+#define geom_light_strength  (geom_param(6).z)
+
+float geom_fresnel(float cos_theta, float F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+vec2 geom_env_brdf(float NdotV, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04, -0.04);
+    vec4  r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+vec3 geom_srgb_to_linear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+// What the surface sends toward the eye (premultiplied: L) and how much of what lies behind it it hides
+void geom_shade(vec3 color, float alpha, vec3 N, vec3 V, out vec3 L, out float opacity) {
+    float a = clamp(alpha, 0.0, 1.0);
+    if (geom_basic > 0.5) {
+        vec3  ld = geom_light_dir;
+        float w  = 0.5 + 0.5 * dot(N, ld);
+        vec3  c  = clamp(color, 0.0, 1.0) * (geom_basic_ambient + geom_light_strength * (1.0 - geom_basic_ambient) * w * w);
+        c /= max(1.0, max(c.r, max(c.g, c.b)));
+        vec3  H = normalize(ld + V);
+        float s = geom_light_strength * geom_basic_specular * pow(max(dot(N, H), 0.0), 48.0);
+        c = mix(c, vec3(1.0), clamp(s, 0.0, 1.0));
+        L = a * ((geom_linear_colors > 0.5) ? c : geom_srgb_to_linear(c));
+        opacity = a;
+        return;
+    }
+    float roughness = clamp(geom_roughness, 0.04, 1.0);
+    float F0 = clamp(geom_F0, 0.0, 1.0);
+    vec3  albedo = (geom_linear_colors > 0.5) ? clamp(color, 0.0, 1.0) : geom_srgb_to_linear(color);
+    vec3  ld = geom_light_dir;
+    float NdotV = clamp(dot(N, V), 0.0, 1.0);
+    float NdotL = clamp(dot(N, ld), 0.0, 1.0);
+
+    vec3 diffuse  = vec3(0.0);
+    vec3 specular = vec3(0.0);
+    if (NdotL > 0.0) {
+        vec3  H     = normalize(ld + V);
+        float NdotH = clamp(dot(N, H), 0.0, 1.0);
+        float HdotV = clamp(dot(H, V), 0.0, 1.0);
+        float ra = roughness * roughness;
+        float a2 = ra * ra;
+        float d  = NdotH * NdotH * (a2 - 1.0) + 1.0;
+        float D  = a2 / (GEOM_PI * d * d);
+        float r1 = roughness + 1.0;
+        float k  = (r1 * r1) / 8.0;
+        float G  = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
+        float F  = geom_fresnel(HdotV, F0);
+        vec3  E  = geom_dir_radiance * geom_light_strength;
+        specular += vec3(D * G * F / (4.0 * NdotV * NdotL + 0.0001)) * E * NdotL;
+        diffuse  += (1.0 - F) * albedo * (1.0 / GEOM_PI) * E * NdotL;
+    }
+    vec2  ab = geom_env_brdf(NdotV, roughness);
+    float Fe = F0 * ab.x + ab.y;
+    diffuse  += (1.0 - Fe) * albedo * mix(geom_ground_radiance, geom_sky_radiance, 0.5 + 0.5 * N.y);
+    float w = 0.1 + roughness;
+    specular += Fe * mix(geom_ground_radiance, geom_sky_radiance, smoothstep(-w, w, reflect(-V, N).y));
+
+    L = a * diffuse + specular;
+    opacity = 1.0 - (1.0 - a) * (1.0 - Fe);
+}
+
+uint geom_pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index, uint atom_flags) {
+    // The depth the passes compare, and the one the depth tests see, the same whatever the representation: written
+    // (md_gl's impostors write the same, its meshes would leave the rasterizer's)
+    vec4  clip = u_view_to_clip * vec4(view_coord, 1.0);
+    float z = clip.z / clip.w * 0.5 + 0.5;
+    gl_FragDepth = z;
+
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    bool  occluded = geom_param(0).w > 0.5 && z >= texelFetch(md_user_texture_0, px, 0).r;
+
+    // Not selected while something is (AtomBit_Dimmed): less of its colour, as in the G-buffer
+    if ((atom_flags & 16u) != 0u) {
+        color.rgb = mix(vec3(dot(color.rgb, vec3(0.2126, 0.7152, 0.0722))), color.rgb, DIMMED_SATURATION);
+    }
+    vec3 N = normalize(view_normal);
+#if ORTHO
+    vec3 V = vec3(0.0, 0.0, 1.0);
+#else
+    vec3 V = normalize(-view_coord);
+#endif
+    if (dot(N, V) < 0.0) N = -N;
+
+    // The passes before GEOMETRY_PASS 4 use the opacity alone: the compiler leaves the rest out of them
+    vec3  L;
+    float opacity;
+    geom_shade(color.rgb, color.a * geom_param(1).x, N, V, L, opacity);
+    opacity = clamp(opacity, 0.0, GEOM_MAX_OPACITY);
+
+#if GEOMETRY_PASS == 0
+    // Behind the opaque scene it hides nothing; no optical depth (an impostor has no back face to close it)
+    out_tod = vec4(occluded ? 0.0 : log(1.0 - opacity), 0.0, 0.0, 0.0);
+#else
+    if (occluded || opacity <= 0.0) discard;
+#if GEOMETRY_PASS == 1
+    out_color = vec4(opacity, opacity, z, z);
+#elif GEOMETRY_PASS == 2
+    if (z <= texelFetch(md_user_texture_2, px, 0).r + GEOM_PEEL_EPS) discard;
+    out_color = vec4(opacity, opacity, z, z);
+#elif GEOMETRY_PASS == 3
+    if (z <= texelFetch(md_user_texture_2, px, 0).r + GEOM_PEEL_EPS) discard;
+    // the threshold, from the blue noise at an offset per layer (an atom of a draw) and frame
+    vec4  p0    = geom_param(0);
+    uint  frame = uint(p0.x);
+    uint  id    = uint(geom_param(1).y) | (uint(geom_param(1).z) << 16u);
+    uint  layer = geom_pcg(geom_pcg(atom_index) ^ ((id + 1u) * 0x9E3779B9u));
+    uint  shift = geom_pcg(layer ^ ((frame / GEOM_LAYER_FRAMES + 1u) * 0x68E31DA4u));
+    vec2  r2    = fract(vec2(0.7548776662, 0.5698402910) * float(frame) + 0.5);
+    ivec2 q     = (px + ivec2(int(shift & 0xFFFFu), int(shift >> 16u)) + ivec2(r2 * float(GEOM_BLUE_NOISE_SIZE))) & (GEOM_BLUE_NOISE_SIZE - 1);
+    if (texelFetch(md_user_texture_3, q, 0).r >= opacity) discard;
+#else
+    vec4  peel = texelFetch(md_user_texture_2, px, 0);     // o0, o1, z0, z1
+    float vis  = (z <= peel.z + GEOM_PEEL_EPS) ? 1.0 : (z <= peel.w + GEOM_PEEL_EPS) ? (1.0 - peel.x) : (1.0 - peel.x) * (1.0 - peel.y);
+    out_color = vec4(L, opacity) * vis;
+#endif
+#endif
+}
+)");
+
+str_t geometry_snippet(Pass pass) {
+    static char* text[Pass_Count] = {};
+    static size_t len[Pass_Count] = {};
+    const int p = CLAMP((int)pass, 0, (int)Pass_Count - 1);
+    if (!text[p]) {
+        const size_t cap = geometry_snippet_src.len + 64;
+        text[p] = (char*)md_alloc(md_get_heap_allocator(), cap);
+        len[p] = (size_t)snprintf(text[p], cap, "#define GEOMETRY_PASS %d\n%.*s", p, (int)geometry_snippet_src.len, geometry_snippet_src.ptr);
+    }
+    return {text[p], len[p]};
+}
+
+void geometry_set_draw(float opacity, uint32_t id) {
+    if (!gl.tex_geometry_params) return;
+    const float texel[4] = {CLAMP(opacity, 0.0f, 1.0f), (float)(id & 0xFFFFu), (float)(id >> 16), 0.0f};
+    GLint active = 0, bound = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+    glBindTexture(GL_TEXTURE_2D, gl.tex_geometry_params);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, GeometryParam_Draw, 0, 1, 1, GL_RGBA, GL_FLOAT, texel);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)bound);
+    glActiveTexture((GLenum)active);
 }
 
 }  // namespace isomesh

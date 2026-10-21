@@ -7,8 +7,9 @@
 //   PASS_TRANSMITTANCE  every fragment, no depth test: sum log(1 - opacity) (the exact coverage of all of them
 //                       together) and the optical depth of the regions they enclose (below), additively
 //                       (ISOMESH_TRANSMITTANCE: the opacity alone, not the colour)
-//   PASS_PEEL0          the nearest fragment of every pixel (depth test), and its opacity
-//   PASS_PEEL1          the nearest one behind that, and its opacity
+//   PASS_PEEL0          the nearest fragment of every pixel (depth test), and its opacity and depth (r, b)
+//   PASS_PEEL1          the nearest one behind that, and its opacity and depth (g, a): the peels' colour target holds
+//                       both when md_gl's geometry is drawn in the same passes (isomesh_utils.h): its accumulation reads it
 //   PASS_DEPTH          the stochastic depth of the fragments behind those two: each covers the pixel with
 //                       probability = its opacity, and the depth test keeps the nearest covering one
 //   PASS_ACCUMULATE     every fragment adds its radiance times its visibility: 1 for the nearest, 1 - o0 for the
@@ -127,7 +128,7 @@ uniform float u_light_strength;
 #ifdef ISOMESH_TRANSMITTANCE
 layout(location = 0) out vec4 out_tod;      // log(1 - opacity), optical depth
 #else
-layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity
+layout(location = 0) out vec4 out_color;    // PASS_ACCUMULATE: radiance, opacity; PASS_PEEL*: the opacity and depth
 #endif
 
 const int PASS_TRANSMITTANCE = 0;
@@ -419,7 +420,7 @@ void main() {
     if (opacity <= 0.0) discard;
 
     if (ISOMESH_PASS == PASS_PEEL0) {
-        out_color = vec4(opacity);
+        out_color = vec4(opacity, opacity, gl_FragCoord.z, gl_FragCoord.z);     // r and b written
         return;
     }
 
@@ -428,7 +429,7 @@ void main() {
     float z0 = texelFetch(u_tex_peel_depth0, px, 0).r;
     if (ISOMESH_PASS == PASS_PEEL1) {
         if (z <= z0 + PEEL_EPS) discard;
-        out_color = vec4(opacity);
+        out_color = vec4(opacity, opacity, z, z);                               // g and a written
         return;
     }
     float z1 = texelFetch(u_tex_peel_depth1, px, 0).r;

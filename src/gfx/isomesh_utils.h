@@ -21,8 +21,15 @@
 // per pixel, and one pass into the mean that also puts it over the caller's target (once the mean is kept, that
 // alone), both over the pixels the surfaces' bounds cover. The mean antialiases the edges: it is of the caller's
 // jittered projections, or when there are none (proj as proj_no_jitter) of a jitter of its own over the pixel. A
-// Target holds 28 bytes per pixel for the frame and 24 for the history.
+// Target holds 28 bytes per pixel for the frame (40 with the caller's geometry) and 24 for the history.
+//
+// The caller's geometry (RenderDesc::geometry) is drawn in the same passes, into the same targets and the same mean:
+// md_gl's representations drawn transparent, through output snippets of md_gl's shaders (geometry_snippet) that do in
+// each pass what isomesh.frag does, from the fragment md_gl hands them (its view position, normal, colour), shaded as
+// the surfaces are. With geometry the peels' colour target holds the opacities and the depths of both peels (o0, o1,
+// z0, z1), so that a snippet's pass reads no more than md_gl's four textures of the caller's.
 
+#include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/isolines.h>
@@ -38,6 +45,16 @@ static constexpr uint32_t MAX_FRAMES = 128;
 
 void initialize();
 void shutdown();
+
+// The passes of a frame, in the order render() draws them (isomesh.frag's PASS_*)
+enum Pass {
+    Pass_Transmittance = 0,     // the coverage of everything together, and the optical depth of what the surfaces enclose
+    Pass_Peel0         = 1,     // the nearest layer, exactly
+    Pass_Peel1         = 2,     // the one behind it
+    Pass_Depth         = 3,     // the stochastic depth of the layers behind those two
+    Pass_Accumulate    = 4,     // the radiance of everything times its visibility
+    Pass_Count
+};
 
 // Triangles (counter-clockwise seen from outside, which is where the normals point) in one vertex and index
 // buffer on the GL side. Surfaces are ranges of the index buffer.
@@ -75,11 +92,13 @@ struct Target {
     uint32_t tex_frame_tod   = 0;      // log transmittance and optical depth (RG16F)
     uint32_t tex_frame_depth = 0;      // the stochastic depth
     uint32_t tex_peel_depth[2] = {};   // the depths of the two nearest layers (32F)
-    uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F)
+    uint32_t tex_peel_opacity  = 0;    // and their opacities (RG16F), and with the caller's geometry their depths too
+                                       // (RGBA32F: o0, o1, z0, z1; RenderDesc::geometry)
     uint32_t fbo_color = 0;         // tex_frame_color + tex_frame_depth
     uint32_t fbo_tod   = 0;         // tex_frame_tod
     uint32_t fbo_peel[2] = {};      // tex_peel_opacity + tex_peel_depth[i]
     uint32_t fbo       = 0;         // the history being written
+    bool     peel_depths = false;   // tex_peel_opacity holds the depths (RGBA32F)
     uint32_t tex_history_color[2] = {};
     uint32_t tex_history_t[2]     = {};
     uint32_t cur = 0;           // which history holds the mean
@@ -155,10 +174,28 @@ struct RenderDesc {
     // For profiling a still view: the meshes drawn every frame, past MAX_FRAMES too, the mean then of about the last
     // MAX_FRAMES frames (each new one weighs 1 / MAX_FRAMES). It never converges.
     bool keep_drawing = false;
+
+    // Geometry of the caller's in the same passes: in each, after the surfaces, with the pass's targets bound and its state
+    // set, draw(pass, user), drawing with md_gl's shaders made of geometry_snippet(pass); what the snippets read is bound
+    // at MD_GL_USER_TEXTURE_UNIT + 0..3. With it the mean is of all of the target rather than of the surfaces' bounds, and
+    // render() draws without surfaces too. What it draws belongs in scene_hash.
+    struct {
+        void (*draw)(Pass pass, void* user) = nullptr;
+        void* user = nullptr;
+    } geometry;
 };
 
 // Returns true when the colour target holds this pass's result (cleared and/or drawn into). 'converged' (optional)
 // says whether the image is final: nothing changes it until the desc does.
 bool render(Target* target, const RenderDesc& desc, bool* converged = nullptr);
+
+// The output snippet of md_gl's shaders (md_gl_shaders_create) for the caller's geometry in a pass. A caller's defines
+// may come before it: DIMMED_SATURATION, the saturation kept by atoms dimmed while others are selected (1 by default),
+// as the G-buffer's snippet has it.
+str_t geometry_snippet(Pass pass);
+
+// Before each draw of the caller's geometry in a pass: the opacity of what it draws (its colours' alpha times this) and
+// an id that tells its thresholds from those of another draw of the same atoms (another representation's)
+void geometry_set_draw(float opacity, uint32_t id);
 
 }  // namespace isomesh
