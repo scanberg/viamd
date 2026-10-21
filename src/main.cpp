@@ -5226,7 +5226,7 @@ struct IsoBenchVariant {
     void (*apply)(md_gto_iso_gpu_switches_t* sw);     // from the defaults
 };
 
-// The library's defaults (r21), which every variant starts from
+// The library's defaults (r22), which every variant starts from
 static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     md_gto_iso_gpu_switches_t s = {};
     s.relax_first = true;  s.corners_v2 = true;    s.eval_v2 = true;    s.newton_predict = true;
@@ -5234,15 +5234,16 @@ static md_gto_iso_gpu_switches_t iso_bench_defaults() {
     s.canon_terms = true;  s.gemm = true;          s.octree_small = true; s.dform = false;
     s.dform_octree = true; s.coef_screen = true;   s.eval_list = true;  s.gemm_t32 = false;
     s.gemm_pipe = 0;       s.corners_v4 = true;    s.newton_tol_exp = 2;  s.dform_kernel = 2;
-    s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = true;
-    s.wide_kernel = 1;
+    s.ordered = true;      s.diag = 0;             s.gemm_wide = true;   s.octree8 = false;
+    s.wide_kernel = 1;     s.octree_start = 2;
     return s;
 }
 
 static const IsoBenchVariant iso_bench_variants[] = {
     {"all new (the defaults)",  [](md_gto_iso_gpu_switches_t*) {}},
     {"all old (round 1)",       [](md_gto_iso_gpu_switches_t* s) { *s = {}; s->eval_eps_exp = 10; s->newton_tol_exp = 4; }},
-    {"octree8 off",             [](md_gto_iso_gpu_switches_t* s) { s->octree8 = false; }},
+    {"octree from the root",    [](md_gto_iso_gpu_switches_t* s) { s->octree_start = 0; }},
+    {"octree8 on",              [](md_gto_iso_gpu_switches_t* s) { s->octree8 = true; }},
     {"wide_kernel r16",         [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 0; }},
     {"wide_kernel C ahead",     [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; }},
     {"wide_kernel C ahead, diag no multiply-adds", [](md_gto_iso_gpu_switches_t* s) { s->wide_kernel = 2; s->diag = 2; }},
@@ -5356,6 +5357,14 @@ static void draw_iso_mesh_bench(ApplicationState* data) {
     ImGui::SetItemTooltip("The D-form octree below the root with a node's 8 children in one group (iso_octree_dform8): "
                           "the shells reaching the parent listed once, each element of D loaded once for all 8 "
                           "instead of once per child; the same bounds");
+    ImGui::SameLine();
+    {
+        int st = sw.octree_start;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+        if (ImGui::SliderInt("Octree start", &st, 0, 3)) { sw.octree_start = st; changed = true; }
+    }
+    ImGui::SetItemTooltip("The first level the octree tests; the levels above keep every node (their few nodes reach "
+                          "every AO, a group each, and the root box holds the surfaces anyway)");
     ImGui::SameLine();
     changed |= ImGui::Checkbox("GEMM wide", &sw.gemm_wide);
     ImGui::SetItemTooltip("Canonical sets of more than 64 functions: the GEMM in one pass of 128, 192 or 256 columns, "
