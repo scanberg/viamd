@@ -5288,6 +5288,8 @@ static const IsoBenchVariant iso_bench_variants[] = {
     {"shared_corners off",      [](md_gto_iso_gpu_switches_t* s) { s->shared_corners = false; }},
     {"newton_predict off",      [](md_gto_iso_gpu_switches_t* s) { s->newton_predict = false; }},
     {"eval_eps 1e-10",          [](md_gto_iso_gpu_switches_t* s) { s->eval_eps_exp = 10; }},
+    // the defaults again, last: how far the first row was off (a GPU still raising its clocks, caches cold)
+    {"all new, again (drift check)", [](md_gto_iso_gpu_switches_t*) {}},
 };
 
 static struct {
