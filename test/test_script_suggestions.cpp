@@ -1,0 +1,402 @@
+#include "utest.h"
+
+#include <script_suggestions.h>
+
+#include <md_system.h>
+#include <md_util.h>
+#include <md_pdb.h>
+#include <md_gro.h>
+#include <md_mmcif.h>
+#include <md_xyz.h>
+#include <md_filter.h>
+#include <md_script.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_writer.h>
+
+#include <string.h>
+#include <initializer_list>     // The loops over braced lists: libc++ does not bring it in through the others
+
+/* What the Script menu of the context menu offers for the selection. The promise is that a line does what it says once
+ * it is in the script, so every test checks every line it gets by evaluating it again, apart from the generator: the
+ * expression of a selection picks the selected atoms and no others, a measurement compiles. On top of that, the forms
+ * which say what the atoms are have to be the ones offered where they apply. */
+
+namespace {
+
+struct Loaded {
+    md_allocator_i* alloc = nullptr;
+    md_system_t sys = {};
+};
+
+bool load(Loaded* l, const char* file) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", VIAMD_TEST_DATA_DIR, file);
+    l->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    l->sys = { .alloc = l->alloc };
+    md_system_state_t st = { .alloc = l->alloc };
+    const str_t p = str_from_cstr(path);
+    bool ok = false;
+    if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p);
+    else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p);
+    else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, MD_XYZ_OPTION_NONE);
+    else                           ok = md_pdb_system_init_from_file(&l->sys, &st, p, MD_PDB_OPTION_NONE);
+    return ok && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL);
+}
+
+void unload(Loaded* l) {
+    md_arena_allocator_destroy(l->alloc);
+}
+
+md_bitset_t select(const Loaded& l, const char* expr) {
+    md_filter_context_t ctx = {};
+    ctx.sys = &l.sys;
+    md_bitset_t sel = {};
+    if (!md_filter(&sel, str_from_cstr(expr), &ctx, l.alloc).success) return {};
+    return sel;
+}
+
+// The one atom the expression picks, -1 when it is not one
+int32_t atom(const Loaded& l, const char* expr) {
+    const md_bitset_t s = select(l, expr);
+    return md_bitset_count(s) == 1 ? (int32_t)s.beg : -1;
+}
+
+bool compiles(const Loaded& l, str_t src) {
+    md_script_ir_t* ir = md_script_ir_create(l.alloc);
+    md_script_ir_compile_from_source(ir, src, &l.sys, nullptr);
+    const bool ok = md_script_ir_valid(ir);
+    if (!ok) md_script_ir_write_diagnostics(md_writer_stdout(), ir);
+    md_script_ir_free(ir);
+    return ok;
+}
+
+// Nothing which cannot be typed: a name padded with zeros would cut the line short where it is printed
+bool printable(str_t s) {
+    for (size_t i = 0; i < s.len; ++i) {
+        const unsigned char c = (unsigned char)s.ptr[i];
+        if (c < 0x20 || c == 0x7F) return false;
+    }
+    return true;
+}
+
+// "sel1 = <expr>;" -> <expr>
+str_t rhs(str_t line, str_t ident) {
+    const size_t pre = ident.len + 3;
+    if (line.len <= pre + 1 || !str_eq(str_substr(line, 0, ident.len), ident) || !str_eq(str_substr(line, ident.len, 3), STR_LIT(" = ")) ||
+        line.ptr[line.len - 1] != ';') {
+        return {};
+    }
+    return str_substr(line, pre, line.len - pre - 1);
+}
+
+bool contains(const md_array(ScriptSuggestion) s, const char* text) {
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        if (str_eq_cstr(s[i].text, text)) return true;
+    }
+    return false;
+}
+
+bool any_contains(const md_array(ScriptSuggestion) s, const char* needle) {
+    size_t loc;
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        if (str_find_str(&loc, s[i].text, str_from_cstr(needle))) return true;
+    }
+    return false;
+}
+
+void print(const md_array(ScriptSuggestion) s) {
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        printf("    " STR_FMT "    [" STR_FMT "]\n", STR_ARG(s[i].text), STR_ARG(s[i].hint));
+    }
+}
+
+// Every line assigns to the name, compiles, and picks exactly the selection
+bool all_pick(const Loaded& l, md_bitset_t sel, const md_array(ScriptSuggestion) s) {
+    const str_t ident = STR_LIT("sel1");
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        const str_t expr = rhs(s[i].text, ident);
+        md_bitset_t got = {};
+        md_filter_context_t ctx = {};
+        ctx.sys = &l.sys;
+        const bool ok = !str_empty(expr) && printable(s[i].text) && compiles(l, s[i].text) &&
+            md_filter(&got, expr, &ctx, l.alloc).success && md_bitset_equal(got, sel);
+        if (!ok) {
+            printf("  does not pick the selection: " STR_FMT "\n", STR_ARG(s[i].text));
+            return false;
+        }
+    }
+    return true;
+}
+
+md_array(ScriptSuggestion) suggest(const Loaded& l, md_bitset_t sel) {
+    return script_suggest_selection(STR_LIT("sel1"), sel, l.sys, l.alloc);
+}
+
+md_array(ScriptSuggestion) measure(const Loaded& l, std::initializer_list<const char*> picks) {
+    int32_t atoms[8];
+    size_t n = 0;
+    for (const char* p : picks) {
+        if (n < ARRAY_SIZE(atoms)) atoms[n++] = atom(l, p);
+    }
+    return script_suggest_measurement(STR_LIT("m1"), atoms, n, l.sys, l.alloc);
+}
+
+}  // namespace
+
+// The molecules which are not chains (a ligand, a water) are instances: chain() of their position does not pick them,
+// or picks another chain. This is what the menu used to write for a whole ligand.
+UTEST(script_suggestions, molecule_which_is_not_a_chain) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "npt.gro"));
+    const md_bitset_t sel = select(l, "instance(2)");   // the ligand, after the protein
+    ASSERT_EQ(10u, (unsigned)md_bitset_count(sel));
+    md_array(ScriptSuggestion) s = suggest(l, sel);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s));
+    EXPECT_FALSE(any_contains(s, "chain("));
+    EXPECT_TRUE(contains(s, "sel1 = instance(2);"));
+    EXPECT_TRUE(contains(s, "sel1 = resname(\"LIG\");"));
+
+    // Waters likewise, the protein with them
+    const md_bitset_t mixed = select(l, "instance(1) or instance(5:9)");
+    md_array(ScriptSuggestion) m = suggest(l, mixed);
+    print(m);
+    EXPECT_TRUE(all_pick(l, mixed, m));
+    EXPECT_TRUE(contains(m, "sel1 = chain(\"A\") or instance(5:9);"));
+    EXPECT_TRUE(contains(m, "sel1 = chain(1) or instance(5:9);"));
+    unload(&l);
+}
+
+UTEST(script_suggestions, chains) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    const md_bitset_t b = select(l, "chain(2)");
+    md_array(ScriptSuggestion) s = suggest(l, b);
+    print(s);
+    EXPECT_TRUE(all_pick(l, b, s));
+    ASSERT_GT(md_array_size(s), 0u);
+    EXPECT_TRUE(str_eq_cstr(s[0].text, "sel1 = chain(\"B\");"));
+    EXPECT_TRUE(contains(s, "sel1 = chain(2);"));
+
+    const md_bitset_t ac = select(l, "chain(1) or chain(3)");
+    md_array(ScriptSuggestion) t = suggest(l, ac);
+    print(t);
+    EXPECT_TRUE(all_pick(l, ac, t));
+    EXPECT_TRUE(contains(t, "sel1 = chain({\"A\", \"C\"});"));
+    unload(&l);
+}
+
+// Residues of a chain by the numbers of the file, which is what the tooltip shows of them; by their position in the
+// system as well
+UTEST(script_suggestions, residues) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    const md_bitset_t sel = select(l, "resid(10:20) in chain(2)");
+    md_array(ScriptSuggestion) s = suggest(l, sel);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s));
+    ASSERT_GT(md_array_size(s), 0u);
+    EXPECT_TRUE(str_eq_cstr(s[0].text, "sel1 = resid(10:20) in chain(\"B\");"));
+    EXPECT_TRUE(contains(s, "sel1 = residue(405:415);"));
+    // Eleven residues are eleven selections, which behaves differently in a context from one: the hint says so
+    EXPECT_TRUE(str_eq_cstr(s[0].hint, "82 atoms, as 11 selections (one per structure)"));
+    unload(&l);
+}
+
+// What the atoms are, rather than where: their names within the chain, the backbone of residues
+UTEST(script_suggestions, what_the_atoms_are) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+
+    const md_bitset_t ca = select(l, "name(\"CA\") and chain(1)");
+    md_array(ScriptSuggestion) s = suggest(l, ca);
+    print(s);
+    EXPECT_TRUE(all_pick(l, ca, s));
+    ASSERT_GT(md_array_size(s), 0u);
+    EXPECT_TRUE(str_eq_cstr(s[0].text, "sel1 = name(\"CA\") and chain(\"A\");"));
+
+    const md_bitset_t bb = select(l, "backbone() and residue(10:12)");
+    md_array(ScriptSuggestion) t = suggest(l, bb);
+    print(t);
+    EXPECT_TRUE(all_pick(l, bb, t));
+    ASSERT_GT(md_array_size(t), 0u);
+    EXPECT_TRUE(str_eq_cstr(t[0].text, "sel1 = backbone() and (resid(10:12) in chain(\"A\"));"));
+    // The atoms of each residue by name, in the order the residue has them
+    EXPECT_TRUE(contains(t, "sel1 = name({\"N\", \"CA\", \"C\"}) in resid(10:12) in chain(\"A\");"));
+    unload(&l);
+
+    ASSERT_TRUE(load(&l, "npt.gro"));
+    const md_bitset_t w = select(l, "water()");
+    md_array(ScriptSuggestion) u = suggest(l, w);
+    print(u);
+    EXPECT_TRUE(all_pick(l, w, u));
+    ASSERT_GT(md_array_size(u), 0u);
+    EXPECT_TRUE(str_eq_cstr(u[0].text, "sel1 = water();"));
+    // The atoms of whole residues by name say nothing the residues do not
+    EXPECT_FALSE(any_contains(u, "name(\"OW\""));
+
+    const md_bitset_t o = select(l, "element(\"O\") and water()");
+    md_array(ScriptSuggestion) v = suggest(l, o);
+    print(v);
+    EXPECT_TRUE(all_pick(l, o, v));
+    EXPECT_TRUE(contains(v, "sel1 = name(\"OW\");"));
+    EXPECT_TRUE(contains(v, "sel1 = element(\"O\") and water();"));
+    unload(&l);
+}
+
+// 'in' binds looser than 'or': the terms of several residues are put in parentheses, or the first context would take
+// all of what follows it
+UTEST(script_suggestions, scattered) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    const md_bitset_t sel = select(l, "atom({5, 100, 2000, 7000})");
+    md_array(ScriptSuggestion) s = suggest(l, sel);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s));
+    EXPECT_TRUE(contains(s, "sel1 = atom({5, 100, 2000, 7000});"));
+    EXPECT_TRUE(contains(s, "sel1 = (atom(5) in residue({1, 12})) or (atom(2) in residue(261)) or (atom(8) in residue(916));"));
+
+    // Nothing short describes the atoms around a residue: they are listed, and the hint says so
+    const md_bitset_t near = select(l, "within(6, residue(30)) and not residue(30)");
+    ASSERT_GT(md_bitset_count(near), 20u);
+    md_array(ScriptSuggestion) t = suggest(l, near);
+    print(t);
+    EXPECT_TRUE(all_pick(l, near, t));
+    EXPECT_GT(md_array_size(t), 0u);
+    unload(&l);
+}
+
+// Selections the user can make in any system, of any kind: whatever is offered for them picks them
+UTEST(script_suggestions, every_line_picks_the_selection) {
+    const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "2or2.cif", "nucl-dna.gro", "dppc64.pdb", "c60.pdb", "tryptophan.xyz", "1fez.cif", "tubulin-A-B.pdb"};
+    const char* exprs[] = {
+        "all()", "atom(1)", "atom(1:7)", "atom({3, 9, 27})", "residue(1)", "residue(2:4)", "instance(1)", "instance(2)",
+        "instance(2:4)", "atom(2:3) in residue(2)", "element(\"C\")", "element(\"O\")", "protein()", "water()", "nucleic()",
+        "backbone()", "not element(\"H\") and residue(1:3)", "residue(3) or atom(1)", "lipid()", "ion()",
+        "atom(1:5:400)", "name(\"CA\")", "within(5, atom(1))",
+    };
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        Loaded l;
+        ASSERT_TRUE(load(&l, files[f]));
+        for (size_t e = 0; e < ARRAY_SIZE(exprs); ++e) {
+            const md_bitset_t sel = select(l, exprs[e]);
+            if (md_bitset_empty(sel)) continue;
+            md_array(ScriptSuggestion) s = suggest(l, sel);
+            if (!all_pick(l, sel, s)) {
+                printf("  %s: %s\n", files[f], exprs[e]);
+                print(s);
+                EXPECT_TRUE(false);
+            }
+        }
+        unload(&l);
+    }
+}
+
+// Selections of no particular shape: some atoms of some residues, some residues whole, in any instance
+UTEST(script_suggestions, every_line_picks_a_random_selection) {
+    const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "nucl-dna.gro", "dppc64.pdb", "tubulin-A-B.pdb"};
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    auto next = [&rng](uint32_t n) {
+        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+        return (uint32_t)(rng % n);
+    };
+    size_t offered = 0;
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        Loaded l;
+        ASSERT_TRUE(load(&l, files[f]));
+        const md_system_t& sys = l.sys;
+        for (int iter = 0; iter < 40; ++iter) {
+            md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, l.alloc);
+            const int parts = 1 + (int)next(4);
+            for (int p = 0; p < parts; ++p) {
+                const uint32_t c = next((uint32_t)sys.component.count);
+                const md_urange_t r = md_component_atom_range(&sys.component, c);
+                switch (next(4)) {
+                case 0: md_bitmask_set_range(&mask, r.beg, r.end); break;                            // a residue
+                case 1: md_bitmask_set_bit(&mask, r.beg + next(r.end - r.beg)); break;               // an atom of one
+                case 2: {                                                                            // a few residues
+                    const md_urange_t r2 = md_component_atom_range(&sys.component, MIN(c + 1 + next(5), (uint32_t)sys.component.count - 1));
+                    md_bitmask_set_range(&mask, r.beg, r2.end);
+                } break;
+                default: {                                                                           // the same atom of several residues
+                    const uint32_t k = next(r.end - r.beg);
+                    for (uint32_t i = 0; i < 4 && c + i < sys.component.count; ++i) {
+                        const md_urange_t ri = md_component_atom_range(&sys.component, c + i);
+                        if (ri.beg + k < ri.end) md_bitmask_set_bit(&mask, ri.beg + k);
+                    }
+                } break;
+                }
+            }
+            const md_bitset_t sel = md_bitset_copy(md_bitmask_view(&mask), l.alloc);
+            md_array(ScriptSuggestion) s = suggest(l, sel);
+            offered += md_array_size(s) > 0;
+            if (!all_pick(l, sel, s)) {
+                printf("  %s, selection %d\n", files[f], iter);
+                print(s);
+                EXPECT_TRUE(false);
+            }
+        }
+        unload(&l);
+    }
+    // Small selections of residues and atoms are listed at the very least
+    EXPECT_EQ(ARRAY_SIZE(files) * 40, offered);
+}
+
+// The names of an XYZ file are its element symbols, padded with zeros as they are read: such a name cannot be written
+UTEST(script_suggestions, names_which_cannot_be_written) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "tryptophan.xyz"));
+    const md_bitset_t sel = select(l, "element(\"C\")");
+    md_array(ScriptSuggestion) s = suggest(l, sel);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s));
+    EXPECT_TRUE(contains(s, "sel1 = element(\"C\");"));
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(printable(s[i].text));
+    unload(&l);
+}
+
+UTEST(script_suggestions, measurement_within_a_residue) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    md_array(ScriptSuggestion) s = measure(l, {"name(\"N\") in residue(5)", "name(\"CA\") in residue(5)", "name(\"C\") in residue(5)"});
+    print(s);
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text));
+    EXPECT_TRUE(contains(s, "m1 = angle(31, 32, 33);"));
+    EXPECT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in residue(5);"));
+    EXPECT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resid(5) in chain(\"A\");"));
+    // The same angle in every residue of the name, which the hint counts
+    ASSERT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resname(\"HIS\");"));
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        size_t loc;
+        const bool every = str_find_str(&loc, s[i].text, STR_LIT("resname("));
+        EXPECT_TRUE(every == str_eq_cstr(s[i].hint, "One value for each of the 51 HIS"));
+    }
+    unload(&l);
+
+    // A residue of which there is only one: no count to give
+    ASSERT_TRUE(load(&l, "npt.gro"));
+    md_array(ScriptSuggestion) t = measure(l, {"atom(1) in instance(2)", "atom(2) in instance(2)"});
+    print(t);
+    EXPECT_TRUE(contains(t, "m1 = distance(name(\"H00\"), name(\"C01\")) in resname(\"LIG\");"));
+    for (size_t i = 0; i < md_array_size(t); ++i) EXPECT_TRUE(str_empty(t[i].hint));
+    unload(&l);
+}
+
+// Atoms of several residues, each by name within its own; one which some residue of the name does not have is not
+// measured in every residue of the name
+UTEST(script_suggestions, measurement_across_residues) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    md_array(ScriptSuggestion) s = measure(l, {"name(\"CA\") in residue(5)", "name(\"CA\") in residue(404)"});
+    print(s);
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text));
+    EXPECT_TRUE(contains(s, "m1 = distance(name(\"CA\") in residue(5), name(\"CA\") in residue(404));"));
+    EXPECT_TRUE(contains(s, "m1 = distance(name(\"CA\") in resid(5) in chain(\"A\"), name(\"CA\") in resid(9) in chain(\"B\"));"));
+    EXPECT_FALSE(any_contains(s, "resname("));
+
+    // Two, three or four atoms, and each once
+    EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)"})));
+    EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(1)"})));
+    EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(2)", "atom(3)", "atom(4)", "atom(5)"})));
+    unload(&l);
+}
