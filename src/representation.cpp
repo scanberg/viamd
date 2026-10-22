@@ -1058,8 +1058,9 @@ void create_default_representations(ApplicationState* state) {
     // element to, should not take the protein, ligand and water representations from the rest.
     if (2 * num_coarse_grained > state->mold.sys.atom.count) {
         // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon. So do nucleic acids
-        // of beads where every nucleotide is on a backbone, their bases with the rings of ideal ones. The rest as
-        // beads.
+        // of beads where every nucleotide is on a backbone, their bases with the rings of ideal ones. The water as a
+        // representation of its own, hidden unless there is nothing else, as for atoms: the water beads of a solvated
+        // membrane are most of it. The rest as beads.
         const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
         const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
         const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
@@ -1071,11 +1072,12 @@ void create_default_representations(ApplicationState* state) {
             Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("nucleic"));
             snprintf(nucl->name, sizeof(nucl->name), "nucleic");
         }
-        const char* shown[3];
+        const char* shown[4];
         int num_shown = 0;
         if (protein_trace)   shown[num_shown++] = "protein";
         if (nucleic_cartoon) shown[num_shown++] = "nucleic";
         if (lipid_cartoon)   shown[num_shown++] = "head or tail";
+        if (water_present)   shown[num_shown++] = "water";
         char rest[64] = "all";
         if (num_shown == 1 && !strchr(shown[0], ' ')) {
             snprintf(rest, sizeof(rest), "not %s", shown[0]);
@@ -1088,6 +1090,11 @@ void create_default_representations(ApplicationState* state) {
         }
         Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, str_from_cstr(rest));
         snprintf(rep->name, sizeof(rep->name), "default");
+        if (water_present) {
+            Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
+            snprintf(water->name, sizeof(water->name), "water");
+            water->enabled = !amino_acid_present && !nucleic_present && !ligand_present && !lipid_present;
+        }
         goto done;
     }
 
