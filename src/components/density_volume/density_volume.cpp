@@ -176,7 +176,6 @@ struct DensityVolume : viamd::EventHandler {
         r.rep.color_mapping = mapping;
         r.rep.node.id = next_rep_id++;
         snprintf(r.rep.name, sizeof(r.rep.name), "%s", "structure");
-        snprintf(r.rep.filter.text, sizeof(r.rep.filter.text), "%s", "all");
         md_array_push(reps, r, md_get_heap_allocator());
         return md_array_last(reps);
     }

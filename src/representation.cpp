@@ -1140,14 +1140,14 @@ void create_default_representations(ApplicationState* state) {
 
     if (state->mold.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
     if (state->mold.sys.component.count == 0) {
         // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -1211,7 +1211,7 @@ void create_default_representations(ApplicationState* state) {
         if (nucleic_cartoon) shown[num_shown++] = "nucleic";
         if (lipid_cartoon)   shown[num_shown++] = "head or tail";
         if (water_present)   shown[num_shown++] = "water";
-        char rest[64] = "all";
+        char rest[64] = "";
         if (num_shown == 1 && !strchr(shown[0], ' ')) {
             snprintf(rest, sizeof(rest), "not %s", shown[0]);
         } else if (num_shown > 0) {
@@ -2368,7 +2368,7 @@ static void apply_window_actions(ApplicationState* state, const WindowActions& a
         ungroup_representation_group(state, act.ungroup);
     }
     if (act.add_representation) {
-        create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"), act.add_into);
+        create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT(""), act.add_into);
     }
     if (act.add_group) {
         create_representation_group(state, STR_LIT("group"), act.add_into);
@@ -2815,7 +2815,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         const RepresentationContext ctx = representation_context(*state, rep.node.parent);
         const md_filter_context_t fctx = representation_filter_context(*state, ctx);
         prop::row("filter");
-        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "bonds, or atoms: the bonds among them" : "atoms, or bonds: their atoms")) {
+        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "all bonds (or bonds, or atoms: the bonds among them)" : "all (or atoms, or bonds: their atoms)")) {
             rep.filt_is_dirty = true;
             update_rep = true;
         }

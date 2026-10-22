@@ -934,8 +934,8 @@ struct Representation {
 
     char name[64] = "rep";
     // Evaluated within the context of the groups it is in (see RepresentationGroup). Its result says whether what it
-    // picks depends on the frame, through that context too.
-    AtomFilter filter = {"all"};
+    // picks depends on the frame, through that context too. Empty, as a new one is, it picks everything, as 'all' does.
+    AtomFilter filter = {};
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;

@@ -23,7 +23,7 @@ struct deserialization_state_t;
 // --- Representations ---
 
 // Appended at the end of 'group' (0 for the top level)
-Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"), uint32_t group = 0);
+Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
 // Placed just after the original, in the same group
 Representation* clone_representation(ApplicationState* app, const Representation& rep);
 void remove_representation(ApplicationState* app, size_t idx);
