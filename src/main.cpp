@@ -6850,7 +6850,8 @@ static void update_md_buffers(ApplicationState* data) {
         } else {
             md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
         }
-        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys);
+        // The orders of the frame shown where the bonds tracked changed them (bond_tracking_chem)
+        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys, delta, bond_tracking_chem(data));
 
         // The non-covalent bonds of the system are drawn dashed by the licorice and ball and stick representations
         for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {

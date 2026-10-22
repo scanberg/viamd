@@ -361,7 +361,10 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
 
     const md_atomic_number_t z        = md_atom_atomic_number(&sys.atom, atom_idx);
     const md_particle_kind_t particle = md_atom_particle_kind(&sys.atom, atom_idx);
-    const md_atom_flags_t    flags    = md_system_atom_flags(&sys, atom_idx);
+    // Its chemistry in the frame shown where the bonds tracked changed it, that of the system elsewhere
+    int formal_charge = 0;
+    int num_h = 0;
+    const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
     const bool nucleotide = place.comp_idx != -1 && md_component_kind(&sys.component, place.comp_idx) == MD_COMPONENT_KIND_NUCLEOTIDE;
 
     // What it is
@@ -402,11 +405,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
     if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
     if (flags & MD_ATOM_FLAG_METALLIC)   tooltip_list_add(&chem, "metallic");
-    const int num_h = md_atom_hydrogen_count(&sys.atom, atom_idx);
     if (num_h > 0) md_str_writer_fmt(&chem, "%s%d H", md_str_writer_empty(&chem) ? "" : ", ", num_h);
     tooltip_row_list(req, STR_LIT("chemistry"), chem);
 
-    const int formal_charge = md_atom_formal_charge(&sys.atom, atom_idx);
     if (formal_charge) {
         tooltip_row(req, STR_LIT("formal charge"), "%+d", formal_charge);
     }
@@ -630,13 +631,15 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
 static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t ring_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_system_state_t& sys_state = state.mold.state;
-    const int32_t* atoms = md_index_range_beg(&sys.ring, ring_idx);
-    const size_t   count = md_index_range_size(&sys.ring, ring_idx);
-    if (count == 0) return;
+    // A ring of the system, or one of the frame where its bonds changed (picked_ring)
+    const int32_t* atoms = nullptr;
+    size_t count = 0;
+    md_ring_flags_t flags = MD_RING_FLAG_NONE;
+    if (!picked_ring(state, ring_idx, &atoms, &count, &flags) || count == 0) return;
     for (size_t i = 0; i < count; ++i) {
         if (atoms[i] < 0 || (size_t)atoms[i] >= sys.atom.count) return;
     }
-    const md_ring_flags_t flags = md_system_ring_flags(&sys, ring_idx);
+    const bool frame_ring = ring_idx >= md_index_data_num_ranges(&sys.ring);
 
     // Where it is: the place of its first atom, and of another where the ring reaches over (a ring is mostly in one)
     const TooltipPlace place = tooltip_place_of_atom(sys, (size_t)atoms[0]);
@@ -718,9 +721,14 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         }
     }
 
-    // ring(k) of the script is ring k - 1 of the system, as the circle picks it
+    // ring(k) of the script is ring k - 1 of the system, as the circle picks it. A ring of the frame is none of the
+    // system's: the bonds formed in the frame close it, and the script knows the rings of the system
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    md_str_writer_fmt(&index, "ring(%u)", ring_idx + 1);
+    if (frame_ring) {
+        tooltip_list_add(&index, "of this frame, its bonds as they are tracked");
+    } else {
+        md_str_writer_fmt(&index, "ring(%u)", ring_idx + 1);
+    }
     tooltip_append_index(&index, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
@@ -797,7 +805,7 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
     } else if (hit.domain == PickingDomain_BackboneSegment) {
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
-        if (hit.local_idx < md_index_data_num_ranges(&sys.ring)) tooltip_ring(req, state, hit.local_idx);
+        tooltip_ring(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
         if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
@@ -1516,8 +1524,11 @@ void init_system_data(ApplicationState* data) {
             // Of the bonds of another system
             auto& bt = data->operations.bond_tracking;
             md_bond_delta_free(&bt.delta, data->allocator.persistent);
+            md_chem_delta_free(&bt.chem, data->allocator.persistent);
             bt.delta = {};
             bt.key = 0;
+            bt.formed_capacity = 0;
+            bt.ring_capacity = 0;
             md_bitset_free(&bt.scope_mask, data->allocator.persistent);
             bt.scope.result = {};
             bt.scope_dirty = true;
@@ -5165,13 +5176,62 @@ const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app) {
     return bt.enabled && bt.key != 0 ? &bt.delta : nullptr;
 }
 
+const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app) {
+    ASSERT(app);
+    const auto& bt = app->operations.bond_tracking;
+    return bt.enabled && bt.key != 0 ? &bt.chem : nullptr;
+}
+
+md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, int* formal_charge, int* hydrogen_count) {
+    const md_system_t& sys = app.mold.sys;
+    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+    if (chem && chem->num_atoms) {
+        // The atoms of the region are ascending
+        size_t lo = 0, hi = chem->num_atoms;
+        while (lo < hi) {
+            const size_t mid = (lo + hi) / 2;
+            if ((size_t)chem->atom_idx[mid] < atom_idx) lo = mid + 1; else hi = mid;
+        }
+        if (lo < chem->num_atoms && (size_t)chem->atom_idx[lo] == atom_idx) {
+            if (formal_charge)  *formal_charge  = chem->formal_charge[lo];
+            if (hydrogen_count) *hydrogen_count = chem->hydrogen_count[lo];
+            return chem->atom_flags[lo];
+        }
+    }
+    if (formal_charge)  *formal_charge  = md_atom_formal_charge(&sys.atom, atom_idx);
+    if (hydrogen_count) *hydrogen_count = md_atom_hydrogen_count(&sys.atom, atom_idx);
+    return md_atom_flags(&sys.atom, atom_idx);
+}
+
+bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags) {
+    const md_system_t& sys = app.mold.sys;
+    const size_t num = md_index_data_num_ranges(&sys.ring);
+    if (idx < num) {
+        *atoms = md_index_range_beg(&sys.ring, idx);
+        *count = md_index_range_size(&sys.ring, idx);
+        *flags = md_system_ring_flags(&sys, idx);
+        return true;
+    }
+    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+    idx -= num;
+    if (chem && idx < md_index_data_num_ranges(&chem->ring)) {
+        *atoms = md_index_range_beg(&chem->ring, idx);
+        *count = md_index_range_size(&chem->ring, idx);
+        *flags = chem->ring_flags[idx];
+        return true;
+    }
+    return false;
+}
+
 static void bond_tracking_clear(ApplicationState* app) {
     auto& bt = app->operations.bond_tracking;
     if (bt.key != 0) {
         md_bond_delta_free(&bt.delta, app->allocator.persistent);
+        md_chem_delta_free(&bt.chem, app->allocator.persistent);
         bt.delta = {};
         bt.key = 0;
         bt.formed_capacity = 0;
+        bt.ring_capacity = 0;
         app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 }
@@ -5249,23 +5309,43 @@ void bond_tracking_update(ApplicationState* app) {
     bt.time_ms = time_ms;
     bt.formed_capacity = MAX(bt.formed_capacity, delta.num_formed);
     if (!same) {
+        // The chemistry where the bonds changed: what is drawn there, the orders and rings of the frame. A region too
+        // large to perceive leaves it empty, and the bonds formed plain.
+        if (!md_chem_perceive_delta(&bt.chem, &sys, &state, &bt.delta, MD_CHEM_FLAG_PROTONATE_PH7, app->allocator.persistent)) {
+            md_chem_delta_free(&bt.chem, app->allocator.persistent);
+        }
+        bt.ring_capacity = MAX(bt.ring_capacity, md_index_data_num_ranges(&bt.chem.ring));
+        bt.time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
         app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
+}
+
+// The flags of a bond in the frame's chemistry (bond_tracking_chem), whose bonds are ascending by index: those of the
+// region where it is in it, flags otherwise
+static md_bond_flags_t frame_bond_flags(const ApplicationState& app, size_t idx, md_bond_flags_t flags) {
+    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+    if (!chem || !chem->num_bonds) return flags;
+    size_t lo = 0, hi = chem->num_bonds;
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (chem->bond_idx[mid] < idx) lo = mid + 1; else hi = mid;
+    }
+    return (lo < chem->num_bonds && chem->bond_idx[lo] == idx) ? chem->bond_flags[lo] : flags;
 }
 
 bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed) {
     const md_system_t& sys = app.mold.sys;
     if (idx < sys.bond.count) {
         *pair = sys.bond.pairs[idx];
-        *flags = sys.bond.flags[idx];
+        *flags = frame_bond_flags(app, idx, sys.bond.flags[idx]);
         *formed = false;
         return true;
     }
     const md_bond_delta_t* delta = bond_tracking_delta(&app);
-    idx -= sys.bond.count;
-    if (delta && idx < delta->num_formed) {
-        *pair = delta->formed_pair[idx];
-        *flags = delta->formed_flags[idx];
+    const size_t k = idx - sys.bond.count;
+    if (delta && k < delta->num_formed) {
+        *pair = delta->formed_pair[k];
+        *flags = frame_bond_flags(app, idx, delta->formed_flags[k]);
         *formed = true;
         return true;
     }
@@ -5943,8 +6023,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
-            // One index per ring of the system, which the circle of an aromatic ring writes: only those are drawn
-            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring));
+            // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
+            // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
+            const size_t num_frame_rings = delta ? state->operations.bond_tracking.ring_capacity : 0;
+            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring) + num_frame_rings);
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
             picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
@@ -6007,7 +6089,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         }
                     } else if (surf->hit.domain == PickingDomain_Ring) {
                         // The circle of an aromatic ring stands for the atoms of the ring
-                        mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, surf->hit.local_idx, state->selection.granularity, state->mold.sys);
+                        const int32_t* ring_atoms = nullptr;
+                        size_t ring_count = 0;
+                        md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
+                        if (picked_ring(*state, surf->hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
+                            mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, ring_atoms, ring_count, state->selection.granularity, state->mold.sys);
+                        }
                     } else if (surf->hit.domain == PickingDomain_ChainGap) {
                         // The gap of a chain stands for the residues on either side of its break
                         const size_t comp_idx = surf->hit.local_idx;

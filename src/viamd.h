@@ -12,6 +12,7 @@
 #include <md_script.h>
 #include <md_gl.h>
 #include <md_util.h>
+#include <md_chem.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -1627,6 +1628,12 @@ struct ApplicationState {
             // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
             // forms more than any before it has the indices of the ones beyond run into those of the next domain.
             size_t formed_capacity = 0;
+            // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
+            // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
+            // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
+            // formed_capacity are for the bonds.
+            md_chem_delta_t chem = {};
+            size_t ring_capacity = 0;
             uint64_t key = 0;                           // What it was computed from, 0 when it is empty
             double time_ms = 0.0;                       // How long that took
         } bond_tracking;
@@ -1989,17 +1996,13 @@ static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mas
     mask_set_atom_by_selection_granularity(mask, range.beg, granularity, sys);
 }
 
-// Sets the bits of the atoms of a ring (md_system_t::ring), each grown by the granularity, for a hit on the circle of an
-// aromatic ring: at Atom granularity the ring itself, at coarser ones what its atoms are in
-static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, size_t ring_idx, SelectionGranularity granularity, const md_system_t& sys) {
+// Sets the bits of the atoms of a ring (count atoms), each grown by the granularity, for a hit on the circle of an
+// aromatic ring (picked_ring): at Atom granularity the ring itself, at coarser ones what its atoms are in
+static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, const int32_t* atoms, size_t count, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
-    if (ring_idx >= md_index_data_num_ranges(&sys.ring)) return;
-
-    const int32_t* beg = md_index_range_beg(&sys.ring, ring_idx);
-    const int32_t* end = md_index_range_end(&sys.ring, ring_idx);
-    for (const int32_t* it = beg; it != end; ++it) {
-        if (*it >= 0 && (size_t)*it < sys.atom.count) {
-            mask_set_atom_by_selection_granularity(mask, (size_t)*it, granularity, sys);
+    for (size_t i = 0; i < count; ++i) {
+        if (atoms[i] >= 0 && (size_t)atoms[i] < sys.atom.count) {
+            mask_set_atom_by_selection_granularity(mask, (size_t)atoms[i], granularity, sys);
         }
     }
 }
@@ -2145,6 +2148,16 @@ void bond_tracking_update(ApplicationState* app);
 
 // The bond changes drawn, those of the frame shown: NULL when they are not tracked
 const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app);
+// The chemistry of the frame shown where its bonds changed: NULL when the changes are not tracked
+const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app);
+
+// What an atom is in the frame shown, its chemistry tracked (bond_tracking_chem) or that of the system: the flags,
+// formal charge and hydrogens of the atom
+md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, int* formal_charge, int* hydrogen_count);
+
+// The atoms and flags of ring idx of the ring picking domain: a ring of the system, or one of the frame's chemistry
+// after them. False when there is none.
+bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags);
 
 // The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
 // come after them as they are drawn (formed is set for those)
