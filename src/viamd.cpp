@@ -480,13 +480,43 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 // the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
 // dihedrals. phi and psi need a neighbour on either side within the chain, so the ends of a chain, and chains too
 // short to assign, have none (md_util_backbone_angles_compute).
+static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
+    const md_system_t& sys = state.mold.sys;
+    const md_protein_backbone_data_t& bb = sys.protein_backbone;
+
+    if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
+        tooltip_row(req, STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
+    }
+
+    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&state.mold.state, &sys);
+    if (angles && bb.range.offset) {
+        for (size_t i = 0; i < bb.range.count; ++i) {
+            const uint32_t beg = bb.range.offset[i];
+            const uint32_t end = bb.range.offset[i + 1];
+            if (seg_idx < beg || end <= seg_idx) continue;
+            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end && !md_protein_backbone_range_is_trace(&bb, i)) {
+                // phi, psi and the degree sign in UTF-8 escapes
+                tooltip_row(req, STR_LIT("\xCF\x86, \xCF\x88"), "%.1f\xC2\xB0, %.1f\xC2\xB0", RAD_TO_DEG(angles[seg_idx].phi), RAD_TO_DEG(angles[seg_idx].psi));
+            }
+            break;
+        }
+    }
+}
+
 static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
     ASSERT(seg_idx < bb.segment.count && bb.segment.comp_idx);
 
     const int comp_idx = bb.segment.comp_idx[seg_idx];
-    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) return;
+    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) {
+        // No component (a backbone found from the bonds alone, as for an XYZ file): no residue to name, only what the
+        // segment adds, and the atom of its CA
+        tooltip_title(req, "amino acid");
+        tooltip_backbone_segment_geometry(req, state, seg_idx);
+        tooltip_row(req, STR_LIT("index"), "atom(%d)", bb.segment.atoms[seg_idx].ca + 1);
+        return;
+    }
     const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
     const TooltipPlace place = {
         .comp_idx = comp_idx,
@@ -510,23 +540,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     if (flags & MD_COMPONENT_FLAG_BREAK_AFTER)  tooltip_list_add(&kind_list, "chain break after");
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
 
-    if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
-        tooltip_row(req, STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
-    }
-
-    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&state.mold.state, &sys);
-    if (angles && bb.range.offset) {
-        for (size_t i = 0; i < bb.range.count; ++i) {
-            const uint32_t beg = bb.range.offset[i];
-            const uint32_t end = bb.range.offset[i + 1];
-            if (seg_idx < beg || end <= seg_idx) continue;
-            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end && !md_protein_backbone_range_is_trace(&bb, i)) {
-                // phi, psi and the degree sign in UTF-8 escapes
-                tooltip_row(req, STR_LIT("\xCF\x86, \xCF\x88"), "%.1f\xC2\xB0, %.1f\xC2\xB0", RAD_TO_DEG(angles[seg_idx].phi), RAD_TO_DEG(angles[seg_idx].psi));
-            }
-            break;
-        }
-    }
+    tooltip_backbone_segment_geometry(req, state, seg_idx);
 
     tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
 
@@ -705,8 +719,16 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
 static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t point_idx) {
     const md_system_t& sys = state.mold.sys;
     const CartoonGlyphs& glyphs = state.mold.cartoon_glyphs;
+    // Indexed by CartoonGlyphKind
+    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
+    static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
+
     const int32_t comp_idx = cartoon_glyphs_point_component(glyphs, point_idx);
-    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) return;
+    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) {
+        // No component (a nucleic backbone found from the bonds alone, as for an XYZ file): only what part it is
+        if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_title(req, "nucleotide" TOOLTIP_SEP "%s", parts[glyphs.point_kind[point_idx]]);
+        return;
+    }
     const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
     const TooltipPlace place = {
         .comp_idx = comp_idx,
@@ -717,9 +739,6 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    // Indexed by CartoonGlyphKind
-    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
-    static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
     const md_component_kind_t kind = md_component_kind(&sys.component, comp_idx);
     if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
@@ -5668,8 +5687,18 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         const md_protein_backbone_data_t& bb = state->mold.sys.protein_backbone;
                         const size_t seg_idx = surf->hit.local_idx;
                         if (seg_idx < bb.segment.count && bb.segment.comp_idx) {
-                            // A cartoon segment stands for the component it stems from: at least that is hovered and selected
-                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)bb.segment.comp_idx[seg_idx], state->selection.granularity, state->mold.sys);
+                            const md_component_idx_t comp_idx = bb.segment.comp_idx[seg_idx];
+                            if (comp_idx >= 0) {
+                                // A cartoon segment stands for the component it stems from: at least that is hovered and selected
+                                mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
+                            } else {
+                                // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
+                                const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
+                                const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
+                                for (md_atom_idx_t atom : atoms) {
+                                    if (atom >= 0) mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)atom, state->selection.granularity, state->mold.sys);
+                                }
+                            }
                         }
                     } else if (surf->hit.domain == PickingDomain_Ring) {
                         // The circle of an aromatic ring stands for the atoms of the ring
@@ -5684,9 +5713,15 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
                         // A point of the cartoon of a lipid or a nucleic acid stands for its component, as a cartoon segment does
                         const uint32_t point_idx = cartoon_glyphs_picked_point(state->mold.cartoon_glyphs, surf->hit.local_idx);
-                        const int32_t comp_idx = cartoon_glyphs_point_component(state->mold.cartoon_glyphs, point_idx);
+                        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+                        const int32_t comp_idx = cartoon_glyphs_point_component(glyphs, point_idx);
                         if (comp_idx >= 0 && (size_t)comp_idx < state->mold.sys.component.count) {
                             mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
+                        } else if (point_idx < glyphs.num_points) {
+                            // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
+                            for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {
+                                mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)glyphs.point_atom[k], state->selection.granularity, state->mold.sys);
+                            }
                         }
                     }
                     
