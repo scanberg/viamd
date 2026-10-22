@@ -351,10 +351,17 @@ static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_
     const uint32_t first_side = sides[0];
     const uint32_t last_side = sides[num_sections - 1];
 
-    // The side chain: the spine beyond its last ring atom
+    // The dummies of a coarse grained sterol, which carry the mass of its rings and do not interact (VOH V1 V2 V3 of
+    // the optimal LINCS cholesterol of Martini 2, its ring beads virtual sites of them): of the ring system, which its
+    // spine runs through to reach the side chain, though the slab is laid out from the ring beads alone
+    auto is_dummy = [&](int32_t i) -> bool {
+        return atom_is_bead(sys, i) && md_atom_name(&sys.atom, i).len >= 1 && md_atom_name(&sys.atom, i).ptr[0] == 'V';
+    };
+
+    // The side chain: the spine beyond its last ring atom (or dummy)
     size_t chain_beg = 0;
     for (size_t k = 0; k < len; ++k) {
-        if (is_ring(spine[k])) chain_beg = k + 1;
+        if (is_ring(spine[k]) || is_dummy(spine[k])) chain_beg = k + 1;
     }
 
     b.tube_point(head_point, STEROL_HALF_THICKNESS, 0.0f, UINT32_MAX, first_side);

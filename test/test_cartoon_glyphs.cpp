@@ -121,6 +121,64 @@ UTEST(cartoon_glyphs, martini_phospholipids_split_and_sterols_do_not) {
     md_arena_allocator_destroy(alloc);
 }
 
+// The optimal LINCS cholesterol of Martini 2 carries the mass of its rings on dummies which do not interact (VOH V1 V2
+// V3), its ring beads virtual sites of them, so the spine of its skeleton runs over the dummies to the side chain. It is
+// drawn as the cholesterol of 8 beads is: the slab of its ring beads, then the side chain C1 C2, and no control point on
+// a dummy. Here one of each, of the same beads where they are (the dummies on the beads they stand in for, as a
+// structure built from the cholesterol of 8 beads has them).
+UTEST(cartoon_glyphs, martini_cholesterol_of_dummies_drawn_as_of_beads) {
+    static const char gro[] =
+        "CHOL of 12 and of 8\n"
+        "   20\n"
+        "    1CHOL   VOH    1   9.702  18.783  12.773\n"
+        "    1CHOL    V2    2   9.932  18.814  13.207\n"
+        "    1CHOL    V3    3   9.919  18.555  13.286\n"
+        "    1CHOL    V1    4  10.081  18.381  13.768\n"
+        "    1CHOL   ROH    5   9.702  18.783  12.773\n"
+        "    1CHOL    R1    6   9.905  18.703  12.954\n"
+        "    1CHOL    R2    7   9.932  18.814  13.207\n"
+        "    1CHOL    R3    8   9.919  18.555  13.286\n"
+        "    1CHOL    R4    9  10.034  18.695  13.515\n"
+        "    1CHOL    R5   10  10.117  18.521  13.415\n"
+        "    1CHOL    C1   11  10.081  18.381  13.768\n"
+        "    1CHOL    C2   12   9.921  18.432  14.041\n"
+        "    2CHOL   ROH   13   6.702  18.783  12.773\n"
+        "    2CHOL    R1   14   6.905  18.703  12.954\n"
+        "    2CHOL    R2   15   6.932  18.814  13.207\n"
+        "    2CHOL    R3   16   6.919  18.555  13.286\n"
+        "    2CHOL    R4   17   7.034  18.695  13.515\n"
+        "    2CHOL    R5   18   7.117  18.521  13.415\n"
+        "    2CHOL    C1   19   7.081  18.381  13.768\n"
+        "    2CHOL    C2   20   6.921  18.432  14.041\n"
+        "  20.00000  30.00000  30.00000\n";
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro)));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(2u, (uint32_t)sys.lipid.count);
+
+    CartoonGlyphs g = {};
+    cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
+    ASSERT_EQ(2u, g.num_tubes);
+    // Alike: the head, the sections of the slab, C1 and C2
+    EXPECT_EQ(g.tube_offset[2] - g.tube_offset[1], g.tube_offset[1] - g.tube_offset[0]);
+    for (uint32_t t = 0; t < 2; ++t) {
+        const uint32_t beg = g.tube_offset[t], end = g.tube_offset[t + 1];
+        ASSERT_GE(end - beg, 3u);
+        EXPECT_TRUE(point_has_atom_named(g, sys, g.tube_point[end - 1], "C2"));
+        EXPECT_TRUE(point_has_atom_named(g, sys, g.tube_point[end - 2], "C1"));
+        for (uint32_t k = beg; k < end; ++k) {
+            const uint32_t p = g.tube_point[k];
+            const bool dummy = g.point_offset[p + 1] - g.point_offset[p] == 1 && md_atom_name(&sys.atom, g.point_atom[g.point_offset[p]]).ptr[0] == 'V';
+            EXPECT_FALSE(dummy);
+        }
+    }
+
+    cartoon_glyphs_free(&g);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     md_system_t sys = { .alloc = alloc };
