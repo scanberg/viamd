@@ -1472,7 +1472,7 @@ struct Dataset : viamd::EventHandler {
             if (c.has_charge) ImGui::TableSetupColumn("Charge", ImGuiTableColumnFlags_WidthStretch, 0.9f);
             // The header, with what the less obvious columns count
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            const char* header_tips[7] = { nullptr, nullptr, "Separate molecules: groups of atoms connected by bonds", "Residues, all molecules together",
+            const char* header_tips[7] = { nullptr, nullptr, "Molecules: atoms joined by bonds, each residue and polymer chain whole", "Residues, all molecules together",
                                            nullptr, "Of all molecules together", "Net charge of all molecules together, from the topology" };
             for (int col = 0; col < num_cols; ++col) {
                 if (!ImGui::TableSetColumnIndex(col)) continue;
@@ -1585,7 +1585,7 @@ struct Dataset : viamd::EventHandler {
         const Composition& c = composition;
         ImGui::Spacing();
         ImGui::Text("%zu atoms, %zu residues, %zu molecules", c.num_atoms, c.num_components, c.num_molecules);
-        ImGui::SetItemTooltip("Molecules: groups of atoms connected by bonds");
+        ImGui::SetItemTooltip("Molecules: atoms joined by bonds, each residue and polymer chain whole");
 
         char mass_buf[64];
         snprintf(mass_buf, sizeof(mass_buf), "Mass %.6g Da", c.mass);

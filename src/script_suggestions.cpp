@@ -295,9 +295,65 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
 
 // ### THE STRUCTURES WHICH HOLD THE SELECTION ###
 
+// The molecule (md_structure_data_t) of an atom, -1 when there are none
+static int32_t molecule_of_atom(const md_system_t& sys, uint32_t atom) {
+    const md_structure_data_t& st = sys.structure;
+    if (st.count == 0 || !st.atom_slot || !st.offset || atom >= sys.atom.count) return -1;
+    const uint32_t slot = (uint32_t)st.atom_slot[atom];
+    size_t lo = 0, hi = st.count;
+    while (lo + 1 < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (st.offset[mid] <= slot) lo = mid; else hi = mid;
+    }
+    return (int32_t)lo;
+}
+
+static uint32_t molecule_size(const md_system_t& sys, int32_t mol) {
+    return sys.structure.offset[mol + 1] - sys.structure.offset[mol];
+}
+
+// The molecule which an instance is all of, -1 when it is part of a larger one (a ligand bonded to a protein, a metal
+// to the residues around it), of several (the waters of an mmCIF file), or there are none
+static int32_t molecule_of_instance(const md_system_t& sys, int32_t inst) {
+    const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
+    if (r.beg >= r.end) return -1;
+    const int32_t mol = molecule_of_atom(sys, r.beg);
+    return mol >= 0 && molecule_size(sys, mol) == r.end - r.beg ? mol : -1;
+}
+
+// The molecules an instance is part of, where they are not inside it: a protein and the metal bonded to it are two
+// instances of one molecule. Those which are wholly among the instances (sorted), else none: then the instance is
+// written by itself.
+static void molecules_beyond_instance(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
+    const md_system_t& sys = *c.sys;
+    const md_structure_data_t& st = sys.structure;
+    const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
+    md_array(int32_t) touched = 0;
+    int32_t prev = -1;
+    for (uint32_t i = r.beg; i < r.end; ++i) {
+        const int32_t mol = molecule_of_atom(sys, i);
+        if (mol < 0) return;
+        if (mol != prev) md_array_push(touched, mol, c.temp);
+        prev = mol;
+    }
+    const size_t n = sort_unique(touched, md_array_size(touched));
+    uint64_t size = 0;
+    for (size_t k = 0; k < n; ++k) size += molecule_size(sys, touched[k]);
+    // Molecules inside the instance: it is the one to write
+    if (size == r.end - r.beg) return;
+    for (size_t k = 0; k < n; ++k) {
+        for (uint32_t s = st.offset[touched[k]]; s < st.offset[touched[k] + 1]; ++s) {
+            const md_instance_idx_t other = md_system_instance_find_by_atom_idx(&sys, (size_t)st.atom_idx[s]);
+            if (other < 0 || !bsearch(&other, insts, num_insts, sizeof(int32_t), cmp_int32)) return;
+        }
+    }
+    for (size_t k = 0; k < n; ++k) md_array_push(*mols, touched[k], c.temp);
+}
+
 // Whole chains and molecules as terms of an 'or'. Chains by their ids: chain("A"), chain({"A", "B"}); a chain inferred
 // where the data gives none (or every chain, by_id false) by its position among the chains: chain(2). A molecule
-// which is in no chain, or whose chain is not whole, by its position among the instances: instance(5:9).
+// which is in no chain, or whose chain is not whole, by its position among the molecules: molecule(5:9), and where it
+// is part of a larger molecule (a ligand bonded to a protein) by its position among the instances: instance(5).
 static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, const Ctx& c, bool by_id) {
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_array(str_t)   ids = 0;
@@ -306,8 +362,25 @@ static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t nu
         if (by_id && chain_by_id(c, chains[i])) md_array_push(ids, md_system_chain_id(c.sys, (size_t)chains[i]), c.temp);
         else md_array_push(pos, chains[i] + 1, c.temp);
     }
+    md_array(int32_t) mols = 0;
     md_array(int32_t) others = 0;
-    for (size_t i = 0; i < num_insts; ++i) md_array_push(others, insts[i] + 1, c.temp);
+    md_array(int32_t) sorted = 0;
+    size_t num_sorted = 0;
+    for (size_t i = 0; i < num_insts; ++i) {
+        const int32_t mol = molecule_of_instance(*c.sys, insts[i]);
+        if (mol >= 0) {
+            md_array_push(mols, mol + 1, c.temp);
+            continue;
+        }
+        if (!sorted) {
+            md_array_push_array(sorted, insts, num_insts, c.temp);
+            num_sorted = sort_unique(sorted, num_insts);
+        }
+        const size_t before = md_array_size(mols);
+        molecules_beyond_instance(&mols, insts[i], sorted, num_sorted, c);
+        if (md_array_size(mols) == before) md_array_push(others, insts[i] + 1, c.temp);
+        else for (size_t k = before; k < md_array_size(mols); ++k) mols[k] += 1;
+    }
 
     if (md_array_size(ids)) {
         // Thousands of chains are not written by their ids
@@ -320,6 +393,12 @@ static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t nu
     if (md_array_size(pos)) {
         sb += "chain(";
         write_ranges(&sb, pos, sort_unique(pos, md_array_size(pos)));
+        sb += ')';
+        md_array_push(*terms, take(&sb, c.temp), c.temp);
+    }
+    if (md_array_size(mols)) {
+        sb += "molecule(";
+        write_ranges(&sb, mols, sort_unique(mols, md_array_size(mols)));
         sb += ')';
         md_array_push(*terms, take(&sb, c.temp), c.temp);
     }
@@ -981,7 +1060,7 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
 
 // ### VALIDATION ###
 
-// The sets the expression gives, one per structure, as a script would have them
+// The sets the expression gives, as a script would have them: one per residue of residue(1:3)
 static bool filter_sets(md_array(md_bitset_t)* sets, str_t expr, const md_system_t& sys, md_allocator_i* temp) {
     md_filter_context_t ctx = {};
     ctx.sys = &sys;
@@ -1060,7 +1139,7 @@ md_array(ScriptSuggestion) script_suggest_selection(str_t ident, md_bitset_t sel
         if (!picks_exactly(expr, sel, sys, temp, &num_sets)) return false;
         // An array of selections behaves differently from one (in a context, in rmsd()), so how many it gives is told
         md_str_writer_fmt(&sb, "%llu atom%s", (unsigned long long)count, count == 1 ? "" : "s");
-        if (num_sets > 1) md_str_writer_fmt(&sb, ", as %zu selections (one per structure)", num_sets);
+        if (num_sets > 1) md_str_writer_fmt(&sb, ", as an array of %zu selections", num_sets);
         if (listed) sb += ", listed: nothing shorter describes them";
         md_str_writer_fmt(&line, STR_FMT " = " STR_FMT ";", STR_ARG(ident), STR_ARG(expr));
         push_suggestion(&out, md_str_writer_to_str(&line), md_str_writer_to_str(&sb), alloc);

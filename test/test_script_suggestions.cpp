@@ -154,7 +154,7 @@ UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     print(s);
     EXPECT_TRUE(all_pick(l, sel, s));
     EXPECT_FALSE(any_contains(s, "chain("));
-    EXPECT_TRUE(contains(s, "sel1 = instance(2);"));
+    EXPECT_TRUE(contains(s, "sel1 = molecule(2);"));
     EXPECT_TRUE(contains(s, "sel1 = resname(\"LIG\");"));
 
     // Waters likewise, the protein with them. A GRO file gives no chain ids: the protein is a chain by its position
@@ -162,7 +162,7 @@ UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     md_array(ScriptSuggestion) m = suggest(l, mixed);
     print(m);
     EXPECT_TRUE(all_pick(l, mixed, m));
-    EXPECT_TRUE(contains(m, "sel1 = chain(1) or instance(5:9);"));
+    EXPECT_TRUE(contains(m, "sel1 = chain(1) or molecule(5:9);"));
     EXPECT_FALSE(any_contains(m, "chain(\""));
     unload(&l);
 }
@@ -191,6 +191,14 @@ UTEST(script_suggestions, chains_by_author_id) {
     print(u);
     EXPECT_TRUE(all_pick(l, res, u));
     EXPECT_TRUE(contains(u, "sel1 = resid(10:20) in chain(\"B\");"));
+
+    // A molecule of more than one instance (what the viewport selects at Molecule granularity) is the molecule
+    const md_bitset_t mol = select(l, "molecule(atom(2500))");
+    md_array(ScriptSuggestion) v = suggest(l, mol);
+    print(v);
+    EXPECT_TRUE(all_pick(l, mol, v));
+    ASSERT_GT(md_array_size(v), 0u);
+    EXPECT_TRUE(str_eq_cstr(v[0].text, "sel1 = molecule(2);"));
     unload(&l);
 }
 
@@ -226,7 +234,7 @@ UTEST(script_suggestions, residues) {
     EXPECT_TRUE(str_eq_cstr(s[0].text, "sel1 = resid(10:20) in chain(\"B\");"));
     EXPECT_TRUE(contains(s, "sel1 = residue(405:415);"));
     // Eleven residues are eleven selections, which behaves differently in a context from one: the hint says so
-    EXPECT_TRUE(str_eq_cstr(s[0].hint, "82 atoms, as 11 selections (one per structure)"));
+    EXPECT_TRUE(str_eq_cstr(s[0].hint, "82 atoms, as an array of 11 selections"));
     unload(&l);
 }
 
