@@ -157,13 +157,40 @@ UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     EXPECT_TRUE(contains(s, "sel1 = instance(2);"));
     EXPECT_TRUE(contains(s, "sel1 = resname(\"LIG\");"));
 
-    // Waters likewise, the protein with them
+    // Waters likewise, the protein with them. A GRO file gives no chain ids: the protein is a chain by its position
     const md_bitset_t mixed = select(l, "instance(1) or instance(5:9)");
     md_array(ScriptSuggestion) m = suggest(l, mixed);
     print(m);
     EXPECT_TRUE(all_pick(l, mixed, m));
-    EXPECT_TRUE(contains(m, "sel1 = chain(\"A\") or instance(5:9);"));
     EXPECT_TRUE(contains(m, "sel1 = chain(1) or instance(5:9);"));
+    EXPECT_FALSE(any_contains(m, "chain(\""));
+    unload(&l);
+}
+
+// A chain is all that the data gives its id: in an mmCIF file the protein of chain A and the ligands, ions and waters
+// the author filed under A. The protein alone is the protein of the chain.
+UTEST(script_suggestions, chains_by_author_id) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1fez.cif"));
+    const md_bitset_t a = select(l, "chain('A')");
+    md_array(ScriptSuggestion) s = suggest(l, a);
+    print(s);
+    EXPECT_TRUE(all_pick(l, a, s));
+    ASSERT_GT(md_array_size(s), 0u);
+    EXPECT_TRUE(str_eq_cstr(s[0].text, "sel1 = chain(\"A\");"));
+
+    const md_bitset_t prot = select(l, "protein() and chain('A')");
+    md_array(ScriptSuggestion) t = suggest(l, prot);
+    print(t);
+    EXPECT_TRUE(all_pick(l, prot, t));
+    EXPECT_TRUE(contains(t, "sel1 = protein() and chain(\"A\");"));
+
+    // Residues by the numbers of the chain
+    const md_bitset_t res = select(l, "resid(10:20) in chain('B')");
+    md_array(ScriptSuggestion) u = suggest(l, res);
+    print(u);
+    EXPECT_TRUE(all_pick(l, res, u));
+    EXPECT_TRUE(contains(u, "sel1 = resid(10:20) in chain(\"B\");"));
     unload(&l);
 }
 

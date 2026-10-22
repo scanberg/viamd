@@ -216,27 +216,29 @@ static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_id
     };
 }
 
-// "ALA 42", or the component's index when it has no name
+// "ALA 42", or the residue's index when it has no name
 static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, int comp_idx) {
     const str_t name = md_component_name(&sys.component, comp_idx);
     if (!str_empty(name)) {
         md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
     } else {
-        md_str_writer_fmt(sb, "component %d", comp_idx + 1);
+        md_str_writer_fmt(sb, "residue %d", comp_idx + 1);
     }
 }
 
-// "chain A", with the author's id where it differs ("chain C (auth A)"), or the instance's index when it has no id
-static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, int inst_idx) {
-    const str_t id   = md_instance_id(&sys.instance, inst_idx);
-    const str_t auth = md_instance_auth_id(&sys.instance, inst_idx);
+// The chain of a place (md_chain_data_t), -1 for one in none
+static int tooltip_place_chain(const md_system_t& sys, const TooltipPlace& place) {
+    return place.inst_idx >= 0 ? md_system_chain_find_by_inst_idx(&sys, (size_t)place.inst_idx) : -1;
+}
+
+// "chain A", the id the data gives; "chain 2" for a chain inferred where it gives none, by its position, as chain(2)
+// finds it. A molecule in no chain (a water the data gives no chain id) is named by its residue alone.
+static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, int chain_idx) {
+    const str_t id = md_system_chain_id(&sys, (size_t)chain_idx);
     if (!str_empty(id)) {
         md_str_writer_fmt(sb, "chain " STR_FMT, STR_ARG(id));
     } else {
-        md_str_writer_fmt(sb, "instance %d", inst_idx + 1);
-    }
-    if (!str_empty(auth) && !str_eq(auth, id)) {
-        md_str_writer_fmt(sb, " (auth " STR_FMT ")", STR_ARG(auth));
+        md_str_writer_fmt(sb, "chain %d", chain_idx + 1);
     }
 }
 
@@ -244,37 +246,42 @@ static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, in
 // " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B"
 static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
     auto sep = [sb]() { if (!md_str_writer_empty(sb)) *sb += TOOLTIP_SEP; };
-    const bool two_insts = b && b->inst_idx != a.inst_idx;
-    const bool two_comps = b && b->comp_idx != a.comp_idx;
+    const int chain_a = tooltip_place_chain(sys, a);
+    const int chain_b = b ? tooltip_place_chain(sys, *b) : -1;
+    const bool two_chains = b && chain_b != chain_a;
+    const bool two_comps  = b && b->comp_idx != a.comp_idx;
 
     if (a.comp_idx != -1) {
         sep();
         tooltip_append_residue(sb, sys, a.comp_idx);
-        if (two_comps && !two_insts && b->comp_idx != -1) {
+        if (two_comps && !two_chains && b->comp_idx != -1) {
             *sb += " / ";
             tooltip_append_residue(sb, sys, b->comp_idx);
         }
     }
-    if (a.inst_idx != -1) {
+    if (chain_a != -1) {
         sep();
-        tooltip_append_chain(sb, sys, a.inst_idx);
+        tooltip_append_chain(sb, sys, chain_a);
     }
-    if (two_insts) {
+    if (two_chains && (b->comp_idx != -1 || chain_b != -1)) {
         *sb += " / ";
         if (b->comp_idx != -1) {
             tooltip_append_residue(sb, sys, b->comp_idx);
-            if (b->inst_idx != -1) *sb += TOOLTIP_SEP;
+            if (chain_b != -1) *sb += TOOLTIP_SEP;
         }
-        if (b->inst_idx != -1) {
-            tooltip_append_chain(sb, sys, b->inst_idx);
+        if (chain_b != -1) {
+            tooltip_append_chain(sb, sys, chain_b);
         }
     }
 }
 
-// "component(56) instance(1)", after whatever sb holds
-static void tooltip_append_index(md_str_writer_t* sb, const TooltipPlace& place) {
-    if (place.comp_idx != -1) md_str_writer_fmt(sb, "%scomponent(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
-    if (place.inst_idx != -1) md_str_writer_fmt(sb, "%sinstance(%d)",  md_str_writer_empty(sb) ? "" : " ", place.inst_idx + 1);
+// "residue(56) chain(1)", after whatever sb holds: the place in the script's terms. A molecule in no chain is given by
+// its instance.
+static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
+    const int chain = tooltip_place_chain(sys, place);
+    if (place.comp_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
+    if (chain != -1)               md_str_writer_fmt(sb, "%schain(%d)",    md_str_writer_empty(sb) ? "" : " ", chain + 1);
+    else if (place.inst_idx != -1) md_str_writer_fmt(sb, "%sinstance(%d)", md_str_writer_empty(sb) ? "" : " ", place.inst_idx + 1);
 }
 
 // The atom's name, else its element's symbol, else its index
@@ -422,7 +429,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     md_str_writer_fmt(&index, "atom(%u)", atom_idx + 1);
-    tooltip_append_index(&index, place);
+    tooltip_append_index(&index, sys, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
@@ -556,7 +563,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
 
     tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
 
-    // The molecule it is part of, which the title names only by its chain
+    // The molecule it is part of (the type of it: the entity), which the title names only by its chain
     if (place.inst_idx != -1) {
         const md_entity_idx_t ent_idx = md_instance_entity_idx(&sys.instance, place.inst_idx);
         if (ent_idx != -1) {
@@ -565,15 +572,15 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
             const char* ent_kind = md_entity_kind_name(md_entity_kind(&sys.entity, ent_idx));
             const char* inferred = (ent_flags & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "";
             if (!str_empty(desc)) {
-                tooltip_row(req, STR_LIT("entity"), STR_FMT " (%s%s)", STR_ARG(desc), ent_kind, inferred);
+                tooltip_row(req, STR_LIT("molecule"), STR_FMT " (%s%s)", STR_ARG(desc), ent_kind, inferred);
             } else {
-                tooltip_row(req, STR_LIT("entity"), "%s%s", ent_kind, inferred);
+                tooltip_row(req, STR_LIT("molecule"), "%s%s", ent_kind, inferred);
             }
         }
     }
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    tooltip_append_index(&index, place);
+    tooltip_append_index(&index, sys, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
@@ -621,8 +628,10 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    md_str_writer_fmt(&index, "component(%u) component(%u)", comp_idx + 1, comp_idx + 2);
-    if (inst_idx != -1) md_str_writer_fmt(&index, " instance(%d)", inst_idx + 1);
+    md_str_writer_fmt(&index, "residue(%u) residue(%u)", comp_idx + 1, comp_idx + 2);
+    const md_chain_idx_t chain = inst_idx != -1 ? md_system_chain_find_by_inst_idx(&sys, (size_t)inst_idx) : -1;
+    if (chain != -1)         md_str_writer_fmt(&index, " chain(%d)", chain + 1);
+    else if (inst_idx != -1) md_str_writer_fmt(&index, " instance(%d)", inst_idx + 1);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
@@ -729,7 +738,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     } else {
         md_str_writer_fmt(&index, "ring(%u)", ring_idx + 1);
     }
-    tooltip_append_index(&index, place);
+    tooltip_append_index(&index, sys, place);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 

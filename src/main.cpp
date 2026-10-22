@@ -2201,7 +2201,7 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
-            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole components (residues) or whole instances (chains, molecules)");
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nor whole chains (all that the file gives the chain id, or the molecule where it gives none)");
             size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);

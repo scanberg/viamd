@@ -748,11 +748,11 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
     case ColorMapping::CompIndex:
         color_atoms_comp_idx(colors, num_atoms, sys);
         break;
-    case ColorMapping::InstId:
-        color_atoms_inst_id(colors, num_atoms, sys);
+    case ColorMapping::ChainId:
+        color_atoms_chain_id(colors, num_atoms, sys);
         break;
-    case ColorMapping::InstIndex:
-        color_atoms_inst_idx(colors, num_atoms, sys);
+    case ColorMapping::ChainIndex:
+        color_atoms_chain_idx(colors, num_atoms, sys);
         break;
     case ColorMapping::SecondaryStructure: {
         SecondaryStructurePalette palette = {
@@ -1244,7 +1244,7 @@ void create_default_representations(ApplicationState* state) {
             }
         }
         if (num_chains > 1) {
-            color = ColorMapping::InstId;
+            color = ColorMapping::ChainId;
         } else if (chain_res_count < 20) {
             type = RepresentationType::BallAndStick;
             color = ColorMapping::Type;

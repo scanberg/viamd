@@ -1458,7 +1458,7 @@ struct Dataset : viamd::EventHandler {
         }
         const Composition& c = composition;
 
-        ImGui::TextDisabled("Hover a row to highlight its atoms, shift click to select them, click to list its instances.");
+        ImGui::TextDisabled("Hover a row to highlight its atoms, shift click to select them, click to list its copies.");
 
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
         const int num_cols = c.has_charge ? 7 : 6;
@@ -1472,7 +1472,7 @@ struct Dataset : viamd::EventHandler {
             if (c.has_charge) ImGui::TableSetupColumn("Charge", ImGuiTableColumnFlags_WidthStretch, 0.9f);
             // The header, with what the less obvious columns count
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            const char* header_tips[7] = { nullptr, nullptr, "Separate molecules: groups of atoms connected by bonds", "Residues (components), all molecules together",
+            const char* header_tips[7] = { nullptr, nullptr, "Separate molecules: groups of atoms connected by bonds", "Residues, all molecules together",
                                            nullptr, "Of all molecules together", "Net charge of all molecules together, from the topology" };
             for (int col = 0; col < num_cols; ++col) {
                 if (!ImGui::TableSetColumnIndex(col)) continue;
@@ -1523,8 +1523,8 @@ struct Dataset : viamd::EventHandler {
             const int count = (int)md_array_size(instances);
 
             ImGui::Indent();
-            ImGui::Text("%s: %d %s", row.name, count, count == 1 ? "instance" : "instances");
-            ImGui::SetItemTooltip("An instance is a chain or a group of molecules as the file (or the inference) grouped them");
+            ImGui::Text("%s: %d %s", row.name, count, count == 1 ? "copy" : "copies");
+            ImGui::SetItemTooltip("The copies of the molecule in the system: each polymer chain, or each molecule, on its own");
             if (row.polymer) {
                 ImGui::SameLine();
                 ImGui::Checkbox("One letter codes", &use_short_labels);
@@ -1542,16 +1542,17 @@ struct Dataset : viamd::EventHandler {
                     while (clipper.Step()) {
                         for (int k = clipper.DisplayStart; k < clipper.DisplayEnd; ++k) {
                             const uint32_t inst = instances[k];
-                            const str_t id   = md_instance_id(&sys.instance, inst);
-                            const str_t auth = md_instance_auth_id(&sys.instance, inst);
                             const md_urange_t comps = md_system_instance_comp_range(&sys, inst);
                             const md_urange_t atoms = md_system_instance_atom_range(&sys, inst);
+                            // By its chain: the id the data gives, or the position of an inferred one; else by its number
+                            const md_chain_idx_t chain = md_system_chain_find_by_inst_idx(&sys, inst);
+                            const str_t id = chain >= 0 ? md_system_chain_id(&sys, (size_t)chain) : str_t{};
+                            char where[48];
+                            if (!str_empty(id))  snprintf(where, sizeof(where), "chain " STR_FMT, STR_ARG(id));
+                            else if (chain >= 0) snprintf(where, sizeof(where), "chain %d", chain + 1);
+                            else                 snprintf(where, sizeof(where), "#%d", k + 1);
                             char label[128];
-                            if (!str_empty(auth)) {
-                                snprintf(label, sizeof(label), STR_FMT " (" STR_FMT ")   %u residues, %u atoms", STR_ARG(id), STR_ARG(auth), comps.end - comps.beg, atoms.end - atoms.beg);
-                            } else {
-                                snprintf(label, sizeof(label), STR_FMT "   %u residues, %u atoms", STR_ARG(id), comps.end - comps.beg, atoms.end - atoms.beg);
-                            }
+                            snprintf(label, sizeof(label), "%s   %u residue%s, %u atoms", where, comps.end - comps.beg, comps.end - comps.beg == 1 ? "" : "s", atoms.end - atoms.beg);
                             ImGui::PushID(k);
                             if (ImGui::Selectable(label, expanded_instance == k) && !ImGui::IsKeyDown(ImGuiMod_Shift) && row.polymer) {
                                 expanded_instance = expanded_instance == k ? -1 : k;

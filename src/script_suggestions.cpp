@@ -170,79 +170,56 @@ struct Ctx {
     md_bitset_t sel = {};
     size_t limit = MAX_EXPR_LEN;        // the longest expression written
     size_t max_groups = MAX_GROUPS;     // the most ways of holding part of a residue written (Groups)
-    // [instance] The position of a chain among the chains (what chain(i) counts), -1 for a molecule which is not one
-    int32_t* chain_pos = nullptr;
-    // [instance] A chain whose id is not empty and no other chain has: chain("A") picks it and nothing else
-    uint8_t* chain_by_id = nullptr;
-    // [instance] A chain whose residues have sequence ids no other residue of it has: resid(i) in chain("A") picks one
-    uint8_t* chain_by_seq = nullptr;
+    // [chain] Whether the residues of the chain have sequence ids no other residue of it has, so that
+    // resid(i) in chain("A") picks one: 0 not yet known, 1 they have, 2 they have not
+    uint8_t* chain_seq = nullptr;
 };
-
-struct IdInst {
-    str_t id;
-    int32_t inst;
-};
-
-static int cmp_id_inst(const void* a, const void* b) {
-    return str_cmp_lex(((const IdInst*)a)->id, ((const IdInst*)b)->id);
-}
-
-static bool instance_is_chain(const md_system_t& sys, size_t inst) {
-    return md_entity_kind_is_polymer(md_system_instance_entity_kind(&sys, inst));
-}
-
-static bool seq_ids_unique(const md_system_t& sys, md_urange_t comps, md_allocator_i* temp) {
-    if (!sys.component.seq_id || comps.end <= comps.beg) return false;
-    const size_t n = comps.end - comps.beg;
-    int32_t* ids = (int32_t*)md_alloc(temp, n * sizeof(int32_t));
-    for (size_t i = 0; i < n; ++i) ids[i] = (int32_t)sys.component.seq_id[comps.beg + i];
-    return sort_unique(ids, n) == n;
-}
 
 static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocator_i* temp) {
     c->sys  = &sys;
     c->temp = temp;
     c->sel  = sel;
+    const size_t num_chains = md_system_chain_count(&sys);
+    c->chain_seq = (uint8_t*)md_alloc(temp, num_chains + 1);
+    MEMSET(c->chain_seq, 0, num_chains + 1);
+}
 
-    const size_t num_inst = md_system_instance_count(&sys);
-    c->chain_pos    = (int32_t*)md_alloc(temp, (num_inst + 1) * sizeof(int32_t));
-    c->chain_by_id  = (uint8_t*)md_alloc(temp, num_inst + 1);
-    c->chain_by_seq = (uint8_t*)md_alloc(temp, num_inst + 1);
-    MEMSET(c->chain_by_id,  0, num_inst + 1);
-    MEMSET(c->chain_by_seq, 0, num_inst + 1);
+// The chain of an instance (md_chain_data_t), -1 for none
+static int32_t inst_chain(const Ctx& c, int32_t inst) {
+    return inst >= 0 ? md_system_chain_find_by_inst_idx(c.sys, (size_t)inst) : -1;
+}
 
-    md_array(IdInst) ids = 0;
-    int32_t pos = 0;
-    for (size_t i = 0; i < num_inst; ++i) {
-        if (instance_is_chain(sys, i)) {
-            c->chain_pos[i] = pos++;
-            const str_t id = md_system_instance_id(&sys, i);
-            if (quotable(id)) {
-                IdInst item = {id, (int32_t)i};
-                md_array_push(ids, item, temp);
-            }
-        } else {
-            c->chain_pos[i] = -1;
-        }
-    }
+// A chain is written by the id the data gives it: chain("A"), all of the atoms of the id. A chain inferred where the
+// data gives none is written by its position: chain(2).
+static bool chain_by_id(const Ctx& c, int32_t chain) {
+    return chain >= 0 && quotable(md_system_chain_id(c.sys, (size_t)chain));
+}
 
-    // Unique among the chains: chain("A") does not look at the molecules which are not chains, which share their ids
-    const size_t num_ids = md_array_size(ids);
-    if (num_ids) qsort(ids, num_ids, sizeof(IdInst), cmp_id_inst);
-    for (size_t i = 0; i < num_ids; ++i) {
-        const bool prev = i > 0 && str_eq(ids[i - 1].id, ids[i].id);
-        const bool next = i + 1 < num_ids && str_eq(ids[i + 1].id, ids[i].id);
-        if (!prev && !next) c->chain_by_id[ids[i].inst] = 1;
+static void write_chain(md_str_writer_t* sb, const Ctx& c, int32_t chain) {
+    if (chain_by_id(c, chain)) {
+        *sb += "chain(";
+        write_quoted(sb, md_system_chain_id(c.sys, (size_t)chain));
+        *sb += ')';
+    } else {
+        md_str_writer_fmt(sb, "chain(%d)", chain + 1);
     }
 }
 
-// The sequence ids of a chain are only looked at when it holds part of what is described
-static bool chain_by_seq(Ctx* c, int32_t inst) {
-    if (inst < 0 || !c->chain_by_id[inst]) return false;
-    if (c->chain_by_seq[inst] == 0) {
-        c->chain_by_seq[inst] = seq_ids_unique(*c->sys, md_system_instance_comp_range(c->sys, inst), c->temp) ? 1 : 2;
+// The sequence ids of a chain are only looked at when it holds part of what is described. Those of all of its
+// residues: the waters the data files under a chain are numbered with it.
+static bool chain_by_seq(Ctx* c, int32_t chain) {
+    if (chain < 0 || !c->sys->component.seq_id) return false;
+    if (c->chain_seq[chain] == 0) {
+        md_array(int32_t) ids = 0;
+        const md_instance_idx_t* end = md_system_chain_inst_end(c->sys, (size_t)chain);
+        for (const md_instance_idx_t* it = md_system_chain_inst_beg(c->sys, (size_t)chain); it && it < end; ++it) {
+            const md_urange_t comps = md_system_instance_comp_range(c->sys, (size_t)*it);
+            for (uint32_t k = comps.beg; k < comps.end; ++k) md_array_push(ids, (int32_t)c->sys->component.seq_id[k], c->temp);
+        }
+        const size_t n = md_array_size(ids);
+        c->chain_seq[chain] = n > 0 && sort_unique(ids, n) == n ? 1 : 2;
     }
-    return c->chain_by_seq[inst] == 1;
+    return c->chain_seq[chain] == 1;
 }
 
 // What the selection holds: the components with a selected atom, whole or in part, the instances which hold them,
@@ -318,23 +295,20 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
 
 // ### THE STRUCTURES WHICH HOLD THE SELECTION ###
 
-// Instances as terms of an 'or'. Chains by their ids, where those pick them alone: chain("A"), chain({"A", "B"}); else
-// by their position among the chains: chain(2). The molecules which are not chains by their position among all of
-// the instances: instance(5:9). by_id false writes every chain by its position.
-static bool instance_terms(md_array(str_t)* terms, const int32_t* insts, size_t n, const Ctx& c, bool by_id) {
+// Whole chains and molecules as terms of an 'or'. Chains by their ids: chain("A"), chain({"A", "B"}); a chain inferred
+// where the data gives none (or every chain, by_id false) by its position among the chains: chain(2). A molecule
+// which is in no chain, or whose chain is not whole, by its position among the instances: instance(5:9).
+static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, const Ctx& c, bool by_id) {
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_array(str_t)   ids = 0;
-    md_array(int32_t) chains = 0;
-    md_array(int32_t) others = 0;
-    for (size_t i = 0; i < n; ++i) {
-        const int32_t inst = insts[i];
-        if (c.chain_pos[inst] >= 0) {
-            if (by_id && c.chain_by_id[inst]) md_array_push(ids, md_system_instance_id(c.sys, inst), c.temp);
-            else md_array_push(chains, c.chain_pos[inst] + 1, c.temp);
-        } else {
-            md_array_push(others, inst + 1, c.temp);
-        }
+    md_array(int32_t) pos = 0;
+    for (size_t i = 0; i < num_chains; ++i) {
+        if (by_id && chain_by_id(c, chains[i])) md_array_push(ids, md_system_chain_id(c.sys, (size_t)chains[i]), c.temp);
+        else md_array_push(pos, chains[i] + 1, c.temp);
     }
+    md_array(int32_t) others = 0;
+    for (size_t i = 0; i < num_insts; ++i) md_array_push(others, insts[i] + 1, c.temp);
+
     if (md_array_size(ids)) {
         // Thousands of chains are not written by their ids
         if (md_array_size(ids) * 5 > c.limit) return false;
@@ -343,9 +317,9 @@ static bool instance_terms(md_array(str_t)* terms, const int32_t* insts, size_t 
         sb += ')';
         md_array_push(*terms, take(&sb, c.temp), c.temp);
     }
-    if (md_array_size(chains)) {
+    if (md_array_size(pos)) {
         sb += "chain(";
-        write_ranges(&sb, chains, sort_unique(chains, md_array_size(chains)));
+        write_ranges(&sb, pos, sort_unique(pos, md_array_size(pos)));
         sb += ')';
         md_array_push(*terms, take(&sb, c.temp), c.temp);
     }
@@ -358,6 +332,31 @@ static bool instance_terms(md_array(str_t)* terms, const int32_t* insts, size_t 
     size_t len = 0;
     for (size_t i = 0; i < md_array_size(*terms); ++i) len += (*terms)[i].len;
     return len <= c.limit;
+}
+
+// Of the instances which hold the selection: the chains they make whole, and the instances whole which are in no chain
+// or in one which is not whole (a ligand of chain A, without the rest of A)
+static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)* insts, const Breakdown& b, const Ctx& c) {
+    const size_t num_chains = md_system_chain_count(c.sys);
+    uint32_t* full = (uint32_t*)md_alloc(c.temp, (num_chains + 1) * sizeof(uint32_t));
+    MEMSET(full, 0, (num_chains + 1) * sizeof(uint32_t));
+    for (size_t i = 0; i < md_array_size(b.inst); ++i) {
+        const int32_t chain = inst_chain(c, b.inst[i]);
+        if (chain >= 0 && b.inst_full[i]) full[chain] += 1;
+    }
+    uint8_t* pushed = (uint8_t*)md_alloc(c.temp, num_chains + 1);
+    MEMSET(pushed, 0, num_chains + 1);
+    for (size_t i = 0; i < md_array_size(b.inst); ++i) {
+        const int32_t chain = inst_chain(c, b.inst[i]);
+        const bool chain_whole = chain >= 0 && full[chain] == (uint32_t)(md_system_chain_inst_end(c.sys, (size_t)chain) - md_system_chain_inst_beg(c.sys, (size_t)chain));
+        if (chain_whole) {
+            // Once, as the instances of a chain need not be consecutive
+            if (!pushed[chain]) md_array_push(*chains, chain, c.temp);
+            pushed[chain] = 1;
+        } else if (b.inst_full[i]) {
+            md_array_push(*insts, b.inst[i], c.temp);
+        }
+    }
 }
 
 // The selected atoms of a component which holds others as well, as the script picks them within it: by their names
@@ -437,22 +436,35 @@ static void group_terms(md_array(str_t)* terms, md_array(int32_t) whole, const G
     }
 }
 
-// The selection by the structures which hold it: the instances it holds whole, the residues it holds whole of the
-// others, and what it holds of the residues it holds a part of (part_term). By id: the chains by their ids, the
+// The selection by the structures which hold it: the chains and molecules it holds whole, the residues it holds whole of
+// the others, and what it holds of the residues it holds a part of (part_term). By id: the chains by their ids, the
 // residues of a chain by their sequence ids within it and the atoms by their names, where those pick them alone. Else
 // everything by position. False when it does not make a line short enough to read.
 static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, bool by_id) {
     md_allocator_i* temp = c->temp;
     md_array(str_t) terms = 0;
 
+    md_array(int32_t) whole_chains = 0;
     md_array(int32_t) whole_insts = 0;
-    for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-        if (b.inst_full[i]) md_array_push(whole_insts, b.inst[i], temp);
-    }
-    if (!instance_terms(&terms, whole_insts, md_array_size(whole_insts), *c, by_id)) return false;
+    whole_chains_and_insts(&whole_chains, &whole_insts, b, *c);
+    if (!whole_terms(&terms, whole_chains, md_array_size(whole_chains), whole_insts, md_array_size(whole_insts), *c, by_id)) return false;
     // What the terms add up to: a selection held in thousands of chains is given up on before all of them are written
     size_t len = 0;
     for (size_t i = 0; i < md_array_size(terms); ++i) len += terms[i].len;
+
+    // Written whole already
+    const size_t num_chains = md_system_chain_count(c->sys);
+    uint8_t* chain_written = (uint8_t*)md_alloc(temp, num_chains + 1);
+    MEMSET(chain_written, 0, num_chains + 1);
+    for (size_t i = 0; i < md_array_size(whole_chains); ++i) chain_written[whole_chains[i]] = 1;
+
+    // The residues of a chain by their sequence ids within it, gathered over all of its instances (they need not be
+    // consecutive): a slot per chain
+    int32_t* chain_slot = (int32_t*)md_alloc(temp, (num_chains + 1) * sizeof(int32_t));
+    for (size_t i = 0; i <= num_chains; ++i) chain_slot[i] = -1;
+    md_array(int32_t) slot_chain = 0;
+    md_array(md_array(int32_t)) slot_whole = 0;
+    md_array(Groups) slot_parts = 0;
 
     // The residues which are written by their position in the system, whichever instance they are of
     md_array(int32_t) whole = 0;
@@ -460,53 +472,51 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
 
     md_str_writer_t sb = md_str_writer_create(temp);
     const size_t num_comps = md_array_size(b.comp);
-    for (size_t i = 0; i < num_comps;) {
-        const int32_t inst = b.comp_inst[i];
-        size_t end = i + 1;
-        while (end < num_comps && b.comp_inst[end] == inst) ++end;
-        if (inst >= 0 && b.inst_full[b.comp_slot[i]]) {
-            i = end;
-            continue;
-        }
+    for (size_t k = 0; k < num_comps; ++k) {
+        const int32_t inst = b.comp_inst[k];
+        const int32_t chain = inst_chain(*c, inst);
+        if (inst >= 0 && b.inst_full[b.comp_slot[k]]) continue;     // its instance is written whole
+        if (chain >= 0 && chain_written[chain]) continue;
 
-        if (by_id && chain_by_seq(c, inst)) {
-            md_array(int32_t) chain_whole = 0;
-            Groups chain_parts = {};
-            for (size_t k = i; k < end; ++k) {
-                const int32_t seq = (int32_t)md_component_seq_id(&c->sys->component, b.comp[k]);
-                if (b.comp_full[k]) {
-                    md_array_push(chain_whole, seq, temp);
-                } else {
-                    part_term(&sb, b.comp[k], *c, true);
-                    if (too_long(&sb, c->limit) || !groups_add(&chain_parts, take(&sb, temp), seq, c->max_groups, temp)) return false;
-                }
+        if (by_id && chain_by_seq(c, chain)) {
+            if (chain_slot[chain] < 0) {
+                chain_slot[chain] = (int32_t)md_array_size(slot_chain);
+                md_array_push(slot_chain, chain, temp);
+                md_array_push(slot_whole, (md_array(int32_t))0, temp);
+                md_array_push(slot_parts, Groups{}, temp);
             }
-            // Each term within the chain of its own, which reads more easily than one context around several:
-            // '(resid(10:20) in chain("A")) or (name("CA") in resid(21) in chain("A"))'
-            md_array(str_t) inner = 0;
-            group_terms(&inner, chain_whole, chain_parts, "resid", temp);
-            sb += "chain(";
-            write_quoted(&sb, md_system_instance_id(c->sys, inst));
-            sb += ')';
-            const str_t chain = take(&sb, temp);
-            for (size_t k = 0; k < md_array_size(inner); ++k) {
-                write_in(&sb, inner[k], chain);
-                len += md_str_writer_len(&sb) + 6;
-                if (len > c->limit) return false;
-                md_array_push(terms, take(&sb, temp), temp);
+            const int32_t slot = chain_slot[chain];
+            const int32_t seq = (int32_t)md_component_seq_id(&c->sys->component, b.comp[k]);
+            if (b.comp_full[k]) {
+                md_array_push(slot_whole[slot], seq, temp);
+            } else {
+                part_term(&sb, b.comp[k], *c, true);
+                if (too_long(&sb, c->limit) || !groups_add(&slot_parts[slot], take(&sb, temp), seq, c->max_groups, temp)) return false;
             }
         } else {
-            for (size_t k = i; k < end; ++k) {
-                const int32_t pos = b.comp[k] + 1;
-                if (b.comp_full[k]) {
-                    md_array_push(whole, pos, temp);
-                } else {
-                    part_term(&sb, b.comp[k], *c, by_id);
-                    if (too_long(&sb, c->limit) || !groups_add(&parts, take(&sb, temp), pos, c->max_groups, temp)) return false;
-                }
+            const int32_t pos = b.comp[k] + 1;
+            if (b.comp_full[k]) {
+                md_array_push(whole, pos, temp);
+            } else {
+                part_term(&sb, b.comp[k], *c, by_id);
+                if (too_long(&sb, c->limit) || !groups_add(&parts, take(&sb, temp), pos, c->max_groups, temp)) return false;
             }
         }
-        i = end;
+    }
+
+    // Each term within its chain on its own, which reads more easily than one context around several:
+    // '(resid(10:20) in chain("A")) or (name("CA") in resid(21) in chain("A"))'
+    for (size_t slot = 0; slot < md_array_size(slot_chain); ++slot) {
+        md_array(str_t) inner = 0;
+        group_terms(&inner, slot_whole[slot], slot_parts[slot], "resid", temp);
+        write_chain(&sb, *c, slot_chain[slot]);
+        const str_t chain = take(&sb, temp);
+        for (size_t k = 0; k < md_array_size(inner); ++k) {
+            write_in(&sb, inner[k], chain);
+            len += md_str_writer_len(&sb) + 6;
+            if (len > c->limit) return false;
+            md_array_push(terms, take(&sb, temp), temp);
+        }
     }
     group_terms(&terms, whole, parts, "residue", temp);
 
@@ -562,7 +572,7 @@ enum Scope : uint32_t {
     Scope_System    = 1,
     Scope_Class     = 2,    // the components of the one kind the selected ones are of: protein(), water(), ...
     Scope_Resname   = 4,    // the components of the names of the selected ones
-    Scope_Inst      = 8,    // the instances which hold the selection
+    Scope_Inst      = 8,    // the chains which hold the selection (and the molecules in no chain which do)
     Scope_Res       = 16,   // the components which hold the selection
     Scope_All       = 31,
 };
@@ -584,7 +594,7 @@ struct Scopes {
     int class_kind = -1;
     md_array(str_t) resnames = 0;
     uint8_t* comp_touched = nullptr;        // [component]
-    uint8_t* inst_touched = nullptr;        // [instance]
+    uint8_t* inst_touched = nullptr;        // [instance] of the chains which hold the selection, or holds it itself
 };
 
 static int scope_slot(uint32_t scope) {
@@ -686,7 +696,39 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     MEMSET(s->comp_touched, 0, num_comps + 1);
     MEMSET(s->inst_touched, 0, num_inst + 1);
     for (size_t i = 0; i < md_array_size(b.comp); ++i) s->comp_touched[b.comp[i]] = 1;
-    for (size_t i = 0; i < md_array_size(b.inst); ++i) s->inst_touched[b.inst[i]] = 1;
+
+    // The chains which hold the selection, all of their instances, and the molecules in no chain which hold it
+    md_array(int32_t) chains = 0;
+    md_array(int32_t) loose_insts = 0;
+    bool scope_whole = true;    // the selection is all of them: then the scope says nothing
+    {
+        const size_t num_chains = md_system_chain_count(&sys);
+        uint8_t* chain_seen = (uint8_t*)md_alloc(temp, num_chains + 1);
+        MEMSET(chain_seen, 0, num_chains + 1);
+        for (size_t i = 0; i < md_array_size(b.inst); ++i) {
+            const int32_t chain = inst_chain(*c, b.inst[i]);
+            if (chain < 0) {
+                s->inst_touched[b.inst[i]] = 1;
+                md_array_push(loose_insts, b.inst[i], temp);
+                scope_whole &= b.inst_full[i] != 0;
+            } else if (!chain_seen[chain]) {
+                chain_seen[chain] = 1;
+                md_array_push(chains, chain, temp);
+                const md_instance_idx_t* end = md_system_chain_inst_end(&sys, (size_t)chain);
+                for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, (size_t)chain); it && it < end; ++it) {
+                    s->inst_touched[*it] = 1;
+                }
+            }
+        }
+        // Every instance of the chains whole
+        for (size_t k = 0; k < md_array_size(chains) && scope_whole; ++k) {
+            const md_instance_idx_t* end = md_system_chain_inst_end(&sys, (size_t)chains[k]);
+            for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, (size_t)chains[k]); it && it < end && scope_whole; ++it) {
+                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*it);
+                scope_whole = md_bitset_test_all_range(c->sel, r.beg, r.end);
+            }
+        }
+    }
 
     s->avail = Scope_System;
     // A scope is of the components which hold the selection: selected atoms which are in none fit none of them
@@ -726,12 +768,13 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
         md_array_shrink(s->resnames, 0);
     }
 
-    // The instances which hold the selection, when it is not the whole of them: then it is written as them
+    // The chains which hold the selection (and the molecules in no chain), when it is not the whole of them: then it is
+    // written as them
     bool all_in_inst = true;
     for (size_t i = 0; i < md_array_size(b.comp_inst); ++i) all_in_inst &= b.comp_inst[i] >= 0;
-    if (all_in_inst && !b.insts_full) {
+    if (all_in_inst && !scope_whole) {
         md_array(str_t) terms = 0;
-        const bool ok = instance_terms(&terms, b.inst, md_array_size(b.inst), *c, true);
+        const bool ok = whole_terms(&terms, chains, md_array_size(chains), loose_insts, md_array_size(loose_insts), *c, true);
         md_str_writer_t sb = md_str_writer_create(temp);
         write_or(&sb, terms, md_array_size(terms));
         if (ok && !too_long(&sb, c->limit)) {
@@ -1067,18 +1110,18 @@ static bool unique_name_in_comp(str_t* out, const md_system_t& sys, int32_t atom
     return true;
 }
 
-// The context which picks the component alone, as the file numbers it: 'resid(42) in chain("A")', else 'resid(42)'
+// The context which picks the component alone, as the file numbers it: 'resid(42) in chain("A")' (or of an inferred
+// chain, 'resid(42) in chain(2)'), else 'resid(42)'
 static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t comp) {
     const md_system_t& sys = *c->sys;
     if (!sys.component.seq_id) return false;
-    const int32_t inst = md_instance_find_by_comp_idx(&sys.instance, comp);
+    const int32_t chain = inst_chain(*c, md_instance_find_by_comp_idx(&sys.instance, comp));
     *sb += "resid(";
     write_int(sb, md_component_seq_id(&sys.component, comp));
     *sb += ')';
-    if (chain_by_seq(c, inst)) {
-        *sb += " in chain(";
-        write_quoted(sb, md_system_instance_id(&sys, inst));
-        *sb += ')';
+    if (chain_by_seq(c, chain)) {
+        *sb += " in ";
+        write_chain(sb, *c, chain);
     }
     return true;
 }

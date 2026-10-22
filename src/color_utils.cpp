@@ -148,25 +148,32 @@ void color_atoms_comp_idx(uint32_t* colors, size_t count, const md_system_t& sys
     }
 }
 
-void color_atoms_inst_id(uint32_t* colors, size_t count, const md_system_t& sys) {
-    set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.instance.count; i++) {
-        str_t str = sys.instance.id[i];
-        uint32_t u32 = 0;
-        for (size_t j = 0; j < str.len; ++j) {
-            u32 += str.ptr[j];
-        }
-        const uint32_t color = u32_to_color(u32);
-        md_urange_t range = md_system_instance_atom_range(&sys, i);
-        set_colors(colors + range.beg, range.end - range.beg, color);
+static void set_chain_colors(uint32_t* colors, size_t count, const md_system_t& sys, size_t chain_idx, uint32_t color) {
+    const md_instance_idx_t* end = md_system_chain_inst_end(&sys, chain_idx);
+    for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t range = md_system_instance_atom_range(&sys, (size_t)*it);
+        if (range.end <= count) set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
-void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+
+// The same id the same color, in any system: a hash of the id, as the qualitative palette takes one. An inferred chain
+// has none, and takes its position.
+void color_atoms_chain_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.instance.count; i++) {
-        const uint32_t color = u32_to_color((uint32_t)i);
-        md_urange_t range = md_system_instance_atom_range(&sys, i);
-        set_colors(colors + range.beg, range.end - range.beg, color);
+    for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+        const str_t id = md_system_chain_id(&sys, c);
+        uint32_t u32 = 0;
+        for (size_t j = 0; j < id.len; ++j) {
+            u32 += (uint8_t)id.ptr[j];
+        }
+        set_chain_colors(colors, count, sys, c, u32_to_color(str_empty(id) ? (uint32_t)c : u32));
+    }
+}
+
+void color_atoms_chain_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+        set_chain_colors(colors, count, sys, c, u32_to_color((uint32_t)c));
     }
 }
 
