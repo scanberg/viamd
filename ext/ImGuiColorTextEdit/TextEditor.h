@@ -255,6 +255,12 @@ public:
 	inline DocPos GetDocPosAtMousePos(const ImVec2& mousePos) const {return  getDocPosAtMousePos(mousePos); }
 	inline std::string GetWordAtMousePos(const ImVec2& mousePos) const { return getWordAtMousePos(mousePos); }
 
+	// viamd addition, to carry over when updating: where a click at the mouse position would put the cursor (between
+	// the glyphs closest to it rather than on the glyph under it), and the top left corner in screen coordinates of
+	// the glyph at a position, where the caret is drawn for it. Both as of the last Render().
+	inline DocPos GetCursorPosAtMousePos(const ImVec2& mousePos) const { return getCursorPosAtMousePos(mousePos); }
+	inline ImVec2 GetScreenPosOfDocPos(DocPos pos) const { return getScreenPosOfDocPos(normalizePos(pos)); }
+
 	// scrolling support
 	enum class Scroll {
 		alignTop,
@@ -1905,6 +1911,8 @@ protected:
 	bool isMousePosOverTextArea(const ImVec2& mousePos) const;
 	DocPos getDocPosAtMousePos(const ImVec2& mousePos) const;
 	std::string getWordAtMousePos(const ImVec2& mousePos) const;
+	DocPos getCursorPosAtMousePos(const ImVec2& mousePos) const;
+	ImVec2 getScreenPosOfDocPos(DocPos pos) const;
 
 	// scrolling support
 	void setCursor(DocPos pos);

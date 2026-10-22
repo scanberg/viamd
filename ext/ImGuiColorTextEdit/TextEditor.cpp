@@ -2039,6 +2039,42 @@ std::string TextEditor::getWordAtMousePos(const ImVec2& mousePos) const {
 
 
 //
+//	TextEditor::getCursorPosAtMousePos (viamd addition)
+//
+
+TextEditor::DocPos TextEditor::getCursorPosAtMousePos(const ImVec2& mousePos) const {
+	if (firstFrame) {
+		return DocPos();
+
+	} else {
+		// as a left click places the cursor (see handleMouseInteractions)
+		auto local = mousePos - cursorScreenPos;
+		DocPos glyphPos;
+		DocPos cursorPos;
+
+		typeSetter.screenPos2DocPos(
+			document,
+			ImVec2(std::max(0.0f, (local.x - textLeftOffset) / glyphSize.x), local.y / glyphSize.y),
+			glyphPos,
+			cursorPos);
+
+		return cursorPos;
+	}
+}
+
+
+//
+//	TextEditor::getScreenPosOfDocPos (viamd addition)
+//
+
+ImVec2 TextEditor::getScreenPosOfDocPos(DocPos pos) const {
+	// as the caret is drawn (see renderCursorCarets)
+	auto visPos = docPos2VisPos(pos);
+	return ImVec2(cursorScreenPos.x + textLeftOffset + visPos.column * glyphSize.x, cursorScreenPos.y + visPos.row * glyphSize.y);
+}
+
+
+//
 //	TextEditor::setCursor
 //
 

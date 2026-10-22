@@ -5431,6 +5431,37 @@ static void draw_script_reference_window(ApplicationState* state) {
     }
 }
 
+// What a payload dragged over the script editor is written as in the script, false if it does not go there. An attribute
+// of the system dragged as a series (from the Attributes or System window, a plot's legend, ...) goes in as the
+// expression that reads it, attr("edr/potential"), text for the script as it is.
+static bool script_drop_text(char* buf, size_t cap, const ApplicationState* state, const ImGuiPayload* payload) {
+    ASSERT(buf && cap > 0);
+    ASSERT(state);
+    ASSERT(payload);
+    buf[0] = '\0';
+
+    if (payload->IsDataType(SCRIPT_TEXT_DND)) {
+        if (!payload->Data || payload->DataSize <= 0) return false;
+        const size_t len = strnlen((const char*)payload->Data, (size_t)payload->DataSize);
+        if (len == 0 || len >= cap) return false;
+        memcpy(buf, payload->Data, len);
+        buf[len] = '\0';
+        return true;
+    }
+
+    if ((payload->IsDataType(TIMELINE_SERIES_DND) || payload->IsDataType(DISTRIBUTION_SERIES_DND)) && payload->DataSize == (int)sizeof(SeriesDragPayload)) {
+        // The values themselves: a summary of them (mean, extent) is not what attr() reads
+        const SeriesKey& key = ((const SeriesDragPayload*)payload->Data)->key;
+        if (key.source != SeriesSource_System || key.variant != SeriesVariant_Values) return false;
+        const str_t path = str_from_cstr(key.path);
+        const md_attributes_t* table = series_table(state, SeriesSource_System, path);
+        const md_attribute_t* attr = table ? md_attributes_find(table, path) : nullptr;
+        return attr && script_editor::attr_expression(buf, cap, table, attr);
+    }
+
+    return false;
+}
+
 static void draw_script_editor_window(ApplicationState* state) {
     ASSERT(state);
 
@@ -5607,6 +5638,17 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
         const bool editor_hovered = ImGui::IsItemHovered();
         state->editor_focused = script_editor::has_focus_after_render();
+
+        // Attributes dropped in go where a click would put the cursor, as the expression that reads them
+        if (ImGui::BeginDragDropTarget()) {
+            const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+            char text[512];
+            if (payload && script_drop_text(text, sizeof(text), state, payload)) {
+                script_editor::accept_drop(state->editor, payload->DataType, str_from_cstr(text));
+            }
+            ImGui::EndDragDropTarget();
+        }
+
         const script_editor::Marker* hovered_marker = script_editor::markers_update(&state->editor_markers, &state->editor, editor_hovered);
 
         // F1 looks up the identifier under the mouse in the script reference, or else the one at the text cursor.

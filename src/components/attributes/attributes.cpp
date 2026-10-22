@@ -3,7 +3,9 @@
 // The system's table (topology columns, the run and everything loaded along it) and the script
 // evaluations' tables (script/<ident> and its siblings) are listed side by side, one row per
 // attribute, with what it is, how it is stored and whether the Timelines and Distributions windows
-// can show it. A row that can be shown is dragged from here into a subplot of either window.
+// can show it. A row that can be shown is dragged from here into a subplot of either window, and one
+// of the system that the script reads (attr()) into the Script Editor, where it goes in as the
+// expression that reads it.
 //
 // Opened with KEY_SHOW_ATTRIBUTE_WINDOW (Ctrl+Shift+A) from anywhere, or from the Windows menu.
 
@@ -24,6 +26,7 @@
 #include <app/IconsFontAwesome6.h>
 
 #include <stdio.h>
+#include <string.h>
 
 namespace attributes {
 
@@ -221,7 +224,9 @@ struct Attributes : viamd::EventHandler {
             }
         }
 
-        ImGui::TextDisabled("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot.", md_array_size(rows), total);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
+        ImGui::PopStyleColor();
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Hideable;
@@ -274,13 +279,24 @@ struct Attributes : viamd::EventHandler {
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
                     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort);
 
-                    if (row.views && ImGui::BeginDragDropSource()) {
-                        char label[96];
-                        series_label(label, sizeof(label), &state, key);
-                        // As a timeline series when it is one, which a distribution subplot accepts
-                        // as well; otherwise as what only a distribution subplot takes
-                        const char* dnd_type = timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
-                        series_set_drag_payload(dnd_type, key, -1, label, series_default_color(&state, key));
+                    // How the script reads it, if it does: an attribute of the system the script is compiled against
+                    char expr[sizeof(path_buf) + 16];
+                    const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), row.table, row.attr);
+
+                    if ((row.views || scriptable) && ImGui::BeginDragDropSource()) {
+                        if (row.views) {
+                            char label[96];
+                            series_label(label, sizeof(label), &state, key);
+                            // As a timeline series when it is one, which a distribution subplot accepts
+                            // as well; otherwise as what only a distribution subplot takes. The Script
+                            // Editor takes either as the expression that reads it.
+                            const char* dnd_type = timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
+                            series_set_drag_payload(dnd_type, key, -1, label, series_default_color(&state, key));
+                        } else {
+                            // What only the Script Editor takes
+                            ImGui::SetDragDropPayload(SCRIPT_TEXT_DND, expr, strlen(expr) + 1);
+                            ImGui::TextUnformatted(expr);
+                        }
                         ImGui::EndDragDropSource();
                     }
 
@@ -298,6 +314,9 @@ struct Attributes : viamd::EventHandler {
                             char buf[512];
                             snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(attr.path));
                             ImGui::SetClipboardText(buf);
+                        }
+                        if (scriptable && ImGui::MenuItem("Copy script expression", expr)) {
+                            ImGui::SetClipboardText(expr);
                         }
                         ImGui::EndPopup();
                     }
@@ -347,14 +366,18 @@ struct Attributes : viamd::EventHandler {
                             ImGui::Text("Value: " STR_FMT, STR_ARG(value));
                         }
                         ImGui::Separator();
-                        if (timeline && distribution) {
-                            ImGui::TextUnformatted("Drag into a Timelines or Distributions subplot");
-                        } else if (timeline) {
-                            ImGui::TextUnformatted("Drag into a Timelines subplot");
-                        } else if (distribution) {
-                            ImGui::TextUnformatted("Drag into a Distributions subplot");
-                            if (row.reason) ImGui::TextDisabled("Not over time: %s", row.reason);
-                        } else if (row.reason) {
+                        const char* plots = timeline && distribution ? "a Timelines or Distributions subplot" :
+                                            timeline ? "a Timelines subplot" : distribution ? "a Distributions subplot" : nullptr;
+                        if (plots && scriptable) {
+                            ImGui::Text("Drag into %s, or into the Script Editor as %s", plots, expr);
+                        } else if (plots) {
+                            ImGui::Text("Drag into %s", plots);
+                        } else if (scriptable) {
+                            ImGui::Text("Drag into the Script Editor as %s", expr);
+                        }
+                        if (distribution && !timeline && row.reason) {
+                            ImGui::TextDisabled("Not over time: %s", row.reason);
+                        } else if (!plots && row.reason) {
                             ImGui::TextDisabled("Cannot be plotted: %s", row.reason);
                         }
                         ImGui::EndTooltip();

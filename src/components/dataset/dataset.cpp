@@ -1905,7 +1905,8 @@ struct Dataset : viamd::EventHandler {
     // Quantities loaded along the run - an energy file, the columns of an .xvg or a .csv - one node
     // per file. Each row is a series the Timelines and Distributions windows can plot: drag it into
     // a subplot of either, double click it to toggle it in the first timeline subplot, or pick one
-    // from its context menu.
+    // from its context menu. Dragged into the Script Editor, it goes in as the expression that reads
+    // it, attr("edr/potential").
     void draw_series(ApplicationState& data) {
         str_t groups[64];
         const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
@@ -1918,7 +1919,6 @@ struct Dataset : viamd::EventHandler {
         const str_t filter = str_from_cstr(series_filter);
 
         const md_attributes_t* table = &data.mold.sys.attributes;
-        const str_t run = str_from_cstr(data.mold.run);
 
         for (size_t g = 0; g < num_groups; ++g) {
             md_temp_scope_t temp = md_temp_begin();
@@ -1960,12 +1960,9 @@ struct Dataset : viamd::EventHandler {
                     continue;
                 }
 
-                // How attr() in the script reads it: the path below the run
-                char expr[SERIES_PATH_CAP + 16] = "";
-                if (str_begins_with(paths[i], run) && paths[i].len > run.len + 1) {
-                    const str_t rel = str_substr(paths[i], run.len + 1);
-                    snprintf(expr, sizeof(expr), "attr(\"" STR_FMT "\")", STR_ARG(rel));
-                }
+                // How the script reads it, as dropping it into the Script Editor writes it
+                char expr[SERIES_PATH_CAP + 16];
+                script_editor::attr_expression(expr, sizeof(expr), table, attr);
 
                 bool in_subplot[PLOT_MAX_SUBPLOTS] = {};
                 bool in_any = false;
@@ -2002,7 +1999,8 @@ struct Dataset : viamd::EventHandler {
                     ImGui::TextDisabled(STR_FMT, STR_ARG(attr->path));
                     if (expr[0]) ImGui::TextDisabled("In the script: %s", expr);
                     ImGui::Separator();
-                    ImGui::TextUnformatted("Drag into a timeline or distribution subplot, double click to toggle it in the first timeline");
+                    ImGui::TextUnformatted(expr[0] ? "Drag into a timeline or distribution subplot or into the script editor,\ndouble click to toggle it in the first timeline"
+                                                   : "Drag into a timeline or distribution subplot, double click to toggle it in the first timeline");
                     ImGui::EndTooltip();
                 }
                 if (ImGui::BeginDragDropSource()) {

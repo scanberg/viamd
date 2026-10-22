@@ -3,9 +3,11 @@
 // viamd's side of the script editor.
 //
 // The editor widget (ext/ImGuiColorTextEdit, https://github.com/goossens/ImGuiColorTextEdit) is vendored so that it can
-// be updated by copying in a newer version, with one addition to carry over when that is done: line decorations can go
-// left of the line numbers (SetDecorationsBeforeLineNumbers), where the marks of the properties are. Everything viamd needs on top of it lives here: the mdscript
-// language definition, autocompletion, markers for compiler errors, warnings and visualization tokens, and a few helpers.
+// be updated by copying in a newer version, with two additions to carry over when that is done: line decorations can go
+// left of the line numbers (SetDecorationsBeforeLineNumbers), where the marks of the properties are, and what a drop
+// needs to know of where the mouse is (GetCursorPosAtMousePos, GetScreenPosOfDocPos). Everything viamd needs on top of
+// it lives here: the mdscript language definition, autocompletion, markers for compiler errors, warnings and
+// visualization tokens, dropping text in, and a few helpers.
 //
 // Markers are kept here rather than in the editor. The editor is only asked two things: which glyph the mouse is over
 // (TextEditor::GetDocPosAtMousePos) and to draw squiggles. Errors and warnings are underlined in red and yellow, and
@@ -21,6 +23,13 @@
 #include <string_view>
 
 struct md_allocator_i;
+struct md_attribute_t;
+struct md_attributes_t;
+
+// ImGui drag and drop payload type of text for the script, zero terminated, which the editor takes as it is. What an
+// attribute that the script reads is dragged as where it carries no series (the Timelines and Distributions windows
+// cannot show it, such as a frame axis).
+#define SCRIPT_TEXT_DND "SCRIPT_TEXT"
 
 namespace script_editor {
 
@@ -45,6 +54,19 @@ void insert_lines_at_cursor(TextEditor& editor, str_t code);
 
 // True if the editor has keyboard focus. Call right after TextEditor::Render(), while its child window is the last item.
 bool has_focus_after_render();
+
+// The expression that reads an attribute of the system (attributes: the table attr is in) in the script: attr("<path>"),
+// with the path in the form that completion offers it (md_script_attr_path), "edr/potential" rather than
+// "run/a/edr/potential" where that names it alone. Writes a terminated string of at most cap - 1 characters. False, with
+// buf empty, if attr() cannot read the attribute or the expression does not fit.
+bool attr_expression(char* buf, size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr);
+
+// Accepts the payload being dragged over the editor as text: it goes where a left click at the mouse would put the
+// cursor. Call between ImGui::BeginDragDropTarget() and EndDragDropTarget(), right after TextEditor::Render() so that
+// its child window is the target, with the type of the payload and the text it stands for. While it is dragged, a
+// caret shows where the text would go and the tooltip what it is. Once dropped, the text is inserted as one edit
+// (undone as one) with the cursor after it, and the editor takes the focus: true on that frame. Not in read-only mode.
+bool accept_drop(TextEditor& editor, const char* payload_type, str_t text);
 
 // Turns on autocompletion for mdscript. What can be written at the cursor comes from mdlib (md_script_complete):
 // variables, procedures, constants and keywords, the parameters of the procedure being called, and the values that

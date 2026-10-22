@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+#include <stdio.h>
+
 namespace script_editor {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -137,6 +139,59 @@ bool has_focus_after_render() {
         if (!(w->Flags & ImGuiWindowFlags_ChildWindow)) break;
     }
     return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Dropping text in
+////////////////////////////////////////////////////////////////////////////////
+
+bool attr_expression(char* buf, size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr) {
+    ASSERT(buf && cap > 0);
+    buf[0] = '\0';
+    const str_t path = md_script_attr_path(attributes, attr);
+    if (str_empty(path)) return false;
+    // Nothing in it that the script's lexer ends (or gives up on) a string at
+    for (size_t i = 0; i < path.len; ++i) {
+        const char c = path.ptr[i];
+        if (c == '"' || c == ';' || c == '\n' || c == '\r') return false;
+    }
+    const int len = snprintf(buf, cap, "attr(\"" STR_FMT "\")", STR_ARG(path));
+    if (len < 0 || (size_t)len >= cap) {
+        buf[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool accept_drop(TextEditor& editor, const char* payload_type, str_t text) {
+    if (editor.IsReadOnlyEnabled() || str_empty(text)) return false;
+
+    const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payload_type, ImGuiDragDropFlags_AcceptBeforeDelivery);
+    if (!payload) return false;
+
+    const TextEditor::DocPos pos = editor.GetCursorPosAtMousePos(ImGui::GetMousePos());
+    const std::string_view str(text.ptr, text.len);
+
+    if (!payload->IsDelivery()) {
+        // A caret where it goes, over the editor (its child window is drawn over the window that the target is in)
+        const ImVec2 p = editor.GetScreenPosOfDocPos(pos);
+        const float w = std::max(1.0f, ImGui::GetFontSize() * (1.0f / 16.0f));  // half its width
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->PushClipRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true);
+        dl->AddRectFilled(ImVec2(p.x - w, p.y), ImVec2(p.x + w, p.y + editor.GetLineHeight()), editor.GetPalette().get(TextEditor::Color::cursor));
+        dl->PopClipRect();
+
+        // And what goes in, in place of the source's preview
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(str.data(), str.data() + str.size());
+        ImGui::EndTooltip();
+        return false;
+    }
+
+    // One edit, after which the cursor is at its end
+    editor.ReplaceSectionText(pos, pos, str);
+    editor.SetFocus();
+    return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
