@@ -578,6 +578,87 @@ static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
     return false;
 }
 
+// The rings of 3 to 7 atoms of each atom: atom a is in ring[offset[a] .. offset[a + 1]). For the nucleotides without a
+// component (their backbones found from the bonds alone, as for an XYZ file), whose rings are found from their atoms.
+struct AtomRings {
+    md_array(uint32_t) offset = nullptr;    // [num_atoms + 1]
+    md_array(uint32_t) ring = nullptr;
+};
+
+static AtomRings rings_by_atom(const md_system_t& sys, md_allocator_i* alloc) {
+    AtomRings out;
+    const size_t num_atoms = sys.atom.count;
+    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    md_array_resize(out.offset, num_atoms + 1, alloc);
+    MEMSET(out.offset, 0, sizeof(uint32_t) * (num_atoms + 1));
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
+        const size_t n = md_index_range_size(&sys.ring, r);
+        if (n < 3 || n > 7) continue;
+        for (size_t k = 0; k < n; ++k) out.offset[atoms[k] + 1] += 1;
+    }
+    for (size_t i = 0; i < num_atoms; ++i) out.offset[i + 1] += out.offset[i];
+    md_array_resize(out.ring, out.offset[num_atoms], alloc);
+    uint32_t* cursor = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
+    MEMCPY(cursor, out.offset, sizeof(uint32_t) * num_atoms);
+    for (size_t r = 0; r < num_rings; ++r) {
+        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
+        const size_t n = md_index_range_size(&sys.ring, r);
+        if (n < 3 || n > 7) continue;
+        for (size_t k = 0; k < n; ++k) out.ring[cursor[atoms[k]]++] = (uint32_t)r;
+    }
+    return out;
+}
+
+static bool array_has(const uint32_t* arr, size_t n, uint32_t x) {
+    for (size_t i = 0; i < n; ++i) {
+        if (arr[i] == x) return true;
+    }
+    return false;
+}
+
+// The rings of a nucleotide from its atoms rather than from its component: the sugar, the ring with its C1'; then those
+// of its base, the ring with the atom bonded to the C1' outside the sugar (the glycosidic N) and the rings fused to it,
+// which share a bond with it (the second ring of a purine).
+static void nucleotide_rings(md_array(uint32_t)* out, const AtomRings& ar, const md_system_t& sys, int32_t c1, md_allocator_i* alloc) {
+    md_array_shrink(*out, 0);
+    if (c1 < 0) return;
+    uint32_t sugar = UINT32_MAX;
+    if (ar.offset[c1] < ar.offset[c1 + 1]) {
+        sugar = ar.ring[ar.offset[c1]];
+        md_array_push(*out, sugar, alloc);
+    }
+
+    int32_t glycosidic = -1;
+    md_bond_iter_t it = md_bond_iter(&sys.bond, (size_t)c1);
+    for (; md_bond_iter_has_next(&it) && glycosidic < 0; md_bond_iter_next(&it)) {
+        const int32_t a = md_bond_iter_atom_index(&it);
+        if (md_atom_atomic_number(&sys.atom, (size_t)a) == MD_Z_H) continue;
+        if (sugar != UINT32_MAX && ring_has_atom(sys, sugar, a)) continue;
+        if (ar.offset[a] < ar.offset[a + 1]) glycosidic = a;
+    }
+    if (glycosidic < 0) return;
+
+    const size_t first = md_array_size(*out);
+    for (uint32_t k = ar.offset[glycosidic]; k < ar.offset[glycosidic + 1]; ++k) {
+        if (!array_has(*out, md_array_size(*out), ar.ring[k])) md_array_push(*out, ar.ring[k], alloc);
+    }
+    for (size_t i = first; i < md_array_size(*out); ++i) {
+        const uint32_t ring = (*out)[i];
+        const int32_t* atoms = md_index_range_beg(&sys.ring, ring);
+        const size_t n = md_index_range_size(&sys.ring, ring);
+        for (size_t k = 0; k < n; ++k) {
+            for (uint32_t j = ar.offset[atoms[k]]; j < ar.offset[atoms[k] + 1]; ++j) {
+                const uint32_t other = ar.ring[j];
+                if (other == sugar || array_has(*out, md_array_size(*out), other)) continue;
+                size_t shared = 0;
+                for (size_t l = 0; l < n; ++l) shared += ring_has_atom(sys, other, atoms[l]) ? 1 : 0;
+                if (shared >= 2) md_array_push(*out, other, alloc);
+            }
+        }
+    }
+}
+
 // The rings of the bases of the Martini nucleic acids, each ring atom a weighted sum of the real beads of its base
 // (cartoon_nucleobases.inl, which tools/gen_cartoon_nucleobases.py generates and checks): the atoms N1 C2 N3 C4 C5 C6,
 // then N7 C8 N9 for a purine. The bases of the models are told apart by the number of their beads, virtual sites
@@ -669,9 +750,16 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
     md_array(CompRing) comp_rings = rings_by_component(sys, temp_alloc);
     const size_t num_comp_rings = md_array_size(comp_rings);
 
-    // The point of each atom of the current nucleotide, and the corners of a slab
+    // Nucleotides without a component have their rings found from their atoms
+    bool without_comp = false;
+    for (size_t s = 0; s < bb.segment.count && !without_comp; ++s) without_comp = bb.segment.comp_idx[s] < 0;
+    AtomRings atom_rings = {};
+    if (without_comp) atom_rings = rings_by_atom(sys, temp_alloc);
+
+    // The point of each atom of the current nucleotide, its rings, and the corners of a slab
     md_array(int32_t)  corner_atom = nullptr;
     md_array(uint32_t) corner_point = nullptr;
+    md_array(uint32_t) seg_rings = nullptr;
     md_array(uint32_t) corners = nullptr;
 
     for (size_t r = 0; r < bb.range.count; ++r) {
@@ -713,16 +801,25 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
                 continue;
             }
 
-            // The rings of the nucleotide: binary search for its first
-            size_t lo = 0, hi = num_comp_rings;
-            while (lo < hi) {
-                const size_t mid = (lo + hi) / 2;
-                if (comp_rings[mid].comp < comp) lo = mid + 1;
-                else hi = mid;
+            // The rings of the nucleotide: those within its component (binary search for its first), or without one
+            // those found from its C1'
+            md_array_shrink(seg_rings, 0);
+            if (comp >= 0) {
+                size_t lo = 0, hi = num_comp_rings;
+                while (lo < hi) {
+                    const size_t mid = (lo + hi) / 2;
+                    if (comp_rings[mid].comp < comp) lo = mid + 1;
+                    else hi = mid;
+                }
+                for (size_t i = lo; i < num_comp_rings && comp_rings[i].comp == comp; ++i) {
+                    md_array_push(seg_rings, comp_rings[i].ring, temp_alloc);
+                }
+            } else {
+                nucleotide_rings(&seg_rings, atom_rings, sys, atoms.c1, temp_alloc);
             }
             uint32_t sugar_c1 = UINT32_MAX;
-            for (size_t i = lo; i < num_comp_rings && comp_rings[i].comp == comp; ++i) {
-                const uint32_t ring = comp_rings[i].ring;
+            for (size_t i = 0; i < md_array_size(seg_rings); ++i) {
+                const uint32_t ring = seg_rings[i];
                 const int32_t* ring_atoms = md_index_range_beg(&sys.ring, ring);
                 const size_t n = md_index_range_size(&sys.ring, ring);
                 if (n > 7) continue;

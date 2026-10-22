@@ -221,8 +221,17 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
                 }
 #endif
                 md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[range_beg + j];
-                md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
-                set_colors(colors + range.beg, range.end - range.beg, color);
+                if (comp_idx >= 0) {
+                    md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+                    set_colors(colors + range.beg, range.end - range.beg, color);
+                } else {
+                    // No component (a backbone found from the bonds alone, as for an XYZ file): the atoms of the segment
+                    const md_amino_acid_atoms_t& a = sys.protein_backbone.segment.atoms[range_beg + j];
+                    const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o, a.cb, a.hn };
+                    for (md_atom_idx_t atom : atoms) {
+                        if (atom >= 0 && (size_t)atom < count) colors[atom] = color;
+                    }
+                }
             }
         }
     } else {

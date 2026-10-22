@@ -7,9 +7,13 @@
 #include <md_pdb.h>
 #include <md_tpr.h>
 #include <md_gro.h>
+#include <md_xyz.h>
 #include <core/md_arena_allocator.h>
 
 #include <float.h>
+#include <stdio.h>
+#include <string.h>
+#include <algorithm>
 
 /* The cartoon of the lipids is built on the CPU (the points, which atoms each stands for, the tubes through them) and
  * placed on the GPU. Without a GL molecule to derive the points from, cartoon_glyphs_init builds the first part and
@@ -241,6 +245,76 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     EXPECT_EQ(UINT32_MAX, cartoon_glyphs_picked_point(g, first_slab + g.num_slabs));
 
     cartoon_glyphs_free(&g);
+    md_arena_allocator_destroy(alloc);
+}
+
+// The atoms of the corners of each slab, each slab a key of its atoms in order of index, sorted: the slabs as a set
+static md_array(uint64_t) slab_keys(const CartoonGlyphs& g, md_allocator_i* alloc) {
+    md_array(uint64_t) keys = nullptr;
+    for (uint32_t s = 0; s < g.num_slabs; ++s) {
+        int32_t atoms[8];
+        const uint32_t m = g.slab_offset[s + 1] - g.slab_offset[s];
+        for (uint32_t k = 0; k < m && k < 8; ++k) atoms[k] = g.point_atom[g.point_offset[g.slab_point[g.slab_offset[s] + k]]];
+        for (uint32_t i = 1; i < m && i < 8; ++i) {
+            for (uint32_t j = i; j > 0 && atoms[j - 1] > atoms[j]; --j) {
+                const int32_t t = atoms[j]; atoms[j] = atoms[j - 1]; atoms[j - 1] = t;
+            }
+        }
+        uint64_t key = 1469598103934665603ull;
+        for (uint32_t k = 0; k < m && k < 8; ++k) key = (key ^ (uint64_t)(uint32_t)atoms[k]) * 1099511628211ull;
+        md_array_push(keys, key, alloc);
+    }
+    std::sort(keys, keys + md_array_size(keys));
+    return keys;
+}
+
+// A nucleic acid from an XYZ file, the element and the position of each atom: without components, its backbones are found
+// from the bonds alone (md_util_system_infer) and the rings of each nucleotide from its C1'. The same slabs as of the
+// same atoms read with their residues, and the same band, though no point stands for a component.
+UTEST(cartoon_glyphs, nucleic_acids_without_components) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_system_t ref = { .alloc = alloc };
+    md_system_state_t ref_st = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL));
+
+    char* text = (char*)md_alloc(alloc, 64 * (ref.atom.count + 1));
+    size_t len = (size_t)snprintf(text, 64, "%zu\nxyz\n", ref.atom.count);
+    for (size_t i = 0; i < ref.atom.count; ++i) {
+        const str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&ref.atom, i));
+        const vec3_t p = md_state_coord(&ref_st, i);
+        len += (size_t)snprintf(text + len, 64, "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, p.x, p.y, p.z);
+    }
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, str_t{ text, len }, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ((size_t)0, sys.component.count);
+    ASSERT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
+
+    CartoonGlyphs g_ref = {};
+    CartoonGlyphs g = {};
+    cartoon_glyphs_init(&g_ref, ref, md_gl_mol_t{}, alloc);
+    cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
+    ASSERT_GT(g_ref.num_slabs, 0u);
+    EXPECT_EQ(g_ref.num_points, g.num_points);
+    EXPECT_EQ(g_ref.num_tubes, g.num_tubes);
+    EXPECT_EQ(g_ref.num_tube_points, g.num_tube_points);
+    EXPECT_EQ(g_ref.num_slabs, g.num_slabs);
+
+    md_array(uint64_t) keys_ref = slab_keys(g_ref, alloc);
+    md_array(uint64_t) keys = slab_keys(g, alloc);
+    ASSERT_EQ(md_array_size(keys_ref), md_array_size(keys));
+    EXPECT_EQ(0, memcmp(keys_ref, keys, md_array_bytes(keys)));
+
+    for (uint32_t i = 0; i < g.num_points; ++i) EXPECT_EQ(-1, g.point_comp[i]);
+    for (uint32_t i = 0; i < g.num_tube_points; ++i) {
+        ASSERT_LT(g.tube_face[i], g.num_points);
+        EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.tube_face[i]]);
+    }
+
+    cartoon_glyphs_free(&g);
+    cartoon_glyphs_free(&g_ref);
     md_arena_allocator_destroy(alloc);
 }
 

@@ -197,6 +197,24 @@ void main() {
 }
 )");
 
+// Adds the atoms a backbone segment stands for to mask: those of its residue, or for a segment without a component (a
+// backbone found from the bonds alone, as for an XYZ file) those of its backbone
+static void mask_add_segment(md_bitmask_t* mask, const md_system_t& sys, size_t seg_idx) {
+    const md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[seg_idx];
+    if (comp_idx >= 0) {
+        const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+        if (range.beg != range.end) {
+            modify_field(mask, range, SelectionOperator::Or);
+        }
+        return;
+    }
+    const md_amino_acid_atoms_t& a = sys.protein_backbone.segment.atoms[seg_idx];
+    const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
+    for (md_atom_idx_t i : atoms) {
+        if (i >= 0 && (size_t)i < sys.atom.count) md_bitmask_set_bit(mask, (uint32_t)i);
+    }
+}
+
 static inline double b3(double t) {
     double at = fabs(t);
     double t1 = -at + 1.0;
@@ -1052,11 +1070,7 @@ struct Ramachandran : viamd::EventHandler {
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
-										md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
-                                        if (range.beg != range.end) {
-                                            modify_field(highlight_mask, range, SelectionOperator::Or);
-                                        }
+                                        mask_add_segment(highlight_mask, sys, idx);
                                     }
                                 }
                                 if (hovered) {
@@ -1074,15 +1088,17 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (mouse_hover_idx != -1) {
                                 if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
+                                    mask_add_segment(highlight_mask, sys, (size_t)mouse_hover_idx);
+                                    grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
                                     md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
-									md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
-                                    if (range.beg != range.end) {
-                                        modify_field(highlight_mask, range, SelectionOperator::Or);
-                                        grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
-									}
-									str_t lbl = md_component_name(&sys.component, comp_idx);
-									md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
-                                    ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
+                                    if (comp_idx >= 0) {
+                                        str_t lbl = md_component_name(&sys.component, comp_idx);
+                                        md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
+                                        ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
+                                    } else {
+                                        // No residue to name: the atom of its CA
+                                        ImGui::SetTooltip("atom[%d]: CA", sys.protein_backbone.segment.atoms[mouse_hover_idx].ca + 1);
+                                    }
                                 }
                             }
 
