@@ -33,6 +33,17 @@ void create_default_representations(ApplicationState* app);
 
 Representation* find_representation(ApplicationState* app, uint32_t id);
 
+// The bond between two atoms (pair, of the system) in a Bonds representation, picked by 'bond(i, j)'. Into
+// NULL: a new one at the top level, dashed for a non-covalent bond and over the sticks of a licorice otherwise, opened
+// in the window to be styled. Otherwise added to the filter of 'into', which representation_can_show_bond allows;
+// false when the filter would not fit.
+bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into);
+// Whether representation_show_bond can add a bond to it: a Bonds representation of the whole system (an atom index
+// counts from the start of the context, and a group's context can change with the frame)
+bool representation_can_show_bond(const ApplicationState& app, const Representation& rep);
+// Whether it shows the bond between the two atoms, as of the last evaluation of its filter
+bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair);
+
 // --- Groups ---
 
 // Appended at the end of 'parent' (0 for the top level)

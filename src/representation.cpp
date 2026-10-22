@@ -967,7 +967,7 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
     bool dashed = true;
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         // The non-covalent bonds of the system among its atoms, thinner than its sticks, in their colours
-        if (state.mold.sys.bond.noncovalent_count == 0) return;
+        if (!rep.noncovalent_bonds || state.mold.sys.bond.noncovalent_count == 0) return;
         const md_gl_draw_op_t sticks = representation_draw_op(rep);
         const bool licorice = rep.type == RepresentationType::Licorice;
         op.args.weak_bonds.radius = 0.5f * 0.2f * (licorice ? rep.scale.x : rep.scale.y);
@@ -1030,6 +1030,49 @@ void flag_representation_as_dirty(Representation* rep) {
     rep->filt_is_dirty = true;
     rep->needs_update  = true;
     rep->electronic_structure.vol_hash = 0;
+}
+
+bool representation_can_show_bond(const ApplicationState& app, const Representation& rep) {
+    return rep.type == RepresentationType::Bonds && representation_context(app, rep.node.parent).atoms == nullptr;
+}
+
+bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair) {
+    for (size_t i = 0; i < md_array_size(rep.bond_pairs); ++i) {
+        const md_atom_pair_t p = rep.bond_pairs[i];
+        if ((p.idx[0] == pair.idx[0] && p.idx[1] == pair.idx[1]) || (p.idx[0] == pair.idx[1] && p.idx[1] == pair.idx[0])) return true;
+    }
+    return false;
+}
+
+bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into) {
+    ASSERT(app);
+    char expr[64];
+    snprintf(expr, sizeof(expr), "bond(%d, %d)", pair.idx[0] + 1, pair.idx[1] + 1);
+
+    if (into) {
+        ASSERT(representation_can_show_bond(*app, *into));
+        char text[sizeof(into->filter.text)];
+        const bool empty = str_empty(str_trim(str_from_cstr(into->filter.text)));
+        const int n = empty ? snprintf(text, sizeof(text), "%s", expr) : snprintf(text, sizeof(text), "(%s) or %s", into->filter.text, expr);
+        if (n < 0 || (size_t)n >= sizeof(text)) return false;
+        MEMCPY(into->filter.text, text, (size_t)n + 1);
+        flag_representation_as_dirty(into);
+        return true;
+    }
+
+    // Distinct from what draws the bond already: one colour, dashed as a weak bond is, and a stick over that of a
+    // licorice (whose non-covalent bonds are half as thick as its sticks)
+    Representation* rep = create_representation(app, RepresentationType::Bonds, ColorMapping::Uniform, str_from_cstr(expr));
+    if (!rep) return false;
+    const bool noncovalent = md_bond_is_noncovalent(flags);
+    snprintf(rep->name, sizeof(rep->name), "bond %d-%d", pair.idx[0] + 1, pair.idx[1] + 1);
+    rep->bonds_dashed    = noncovalent;
+    rep->scale.x         = noncovalent ? 1.0f : 1.25f;
+    rep->bond_color      = BondColorMode::Uniform;
+    rep->bond_base_color = {1.0f, 0.55f, 0.1f, 1.0f};
+    rep->open_properties = true;
+    app->representation.show_window = true;
+    return true;
 }
 
 void flag_all_representations_as_dirty(ApplicationState* state) {
@@ -1320,6 +1363,8 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_bool(rep->chain_gaps, arg);
     } else if (str_eq(ident, STR_LIT("ElasticBonds"))) {
         viamd::extract_bool(rep->elastic_bonds, arg);
+    } else if (str_eq(ident, STR_LIT("NoncovalentBonds"))) {
+        viamd::extract_bool(rep->noncovalent_bonds, arg);
     } else if (str_eq(ident, STR_LIT("TwoHeadSpheres"))) {
         viamd::extract_bool(rep->two_head_spheres, arg);
     } else if (str_eq(ident, STR_LIT("NucleicBandRadius"))) {
@@ -1555,6 +1600,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     }
     viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
     viamd::write_bool(state, STR_LIT("ElasticBonds"), rep.elastic_bonds);
+    viamd::write_bool(state, STR_LIT("NoncovalentBonds"), rep.noncovalent_bonds);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
     viamd::write_flt(state,  STR_LIT("NucleicBandRadius"), rep.nucleic_band_radius);
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
@@ -2702,6 +2748,10 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
+        if (state->mold.sys.bond.noncovalent_count > 0) {
+            prop::row("non-covalent bonds", "The non-covalent bonds of the system among its atoms (hydrogen bonds and interactions a file gives or a user marks), dashed and thinner than the sticks. Off to leave them to a Bonds representation");
+            update_rep |= ImGui::Checkbox("##noncovalent_bonds", &rep.noncovalent_bonds);
+        }
         if (system_has_elastic_bonds(state->mold.sys)) {
             prop::row("elastic bonds", "The springs of the force field which are not bonds of the molecules: the elastic network of a coarse grained protein or nucleic acid, restraints. Drawn as plain bonds when shown");
             update_rep |= ImGui::Checkbox("##elastic_bonds", &rep.elastic_bonds);
@@ -2934,6 +2984,10 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
     if (handle.tooltip) ImGui::SetTooltip(DRAG_HANDLE_HINT);
     ImGui::SameLine(0, 0);
 
+    if (rep.open_properties) {
+        ImGui::SetNextItemOpen(true);
+        rep.open_properties = false;
+    }
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, pad));
     const bool open = ImGui::TreeNodeEx("##node", ImGuiTreeNodeFlags_FramePadding);
     ImGui::PopStyleVar();

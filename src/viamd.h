@@ -980,9 +980,11 @@ struct Representation {
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
+    bool   noncovalent_bonds = true; // Licorice, ball and stick: the non-covalent bonds of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
     // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and whether they are dashed
     md_array(md_atom_pair_t) bond_pairs = nullptr;
     bool   bonds_dashed = false;
+    bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
