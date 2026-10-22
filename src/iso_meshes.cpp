@@ -5,6 +5,7 @@
 #include <surface_field.h>
 
 #include <md_gto_iso.h>
+#include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
@@ -87,6 +88,27 @@ md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_
     size_t dim = 0;
     const double* D = density_matrix_extract(&dim, temp, state->mold.sys, density_path, slice);
     return D ? iso_field_create_density_matrix(state, D, dim) : nullptr;
+}
+
+// An SCF density (orbital/{alpha,beta,total,difference}/density) from the orbitals it is the sum of
+// (md_qm_density_orbitals): the field takes them as they are, where from the matrix it would factorize
+// it again, which for a protein's density is minutes rather than a second. NULL when the system does
+// not publish the orbitals, or the density is zero.
+static md_gto_iso_field_t* iso_field_create_scf_density(const ApplicationState* state, str_t density_path) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    FieldContext ctx;
+    if (!field_context(&ctx, temp, state)) return nullptr;
+    double* rows = nullptr;
+    double* weights = nullptr;
+    size_t num_ao = 0;
+    const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, &state->mold.sys, density_path, md_temp_allocator(temp));
+    if (count == 0) return nullptr;
+    if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), STR_ARG(density_path), num_ao);
+        return nullptr;
+    }
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), rows, nullptr, weights, count, md_get_heap_allocator());
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -586,8 +608,11 @@ static md_gto_iso_field_t* electronic_structure_field_create(const ApplicationSt
         return iso_field_create_density(state, path, &slice);
     }
     case ElectronicStructureSource::ElectronDensity: {
-        // its maxima are at the nuclei: the GPU extraction evaluates it only around the surface (the flood)
-        md_gto_iso_field_t* f = iso_field_create_density(state, es_electron_density_path(es.spin), nullptr);
+        // from its orbitals where the system has them, from its matrix otherwise. Its maxima are at the
+        // nuclei: the GPU extraction evaluates it only around the surface (the flood)
+        const str_t path = es_electron_density_path(es.spin);
+        md_gto_iso_field_t* f = iso_field_create_scf_density(state, path);
+        if (!f) f = iso_field_create_density(state, path, nullptr);
         md_gto_iso_field_set_maxima_at_atoms(f, true);
         return f;
     }
