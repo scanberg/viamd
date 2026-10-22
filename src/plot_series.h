@@ -118,6 +118,11 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key);
 // "script/<ident>" -> "<ident>" for a script series, empty otherwise
 str_t series_script_ident(const SeriesKey& key);
 
+// The name of member k of the series' population, from "<path>/labels": what the script property holds is what an
+// attr() pattern matched ("Coul-SR:Protein-SOL" of attr("edr/coul_sr_*")). Empty when its members have no names. A
+// view into the table, valid for the frame.
+str_t series_member_label(const ApplicationState* app, const SeriesKey& key, int k);
+
 // How what a script series shows stands against the script as it is now in the editor, and how far its evaluation has
 // come. Anything else is always current.
 enum SeriesStatus : uint8_t {

@@ -278,6 +278,18 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
     return color;
 }
 
+str_t series_member_label(const ApplicationState* app, const SeriesKey& key, int k) {
+    if (k < 0) return {};
+    char buf[SERIES_PATH_CAP + 8];
+    const int len = snprintf(buf, sizeof(buf), "%s/labels", key.path);
+    if (len <= 0 || (size_t)len >= sizeof(buf)) return {};
+    const str_t path = {buf, (size_t)len};
+    const md_attributes_t* table = series_table(app, key.source, path);
+    const md_attribute_t* attr = table ? md_attributes_find(table, path) : nullptr;
+    if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR || attr->format.rank != 1 || (uint32_t)k >= attr->format.shape[0]) return {};
+    return md_attribute_str(table, attr, (size_t)k);
+}
+
 void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src_subplot, const char* label, ImVec4 color) {
     SeriesDragPayload payload;
     payload.key = key;

@@ -4032,6 +4032,10 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
             if (ImGui::Selectable(lbl, s.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
                 s.population_mask.flip(k);
             }
+            const str_t member = series_member_label(data, s.key, k);
+            if (!str_empty(member)) {
+                ImGui::SetItemTooltip(STR_FMT, STR_ARG(member));
+            }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
                     script_visualize_ref(data, vis_ref, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
@@ -4311,7 +4315,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     // The entry, and the member of its population, under the mouse
                     int  hovered_idx      = -1;
                     int  hovered_pop_idx  = -1;
-                    char hovered_label[128] = "";
+                    char hovered_label[192] = "";
 
                     bool print_timeline_tooltip = false;
 
@@ -4410,7 +4414,10 @@ static void draw_timeline_window(ApplicationState* data) {
 
                                     hovered_idx = j;
                                     hovered_pop_idx = k;
-                                    if (v.dim > 1) {
+                                    const str_t member = v.dim > 1 ? series_member_label(data, s.key, k) : str_t{};
+                                    if (!str_empty(member)) {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" STR_FMT "): %s %s", v.label, k + 1, STR_ARG(member), value_buf, v.unit_str);
+                                    } else if (v.dim > 1) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s %s", v.label, k + 1, value_buf, v.unit_str);
                                     } else {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s: %s %s", v.label, value_buf, v.unit_str);
@@ -4955,7 +4962,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     int  hovered_idx       = -1;
                     int  hovered_pop_idx   = -1;
                     int  hovered_bin       = -1;
-                    char hovered_label[128] = "";
+                    char hovered_label[192] = "";
 
                     if (ImPlot::IsPlotHovered()) {
                         script_set_hovered_property(data, STR_LIT(""));
@@ -5044,7 +5051,12 @@ static void draw_distribution_window(ApplicationState* data) {
                                     if (v.num_periods > 0) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s, %s: %.4g at %.4g %s", v.label, v.periods[k].name, pt.y, pt.x, v.x_unit_str);
                                     } else if (dim > 1) {
-                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %.4g at %.4g %s", v.label, k + 1, pt.y, pt.x, v.x_unit_str);
+                                        const str_t member = series_member_label(data, s.key, k);
+                                        if (!str_empty(member)) {
+                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" STR_FMT "): %.4g at %.4g %s", v.label, k + 1, STR_ARG(member), pt.y, pt.x, v.x_unit_str);
+                                        } else {
+                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %.4g at %.4g %s", v.label, k + 1, pt.y, pt.x, v.x_unit_str);
+                                        }
                                     } else {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s: %.4g at %.4g %s", v.label, pt.y, pt.x, v.x_unit_str);
                                     }
@@ -6196,7 +6208,9 @@ static void draw_property_export_window(ApplicationState* data) {
                         }
                         md_array_push(column_data, col, alloc);
                         if (dim > 1) {
-                            const str_t legend = str_printf(alloc, "%s[%i]", label, k + 1);
+                            const str_t member = series_member_label(data, selected, k);
+                            const str_t legend = str_empty(member) ? str_printf(alloc, "%s[%i]", label, k + 1)
+                                                                   : str_printf(alloc, "%s[%i] " STR_FMT, label, k + 1, STR_ARG(member));
                             md_array_push(legends, legend, alloc);
                             md_array_push(column_labels, legend, alloc);
                         } else {
