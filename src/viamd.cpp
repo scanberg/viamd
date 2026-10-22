@@ -401,6 +401,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
     if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
     if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
+    if (flags & MD_ATOM_FLAG_METALLIC)   tooltip_list_add(&chem, "metallic");
     const int num_h = md_atom_hydrogen_count(&sys.atom, atom_idx);
     if (num_h > 0) md_str_writer_fmt(&chem, "%s%d H", md_str_writer_empty(&chem) ? "" : ", ", num_h);
     tooltip_row_list(req, STR_LIT("chemistry"), chem);
@@ -461,6 +462,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     switch (md_bond_kind(flags)) {
     case MD_BOND_KIND_COORDINATE:  tooltip_list_add(&kind, "coordinate"); break;
     case MD_BOND_KIND_ELASTIC:     tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)"); break;
+    case MD_BOND_KIND_METALLIC:    tooltip_list_add(&kind, "metallic (to a nearest neighbour in a metal)"); break;
     case MD_BOND_KIND_INTERACTION: tooltip_list_add(&kind, "non-covalent interaction"); break;
     case MD_BOND_KIND_HYDROGEN:    tooltip_list_add(&kind, "hydrogen bond"); break;
     default: break;

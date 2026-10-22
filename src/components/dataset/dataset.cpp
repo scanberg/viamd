@@ -1160,6 +1160,7 @@ struct Dataset : viamd::EventHandler {
         size_t bonds_user = 0;
         size_t bonds_file = 0;
         size_t bonds_elastic = 0;   // Not bonds of the molecules, and so in none of the above
+        size_t bonds_metallic = 0;  // Nor these: the first shells of the atoms of a metal
         size_t bonds_noncovalent = 0; // Of those above, the ones after the bond graph (md_bond_data_t)
 
         size_t atoms_without_element = 0;   // neither an element nor a coarse grained bead, and with mass
@@ -1324,6 +1325,10 @@ struct Dataset : viamd::EventHandler {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
             if (md_bond_kind((md_bond_flags_t)f) == MD_BOND_KIND_ELASTIC) {
                 c.bonds_elastic += 1;
+                continue;
+            }
+            if (md_bond_kind((md_bond_flags_t)f) == MD_BOND_KIND_METALLIC) {
+                c.bonds_metallic += 1;
                 continue;
             }
             switch (md_bond_origin((md_bond_flags_t)f)) {
@@ -1621,6 +1626,11 @@ struct Dataset : viamd::EventHandler {
             ImGui::Text("%zu elastic bonds", c.bonds_elastic);
             ImGui::SameLine();
             ImGui::TextDisabled("(springs of the force field: shown by licorice and ball and stick when asked to)");
+        }
+        if (c.bonds_metallic > 0) {
+            ImGui::Text("%zu metallic bonds", c.bonds_metallic);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(of the atoms of a metal to their nearest neighbours: shown by a Bonds representation, not by licorice or ball and stick)");
         }
 
         const md_unitcell_t& uc = cell;
