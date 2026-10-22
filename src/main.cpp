@@ -3244,8 +3244,40 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 }
             } else {
 				md_bond_flags_t flags = md_system_bond_flags(&sys, bond_idx);
+                const md_atom_pair_t pair = md_bond_pair(&sys.bond, bond_idx);
+                char buf[256];
+                snprintf(buf, sizeof(buf), "Show Bond (%i, %i) In", idx[0] + 1, idx[1] + 1);
+                if (ImGui::BeginMenu(buf)) {
+                    // A representation of its own, to style the bond by, or one of the Bonds representations of the
+                    // whole system
+                    if (ImGui::MenuItem("New Bonds Representation")) {
+                        representation_show_bond(state, pair, flags, nullptr);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SetItemTooltip("A representation of this bond alone, drawn over the sticks, to style it by.\n"
+                                          "Turn off 'non-covalent bonds' in a licorice or ball and stick to have it drawn only here.");
+                    bool separated = false;
+                    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+                        Representation& rep = state->representation.reps[i];
+                        if (!representation_can_show_bond(*state, rep)) continue;
+                        if (!separated) {
+                            ImGui::Separator();
+                            separated = true;
+                        }
+                        ImGui::PushID((int)rep.node.id);
+                        const bool shows = representation_shows_bond(rep, pair);
+                        if (ImGui::MenuItem(rep.name, nullptr, shows, !shows)) {
+                            if (!representation_show_bond(state, pair, flags, &rep)) {
+                                VIAMD_LOG_INFO("The filter of '%s' has no room for the bond", rep.name);
+                            }
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SetItemTooltip(shows ? "Shows it already" : "Add the bond to what its filter picks");
+                        ImGui::PopID();
+                    }
+                    ImGui::EndMenu();
+                }
                 if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-                    char buf[256];
                     snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                     if (ImGui::MenuItem(buf)) {
                         const bool graph = (size_t)bond_idx < sys.bond.count;
@@ -7726,6 +7758,10 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
+        h = md_hash64(&rep.noncovalent_bonds, sizeof(rep.noncovalent_bonds), h);
+        if (rep.type == RepresentationType::Bonds) {
+            h = md_hash64(&rep.bonds_dashed, sizeof(rep.bonds_dashed), h);
+        }
         h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
         if (rep.type == RepresentationType::Cartoon) {
             h = md_hash64(&rep.two_head_spheres, sizeof(rep.two_head_spheres), h);
