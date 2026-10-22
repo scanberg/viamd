@@ -2803,13 +2803,12 @@ static bool draw_representation_properties(ApplicationState* state, Representati
     const bool atoms = RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon;
 
     if (atoms || bonds) {
-        // Completed within the context it is evaluated in: what is not there would not match. A filter of bonds is
-        // completed with the bond sets as well.
+        // Completed within the context it is evaluated in: what is not there would not match. Either takes atoms or
+        // bonds, the one as the other: the atoms of bonds, the bonds among atoms.
         const RepresentationContext ctx = representation_context(*state, rep.node.parent);
-        md_filter_context_t fctx = representation_filter_context(*state, ctx);
-        fctx.bonds = bonds;
+        const md_filter_context_t fctx = representation_filter_context(*state, ctx);
         prop::row("filter");
-        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "bonds, or atoms: the bonds among them" : nullptr)) {
+        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "bonds, or atoms: the bonds among them" : "atoms, or bonds: their atoms")) {
             rep.filt_is_dirty = true;
             update_rep = true;
         }
@@ -2817,7 +2816,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             if (ctx.group) {
                 ImGui::SetTooltip("Within the context of the group '%s': %s", ctx.group->name, ctx.group->filter.text);
             } else if (bonds) {
-                ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bonds(bond_delta()).\n"
+                ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bond(bond_delta()).\n"
                                   "A set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
             }
         }

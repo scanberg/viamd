@@ -2528,7 +2528,7 @@ static void draw_main_menu(ApplicationState* data) {
 
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Copy to Script")) {
-                    // The same as a script value, to count or plot: formed(d), broken(d), bonds(d)
+                    // The same as a script value, to count or plot: formed(d), broken(d), bond(d)
                     char args[512] = "";
                     int len = 0;
                     const str_t scope = str_trim(str_from_cstr(tracking.scope.text));
@@ -2552,7 +2552,7 @@ static void draw_main_menu(ApplicationState* data) {
                     script_editor::append_line(data->editor, str_from_cstr(line));
                 }
                 ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
-                                      "(count(formed(d))) or select them (bonds(d) is the bonds of each frame)");
+                                      "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");
 
                 if (ImGui::TreeNode("Advanced##track-bonds")) {
                     float tolerance = tracking.tolerance;
