@@ -155,6 +155,7 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
     cd.num_points       = n;
     cd.point_dipole     = dipole;
     cd.point_quadrupole = quad;
+    cd.far_field_theta  = MD_GTO_INT_FAR_FIELD_THETA;   // an environment can be tens of thousands of sites
     return md_gto_int_charges_init(out, &cd, alloc);
 }
 
@@ -275,6 +276,10 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     cd.point_charge     = Z;
     cd.num_points       = num_atoms;
     cd.threshold        = ESP_SCREENING_THRESHOLD;
+    // Beyond the reach of its gaussians, a part of the density is its multipole expansion: on a
+    // 1152 atom protein ~25x less work per point near its surface, within ~5e-5 au of the exact sum
+    // (md_gto_int.h). Without it every gaussian is evaluated at every point, ~12 M steps a point there.
+    cd.far_field_theta  = MD_GTO_INT_FAR_FIELD_THETA;
     if (!md_gto_int_charges_init(out, &cd, alloc)) {
         MD_LOG_ERROR("Electrostatic potential: could not build the charge distribution");
         return false;
@@ -617,16 +622,46 @@ static void evaluate_band_cpu(SurfaceFieldVolume* vol, const uint8_t* fmask, siz
 }
 
 #if MD_ENABLE_GPU
-// The whole field grid on the device, read back. False when the device cannot serve it - no device,
-// a grid larger than the scratch, point multipoles (which md_gto_int evaluates on the CPU only) - or
-// when it fails, and the CPU takes over then.
-static bool evaluate_all_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc) {
+// The voxels of fmask that hold no value yet, on the device, read back. With a far field only the
+// 4x4x4 bricks holding such a voxel are evaluated, and every voxel of those is kept (they are right,
+// and the band moves with the isovalues); without one the whole grid is. False when the device
+// cannot serve it - no device, a grid larger than the scratch, point multipoles (which md_gto_int
+// evaluates on the CPU only) - or when it fails, and the CPU takes over then.
+static bool evaluate_band_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc, const uint8_t* fmask) {
     md_gpu_stream_t stream = desc.gpu_stream;
     if (!stream || !desc.gpu_scratch || !vol->charges) return false;
     if (vol->charges->point_dipole || vol->charges->point_quadrupole) return false;
     const md_grid_t& grid = vol->grid;
     for (int a = 0; a < 3; ++a) {
         if (grid.dim[a] <= 0 || (uint32_t)grid.dim[a] > desc.gpu_scratch_dim[a]) return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    // What to evaluate, and with a far field what will have been: the bricks of the wanted voxels
+    const bool bricks = vol->charges->num_nodes > 0;
+    uint8_t* want = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
+    uint8_t* got  = bricks ? (uint8_t*)md_temp_alloc(temp, vol->num_voxels) : nullptr;
+    if (!want || (bricks && !got)) return false;
+    size_t num_want = 0;
+    for (size_t i = 0; i < vol->num_voxels; ++i) {
+        want[i] = (fmask[i] && !bit_get(vol->done, i)) ? 1 : 0;
+        num_want += want[i];
+    }
+    if (num_want == 0) return true;
+    const int nx = grid.dim[0], ny = grid.dim[1], nz = grid.dim[2];
+    if (bricks) {
+        const int bx = (nx + 3) / 4, by = (ny + 3) / 4, bz = (nz + 3) / 4;
+        uint8_t* brick = (uint8_t*)md_temp_alloc(temp, (size_t)bx * by * bz);
+        if (!brick) return false;
+        MEMSET(brick, 0, (size_t)bx * by * bz);
+        for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
+            if (want[((size_t)z * ny + y) * nx + x]) brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4] = 1;
+        }
+        for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
+            got[((size_t)z * ny + y) * nx + x] = brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4];
+        }
     }
 
     md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, vol->charges);
@@ -638,6 +673,7 @@ static bool evaluate_all_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& de
     pd.grid             = &grid;
     pd.sample_offset[0] = pd.sample_offset[1] = pd.sample_offset[2] = 0.5f;   // voxel centres, as the GL texture
     pd.op               = MD_GTO_OP_SET;
+    pd.voxel_mask       = want;
 
     bool ok = false;
     if (md_gto_int_gpu_potential_launch(stream, &pd)) {
@@ -645,12 +681,22 @@ static bool evaluate_all_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& de
         md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, bytes);
         if (rb.cpu) {
             md_gpu_tex_region_t region = {};
-            region.extent[0] = (uint32_t)grid.dim[0];
-            region.extent[1] = (uint32_t)grid.dim[1];
-            region.extent[2] = (uint32_t)grid.dim[2];
+            region.extent[0] = (uint32_t)nx;
+            region.extent[1] = (uint32_t)ny;
+            region.extent[2] = (uint32_t)nz;
             if (md_gpu_copy_from_texture(stream, rb.gpu, desc.gpu_scratch, &region)) {
                 md_gpu_stream_sync(stream);
-                MEMCPY(vol->values, rb.cpu, bytes);
+                // The scratch holds whatever was there before outside what was evaluated
+                const float* v = (const float*)rb.cpu;
+                const uint8_t* take = bricks ? got : nullptr;
+                size_t n = 0;
+                for (size_t i = 0; i < vol->num_voxels; ++i) {
+                    if ((take && !take[i]) || bit_get(vol->done, i)) continue;
+                    vol->values[i] = v[i];
+                    bit_set(vol->done, i);
+                    n += 1;
+                }
+                vol->num_evaluated += n;
                 ok = true;
             }
             md_gpu_free(stream, rb.gpu);
@@ -661,9 +707,7 @@ static bool evaluate_all_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& de
     md_gto_int_gpu_charges_destroy(stream, gq);
     if (!ok) return false;
 
-    MEMSET(vol->done, 0xFF, sizeof(uint64_t) * ((vol->num_voxels + 63) / 64));
-    vol->num_evaluated = vol->num_voxels;
-    vol->complete = true;
+    vol->complete = vol->num_evaluated == vol->num_voxels;
     vol->on_gpu = true;
     return true;
 }
@@ -753,13 +797,13 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
             const md_tick_t t0 = md_tick_now();
             bool on_gpu = false;
 #if MD_ENABLE_GPU
-            on_gpu = evaluate_all_gpu(vol, desc);
+            on_gpu = evaluate_band_gpu(vol, desc, fmask);
 #endif
             if (!on_gpu) {
                 evaluate_band_cpu(vol, fmask, num_new);
             }
-            MD_LOG_DEBUG("Surface field '%s': %zu voxels of %dx%dx%d on the %s, %.1f ms", surface_field_kind_str[(int)desc.kind],
-                         on_gpu ? vol->num_voxels : num_new, vol->grid.dim[0], vol->grid.dim[1], vol->grid.dim[2], on_gpu ? "GPU" : "CPU",
+            MD_LOG_DEBUG("Surface field '%s': %zu voxels wanted of %dx%dx%d, %zu evaluated so far, on the %s, %.1f ms", surface_field_kind_str[(int)desc.kind],
+                         num_new, vol->grid.dim[0], vol->grid.dim[1], vol->grid.dim[2], vol->num_evaluated, on_gpu ? "GPU" : "CPU",
                          md_tick_to_milliseconds(md_tick_now() - t0));
 
             // Everything there is to evaluate is: the distribution has no further use
