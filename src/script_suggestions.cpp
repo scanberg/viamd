@@ -271,14 +271,14 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
         int32_t inst = -1;
         md_urange_t inst_residues = {0, 0};
         for (size_t i = lo; i < res->count && res->atom_offset[i] < sel.end; ++i) {
-            const md_urange_t r = md_residue_atom_range(res, i);
+            const md_urange_t r = md_system_residue_atom_range(&sys, i);
             const uint64_t n = md_bitset_count_range(sel, r.beg, r.end);
             if (!n) continue;
             in_residues += n;
 
             // The residues of an instance are consecutive, so the instance of the previous one is the likely one
             if (!(inst_residues.beg <= i && i < inst_residues.end)) {
-                inst = md_instance_find_by_residue_idx(&sys.instance, i);
+                inst = md_system_instance_find_by_residue_idx(&sys, i);
                 inst_residues = inst >= 0 ? md_system_instance_residue_range(&sys, inst) : md_urange_t{0, 0};
                 if (inst >= 0) {
                     const md_urange_t ar = md_system_instance_atom_range(&sys, inst);
@@ -301,7 +301,7 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
     if (in_residues < popcount) {
         md_bitset_iter_t it = md_bitset_iter(sel);
         while (md_bitset_iter_next(&it)) {
-            if (md_residue_find_by_atom_idx(res, it.idx) == -1) {
+            if (md_system_residue_find_by_atom_idx(&sys, it.idx) == -1) {
                 md_array_push(b->loose, (int32_t)it.idx, c.temp);
             }
         }
@@ -439,7 +439,7 @@ static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)*
 // where those pick them and nothing else in it, name({"N", "CA", "C"}); else by their positions in it, atom(2:4).
 static void part_term(md_str_writer_t* sb, int32_t res_idx, const Ctx& c, bool by_name) {
     const md_system_t& sys = *c.sys;
-    const md_urange_t r = md_residue_atom_range(&sys.residue, res_idx);
+    const md_urange_t r = md_system_residue_atom_range(&sys, res_idx);
 
     if (by_name) {
         md_array(str_t) names = 0;
@@ -581,7 +581,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
                 md_array_push(slot_parts, Groups{}, temp);
             }
             const int32_t slot = chain_slot[chain];
-            const int32_t seq = (int32_t)md_residue_seq_id(&c->sys->residue, b.res[k]);
+            const int32_t seq = (int32_t)md_system_residue_seq_id(c->sys, b.res[k]);
             if (b.res_full[k]) {
                 md_array_push(slot_whole[slot], seq, temp);
             } else {
@@ -722,8 +722,8 @@ static bool pred_atom(const Pred& p, const md_system_t& sys, size_t i) {
 }
 
 static bool pred_res(const Pred& p, const md_system_t& sys, size_t res) {
-    if (p.res_kind >= 0) return (int)md_residue_kind(&sys.residue, res) == p.res_kind;
-    return contains_str(p.res_names, md_array_size(p.res_names), md_residue_name(&sys.residue, res));
+    if (p.res_kind >= 0) return (int)md_system_residue_kind(&sys, res) == p.res_kind;
+    return contains_str(p.res_names, md_array_size(p.res_names), md_system_residue_name(&sys, res));
 }
 
 // The scopes in which something other than the selection fulfils the predicate
@@ -734,8 +734,8 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
 
     auto classify = [&](size_t ci) {
         uint32_t v = Scope_System;
-        if (s.class_kind >= 0 && (int)md_residue_kind(res, ci) == s.class_kind) v |= Scope_Class;
-        if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_residue_name(res, ci))) v |= Scope_Resname;
+        if (s.class_kind >= 0 && (int)md_system_residue_kind(&sys, ci) == s.class_kind) v |= Scope_Class;
+        if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_system_residue_name(&sys, ci))) v |= Scope_Resname;
         if (s.res_in_scope[ci]) v |= Scope_Inst;
         if (s.res_touched[ci]) v |= Scope_Res;
         return v;
@@ -754,7 +754,7 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
 
     uint32_t prev_end = 0;
     for (size_t ci = 0; ci < res->count; ++ci) {
-        const md_urange_t r = md_residue_atom_range(res, ci);
+        const md_urange_t r = md_system_residue_atom_range(&sys, ci);
         loose_atoms(prev_end, r.beg);
         prev_end = r.end;
 
@@ -835,7 +835,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     // Of one kind
     int kind = -1;
     for (size_t i = 0; i < md_array_size(b.res); ++i) {
-        const int k = (int)md_residue_kind(&sys.residue, b.res[i]);
+        const int k = (int)md_system_residue_kind(&sys, b.res[i]);
         if (i == 0) kind = k;
         else if (k != kind) kind = -1;
     }
@@ -848,7 +848,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     // Of a few names
     bool names_ok = true;
     for (size_t i = 0; i < md_array_size(b.res) && names_ok; ++i) {
-        const str_t name = md_residue_name(&sys.residue, b.res[i]);
+        const str_t name = md_system_residue_name(&sys, b.res[i]);
         names_ok = quotable(name);
         if (names_ok && !contains_str(s->resnames, md_array_size(s->resnames), name)) {
             md_array_push(s->resnames, name, temp);
@@ -1121,7 +1121,7 @@ static void glycan_terms(md_array(str_t)* out, const Breakdown& b, Ctx* c) {
     bool all_in_chain = true;
     int32_t cur_part = -1;
     for (size_t k = 0; k < md_array_size(b.res); ++k) {
-        const md_residue_kind_t kind = md_residue_kind(&sys.residue, (size_t)b.res[k]);
+        const md_residue_kind_t kind = md_system_residue_kind(&sys, (size_t)b.res[k]);
         if (kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE || kind == MD_RESIDUE_KIND_WATER ||
             kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) return;
         const int32_t part = md_system_part_find_by_residue_idx(&sys, (size_t)b.res[k]);
@@ -1250,7 +1250,7 @@ md_array(ScriptSuggestion) script_suggest_selection(str_t ident, md_bitset_t sel
 static bool unique_name_in_res(str_t* out, const md_system_t& sys, int32_t atom, int32_t res) {
     const str_t name = md_atom_name(&sys.atom, atom);
     if (!quotable(name)) return false;
-    const md_urange_t r = md_residue_atom_range(&sys.residue, res);
+    const md_urange_t r = md_system_residue_atom_range(&sys, res);
     for (uint32_t i = r.beg; i < r.end; ++i) {
         if ((int32_t)i != atom && str_eq(md_atom_name(&sys.atom, i), name)) return false;
     }
@@ -1265,7 +1265,7 @@ static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t res) {
     if (!sys.residue.seq_id) return false;
     const int32_t chain = res_chain(*c, res);
     *sb += "resid(";
-    write_int(sb, md_residue_seq_id(&sys.residue, res));
+    write_int(sb, md_system_residue_seq_id(&sys, res));
     *sb += ')';
     if (chain_by_seq(c, chain)) {
         *sb += " in ";
@@ -1337,7 +1337,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
     bool named = true;
     bool same_res = true;
     for (size_t i = 0; i < count; ++i) {
-        atom_res[i] = md_residue_find_by_atom_idx(&sys.residue, atoms[i]);
+        atom_res[i] = md_system_residue_find_by_atom_idx(&sys, atoms[i]);
         same_res &= atom_res[i] >= 0 && atom_res[i] == atom_res[0];
         named &= atom_res[i] >= 0 && unique_name_in_res(&names[i], sys, atoms[i], atom_res[i]);
     }
@@ -1345,7 +1345,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
     if (same_res) {
         // Within the residue: the atoms by name, else by their positions in it
         const int32_t res = atom_res[0];
-        const md_urange_t r = md_residue_atom_range(&sys.residue, res);
+        const md_urange_t r = md_system_residue_atom_range(&sys, res);
         str_t pick[4] = {};     // what picks each atom within the residue, as a selection
         for (size_t i = 0; i < count; ++i) {
             if (named) {
@@ -1376,7 +1376,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
         }
 
         // The same measurement in every residue of the name: each of them has to have each of the atoms, once
-        const str_t resname = md_residue_name(&sys.residue, res);
+        const str_t resname = md_system_residue_name(&sys, res);
         if (named && quotable(resname)) {
             sb += "resname(";
             write_quoted(&sb, resname);

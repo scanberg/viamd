@@ -226,11 +226,9 @@ struct Contacts : viamd::EventHandler {
                 off.push_back((uint32_t)atoms.size());
             }
         } else {
-            for (size_t m = 0; m < md_molecule_count(&sys.molecule); ++m) {
-                md_molecule_t st = {};
-                if (md_molecule_extract(&st, &sys.molecule, m)) {
-                    for (size_t k = 0; k < st.count; ++k) atoms.push_back((uint32_t)st.atom_idx[k]);
-                }
+            for (size_t m = 0; m < md_system_molecule_count(&sys); ++m) {
+                const md_molecule_t mol = md_system_molecule(&sys, m);
+                for (size_t k = 0; k < mol.count; ++k) atoms.push_back((uint32_t)mol.atom_idx[k]);
                 off.push_back((uint32_t)atoms.size());
             }
         }

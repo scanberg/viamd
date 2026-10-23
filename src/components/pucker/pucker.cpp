@@ -305,8 +305,8 @@ struct Pucker : viamd::EventHandler {
         const md_system_t& sys = app_state->mold.sys;
         buf[0] = '\0';
         if (row.res_idx < 0) return;
-        const str_t name = md_residue_name(&sys.residue, row.res_idx);
-        const int seq = md_residue_seq_id(&sys.residue, row.res_idx);
+        const str_t name = md_system_residue_name(&sys, row.res_idx);
+        const int seq = md_system_residue_seq_id(&sys, row.res_idx);
         // The chain id the data gives, none for an inferred chain or a molecule in none
         const md_chain_idx_t c = md_system_chain_find_by_atom_idx(&sys, row.r.atoms[0]);
         const str_t chain = c >= 0 ? md_system_chain_id(&sys, (size_t)c) : str_t{};

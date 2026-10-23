@@ -202,7 +202,7 @@ void main() {
 static void mask_add_segment(md_bitmask_t* mask, const md_system_t& sys, size_t seg_idx) {
     const md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[seg_idx];
     if (res_idx >= 0) {
-        const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
+        const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
         if (range.beg != range.end) {
             modify_field(mask, range, SelectionOperator::Or);
         }
@@ -1092,8 +1092,8 @@ struct Ramachandran : viamd::EventHandler {
                                     grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
                                     md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[mouse_hover_idx];
                                     if (res_idx >= 0) {
-                                        str_t lbl = md_residue_name(&sys.residue, res_idx);
-                                        md_sequence_id_t seq_id = md_residue_seq_id(&sys.residue, res_idx);
+                                        str_t lbl = md_system_residue_name(&sys, res_idx);
+                                        md_sequence_id_t seq_id = md_system_residue_seq_id(&sys, res_idx);
                                         ImGui::SetTooltip("res[%d]: %.*s %d", res_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
                                     } else {
                                         // No residue to name: the atom of its CA

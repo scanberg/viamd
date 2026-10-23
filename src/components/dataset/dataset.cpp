@@ -315,11 +315,11 @@ struct Dataset : viamd::EventHandler {
             res_types[i] = item;
         }
         for (size_t c = 0; c < res_count; ++c) {
-            const md_residue_type_idx_t t = md_residue_type_idx(&sys.residue, c);
+            const md_residue_type_idx_t t = md_system_residue_type_idx(&sys, c);
             if (t < 0 || (size_t)t >= type_count) continue;
             ResidueTypeItem& item = res_types[t];
             item.count += 1;
-            item.atom_count += (uint32_t)md_residue_atom_count(&sys.residue, c);
+            item.atom_count += (uint32_t)md_system_residue_atom_count(&sys, c);
             md_array_push(item.res_indices, (int)c, arena);
         }
         for (size_t i = 0; i < type_count; ++i) {
@@ -1248,16 +1248,16 @@ struct Dataset : viamd::EventHandler {
             EntityRow row = {};
             row.entity = (int)e;
             row.kind = "Other";
-            row.polymer = md_entity_kind_is_polymer(md_entity_kind(&sys.entity, e));
-            str_t desc = entity_display_name(md_entity_description(&sys.entity, e));
-            if (str_empty(desc)) desc = md_entity_id(&sys.entity, e);
+            row.polymer = md_entity_kind_is_polymer(md_system_entity_kind(&sys, e));
+            str_t desc = entity_display_name(md_system_entity_description(&sys, e));
+            if (str_empty(desc)) desc = md_system_entity_id(&sys, e);
             str_copy_to_char_buf(row.name, sizeof(row.name), desc);
             row.res_min = UINT32_MAX;
             md_array_push(c.rows, row, data.allocator.persistent);
         }
 
         for (size_t i = 0; i < sys.instance.count; ++i) {
-            const int e = md_instance_entity_idx(&sys.instance, i);
+            const int e = md_system_instance_entity_idx(&sys, i);
             if (e < 0 || (size_t)e >= md_array_size(c.rows)) continue;
             EntityRow& row = c.rows[e];
             const md_urange_t atoms = md_system_instance_atom_range(&sys, i);
@@ -1275,7 +1275,7 @@ struct Dataset : viamd::EventHandler {
                 counts[e].beads += md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD;
             }
             for (uint32_t k = res_range.beg; k < res_range.end; ++k) {
-                const md_residue_kind_t kind = md_residue_kind(&sys.residue, k);
+                const md_residue_kind_t kind = md_system_residue_kind(&sys, k);
                 counts[e].amino   += kind == MD_RESIDUE_KIND_AMINO_ACID;
                 counts[e].nucleic += kind == MD_RESIDUE_KIND_NUCLEOTIDE;
                 counts[e].ion     += kind == MD_RESIDUE_KIND_ION;
@@ -1313,7 +1313,7 @@ struct Dataset : viamd::EventHandler {
             EntityRow& row = c.rows[i];
             if (row.res_min == UINT32_MAX) row.res_min = 0;
             if (row.entity >= 0) {
-                row.kind = entity_kind(md_entity_kind(&sys.entity, row.entity), counts[row.entity], row.num_residues);
+                row.kind = entity_kind(md_system_entity_kind(&sys, row.entity), counts[row.entity], row.num_residues);
             }
             c.mass += row.mass;
             c.charge += row.charge;
@@ -1344,7 +1344,7 @@ struct Dataset : viamd::EventHandler {
         }
         // The backbones of coarse grained residues are beads, which atom names cannot resolve, so they are not counted
         for (size_t i = 0; i < sys.residue.count && !md_system_is_coarse_grained(&sys); ++i) {
-            const md_residue_flags_t f = md_residue_flags(&sys.residue, i);
+            const md_residue_flags_t f = md_system_residue_flags(&sys, i);
             if (f & MD_RESIDUE_FLAG_RESOLVED) continue;
             c.unresolved_amino   += md_residue_flags_kind(f) == MD_RESIDUE_KIND_AMINO_ACID;
             c.unresolved_nucleic += md_residue_flags_kind(f) == MD_RESIDUE_KIND_NUCLEOTIDE;
@@ -1371,7 +1371,7 @@ struct Dataset : viamd::EventHandler {
             }
         } else {
             for (size_t i = 0; i < sys.instance.count; ++i) {
-                if (md_instance_entity_idx(&sys.instance, i) == entity) {
+                if (md_system_instance_entity_idx(&sys, i) == entity) {
                     const md_urange_t r = md_system_instance_atom_range(&sys, i);
                     md_bitmask_set_range(hb, r.beg, r.end);
                 }
@@ -1388,12 +1388,12 @@ struct Dataset : viamd::EventHandler {
         const uint32_t end = MIN(range.end, range.beg + max_shown);
 
         for (uint32_t res_idx = range.beg; res_idx < end; ++res_idx) {
-            str_t res_name = md_residue_name(&sys.residue, res_idx);
-            const md_residue_kind_t res_kind = md_residue_kind(&sys.residue, res_idx);
+            str_t res_name = md_system_residue_name(&sys, res_idx);
+            const md_residue_kind_t res_kind = md_system_residue_kind(&sys, res_idx);
             const bool residue = res_kind == MD_RESIDUE_KIND_AMINO_ACID || res_kind == MD_RESIDUE_KIND_NUCLEOTIDE;
 
             // The one letter code of the standard monomer of its type (M for MSE), the full name of one none is known of
-            const md_residue_type_idx_t type_idx = md_residue_type_idx(&sys.residue, res_idx);
+            const md_residue_type_idx_t type_idx = md_system_residue_type_idx(&sys, res_idx);
             const md_monomer_t monomer = type_idx >= 0 ? md_residue_type_monomer(&sys.residue.type, (size_t)type_idx) : MD_MONOMER_NONE;
             const char letter[2] = { md_monomer_letter(monomer), '\0' };
             const bool short_label = short_labels && residue && monomer != MD_MONOMER_NONE && monomer != MD_MONOMER_UNK && monomer != MD_MONOMER_N;
@@ -1432,8 +1432,8 @@ struct Dataset : viamd::EventHandler {
                 ImGui::PopStyleColor(3);
             }
             if (ImGui::IsItemHovered()) {
-                const str_t full = md_residue_name(&sys.residue, res_idx);
-                ImGui::SetTooltip(STR_FMT " %d", STR_ARG(full), md_residue_seq_id(&sys.residue, res_idx));
+                const str_t full = md_system_residue_name(&sys, res_idx);
+                ImGui::SetTooltip(STR_FMT " %d", STR_ARG(full), md_system_residue_seq_id(&sys, res_idx));
                 const md_urange_t atoms = md_system_residue_atom_range(&sys, res_idx);
                 md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
                 handle_item_click(data);
@@ -1518,7 +1518,7 @@ struct Dataset : viamd::EventHandler {
             defer { md_temp_end(temp); };
             md_array(uint32_t) instances = 0;
             for (size_t i = 0; i < sys.instance.count; ++i) {
-                if (md_instance_entity_idx(&sys.instance, i) == row.entity) md_array_push(instances, (uint32_t)i, md_temp_allocator(temp));
+                if (md_system_instance_entity_idx(&sys, i) == row.entity) md_array_push(instances, (uint32_t)i, md_temp_allocator(temp));
             }
             const int count = (int)md_array_size(instances);
 
@@ -1681,7 +1681,7 @@ struct Dataset : viamd::EventHandler {
                 md_bitmask_t* hb = &data.selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t i = 0; i < sys.residue.count; ++i) {
-                    const md_residue_flags_t f = md_residue_flags(&sys.residue, i);
+                    const md_residue_flags_t f = md_system_residue_flags(&sys, i);
                     if (md_residue_flags_kind(f) == kind && !(f & MD_RESIDUE_FLAG_RESOLVED)) {
                         const md_urange_t r = md_system_residue_atom_range(&sys, i);
                         md_bitmask_set_range(hb, r.beg, r.end);

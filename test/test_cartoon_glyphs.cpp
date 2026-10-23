@@ -197,7 +197,7 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     uint32_t nucleotides = 0;
     for (size_t s = 0; s < bb.segment.count; ++s) {
         if (bb.segment.atoms[s].c4 < 0) continue;
-        const str_t name = md_residue_name(&sys.residue, bb.segment.res_idx[s]);
+        const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
         const bool purine = str_eq_cstr(name, "DA") || str_eq_cstr(name, "DG");
         expected_slabs += purine ? 4 : 3;
         nucleotides += 1;
@@ -348,7 +348,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
 
         uint32_t expected_slabs = 0;
         for (size_t s = 0; s < bb.segment.count; ++s) {
-            const str_t name = md_residue_name(&sys.residue, bb.segment.res_idx[s]);
+            const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
             const bool purine = str_find_char(NULL, name, 'A') || str_find_char(NULL, name, 'G');
             expected_slabs += purine ? 3 : 2;
         }

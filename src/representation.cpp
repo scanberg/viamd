@@ -1154,7 +1154,7 @@ void create_default_representations(ApplicationState* state) {
 
     // What is present, by what the residues are. The selections of the representations below are by the same.
     for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
-        switch (md_residue_kind(&state->mold.sys.residue, i)) {
+        switch (md_system_residue_kind(&state->mold.sys, i)) {
         case MD_RESIDUE_KIND_AMINO_ACID: amino_acid_present = true; break;
         case MD_RESIDUE_KIND_NUCLEOTIDE: nucleic_present = true; num_nucleotides += 1; break;
         case MD_RESIDUE_KIND_ION:          ion_present = true;        break;
@@ -1174,7 +1174,7 @@ void create_default_representations(ApplicationState* state) {
         size_t num_lipid_residues = 0;
         size_t num_known = 0;
         for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
-            num_lipid_residues += md_residue_kind(&state->mold.sys.residue, i) == MD_RESIDUE_KIND_LIPID;
+            num_lipid_residues += md_system_residue_kind(&state->mold.sys, i) == MD_RESIDUE_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
             if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.residues, i);
@@ -1240,7 +1240,7 @@ void create_default_representations(ApplicationState* state) {
         size_t chain_res_count = 0;
         for (size_t i = 0; i < state->mold.sys.instance.count; ++i) {
             if (md_system_instance_entity_kind(&state->mold.sys, i) == MD_ENTITY_KIND_PEPTIDE) {
-                if (num_chains++ == 0) chain_res_count = md_instance_residue_count(&state->mold.sys.instance, i);
+                if (num_chains++ == 0) chain_res_count = md_system_instance_residue_count(&state->mold.sys, i);
             }
         }
         if (num_chains > 1) {
@@ -2667,7 +2667,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
 // structure, which the representations with chain gaps draw a dashed line over
 static bool system_has_chain_breaks(const md_system_t& sys) {
     for (size_t i = 0; i < sys.residue.count; ++i) {
-        if (md_residue_flags(&sys.residue, i) & MD_RESIDUE_FLAG_BREAK_AFTER) return true;
+        if (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) return true;
     }
     return false;
 }

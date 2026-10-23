@@ -212,7 +212,7 @@ struct TooltipPlace {
 
 static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_idx) {
     return {
-        .res_idx = md_residue_find_by_atom_idx(&sys.residue, atom_idx),
+        .res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx),
         .inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx),
         .atom_idx = (int)atom_idx,
     };
@@ -220,9 +220,9 @@ static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_id
 
 // "ALA 42", or the residue's index when it has no name
 static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, int res_idx) {
-    const str_t name = md_residue_name(&sys.residue, res_idx);
+    const str_t name = md_system_residue_name(&sys, res_idx);
     if (!str_empty(name)) {
-        md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_residue_seq_id(&sys.residue, res_idx));
+        md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_system_residue_seq_id(&sys, res_idx));
     } else {
         md_str_writer_fmt(sb, "residue %d", res_idx + 1);
     }
@@ -283,7 +283,7 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
 static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
     const int chain = tooltip_place_chain(sys, place);
     int atom = place.atom_idx;
-    if (atom == -1 && place.res_idx != -1) atom = (int)md_residue_atom_range(&sys.residue, place.res_idx).beg;
+    if (atom == -1 && place.res_idx != -1) atom = (int)md_system_residue_atom_range(&sys, place.res_idx).beg;
     const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
 
     if (place.res_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.res_idx + 1);
@@ -390,7 +390,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     int formal_charge = 0;
     int num_h = 0;
     const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
-    const bool nucleotide = place.res_idx != -1 && md_residue_kind(&sys.residue, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
+    const bool nucleotide = place.res_idx != -1 && md_system_residue_kind(&sys, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
 
     // What it is
     if (particle != MD_PARTICLE_ATOM) {
@@ -554,7 +554,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         tooltip_row(req, STR_LIT("index"), "atom(%d)", bb.segment.atoms[seg_idx].ca + 1);
         return;
     }
-    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const TooltipPlace place = {
         .res_idx = res_idx,
         .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
@@ -564,7 +564,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    const md_residue_kind_t    kind  = md_residue_kind(&sys.residue, res_idx);
+    const md_residue_kind_t    kind  = md_system_residue_kind(&sys, res_idx);
     const md_residue_flags_t flags = md_system_residue_flags(&sys, res_idx);
     const bool nucleotide = kind == MD_RESIDUE_KIND_NUCLEOTIDE;
 
@@ -583,11 +583,11 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
 
     // The molecule it is part of (the type of it: the entity), which the title names only by its chain
     if (place.inst_idx != -1) {
-        const md_entity_idx_t ent_idx = md_instance_entity_idx(&sys.instance, place.inst_idx);
+        const md_entity_idx_t ent_idx = md_system_instance_entity_idx(&sys, place.inst_idx);
         if (ent_idx != -1) {
-            const str_t desc = md_entity_description(&sys.entity, ent_idx);
-            const md_entity_flags_t ent_flags = md_entity_flags(&sys.entity, ent_idx);
-            const char* ent_kind = md_entity_kind_name(md_entity_kind(&sys.entity, ent_idx));
+            const str_t desc = md_system_entity_description(&sys, ent_idx);
+            const md_entity_flags_t ent_flags = md_system_entity_flags(&sys, ent_idx);
+            const char* ent_kind = md_entity_kind_name(md_system_entity_kind(&sys, ent_idx));
             const char* inferred = (ent_flags & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "";
             if (!str_empty(desc)) {
                 tooltip_row(req, STR_LIT("molecule"), STR_FMT " (%s%s)", STR_ARG(desc), ent_kind, inferred);
@@ -612,7 +612,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     ASSERT((size_t)res_idx + 1 < sys.residue.count);
     if (!(md_system_residue_flags(&sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return;
 
-    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const int inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1;
     const TooltipPlace place[2] = {
         {.res_idx = (int)res_idx,       .inst_idx = inst_idx},
@@ -624,7 +624,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     tooltip_append_place(&title, sys, place[0], &place[1]);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    const int missing = md_residue_seq_id(&sys.residue, res_idx + 1) - md_residue_seq_id(&sys.residue, res_idx) - 1;
+    const int missing = md_system_residue_seq_id(&sys, res_idx + 1) - md_system_residue_seq_id(&sys, res_idx) - 1;
     if (missing > 0) {
         tooltip_row(req, STR_LIT("missing"), "%d residue%s by the numbering", missing, missing == 1 ? "" : "s");
     } else {
@@ -776,7 +776,7 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
         if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_title(req, "nucleotide" TOOLTIP_SEP "%s", parts[glyphs.point_kind[point_idx]]);
         return;
     }
-    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
+    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const TooltipPlace place = {
         .res_idx = res_idx,
         .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
@@ -787,7 +787,7 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
-    const md_residue_kind_t kind = md_residue_kind(&sys.residue, res_idx);
+    const md_residue_kind_t kind = md_system_residue_kind(&sys, res_idx);
     if (kind != MD_RESIDUE_KIND_OTHER) tooltip_list_add(&kind_list, md_residue_kind_name(kind));
     if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_list_add(&kind_list, parts[glyphs.point_kind[point_idx]]);
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
@@ -5104,14 +5104,13 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     }
 
     if (unwrap) {
-        const size_t num_structures = md_molecule_count(&sys.molecule);
-        if (num_structures > 0) {
-            task_system::ID task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&s, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+        const size_t num_molecules = md_system_molecule_count(&sys);
+        if (num_molecules > 0) {
+            task_system::ID task = task_system::create_pool_task(STR_LIT("## Unwrap Molecules"), (uint32_t)num_molecules, [&s, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_molecule_t structure = {};
-                    md_molecule_extract(&structure, &sys.molecule, i);
-                    md_util_unwrap_molecule(&s, &structure);
+                    const md_molecule_t mol = md_system_molecule(&sys, i);
+                    md_util_unwrap_molecule(&s, &mol);
                 }
             });
             task_system::enqueue_task(task);

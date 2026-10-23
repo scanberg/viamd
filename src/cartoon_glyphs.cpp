@@ -414,7 +414,7 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
             // of it, at the centre of its heavy atoms, so that it is not missing from the cartoon
             md_array_shrink(whole, 0);
             for (size_t c = 0; c < num_residues; ++c) {
-                const md_urange_t r = md_residue_atom_range(&sys.residue, (size_t)residues[c]);
+                const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)residues[c]);
                 for (uint32_t i = r.beg; i < r.end; ++i) {
                     if (md_atom_atomic_number(&sys.atom, i) != MD_Z_H) md_array_push(whole, (int32_t)i, temp_alloc);
                 }
@@ -548,7 +548,7 @@ static md_array(ResRing) rings_by_residue(const md_system_t& sys, md_allocator_i
         if (n < 3) continue;
         const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)atoms[0]);
         if (res < 0) continue;
-        const md_urange_t range = md_residue_atom_range(&sys.residue, (size_t)res);
+        const md_urange_t range = md_system_residue_atom_range(&sys, (size_t)res);
         bool within = true;
         for (size_t k = 0; k < n; ++k) {
             within &= range.beg <= (uint32_t)atoms[k] && (uint32_t)atoms[k] < range.end;
@@ -693,9 +693,9 @@ static char nucleotide_base(str_t name) {
 // the real beads of the base, taken whole about ref, and a slab for each ring. The point of the glycosidic N, or
 // UINT32_MAX for a base of none of the models (another name, number of beads, a bead missing), which is not drawn.
 static uint32_t coarse_grained_base(GlyphBuilder& b, const md_system_t& sys, int32_t res, int32_t ref) {
-    const char base = nucleotide_base(md_residue_name(&sys.residue, res));
+    const char base = nucleotide_base(md_system_residue_name(&sys, res));
     if (!base) return UINT32_MAX;
-    const md_urange_t range = md_residue_atom_range(&sys.residue, res);
+    const md_urange_t range = md_system_residue_atom_range(&sys, res);
     uint32_t num_beads = 0;
     for (uint32_t i = range.beg; i < range.end; ++i) {
         num_beads += (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_NUCLEOBASE) ? 1 : 0;

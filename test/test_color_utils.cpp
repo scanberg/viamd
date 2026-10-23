@@ -140,10 +140,10 @@ UTEST(viamd_color, res_type) {
     color_atoms_res_type(colors, 9, sys);
     for (int a = 0; a < 4; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_ALA), colors[a]);
     for (int a = 4; a < 8; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_HIS), colors[a]);
-    EXPECT_EQ(md_residue_type_color(&sys.residue.type, (size_t)md_residue_type_idx(&sys.residue, 2)) | 0xFF000000u, colors[8]);
+    EXPECT_EQ(md_residue_type_color(&sys.residue.type, (size_t)md_system_residue_type_idx(&sys, 2)) | 0xFF000000u, colors[8]);
 
     // A color of its own, opaque whatever alpha it was given
-    const md_residue_type_idx_t his = md_residue_type_idx(&sys.residue, 1);
+    const md_residue_type_idx_t his = md_system_residue_type_idx(&sys, 1);
     sys.residue.type.color[his] = 0x00102030u;
     color_atoms_res_type(colors, 9, sys);
     for (int a = 4; a < 8; ++a) EXPECT_EQ(0xFF102030u, colors[a]);

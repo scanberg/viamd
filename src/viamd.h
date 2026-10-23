@@ -1929,9 +1929,8 @@ static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOpe
 }
 
 static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const md_system_t& sys) {
-    md_molecule_t st = {};
-    if (!md_molecule_extract(&st, &sys.molecule, mol_idx)) return;
-    for (size_t k = 0; k < st.count; ++k) md_bitmask_set_bit(mask, (uint32_t)st.atom_idx[k]);
+    const md_molecule_t mol = md_system_molecule(&sys, mol_idx);
+    for (size_t k = 0; k < mol.count; ++k) md_bitmask_set_bit(mask, (uint32_t)mol.atom_idx[k]);
 }
 
 static inline void mask_set_chain(md_bitmask_t* mask, size_t chain_idx, const md_system_t& sys) {
@@ -1956,7 +1955,7 @@ static inline void mask_set_chain_of_res(md_bitmask_t* mask, size_t res_idx, con
         mask_set_molecule(mask, (size_t)mol, sys);
         return;
     }
-    const md_instance_idx_t inst = md_instance_find_by_residue_idx(&sys.instance, res_idx);
+    const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&sys, res_idx);
     const md_urange_t r = inst >= 0 ? md_system_instance_atom_range(&sys, (size_t)inst) : range;
     if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
 }
