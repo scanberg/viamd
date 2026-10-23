@@ -1317,6 +1317,12 @@ struct ApplicationState {
         // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
         // over the QM atoms against an upload of the same array.
         uint64_t            gpu_atoms_hash = 0;
+        // The SCF density the evaluations read, as a matrix in tiles (md_gto_gpu_dmat): only the AO pairs
+        // an evaluation reads, built on the device from the orbitals, so no matrix is made on the host.
+        // Its pattern follows the atoms while they stay within its margin; the matrix is rebuilt when the
+        // density asked for, or the orbitals it is made of, change.
+        md_gto_gpu_dmat_t   gpu_dmat = nullptr;
+        uint64_t            gpu_dmat_key = 0;      // the density and the orbitals' versions it holds, 0: none
 #endif
     } mold;
 

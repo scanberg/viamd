@@ -2969,6 +2969,11 @@ void system_gpu_data_free(ApplicationState* state) {
         state->mold.gpu_atoms = 0;
     }
     state->mold.gpu_atoms_hash = 0;
+    if (state->mold.gpu_dmat) {
+        md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
+        state->mold.gpu_dmat = nullptr;
+    }
+    state->mold.gpu_dmat_key = 0;
 #else
     (void)state;
 #endif
@@ -4071,7 +4076,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 }
 
 #if MD_ENABLE_GPU
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op);
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat = nullptr);
 
 bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
                                            const double* density_matrix, size_t dim, md_gto_op_t op) {
@@ -4103,18 +4108,89 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
     return true;
 }
 
-// The density kernel over whatever was last uploaded to the coefficient buffer
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op) {
+// The density kernel over whatever was last uploaded to the coefficient buffer, or over a dmat
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat) {
     md_gto_gpu_density_desc_t desc = {
         .basis         = state->mold.gpu_basis,
         .atom_xyz      = state->mold.gpu_atoms,
-        .coeff         = state->gpu_coeff,
+        .coeff         = dmat ? 0 : state->gpu_coeff,
+        .dmat          = dmat,
         .out_tex       = state->gpu_volume,
         .grid          = &grid,
         .sample_offset = {0.5f, 0.5f, 0.5f},
         .op            = op,
     };
     md_gto_gpu_density_launch(state->gpu_stream, &desc);
+}
+
+// How far the atoms may move before the dmat's pattern is made again (bohr): the pattern keeps the AO pairs
+// up to this much further apart, about 13% more tiles for a protein, and holds while no atom has moved
+// more than half of it.
+static constexpr double GPU_DMAT_MARGIN = 1.0;
+
+// The SCF density at density_path (orbital/{alpha,beta,total,difference}/density) in state->mold.gpu_dmat,
+// built on the device from its orbitals (md_qm_density_orbitals). False for any other density, or one
+// whose orbitals are not published or that is zero: those go through the packed matrix.
+static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
+    const bool scf = str_eq(density_path, es_path::alpha_density) || str_eq(density_path, es_path::beta_density) ||
+                     str_eq(density_path, es_path::total_density) || str_eq(density_path, es_path::difference_density);
+    if (!scf || !state->gpu_stream || !state->mold.gpu_basis) {
+        return false;
+    }
+    const md_system_t& sys = state->mold.sys;
+
+    // What the matrix holds: the density, and the versions of the orbitals and occupations it is made of
+    uint64_t key = md_hash64(density_path.ptr, density_path.len, 0x5cf0d3a7);
+    const str_t sources[4] = {es_path::alpha_coefficient, es_path::alpha_occupation, es_path::beta_coefficient, es_path::beta_occupation};
+    for (const str_t& p : sources) {
+        const md_attribute_t* a = md_attributes_find(&sys.attributes, p);
+        const uint64_t v = a ? md_attributes_version(&sys.attributes, a->id) : 0;
+        key = md_hash64(&v, sizeof(v), key);
+    }
+    key = key ? key : 1;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t num_atoms = 0;
+    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
+        return false;
+    }
+    // A pattern made where the atoms were: kept while they stay within the margin, else made again
+    if (state->mold.gpu_dmat && !md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(vec3_t))) {
+        md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
+        state->mold.gpu_dmat = nullptr;
+    }
+    if (!state->mold.gpu_dmat) {
+        md_gto_basis_t basis = {};
+        if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+            return false;
+        }
+        // The cutoff of gpu_basis (system_gpu_data_update), whose radii the pattern is made with
+        const md_gto_gpu_dmat_desc_t desc = {
+            .basis = &basis, .atom_xyz = (const float*)xyz, .atom_xyz_stride = sizeof(vec3_t),
+            .cutoff = DEFAULT_GTO_CUTOFF_VALUE, .margin = GPU_DMAT_MARGIN,
+        };
+        state->mold.gpu_dmat = md_gto_gpu_dmat_create(state->gpu_stream, &desc);
+        state->mold.gpu_dmat_key = 0;
+        if (!state->mold.gpu_dmat) {
+            return false;
+        }
+    }
+    if (key != state->mold.gpu_dmat_key) {
+        double* rows = nullptr;
+        double* weights = nullptr;
+        size_t num_ao = 0;
+        const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, &sys, density_path, md_temp_allocator(temp));
+        if (count == 0 || num_ao != md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis)) {
+            return false;
+        }
+        if (!md_gto_gpu_dmat_build(state->gpu_stream, state->mold.gpu_dmat, rows, weights, count)) {
+            return false;
+        }
+        state->mold.gpu_dmat_key = key;
+    }
+    return true;
 }
 
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
@@ -4144,6 +4220,13 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
     }
     if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
         return false;
+    }
+
+    // An SCF density through the dmat, built on the device from its orbitals: no matrix on the host, and
+    // only the AO pairs the evaluation reads
+    if (s.num_idx == 0 && density_dmat_ensure(state, density_path)) {
+        density_gpu_launch(state, grid, op, state->mold.gpu_dmat);
+        return true;
     }
 
     // Straight into the upload buffer: the packed float triangle is exactly what the kernel reads, so
