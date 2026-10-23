@@ -284,13 +284,13 @@ static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, co
     const int chain = tooltip_place_chain(sys, place);
     int atom = place.atom_idx;
     if (atom == -1 && place.comp_idx != -1) atom = (int)md_component_atom_range(&sys.component, place.comp_idx).beg;
-    const int64_t mol = atom != -1 ? molecule_of_atom(sys, (size_t)atom) : -1;
+    const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
 
     if (place.comp_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
     const int32_t part = place.comp_idx != -1 ? md_system_part_find_by_comp_idx(&sys, (size_t)place.comp_idx) : -1;
     if (part != -1 && mol != -1) {
         const md_urange_t part_atoms = md_system_part_atom_range(&sys, (size_t)part);
-        const uint32_t mol_size = sys.structure.offset[mol + 1] - sys.structure.offset[mol];
+        const size_t mol_size = md_system_molecule_atom_count(&sys, (size_t)mol);
         if (part_atoms.end - part_atoms.beg < mol_size) {
             md_str_writer_fmt(sb, "%spart(%d)", md_str_writer_empty(sb) ? "" : " ", part + 1);
         }
@@ -648,7 +648,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     md_str_writer_t index = md_str_writer_create(req->alloc);
     md_str_writer_fmt(&index, "residue(%u) residue(%u)", comp_idx + 1, comp_idx + 2);
     const md_chain_idx_t chain = md_system_chain_find_by_comp_idx(&sys, comp_idx);
-    const int64_t mol = range.beg < range.end ? molecule_of_atom(sys, range.beg) : -1;
+    const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
     if (chain != -1)    md_str_writer_fmt(&index, " chain(%d)", chain + 1);
     else if (mol != -1) md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
     tooltip_row_list(req, STR_LIT("index"), index);

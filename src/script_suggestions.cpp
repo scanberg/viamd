@@ -312,30 +312,13 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
 
 // ### THE STRUCTURES WHICH HOLD THE SELECTION ###
 
-// The molecule (md_structure_data_t) of an atom, -1 when there are none
-static int32_t molecule_of_atom(const md_system_t& sys, uint32_t atom) {
-    const md_structure_data_t& st = sys.structure;
-    if (st.count == 0 || !st.atom_slot || !st.offset || atom >= sys.atom.count) return -1;
-    const uint32_t slot = (uint32_t)st.atom_slot[atom];
-    size_t lo = 0, hi = st.count;
-    while (lo + 1 < hi) {
-        const size_t mid = (lo + hi) / 2;
-        if (st.offset[mid] <= slot) lo = mid; else hi = mid;
-    }
-    return (int32_t)lo;
-}
-
-static uint32_t molecule_size(const md_system_t& sys, int32_t mol) {
-    return sys.structure.offset[mol + 1] - sys.structure.offset[mol];
-}
-
 // The molecule which an instance is all of, -1 when it is part of a larger one (a ligand bonded to a protein, a metal
 // to the residues around it), of several (the waters of an mmCIF file), or there are none
 static int32_t molecule_of_instance(const md_system_t& sys, int32_t inst) {
     const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
     if (r.beg >= r.end) return -1;
-    const int32_t mol = molecule_of_atom(sys, r.beg);
-    return mol >= 0 && molecule_size(sys, mol) == r.end - r.beg ? mol : -1;
+    const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, r.beg);
+    return mol >= 0 && md_system_molecule_atom_count(&sys, mol) == r.end - r.beg ? mol : -1;
 }
 
 // The molecules of an instance which is not one molecule: those inside it (the waters of a chain, which an mmCIF file
@@ -348,14 +331,14 @@ static void molecules_of_instance(md_array(int32_t)* mols, int32_t inst, const i
     md_array(int32_t) touched = 0;
     int32_t prev = -1;
     for (uint32_t i = r.beg; i < r.end; ++i) {
-        const int32_t mol = molecule_of_atom(sys, i);
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, i);
         if (mol < 0) return;
         if (mol != prev) md_array_push(touched, mol, c.temp);
         prev = mol;
     }
     const size_t n = sort_unique(touched, md_array_size(touched));
     uint64_t size = 0;
-    for (size_t k = 0; k < n; ++k) size += molecule_size(sys, touched[k]);
+    for (size_t k = 0; k < n; ++k) size += md_system_molecule_atom_count(&sys, touched[k]);
     // Molecules inside the instance, which is whole
     if (size == r.end - r.beg) {
         for (size_t k = 0; k < n; ++k) md_array_push(*mols, touched[k], c.temp);

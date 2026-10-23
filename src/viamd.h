@@ -1928,19 +1928,6 @@ static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOpe
     modify_field(m, md_bitset_range(range.beg, range.end), op);
 }
 
-// The molecule of an atom (md_structure_data_t), -1 where there are none (a system without bonds)
-static inline int64_t molecule_of_atom(const md_system_t& sys, size_t atom_idx) {
-    const md_structure_data_t& st = sys.structure;
-    if (st.count == 0 || !st.atom_slot || !st.offset || atom_idx >= sys.atom.count) return -1;
-    const uint32_t slot = (uint32_t)st.atom_slot[atom_idx];
-    size_t lo = 0, hi = st.count;
-    while (lo + 1 < hi) {
-        const size_t mid = (lo + hi) / 2;
-        if (st.offset[mid] <= slot) lo = mid; else hi = mid;
-    }
-    return (int64_t)lo;
-}
-
 static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const md_system_t& sys) {
     md_structure_t st = {};
     if (!md_structure_extract(&st, &sys.structure, mol_idx)) return;
@@ -1964,7 +1951,7 @@ static inline void mask_set_chain_of_comp(md_bitmask_t* mask, size_t comp_idx, c
         return;
     }
     const md_urange_t range = md_system_component_atom_range(&sys, comp_idx);
-    const int64_t mol = range.beg < range.end ? molecule_of_atom(sys, range.beg) : -1;
+    const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
     if (mol >= 0) {
         mask_set_molecule(mask, (size_t)mol, sys);
         return;
@@ -2035,7 +2022,7 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         md_bitmask_t touched = md_bitmask_create(0, (uint32_t)sys.structure.count, alloc);
         md_bitset_iter_t it = md_bitmask_iter(mask);
         while (md_bitset_iter_next(&it)) {
-            const int64_t mol = molecule_of_atom(sys, it.idx);
+            const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, it.idx);
             if (mol >= 0) md_bitmask_set_bit(&touched, (uint32_t)mol);
         }
         md_bitset_iter_t mit = md_bitmask_iter(&touched);
@@ -2087,7 +2074,7 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
         break;
     }
     case SelectionGranularity::Molecule: {
-        const int64_t mol = molecule_of_atom(sys, atom_idx);
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atom_idx);
         if (mol >= 0) {
             mask_set_molecule(mask, (size_t)mol, sys);
             return;
