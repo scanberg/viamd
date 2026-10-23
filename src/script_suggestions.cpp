@@ -184,9 +184,27 @@ static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocat
     MEMSET(c->chain_seq, 0, num_chains + 1);
 }
 
-// The chain of an instance (md_chain_data_t), -1 for none
-static int32_t inst_chain(const Ctx& c, int32_t inst) {
-    return inst >= 0 ? md_system_chain_find_by_inst_idx(c.sys, (size_t)inst) : -1;
+// The chain of a component (md_chain_data_t), -1 for none
+static int32_t comp_chain(const Ctx& c, int32_t comp) {
+    return comp >= 0 ? md_system_chain_find_by_comp_idx(c.sys, (size_t)comp) : -1;
+}
+
+// The chain of an instance: that of its first component. The components of an instance are of one chain, or of none,
+// except in a molecule of a topology which holds several strands (a DNA duplex), whose chains are all inferred.
+static int32_t inst_first_chain(const Ctx& c, int32_t inst) {
+    if (inst < 0) return -1;
+    const md_urange_t comps = md_system_instance_comp_range(c.sys, (size_t)inst);
+    return comps.beg < comps.end ? comp_chain(c, (int32_t)comps.beg) : -1;
+}
+
+// Every atom of the chain is selected
+static bool chain_whole(const Ctx& c, int32_t chain) {
+    const md_urange_t* end = md_system_chain_run_end(c.sys, (size_t)chain);
+    for (const md_urange_t* it = md_system_chain_run_beg(c.sys, (size_t)chain); it && it < end; ++it) {
+        const md_urange_t r = md_system_chain_run_atom_range(c.sys, *it);
+        if (r.beg < r.end && !md_bitset_test_all_range(c.sel, r.beg, r.end)) return false;
+    }
+    return true;
 }
 
 // A chain is written by the id the data gives it: chain("A"), all of the atoms of the id. A chain inferred where the
@@ -211,10 +229,9 @@ static bool chain_by_seq(Ctx* c, int32_t chain) {
     if (chain < 0 || !c->sys->component.seq_id) return false;
     if (c->chain_seq[chain] == 0) {
         md_array(int32_t) ids = 0;
-        const md_instance_idx_t* end = md_system_chain_inst_end(c->sys, (size_t)chain);
-        for (const md_instance_idx_t* it = md_system_chain_inst_beg(c->sys, (size_t)chain); it && it < end; ++it) {
-            const md_urange_t comps = md_system_instance_comp_range(c->sys, (size_t)*it);
-            for (uint32_t k = comps.beg; k < comps.end; ++k) md_array_push(ids, (int32_t)c->sys->component.seq_id[k], c->temp);
+        const md_urange_t* end = md_system_chain_run_end(c->sys, (size_t)chain);
+        for (const md_urange_t* it = md_system_chain_run_beg(c->sys, (size_t)chain); it && it < end; ++it) {
+            for (uint32_t k = it->beg; k < it->end; ++k) md_array_push(ids, (int32_t)c->sys->component.seq_id[k], c->temp);
         }
         const size_t n = md_array_size(ids);
         c->chain_seq[chain] = n > 0 && sort_unique(ids, n) == n ? 1 : 2;
@@ -410,28 +427,28 @@ static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, co
     return len <= c.limit;
 }
 
-// Of the instances which hold the selection: the chains they make whole, and the instances whole which are in no chain
-// or in one which is not whole (a ligand of chain A, without the rest of A)
+// The chains the selection holds whole, and the instances it holds whole which are not all of whole chains: in no
+// chain, or in one which is not whole (a ligand of chain A, without the rest of A)
 static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)* insts, const Breakdown& b, const Ctx& c) {
     const size_t num_chains = md_system_chain_count(c.sys);
-    uint32_t* full = (uint32_t*)md_alloc(c.temp, (num_chains + 1) * sizeof(uint32_t));
-    MEMSET(full, 0, (num_chains + 1) * sizeof(uint32_t));
-    for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-        const int32_t chain = inst_chain(c, b.inst[i]);
-        if (chain >= 0 && b.inst_full[i]) full[chain] += 1;
+    // [chain] 0 not seen, 1 whole, 2 not whole
+    uint8_t* state = (uint8_t*)md_alloc(c.temp, num_chains + 1);
+    MEMSET(state, 0, num_chains + 1);
+    for (size_t k = 0; k < md_array_size(b.comp); ++k) {
+        const int32_t chain = comp_chain(c, b.comp[k]);
+        if (chain < 0 || state[chain]) continue;
+        state[chain] = chain_whole(c, chain) ? 1 : 2;
+        if (state[chain] == 1) md_array_push(*chains, chain, c.temp);
     }
-    uint8_t* pushed = (uint8_t*)md_alloc(c.temp, num_chains + 1);
-    MEMSET(pushed, 0, num_chains + 1);
     for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-        const int32_t chain = inst_chain(c, b.inst[i]);
-        const bool chain_whole = chain >= 0 && full[chain] == (uint32_t)(md_system_chain_inst_end(c.sys, (size_t)chain) - md_system_chain_inst_beg(c.sys, (size_t)chain));
-        if (chain_whole) {
-            // Once, as the instances of a chain need not be consecutive
-            if (!pushed[chain]) md_array_push(*chains, chain, c.temp);
-            pushed[chain] = 1;
-        } else if (b.inst_full[i]) {
-            md_array_push(*insts, b.inst[i], c.temp);
+        if (!b.inst_full[i]) continue;
+        const md_urange_t comps = md_system_instance_comp_range(c.sys, (size_t)b.inst[i]);
+        bool in_whole = true;
+        for (uint32_t k = comps.beg; k < comps.end && in_whole; ++k) {
+            const int32_t chain = comp_chain(c, (int32_t)k);
+            in_whole = chain >= 0 && state[chain] == 1;
         }
+        if (!in_whole) md_array_push(*insts, b.inst[i], c.temp);
     }
 }
 
@@ -529,7 +546,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
         // chain("B"), rather than its position among the molecules
         size_t n = 0;
         for (size_t i = 0; i < md_array_size(whole_insts); ++i) {
-            const int32_t chain = inst_chain(*c, whole_insts[i]);
+            const int32_t chain = inst_first_chain(*c, whole_insts[i]);
             if (chain_by_id(*c, chain) && chain_by_seq(c, chain)) md_array_push(unwritten, whole_insts[i], temp);
             else whole_insts[n++] = whole_insts[i];
         }
@@ -563,7 +580,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     const size_t num_comps = md_array_size(b.comp);
     for (size_t k = 0; k < num_comps; ++k) {
         const int32_t inst = b.comp_inst[k];
-        const int32_t chain = inst_chain(*c, inst);
+        const int32_t chain = comp_chain(*c, b.comp[k]);
         // Its instance is written whole, as a molecule or with its chain
         if (inst >= 0 && b.inst_full[b.comp_slot[k]] && !bsearch(&inst, unwritten, num_unwritten, sizeof(int32_t), cmp_int32)) continue;
         if (chain >= 0 && chain_written[chain]) continue;
@@ -684,7 +701,7 @@ struct Scopes {
     int class_kind = -1;
     md_array(str_t) resnames = 0;
     uint8_t* comp_touched = nullptr;        // [component]
-    uint8_t* inst_touched = nullptr;        // [instance] of the chains which hold the selection, or holds it itself
+    uint8_t* comp_in_scope = nullptr;       // [component] of the chains which hold the selection, or of a molecule in no chain which does
 };
 
 static int scope_slot(uint32_t scope) {
@@ -712,11 +729,11 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     const md_component_data_t* comp = &sys.component;
     uint32_t violated = 0;
 
-    auto classify = [&](size_t ci, int32_t inst) {
+    auto classify = [&](size_t ci) {
         uint32_t v = Scope_System;
         if (s.class_kind >= 0 && (int)md_component_kind(comp, ci) == s.class_kind) v |= Scope_Class;
         if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_component_name(comp, ci))) v |= Scope_Resname;
-        if (inst >= 0 && s.inst_touched[inst]) v |= Scope_Inst;
+        if (s.comp_in_scope[ci]) v |= Scope_Inst;
         if (s.comp_touched[ci]) v |= Scope_Res;
         return v;
     };
@@ -733,16 +750,10 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     };
 
     uint32_t prev_end = 0;
-    int32_t inst = -1;
-    md_urange_t inst_comps = {0, 0};
     for (size_t ci = 0; ci < comp->count; ++ci) {
         const md_urange_t r = md_component_atom_range(comp, ci);
         loose_atoms(prev_end, r.beg);
         prev_end = r.end;
-        if (!(inst_comps.beg <= ci && ci < inst_comps.end)) {
-            inst = md_instance_find_by_comp_idx(&sys.instance, ci);
-            inst_comps = inst >= 0 ? md_system_instance_comp_range(&sys, inst) : md_urange_t{(uint32_t)ci, (uint32_t)ci + 1};
-        }
 
         bool violation = false;
         if (p.comp_level) {
@@ -754,7 +765,7 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
             }
         }
         if (violation) {
-            violated |= classify(ci, inst);
+            violated |= classify(ci);
             // The components which hold the selection are within every other scope: nothing is left
             if (violated & Scope_Res) return Scope_All;
         }
@@ -779,15 +790,14 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     const md_system_t& sys = *c->sys;
     md_allocator_i* temp = c->temp;
     const size_t num_comps = sys.component.count;
-    const size_t num_inst = md_system_instance_count(&sys);
 
-    s->comp_touched = (uint8_t*)md_alloc(temp, num_comps + 1);
-    s->inst_touched = (uint8_t*)md_alloc(temp, num_inst + 1);
+    s->comp_touched  = (uint8_t*)md_alloc(temp, num_comps + 1);
+    s->comp_in_scope = (uint8_t*)md_alloc(temp, num_comps + 1);
     MEMSET(s->comp_touched, 0, num_comps + 1);
-    MEMSET(s->inst_touched, 0, num_inst + 1);
+    MEMSET(s->comp_in_scope, 0, num_comps + 1);
     for (size_t i = 0; i < md_array_size(b.comp); ++i) s->comp_touched[b.comp[i]] = 1;
 
-    // The chains which hold the selection, all of their instances, and the molecules in no chain which hold it
+    // The chains which hold the selection, all of their residues, and the molecules in no chain which hold it
     md_array(int32_t) chains = 0;
     md_array(int32_t) loose_insts = 0;
     bool scope_whole = true;    // the selection is all of them: then the scope says nothing
@@ -795,28 +805,23 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
         const size_t num_chains = md_system_chain_count(&sys);
         uint8_t* chain_seen = (uint8_t*)md_alloc(temp, num_chains + 1);
         MEMSET(chain_seen, 0, num_chains + 1);
-        for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-            const int32_t chain = inst_chain(*c, b.inst[i]);
-            if (chain < 0) {
-                s->inst_touched[b.inst[i]] = 1;
-                md_array_push(loose_insts, b.inst[i], temp);
-                scope_whole &= b.inst_full[i] != 0;
-            } else if (!chain_seen[chain]) {
-                chain_seen[chain] = 1;
-                md_array_push(chains, chain, temp);
-                const md_instance_idx_t* end = md_system_chain_inst_end(&sys, (size_t)chain);
-                for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, (size_t)chain); it && it < end; ++it) {
-                    s->inst_touched[*it] = 1;
-                }
+        for (size_t k = 0; k < md_array_size(b.comp); ++k) {
+            const int32_t chain = comp_chain(*c, b.comp[k]);
+            if (chain < 0 || chain_seen[chain]) continue;
+            chain_seen[chain] = 1;
+            md_array_push(chains, chain, temp);
+            scope_whole = scope_whole && chain_whole(*c, chain);
+            const md_urange_t* end = md_system_chain_run_end(&sys, (size_t)chain);
+            for (const md_urange_t* it = md_system_chain_run_beg(&sys, (size_t)chain); it && it < end; ++it) {
+                for (uint32_t ci = it->beg; ci < it->end; ++ci) s->comp_in_scope[ci] = 1;
             }
         }
-        // Every instance of the chains whole
-        for (size_t k = 0; k < md_array_size(chains) && scope_whole; ++k) {
-            const md_instance_idx_t* end = md_system_chain_inst_end(&sys, (size_t)chains[k]);
-            for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, (size_t)chains[k]); it && it < end && scope_whole; ++it) {
-                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*it);
-                scope_whole = md_bitset_test_all_range(c->sel, r.beg, r.end);
-            }
+        for (size_t i = 0; i < md_array_size(b.inst); ++i) {
+            if (inst_first_chain(*c, b.inst[i]) >= 0) continue;
+            md_array_push(loose_insts, b.inst[i], temp);
+            scope_whole = scope_whole && b.inst_full[i] != 0;
+            const md_urange_t comps = md_system_instance_comp_range(&sys, (size_t)b.inst[i]);
+            for (uint32_t ci = comps.beg; ci < comps.end; ++ci) s->comp_in_scope[ci] = 1;
         }
     }
 
@@ -1208,7 +1213,7 @@ static bool unique_name_in_comp(str_t* out, const md_system_t& sys, int32_t atom
 static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t comp) {
     const md_system_t& sys = *c->sys;
     if (!sys.component.seq_id) return false;
-    const int32_t chain = inst_chain(*c, md_instance_find_by_comp_idx(&sys.instance, comp));
+    const int32_t chain = comp_chain(*c, comp);
     *sb += "resid(";
     write_int(sb, md_component_seq_id(&sys.component, comp));
     *sb += ')';

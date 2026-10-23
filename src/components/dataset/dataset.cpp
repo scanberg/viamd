@@ -1544,11 +1544,14 @@ struct Dataset : viamd::EventHandler {
                             const uint32_t inst = instances[k];
                             const md_urange_t comps = md_system_instance_comp_range(&sys, inst);
                             const md_urange_t atoms = md_system_instance_atom_range(&sys, inst);
-                            // By its chain: the id the data gives, or the position of an inferred one; else by its number
-                            const md_chain_idx_t chain = md_system_chain_find_by_inst_idx(&sys, inst);
+                            // By its chain: the id the data gives, or the position of an inferred one; a molecule of a
+                            // topology may hold several (the two strands of a duplex); else by its number
+                            const md_chain_idx_t chain = comps.beg < comps.end ? md_system_chain_find_by_comp_idx(&sys, comps.beg) : -1;
+                            const md_chain_idx_t last  = comps.beg < comps.end ? md_system_chain_find_by_comp_idx(&sys, comps.end - 1) : -1;
                             const str_t id = chain >= 0 ? md_system_chain_id(&sys, (size_t)chain) : str_t{};
                             char where[48];
                             if (!str_empty(id))  snprintf(where, sizeof(where), "chain " STR_FMT, STR_ARG(id));
+                            else if (chain >= 0 && last > chain) snprintf(where, sizeof(where), "chains %d-%d", chain + 1, last + 1);
                             else if (chain >= 0) snprintf(where, sizeof(where), "chain %d", chain + 1);
                             else                 snprintf(where, sizeof(where), "#%d", k + 1);
                             char label[128];

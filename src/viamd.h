@@ -1925,22 +1925,6 @@ static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOpe
     modify_field(m, md_bitset_range(range.beg, range.end), op);
 }
 
-// The atoms of the chain of an instance, or of the instance where it is in no chain (a molecule the data gives no chain
-// id, which is not a polymer): what Chain granularity takes of an atom
-static inline void mask_set_chain_of_instance(md_bitmask_t* mask, size_t inst_idx, const md_system_t& sys) {
-    const md_chain_idx_t chain = md_system_chain_find_by_inst_idx(&sys, inst_idx);
-    if (chain < 0) {
-        const md_urange_t range = md_system_instance_atom_range(&sys, inst_idx);
-        md_bitmask_set_range(mask, range.beg, range.end);
-        return;
-    }
-    const md_instance_idx_t* end = md_system_chain_inst_end(&sys, (size_t)chain);
-    for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, (size_t)chain); it && it < end; ++it) {
-        const md_urange_t range = md_system_instance_atom_range(&sys, (size_t)*it);
-        md_bitmask_set_range(mask, range.beg, range.end);
-    }
-}
-
 // The molecule of an atom (md_structure_data_t), -1 where there are none (a system without bonds)
 static inline int64_t molecule_of_atom(const md_system_t& sys, size_t atom_idx) {
     const md_structure_data_t& st = sys.structure;
@@ -1960,6 +1944,33 @@ static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const m
     for (size_t k = 0; k < st.count; ++k) md_bitmask_set_bit(mask, (uint32_t)st.atom_idx[k]);
 }
 
+static inline void mask_set_chain(md_bitmask_t* mask, size_t chain_idx, const md_system_t& sys) {
+    const md_urange_t* end = md_system_chain_run_end(&sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(&sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t range = md_system_chain_run_atom_range(&sys, *it);
+        if (range.beg < range.end) md_bitmask_set_range(mask, range.beg, range.end);
+    }
+}
+
+// What Chain granularity takes of a residue: its chain (md_chain_data_t), else its molecule (a molecule the data gives
+// no chain id, which is not a polymer), else its instance
+static inline void mask_set_chain_of_comp(md_bitmask_t* mask, size_t comp_idx, const md_system_t& sys) {
+    const md_chain_idx_t chain = md_system_chain_find_by_comp_idx(&sys, comp_idx);
+    if (chain >= 0) {
+        mask_set_chain(mask, (size_t)chain, sys);
+        return;
+    }
+    const md_urange_t range = md_system_component_atom_range(&sys, comp_idx);
+    const int64_t mol = range.beg < range.end ? molecule_of_atom(sys, range.beg) : -1;
+    if (mol >= 0) {
+        mask_set_molecule(mask, (size_t)mol, sys);
+        return;
+    }
+    const md_instance_idx_t inst = md_instance_find_by_comp_idx(&sys.instance, comp_idx);
+    const md_urange_t r = inst >= 0 ? md_system_instance_atom_range(&sys, (size_t)inst) : range;
+    if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
+}
+
 // Grows the mask to whole residues, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
 // filed under a chain come after every polymer), so what is touched is found first and set after.
 static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
@@ -1976,17 +1987,24 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         }
         break;
     case SelectionGranularity::Chain: {
-        md_array(md_instance_idx_t) touched = 0;
+        // The residues touched, each chain (or molecule in none) taken once: a chain's waters are many residues
         md_allocator_i* alloc = md_get_heap_allocator();
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            const md_urange_t range = md_system_instance_atom_range(&sys, i);
-            if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
-                md_array_push(touched, (md_instance_idx_t)i, alloc);
+        md_array(int32_t) touched = 0;
+        md_bitmask_t chain_done = md_bitmask_create(0, (uint32_t)md_system_chain_count(&sys), alloc);
+        for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
+            const md_urange_t range = md_system_component_atom_range(&sys, i);
+            if (!md_bitmask_test_any_range(mask, range.beg, range.end)) continue;
+            const md_chain_idx_t chain = md_system_chain_find_by_comp_idx(&sys, i);
+            if (chain >= 0) {
+                if (md_bitmask_test_bit(&chain_done, (uint32_t)chain)) continue;
+                md_bitmask_set_bit(&chain_done, (uint32_t)chain);
             }
+            md_array_push(touched, (int32_t)i, alloc);
         }
         for (size_t k = 0; k < md_array_size(touched); ++k) {
-            mask_set_chain_of_instance(mask, (size_t)touched[k], sys);
+            mask_set_chain_of_comp(mask, (size_t)touched[k], sys);
         }
+        md_bitmask_free(&chain_done);
         md_array_free(touched, alloc);
         break;
     }
@@ -2035,9 +2053,9 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
         break;
     }
     case SelectionGranularity::Chain: {
-        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
-        if (inst_idx >= 0) {
-            mask_set_chain_of_instance(mask, (size_t)inst_idx, sys);
+        const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(&sys, atom_idx);
+        if (comp_idx >= 0) {
+            mask_set_chain_of_comp(mask, (size_t)comp_idx, sys);
             return;
         }
         break;

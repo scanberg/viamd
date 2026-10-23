@@ -8,6 +8,7 @@
 #include <md_gro.h>
 #include <md_mmcif.h>
 #include <md_xyz.h>
+#include <md_tpr.h>
 #include <md_filter.h>
 #include <md_script.h>
 #include <core/md_arena_allocator.h>
@@ -36,6 +37,7 @@ bool load(Loaded* l, const char* file) {
     md_system_state_t st = { .alloc = l->alloc };
     const str_t p = str_from_cstr(path);
     bool ok = false;
+    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
     if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p);
     else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p);
     else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, MD_XYZ_OPTION_NONE);
@@ -210,6 +212,27 @@ UTEST(script_suggestions, chains_by_author_id) {
     EXPECT_TRUE(contains(w, "sel1 = resid(802) in chain(\"B\");"));
     EXPECT_TRUE(any_contains(w, "molecule("));
     EXPECT_FALSE(any_contains(w, "instance("));
+    unload(&l);
+}
+
+// A DNA duplex which martinize-dna writes as one molecule type: one molecule, as GROMACS has it, of two chains, a strand
+// each, which the topology gives no ids
+UTEST(script_suggestions, strands_of_one_molecule) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "martini/martini2_dna.tpr"));
+    const md_bitset_t strand = select(l, "chain(2)");
+    md_array(ScriptSuggestion) s = suggest(l, strand);
+    print(s);
+    EXPECT_TRUE(all_pick(l, strand, s));
+    EXPECT_TRUE(contains(s, "sel1 = chain(2);"));
+    EXPECT_FALSE(any_contains(s, "molecule("));
+
+    const md_bitset_t duplex = select(l, "molecule(1)");
+    EXPECT_EQ(md_bitset_count(duplex), md_bitset_count(select(l, "chain(1:2)")));
+    md_array(ScriptSuggestion) t = suggest(l, duplex);
+    print(t);
+    EXPECT_TRUE(all_pick(l, duplex, t));
+    EXPECT_TRUE(contains(t, "sel1 = chain(1:2);") || contains(t, "sel1 = nucleic();"));
     unload(&l);
 }
 

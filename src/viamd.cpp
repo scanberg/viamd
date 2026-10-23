@@ -230,7 +230,7 @@ static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, 
 
 // The chain of a place (md_chain_data_t), -1 for one in none
 static int tooltip_place_chain(const md_system_t& sys, const TooltipPlace& place) {
-    return place.inst_idx >= 0 ? md_system_chain_find_by_inst_idx(&sys, (size_t)place.inst_idx) : -1;
+    return place.comp_idx >= 0 ? md_system_chain_find_by_comp_idx(&sys, (size_t)place.comp_idx) : -1;
 }
 
 // "chain A", the id the data gives; "chain 2" for a chain inferred where it gives none, by its position, as chain(2)
@@ -637,7 +637,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     md_str_writer_fmt(&index, "residue(%u) residue(%u)", comp_idx + 1, comp_idx + 2);
-    const md_chain_idx_t chain = inst_idx != -1 ? md_system_chain_find_by_inst_idx(&sys, (size_t)inst_idx) : -1;
+    const md_chain_idx_t chain = md_system_chain_find_by_comp_idx(&sys, comp_idx);
     const int64_t mol = range.beg < range.end ? molecule_of_atom(sys, range.beg) : -1;
     if (chain != -1)    md_str_writer_fmt(&index, " chain(%d)", chain + 1);
     else if (mol != -1) md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);

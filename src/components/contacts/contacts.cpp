@@ -212,9 +212,9 @@ struct Contacts : viamd::EventHandler {
             }
         } else if (group_by == GroupBy_Chain) {
             for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
-                const md_instance_idx_t* end = md_system_chain_inst_end(&sys, c);
-                for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, c); it && it < end; ++it) {
-                    push_range(md_system_instance_atom_range(&sys, (size_t)*it));
+                const md_urange_t* end = md_system_chain_run_end(&sys, c);
+                for (const md_urange_t* it = md_system_chain_run_beg(&sys, c); it && it < end; ++it) {
+                    push_range(md_system_chain_run_atom_range(&sys, *it));
                 }
                 off.push_back((uint32_t)atoms.size());
             }

@@ -149,10 +149,10 @@ void color_atoms_comp_idx(uint32_t* colors, size_t count, const md_system_t& sys
 }
 
 static void set_chain_colors(uint32_t* colors, size_t count, const md_system_t& sys, size_t chain_idx, uint32_t color) {
-    const md_instance_idx_t* end = md_system_chain_inst_end(&sys, chain_idx);
-    for (const md_instance_idx_t* it = md_system_chain_inst_beg(&sys, chain_idx); it && it < end; ++it) {
-        const md_urange_t range = md_system_instance_atom_range(&sys, (size_t)*it);
-        if (range.end <= count) set_colors(colors + range.beg, range.end - range.beg, color);
+    const md_urange_t* end = md_system_chain_run_end(&sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(&sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t range = md_system_chain_run_atom_range(&sys, *it);
+        if (range.beg < range.end && range.end <= count) set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
