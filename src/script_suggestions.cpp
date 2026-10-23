@@ -19,7 +19,7 @@ static constexpr size_t MAX_EXPR_LEN = 240;
 static constexpr size_t MAX_LISTED_EXPR_LEN = 4096;
 static constexpr size_t MAX_SELECTION_SUGGESTIONS = 6;
 
-// A component holding the selected atoms of other components in many different ways is not described, it is listed:
+// A residue holding the selected atoms of other residues in many different ways is not described, it is listed:
 // past this many ways (each one a term of its own) the description is given up.
 static constexpr size_t MAX_GROUPS = 12;
 
@@ -184,17 +184,17 @@ static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocat
     MEMSET(c->chain_seq, 0, num_chains + 1);
 }
 
-// The chain of a component (md_chain_data_t), -1 for none
-static int32_t comp_chain(const Ctx& c, int32_t comp) {
-    return comp >= 0 ? md_system_chain_find_by_comp_idx(c.sys, (size_t)comp) : -1;
+// The chain of a residue (md_chain_data_t), -1 for none
+static int32_t res_chain(const Ctx& c, int32_t res) {
+    return res >= 0 ? md_system_chain_find_by_residue_idx(c.sys, (size_t)res) : -1;
 }
 
-// The chain of an instance: that of its first component. The components of an instance are of one chain, or of none,
+// The chain of an instance: that of its first residue. The residues of an instance are of one chain, or of none,
 // except in a molecule of a topology which holds several strands (a DNA duplex), whose chains are all inferred.
 static int32_t inst_first_chain(const Ctx& c, int32_t inst) {
     if (inst < 0) return -1;
-    const md_urange_t comps = md_system_instance_comp_range(c.sys, (size_t)inst);
-    return comps.beg < comps.end ? comp_chain(c, (int32_t)comps.beg) : -1;
+    const md_urange_t residues = md_system_instance_residue_range(c.sys, (size_t)inst);
+    return residues.beg < residues.end ? res_chain(c, (int32_t)residues.beg) : -1;
 }
 
 // Every atom of the chain is selected
@@ -226,12 +226,12 @@ static void write_chain(md_str_writer_t* sb, const Ctx& c, int32_t chain) {
 // The sequence ids of a chain are only looked at when it holds part of what is described. Those of all of its
 // residues: the waters the data files under a chain are numbered with it.
 static bool chain_by_seq(Ctx* c, int32_t chain) {
-    if (chain < 0 || !c->sys->component.seq_id) return false;
+    if (chain < 0 || !c->sys->residue.seq_id) return false;
     if (c->chain_seq[chain] == 0) {
         md_array(int32_t) ids = 0;
         const md_urange_t* end = md_system_chain_run_end(c->sys, (size_t)chain);
         for (const md_urange_t* it = md_system_chain_run_beg(c->sys, (size_t)chain); it && it < end; ++it) {
-            for (uint32_t k = it->beg; k < it->end; ++k) md_array_push(ids, (int32_t)c->sys->component.seq_id[k], c->temp);
+            for (uint32_t k = it->beg; k < it->end; ++k) md_array_push(ids, (int32_t)c->sys->residue.seq_id[k], c->temp);
         }
         const size_t n = md_array_size(ids);
         c->chain_seq[chain] = n > 0 && sort_unique(ids, n) == n ? 1 : 2;
@@ -239,47 +239,47 @@ static bool chain_by_seq(Ctx* c, int32_t chain) {
     return c->chain_seq[chain] == 1;
 }
 
-// What the selection holds: the components with a selected atom, whole or in part, the instances which hold them,
-// and the selected atoms which are in no component.
+// What the selection holds: the residues with a selected atom, whole or in part, the instances which hold them,
+// and the selected atoms which are in no residue.
 struct Breakdown {
-    md_array(int32_t) comp      = 0;
-    md_array(uint8_t) comp_full = 0;    // [comp] every atom of the component is selected
-    md_array(int32_t) comp_inst = 0;    // [comp] its instance, -1 for none
-    md_array(int32_t) comp_slot = 0;    // [comp] where its instance is in inst, -1 for none
-    md_array(int32_t) inst      = 0;    // the instances of the components, in order
+    md_array(int32_t) res       = 0;
+    md_array(uint8_t) res_full = 0;     // [res] every atom of the residue is selected
+    md_array(int32_t) res_inst = 0;     // [res] its instance, -1 for none
+    md_array(int32_t) res_slot = 0;     // [res] where its instance is in inst, -1 for none
+    md_array(int32_t) inst      = 0;    // the instances of the residues, in order
     md_array(uint8_t) inst_full = 0;    // [inst] every atom of the instance is selected
-    md_array(int32_t) loose     = 0;    // selected atoms of no component
-    bool comps_full = true;             // the selection is whole components (and nothing else)
+    md_array(int32_t) loose     = 0;    // selected atoms of no residue
+    bool residues_full = true;          // the selection is whole residues (and nothing else)
     bool insts_full = true;             // the selection is whole instances (and nothing else)
 };
 
 static void breakdown_init(Breakdown* b, const Ctx& c) {
     const md_system_t& sys = *c.sys;
-    const md_component_data_t* comp = &sys.component;
+    const md_residue_data_t* res = &sys.residue;
     const md_bitset_t sel = c.sel;
     const uint64_t popcount = md_bitset_count(sel);
 
-    uint64_t in_comps = 0;
-    if (comp->count && comp->atom_offset && !md_bitset_empty(sel)) {
-        // The first component which ends past the first selected atom
-        size_t lo = 0, hi = comp->count;
+    uint64_t in_residues = 0;
+    if (res->count && res->atom_offset && !md_bitset_empty(sel)) {
+        // The first residue which ends past the first selected atom
+        size_t lo = 0, hi = res->count;
         while (lo < hi) {
             const size_t mid = lo + (hi - lo) / 2;
-            if (comp->atom_offset[mid + 1] <= sel.beg) lo = mid + 1;
+            if (res->atom_offset[mid + 1] <= sel.beg) lo = mid + 1;
             else hi = mid;
         }
         int32_t inst = -1;
-        md_urange_t inst_comps = {0, 0};
-        for (size_t i = lo; i < comp->count && comp->atom_offset[i] < sel.end; ++i) {
-            const md_urange_t r = md_component_atom_range(comp, i);
+        md_urange_t inst_residues = {0, 0};
+        for (size_t i = lo; i < res->count && res->atom_offset[i] < sel.end; ++i) {
+            const md_urange_t r = md_residue_atom_range(res, i);
             const uint64_t n = md_bitset_count_range(sel, r.beg, r.end);
             if (!n) continue;
-            in_comps += n;
+            in_residues += n;
 
-            // The components of an instance are consecutive, so the instance of the previous one is the likely one
-            if (!(inst_comps.beg <= i && i < inst_comps.end)) {
-                inst = md_instance_find_by_comp_idx(&sys.instance, i);
-                inst_comps = inst >= 0 ? md_system_instance_comp_range(&sys, inst) : md_urange_t{0, 0};
+            // The residues of an instance are consecutive, so the instance of the previous one is the likely one
+            if (!(inst_residues.beg <= i && i < inst_residues.end)) {
+                inst = md_instance_find_by_residue_idx(&sys.instance, i);
+                inst_residues = inst >= 0 ? md_system_instance_residue_range(&sys, inst) : md_urange_t{0, 0};
                 if (inst >= 0) {
                     const md_urange_t ar = md_system_instance_atom_range(&sys, inst);
                     const bool full = md_bitset_test_all_range(sel, ar.beg, ar.end);
@@ -289,23 +289,23 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
                 }
             }
             const bool full = n == (uint64_t)(r.end - r.beg);
-            md_array_push(b->comp, (int32_t)i, c.temp);
-            md_array_push(b->comp_full, (uint8_t)full, c.temp);
-            md_array_push(b->comp_inst, inst, c.temp);
-            md_array_push(b->comp_slot, inst >= 0 ? (int32_t)md_array_size(b->inst) - 1 : -1, c.temp);
-            b->comps_full &= full;
+            md_array_push(b->res, (int32_t)i, c.temp);
+            md_array_push(b->res_full, (uint8_t)full, c.temp);
+            md_array_push(b->res_inst, inst, c.temp);
+            md_array_push(b->res_slot, inst >= 0 ? (int32_t)md_array_size(b->inst) - 1 : -1, c.temp);
+            b->residues_full &= full;
             b->insts_full &= inst >= 0;
         }
     }
 
-    if (in_comps < popcount) {
+    if (in_residues < popcount) {
         md_bitset_iter_t it = md_bitset_iter(sel);
         while (md_bitset_iter_next(&it)) {
-            if (md_component_find_by_atom_idx(comp, it.idx) == -1) {
+            if (md_residue_find_by_atom_idx(res, it.idx) == -1) {
                 md_array_push(b->loose, (int32_t)it.idx, c.temp);
             }
         }
-        b->comps_full = false;
+        b->residues_full = false;
         b->insts_full = false;
     }
 }
@@ -326,7 +326,7 @@ static int32_t molecule_of_instance(const md_system_t& sys, int32_t inst) {
 // molecule) where they are wholly among the instances (sorted). None where they are not: its residues are written then.
 static void molecules_of_instance(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
     const md_system_t& sys = *c.sys;
-    const md_structure_data_t& st = sys.structure;
+    const md_molecule_data_t& st = sys.molecule;
     const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
     md_array(int32_t) touched = 0;
     int32_t prev = -1;
@@ -417,29 +417,29 @@ static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)*
     // [chain] 0 not seen, 1 whole, 2 not whole
     uint8_t* state = (uint8_t*)md_alloc(c.temp, num_chains + 1);
     MEMSET(state, 0, num_chains + 1);
-    for (size_t k = 0; k < md_array_size(b.comp); ++k) {
-        const int32_t chain = comp_chain(c, b.comp[k]);
+    for (size_t k = 0; k < md_array_size(b.res); ++k) {
+        const int32_t chain = res_chain(c, b.res[k]);
         if (chain < 0 || state[chain]) continue;
         state[chain] = chain_whole(c, chain) ? 1 : 2;
         if (state[chain] == 1) md_array_push(*chains, chain, c.temp);
     }
     for (size_t i = 0; i < md_array_size(b.inst); ++i) {
         if (!b.inst_full[i]) continue;
-        const md_urange_t comps = md_system_instance_comp_range(c.sys, (size_t)b.inst[i]);
+        const md_urange_t residues = md_system_instance_residue_range(c.sys, (size_t)b.inst[i]);
         bool in_whole = true;
-        for (uint32_t k = comps.beg; k < comps.end && in_whole; ++k) {
-            const int32_t chain = comp_chain(c, (int32_t)k);
+        for (uint32_t k = residues.beg; k < residues.end && in_whole; ++k) {
+            const int32_t chain = res_chain(c, (int32_t)k);
             in_whole = chain >= 0 && state[chain] == 1;
         }
         if (!in_whole) md_array_push(*insts, b.inst[i], c.temp);
     }
 }
 
-// The selected atoms of a component which holds others as well, as the script picks them within it: by their names
+// The selected atoms of a residue which holds others as well, as the script picks them within it: by their names
 // where those pick them and nothing else in it, name({"N", "CA", "C"}); else by their positions in it, atom(2:4).
-static void part_term(md_str_writer_t* sb, int32_t comp_idx, const Ctx& c, bool by_name) {
+static void part_term(md_str_writer_t* sb, int32_t res_idx, const Ctx& c, bool by_name) {
     const md_system_t& sys = *c.sys;
-    const md_urange_t r = md_component_atom_range(&sys.component, comp_idx);
+    const md_urange_t r = md_residue_atom_range(&sys.residue, res_idx);
 
     if (by_name) {
         md_array(str_t) names = 0;
@@ -474,10 +474,10 @@ static void part_term(md_str_writer_t* sb, int32_t comp_idx, const Ctx& c, bool 
     *sb += ')';
 }
 
-// Components which hold the selected atoms the same way, by what picks those atoms within them (part_term)
+// Residues which hold the selected atoms the same way, by what picks those atoms within them (part_term)
 struct Groups {
     md_array(str_t) term = 0;
-    md_array(md_array(int32_t)) vals = 0;   // what the components are written by: their positions or sequence ids
+    md_array(md_array(int32_t)) vals = 0;   // what the residues are written by: their positions or sequence ids
 };
 
 static bool groups_add(Groups* g, str_t term, int32_t val, size_t max_groups, md_allocator_i* temp) {
@@ -495,7 +495,7 @@ static bool groups_add(Groups* g, str_t term, int32_t val, size_t max_groups, md
     return true;
 }
 
-// "term in selector(vals)" for each group, and "selector(vals)" for the whole components, pushed to terms
+// "term in selector(vals)" for each group, and "selector(vals)" for the whole residues, pushed to terms
 static void group_terms(md_array(str_t)* terms, md_array(int32_t) whole, const Groups& g, const char* selector, md_allocator_i* temp) {
     md_str_writer_t sb = md_str_writer_create(temp);
     if (md_array_size(whole)) {
@@ -565,12 +565,12 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     bool cur_part_whole = false;
 
     md_str_writer_t sb = md_str_writer_create(temp);
-    const size_t num_comps = md_array_size(b.comp);
-    for (size_t k = 0; k < num_comps; ++k) {
-        const int32_t inst = b.comp_inst[k];
-        const int32_t chain = comp_chain(*c, b.comp[k]);
+    const size_t num_residues = md_array_size(b.res);
+    for (size_t k = 0; k < num_residues; ++k) {
+        const int32_t inst = b.res_inst[k];
+        const int32_t chain = res_chain(*c, b.res[k]);
         // Its instance is written whole, as a molecule or with its chain
-        if (inst >= 0 && b.inst_full[b.comp_slot[k]] && !bsearch(&inst, unwritten, num_unwritten, sizeof(int32_t), cmp_int32)) continue;
+        if (inst >= 0 && b.inst_full[b.res_slot[k]] && !bsearch(&inst, unwritten, num_unwritten, sizeof(int32_t), cmp_int32)) continue;
         if (chain >= 0 && chain_written[chain]) continue;
 
         if (by_id && chain_by_seq(c, chain)) {
@@ -581,20 +581,20 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
                 md_array_push(slot_parts, Groups{}, temp);
             }
             const int32_t slot = chain_slot[chain];
-            const int32_t seq = (int32_t)md_component_seq_id(&c->sys->component, b.comp[k]);
-            if (b.comp_full[k]) {
+            const int32_t seq = (int32_t)md_residue_seq_id(&c->sys->residue, b.res[k]);
+            if (b.res_full[k]) {
                 md_array_push(slot_whole[slot], seq, temp);
             } else {
-                part_term(&sb, b.comp[k], *c, true);
+                part_term(&sb, b.res[k], *c, true);
                 if (too_long(&sb, c->limit) || !groups_add(&slot_parts[slot], take(&sb, temp), seq, c->max_groups, temp)) return false;
             }
         } else {
-            const int32_t pos = b.comp[k] + 1;
-            if (b.comp_full[k]) {
-                const int32_t part = md_system_part_find_by_comp_idx(c->sys, (size_t)b.comp[k]);
+            const int32_t pos = b.res[k] + 1;
+            if (b.res_full[k]) {
+                const int32_t part = md_system_part_find_by_residue_idx(c->sys, (size_t)b.res[k]);
                 if (part >= 0 && part != cur_part) {
                     cur_part = part;
-                    const md_urange_t pc = md_system_part_comp_range(c->sys, (size_t)part);
+                    const md_urange_t pc = md_system_part_residue_range(c->sys, (size_t)part);
                     const md_urange_t pa = md_system_part_atom_range(c->sys, (size_t)part);
                     cur_part_whole = pc.end - pc.beg > 1 && md_bitset_test_all_range(c->sel, pa.beg, pa.end);
                     if (cur_part_whole) md_array_push(whole_parts, part + 1, temp);
@@ -602,7 +602,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
                 if (part >= 0 && cur_part_whole) continue;
                 md_array_push(whole, pos, temp);
             } else {
-                part_term(&sb, b.comp[k], *c, by_id);
+                part_term(&sb, b.res[k], *c, by_id);
                 if (too_long(&sb, c->limit) || !groups_add(&parts, take(&sb, temp), pos, c->max_groups, temp)) return false;
             }
         }
@@ -680,22 +680,22 @@ static bool write_atoms(md_str_writer_t* out, const Ctx& c) {
 
 enum Scope : uint32_t {
     Scope_System    = 1,
-    Scope_Class     = 2,    // the components of the one kind the selected ones are of: protein(), water(), ...
-    Scope_Resname   = 4,    // the components of the names of the selected ones
+    Scope_Class     = 2,    // the residues of the one kind the selected ones are of: protein(), water(), ...
+    Scope_Resname   = 4,    // the residues of the names of the selected ones
     Scope_Inst      = 8,    // the chains which hold the selection (and the molecules in no chain which do)
-    Scope_Res       = 16,   // the components which hold the selection
+    Scope_Res       = 16,   // the residues which hold the selection
     Scope_All       = 31,
 };
 
 struct Pred {
     str_t text = {};
-    bool comp_level = false;                // of whole components (true), or of atoms
+    bool res_level = false;                 // of whole residues (true), or of atoms
     // Atoms: by their type (name, element), or by their flags
-    uint8_t* type_take = nullptr;           // [atom types]
+    uint8_t* type_take = nullptr;           // [particle types]
     uint32_t flags = 0;                     // MD_ATOM_FLAG_...
-    // Components: of a kind, or of a name
-    int comp_kind = -1;
-    md_array(str_t) comp_names = 0;
+    // Residues: of a kind, or of a name
+    int res_kind = -1;
+    md_array(str_t) res_names = 0;
 };
 
 struct Scopes {
@@ -703,8 +703,8 @@ struct Scopes {
     str_t text[5] = {};                     // indexed by the bit of the scope
     int class_kind = -1;
     md_array(str_t) resnames = 0;
-    uint8_t* comp_touched = nullptr;        // [component]
-    uint8_t* comp_in_scope = nullptr;       // [component] of the chains which hold the selection, or of a molecule in no chain which does
+    uint8_t* res_touched = nullptr;         // [residue]
+    uint8_t* res_in_scope = nullptr;        // [residue] of the chains which hold the selection, or of a molecule in no chain which does
 };
 
 static int scope_slot(uint32_t scope) {
@@ -715,35 +715,35 @@ static int scope_slot(uint32_t scope) {
 
 static bool pred_atom(const Pred& p, const md_system_t& sys, size_t i) {
     if (p.type_take) {
-        const md_atom_type_idx_t t = sys.atom.type_idx ? sys.atom.type_idx[i] : 0;
+        const md_particle_type_idx_t t = sys.atom.type_idx ? sys.atom.type_idx[i] : 0;
         return (size_t)t < sys.atom.type.count && p.type_take[t];
     }
     return ((uint32_t)md_atom_flags(&sys.atom, i) & p.flags) != 0;
 }
 
-static bool pred_comp(const Pred& p, const md_system_t& sys, size_t comp) {
-    if (p.comp_kind >= 0) return (int)md_component_kind(&sys.component, comp) == p.comp_kind;
-    return contains_str(p.comp_names, md_array_size(p.comp_names), md_component_name(&sys.component, comp));
+static bool pred_res(const Pred& p, const md_system_t& sys, size_t res) {
+    if (p.res_kind >= 0) return (int)md_residue_kind(&sys.residue, res) == p.res_kind;
+    return contains_str(p.res_names, md_array_size(p.res_names), md_residue_name(&sys.residue, res));
 }
 
 // The scopes in which something other than the selection fulfils the predicate
 static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     const md_system_t& sys = *c.sys;
-    const md_component_data_t* comp = &sys.component;
+    const md_residue_data_t* res = &sys.residue;
     uint32_t violated = 0;
 
     auto classify = [&](size_t ci) {
         uint32_t v = Scope_System;
-        if (s.class_kind >= 0 && (int)md_component_kind(comp, ci) == s.class_kind) v |= Scope_Class;
-        if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_component_name(comp, ci))) v |= Scope_Resname;
-        if (s.comp_in_scope[ci]) v |= Scope_Inst;
-        if (s.comp_touched[ci]) v |= Scope_Res;
+        if (s.class_kind >= 0 && (int)md_residue_kind(res, ci) == s.class_kind) v |= Scope_Class;
+        if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_residue_name(res, ci))) v |= Scope_Resname;
+        if (s.res_in_scope[ci]) v |= Scope_Inst;
+        if (s.res_touched[ci]) v |= Scope_Res;
         return v;
     };
 
-    // The atoms before, between and after the components belong to no scope but the system
+    // The atoms before, between and after the residues belong to no scope but the system
     auto loose_atoms = [&](uint32_t beg, uint32_t end) {
-        if (p.comp_level || (violated & Scope_System)) return;
+        if (p.res_level || (violated & Scope_System)) return;
         for (uint32_t i = beg; i < end; ++i) {
             if (!md_bitset_test(c.sel, i) && pred_atom(p, sys, i)) {
                 violated |= Scope_System;
@@ -753,15 +753,15 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     };
 
     uint32_t prev_end = 0;
-    for (size_t ci = 0; ci < comp->count; ++ci) {
-        const md_urange_t r = md_component_atom_range(comp, ci);
+    for (size_t ci = 0; ci < res->count; ++ci) {
+        const md_urange_t r = md_residue_atom_range(res, ci);
         loose_atoms(prev_end, r.beg);
         prev_end = r.end;
 
         bool violation = false;
-        if (p.comp_level) {
-            // The selected components are whole, so any other of the kind is a violation
-            violation = !s.comp_touched[ci] && pred_comp(p, sys, ci);
+        if (p.res_level) {
+            // The selected residues are whole, so any other of the kind is a violation
+            violation = !s.res_touched[ci] && pred_res(p, sys, ci);
         } else {
             for (uint32_t i = r.beg; i < r.end && !violation; ++i) {
                 violation = !md_bitset_test(c.sel, i) && pred_atom(p, sys, i);
@@ -769,7 +769,7 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
         }
         if (violation) {
             violated |= classify(ci);
-            // The components which hold the selection are within every other scope: nothing is left
+            // The residues which hold the selection are within every other scope: nothing is left
             if (violated & Scope_Res) return Scope_All;
         }
     }
@@ -777,14 +777,14 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     return violated;
 }
 
-// The class of a kind of component, as the script selects it
+// The class of a kind of residue, as the script selects it
 static const char* class_selector(int kind) {
     switch (kind) {
-    case MD_COMPONENT_KIND_AMINO_ACID: return "protein()";
-    case MD_COMPONENT_KIND_NUCLEOTIDE: return "nucleic()";
-    case MD_COMPONENT_KIND_WATER:      return "water()";
-    case MD_COMPONENT_KIND_ION:        return "ion()";
-    case MD_COMPONENT_KIND_LIPID:      return "lipid()";
+    case MD_RESIDUE_KIND_AMINO_ACID: return "protein()";
+    case MD_RESIDUE_KIND_NUCLEOTIDE: return "nucleic()";
+    case MD_RESIDUE_KIND_WATER:        return "water()";
+    case MD_RESIDUE_KIND_ION:          return "ion()";
+    case MD_RESIDUE_KIND_LIPID:        return "lipid()";
     default: return nullptr;
     }
 }
@@ -792,13 +792,13 @@ static const char* class_selector(int kind) {
 static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     const md_system_t& sys = *c->sys;
     md_allocator_i* temp = c->temp;
-    const size_t num_comps = sys.component.count;
+    const size_t num_residues = sys.residue.count;
 
-    s->comp_touched  = (uint8_t*)md_alloc(temp, num_comps + 1);
-    s->comp_in_scope = (uint8_t*)md_alloc(temp, num_comps + 1);
-    MEMSET(s->comp_touched, 0, num_comps + 1);
-    MEMSET(s->comp_in_scope, 0, num_comps + 1);
-    for (size_t i = 0; i < md_array_size(b.comp); ++i) s->comp_touched[b.comp[i]] = 1;
+    s->res_touched   = (uint8_t*)md_alloc(temp, num_residues + 1);
+    s->res_in_scope = (uint8_t*)md_alloc(temp, num_residues + 1);
+    MEMSET(s->res_touched, 0, num_residues + 1);
+    MEMSET(s->res_in_scope, 0, num_residues + 1);
+    for (size_t i = 0; i < md_array_size(b.res); ++i) s->res_touched[b.res[i]] = 1;
 
     // The chains which hold the selection, all of their residues, and the molecules in no chain which hold it
     md_array(int32_t) chains = 0;
@@ -808,34 +808,34 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
         const size_t num_chains = md_system_chain_count(&sys);
         uint8_t* chain_seen = (uint8_t*)md_alloc(temp, num_chains + 1);
         MEMSET(chain_seen, 0, num_chains + 1);
-        for (size_t k = 0; k < md_array_size(b.comp); ++k) {
-            const int32_t chain = comp_chain(*c, b.comp[k]);
+        for (size_t k = 0; k < md_array_size(b.res); ++k) {
+            const int32_t chain = res_chain(*c, b.res[k]);
             if (chain < 0 || chain_seen[chain]) continue;
             chain_seen[chain] = 1;
             md_array_push(chains, chain, temp);
             scope_whole = scope_whole && chain_whole(*c, chain);
             const md_urange_t* end = md_system_chain_run_end(&sys, (size_t)chain);
             for (const md_urange_t* it = md_system_chain_run_beg(&sys, (size_t)chain); it && it < end; ++it) {
-                for (uint32_t ci = it->beg; ci < it->end; ++ci) s->comp_in_scope[ci] = 1;
+                for (uint32_t ci = it->beg; ci < it->end; ++ci) s->res_in_scope[ci] = 1;
             }
         }
         for (size_t i = 0; i < md_array_size(b.inst); ++i) {
             if (inst_first_chain(*c, b.inst[i]) >= 0) continue;
             md_array_push(loose_insts, b.inst[i], temp);
             scope_whole = scope_whole && b.inst_full[i] != 0;
-            const md_urange_t comps = md_system_instance_comp_range(&sys, (size_t)b.inst[i]);
-            for (uint32_t ci = comps.beg; ci < comps.end; ++ci) s->comp_in_scope[ci] = 1;
+            const md_urange_t residues = md_system_instance_residue_range(&sys, (size_t)b.inst[i]);
+            for (uint32_t ci = residues.beg; ci < residues.end; ++ci) s->res_in_scope[ci] = 1;
         }
     }
 
     s->avail = Scope_System;
-    // A scope is of the components which hold the selection: selected atoms which are in none fit none of them
-    if (md_array_size(b.loose) || md_array_size(b.comp) == 0) return;
+    // A scope is of the residues which hold the selection: selected atoms which are in none fit none of them
+    if (md_array_size(b.loose) || md_array_size(b.res) == 0) return;
 
     // Of one kind
     int kind = -1;
-    for (size_t i = 0; i < md_array_size(b.comp); ++i) {
-        const int k = (int)md_component_kind(&sys.component, b.comp[i]);
+    for (size_t i = 0; i < md_array_size(b.res); ++i) {
+        const int k = (int)md_residue_kind(&sys.residue, b.res[i]);
         if (i == 0) kind = k;
         else if (k != kind) kind = -1;
     }
@@ -847,8 +847,8 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
 
     // Of a few names
     bool names_ok = true;
-    for (size_t i = 0; i < md_array_size(b.comp) && names_ok; ++i) {
-        const str_t name = md_component_name(&sys.component, b.comp[i]);
+    for (size_t i = 0; i < md_array_size(b.res) && names_ok; ++i) {
+        const str_t name = md_residue_name(&sys.residue, b.res[i]);
         names_ok = quotable(name);
         if (names_ok && !contains_str(s->resnames, md_array_size(s->resnames), name)) {
             md_array_push(s->resnames, name, temp);
@@ -869,7 +869,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     // The chains which hold the selection (and the molecules in no chain), when it is not the whole of them: then it is
     // written as them
     bool all_in_inst = true;
-    for (size_t i = 0; i < md_array_size(b.comp_inst); ++i) all_in_inst &= b.comp_inst[i] >= 0;
+    for (size_t i = 0; i < md_array_size(b.res_inst); ++i) all_in_inst &= b.res_inst[i] >= 0;
     if (all_in_inst && !scope_whole) {
         md_array(str_t) terms = 0;
         md_array(int32_t) unwritten = 0;
@@ -884,21 +884,21 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
         }
     }
 
-    // The components which hold the selection, when it is not the whole of them, written whole
-    if (!b.comps_full) {
+    // The residues which hold the selection, when it is not the whole of them, written whole
+    if (!b.residues_full) {
         Breakdown whole = b;
-        whole.comp_full = (uint8_t*)0;
+        whole.res_full = (uint8_t*)0;
         whole.inst_full = (uint8_t*)0;
-        for (size_t i = 0; i < md_array_size(b.comp); ++i) md_array_push(whole.comp_full, (uint8_t)1, temp);
-        // An instance is whole when all of its components hold the selection
+        for (size_t i = 0; i < md_array_size(b.res); ++i) md_array_push(whole.res_full, (uint8_t)1, temp);
+        // An instance is whole when all of its residues hold the selection
         md_array(uint32_t) held = 0;
         md_array_resize(held, md_array_size(b.inst), temp);
         for (size_t i = 0; i < md_array_size(b.inst); ++i) held[i] = 0;
-        for (size_t k = 0; k < md_array_size(b.comp_slot); ++k) {
-            if (b.comp_slot[k] >= 0) held[b.comp_slot[k]] += 1;
+        for (size_t k = 0; k < md_array_size(b.res_slot); ++k) {
+            if (b.res_slot[k] >= 0) held[b.res_slot[k]] += 1;
         }
         for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-            md_array_push(whole.inst_full, (uint8_t)(held[i] == md_system_instance_comp_count(&sys, b.inst[i])), temp);
+            md_array_push(whole.inst_full, (uint8_t)(held[i] == md_system_instance_residue_count(&sys, b.inst[i])), temp);
         }
         md_str_writer_t sb = md_str_writer_create(temp);
         if (write_structures(&sb, whole, c, true)) {
@@ -915,28 +915,28 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
     md_array(Pred) preds = 0;
     md_str_writer_t sb = md_str_writer_create(temp);
 
-    // Of whole components
-    if (b.comps_full && md_array_size(b.loose) == 0 && md_array_size(b.comp)) {
+    // Of whole residues
+    if (b.residues_full && md_array_size(b.loose) == 0 && md_array_size(b.res)) {
         if (s.class_kind >= 0) {
             Pred p = {};
             p.text = str_from_cstr(class_selector(s.class_kind));
-            p.comp_level = true;
-            p.comp_kind = s.class_kind;
+            p.res_level = true;
+            p.res_kind = s.class_kind;
             md_array_push(preds, p, temp);
         }
         if (md_array_size(s.resnames)) {
             Pred p = {};
             p.text = s.text[scope_slot(Scope_Resname)];
-            p.comp_level = true;
-            p.comp_names = s.resnames;
+            p.res_level = true;
+            p.res_names = s.resnames;
             md_array_push(preds, p, temp);
         }
     }
 
-    // Of atoms. Of whole components they say nothing the components do not say better: name({"OW", "HW1", "HW2"}) is
+    // Of atoms. Of whole residues they say nothing the residues do not say better: name({"OW", "HW1", "HW2"}) is
     // every atom of the waters.
     const size_t num_types = sys.atom.type.count;
-    if (!sys.atom.type_idx || num_types == 0 || b.comps_full) return preds;
+    if (!sys.atom.type_idx || num_types == 0 || b.residues_full) return preds;
 
     // The types of the atoms, and their names in the order the atoms have them (N, CA, C rather than C, CA, N)
     uint8_t* seen = (uint8_t*)md_alloc(temp, num_types);
@@ -946,10 +946,10 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
     uint32_t flags_all = ~0u;
     md_bitset_iter_t it = md_bitset_iter(c.sel);
     while (md_bitset_iter_next(&it)) {
-        const md_atom_type_idx_t t = sys.atom.type_idx[it.idx];
+        const md_particle_type_idx_t t = sys.atom.type_idx[it.idx];
         if ((size_t)t < num_types && !seen[t]) {
             seen[t] = 1;
-            const str_t name = md_atom_type_name(&sys.atom.type, t);
+            const str_t name = md_particle_type_name(&sys.atom.type, t);
             names_ok &= quotable(name);
             if (names_ok && !contains_str(names, md_array_size(names), name)) {
                 md_array_push(names, name, temp);
@@ -981,7 +981,7 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
     if (names_ok && md_array_size(names)) {
         Pred p = {};
         p.type_take = (uint8_t*)md_alloc(temp, num_types);
-        for (size_t t = 0; t < num_types; ++t) p.type_take[t] = contains_str(names, md_array_size(names), md_atom_type_name(&sys.atom.type, t));
+        for (size_t t = 0; t < num_types; ++t) p.type_take[t] = contains_str(names, md_array_size(names), md_particle_type_name(&sys.atom.type, t));
         sb += "name(";
         write_strings(&sb, names, md_array_size(names));
         sb += ')';
@@ -1056,10 +1056,10 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
         const Pred& p = preds[i];
         const uint32_t violated = pred_violations(p, *c, s);
         uint32_t avail = s.avail & ~violated;
-        // Whole components within the components they are of, or within themselves, say nothing. Within the instances
+        // Whole residues within the residues they are of, or within themselves, say nothing. Within the instances
         // which hold them they say something of several (the HIS of chain A), and of one only that it is the one of
         // its name there, which its residue number says better.
-        if (p.comp_level) avail &= md_array_size(b.comp) > 1 ? (Scope_System | Scope_Inst) : Scope_System;
+        if (p.res_level) avail &= md_array_size(b.res) > 1 ? (Scope_System | Scope_Inst) : Scope_System;
 
         for (uint32_t scope = Scope_System; scope <= Scope_Res; scope <<= 1) {
             if (!(avail & scope)) continue;
@@ -1115,23 +1115,23 @@ static bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
 // glycan(), glycan() in chain("A"). Whether they pick the selection is for the validation to tell.
 static void glycan_terms(md_array(str_t)* out, const Breakdown& b, Ctx* c) {
     const md_system_t& sys = *c->sys;
-    if (!b.comps_full || md_array_size(b.loose) || md_array_size(b.comp) == 0 || md_system_part_count(&sys) == 0) return;
+    if (!b.residues_full || md_array_size(b.loose) || md_array_size(b.res) == 0 || md_system_part_count(&sys) == 0) return;
 
     md_array(int32_t) chains = 0;
     bool all_in_chain = true;
     int32_t cur_part = -1;
-    for (size_t k = 0; k < md_array_size(b.comp); ++k) {
-        const md_component_kind_t kind = md_component_kind(&sys.component, (size_t)b.comp[k]);
-        if (kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE || kind == MD_COMPONENT_KIND_WATER ||
-            kind == MD_COMPONENT_KIND_ION || kind == MD_COMPONENT_KIND_LIPID) return;
-        const int32_t part = md_system_part_find_by_comp_idx(&sys, (size_t)b.comp[k]);
+    for (size_t k = 0; k < md_array_size(b.res); ++k) {
+        const md_residue_kind_t kind = md_residue_kind(&sys.residue, (size_t)b.res[k]);
+        if (kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE || kind == MD_RESIDUE_KIND_WATER ||
+            kind == MD_RESIDUE_KIND_ION || kind == MD_RESIDUE_KIND_LIPID) return;
+        const int32_t part = md_system_part_find_by_residue_idx(&sys, (size_t)b.res[k]);
         if (part < 0) return;
         if (part != cur_part) {
             cur_part = part;
             const md_urange_t pa = md_system_part_atom_range(&sys, (size_t)part);
             if (!md_bitset_test_all_range(c->sel, pa.beg, pa.end)) return;
         }
-        const int32_t chain = comp_chain(*c, b.comp[k]);
+        const int32_t chain = res_chain(*c, b.res[k]);
         if (chain < 0) all_in_chain = false;
         else md_array_push(chains, chain, c->temp);
     }
@@ -1246,11 +1246,11 @@ md_array(ScriptSuggestion) script_suggest_selection(str_t ident, md_bitset_t sel
 
 // ### MEASUREMENT ###
 
-// The name of the atom when no other atom of its component has it
-static bool unique_name_in_comp(str_t* out, const md_system_t& sys, int32_t atom, int32_t comp) {
+// The name of the atom when no other atom of its residue has it
+static bool unique_name_in_res(str_t* out, const md_system_t& sys, int32_t atom, int32_t res) {
     const str_t name = md_atom_name(&sys.atom, atom);
     if (!quotable(name)) return false;
-    const md_urange_t r = md_component_atom_range(&sys.component, comp);
+    const md_urange_t r = md_residue_atom_range(&sys.residue, res);
     for (uint32_t i = r.beg; i < r.end; ++i) {
         if ((int32_t)i != atom && str_eq(md_atom_name(&sys.atom, i), name)) return false;
     }
@@ -1258,14 +1258,14 @@ static bool unique_name_in_comp(str_t* out, const md_system_t& sys, int32_t atom
     return true;
 }
 
-// The context which picks the component alone, as the file numbers it: 'resid(42) in chain("A")' (or of an inferred
+// The context which picks the residue alone, as the file numbers it: 'resid(42) in chain("A")' (or of an inferred
 // chain, 'resid(42) in chain(2)'), else 'resid(42)'
-static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t comp) {
+static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t res) {
     const md_system_t& sys = *c->sys;
-    if (!sys.component.seq_id) return false;
-    const int32_t chain = comp_chain(*c, comp);
+    if (!sys.residue.seq_id) return false;
+    const int32_t chain = res_chain(*c, res);
     *sb += "resid(";
-    write_int(sb, md_component_seq_id(&sys.component, comp));
+    write_int(sb, md_residue_seq_id(&sys.residue, res));
     *sb += ')';
     if (chain_by_seq(c, chain)) {
         *sb += " in ";
@@ -1332,20 +1332,20 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
     write_call(args);
     push_line({});
 
-    int32_t comps[4] = {-1, -1, -1, -1};
+    int32_t atom_res[4] = {-1, -1, -1, -1};
     str_t names[4] = {};
     bool named = true;
-    bool same_comp = true;
+    bool same_res = true;
     for (size_t i = 0; i < count; ++i) {
-        comps[i] = md_component_find_by_atom_idx(&sys.component, atoms[i]);
-        same_comp &= comps[i] >= 0 && comps[i] == comps[0];
-        named &= comps[i] >= 0 && unique_name_in_comp(&names[i], sys, atoms[i], comps[i]);
+        atom_res[i] = md_residue_find_by_atom_idx(&sys.residue, atoms[i]);
+        same_res &= atom_res[i] >= 0 && atom_res[i] == atom_res[0];
+        named &= atom_res[i] >= 0 && unique_name_in_res(&names[i], sys, atoms[i], atom_res[i]);
     }
 
-    if (same_comp) {
+    if (same_res) {
         // Within the residue: the atoms by name, else by their positions in it
-        const int32_t comp = comps[0];
-        const md_urange_t r = md_component_atom_range(&sys.component, comp);
+        const int32_t res = atom_res[0];
+        const md_urange_t r = md_residue_atom_range(&sys.residue, res);
         str_t pick[4] = {};     // what picks each atom within the residue, as a selection
         for (size_t i = 0; i < count; ++i) {
             if (named) {
@@ -1363,9 +1363,9 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
         }
 
         str_t contexts[2] = {};
-        md_str_writer_fmt(&sb, "residue(%d)", comp + 1);
+        md_str_writer_fmt(&sb, "residue(%d)", res + 1);
         contexts[0] = take(&sb, temp);
-        if (resid_context(&sb, &c, comp)) contexts[1] = take(&sb, temp);
+        if (resid_context(&sb, &c, res)) contexts[1] = take(&sb, temp);
         md_str_writer_reset(&sb);
 
         for (size_t k = 0; k < ARRAY_SIZE(contexts); ++k) {
@@ -1376,7 +1376,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
         }
 
         // The same measurement in every residue of the name: each of them has to have each of the atoms, once
-        const str_t resname = md_component_name(&sys.component, comp);
+        const str_t resname = md_residue_name(&sys.residue, res);
         if (named && quotable(resname)) {
             sb += "resname(";
             write_quoted(&sb, resname);
@@ -1411,8 +1411,8 @@ md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t
                 sb += "name(";
                 write_quoted(&sb, names[i]);
                 sb += ") in ";
-                if (form == 0) md_str_writer_fmt(&sb, "residue(%d)", comps[i] + 1);
-                else ok = resid_context(&sb, &c, comps[i]);
+                if (form == 0) md_str_writer_fmt(&sb, "residue(%d)", atom_res[i] + 1);
+                else ok = resid_context(&sb, &c, atom_res[i]);
                 args[i] = take(&sb, temp);
                 ok = ok && picks_exactly(args[i], md_bitset_range(atoms[i], atoms[i] + 1), sys, temp);
             }

@@ -2898,11 +2898,11 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_array_free(mol->bond.conn.atom_idx, data->mold.sys.alloc);
     md_array_free(mol->bond.conn.bond_idx, data->mold.sys.alloc);
 
-    md_index_data_free(&mol->structure);
+    md_index_data_free(&mol->molecule);
     md_index_data_free(&mol->ring);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_STRUCTURE_BIT);
+    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
@@ -2969,7 +2969,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
 
     uint64_t key = md_bitset_hash64(sel, 0);
     key = md_hash64(atoms, num_atoms * sizeof(int32_t), key);
-    const uint64_t counts[3] = {sys.atom.count, sys.component.count, sys.instance.count};
+    const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.instance.count};
     key = md_hash64(counts, sizeof(counts), key);
     // The names the lines assign to are the first ones the script does not have
     key = md_hash64_combine(key, md_script_ir_fingerprint(state->script.ir));

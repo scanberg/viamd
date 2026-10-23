@@ -42,7 +42,7 @@
 
 namespace {
 
-// What the particles are grouped by: residues, molecules (md_structure_data_t: atoms joined by bonds, each residue and
+// What the particles are grouped by: residues, molecules (md_molecule_data_t: atoms joined by bonds, each residue and
 // polymer chain whole), chains (md_chain_data_t: all that the data gives a chain id) or parts (md_part_data_t: the
 // covalent pieces of a molecule, a strand with its caps, a glycan, a ligand). A particle in no group of the kind (an
 // ion in no chain) is left out. The values are those a workspace stores.
@@ -208,8 +208,8 @@ struct Contacts : viamd::EventHandler {
         auto push_range = [&](md_urange_t r) { for (uint32_t k = r.beg; k < r.end && k < N; ++k) atoms.push_back(k); };
         off.push_back(0);
         if (group_by == GroupBy_Residue) {
-            for (size_t c = 0; c < md_system_component_count(&sys); ++c) {
-                push_range(md_system_component_atom_range(&sys, c));
+            for (size_t c = 0; c < md_system_residue_count(&sys); ++c) {
+                push_range(md_system_residue_atom_range(&sys, c));
                 off.push_back((uint32_t)atoms.size());
             }
         } else if (group_by == GroupBy_Part) {
@@ -226,9 +226,9 @@ struct Contacts : viamd::EventHandler {
                 off.push_back((uint32_t)atoms.size());
             }
         } else {
-            for (size_t m = 0; m < md_structure_count(&sys.structure); ++m) {
-                md_structure_t st = {};
-                if (md_structure_extract(&st, &sys.structure, m)) {
+            for (size_t m = 0; m < md_molecule_count(&sys.molecule); ++m) {
+                md_molecule_t st = {};
+                if (md_molecule_extract(&st, &sys.molecule, m)) {
                     for (size_t k = 0; k < st.count; ++k) atoms.push_back((uint32_t)st.atom_idx[k]);
                 }
                 off.push_back((uint32_t)atoms.size());

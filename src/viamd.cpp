@@ -205,32 +205,32 @@ static void tooltip_unit_suffix(char* buf, size_t cap, md_unit_t unit) {
 
 // Where an atom sits: its residue and its chain, -1 for either it is not in
 struct TooltipPlace {
-    int comp_idx = -1;
+    int res_idx = -1;
     int inst_idx = -1;
     int atom_idx = -1;      // An atom of it, which tells its molecule
 };
 
 static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_idx) {
     return {
-        .comp_idx = md_component_find_by_atom_idx(&sys.component, atom_idx),
+        .res_idx = md_residue_find_by_atom_idx(&sys.residue, atom_idx),
         .inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx),
         .atom_idx = (int)atom_idx,
     };
 }
 
 // "ALA 42", or the residue's index when it has no name
-static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, int comp_idx) {
-    const str_t name = md_component_name(&sys.component, comp_idx);
+static void tooltip_append_residue(md_str_writer_t* sb, const md_system_t& sys, int res_idx) {
+    const str_t name = md_residue_name(&sys.residue, res_idx);
     if (!str_empty(name)) {
-        md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
+        md_str_writer_fmt(sb, STR_FMT " %d", STR_ARG(name), md_residue_seq_id(&sys.residue, res_idx));
     } else {
-        md_str_writer_fmt(sb, "residue %d", comp_idx + 1);
+        md_str_writer_fmt(sb, "residue %d", res_idx + 1);
     }
 }
 
 // The chain of a place (md_chain_data_t), -1 for one in none
 static int tooltip_place_chain(const md_system_t& sys, const TooltipPlace& place) {
-    return place.comp_idx >= 0 ? md_system_chain_find_by_comp_idx(&sys, (size_t)place.comp_idx) : -1;
+    return place.res_idx >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)place.res_idx) : -1;
 }
 
 // "chain A", the id the data gives; "chain 2" for a chain inferred where it gives none, by its position, as chain(2)
@@ -251,24 +251,24 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
     const int chain_a = tooltip_place_chain(sys, a);
     const int chain_b = b ? tooltip_place_chain(sys, *b) : -1;
     const bool two_chains = b && chain_b != chain_a;
-    const bool two_comps  = b && b->comp_idx != a.comp_idx;
+    const bool two_residues = b && b->res_idx != a.res_idx;
 
-    if (a.comp_idx != -1) {
+    if (a.res_idx != -1) {
         sep();
-        tooltip_append_residue(sb, sys, a.comp_idx);
-        if (two_comps && !two_chains && b->comp_idx != -1) {
+        tooltip_append_residue(sb, sys, a.res_idx);
+        if (two_residues && !two_chains && b->res_idx != -1) {
             *sb += " / ";
-            tooltip_append_residue(sb, sys, b->comp_idx);
+            tooltip_append_residue(sb, sys, b->res_idx);
         }
     }
     if (chain_a != -1) {
         sep();
         tooltip_append_chain(sb, sys, chain_a);
     }
-    if (two_chains && (b->comp_idx != -1 || chain_b != -1)) {
+    if (two_chains && (b->res_idx != -1 || chain_b != -1)) {
         *sb += " / ";
-        if (b->comp_idx != -1) {
-            tooltip_append_residue(sb, sys, b->comp_idx);
+        if (b->res_idx != -1) {
+            tooltip_append_residue(sb, sys, b->res_idx);
             if (chain_b != -1) *sb += TOOLTIP_SEP;
         }
         if (chain_b != -1) {
@@ -283,11 +283,11 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
 static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
     const int chain = tooltip_place_chain(sys, place);
     int atom = place.atom_idx;
-    if (atom == -1 && place.comp_idx != -1) atom = (int)md_component_atom_range(&sys.component, place.comp_idx).beg;
+    if (atom == -1 && place.res_idx != -1) atom = (int)md_residue_atom_range(&sys.residue, place.res_idx).beg;
     const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
 
-    if (place.comp_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
-    const int32_t part = place.comp_idx != -1 ? md_system_part_find_by_comp_idx(&sys, (size_t)place.comp_idx) : -1;
+    if (place.res_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.res_idx + 1);
+    const int32_t part = place.res_idx != -1 ? md_system_part_find_by_residue_idx(&sys, (size_t)place.res_idx) : -1;
     if (part != -1 && mol != -1) {
         const md_urange_t part_atoms = md_system_part_atom_range(&sys, (size_t)part);
         const size_t mol_size = md_system_molecule_atom_count(&sys, (size_t)mol);
@@ -390,7 +390,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     int formal_charge = 0;
     int num_h = 0;
     const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
-    const bool nucleotide = place.comp_idx != -1 && md_component_kind(&sys.component, place.comp_idx) == MD_COMPONENT_KIND_NUCLEOTIDE;
+    const bool nucleotide = place.res_idx != -1 && md_residue_kind(&sys.residue, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
 
     // What it is
     if (particle != MD_PARTICLE_ATOM) {
@@ -401,7 +401,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
         const str_t name   = tooltip_lower(req->alloc, md_util_element_name(z));
         tooltip_row(req, STR_LIT("element"), STR_FMT " (" STR_FMT ")", STR_ARG(symbol), STR_ARG(name));
     }
-    const str_t ff_type = md_atom_type_ff_type(&sys.atom.type, (size_t)md_atom_type_idx(&sys.atom, atom_idx));
+    const str_t ff_type = md_particle_type_ff_type(&sys.atom.type, (size_t)md_atom_particle_type_idx(&sys.atom, atom_idx));
     if (!str_empty(ff_type)) {
         tooltip_row(req, STR_LIT("type"), STR_FMT, STR_ARG(ff_type));
     }
@@ -543,20 +543,20 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
 static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
-    ASSERT(seg_idx < bb.segment.count && bb.segment.comp_idx);
+    ASSERT(seg_idx < bb.segment.count && bb.segment.res_idx);
 
-    const int comp_idx = bb.segment.comp_idx[seg_idx];
-    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) {
-        // No component (a backbone found from the bonds alone, as for an XYZ file): no residue to name, only what the
+    const int res_idx = bb.segment.res_idx[seg_idx];
+    if (res_idx < 0 || (size_t)res_idx >= sys.residue.count) {
+        // No residue (a backbone found from the bonds alone, as for an XYZ file): no residue to name, only what the
         // segment adds, and the atom of its CA
         tooltip_title(req, "amino acid");
         tooltip_backbone_segment_geometry(req, state, seg_idx);
         tooltip_row(req, STR_LIT("index"), "atom(%d)", bb.segment.atoms[seg_idx].ca + 1);
         return;
     }
-    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
     const TooltipPlace place = {
-        .comp_idx = comp_idx,
+        .res_idx = res_idx,
         .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
     };
 
@@ -564,17 +564,17 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    const md_component_kind_t  kind  = md_component_kind(&sys.component, comp_idx);
-    const md_component_flags_t flags = md_system_component_flags(&sys, comp_idx);
-    const bool nucleotide = kind == MD_COMPONENT_KIND_NUCLEOTIDE;
+    const md_residue_kind_t    kind  = md_residue_kind(&sys.residue, res_idx);
+    const md_residue_flags_t flags = md_system_residue_flags(&sys, res_idx);
+    const bool nucleotide = kind == MD_RESIDUE_KIND_NUCLEOTIDE;
 
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
-    if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
-    if ((kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
-    if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
-    if (flags & MD_COMPONENT_FLAG_TERMINAL_END) tooltip_list_add(&kind_list, nucleotide ? "3' end" : "C-terminus");
-    if (flags & MD_COMPONENT_FLAG_BREAK_BEFORE) tooltip_list_add(&kind_list, "chain break before");
-    if (flags & MD_COMPONENT_FLAG_BREAK_AFTER)  tooltip_list_add(&kind_list, "chain break after");
+    if (kind != MD_RESIDUE_KIND_OTHER) tooltip_list_add(&kind_list, md_residue_kind_name(kind));
+    if ((kind == MD_RESIDUE_KIND_AMINO_ACID || nucleotide) && !(flags & MD_RESIDUE_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
+    if (flags & MD_RESIDUE_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
+    if (flags & MD_RESIDUE_FLAG_TERMINAL_END) tooltip_list_add(&kind_list, nucleotide ? "3' end" : "C-terminus");
+    if (flags & MD_RESIDUE_FLAG_BREAK_BEFORE) tooltip_list_add(&kind_list, "chain break before");
+    if (flags & MD_RESIDUE_FLAG_BREAK_AFTER)    tooltip_list_add(&kind_list, "chain break after");
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
 
     tooltip_backbone_segment_geometry(req, state, seg_idx);
@@ -602,21 +602,21 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
-// The gap of a chain over a break after the component comp_idx (md_gl_mol_set_chain_gaps): the residues on either side,
+// The gap of a chain over a break after the residue res_idx (md_gl_mol_set_chain_gaps): the residues on either side,
 // how many residues are missing between them by their numbering, and how far apart the atoms a link would join are in
 // the current frame. The numbering is that of the residues of the sequence in an mmCIF file, which counts the missing
 // ones exactly, but the author's in a PDB file, which may skip where nothing is missing; a model built in pieces may
 // number on over a break where something is.
-static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t comp_idx) {
+static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t res_idx) {
     const md_system_t& sys = state.mold.sys;
-    ASSERT((size_t)comp_idx + 1 < sys.component.count);
-    if (!(md_system_component_flags(&sys, comp_idx) & MD_COMPONENT_FLAG_BREAK_AFTER)) return;
+    ASSERT((size_t)res_idx + 1 < sys.residue.count);
+    if (!(md_system_residue_flags(&sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return;
 
-    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
     const int inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1;
     const TooltipPlace place[2] = {
-        {.comp_idx = (int)comp_idx,     .inst_idx = inst_idx},
-        {.comp_idx = (int)comp_idx + 1, .inst_idx = inst_idx},
+        {.res_idx = (int)res_idx,       .inst_idx = inst_idx},
+        {.res_idx = (int)res_idx + 1, .inst_idx = inst_idx},
     };
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
@@ -624,7 +624,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     tooltip_append_place(&title, sys, place[0], &place[1]);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    const int missing = md_component_seq_id(&sys.component, comp_idx + 1) - md_component_seq_id(&sys.component, comp_idx) - 1;
+    const int missing = md_residue_seq_id(&sys.residue, res_idx + 1) - md_residue_seq_id(&sys.residue, res_idx) - 1;
     if (missing > 0) {
         tooltip_row(req, STR_LIT("missing"), "%d residue%s by the numbering", missing, missing == 1 ? "" : "s");
     } else {
@@ -632,7 +632,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_atom_idx_t atoms[2];
-    if (md_util_chain_break_atoms(atoms, &sys, comp_idx)) {
+    if (md_util_chain_break_atoms(atoms, &sys, res_idx)) {
         const md_system_state_t& sys_state = state.mold.state;
         vec3_t d = vec3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
         md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
@@ -646,8 +646,8 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    md_str_writer_fmt(&index, "residue(%u) residue(%u)", comp_idx + 1, comp_idx + 2);
-    const md_chain_idx_t chain = md_system_chain_find_by_comp_idx(&sys, comp_idx);
+    md_str_writer_fmt(&index, "residue(%u) residue(%u)", res_idx + 1, res_idx + 2);
+    const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
     const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
     if (chain != -1)    md_str_writer_fmt(&index, " chain(%d)", chain + 1);
     else if (mol != -1) md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
@@ -674,7 +674,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     TooltipPlace other = place;
     for (size_t i = 1; i < count; ++i) {
         const TooltipPlace p = tooltip_place_of_atom(sys, (size_t)atoms[i]);
-        if (p.comp_idx != place.comp_idx || p.inst_idx != place.inst_idx) {
+        if (p.res_idx != place.res_idx || p.inst_idx != place.inst_idx) {
             other = p;
             break;
         }
@@ -761,7 +761,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
-// A point of the cartoon of the lipids and nucleic acids stands for its component: the component, and what part of it
+// A point of the cartoon of the lipids and nucleic acids stands for its residue: the residue, and what part of it
 // the point is
 static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t point_idx) {
     const md_system_t& sys = state.mold.sys;
@@ -770,15 +770,15 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
     static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
 
-    const int32_t comp_idx = cartoon_glyphs_point_component(glyphs, point_idx);
-    if (comp_idx < 0 || (size_t)comp_idx >= sys.component.count) {
-        // No component (a nucleic backbone found from the bonds alone, as for an XYZ file): only what part it is
+    const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
+    if (res_idx < 0 || (size_t)res_idx >= sys.residue.count) {
+        // No residue (a nucleic backbone found from the bonds alone, as for an XYZ file): only what part it is
         if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_title(req, "nucleotide" TOOLTIP_SEP "%s", parts[glyphs.point_kind[point_idx]]);
         return;
     }
-    const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const md_urange_t range = md_residue_atom_range(&sys.residue, res_idx);
     const TooltipPlace place = {
-        .comp_idx = comp_idx,
+        .res_idx = res_idx,
         .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
     };
 
@@ -787,8 +787,8 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
     md_str_writer_t kind_list = md_str_writer_create(req->alloc);
-    const md_component_kind_t kind = md_component_kind(&sys.component, comp_idx);
-    if (kind != MD_COMPONENT_KIND_OTHER) tooltip_list_add(&kind_list, md_component_kind_name(kind));
+    const md_residue_kind_t kind = md_residue_kind(&sys.residue, res_idx);
+    if (kind != MD_RESIDUE_KIND_OTHER) tooltip_list_add(&kind_list, md_residue_kind_name(kind));
     if (glyphs.point_kind[point_idx] < ARRAY_SIZE(parts)) tooltip_list_add(&kind_list, parts[glyphs.point_kind[point_idx]]);
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
 
@@ -831,14 +831,14 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         bool formed;
         if (picked_bond(state, hit.local_idx, &pair, &flags, &formed)) tooltip_bond(req, state, pair, flags, formed);
     } else if (hit.domain == PickingDomain_BackboneSegment) {
-        if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.comp_idx) tooltip_backbone_segment(req, state, hit.local_idx);
+        if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.res_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
         tooltip_ring(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
         if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
     } else if (hit.domain == PickingDomain_ChainGap) {
-        if ((size_t)hit.local_idx + 1 < sys.component.count) tooltip_chain_gap(req, state, hit.local_idx);
+        if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
     }
@@ -1744,7 +1744,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             const size_t num_atoms = state->mold.sys.atom.count;
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
                 // The contract of a supplement: it adds to the atoms, and never changes how many there are.
-                // What is kept by atom index (selections, user bonds, atom type edits, and all of it in a
+                // What is kept by atom index (selections, user bonds, particle type edits, and all of it in a
                 // workspace) would silently apply to other atoms. The loaders check their file against the
                 // system before they change it; this is where one that does not would show.
                 ASSERT(state->mold.sys.atom.count == num_atoms);
@@ -1797,7 +1797,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                 // carried no bonds at all (an H5MD file without connectivity) has none to protect, and
                 // gets them inferred like any other structure.
                 flags &= ~MD_UTIL_INFER_BOND_BIT;
-                flags |= MD_UTIL_INFER_STRUCTURE_BIT;
+                flags |= MD_UTIL_INFER_MOLECULE_BIT;
             }
             if (!md_util_system_infer(&state->mold.sys, &state->mold.state, flags)) {
                 VIAMD_LOG_ERROR("Nothing could be inferred for the data in '" STR_FMT "'; it is shown as loaded", STR_ARG(path_to_file));
@@ -2530,7 +2530,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
-    // The components take theirs on the end of the load, after which there is no filter to speak of.
+    // The residues take theirs on the end of the load, after which there is no filter to speak of.
     plot_resolve_legacy_periods(data, data->timeline.subplots, PLOT_MAX_SUBPLOTS);
     plot_resolve_legacy_periods(data, data->distributions.subplots, PLOT_MAX_SUBPLOTS);
 
@@ -2792,7 +2792,7 @@ static const md_attribute_t* dipole_origin_of(const md_system_t& sys, const md_a
     return md_attributes_sibling(&sys.attributes, vec, STR_LIT("origin"));
 }
 
-// A vector and an origin form a group only if both are there, both are 3 component, and the origin
+// A vector and an origin form a group only if both are there, both are 3 residue, and the origin
 // is addressed by the vector's index space - either one per element, or a single anchor shared over
 // all of them, which is how one centre of charge serves every excited state.
 static bool dipole_group_qualifies(const md_attribute_t* vec, const md_attribute_t* org) {
@@ -2872,7 +2872,7 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
 }
 
 
-// A per atom scalar field: values one component wide, the atom axis LAST, and at most one axis of
+// A per atom scalar field: values one residue wide, the atom axis LAST, and at most one axis of
 // variants ahead of it. mdlib deliberately does not know that an "atom/..." path is over this
 // system's atoms - categories are not predeclared - so this is where that convention is checked.
 static bool atom_attribute_qualifies(const md_attribute_t* attr, const md_system_t& sys) {
@@ -2977,7 +2977,7 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 // ---------------------------------------------------------------------------
 // Per dataset GPU data
 // ---------------------------------------------------------------------------
-// Built from the system's own basis/ attributes, so it needs no loader and no component - which is
+// Built from the system's own basis/ attributes, so it needs no loader and no residue - which is
 // the point of publishing the basis in the first place. Lives beside gl_mol because it is the same
 // kind of thing: derived FROM the system so that something can draw or evaluate it, and never read
 // back by mdlib.
@@ -3057,7 +3057,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
 // Nothing here holds a reader. The basis and the AO coefficients are attributes on the system, the
 // atom positions are the system's own state, and the grid, the destination texture and the
 // evaluation parameters belong to the caller. There is no vlx pointer in scope, no event, and no
-// component to ask - which is the whole point of publishing the coefficients.
+// residue to ask - which is the whole point of publishing the coefficients.
 //
 // The basis is rebuilt per call for now. That is one interleave over a few hundred shells, but it
 // is the obvious thing for a representation to cache, keyed on the ids of the basis/ attributes it
@@ -4192,7 +4192,7 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
 #endif
 
 // The backend choice, over a density matrix the caller already holds. density_evaluate below is
-// this plus the extract, and a caller which has cached the matrix - the QM component does, because
+// this plus the extract, and a caller which has cached the matrix - the QM residue does, because
 // the transition densities are rebuilt on every read - calls this one and skips the rebuild.
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
                              const double* density_matrix, size_t dim, md_gto_op_t op) {
@@ -5104,14 +5104,14 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     }
 
     if (unwrap) {
-        const size_t num_structures = md_structure_count(&sys.structure);
+        const size_t num_structures = md_molecule_count(&sys.molecule);
         if (num_structures > 0) {
             task_system::ID task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&s, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_structure_t structure = {};
-                    md_structure_extract(&structure, &sys.structure, i);
-                    md_util_unwrap_structure(&s, &structure);
+                    md_molecule_t structure = {};
+                    md_molecule_extract(&structure, &sys.molecule, i);
+                    md_util_unwrap_molecule(&s, &structure);
                 }
             });
             task_system::enqueue_task(task);
@@ -5168,7 +5168,7 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
     md_system_topology_changed(&sys);
     // What follows from the bonds, from the same coordinates, which md_util_system_infer records as the reference
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_STRUCTURE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT);
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT);
     system_bonds_changed(app, false);
     return true;
 }
@@ -5186,7 +5186,7 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_system_bond_build_connectivity(&sys);
         // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
         // are what they were, and a bond added by hand has none.
-        md_util_system_infer_structures(&sys);
+        md_util_system_infer_molecules(&sys);
         md_util_system_infer_rings(&sys);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
@@ -6058,8 +6058,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
             picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
-            // One index per component, which the gap over a break after it writes: only those are drawn
-            picking_range_reserve(&state->picking_range_gap, space, PickingDomain_ChainGap, state->mold.sys.component.count);
+            // One index per residue, which the gap over a break after it writes: only those are drawn
+            picking_range_reserve(&state->picking_range_gap, space, PickingDomain_ChainGap, state->mold.sys.residue.count);
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -6101,11 +6101,11 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == PickingDomain_BackboneSegment) {
                         const md_protein_backbone_data_t& bb = state->mold.sys.protein_backbone;
                         const size_t seg_idx = surf->hit.local_idx;
-                        if (seg_idx < bb.segment.count && bb.segment.comp_idx) {
-                            const md_component_idx_t comp_idx = bb.segment.comp_idx[seg_idx];
-                            if (comp_idx >= 0) {
-                                // A cartoon segment stands for the component it stems from: at least that is hovered and selected
-                                mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
+                        if (seg_idx < bb.segment.count && bb.segment.res_idx) {
+                            const md_residue_idx_t res_idx = bb.segment.res_idx[seg_idx];
+                            if (res_idx >= 0) {
+                                // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
+                                mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, (size_t)res_idx, state->selection.granularity, state->mold.sys);
                             } else {
                                 // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
                                 const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
@@ -6125,18 +6125,18 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         }
                     } else if (surf->hit.domain == PickingDomain_ChainGap) {
                         // The gap of a chain stands for the residues on either side of its break
-                        const size_t comp_idx = surf->hit.local_idx;
-                        if (comp_idx + 1 < state->mold.sys.component.count) {
-                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, comp_idx,     state->selection.granularity, state->mold.sys);
-                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, comp_idx + 1, state->selection.granularity, state->mold.sys);
+                        const size_t res_idx = surf->hit.local_idx;
+                        if (res_idx + 1 < state->mold.sys.residue.count) {
+                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, res_idx,        state->selection.granularity, state->mold.sys);
+                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, res_idx + 1, state->selection.granularity, state->mold.sys);
                         }
                     } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
-                        // A point of the cartoon of a lipid or a nucleic acid stands for its component, as a cartoon segment does
+                        // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
                         const uint32_t point_idx = cartoon_glyphs_picked_point(state->mold.cartoon_glyphs, surf->hit.local_idx);
                         const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
-                        const int32_t comp_idx = cartoon_glyphs_point_component(glyphs, point_idx);
-                        if (comp_idx >= 0 && (size_t)comp_idx < state->mold.sys.component.count) {
-                            mask_set_component_by_selection_granularity(&state->selection.highlight_mask, (size_t)comp_idx, state->selection.granularity, state->mold.sys);
+                        const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
+                        if (res_idx >= 0 && (size_t)res_idx < state->mold.sys.residue.count) {
+                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, (size_t)res_idx, state->selection.granularity, state->mold.sys);
                         } else if (point_idx < glyphs.num_points) {
                             // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
                             for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {

@@ -352,7 +352,7 @@ UTEST(script_suggestions, glycans) {
     md_system_state_t st = { .alloc = l.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(2u, (unsigned)md_structure_count(&l.sys.structure));
+    ASSERT_EQ(2u, (unsigned)md_molecule_count(&l.sys.molecule));
     ASSERT_EQ(4u, (unsigned)md_system_part_count(&l.sys));
 
     const md_bitset_t all = select(l, "glycan()");
@@ -516,19 +516,19 @@ UTEST(script_suggestions, every_line_picks_a_random_selection) {
             md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, l.alloc);
             const int parts = 1 + (int)next(4);
             for (int p = 0; p < parts; ++p) {
-                const uint32_t c = next((uint32_t)sys.component.count);
-                const md_urange_t r = md_component_atom_range(&sys.component, c);
+                const uint32_t c = next((uint32_t)sys.residue.count);
+                const md_urange_t r = md_residue_atom_range(&sys.residue, c);
                 switch (next(4)) {
                 case 0: md_bitmask_set_range(&mask, r.beg, r.end); break;                            // a residue
                 case 1: md_bitmask_set_bit(&mask, r.beg + next(r.end - r.beg)); break;               // an atom of one
                 case 2: {                                                                            // a few residues
-                    const md_urange_t r2 = md_component_atom_range(&sys.component, MIN(c + 1 + next(5), (uint32_t)sys.component.count - 1));
+                    const md_urange_t r2 = md_residue_atom_range(&sys.residue, MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
                     md_bitmask_set_range(&mask, r.beg, r2.end);
                 } break;
                 default: {                                                                           // the same atom of several residues
                     const uint32_t k = next(r.end - r.beg);
-                    for (uint32_t i = 0; i < 4 && c + i < sys.component.count; ++i) {
-                        const md_urange_t ri = md_component_atom_range(&sys.component, c + i);
+                    for (uint32_t i = 0; i < 4 && c + i < sys.residue.count; ++i) {
+                        const md_urange_t ri = md_residue_atom_range(&sys.residue, c + i);
                         if (ri.beg + k < ri.end) md_bitmask_set_bit(&mask, ri.beg + k);
                     }
                 } break;

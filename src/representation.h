@@ -114,7 +114,7 @@ void recompute_atom_visibility_mask(ApplicationState* app);
 // properties in the window and in a workspace.
 
 // Whether the system has what a type draws: atoms, bonds, a backbone
-bool representation_atom_type_valid(const ApplicationState& app, RepresentationType type);
+bool representation_particle_type_valid(const ApplicationState& app, RepresentationType type);
 
 // The draw op of a representation of atoms: its type, arguments and colours (md_rep). The copies and the subset are
 // the caller's.

@@ -282,11 +282,11 @@ void color_atoms_uniform            (uint32_t* colors, size_t count, uint32_t co
 void color_atoms_cpk                (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_type               (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_idx                (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_name          (uint32_t* colors, size_t count, const md_system_t& sys);
-// The colour of the type of each component (sys.component.type), white before the types are inferred
-void color_atoms_comp_type          (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_res_name           (uint32_t* colors, size_t count, const md_system_t& sys);
+// The colour of the type of each residue (sys.residue.type), white before the types are inferred
+void color_atoms_res_type           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_res_seq_id         (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_res_idx            (uint32_t* colors, size_t count, const md_system_t& sys);
 // By the chains (md_chain_data_t): their ids, or their positions. An atom in no chain is white.
 void color_atoms_chain_id           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_chain_idx          (uint32_t* colors, size_t count, const md_system_t& sys);
