@@ -18,6 +18,7 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <atomic>
 #include <math.h>
 #include <string.h>
 
@@ -355,34 +356,382 @@ static bool grid_same(const md_grid_t& a, const md_grid_t& b) {
 static inline bool bit_get(const uint64_t* bits, size_t i) { return (bits[i >> 6] >> (i & 63)) & 1; }
 static inline void bit_set(uint64_t* bits, size_t i)       { bits[i >> 6] |= (1ull << (i & 63)); }
 
-static void field_charges_free(SurfaceFieldVolume* vol) {
-    if (vol->charges) {
-        md_allocator_i* heap = md_get_heap_allocator();
-        md_gto_int_charges_free(vol->charges, heap);
-        md_free(heap, vol->charges, sizeof(md_gto_int_charges_t));
-        vol->charges = nullptr;
+// ---------------------------------------------------------------------------
+// What is under way, for a progress display
+// ---------------------------------------------------------------------------
+struct FieldProgress {
+    const char* label = "";
+    float       fraction = 0.0f;
+    bool        preparing = false;
+    bool        active = false;
+    md_tick_t   t0 = 0;
+};
+
+static constexpr uint32_t MAX_PROGRESS = 64;
+static FieldProgress* g_progress[MAX_PROGRESS];
+static uint32_t       g_num_progress = 0;
+
+static void progress_set(FieldProgress* p, const char* label, float fraction, bool preparing) {
+    if (!p->active && g_num_progress < MAX_PROGRESS) {
+        p->active = true;
+        p->t0 = md_tick_now();
+        g_progress[g_num_progress++] = p;
     }
+    p->label = label;
+    p->fraction = CLAMP(fraction, 0.0f, 1.0f);
+    p->preparing = preparing;
+}
+
+static void progress_clear(FieldProgress* p) {
+    if (!p->active) return;
+    for (uint32_t i = 0; i < g_num_progress; ++i) {
+        if (g_progress[i] == p) {
+            g_progress[i] = g_progress[--g_num_progress];
+            break;
+        }
+    }
+    p->active = false;
+}
+
+size_t surface_field_progress(SurfaceFieldProgress* out, size_t cap) {
+    const md_tick_t now = md_tick_now();
+    size_t n = 0;
+    for (uint32_t i = 0; i < g_num_progress && n < cap; ++i) {
+        const FieldProgress* p = g_progress[i];
+        if (md_tick_to_seconds(now - p->t0) < 0.25) continue;   // what is done within a few frames shows nothing
+        out[n].label = p->label;
+        out[n].fraction = p->fraction;
+        out[n].preparing = p->preparing;
+        n += 1;
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// The charge distribution of a source, made on a worker thread
+// ---------------------------------------------------------------------------
+// For a QM region that is reading the density matrix and making md_gto_int's distribution of it:
+// seconds on a protein, so it is a pool task and the frame goes on. What the build reads is copied
+// when it is asked for (the positions), or does not change while pool tasks run (the system's
+// attributes: a load waits for the pool, interrupt_async_tasks; the on demand density reader takes the
+// HDF5 lock). One build at a time per source: a request for another while one runs is kept, and
+// started when it ends, unless a newer request has replaced it.
+struct FieldBuild {
+    uint64_t           hash = 0;
+    SurfaceFieldKind   kind = SurfaceFieldKind::EmbeddingPotential;
+    const md_system_t* sys = nullptr;
+    vec3_t*            basis_atom_xyz = nullptr;
+    size_t             num_basis_atoms = 0;
+    vec3_t*            state_xyz = nullptr;
+    size_t             num_state_atoms = 0;
+    // made by the task
+    md_gto_int_charges_t* charges = nullptr;
+    bool               ran = false;     // an interrupted pool task never runs its function
+    bool               ok = false;
+    double             seconds = 0.0;
+};
+
+static void charges_destroy(md_gto_int_charges_t* q) {
+    if (!q) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_gto_int_charges_free(q, heap);
+    md_free(heap, q, sizeof(md_gto_int_charges_t));
+}
+
+static void build_destroy(FieldBuild* b) {
+    if (!b) return;
+    charges_destroy(b->charges);
+    free(b->basis_atom_xyz);
+    free(b->state_xyz);
+    delete b;
+}
+
+static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
+    FieldBuild* b = new FieldBuild();
+    b->hash = desc.source_hash;
+    b->kind = desc.kind;
+    b->sys  = desc.sys;
+    if (desc.basis_atom_xyz && desc.num_basis_atoms) {
+        b->basis_atom_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.num_basis_atoms);
+        if (b->basis_atom_xyz) {
+            MEMCPY(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(vec3_t) * desc.num_basis_atoms);
+            b->num_basis_atoms = desc.num_basis_atoms;
+        }
+    }
+    if (desc.state && desc.state->xyz && desc.state->num_atoms) {
+        b->state_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.state->num_atoms);
+        if (b->state_xyz) {
+            MEMCPY(b->state_xyz, desc.state->xyz, sizeof(vec3_t) * desc.state->num_atoms);
+            b->num_state_atoms = desc.state->num_atoms;
+        }
+    }
+    return b;
+}
+
+// On a worker thread
+static void build_run(FieldBuild* b) {
+    b->ran = true;
+    const md_tick_t t0 = md_tick_now();
+    md_system_state_t state = {};
+    state.num_atoms = b->num_state_atoms;
+    state.xyz       = b->state_xyz;
+    SurfaceFieldDesc desc = {};
+    desc.kind            = b->kind;
+    desc.sys             = b->sys;
+    desc.state           = b->state_xyz ? &state : nullptr;
+    desc.basis_atom_xyz  = b->basis_atom_xyz;
+    desc.num_basis_atoms = b->num_basis_atoms;
+    desc.source_hash     = b->hash;
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
+    if (q) {
+        MEMSET(q, 0, sizeof(*q));
+        if (build_charges(q, desc, heap)) {
+            b->charges = q;
+            b->ok = true;
+        } else {
+            md_free(heap, q, sizeof(md_gto_int_charges_t));
+        }
+    }
+    b->seconds = md_tick_to_seconds(md_tick_now() - t0);
+}
+
+struct FieldSource {
+    uint64_t              hash = 0;          // what charges is of
+    md_gto_int_charges_t* charges = nullptr;
+    void*                 gpu = nullptr;     // md_gto_int_gpu_charges_t, made when first wanted
+    bool                  gpu_failed = false;
+    uint64_t              failed_hash = 0;   // a source whose build failed: not tried again
+    FieldBuild*           build = nullptr;   // under way
+    task_system::ID       task = task_system::INVALID_ID;
+    FieldBuild*           next = nullptr;    // asked for while it ran
+};
+
+static void source_start(FieldSource* fs, FieldBuild* b) {
+    fs->build = b;
+    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field charges"), [b]() { build_run(b); });
+    task_system::enqueue_task(fs->task);
+}
+
+// The charges, and their copy on the device. Whatever reads them on the device must have ended.
+static void source_drop_charges(FieldSource* fs, md_gpu_stream_t stream) {
+#if MD_ENABLE_GPU
+    if (fs->gpu && stream) md_gto_int_gpu_charges_destroy(stream, (md_gto_int_gpu_charges_t)fs->gpu);
+#else
+    (void)stream;
+#endif
+    fs->gpu = nullptr;
+    fs->gpu_failed = false;
+    charges_destroy(fs->charges);
+    fs->charges = nullptr;
+    fs->hash = 0;
+}
+
+static bool source_ready(const FieldSource& fs, uint64_t hash)  { return fs.charges && fs.hash == hash; }
+static bool source_failed(const FieldSource& fs, uint64_t hash) { return hash != 0 && fs.failed_hash == hash; }
+static bool source_building(const FieldSource& fs)              { return fs.build != nullptr || fs.next != nullptr; }
+
+// Asks for the charges of desc's source, unless they are there, being made, or failed to be
+static void source_request(FieldSource* fs, const SurfaceFieldDesc& desc) {
+    const uint64_t h = desc.source_hash;
+    if (source_ready(*fs, h) || source_failed(*fs, h)) return;
+    if (fs->build && fs->build->hash == h) {
+        build_destroy(fs->next);    // what was asked for after it is not wanted any more
+        fs->next = nullptr;
+        return;
+    }
+    if (fs->next && fs->next->hash == h) return;
+    FieldBuild* b = build_create(desc);
+    if (!fs->build) {
+        source_start(fs, b);
+    } else {
+        build_destroy(fs->next);
+        fs->next = b;
+    }
+}
+
+// Takes a finished build: its charges replace the source's if they are of the source wanted. Whatever
+// reads the old ones on the device must have ended (they go when the new ones come). True when the
+// charges changed.
+static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream, const char* what) {
+    bool changed = false;
+    if (fs->build && !task_system::task_is_running(fs->task)) {
+        FieldBuild* b = fs->build;
+        fs->build = nullptr;
+        fs->task  = task_system::INVALID_ID;
+        if (!b->ran && b->hash == wanted && !fs->next) {
+            source_start(fs, b);   // interrupted before it ran (interrupt_async_tasks): again
+            return false;
+        }
+        if (b->ran && b->hash == wanted) {
+            if (b->ok) {
+                source_drop_charges(fs, stream);
+                fs->charges = b->charges;
+                fs->hash    = b->hash;
+                b->charges  = nullptr;
+                changed = true;
+                MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
+                             fs->charges->num_gaussians, fs->charges->num_points, (unsigned long long)md_gto_int_charges_work_per_point(fs->charges),
+                             b->seconds * 1.0e3);
+            } else {
+                fs->failed_hash = b->hash;
+                MD_LOG_ERROR("Surface field: the system has nothing to make '%s' of", what);
+            }
+        }
+        build_destroy(b);
+    }
+    if (!fs->build && fs->next) {
+        FieldBuild* n = fs->next;
+        fs->next = nullptr;
+        if (n->hash == wanted) source_start(fs, n);
+        else build_destroy(n);
+    }
+    return changed;
+}
+
+// Waits for a build under way (a few seconds at most, and only when a field goes while it is made)
+static void source_free(FieldSource* fs, md_gpu_stream_t stream) {
+    if (fs->build) {
+        task_system::task_wait_for(fs->task);
+        build_destroy(fs->build);
+        fs->build = nullptr;
+        fs->task  = task_system::INVALID_ID;
+    }
+    build_destroy(fs->next);
+    fs->next = nullptr;
+    source_drop_charges(fs, stream);
+    fs->failed_hash = 0;
+}
+
+#if MD_ENABLE_GPU
+// The charges on the device; NULL where md_gto_int cannot evaluate them there (point multipoles)
+static md_gto_int_gpu_charges_t source_gpu(FieldSource* fs, md_gpu_stream_t stream) {
+    if (!fs->charges || !stream) return nullptr;
+    if (fs->charges->point_dipole || fs->charges->point_quadrupole) return nullptr;
+    if (!fs->gpu && !fs->gpu_failed) {
+        fs->gpu = md_gto_int_gpu_charges_create(stream, fs->charges);
+        fs->gpu_failed = fs->gpu == nullptr;
+    }
+    return (md_gto_int_gpu_charges_t)fs->gpu;
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// The volume's work
+// ---------------------------------------------------------------------------
+struct SurfaceFieldWork {
+    md_gpu_stream_t stream = nullptr;
+    SurfaceFieldKind kind = SurfaceFieldKind::EmbeddingPotential;
+    FieldSource   source;
+    FieldProgress progress;
+
+    uint8_t* want = nullptr;        // [num_voxels] the voxels the surfaces of the last update can sample
+    size_t   num_left = 0;          // of those, holding no value yet
+    float*   samples = nullptr;     // [3 * num_samples] where the surfaces cross the density grid's edges,
+    size_t   num_samples = 0;       // in the field grid's index space (surface_statistics)
+    size_t   cap_samples = 0;
+
+    // The evaluation under way
+    enum Stage { Idle, Gpu, Readback, Cpu } stage = Idle;
+    uint8_t* got = nullptr;         // [num_voxels] what it fills
+    bool     gpu_failed = false;    // the device could not serve this source: the CPU does
+    md_tick_t t0 = 0;
+#if MD_ENABLE_GPU
+    md_gto_int_gpu_job_t* job = nullptr;
+    md_gpu_texture_t tex = nullptr; // the field grid, written by the job
+    int      tex_dim[3] = {};
+    md_gpu_mem_t  rb = {};          // its readback
+    md_gpu_sync_t rb_sync = {};
+#endif
+    task_system::ID cpu_task = task_system::INVALID_ID;
+    std::atomic<bool> cpu_cancel{false};   // looked at every few points: a cancel waits for no more than that
+    uint32_t* cpu_index = nullptr;
+    float*    cpu_xyz = nullptr;
+    double*   cpu_out = nullptr;
+    size_t    cpu_count = 0;
+    const md_gto_int_charges_t* cpu_charges = nullptr;
+};
+
+// The potential at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
+// interrupt is only looked at between the ranges it hands out, which can be a good part of the task.
+static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const md_gto_int_charges_t* q, const std::atomic<bool>& cancel) {
+    for (uint32_t b = beg; b < end && !cancel.load(std::memory_order_relaxed); b += 8) {
+        const uint32_t e = MIN(b + 8, end);
+        md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, q);
+    }
+}
+
+static void work_cpu_free(SurfaceFieldWork* w) {
+    free(w->cpu_index);
+    free(w->cpu_xyz);
+    free(w->cpu_out);
+    w->cpu_index = nullptr;
+    w->cpu_xyz = nullptr;
+    w->cpu_out = nullptr;
+    w->cpu_count = 0;
+    w->cpu_task = task_system::INVALID_ID;
+}
+
+// Stops the evaluation under way; what it has made is lost
+static void work_cancel(SurfaceFieldWork* w) {
+#if MD_ENABLE_GPU
+    if (w->job) {
+        md_gto_int_gpu_job_end(w->job);
+        w->job = nullptr;
+    }
+    if (w->rb.gpu) {
+        md_gpu_free(w->stream, w->rb.gpu);   // after the copy in flight, stream ordered
+        w->rb = {};
+    }
+#endif
+    if (w->cpu_task) {
+        w->cpu_cancel = true;
+        task_system::task_interrupt_and_wait_for(w->cpu_task);
+    }
+    work_cpu_free(w);
+    w->stage = SurfaceFieldWork::Idle;
+    progress_clear(&w->progress);
+}
+
+static void work_destroy(SurfaceFieldWork* w) {
+    if (!w) return;
+    work_cancel(w);
+    source_free(&w->source, w->stream);
+#if MD_ENABLE_GPU
+    if (w->tex) md_gpu_texture_destroy(w->tex);
+#endif
+    free(w->want);
+    free(w->got);
+    free(w->samples);
+    delete w;
 }
 
 static void field_volume_reset(SurfaceFieldVolume* vol, const md_grid_t& grid) {
     const size_t n = md_grid_num_points(&grid);
     md_allocator_i* heap = md_get_heap_allocator();
+    SurfaceFieldWork* w = vol->work;
     if (n != vol->num_voxels) {
         if (vol->values) md_free(heap, vol->values, sizeof(float) * vol->num_voxels);
         if (vol->done)   md_free(heap, vol->done, sizeof(uint64_t) * ((vol->num_voxels + 63) / 64));
         vol->values = (float*)md_alloc(heap, sizeof(float) * n);
         vol->done   = (uint64_t*)md_alloc(heap, sizeof(uint64_t) * ((n + 63) / 64));
         vol->num_voxels = n;
+        free(w->want);
+        free(w->got);
+        w->want = (uint8_t*)malloc(n);
+        w->got  = (uint8_t*)malloc(n);
     }
     MEMSET(vol->values, 0, sizeof(float) * n);
     MEMSET(vol->done, 0, sizeof(uint64_t) * ((n + 63) / 64));
+    MEMSET(w->want, 0, n);
+    w->num_left = 0;
+    w->num_samples = 0;
     vol->grid = grid;
     vol->num_evaluated = 0;
     vol->num_uploaded = 0;
     vol->complete = false;
     vol->on_gpu = false;
     vol->num_surface_samples = 0;
-    field_charges_free(vol);
 }
 
 // The voxels of the density grid a surface can sample: the 8 corners of every cell that some
@@ -505,24 +854,20 @@ static bool field_sample(float* out, const SurfaceFieldVolume& vol, const float 
     return true;
 }
 
-// The field interpolated to where an isosurface crosses an edge of the density grid: samples of the
-// field ON the surface, at the density grid's resolution
-static void surface_statistics(SurfaceFieldVolume* vol, const int ddim[3], const float* d, const uint8_t* dmask, const float* iso, size_t num_iso) {
+// Where an isosurface crosses an edge of the density grid, in the field grid's index space: the
+// samples of the field ON the surface, at the density grid's resolution. Kept with the band, since
+// the values they read arrive later.
+static void surface_samples_collect(SurfaceFieldWork* w, const SurfaceFieldVolume& vol, const int ddim[3], const float* d, const uint8_t* dmask,
+                                    const float* iso, size_t num_iso) {
     const size_t nx = ddim[0], ny = ddim[1], nz = ddim[2];
     const size_t step[3] = { 1, nx, nx * ny };
     const size_t len[3]  = { nx, ny, nz };
     const float  ratio[3] = {
-        (float)vol->grid.dim[0] / (float)ddim[0],
-        (float)vol->grid.dim[1] / (float)ddim[1],
-        (float)vol->grid.dim[2] / (float)ddim[2],
+        (float)vol.grid.dim[0] / (float)ddim[0],
+        (float)vol.grid.dim[1] / (float)ddim[1],
+        (float)vol.grid.dim[2] / (float)ddim[2],
     };
-
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    size_t cap = 1024, count = 0;
-    float* samples = (float*)md_temp_alloc(temp, sizeof(float) * cap);
-
+    w->num_samples = 0;
     for (size_t k = 0; k < nz; ++k) {
         for (size_t j = 0; j < ny; ++j) {
             for (size_t i = 0; i < nx; ++i) {
@@ -537,25 +882,34 @@ static void surface_statistics(SurfaceFieldVolume* vol, const int ddim[3], const
                     for (size_t t = 0; t < num_iso; ++t) {
                         if ((d0 - iso[t]) * (d1 - iso[t]) >= 0.0f) continue;
                         const float s = (iso[t] - d0) / (d1 - d0);
-                        float u[3];
+                        if (w->num_samples == w->cap_samples) {
+                            const size_t cap = MAX(w->cap_samples * 2, (size_t)4096);
+                            float* bigger = (float*)realloc(w->samples, sizeof(float) * 3 * cap);
+                            if (!bigger) return;
+                            w->samples = bigger;
+                            w->cap_samples = cap;
+                        }
+                        float* u = w->samples + 3 * w->num_samples++;
                         for (int b = 0; b < 3; ++b) {
                             u[b] = ((float)coord[b] + (b == a ? s : 0.0f) + 0.5f) * ratio[b] - 0.5f;
                         }
-                        float v;
-                        if (!field_sample(&v, *vol, u)) continue;
-                        if (count == cap) {
-                            float* bigger = (float*)md_temp_alloc(temp, sizeof(float) * cap * 2);
-                            MEMCPY(bigger, samples, sizeof(float) * cap);
-                            samples = bigger;
-                            cap *= 2;
-                        }
-                        samples[count++] = v;
                     }
                 }
             }
         }
     }
+}
 
+// The spread of the field over the samples that have values
+static void surface_statistics(SurfaceFieldVolume* vol, const SurfaceFieldWork& w) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    float* samples = (float*)md_temp_alloc(temp, sizeof(float) * MAX(w.num_samples, (size_t)1));
+    size_t count = 0;
+    for (size_t i = 0; samples && i < w.num_samples; ++i) {
+        float v;
+        if (field_sample(&v, *vol, w.samples + 3 * i)) samples[count++] = v;
+    }
     vol->num_surface_samples = count;
     if (count == 0) {
         vol->surface_min = vol->surface_max = vol->surface_lo = vol->surface_hi = 0.0f;
@@ -571,144 +925,138 @@ static void surface_statistics(SurfaceFieldVolume* vol, const int ddim[3], const
     vol->surface_max = *std::max_element(samples, samples + count);
 }
 
+static void count_left(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    size_t n = 0;
+    for (size_t i = 0; i < vol->num_voxels; ++i) n += (w->want[i] && !bit_get(vol->done, i));
+    w->num_left = n;
+}
+
 // ---------------------------------------------------------------------------
 // Evaluation
 // ---------------------------------------------------------------------------
 
-// The voxels of fmask that hold no value yet, on the CPU's worker threads
-static void evaluate_band_cpu(SurfaceFieldVolume* vol, const uint8_t* fmask, size_t num_new) {
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    uint32_t* index = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_new);
-    float*    xyz   = (float*)md_temp_alloc(temp, sizeof(float) * 3 * num_new);
-    double*   out   = (double*)md_temp_alloc(temp, sizeof(double) * num_new);
-
+// The voxels wanted that hold no value yet, on the CPU's worker threads: a pool task over copies of
+// their positions
+static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    const size_t n = w->num_left;
+    w->cpu_index = (uint32_t*)malloc(sizeof(uint32_t) * n);
+    w->cpu_xyz   = (float*)malloc(sizeof(float) * 3 * n);
+    w->cpu_out   = (double*)malloc(sizeof(double) * n);
+    if (!w->cpu_index || !w->cpu_xyz || !w->cpu_out) {
+        work_cpu_free(w);
+        return false;
+    }
     const md_grid_t& grid = vol->grid;
     const size_t nx = grid.dim[0], ny = grid.dim[1];
-    size_t n = 0;
-    for (size_t idx = 0; idx < vol->num_voxels; ++idx) {
-        if (!fmask[idx] || bit_get(vol->done, idx)) continue;
+    size_t m = 0;
+    for (size_t idx = 0; idx < vol->num_voxels && m < n; ++idx) {
+        if (!w->want[idx] || bit_get(vol->done, idx)) continue;
         const size_t i = idx % nx, j = (idx / nx) % ny, k = idx / (nx * ny);
         const float l[3] = { ((float)i + 0.5f) * grid.spacing.x, ((float)j + 0.5f) * grid.spacing.y, ((float)k + 0.5f) * grid.spacing.z };
         for (int a = 0; a < 3; ++a) {
             // orientation columns are the grid axes in world space
-            xyz[3 * n + a] = grid.origin.elem[a] + grid.orientation.elem[0][a] * l[0] + grid.orientation.elem[1][a] * l[1] + grid.orientation.elem[2][a] * l[2];
+            w->cpu_xyz[3 * m + a] = grid.origin.elem[a] + grid.orientation.elem[0][a] * l[0] + grid.orientation.elem[1][a] * l[1] + grid.orientation.elem[2][a] * l[2];
         }
-        index[n++] = (uint32_t)idx;
+        w->cpu_index[m++] = (uint32_t)idx;
     }
-    ASSERT(n == num_new);
-
-    struct Payload {
-        const md_gto_int_charges_t* charges;
-        const float* xyz;
-        double* out;
-    } payload = { vol->charges, xyz, out };
-
+    w->cpu_count   = m;
+    w->cpu_charges = w->source.charges;
     // A point of a QM density's potential is ~0.1-1 ms of work, of a few point charges microseconds
-    const uint64_t work = md_gto_int_charges_work_per_point(vol->charges);
+    const uint64_t work = md_gto_int_charges_work_per_point(w->cpu_charges);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
-    task_system::ID task = task_system::create_pool_task(STR_LIT("## Surface Field"), (uint32_t)num_new, [p = &payload](uint32_t beg, uint32_t end, uint32_t) {
-        md_gto_int_potential_xyz(p->out + beg, NULL, p->xyz + 3 * (size_t)beg, end - beg, 0, p->charges);
+    w->cpu_cancel = false;
+    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field"), (uint32_t)m, [w](uint32_t beg, uint32_t end, uint32_t) {
+        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_charges, w->cpu_cancel);
     }, grain);
-    task_system::enqueue_task(task);
-    task_system::task_wait_for(task);
-
-    for (size_t m = 0; m < num_new; ++m) {
-        vol->values[index[m]] = (float)out[m];
-        bit_set(vol->done, index[m]);
-    }
-    vol->num_evaluated += num_new;
+    task_system::enqueue_task(w->cpu_task);
+    w->stage = SurfaceFieldWork::Cpu;
+    return true;
 }
 
 #if MD_ENABLE_GPU
-// The voxels of fmask that hold no value yet, on the device, read back. With a far field only the
-// 4x4x4 bricks holding such a voxel are evaluated, and every voxel of those is kept (they are right,
-// and the band moves with the isovalues); without one the whole grid is. False when the device
-// cannot serve it - no device, a grid larger than the scratch, point multipoles (which md_gto_int
-// evaluates on the CPU only) - or when it fails, and the CPU takes over then.
-static bool evaluate_band_gpu(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc, const uint8_t* fmask) {
-    md_gpu_stream_t stream = desc.gpu_stream;
-    if (!stream || !desc.gpu_scratch || !vol->charges) return false;
-    if (vol->charges->point_dipole || vol->charges->point_quadrupole) return false;
+// The voxels wanted that hold no value yet, as a job on the device into the work's own texture. With a
+// far field only the 4x4x4 bricks holding such a voxel are evaluated, and every voxel of those is kept
+// (they are right, and the band moves with the isovalues); without one the whole grid is. False when
+// the device cannot serve it - point multipoles (which md_gto_int evaluates on the CPU only), no
+// texture, no job - and the CPU takes over then.
+static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    md_gpu_stream_t stream = w->stream;
+    md_gto_int_gpu_charges_t gq = source_gpu(&w->source, stream);
+    if (!gq) return false;
     const md_grid_t& grid = vol->grid;
-    for (int a = 0; a < 3; ++a) {
-        if (grid.dim[a] <= 0 || (uint32_t)grid.dim[a] > desc.gpu_scratch_dim[a]) return false;
+    const int nx = grid.dim[0], ny = grid.dim[1], nz = grid.dim[2];
+    if (!w->tex || w->tex_dim[0] != nx || w->tex_dim[1] != ny || w->tex_dim[2] != nz) {
+        if (w->tex) md_gpu_texture_destroy(w->tex);
+        md_gpu_texture_desc_t td = {};
+        td.type   = MD_GPU_TEX_3D;
+        td.format = MD_GPU_FORMAT_R32_FLOAT;
+        td.usage  = MD_GPU_TEX_STORAGE;
+        td.width  = (uint32_t)nx;
+        td.height = (uint32_t)ny;
+        td.depth_or_layers = (uint32_t)nz;
+        td.label  = "surface field";
+        w->tex = md_gpu_texture_create(stream, &td);
+        w->tex_dim[0] = nx; w->tex_dim[1] = ny; w->tex_dim[2] = nz;
+        if (!w->tex) {
+            MD_LOG_ERROR("Surface field: no %dx%dx%d texture on the device", nx, ny, nz);
+            w->tex_dim[0] = w->tex_dim[1] = w->tex_dim[2] = 0;
+            return false;
+        }
     }
 
+    // What to evaluate, and what will have been
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
-
-    // What to evaluate, and with a far field what will have been: the bricks of the wanted voxels
-    const bool bricks = vol->charges->num_nodes > 0;
-    uint8_t* want = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
-    uint8_t* got  = bricks ? (uint8_t*)md_temp_alloc(temp, vol->num_voxels) : nullptr;
-    if (!want || (bricks && !got)) return false;
-    size_t num_want = 0;
-    for (size_t i = 0; i < vol->num_voxels; ++i) {
-        want[i] = (fmask[i] && !bit_get(vol->done, i)) ? 1 : 0;
-        num_want += want[i];
-    }
-    if (num_want == 0) return true;
-    const int nx = grid.dim[0], ny = grid.dim[1], nz = grid.dim[2];
-    if (bricks) {
+    uint8_t* mask = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
+    if (!mask) return false;
+    for (size_t i = 0; i < vol->num_voxels; ++i) mask[i] = (w->want[i] && !bit_get(vol->done, i)) ? 1 : 0;
+    if (w->source.charges->num_nodes > 0) {
         const int bx = (nx + 3) / 4, by = (ny + 3) / 4, bz = (nz + 3) / 4;
         uint8_t* brick = (uint8_t*)md_temp_alloc(temp, (size_t)bx * by * bz);
         if (!brick) return false;
         MEMSET(brick, 0, (size_t)bx * by * bz);
         for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
-            if (want[((size_t)z * ny + y) * nx + x]) brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4] = 1;
+            if (mask[((size_t)z * ny + y) * nx + x]) brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4] = 1;
         }
         for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
-            got[((size_t)z * ny + y) * nx + x] = brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4];
+            w->got[((size_t)z * ny + y) * nx + x] = brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4];
         }
+    } else {
+        MEMSET(w->got, 1, vol->num_voxels);
     }
-
-    md_gto_int_gpu_charges_t gq = md_gto_int_gpu_charges_create(stream, vol->charges);
-    if (!gq) return false;
 
     md_gto_int_gpu_potential_desc_t pd = {};
     pd.charges          = gq;
-    pd.out_tex          = desc.gpu_scratch;
+    pd.out_tex          = w->tex;
     pd.grid             = &grid;
     pd.sample_offset[0] = pd.sample_offset[1] = pd.sample_offset[2] = 0.5f;   // voxel centres, as the GL texture
     pd.op               = MD_GTO_OP_SET;
-    pd.voxel_mask       = want;
+    pd.voxel_mask       = mask;     // copied by the job
+    w->job = md_gto_int_gpu_potential_job_begin(stream, &pd);
+    if (!w->job) return false;
+    w->stage = SurfaceFieldWork::Gpu;
+    return true;
+}
 
-    bool ok = false;
-    if (md_gto_int_gpu_potential_launch(stream, &pd)) {
-        const size_t bytes = sizeof(float) * vol->num_voxels;
-        md_gpu_mem_t rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, bytes);
-        if (rb.cpu) {
-            md_gpu_tex_region_t region = {};
-            region.extent[0] = (uint32_t)nx;
-            region.extent[1] = (uint32_t)ny;
-            region.extent[2] = (uint32_t)nz;
-            if (md_gpu_copy_from_texture(stream, rb.gpu, desc.gpu_scratch, &region)) {
-                md_gpu_stream_sync(stream);
-                // The scratch holds whatever was there before outside what was evaluated
-                const float* v = (const float*)rb.cpu;
-                const uint8_t* take = bricks ? got : nullptr;
-                size_t n = 0;
-                for (size_t i = 0; i < vol->num_voxels; ++i) {
-                    if ((take && !take[i]) || bit_get(vol->done, i)) continue;
-                    vol->values[i] = v[i];
-                    bit_set(vol->done, i);
-                    n += 1;
-                }
-                vol->num_evaluated += n;
-                ok = true;
-            }
-            md_gpu_free(stream, rb.gpu);
-        } else {
-            MD_LOG_ERROR("Surface field: failed to allocate %zu bytes of readback", bytes);
-        }
+// The job is done: the texture to the host, looked for later
+static bool start_readback(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    const size_t bytes = sizeof(float) * vol->num_voxels;
+    w->rb = md_gpu_malloc(w->stream, MD_GPU_MEM_HOST_READ, bytes);
+    if (!w->rb.cpu) {
+        MD_LOG_ERROR("Surface field: failed to allocate %zu bytes of readback", bytes);
+        return false;
     }
-    md_gto_int_gpu_charges_destroy(stream, gq);
-    if (!ok) return false;
-
-    vol->complete = vol->num_evaluated == vol->num_voxels;
-    vol->on_gpu = true;
+    md_gpu_tex_region_t region = {};
+    region.extent[0] = (uint32_t)vol->grid.dim[0];
+    region.extent[1] = (uint32_t)vol->grid.dim[1];
+    region.extent[2] = (uint32_t)vol->grid.dim[2];
+    if (!md_gpu_copy_from_texture(w->stream, w->rb.gpu, w->tex, &region)) {
+        md_gpu_free(w->stream, w->rb.gpu);
+        w->rb = {};
+        return false;
+    }
+    w->rb_sync = md_gpu_stream_record(w->stream);
+    w->stage = SurfaceFieldWork::Readback;
     return true;
 }
 #endif
@@ -736,90 +1084,188 @@ static void field_upload(SurfaceFieldVolume* vol) {
     vol->num_uploaded = vol->num_evaluated;
 }
 
+// The values, the span over the surfaces, the texture: after new values or a new band
+static void field_publish(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    surface_statistics(vol, *w);
+    if (!vol->tex_id || vol->num_uploaded != vol->num_evaluated) {
+        field_upload(vol);
+    }
+}
+
+// What the evaluation made, into the values
+static void merge(SurfaceFieldVolume* vol, SurfaceFieldWork* w, const float* v, bool on_gpu) {
+    size_t n = 0;
+    for (size_t i = 0; i < vol->num_voxels; ++i) {
+        if (!w->got[i] || bit_get(vol->done, i)) continue;
+        vol->values[i] = v[i];
+        bit_set(vol->done, i);
+        n += 1;
+    }
+    vol->num_evaluated += n;
+    vol->complete = vol->num_evaluated == vol->num_voxels;
+    vol->on_gpu = on_gpu;
+}
+
+bool surface_field_poll(SurfaceFieldVolume* vol) {
+    ASSERT(vol);
+    SurfaceFieldWork* w = vol->work;
+    if (!w) return false;
+    const char* name = surface_field_kind_str[(int)w->kind];
+    source_poll(&w->source, vol->source_hash, w->stream, name);
+
+    bool changed = false;
+    switch (w->stage) {
+#if MD_ENABLE_GPU
+    case SurfaceFieldWork::Gpu: {
+        // waited for in its first frames only: a short evaluation ends within them, a long one costs
+        // a frame no more than a few milliseconds
+        const double age_ms = md_tick_to_milliseconds(md_tick_now() - w->t0);
+        const md_gto_int_gpu_job_status_t st = md_gto_int_gpu_job_poll(w->job, age_ms < 50.0 ? 4.0 : 1.0);
+        if (st == MD_GTO_INT_GPU_JOB_RUNNING) {
+            progress_set(&w->progress, name, md_gto_int_gpu_job_progress(w->job), false);
+            break;
+        }
+        md_gto_int_gpu_job_end(w->job);
+        w->job = nullptr;
+        if (st != MD_GTO_INT_GPU_JOB_DONE || !start_readback(vol, w)) {
+            MD_LOG_ERROR("Surface field '%s': the evaluation on the GPU failed, the CPU takes over", name);
+            w->gpu_failed = true;
+            w->stage = SurfaceFieldWork::Idle;
+        }
+        break;
+    }
+    case SurfaceFieldWork::Readback:
+        if (!md_gpu_sync_is_complete(w->rb_sync)) break;
+        merge(vol, w, (const float*)w->rb.cpu, true);
+        md_gpu_free(w->stream, w->rb.gpu);
+        w->rb = {};
+        w->stage = SurfaceFieldWork::Idle;
+        changed = true;
+        MD_LOG_DEBUG("Surface field '%s': %zu of %zu voxels evaluated on the GPU in %.1f ms (over frames)", name, vol->num_evaluated, vol->num_voxels,
+                     md_tick_to_milliseconds(md_tick_now() - w->t0));
+        break;
+#endif
+    case SurfaceFieldWork::Cpu: {
+        if (task_system::task_is_running(w->cpu_task)) {
+            progress_set(&w->progress, name, task_system::task_fraction_complete(w->cpu_task), false);
+            break;
+        }
+        // the values for those voxels, as a field the size of the grid would be (merge reads got)
+        MEMSET(w->got, 0, vol->num_voxels);
+        for (size_t m = 0; m < w->cpu_count; ++m) {
+            vol->values[w->cpu_index[m]] = (float)w->cpu_out[m];
+        }
+        size_t n = 0;
+        for (size_t m = 0; m < w->cpu_count; ++m) {
+            if (!bit_get(vol->done, w->cpu_index[m])) {
+                bit_set(vol->done, w->cpu_index[m]);
+                n += 1;
+            }
+        }
+        vol->num_evaluated += n;
+        vol->complete = vol->num_evaluated == vol->num_voxels;
+        vol->on_gpu = false;
+        MD_LOG_DEBUG("Surface field '%s': %zu voxels evaluated on the CPU in %.1f ms (on worker threads)", name, w->cpu_count,
+                     md_tick_to_milliseconds(md_tick_now() - w->t0));
+        work_cpu_free(w);
+        w->stage = SurfaceFieldWork::Idle;
+        changed = true;
+        break;
+    }
+    default:
+        break;
+    }
+
+    if (changed) count_left(vol, w);
+
+    // What is left of the band, once the distribution is there
+    if (w->stage == SurfaceFieldWork::Idle && w->num_left > 0 && source_ready(w->source, vol->source_hash)) {
+        w->t0 = md_tick_now();
+        bool started = false;
+#if MD_ENABLE_GPU
+        if (!w->gpu_failed && w->stream) {
+            started = start_gpu(vol, w);
+            if (!started) w->gpu_failed = true;
+        }
+#endif
+        if (!started) start_cpu(vol, w);
+    }
+
+    if (changed) {
+        field_publish(vol, w);
+        // Everything there is to evaluate is: the distribution has no further use
+        if (vol->complete && w->stage == SurfaceFieldWork::Idle) source_drop_charges(&w->source, w->stream);
+    }
+
+    if (w->stage != SurfaceFieldWork::Idle) {
+        // set above
+    } else if (source_building(w->source) && w->num_left > 0) {
+        progress_set(&w->progress, name, 0.0f, true);
+    } else {
+        progress_clear(&w->progress);
+    }
+    return changed;
+}
+
+bool surface_field_busy(const SurfaceFieldVolume& vol) {
+    const SurfaceFieldWork* w = vol.work;
+    if (!w) return false;
+    if (w->stage != SurfaceFieldWork::Idle || source_building(w->source)) return true;
+    // values wanted that will come once the distribution does
+    return w->num_left > 0 && !source_failed(w->source, vol.source_hash) && source_ready(w->source, vol.source_hash);
+}
+
 bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc) {
     ASSERT(vol);
     ASSERT(desc.sys);
     ASSERT(desc.grid);
     ASSERT(desc.density);
 
+    if (!vol->work) vol->work = new SurfaceFieldWork();
+    SurfaceFieldWork* w = vol->work;
+    if (desc.gpu_stream) w->stream = desc.gpu_stream;
+    w->kind = desc.kind;
+
     const md_grid_t& dgrid = *desc.grid;
     const md_grid_t  fgrid = surface_field_grid(desc.kind, dgrid);
 
     if (desc.source_hash != vol->source_hash || !vol->values || !grid_same(vol->grid, fgrid)) {
+        // What is under way is of the old source; the texture keeps its values until new ones come
+        work_cancel(w);
         field_volume_reset(vol, fgrid);
         vol->source_hash = desc.source_hash;
         vol->band_hash = 0;
+        w->gpu_failed = false;      // that was of the old source (point multipoles, say)
     }
-    if (desc.band_hash == vol->band_hash && vol->tex_id) {
+    if (source_failed(w->source, desc.source_hash)) {
+        vol->band_hash = desc.band_hash;   // nothing to do for it: not asked again
+        return false;
+    }
+    if (desc.band_hash == vol->band_hash) {
         return true;
     }
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
-    // The band on the density grid, which the surfaces are drawn from
+    // The band on the density grid, which the surfaces are drawn from, and the voxels of the field grid
+    // it needs
     const size_t num_dvox = md_grid_num_points(&dgrid);
     uint8_t* dmask = (uint8_t*)md_temp_alloc(temp, num_dvox);
     band_mask(dmask, desc.density, dgrid.dim, desc.iso_values, desc.num_iso);
-
-    if (!vol->complete) {
-        // ...and the voxels of the field grid it needs
-        const bool same_dim = vol->grid.dim[0] == dgrid.dim[0] && vol->grid.dim[1] == dgrid.dim[1] && vol->grid.dim[2] == dgrid.dim[2];
-        uint8_t* fmask = dmask;
-        if (!same_dim) {
-            fmask = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
-            band_to_field(fmask, dmask, dgrid.dim, vol->grid.dim, temp);
-        }
-
-        size_t num_new = 0;
-        for (size_t i = 0; i < vol->num_voxels; ++i) {
-            num_new += (fmask[i] && !bit_get(vol->done, i));
-        }
-
-        if (num_new > 0) {
-            if (!vol->charges) {
-                const md_tick_t t0 = md_tick_now();
-                md_allocator_i* heap = md_get_heap_allocator();
-                vol->charges = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
-                MEMSET(vol->charges, 0, sizeof(md_gto_int_charges_t));
-                if (!build_charges(vol->charges, desc, heap)) {
-                    md_free(heap, vol->charges, sizeof(md_gto_int_charges_t));
-                    vol->charges = nullptr;
-                    MD_LOG_ERROR("Surface field: the system has nothing to make '%s' of", surface_field_kind_str[(int)desc.kind]);
-                    field_volume_reset(vol, fgrid);
-                    return false;
-                }
-                MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per voxel, built in %.1f ms", surface_field_kind_str[(int)desc.kind],
-                             vol->charges->num_gaussians, vol->charges->num_points, (unsigned long long)md_gto_int_charges_work_per_point(vol->charges),
-                             md_tick_to_milliseconds(md_tick_now() - t0));
-            }
-
-            const md_tick_t t0 = md_tick_now();
-            bool on_gpu = false;
-#if MD_ENABLE_GPU
-            on_gpu = evaluate_band_gpu(vol, desc, fmask);
-#endif
-            if (!on_gpu) {
-                evaluate_band_cpu(vol, fmask, num_new);
-            }
-            MD_LOG_DEBUG("Surface field '%s': %zu voxels wanted of %dx%dx%d, %zu evaluated so far, on the %s, %.1f ms", surface_field_kind_str[(int)desc.kind],
-                         num_new, vol->grid.dim[0], vol->grid.dim[1], vol->grid.dim[2], vol->num_evaluated, on_gpu ? "GPU" : "CPU",
-                         md_tick_to_milliseconds(md_tick_now() - t0));
-
-            // Everything there is to evaluate is: the distribution has no further use
-            if (vol->complete) {
-                field_charges_free(vol);
-            }
-        }
+    const bool same_dim = vol->grid.dim[0] == dgrid.dim[0] && vol->grid.dim[1] == dgrid.dim[1] && vol->grid.dim[2] == dgrid.dim[2];
+    if (same_dim) {
+        MEMCPY(w->want, dmask, vol->num_voxels);
+    } else {
+        band_to_field(w->want, dmask, dgrid.dim, vol->grid.dim, temp);
     }
-
-    surface_statistics(vol, dgrid.dim, desc.density, dmask, desc.iso_values, desc.num_iso);
-
-    if (!vol->tex_id || vol->num_uploaded != vol->num_evaluated) {
-        field_upload(vol);
-    }
-
+    surface_samples_collect(w, *vol, dgrid.dim, desc.density, dmask, desc.iso_values, desc.num_iso);
+    count_left(vol, w);
     vol->band_hash = desc.band_hash;
+
+    if (w->num_left > 0) source_request(&w->source, desc);
+    surface_field_poll(vol);    // starts what can be at once
+    field_publish(vol, w);      // the span over the new band, of what values there are
     return true;
 }
 
@@ -827,7 +1273,10 @@ void surface_field_invalidate(SurfaceFieldVolume* vol) {
     ASSERT(vol);
     vol->source_hash = 0;
     vol->band_hash = 0;
-    field_charges_free(vol);
+    if (vol->work) {
+        work_cancel(vol->work);
+        source_free(&vol->work->source, vol->work->stream);
+    }
 }
 
 ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol) {
@@ -864,7 +1313,7 @@ uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap) {
 void surface_field_free(SurfaceFieldVolume* vol) {
     ASSERT(vol);
     md_allocator_i* heap = md_get_heap_allocator();
-    field_charges_free(vol);
+    work_destroy(vol->work);
     if (vol->values) md_free(heap, vol->values, sizeof(float) * vol->num_voxels);
     if (vol->done)   md_free(heap, vol->done, sizeof(uint64_t) * ((vol->num_voxels + 63) / 64));
     if (vol->tex_id)       gl::free_texture(&vol->tex_id);
@@ -875,129 +1324,284 @@ void surface_field_free(SurfaceFieldVolume* vol) {
 // ---------------------------------------------------------------------------
 // Field at points
 // ---------------------------------------------------------------------------
+struct SurfaceFieldPointsWork {
+    md_gpu_stream_t  stream = nullptr;
+    SurfaceFieldKind kind = SurfaceFieldKind::EmbeddingPotential;
+    FieldSource      source;
+    FieldProgress    progress;
+    uint64_t         source_hash = 0;   // what the evaluation under way is of
 
-static void field_points_charges_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream) {
+    enum Stage { None, Charges, Gpu, Readback, Cpu, Done, Failed } stage = None;
+    md_tick_t t0 = 0;
+    float*    xyz = nullptr;            // the points on the host, packed float3, when given there
+    size_t    count = 0;
+    float*    values = nullptr;         // [count] once done
 #if MD_ENABLE_GPU
-    if (fp->gpu_charges && stream) md_gto_int_gpu_charges_destroy(stream, (md_gto_int_gpu_charges_t)fp->gpu_charges);
-#else
-    (void)stream;
+    md_gpu_mem_t gpu_xyz = {};          // the points on the device, when given there
+    uint32_t     gpu_stride = 0;
+    md_gpu_mem_t gpu_out = {};
+    md_gpu_mem_t rb = {};
+    md_gpu_sync_t rb_sync = {};
+    md_gto_int_gpu_job_t* job = nullptr;
 #endif
-    fp->gpu_charges = nullptr;
-    if (fp->charges) {
-        md_allocator_i* heap = md_get_heap_allocator();
-        md_gto_int_charges_free(fp->charges, heap);
-        md_free(heap, fp->charges, sizeof(md_gto_int_charges_t));
-        fp->charges = nullptr;
+    task_system::ID cpu_task = task_system::INVALID_ID;
+    std::atomic<bool> cpu_cancel{false};
+    double*   cpu_out = nullptr;
+    bool      on_gpu = false;
+};
+
+// Stops the evaluation under way and drops the points
+static void points_cancel(SurfaceFieldPointsWork* w) {
+#if MD_ENABLE_GPU
+    if (w->job) {
+        md_gto_int_gpu_job_end(w->job);
+        w->job = nullptr;
     }
-    fp->source_hash = 0;
+    // stream ordered: after whatever reads or writes them
+    if (w->rb.gpu)      md_gpu_free(w->stream, w->rb.gpu);
+    if (w->gpu_out.gpu) md_gpu_free(w->stream, w->gpu_out.gpu);
+    if (w->gpu_xyz.gpu) md_gpu_free(w->stream, w->gpu_xyz.gpu);
+    w->rb = {};
+    w->gpu_out = {};
+    w->gpu_xyz = {};
+#endif
+    if (w->cpu_task) {
+        w->cpu_cancel = true;
+        task_system::task_interrupt_and_wait_for(w->cpu_task);
+    }
+    w->cpu_task = task_system::INVALID_ID;
+    free(w->cpu_out);
+    w->cpu_out = nullptr;
+    free(w->xyz);
+    w->xyz = nullptr;
+    w->stage = SurfaceFieldPointsWork::None;
+    progress_clear(&w->progress);
 }
 
-void surface_field_points_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream) {
-    ASSERT(fp);
-    field_points_charges_free(fp, stream);
-    *fp = SurfaceFieldPoints{};
+static bool points_start_cpu(SurfaceFieldPointsWork* w) {
+    if (!w->xyz) return false;
+    w->cpu_out = (double*)malloc(sizeof(double) * w->count);
+    if (!w->cpu_out) return false;
+    const md_gto_int_charges_t* q = w->source.charges;
+    const uint64_t work = md_gto_int_charges_work_per_point(q);
+    const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
+    w->cpu_cancel = false;
+    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, q](uint32_t beg, uint32_t end, uint32_t) {
+        evaluate_points_range(w->cpu_out, w->xyz, beg, end, q, w->cpu_cancel);
+    }, grain);
+    task_system::enqueue_task(w->cpu_task);
+    w->stage = SurfaceFieldPointsWork::Cpu;
+    w->on_gpu = false;
+    return true;
 }
 
 #if MD_ENABLE_GPU
-static bool evaluate_points_gpu(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, md_gpu_stream_t stream) {
-    if (!fp->gpu_charges) {
-        if (fp->charges->point_dipole || fp->charges->point_quadrupole) return false;   // the CPU's
-        fp->gpu_charges = md_gto_int_gpu_charges_create(stream, fp->charges);
-        if (!fp->gpu_charges) return false;
-    }
-    const size_t count = points.count;
-    md_gpu_addr_t xyz = points.gpu_xyz;
-    uint32_t stride = points.gpu_stride;
-    md_gpu_mem_t pts = {};
+static bool points_start_gpu(SurfaceFieldPointsWork* w) {
+    md_gto_int_gpu_charges_t gq = source_gpu(&w->source, w->stream);
+    if (!gq) return false;
+    md_gpu_addr_t xyz = w->gpu_xyz.gpu;
+    uint32_t stride = w->gpu_stride;
     if (!xyz) {
-        // Not on the device: up they go
-        const size_t bytes = sizeof(float) * 3 * count;
-        pts = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, bytes);
-        void* dst = pts.gpu ? md_gpu_upload_begin(stream, pts.gpu, bytes) : nullptr;
-        if (!dst) {
-            if (pts.gpu) md_gpu_free(stream, pts.gpu);
-            return false;
-        }
-        MEMCPY(dst, points.xyz, bytes);
-        md_gpu_upload_end(stream);
-        xyz = pts.gpu;
+        if (!w->xyz) return false;
+        // not on the device: up they go
+        const size_t bytes = sizeof(float) * 3 * w->count;
+        w->gpu_xyz = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, bytes);
+        void* dst = w->gpu_xyz.gpu ? md_gpu_upload_begin(w->stream, w->gpu_xyz.gpu, bytes) : nullptr;
+        if (!dst) return false;
+        MEMCPY(dst, w->xyz, bytes);
+        md_gpu_upload_end(w->stream);
+        xyz = w->gpu_xyz.gpu;
         stride = 0;
     }
-    md_gpu_mem_t res = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * count);
-    md_gpu_mem_t rb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * count);
-    bool ok = false;
-    if (res.gpu && rb.cpu) {
-        md_gto_int_gpu_potential_xyz_desc_t pd = {};
-        pd.charges       = (md_gto_int_gpu_charges_t)fp->gpu_charges;
-        pd.xyz           = xyz;
-        pd.xyz_stride    = stride;
-        pd.num_xyz       = (uint32_t)count;
-        pd.out_potential = res.gpu;
-        if (md_gto_int_gpu_potential_xyz_launch(stream, &pd)) {
-            md_gpu_copy(stream, rb.gpu, res.gpu, sizeof(float) * count);
-            md_gpu_stream_sync(stream);
-            MEMCPY(out, rb.cpu, sizeof(float) * count);
-            ok = true;
-        }
-    }
-    if (pts.gpu) md_gpu_free(stream, pts.gpu);
-    if (res.gpu) md_gpu_free(stream, res.gpu);
-    if (rb.gpu)  md_gpu_free(stream, rb.gpu);
-    return ok;
+    if (!w->gpu_out.gpu) w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, sizeof(float) * w->count);
+    if (!w->gpu_out.gpu) return false;
+    md_gto_int_gpu_potential_xyz_desc_t pd = {};
+    pd.charges       = gq;
+    pd.xyz           = xyz;
+    pd.xyz_stride    = stride;
+    pd.num_xyz       = (uint32_t)w->count;
+    pd.out_potential = w->gpu_out.gpu;
+    w->job = md_gto_int_gpu_potential_xyz_job_begin(w->stream, &pd);
+    if (!w->job) return false;
+    w->stage = SurfaceFieldPointsWork::Gpu;
+    w->on_gpu = true;
+    return true;
 }
 #endif
 
-static void evaluate_points_cpu(const md_gto_int_charges_t* charges, float* out, const float* xyz, size_t count) {
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    double* v = (double*)md_temp_alloc(temp, sizeof(double) * count);
-    struct Payload {
-        const md_gto_int_charges_t* charges;
-        const float* xyz;
-        double* out;
-    } payload = { charges, xyz, v };
-    const uint64_t work = md_gto_int_charges_work_per_point(charges);
-    const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
-    task_system::ID task = task_system::create_pool_task(STR_LIT("## Surface Field Points"), (uint32_t)count, [p = &payload](uint32_t beg, uint32_t end, uint32_t) {
-        md_gto_int_potential_xyz(p->out + beg, NULL, p->xyz + 3 * (size_t)beg, end - beg, 0, p->charges);
-    }, grain);
-    task_system::enqueue_task(task);
-    task_system::task_wait_for(task);
-    for (size_t i = 0; i < count; ++i) out[i] = (float)v[i];
+// The distribution is there: on the device where it can be, else on the CPU
+static void points_start(SurfaceFieldPointsWork* w) {
+#if MD_ENABLE_GPU
+    if (w->stream && points_start_gpu(w)) return;
+#endif
+    if (!points_start_cpu(w)) {
+        MD_LOG_ERROR("Surface field: the points cannot be evaluated where they are");
+        w->stage = SurfaceFieldPointsWork::Failed;
+    }
 }
 
-bool surface_field_evaluate_points(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc) {
+bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc) {
     ASSERT(fp);
     ASSERT(desc.sys);
-    const size_t count = points.count;
-    if (count == 0) return true;
-    if (!out || !(points.xyz || (points.gpu_xyz && desc.gpu_stream))) return false;
-
-    if (!fp->charges || fp->source_hash != desc.source_hash) {
-        field_points_charges_free(fp, desc.gpu_stream);
-        md_allocator_i* heap = md_get_heap_allocator();
-        md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
-        MEMSET(q, 0, sizeof(*q));
-        if (!build_charges(q, desc, heap)) {
-            md_free(heap, q, sizeof(md_gto_int_charges_t));
-            return false;
-        }
-        fp->charges = q;
-        fp->source_hash = desc.source_hash;
+    if (!fp->work) fp->work = new SurfaceFieldPointsWork();
+    SurfaceFieldPointsWork* w = fp->work;
+    if (desc.gpu_stream) w->stream = desc.gpu_stream;
+    w->kind = desc.kind;
+    points_cancel(w);
+    free(w->values);
+    w->values = nullptr;
+    w->count = points.count;
+    w->source_hash = desc.source_hash;
+    w->t0 = md_tick_now();
+    if (points.count == 0) {
+        w->stage = SurfaceFieldPointsWork::Done;
+        return true;
     }
+    if (source_failed(w->source, desc.source_hash)) return false;
 
-    const md_tick_t t0 = md_tick_now();
-    bool on_gpu = false;
+    // The points, copied: the mesh they come from may go before the evaluation is done
+    if (points.xyz) {
+        w->xyz = (float*)malloc(sizeof(float) * 3 * points.count);
+        if (w->xyz) MEMCPY(w->xyz, points.xyz, sizeof(float) * 3 * points.count);
+    }
 #if MD_ENABLE_GPU
-    if (desc.gpu_stream) on_gpu = evaluate_points_gpu(fp, out, points, desc.gpu_stream);
-#endif
-    if (!on_gpu) {
-        if (!points.xyz) return false;
-        evaluate_points_cpu(fp->charges, out, points.xyz, count);
+    if (points.gpu_xyz && w->stream) {
+        const uint32_t stride = points.gpu_stride ? points.gpu_stride : 12u;
+        const size_t bytes = (size_t)stride * points.count;
+        w->gpu_xyz = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, bytes);
+        if (w->gpu_xyz.gpu && md_gpu_copy(w->stream, w->gpu_xyz.gpu, points.gpu_xyz, bytes)) {
+            w->gpu_stride = stride;
+        } else if (w->gpu_xyz.gpu) {
+            md_gpu_free(w->stream, w->gpu_xyz.gpu);
+            w->gpu_xyz = {};
+        }
     }
-    fp->on_gpu  = on_gpu;
-    fp->seconds = md_tick_to_milliseconds(md_tick_now() - t0) * 1.0e-3;
-    return true;
+    const bool have = w->xyz || w->gpu_xyz.gpu;
+#else
+    const bool have = w->xyz != nullptr;
+#endif
+    if (!have) return false;
+
+    source_request(&w->source, desc);
+    w->stage = SurfaceFieldPointsWork::Charges;
+    return surface_field_points_poll(fp, nullptr, nullptr) != SurfaceFieldPointsStatus::Failed;   // starts what can be at once
+}
+
+SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const float** values, size_t* count) {
+    ASSERT(fp);
+    SurfaceFieldPointsWork* w = fp->work;
+    if (!w) return SurfaceFieldPointsStatus::None;
+    const char* name = surface_field_kind_str[(int)w->kind];
+    source_poll(&w->source, w->source_hash, w->stream, name);
+
+    switch (w->stage) {
+    case SurfaceFieldPointsWork::Charges:
+        if (source_failed(w->source, w->source_hash)) {
+            w->stage = SurfaceFieldPointsWork::Failed;
+        } else if (source_ready(w->source, w->source_hash)) {
+            points_start(w);
+        } else if (!source_building(w->source)) {
+            w->stage = SurfaceFieldPointsWork::Failed;   // nothing will come
+        }
+        break;
+#if MD_ENABLE_GPU
+    case SurfaceFieldPointsWork::Gpu: {
+        const double age_ms = md_tick_to_milliseconds(md_tick_now() - w->t0);
+        const md_gto_int_gpu_job_status_t st = md_gto_int_gpu_job_poll(w->job, age_ms < 50.0 ? 4.0 : 1.0);
+        if (st == MD_GTO_INT_GPU_JOB_RUNNING) break;
+        md_gto_int_gpu_job_end(w->job);
+        w->job = nullptr;
+        bool ok = st == MD_GTO_INT_GPU_JOB_DONE;
+        if (ok) {
+            w->rb = md_gpu_malloc(w->stream, MD_GPU_MEM_HOST_READ, sizeof(float) * w->count);
+            ok = w->rb.cpu && md_gpu_copy(w->stream, w->rb.gpu, w->gpu_out.gpu, sizeof(float) * w->count);
+        }
+        if (ok) {
+            w->rb_sync = md_gpu_stream_record(w->stream);
+            w->stage = SurfaceFieldPointsWork::Readback;
+        } else {
+            MD_LOG_ERROR("Surface field '%s': the evaluation at the points failed on the GPU, the CPU takes over", name);
+            if (!points_start_cpu(w)) w->stage = SurfaceFieldPointsWork::Failed;
+        }
+        break;
+    }
+    case SurfaceFieldPointsWork::Readback:
+        if (!md_gpu_sync_is_complete(w->rb_sync)) break;
+        w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
+        if (w->values) MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
+        md_gpu_free(w->stream, w->rb.gpu);
+        w->rb = {};
+        w->stage = w->values ? SurfaceFieldPointsWork::Done : SurfaceFieldPointsWork::Failed;
+        break;
+#endif
+    case SurfaceFieldPointsWork::Cpu:
+        if (task_system::task_is_running(w->cpu_task)) break;
+        w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
+        if (w->values) for (size_t i = 0; i < w->count; ++i) w->values[i] = (float)w->cpu_out[i];
+        free(w->cpu_out);
+        w->cpu_out = nullptr;
+        w->cpu_task = task_system::INVALID_ID;
+        w->stage = w->values ? SurfaceFieldPointsWork::Done : SurfaceFieldPointsWork::Failed;
+        break;
+    default:
+        break;
+    }
+
+    // progress
+    switch (w->stage) {
+    case SurfaceFieldPointsWork::Charges:
+        progress_set(&w->progress, name, 0.0f, true);
+        break;
+#if MD_ENABLE_GPU
+    case SurfaceFieldPointsWork::Gpu:
+        progress_set(&w->progress, name, md_gto_int_gpu_job_progress(w->job), false);
+        break;
+#endif
+    case SurfaceFieldPointsWork::Cpu:
+        progress_set(&w->progress, name, task_system::task_fraction_complete(w->cpu_task), false);
+        break;
+    default:
+        progress_clear(&w->progress);
+        break;
+    }
+
+    if (w->stage == SurfaceFieldPointsWork::Done) {
+        // delivered once
+        fp->on_gpu  = w->on_gpu;
+        fp->seconds = md_tick_to_seconds(md_tick_now() - w->t0);
+        if (values) *values = w->values;
+        if (count)  *count = w->values ? w->count : 0;
+        if (values || count) {
+            w->stage = SurfaceFieldPointsWork::None;
+#if MD_ENABLE_GPU
+            // the points and the output on the device have done their part
+            if (w->gpu_out.gpu) md_gpu_free(w->stream, w->gpu_out.gpu);
+            if (w->gpu_xyz.gpu) md_gpu_free(w->stream, w->gpu_xyz.gpu);
+            w->gpu_out = {};
+            w->gpu_xyz = {};
+#endif
+            free(w->xyz);
+            w->xyz = nullptr;
+        }
+        return SurfaceFieldPointsStatus::Done;
+    }
+    if (w->stage == SurfaceFieldPointsWork::Failed) {
+        w->stage = SurfaceFieldPointsWork::None;
+        progress_clear(&w->progress);
+        return SurfaceFieldPointsStatus::Failed;
+    }
+    return w->stage == SurfaceFieldPointsWork::None ? SurfaceFieldPointsStatus::None : SurfaceFieldPointsStatus::Running;
+}
+
+void surface_field_points_free(SurfaceFieldPoints* fp) {
+    ASSERT(fp);
+    if (SurfaceFieldPointsWork* w = fp->work) {
+        points_cancel(w);
+        source_free(&w->source, w->stream);
+        free(w->values);
+        delete w;
+    }
+    *fp = SurfaceFieldPoints{};
 }
 
 ColorScaleSpan surface_field_span_of(const float* values, size_t count) {

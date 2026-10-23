@@ -646,11 +646,7 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
     if (!es->iso_mesh) return;
     iso_meshes_free(&es->iso_mesh->meshes, state);
     md_gto_iso_field_destroy(es->iso_mesh->field);
-#if MD_ENABLE_GPU
-    surface_field_points_free(&es->iso_mesh->field_points, state->gpu_stream);
-#else
-    surface_field_points_free(&es->iso_mesh->field_points, nullptr);
-#endif
+    surface_field_points_free(&es->iso_mesh->field_points);
     delete es->iso_mesh;
     es->iso_mesh = nullptr;
 }
@@ -717,6 +713,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
         const uint64_t values_key = md_hash64_combine(source, em.meshes.key);
         if (values_key != em.values_key) {
+            // Begun now, taken below once it is done: the surfaces go uncoloured until then
             em.values_key = values_key;
             em.span = {};
             md_temp_scope_t temp = md_temp_begin();
@@ -731,23 +728,27 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 #if MD_ENABLE_GPU
             desc.gpu_stream = state->gpu_stream;
 #endif
-            const uint32_t nv = em.meshes.xyz_count;
-            float* values = (float*)md_temp_alloc(temp, sizeof(float) * MAX(nv, 1u));
             SurfaceFieldPointSet points = {};
             points.xyz        = em.meshes.xyz;
             points.gpu_xyz    = em.meshes.gpu_xyz;
             points.gpu_stride = sizeof(float) * 4;
-            points.count      = nv;
-            // and its gradient along the surface, which the isolines take their width from
-            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MAX(nv, 1u));
-            bool evaluated = surface_field_evaluate_points(&em.field_points, values, points, desc);
-            if (evaluated) {
-                isomesh::mesh_field_gradient(gradients, em.meshes.xyz, values, nv, em.meshes.tri_index, em.meshes.tri_index_count);
+            points.count      = em.meshes.xyz_count;
+            if (!surface_field_points_begin(&em.field_points, points, desc)) {
+                isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
             }
-            if (evaluated && isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, nv)) {
+            md_temp_end(temp);
+        }
+        const float* values = nullptr;
+        size_t nv = 0;
+        if (surface_field_points_poll(&em.field_points, &values, &nv) == SurfaceFieldPointsStatus::Done && values && nv == em.meshes.xyz_count) {
+            // and its gradient along the surface, which the isolines take their width from
+            md_temp_scope_t temp = md_temp_begin();
+            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MAX(nv, (size_t)1));
+            isomesh::mesh_field_gradient(gradients, em.meshes.xyz, values, (uint32_t)nv, em.meshes.tri_index, em.meshes.tri_index_count);
+            if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %u vertices in %.1f ms (%s)", surface_field_kind_str[(int)es.field_kind], nv,
+                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_str[(int)es.field_kind], nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
                 isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);

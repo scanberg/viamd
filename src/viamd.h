@@ -2359,6 +2359,10 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys);
 // electronic structure at all, and leaves the representation untouched.
 bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys);
 
+// Takes what the field a representation is coloured by has finished evaluating (surface_field_poll):
+// once a frame, whatever else updates
+void electronic_structure_field_poll(Representation* rep);
+
 // Brings what an electronic structure representation draws up to date: its volume, evaluated again only
 // when what it is evaluated from changed (the frame among it), and the colours of its surfaces - from
 // atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.

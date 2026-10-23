@@ -3929,8 +3929,8 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
     source_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source_hash);
     uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
     band_hash = md_hash64_combine(band_hash, es.vol_hash);
-    if (es.field_vol.tex_id && source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
-        return;
+    if (source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
+        return;     // what is under way is taken by electronic_structure_field_poll
     }
 
     const size_t num_voxels = md_grid_num_points(&es.grid);
@@ -3958,20 +3958,29 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
     }
 #if MD_ENABLE_GPU
-    if (state->gpu_stream && state->gpu_volume) {
-        desc.gpu_stream  = state->gpu_stream;
-        desc.gpu_scratch = state->gpu_volume;
-        desc.gpu_scratch_dim[0] = desc.gpu_scratch_dim[1] = desc.gpu_scratch_dim[2] = GPU_VOLUME_DIM;
-    }
+    desc.gpu_stream = state->gpu_stream;
 #endif
 
     const md_tick_t t0 = md_tick_now();
     if (surface_field_update(&es.field_vol, desc)) {
         color_scale_update_range(&es.field_map, surface_field_span(es.field_vol));
         const SurfaceFieldVolume& fv = es.field_vol;
-        MD_LOG_DEBUG("Surface field: %zu of %zu voxels (%dx%dx%d) evaluated%s, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g",
+        MD_LOG_DEBUG("Surface field: %zu of %zu voxels (%dx%dx%d) evaluated%s%s, the update %.1f ms", fv.num_evaluated, fv.num_voxels,
+                     fv.grid.dim[0], fv.grid.dim[1], fv.grid.dim[2], fv.on_gpu ? " on the GPU" : "", surface_field_busy(fv) ? ", more under way" : "",
+                     md_tick_to_milliseconds(md_tick_now() - t0));
+    }
+}
+
+void electronic_structure_field_poll(Representation* rep) {
+    ASSERT(rep);
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!surface_field_busy(es.field_vol)) return;
+    if (surface_field_poll(&es.field_vol)) {
+        color_scale_update_range(&es.field_map, surface_field_span(es.field_vol));
+        const SurfaceFieldVolume& fv = es.field_vol;
+        MD_LOG_DEBUG("Surface field: %zu of %zu voxels (%dx%dx%d) evaluated%s; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g",
                      fv.num_evaluated, fv.num_voxels, fv.grid.dim[0], fv.grid.dim[1], fv.grid.dim[2], fv.on_gpu ? " on the GPU" : "",
-                     md_tick_to_milliseconds(md_tick_now() - t0), fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
+                     fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
     }
 }
 

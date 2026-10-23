@@ -11,7 +11,8 @@
 
 struct md_system_t;
 struct md_system_state_t;
-struct md_gto_int_charges_t;
+struct SurfaceFieldWork;
+struct SurfaceFieldPointsWork;
 
 // SURFACE FIELDS
 //
@@ -29,6 +30,13 @@ struct md_gto_int_charges_t;
 //             of it costs anything
 //   how       a colour map and a range, applied per pixel when the surface is shaded - changing
 //             either costs nothing, and the values interpolate as values rather than as colours
+//
+// NOTHING HERE BLOCKS. Making the field's charge distribution (reading a QM density and building
+// md_gto_int's distribution of it: seconds on a protein) runs on a worker thread, the evaluation on
+// the GPU as an md_gto_int job advanced a little each frame, and its readback is waited for by
+// looking. An update works out what is wanted and starts it; surface_field_poll, once a frame while
+// surface_field_busy, takes what has finished. Until new values arrive a surface keeps the ones it
+// has, and surface_field_progress names what is under way for a progress display.
 //
 // The field volume has the density volume's grid, or a coarser one over the same box where the
 // field is smooth and dear: the electrostatic potential of a QM density is a sum over tens of
@@ -86,11 +94,12 @@ struct SurfaceFieldVolume {
     size_t    num_voxels = 0;
     size_t    num_evaluated = 0;
     size_t    num_uploaded = 0;     // num_evaluated when the texture was last written
-    bool      complete = false;     // every voxel holds a value (the GPU evaluates the whole volume)
-    bool      on_gpu = false;       // and it was the GPU that evaluated it
+    bool      complete = false;     // every voxel holds a value
+    bool      on_gpu = false;       // and it was the GPU that evaluated the last of them
 
-    // The charge distribution the CPU evaluates, kept while the band grows over the same source
-    md_gto_int_charges_t* charges = nullptr;
+    // What is under way (surface_field.cpp): the charge distribution, kept while the band grows over
+    // the same source, and the evaluation
+    SurfaceFieldWork* work = nullptr;
 
     uint64_t  source_hash = 0;      // what the values are OF; a change invalidates every one of them
     uint64_t  band_hash = 0;        // the surfaces the band was taken for
@@ -128,12 +137,9 @@ struct SurfaceFieldDesc {
     uint64_t                 source_hash = 0;
     uint64_t                 band_hash = 0;
 
-    // Optional: evaluate on the device, into a 3D R32F storage texture of at least scratch_dim, and
-    // read the result back. Used where it can serve the field (the whole field grid fits the scratch
-    // and md_gto_int evaluates the distribution there), else the band is evaluated on the CPU.
+    // Optional: evaluate on the device, where md_gto_int can evaluate the distribution there (point
+    // charges, the QM density), else on the CPU's worker threads. The stream must outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
-    md_gpu_texture_t         gpu_scratch = nullptr;
-    uint32_t                 gpu_scratch_dim[3] = {};
 };
 
 md_unit_t surface_field_unit(SurfaceFieldKind kind);
@@ -153,9 +159,27 @@ SurfaceFieldKind surface_field_first_available(const md_system_t& sys);
 // times.
 md_grid_t surface_field_grid(SurfaceFieldKind kind, const md_grid_t& density_grid);
 
-// Brings the field volume up to date for the surfaces of desc. Returns false when the field cannot
-// be made, and leaves the volume empty then.
+// Brings the field volume up to date for the surfaces of desc, without waiting: works out the band,
+// and starts what it needs (or leaves it to the evaluation under way to finish first, then the rest).
+// A new source drops what is under way; the texture keeps the old values until the new ones come.
+// Returns false when the field cannot be made: no such field in the system, or its distribution
+// failed to build (not tried again for the same source).
 bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc);
+
+// Takes what has finished and starts what is next; true when the texture and the span changed. Once a
+// frame while surface_field_busy, from the GL thread.
+bool surface_field_poll(SurfaceFieldVolume* vol);
+bool surface_field_busy(const SurfaceFieldVolume& vol);
+
+// What is under way for longer than a moment, every volume and point set, for a progress display:
+// the field's name and how far it is (0 to 1; 0 while its distribution is being made). Returns how
+// many (at most cap).
+struct SurfaceFieldProgress {
+    const char* label = "";
+    float       fraction = 0.0f;
+    bool        preparing = false;  // the distribution is being made
+};
+size_t surface_field_progress(SurfaceFieldProgress* out, size_t cap);
 
 // Forgets what the values are of, keeping the allocations: the next update evaluates afresh. For
 // when the data changes under the same geometry, a new system loaded over the old.
@@ -175,14 +199,12 @@ void surface_field_free(SurfaceFieldVolume* vol);
 // mesh (iso_meshes.h) - rather than on a volume a surface samples: no grid, no band, no interpolation
 // but across a triangle. The charge distribution is kept while desc.source_hash stays the same, so a
 // new set of points (another isovalue) costs only their evaluation. On the GPU when desc.gpu_stream is
-// set and md_gto_int can evaluate the distribution there (point charges only), else on the CPU's
-// worker threads. Blocking.
+// set and md_gto_int can evaluate the distribution there (point charges, the QM density), else on the
+// CPU's worker threads. Without waiting, as the volume: begin, then poll once a frame until done.
 struct SurfaceFieldPoints {
-    md_gto_int_charges_t* charges = nullptr;
-    void*    gpu_charges = nullptr;     // md_gto_int_gpu_charges_t
-    uint64_t source_hash = 0;
+    SurfaceFieldPointsWork* work = nullptr;
     bool     on_gpu = false;            // where the last evaluation ran
-    double   seconds = 0.0;             // and what it took
+    double   seconds = 0.0;             // and what it took, from begin to the values
 };
 
 // The points, bohr. The GPU path reads gpu_xyz when there is one (points already on the device, say where
@@ -195,10 +217,19 @@ struct SurfaceFieldPointSet {
     size_t        count = 0;
 };
 
-// desc: kind, sys, state, basis_atom_xyz / num_basis_atoms, source_hash, gpu_stream (optional); the rest
-// is not used. Returns false when the field cannot be made, or cannot be evaluated where the points are.
-bool surface_field_evaluate_points(SurfaceFieldPoints* fp, float* out, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc);
-void surface_field_points_free(SurfaceFieldPoints* fp, md_gpu_stream_t stream);
+// Starts evaluating the field at the points, which are copied (on the host, and on the device when
+// they are there), replacing an evaluation under way. desc: kind, sys, state, basis_atom_xyz /
+// num_basis_atoms, source_hash, gpu_stream (optional, must outlive fp); the rest is not used. Returns
+// false when the field cannot be made, or cannot be evaluated where the points are.
+bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc);
+
+enum class SurfaceFieldPointsStatus { None, Running, Done, Failed };
+
+// Advances the evaluation begun last. Done: *values (count of them, owned by fp, valid until the next
+// begin or free) holds the field at the points, in their order; Done is returned once.
+SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const float** values, size_t* count);
+
+void surface_field_points_free(SurfaceFieldPoints* fp);
 
 // The spread of values (1st to 99th percentile, and the extremes) as a colour scale reads it
 ColorScaleSpan surface_field_span_of(const float* values, size_t count);

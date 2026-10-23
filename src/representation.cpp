@@ -1008,7 +1008,10 @@ void update_all_representations(ApplicationState* state) {
         }
     }
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        update_representation(state, &state->representation.reps[i]);
+        Representation* rep = &state->representation.reps[i];
+        // The field it is coloured by is evaluated over frames, shown or not
+        if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
+        update_representation(state, rep);
     }
 }
 
@@ -1851,7 +1854,10 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     // Where the field stands, on its label: how much of it has been evaluated, and where
     const SurfaceFieldVolume& vol = es.field_vol;
     char status[160] = "";
-    if (!mesh_mode && vol.num_surface_samples > 0) {
+    if (!mesh_mode && surface_field_busy(vol)) {
+        snprintf(status, sizeof(status), "evaluating, %zu of %zu voxels (%dx%dx%d) so far", vol.num_evaluated, vol.num_voxels,
+                 vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2]);
+    } else if (!mesh_mode && vol.num_surface_samples > 0) {
         snprintf(status, sizeof(status), "%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
