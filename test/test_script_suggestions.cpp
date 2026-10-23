@@ -387,15 +387,15 @@ UTEST(script_suggestions, every_line_picks_a_random_selection) {
     EXPECT_EQ(ARRAY_SIZE(files) * 40, offered);
 }
 
-// The names of an XYZ file are its element symbols, padded with zeros as they are read: such a name cannot be written
-UTEST(script_suggestions, names_which_cannot_be_written) {
+// The names of an XYZ file are the symbols it writes (mdlib used to pad them with zeros, which made them unwritable)
+UTEST(script_suggestions, names_of_an_xyz_file) {
     Loaded l;
     ASSERT_TRUE(load(&l, "tryptophan.xyz"));
     const md_bitset_t sel = select(l, "element(\"C\")");
     md_array(ScriptSuggestion) s = suggest(l, sel);
     print(s);
     EXPECT_TRUE(all_pick(l, sel, s));
-    EXPECT_TRUE(contains(s, "sel1 = element(\"C\");"));
+    EXPECT_TRUE(contains(s, "sel1 = name(\"C\");") || contains(s, "sel1 = element(\"C\");"));
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(printable(s[i].text));
     unload(&l);
 }
