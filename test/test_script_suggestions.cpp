@@ -192,23 +192,24 @@ UTEST(script_suggestions, chains_by_author_id) {
     EXPECT_TRUE(all_pick(l, res, u));
     EXPECT_TRUE(contains(u, "sel1 = resid(10:20) in chain(\"B\");"));
 
-    // A molecule of more than one instance (what the viewport selects at Molecule granularity) is the molecule
+    // The molecule of the protein of chain B (what the viewport selects at Molecule granularity): the Mg it
+    // coordinates is not of it
     const md_bitset_t mol = select(l, "molecule(atom(2500))");
     md_array(ScriptSuggestion) v = suggest(l, mol);
     print(v);
     EXPECT_TRUE(all_pick(l, mol, v));
-    ASSERT_GT(md_array_size(v), 0u);
-    EXPECT_TRUE(str_eq_cstr(v[0].text, "sel1 = molecule(2);"));
+    EXPECT_TRUE(contains(v, "sel1 = protein() and chain(\"B\");"));
+    EXPECT_TRUE(contains(v, "sel1 = molecule(2);"));
 
-    // The Mg of that molecule alone: a residue, not a molecule, and nothing the script has no word for
+    // The Mg alone, a molecule of its own: by the ids of the file, and by its position among the molecules
     const md_bitset_t mg = select(l, "resname('MG') and chain('B')");
     ASSERT_EQ(1u, (unsigned)md_bitset_count(mg));
     md_array(ScriptSuggestion) w = suggest(l, mg);
     print(w);
     EXPECT_TRUE(all_pick(l, mg, w));
-    ASSERT_GT(md_array_size(w), 0u);
+    EXPECT_TRUE(contains(w, "sel1 = resid(802) in chain(\"B\");"));
+    EXPECT_TRUE(any_contains(w, "molecule("));
     EXPECT_FALSE(any_contains(w, "instance("));
-    EXPECT_FALSE(any_contains(w, "molecule("));
     unload(&l);
 }
 

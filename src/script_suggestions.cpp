@@ -524,6 +524,17 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     md_array(int32_t) whole_insts = 0;
     md_array(int32_t) unwritten = 0;
     whole_chains_and_insts(&whole_chains, &whole_insts, b, *c);
+    if (by_id) {
+        // By the ids of the data, a molecule of a chain which has them is its residues within the chain, resid(802) in
+        // chain("B"), rather than its position among the molecules
+        size_t n = 0;
+        for (size_t i = 0; i < md_array_size(whole_insts); ++i) {
+            const int32_t chain = inst_chain(*c, whole_insts[i]);
+            if (chain_by_id(*c, chain) && chain_by_seq(c, chain)) md_array_push(unwritten, whole_insts[i], temp);
+            else whole_insts[n++] = whole_insts[i];
+        }
+        md_array_shrink(whole_insts, n);
+    }
     if (!whole_terms(&terms, &unwritten, whole_chains, md_array_size(whole_chains), whole_insts, md_array_size(whole_insts), *c, by_id)) return false;
     const size_t num_unwritten = sort_unique(unwritten, md_array_size(unwritten));
     // What the terms add up to: a selection held in thousands of chains is given up on before all of them are written
