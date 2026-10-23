@@ -117,7 +117,7 @@ UTEST(viamd_color, oklch_hue_sweep_stays_in_gamut) {
 
 // Res Type: every atom takes the color of the type of its residue, which is that of the standard residue the type is a
 // form of (HIE is one of HIS) until it is given one of its own
-UTEST(viamd_color, comp_type) {
+UTEST(viamd_color, res_type) {
     static const char* pdb =
         "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
         "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C\n"
@@ -134,18 +134,18 @@ UTEST(viamd_color, comp_type) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
-    ASSERT_EQ(3, (int)sys.component.count);
+    ASSERT_EQ(3, (int)sys.residue.count);
 
     uint32_t colors[9] = {};
-    color_atoms_comp_type(colors, 9, sys);
+    color_atoms_res_type(colors, 9, sys);
     for (int a = 0; a < 4; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_ALA), colors[a]);
     for (int a = 4; a < 8; ++a) EXPECT_EQ(md_monomer_color(MD_MONOMER_HIS), colors[a]);
-    EXPECT_EQ(md_component_type_color(&sys.component.type, (size_t)md_component_type_idx(&sys.component, 2)) | 0xFF000000u, colors[8]);
+    EXPECT_EQ(md_residue_type_color(&sys.residue.type, (size_t)md_system_residue_type_idx(&sys, 2)) | 0xFF000000u, colors[8]);
 
     // A color of its own, opaque whatever alpha it was given
-    const md_component_type_idx_t his = md_component_type_idx(&sys.component, 1);
-    sys.component.type.color[his] = 0x00102030u;
-    color_atoms_comp_type(colors, 9, sys);
+    const md_residue_type_idx_t his = md_system_residue_type_idx(&sys, 1);
+    sys.residue.type.color[his] = 0x00102030u;
+    color_atoms_res_type(colors, 9, sys);
     for (int a = 4; a < 8; ++a) EXPECT_EQ(0xFF102030u, colors[a]);
 
     md_arena_allocator_destroy(alloc);

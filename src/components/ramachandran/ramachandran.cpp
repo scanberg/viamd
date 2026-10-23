@@ -197,12 +197,12 @@ void main() {
 }
 )");
 
-// Adds the atoms a backbone segment stands for to mask: those of its residue, or for a segment without a component (a
+// Adds the atoms a backbone segment stands for to mask: those of its residue, or for a segment without a residue (a
 // backbone found from the bonds alone, as for an XYZ file) those of its backbone
 static void mask_add_segment(md_bitmask_t* mask, const md_system_t& sys, size_t seg_idx) {
-    const md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[seg_idx];
-    if (comp_idx >= 0) {
-        const md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+    const md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[seg_idx];
+    if (res_idx >= 0) {
+        const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
         if (range.beg != range.end) {
             modify_field(mask, range, SelectionOperator::Or);
         }
@@ -1090,11 +1090,11 @@ struct Ramachandran : viamd::EventHandler {
                                 if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
                                     mask_add_segment(highlight_mask, sys, (size_t)mouse_hover_idx);
                                     grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
-                                    md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
-                                    if (comp_idx >= 0) {
-                                        str_t lbl = md_component_name(&sys.component, comp_idx);
-                                        md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
-                                        ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
+                                    md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[mouse_hover_idx];
+                                    if (res_idx >= 0) {
+                                        str_t lbl = md_system_residue_name(&sys, res_idx);
+                                        md_sequence_id_t seq_id = md_system_residue_seq_id(&sys, res_idx);
+                                        ImGui::SetTooltip("res[%d]: %.*s %d", res_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
                                     } else {
                                         // No residue to name: the atom of its CA
                                         ImGui::SetTooltip("atom[%d]: CA", sys.protein_backbone.segment.atoms[mouse_hover_idx].ca + 1);

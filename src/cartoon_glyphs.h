@@ -44,7 +44,7 @@ struct md_allocator_i;
 //              gives it from the beads of the ideal base, cartoon_nucleobases.inl); the band goes through the sugar
 //              bead with the C4' (BB2), and the stick from it to the glycosidic N. Its sugar is not drawn: two beads
 //              tell neither the pucker of the ring nor how it lies.
-//              A nucleotide without a component (its backbone found from the bonds alone, as for an XYZ file) has its
+//              A nucleotide without a residue (its backbone found from the bonds alone, as for an XYZ file) has its
 //              rings found from its C1': the sugar, and the base ring with the glycosidic N with those fused to it.
 //
 // The points (the centres of the spheres, the control points of the tubes, the ends of the capsules) are the particles
@@ -54,7 +54,7 @@ struct md_allocator_i;
 // stays whole across the periodic boundary. The spheres are drawn as such (MD_GL_REP_SPACE_FILL, a control point of a
 // tube or a corner of a slab has no sphere: a radius of 0), the tubes as the splines of md_gl through the control
 // points with a stadium profile, round or flat (md_gl_mol_set_tubes, MD_GL_REP_TUBES) and the slabs raycast through
-// their corners (md_gl_mol_set_slabs, MD_GL_REP_SLABS). A point stands for a component (if it has one), which is what
+// their corners (md_gl_mol_set_slabs, MD_GL_REP_SLABS). A point stands for a residue (if it has one), which is what
 // picking it resolves to, takes its colour from one of its atoms, and is shown when any of its atoms is shown. A part of
 // a tube is that of its control point, a slab that of its first corner.
 
@@ -101,7 +101,7 @@ struct CartoonGlyphs {
     md_array(float)    point_weight = nullptr;       // Of point_atom
     md_array(int32_t)  point_ref = nullptr;          // [num_points]
     md_array(int32_t)  point_color_atom = nullptr;   // [num_points] The atom whose colour it takes
-    md_array(int32_t)  point_comp = nullptr;         // [num_points] The component it stands for, -1 for none
+    md_array(int32_t)  point_res = nullptr;          // [num_points] The residue it stands for, -1 for none
     md_array(float)    point_radius = nullptr;       // [num_points] Of its sphere, Å, before the scale of the representation. 0 for none
     md_array(uint8_t)  point_kind = nullptr;         // [num_points] CartoonGlyphKind
     md_array(uint8_t)  point_variant = nullptr;      // [num_points] CartoonGlyphVariant
@@ -165,7 +165,7 @@ static inline uint32_t cartoon_glyphs_picked_point(const CartoonGlyphs& glyphs, 
     return UINT32_MAX;
 }
 
-// The component a point stands for, -1 for none
-static inline int32_t cartoon_glyphs_point_component(const CartoonGlyphs& glyphs, uint32_t point_idx) {
-    return point_idx < glyphs.num_points ? glyphs.point_comp[point_idx] : -1;
+// The residue a point stands for, -1 for none
+static inline int32_t cartoon_glyphs_point_residue(const CartoonGlyphs& glyphs, uint32_t point_idx) {
+    return point_idx < glyphs.num_points ? glyphs.point_res[point_idx] : -1;
 }

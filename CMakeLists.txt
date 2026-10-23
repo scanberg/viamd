@@ -191,6 +191,7 @@ set(SRC_FILES
     src/representation_tree.cpp
     src/script_editor.cpp
     src/script_reference.cpp
+    src/script_suggestions.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
     src/timeline_periods.cpp
@@ -218,6 +219,7 @@ set(SRC_FILES
     src/representation_tree.h
     src/script_editor.h
     src/script_reference.h
+    src/script_suggestions.h
     src/serialization_utils.h
     src/task_system.h
     src/timeline_periods.h

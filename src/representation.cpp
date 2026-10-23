@@ -608,7 +608,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
     }
 }
 
-bool representation_atom_type_valid(const ApplicationState& state, RepresentationType type) {
+bool representation_particle_type_valid(const ApplicationState& state, RepresentationType type) {
     const md_system_t& sys = state.mold.sys;
     switch (type) {
     case RepresentationType::SpaceFill:     return sys.atom.count > 0;
@@ -736,23 +736,23 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
     case ColorMapping::Serial:
         color_atoms_idx(colors, num_atoms, sys);
         break;
-    case ColorMapping::CompName:
-        color_atoms_comp_name(colors, num_atoms, sys);
+    case ColorMapping::ResName:
+        color_atoms_res_name(colors, num_atoms, sys);
         break;
-    case ColorMapping::CompType:
-        color_atoms_comp_type(colors, num_atoms, sys);
+    case ColorMapping::ResType:
+        color_atoms_res_type(colors, num_atoms, sys);
         break;
-    case ColorMapping::CompSeqId:
-        color_atoms_comp_seq_id(colors, num_atoms, sys);
+    case ColorMapping::ResSeqId:
+        color_atoms_res_seq_id(colors, num_atoms, sys);
         break;
-    case ColorMapping::CompIndex:
-        color_atoms_comp_idx(colors, num_atoms, sys);
+    case ColorMapping::ResIndex:
+        color_atoms_res_idx(colors, num_atoms, sys);
         break;
-    case ColorMapping::InstId:
-        color_atoms_inst_id(colors, num_atoms, sys);
+    case ColorMapping::ChainId:
+        color_atoms_chain_id(colors, num_atoms, sys);
         break;
-    case ColorMapping::InstIndex:
-        color_atoms_inst_idx(colors, num_atoms, sys);
+    case ColorMapping::ChainIndex:
+        color_atoms_chain_idx(colors, num_atoms, sys);
         break;
     case ColorMapping::SecondaryStructure: {
         SecondaryStructurePalette palette = {
@@ -882,7 +882,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::BallAndStick:
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
-        rep->type_is_valid = representation_atom_type_valid(*state, rep->type);
+        rep->type_is_valid = representation_particle_type_valid(*state, rep->type);
         break;
     case RepresentationType::ElectronicStructure:
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
@@ -1150,21 +1150,21 @@ void create_default_representations(ApplicationState* state) {
         goto done;
     }
 
-    if (state->mold.sys.component.count == 0) {
+    if (state->mold.sys.residue.count == 0) {
         // No residues present
         Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
-    // What is present, by what the components are. The selections of the representations below are by the same.
-    for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
-        switch (md_component_kind(&state->mold.sys.component, i)) {
-        case MD_COMPONENT_KIND_AMINO_ACID: amino_acid_present = true; break;
-        case MD_COMPONENT_KIND_NUCLEOTIDE: nucleic_present = true; num_nucleotides += 1; break;
-        case MD_COMPONENT_KIND_ION:        ion_present = true;        break;
-        case MD_COMPONENT_KIND_WATER:      water_present = true;      break;
-        case MD_COMPONENT_KIND_LIPID:      lipid_present = true;      break;
+    // What is present, by what the residues are. The selections of the representations below are by the same.
+    for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
+        switch (md_system_residue_kind(&state->mold.sys, i)) {
+        case MD_RESIDUE_KIND_AMINO_ACID: amino_acid_present = true; break;
+        case MD_RESIDUE_KIND_NUCLEOTIDE: nucleic_present = true; num_nucleotides += 1; break;
+        case MD_RESIDUE_KIND_ION:          ion_present = true;        break;
+        case MD_RESIDUE_KIND_WATER:        water_present = true;      break;
+        case MD_RESIDUE_KIND_LIPID:        lipid_present = true;      break;
         default:                           ligand_present = true;     break;
         }
     }
@@ -1176,19 +1176,19 @@ void create_default_representations(ApplicationState* state) {
     // rest of them (lipids by name whose anatomy is not known, as without bonds) as ligands
     if (lipid_present) {
         const md_lipid_data_t& lipids = state->mold.sys.lipid;
-        size_t num_lipid_comps = 0;
+        size_t num_lipid_residues = 0;
         size_t num_known = 0;
-        for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
-            num_lipid_comps += md_component_kind(&state->mold.sys.component, i) == MD_COMPONENT_KIND_LIPID;
+        for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
+            num_lipid_residues += md_system_residue_kind(&state->mold.sys, i) == MD_RESIDUE_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
-            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.comps, i);
+            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.residues, i);
         }
         lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
-        if (!lipid_cartoon || num_known < num_lipid_comps) ligand_present = true;
+        if (!lipid_cartoon || num_known < num_lipid_residues) ligand_present = true;
     }
     if (lipid_cartoon) {
-        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("lipid"));
+        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("lipid"));
         snprintf(lip->name, sizeof(lip->name), "lipid");
     }
 
@@ -1207,7 +1207,7 @@ void create_default_representations(ApplicationState* state) {
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
         if (nucleic_cartoon) {
-            Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::CompType, STR_LIT("nucleic"));
+            Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("nucleic"));
             snprintf(nucl->name, sizeof(nucl->name), "nucleic");
         }
         const char* shown[4];
@@ -1245,11 +1245,11 @@ void create_default_representations(ApplicationState* state) {
         size_t chain_res_count = 0;
         for (size_t i = 0; i < state->mold.sys.instance.count; ++i) {
             if (md_system_instance_entity_kind(&state->mold.sys, i) == MD_ENTITY_KIND_PEPTIDE) {
-                if (num_chains++ == 0) chain_res_count = md_instance_comp_count(&state->mold.sys.instance, i);
+                if (num_chains++ == 0) chain_res_count = md_system_instance_residue_count(&state->mold.sys, i);
             }
         }
         if (num_chains > 1) {
-            color = ColorMapping::InstId;
+            color = ColorMapping::ChainId;
         } else if (chain_res_count < 20) {
             type = RepresentationType::BallAndStick;
             color = ColorMapping::Type;
@@ -1263,7 +1263,7 @@ void create_default_representations(ApplicationState* state) {
         // shows nothing of a nucleotide off a backbone
         const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
         const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
-        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::CompType : ColorMapping::Type, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::ResType : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
@@ -2571,7 +2571,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
         }
         ImGui::EndCombo();
     }
-    if (rep.color_mapping == ColorMapping::CompType) {
+    if (rep.color_mapping == ColorMapping::ResType) {
         ImGui::SetItemTooltip("The colors of the residue types, set in the Residue Types of the System window");
     }
 
@@ -2671,11 +2671,11 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
-// Whether a chain of the system is broken somewhere (MD_COMPONENT_FLAG_BREAK_AFTER): residues missing in a crystal
+// Whether a chain of the system is broken somewhere (MD_RESIDUE_FLAG_BREAK_AFTER): residues missing in a crystal
 // structure, which the representations with chain gaps draw a dashed line over
 static bool system_has_chain_breaks(const md_system_t& sys) {
-    for (size_t i = 0; i < sys.component.count; ++i) {
-        if (md_component_flags(&sys.component, i) & MD_COMPONENT_FLAG_BREAK_AFTER) return true;
+    for (size_t i = 0; i < sys.residue.count; ++i) {
+        if (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) return true;
     }
     return false;
 }

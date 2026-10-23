@@ -303,7 +303,7 @@ struct DensityVolume : viamd::EventHandler {
         defer { md_temp_end(temp); };
 
         Representation& rep = r.rep;
-        rep.type_is_valid = representation_atom_type_valid(*state, rep.type);
+        rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
 
         // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
         // id 0 would draw all of the molecule.
@@ -1051,7 +1051,7 @@ struct DensityVolume : viamd::EventHandler {
             // Its type only says what is drawn of the subsets, its geometry how: neither is found again, but for the
             // glyphs of a Cartoon (update_reps)
             if (draw_representation_type(state, rep, true)) {
-                rep.type_is_valid = representation_atom_type_valid(*state, rep.type);
+                rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
             }
 
             // Completed within the first structure, as each is evaluated within its own

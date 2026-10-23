@@ -197,7 +197,7 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     uint32_t nucleotides = 0;
     for (size_t s = 0; s < bb.segment.count; ++s) {
         if (bb.segment.atoms[s].c4 < 0) continue;
-        const str_t name = md_component_name(&sys.component, bb.segment.comp_idx[s]);
+        const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
         const bool purine = str_eq_cstr(name, "DA") || str_eq_cstr(name, "DG");
         expected_slabs += purine ? 4 : 3;
         nucleotides += 1;
@@ -268,10 +268,10 @@ static md_array(uint64_t) slab_keys(const CartoonGlyphs& g, md_allocator_i* allo
     return keys;
 }
 
-// A nucleic acid from an XYZ file, the element and the position of each atom: without components, its backbones are found
+// A nucleic acid from an XYZ file, the element and the position of each atom: without residues, its backbones are found
 // from the bonds alone (md_util_system_infer) and the rings of each nucleotide from its C1'. The same slabs as of the
-// same atoms read with their residues, and the same band, though no point stands for a component.
-UTEST(cartoon_glyphs, nucleic_acids_without_components) {
+// same atoms read with their residues, and the same band, though no point stands for a residue.
+UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
@@ -289,7 +289,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_components) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, str_t{ text, len }, MD_XYZ_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
-    ASSERT_EQ((size_t)0, sys.component.count);
+    ASSERT_EQ((size_t)0, sys.residue.count);
     ASSERT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
 
     CartoonGlyphs g_ref = {};
@@ -307,7 +307,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_components) {
     ASSERT_EQ(md_array_size(keys_ref), md_array_size(keys));
     EXPECT_EQ(0, memcmp(keys_ref, keys, md_array_bytes(keys)));
 
-    for (uint32_t i = 0; i < g.num_points; ++i) EXPECT_EQ(-1, g.point_comp[i]);
+    for (uint32_t i = 0; i < g.num_points; ++i) EXPECT_EQ(-1, g.point_res[i]);
     for (uint32_t i = 0; i < g.num_tube_points; ++i) {
         ASSERT_LT(g.tube_face[i], g.num_points);
         EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.tube_face[i]]);
@@ -348,7 +348,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
 
         uint32_t expected_slabs = 0;
         for (size_t s = 0; s < bb.segment.count; ++s) {
-            const str_t name = md_component_name(&sys.component, bb.segment.comp_idx[s]);
+            const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
             const bool purine = str_find_char(NULL, name, 'A') || str_find_char(NULL, name, 'G');
             expected_slabs += purine ? 3 : 2;
         }

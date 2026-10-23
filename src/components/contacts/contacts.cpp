@@ -42,13 +42,19 @@
 
 namespace {
 
+// What the particles are grouped by: residues, molecules (md_molecule_data_t: atoms joined by bonds, each residue and
+// polymer chain whole), chains (md_chain_data_t: all that the data gives a chain id) or parts (md_part_data_t: the
+// covalent pieces of a molecule, a strand with its caps, a glycan, a ligand). A particle in no group of the kind (an
+// ion in no chain) is left out. The values are those a workspace stores.
 enum GroupBy {
     GroupBy_Residue,
     GroupBy_Molecule,
+    GroupBy_Chain,
+    GroupBy_Part,
     GroupBy_Count
 };
 
-static const char* group_by_lbl[] = { "Residue", "Molecule / chain" };
+static const char* group_by_lbl[] = { "Residue", "Molecule", "Chain", "Part" };
 
 struct GroupResult {
     uint32_t contacts = 0;      // Groups in contact with
@@ -64,7 +70,8 @@ struct Result {
     double energy_cutoff = 0;   // Å
     GroupBy group_by = GroupBy_Residue;
     std::vector<GroupResult> groups;
-    std::vector<md_urange_t> ranges;    // Particles of each group
+    std::vector<uint32_t> group_off;    // Particles of group g: group_atom[group_off[g], group_off[g + 1])
+    std::vector<uint32_t> group_atom;
     uint64_t num_group_pairs = 0;       // Pairs of groups in contact
     uint64_t num_pairs = 0;
     double   e_lj = 0, e_coul = 0;      // Between groups, each pair once
@@ -196,12 +203,36 @@ struct Contacts : viamd::EventHandler {
         pending = Result{};
         pending.group_by = group_by;
         pending.cutoff = cutoff;
+        std::vector<uint32_t>& off = pending.group_off;
+        std::vector<uint32_t>& atoms = pending.group_atom;
+        auto push_range = [&](md_urange_t r) { for (uint32_t k = r.beg; k < r.end && k < N; ++k) atoms.push_back(k); };
+        off.push_back(0);
         if (group_by == GroupBy_Residue) {
-            for (size_t c = 0; c < md_system_component_count(&sys); ++c) pending.ranges.push_back(md_system_component_atom_range(&sys, c));
+            for (size_t c = 0; c < md_system_residue_count(&sys); ++c) {
+                push_range(md_system_residue_atom_range(&sys, c));
+                off.push_back((uint32_t)atoms.size());
+            }
+        } else if (group_by == GroupBy_Part) {
+            for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+                push_range(md_system_part_atom_range(&sys, p));
+                off.push_back((uint32_t)atoms.size());
+            }
+        } else if (group_by == GroupBy_Chain) {
+            for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+                const md_urange_t* end = md_system_chain_run_end(&sys, c);
+                for (const md_urange_t* it = md_system_chain_run_beg(&sys, c); it && it < end; ++it) {
+                    push_range(md_system_chain_run_atom_range(&sys, *it));
+                }
+                off.push_back((uint32_t)atoms.size());
+            }
         } else {
-            for (size_t c = 0; c < md_system_instance_count(&sys); ++c) pending.ranges.push_back(md_system_instance_atom_range(&sys, c));
+            for (size_t m = 0; m < md_system_molecule_count(&sys); ++m) {
+                const md_molecule_t mol = md_system_molecule(&sys, m);
+                for (size_t k = 0; k < mol.count; ++k) atoms.push_back((uint32_t)mol.atom_idx[k]);
+                off.push_back((uint32_t)atoms.size());
+            }
         }
-        pending.groups.resize(pending.ranges.size());
+        pending.groups.resize(off.size() - 1);
 
         busy = true;
         task = task_system::create_pool_task(STR_LIT("Contacts"), [this]() {
@@ -222,10 +253,13 @@ struct Contacts : viamd::EventHandler {
             std::vector<uint32_t> label(N);
             md_bitmask_t set_m = md_bitmask_create(0, (uint32_t)N, md_get_heap_allocator());
             // Particles in no group get a label of their own and are left out of the set
-            for (size_t k = 0; k < N; ++k) label[k] = (uint32_t)(res.ranges.size() + k);
-            for (size_t g = 0; g < res.ranges.size(); ++g) {
-                for (uint32_t k = res.ranges[g].beg; k < res.ranges[g].end; ++k) label[k] = (uint32_t)g;
-                md_bitmask_set_range(&set_m, res.ranges[g].beg, res.ranges[g].end);
+            const size_t num_groups = res.groups.size();
+            for (size_t k = 0; k < N; ++k) label[k] = (uint32_t)(num_groups + k);
+            for (size_t g = 0; g < num_groups; ++g) {
+                for (uint32_t k = res.group_off[g]; k < res.group_off[g + 1]; ++k) {
+                    label[res.group_atom[k]] = (uint32_t)g;
+                    md_bitmask_set_bit(&set_m, res.group_atom[k]);
+                }
             }
             const md_bitset_t set = md_bitmask_view(&set_m);
 
@@ -271,6 +305,10 @@ struct Contacts : viamd::EventHandler {
             ImGui::PushItemWidth(200);
             int gb = (int)group_by;
             if (ImGui::Combo("Groups", &gb, group_by_lbl, GroupBy_Count)) group_by = (GroupBy)gb;
+            ImGui::SetItemTooltip("Residue: each residue.\nMolecule: atoms joined by bonds, each residue and polymer chain whole.\n"
+                                  "Chain: all that the file gives one chain id, or a polymer where it gives none.\n"
+                                  "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
+                                  "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
             cutoff = CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
@@ -386,8 +424,10 @@ struct Contacts : viamd::EventHandler {
             ImGui::EndTable();
         }
 
-        if (hovered_group >= 0 && hovered_group < (int)res.ranges.size()) {
-            md_bitmask_assign(&app_state->selection.highlight_mask, md_bitset_range((uint32_t)(res.ranges[hovered_group].beg), (uint32_t)(res.ranges[hovered_group].end)));
+        if (hovered_group >= 0 && hovered_group < (int)res.groups.size()) {
+            md_bitmask_t* mask = &app_state->selection.highlight_mask;
+            md_bitmask_clear(mask);
+            for (uint32_t k = res.group_off[hovered_group]; k < res.group_off[hovered_group + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
         }
     }
 };

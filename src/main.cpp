@@ -72,6 +72,7 @@
 #include <representation.h>
 #include <timeline_periods_ui.h>
 #include <script_reference.h>
+#include <script_suggestions.h>
 #include <viamd_event.h>
 #include <event.h>
 
@@ -2208,7 +2209,7 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
-            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole components (residues) or whole instances (chains, molecules)");
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
             size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
@@ -2905,275 +2906,16 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_array_free(mol->bond.conn.atom_idx, data->mold.sys.alloc);
     md_array_free(mol->bond.conn.bond_idx, data->mold.sys.alloc);
 
-    md_index_data_free(&mol->structure);
+    md_index_data_free(&mol->molecule);
     md_index_data_free(&mol->ring);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_STRUCTURE_BIT);
+    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
 }
 */
-
-// Create a textual script describing a selection from a bitfield with respect to some reference index
-// @TODO(Robin): Clean this up, it is a mess. Just provide complete suggestions based on bitfield and molecule input.
-static void write_script_range(md_str_writer_t& sb, const int* indices, size_t num_indices, int ref_idx = 0) {
-    if (num_indices == 0) return;
-    if (num_indices == 1) {
-        md_str_writer_fmt(&sb, "%i", indices[0] - ref_idx + 1);
-        return;
-    }
-    
-    int range_beg = indices[0];
-    int prev_idx  = -1;
-
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-
-    md_array(md_irange_t) items = 0;
-    
-    for (size_t i = 0; i < num_indices; ++i) {
-        int idx = indices[i];
-        
-        if (idx - prev_idx > 1) {
-            if (prev_idx > range_beg) {
-                md_irange_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, temp_alloc);
-            } else if (prev_idx != -1) {
-                md_irange_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, temp_alloc);
-            }
-            range_beg = idx;
-        }
-
-        prev_idx = idx;
-    }
-
-    if (prev_idx - range_beg > 0) {
-        md_irange_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, temp_alloc);
-    } else if (prev_idx != -1) {
-        md_irange_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, temp_alloc);
-    }
-
-    const int64_t num_items = (int64_t)md_array_size(items);
-    if (num_items > 1) sb += "{";
-    for (int64_t i = 0; i < num_items; ++i) {
-        md_irange_t item = items[i];
-        if (item.beg == item.end) {
-            md_str_writer_fmt(&sb, "%i", item.beg);
-        }
-        else {
-            md_str_writer_fmt(&sb, "%i:%i", item.beg, item.end);
-        }
-        if (i < num_items - 1) {
-            sb += ',';
-        }
-    }
-    if (num_items > 1) sb += "}";
-    md_temp_end(temp);
-}
-
-static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bitset_t sel, const md_system_t* sys) {
-    const md_bitset_t* bf = &sel;
-    md_array(str_t) suggestions = 0;
-
-    bool within_same_comp = true;
-    bool within_same_inst = true;
-
-    md_instance_idx_t inst_idx = -1;
-    md_component_idx_t comp_idx = -1;
-
-    md_bitset_iter_t it = md_bitset_iter(*bf);
-    while (md_bitset_iter_next(&it)) {
-        uint64_t a_idx = it.idx;
-        int32_t  i_idx = md_system_instance_find_by_atom_idx(sys, a_idx);
-        int32_t  c_idx = md_system_component_find_by_atom_idx(sys, a_idx);
-
-        if (inst_idx == -1 && comp_idx != -1) {
-            inst_idx = i_idx;
-        } else if (c_idx != -1 && inst_idx != i_idx) {
-            within_same_inst = false;
-        }
-
-        if (comp_idx == -1 && c_idx != -1) {
-            comp_idx = c_idx;
-        } else if (c_idx != -1 && comp_idx != c_idx) {
-            within_same_comp = false;                        
-        }
-
-        if (!within_same_comp && !within_same_inst) {
-            break;
-        }
-    }
-    
-    const size_t popcount = md_bitset_count(*bf);
-    
-    md_str_writer_t sb = md_str_writer_create(frame_alloc);
-    defer { md_str_writer_free(&sb); };
-
-    auto write_atom_remainder = [](md_str_writer_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
-        // Add any remainder
-        const uint64_t remainder = md_bitset_count(*bf);
-        if (remainder) {
-            int* indices = (int*)md_alloc(frame_alloc, remainder * sizeof(int));
-            defer { md_free(frame_alloc, indices, remainder * sizeof(int)); };
-
-            md_bitset_iter_extract_indices(indices, remainder, md_bitset_iter(*bf));
-            sb += "atom(";
-            write_script_range(sb, indices, remainder, ref_idx);
-            sb += ")";
-        }
-    };
-
-    if (comp_idx != -1 && within_same_comp) {
-        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
-        if (popcount != range.end - range.beg) {
-            md_str_writer_reset(&sb);
-            sb += ident;
-            sb += " = ";
-
-            // Subset of residue is selected
-            write_atom_remainder(sb, bf, range.beg);
-            if (md_str_writer_len(&sb) < 512) {
-                str_t resname = md_component_name(&sys->component, comp_idx);
-                md_str_writer_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
-                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-            }
-        }
-    }
-
-    else if (inst_idx != -1 && within_same_inst) {
-        const md_urange_t range = md_system_instance_atom_range(sys, inst_idx);
-        if (popcount != range.end - range.beg) {
-            md_str_writer_reset(&sb);
-            sb += ident;
-            sb += " = ";
-
-            // Subset of chain is selected
-            write_atom_remainder(sb, bf, range.beg);
-            if (md_str_writer_len(&sb) < 512) {
-				str_t inst_id = md_instance_id(&sys->instance, inst_idx);
-				md_str_writer_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
-                md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-            }
-        }
-    }
-
-    // What is left once complete chains and residues are taken out
-    md_bitmask_t remainder = md_bitmask_create(0, (uint32_t)sys->atom.count, frame_alloc);
-    md_bitmask_assign(&remainder, *bf);
-    auto remainder_has_all = [&remainder](md_urange_t range) {
-        return range.beg < range.end && md_bitmask_test_all_range(&remainder, range.beg, range.end);
-    };
-
-    md_array(int) complete_chains = 0;
-    md_array(int) complete_residues = 0;
-    
-    if (sys->instance.count) {
-        for (size_t i = 0; i < sys->instance.count; ++i) {    
-            const md_urange_t range = md_system_instance_atom_range(sys, i);
-            if (remainder_has_all(range)) {
-                md_array_push(complete_chains, (int)i, frame_alloc);
-                md_bitmask_clear_range(&remainder, range.beg, range.end);
-            }
-        }
-    }
-
-    if (sys->component.count) {
-        for (size_t i = 0; i < sys->component.count; ++i) {    
-            const md_urange_t range = md_component_atom_range(&sys->component, i);
-            if (remainder_has_all(range)) {
-                md_array_push(complete_residues, (int)i, frame_alloc);
-                md_bitmask_clear_range(&remainder, range.beg, range.end);
-            }
-        }
-    }
-
-    const uint64_t atom_remainder_count = md_bitmask_count(&remainder);
-    const md_bitset_t tmp_bf = md_bitmask_view(&remainder);
-    
-    if (complete_chains) {
-        md_str_writer_reset(&sb);
-        sb += ident;
-        sb += " = chain(";
-        write_script_range(sb, complete_chains, md_array_size(complete_chains));
-        sb += ")";
-
-        if (complete_residues) {
-            sb += " or residue(";
-            write_script_range(sb, complete_residues, md_array_size(complete_residues));
-            sb += ")";
-        }
-
-        if (atom_remainder_count) {
-            sb += " or ";
-            write_atom_remainder(sb, &tmp_bf);
-        }
-        
-        if (md_str_writer_len(&sb) < 512) {
-            md_str_writer_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-        }
-        
-        md_str_writer_reset(&sb);
-        sb += ident;
-        sb += " = residue(";
-        for (size_t i = 0; i < md_array_size(complete_chains); ++i) {
-            md_urange_t range = md_instance_component_range(&sys->instance, complete_chains[i]);
-            md_str_writer_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
-        }
-        if (complete_residues) {
-            write_script_range(sb, complete_residues, md_array_size(complete_residues));
-        } else {
-            md_str_writer_pop(&sb, 1);
-        }
-        sb += ")";
-
-        if (atom_remainder_count) {
-            sb += " or ";
-            write_atom_remainder(sb, &tmp_bf);
-        }
-        
-        if (md_str_writer_len(&sb) < 512) {
-            md_str_writer_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-        }
-    }
-
-    if (complete_residues) {
-        md_str_writer_reset(&sb);
-        sb += ident;
-        sb += " = residue(";
-        write_script_range(sb, complete_residues, md_array_size(complete_residues));
-        sb += ")";
-
-        if (atom_remainder_count) {
-            sb += " or ";
-            write_atom_remainder(sb, &tmp_bf);
-        }
-
-        if (md_str_writer_len(&sb) < 512) {
-            md_str_writer_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-        }
-    }
-
-    if (popcount) {
-        md_str_writer_reset(&sb);
-        sb += ident;
-        sb += " = ";
-        write_atom_remainder(sb, bf);
-        if (md_str_writer_len(&sb) < 512) {
-            md_str_writer_push_char(&sb, ';');
-            md_array_push(suggestions, str_copy(md_str_writer_to_str(&sb), frame_alloc), frame_alloc);
-        }
-    }
-    
-    return suggestions;
-}
 
 static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
     const int64_t num_ident = md_script_ir_num_identifiers(ir);
@@ -3186,7 +2928,7 @@ static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
 
 static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_allocator_i* alloc) {
     char buf[128];
-    for (int64_t i = 1; i < 10; ++i) {
+    for (int64_t i = 1; i < 1000; ++i) {
         int res = snprintf(buf, sizeof(buf), "%.*s%i", (int)base.len, base.ptr, (int)i);
         if (res > 0) {
             str_t ident = {buf, (size_t)res};
@@ -3198,6 +2940,99 @@ static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_a
     return str_t();
 }
 
+// The lines the Script menu offers (script_suggestions.h): the measurement of the atoms picked one by one, and the
+// selection. Every one of them is evaluated against the system before it is offered, which is not something to do
+// every frame the menu is open, so they are kept for as long as what they are of stays the same.
+struct ScriptSuggestions {
+    uint64_t key = 0;
+    md_allocator_i* arena = nullptr;
+    md_array(ScriptSuggestion) measure = 0;
+    md_array(ScriptSuggestion) select = 0;
+};
+
+static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, bool reset) {
+    static ScriptSuggestions cache;
+
+    const md_system_t& sys = state->mold.sys;
+    const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+    const SingleSelectionSequence& seq = state->selection.single_selection_sequence;
+
+    // The atoms of a measurement, in the order they were picked: the picks have to be what is selected, as the order
+    // is unknown for atoms selected otherwise. Two atoms need no order.
+    int32_t atoms[4];
+    size_t num_atoms = 0;
+    const size_t num_selected = md_bitset_count(sel);
+    const size_t num_picked = single_selection_sequence_count(&seq);
+    if (2 <= num_selected && num_selected <= 4) {
+        bool picks = num_picked == num_selected;
+        for (size_t i = 0; i < num_picked && picks; ++i) picks = md_bitset_test(sel, (uint32_t)seq.idx[i]);
+        if (picks) {
+            MEMCPY(atoms, seq.idx, num_picked * sizeof(int32_t));
+            num_atoms = num_picked;
+        } else if (num_selected == 2) {
+            md_bitset_iter_extract_indices(atoms, 2, md_bitset_iter(sel));
+            num_atoms = 2;
+        }
+    }
+
+    uint64_t key = md_bitset_hash64(sel, 0);
+    key = md_hash64(atoms, num_atoms * sizeof(int32_t), key);
+    const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.instance.count};
+    key = md_hash64(counts, sizeof(counts), key);
+    // The names the lines assign to are the first ones the script does not have
+    key = md_hash64_combine(key, md_script_ir_fingerprint(state->script.ir));
+
+    if (reset || key != cache.key || !cache.arena) {
+        if (!cache.arena) cache.arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        md_arena_allocator_reset(cache.arena);
+        cache.measure = 0;
+        cache.select = 0;
+        cache.key = key;
+
+        if (num_atoms) {
+            static const str_t base[5] = {{}, {}, STR_INIT("dist"), STR_INIT("ang"), STR_INIT("dih")};
+            const str_t ident = create_unique_identifier(state->script.ir, base[num_atoms], cache.arena);
+            cache.measure = script_suggest_measurement(ident, atoms, num_atoms, sys, cache.arena);
+        }
+        if (num_selected) {
+            const str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), cache.arena);
+            cache.select = script_suggest_selection(ident, sel, sys, cache.arena);
+        }
+    }
+    return cache;
+}
+
+static void draw_script_suggestion(ApplicationState* state, const ScriptSuggestion& s) {
+    // A long line is cut short in the menu, and shown whole when hovered
+    constexpr int max_label_len = 100;
+    char label[max_label_len + 8];
+    const bool cut = s.text.len > (size_t)max_label_len;
+    if (cut) snprintf(label, sizeof(label), "%.*s...", max_label_len - 3, s.text.ptr);
+    else snprintf(label, sizeof(label), STR_FMT, STR_ARG(s.text));
+
+    if (ImGui::MenuItem(label)) {
+        script_editor::append_line(state->editor, s.text);
+        ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::IsItemHovered()) {
+        // What the line picks or measures is shown in the viewport
+        script_visualize_str(state, s.text, VIS_FLAGS);
+        if (cut || !str_empty(s.hint)) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
+            if (cut) {
+                constexpr size_t max_tooltip_len = 1024;
+                const size_t len = MIN(s.text.len, max_tooltip_len);
+                ImGui::TextUnformatted(s.text.ptr, s.text.ptr + len);
+                if (len < s.text.len) ImGui::TextDisabled("... (%zu characters)", s.text.len);
+            }
+            if (!str_empty(s.hint)) ImGui::TextDisabled(STR_FMT, STR_ARG(s.hint));
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+}
+
 // # context_menu
 void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
     // @Robin: Will hit ever be used here? (Possibly remove argument)
@@ -3206,7 +3041,6 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
     if (!state->mold.sys.atom.count) return;
 
-    const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
     const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
@@ -3302,9 +3136,9 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             // suggestions of the script. Written when it is asked for, it can take long for a large selection.
             auto selection_scope = [state]() -> str_t {
                 const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
-                const md_array(str_t) suggestions = generate_script_selection_suggestions(STR_LIT("x"), sel, &state->mold.sys);
+                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(STR_LIT("x"), sel, state->mold.sys, frame_alloc);
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
-                    str_t expr = suggestions[i];
+                    str_t expr = suggestions[i].text;
                     if (!str_begins_with(expr, STR_LIT("x = "))) continue;
                     expr = str_trim(str_substr(expr, 4));
                     if (str_ends_with(expr, STR_LIT(";"))) expr = str_trim(str_substr(expr, 0, expr.len - 1));
@@ -3328,209 +3162,22 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                                   "(Operations > Track bond changes, with the selection as its scope)");
         }
         if (ImGui::BeginMenu("Script")) {
-            bool any_suggestions = false;
-            if (num_atoms_selected <= 4 && sss_count > 1) {
-                int idx[4];
-                MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
-                // Check if all selected atoms are within the same residue
-                md_component_idx_t res_idx = md_component_find_by_atom_idx(&state->mold.sys.component, idx[0]);
-                for (size_t i = 1; i < sss_count; ++i) {
-                    md_component_idx_t ri = md_component_find_by_atom_idx(&state->mold.sys.component, idx[i]);
-                    if (res_idx != ri) {
-                        res_idx = -1;
-                        break;
-                    }
-                }
-
-                any_suggestions = true;
-                char buf[256] = "";
-                if (sss_count == 2) {
-                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("dist"), frame_alloc);
-
-                    snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1);
-                    if (ImGui::MenuItem(buf)) {
-                        script_editor::append_line(state->editor, str_from_cstr(buf));
-                        ImGui::CloseCurrentPopup();
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        str_t str = str_from_cstr(buf);
-                        script_visualize_str(state, str, VIS_FLAGS);
-                    }
-
-                    if (res_idx != -1) {
-                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
-                        idx[0] -= range.beg;
-                        idx[1] -= range.beg;
-
-                        snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        const int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
-                        snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, STR_ARG(resname));
-                            if (ImGui::MenuItem(buf)) {
-                                script_editor::append_line(state->editor, str_from_cstr(buf));
-                                ImGui::CloseCurrentPopup();
-                            }
-                            if (ImGui::IsItemHovered()) {
-                                str_t str = str_from_cstr(buf);
-                                script_visualize_str(state, str, VIS_FLAGS);
-                            }
-                        }
-                    }
-                }
-                else if(sss_count == 3) {
-                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("ang"), frame_alloc);
-
-                    snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1);
-                    if (ImGui::MenuItem(buf)) {
-                        script_editor::append_line(state->editor, str_from_cstr(buf));
-                        ImGui::CloseCurrentPopup();
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        str_t str = str_from_cstr(buf);
-                        script_visualize_str(state, str, VIS_FLAGS);
-                    }
-
-                    if (res_idx != -1) {
-                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
-                        idx[0] -= range.beg;
-                        idx[1] -= range.beg;
-                        idx[2] -= range.beg;
-
-                        snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
-                        snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, STR_ARG(resname));
-                            if (ImGui::MenuItem(buf)) {
-                                script_editor::append_line(state->editor, str_from_cstr(buf));
-                                ImGui::CloseCurrentPopup();
-                            }
-                            if (ImGui::IsItemHovered()) {
-                                str_t str = str_from_cstr(buf);
-                                script_visualize_str(state, str, VIS_FLAGS);
-                            }
-                        }
-                    }
-                }
-                else if(sss_count == 4) {
-                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("dih"), frame_alloc);
-
-                    snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
-                    if (ImGui::MenuItem(buf)) {
-                        script_editor::append_line(state->editor, str_from_cstr(buf));
-                        ImGui::CloseCurrentPopup();
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        str_t str = str_from_cstr(buf);
-                        script_visualize_str(state, str, VIS_FLAGS);
-                    }
-
-                    if (res_idx != -1) {
-                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
-                        idx[0] -= range.beg;
-                        idx[1] -= range.beg;
-                        idx[2] -= range.beg;
-                        idx[3] -= range.beg;
-
-                        snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
-                        snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
-                        if (ImGui::MenuItem(buf)) {
-                            script_editor::append_line(state->editor, str_from_cstr(buf));
-                            ImGui::CloseCurrentPopup();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            str_t str = str_from_cstr(buf);
-                            script_visualize_str(state, str, VIS_FLAGS);
-                        }
-
-                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
-                        if (resname) {
-                            snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, STR_ARG(resname));
-                            if (ImGui::MenuItem(buf)) {
-                                script_editor::append_line(state->editor, str_from_cstr(buf));
-                                ImGui::CloseCurrentPopup();
-                            }
-                            if (ImGui::IsItemHovered()) {
-                                str_t str = str_from_cstr(buf);
-                                script_visualize_str(state, str, VIS_FLAGS);
-                            }
-                        }
-                    }
-                }
+            const ScriptSuggestions& sug = script_suggestions_get(state, ImGui::IsWindowAppearing());
+            for (size_t i = 0; i < md_array_size(sug.measure); ++i) {
+                ImGui::PushID((int)i);
+                draw_script_suggestion(state, sug.measure[i]);
+                ImGui::PopID();
             }
-            if (num_atoms_selected >= 1) {
-                const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
-                str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), frame_alloc);
-                
-                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, sel, &state->mold.sys);
-
-			    char buf[128]; // Buffer for limiting menu item size
-                for (size_t i = 0; i < md_array_size(suggestions); ++i) {
-					const char* ptr = suggestions[i].ptr;
-                    str_t s = suggestions[i];
-                    if (str_len(s) > 120) {
-						snprintf(buf, sizeof(buf), "%.*s...", 117, s.ptr);
-						ptr = buf;
-                    }
-                    if (ImGui::MenuItem(ptr)) {
-                        script_editor::append_line(state->editor, s);
-                        ImGui::CloseCurrentPopup();
-                    }
-                }
-
-                any_suggestions = any_suggestions || md_array_size(suggestions) > 0;
+            if (md_array_size(sug.measure) && md_array_size(sug.select)) {
+                ImGui::Separator();
             }
-            if (!any_suggestions) {
-                ImGui::Text("No suggestions for current selection");
+            for (size_t i = 0; i < md_array_size(sug.select); ++i) {
+                ImGui::PushID((int)(1000 + i));
+                draw_script_suggestion(state, sug.select[i]);
+                ImGui::PopID();
+            }
+            if (!md_array_size(sug.measure) && !md_array_size(sug.select)) {
+                ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" : "Nothing is selected");
             }
             ImGui::EndMenu();
         }

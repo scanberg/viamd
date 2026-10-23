@@ -98,17 +98,17 @@ constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain 
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
-// drawn per segment, not per atom, so a hit names the segment and resolves to the component it stems from.
+// drawn per segment, not per atom, so a hit names the segment and resolves to the residue it stems from.
 constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("picking domain backbone segment");
 // A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
 // bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
 constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
 // A point of the cartoon of the lipids and nucleic acids (CartoonGlyphs): a head, a point along a tail or a backbone, or
 // the part of a tube around a control point. A hit names the point (cartoon_glyphs_picked_point) and resolves to the
-// component it stands for.
+// residue it stands for.
 constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking domain cartoon glyph");
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
-// the component before the break (MD_COMPONENT_FLAG_BREAK_AFTER) and resolves to it and the one after it.
+// the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
@@ -121,7 +121,11 @@ static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
 enum class PlaybackMode { Stopped, Playing, Count };
-enum class SelectionGranularity { Atom, Component, Instance, Count };
+// Part: the part of the atom (md_part_data_t), a covalent piece of its molecule: a strand of a polymer with its caps, a
+// glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or the molecule (its instance) for one in no chain.
+// Molecule: the molecule of the atom (md_molecule_data_t), atoms joined by bonds with their residues and polymer chains
+// whole. The values are those a workspace stores.
+enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
@@ -132,16 +136,16 @@ enum class AntiAliasingMode { TAA, FXAA, Count };
 // Stored in workspaces by value: append, never insert or reorder. The order shown is color_mapping_order.
 enum class ColorMapping {
     Uniform,
-    Type,               // the colour of the atom type
+    Type,               // the colour of the particle type
     Serial,             // one per atom index
-    CompName,           // one per component name, of no meaning
-    CompSeqId,
-    CompIndex,
-    InstId,
-    InstIndex,
+    ResName,            // one per residue name, of no meaning
+    ResSeqId,
+    ResIndex,
+    ChainId,            // one per chain id the data gives (md_chain_data_t), inferred chains by their position
+    ChainIndex,         // one per chain, by its position
     SecondaryStructure,
     Attribute,          // a per atom attribute of the system, through a colour scale
-    CompType,           // the colour of the component type, from its standard monomer unless overridden (md_component_type_data_t)
+    ResType,            // the colour of the residue type, from its standard monomer unless overridden (md_residue_type_data_t)
     Count
 };
 
@@ -226,8 +230,10 @@ enum class RepresentationType {
 
 inline const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
     "Atom",
-    "Component",
-    "Instance",
+    "Residue",
+    "Part",
+    "Chain",
+    "Molecule",
 };
 
 inline const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
@@ -249,7 +255,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Bonds",
 };
 
-// What a component (residue) and an instance (chain) are, is said in the words of the files: residue and chain
+// In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t), not the instances
 inline const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform",
     "Atom Type",
@@ -269,12 +275,12 @@ inline const ColorMapping color_mapping_order[(int)ColorMapping::Count] = {
     ColorMapping::Uniform,
     ColorMapping::Type,
     ColorMapping::Serial,
-    ColorMapping::CompName,
-    ColorMapping::CompType,
-    ColorMapping::CompSeqId,
-    ColorMapping::CompIndex,
-    ColorMapping::InstId,
-    ColorMapping::InstIndex,
+    ColorMapping::ResName,
+    ColorMapping::ResType,
+    ColorMapping::ResSeqId,
+    ColorMapping::ResIndex,
+    ColorMapping::ChainId,
+    ColorMapping::ChainIndex,
     ColorMapping::SecondaryStructure,
     ColorMapping::Attribute,
 };
@@ -1435,7 +1441,7 @@ struct ApplicationState {
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
     PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
     PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
-    PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per component
+    PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -1936,36 +1942,117 @@ static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOpe
     modify_field(m, md_bitset_range(range.beg, range.end), op);
 }
 
-// Grows the mask to whole components or instances: those it has any atom of. In place: the entities are
-// disjoint, so setting one does not change what the test of another sees.
+static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const md_system_t& sys) {
+    const md_molecule_t mol = md_system_molecule(&sys, mol_idx);
+    for (size_t k = 0; k < mol.count; ++k) md_bitmask_set_bit(mask, (uint32_t)mol.atom_idx[k]);
+}
+
+static inline void mask_set_chain(md_bitmask_t* mask, size_t chain_idx, const md_system_t& sys) {
+    const md_urange_t* end = md_system_chain_run_end(&sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(&sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t range = md_system_chain_run_atom_range(&sys, *it);
+        if (range.beg < range.end) md_bitmask_set_range(mask, range.beg, range.end);
+    }
+}
+
+// What Chain granularity takes of a residue: its chain (md_chain_data_t), else its molecule (a molecule the data gives
+// no chain id, which is not a polymer), else its instance
+static inline void mask_set_chain_of_res(md_bitmask_t* mask, size_t res_idx, const md_system_t& sys) {
+    const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
+    if (chain >= 0) {
+        mask_set_chain(mask, (size_t)chain, sys);
+        return;
+    }
+    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
+    const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
+    if (mol >= 0) {
+        mask_set_molecule(mask, (size_t)mol, sys);
+        return;
+    }
+    const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&sys, res_idx);
+    const md_urange_t r = inst >= 0 ? md_system_instance_atom_range(&sys, (size_t)inst) : range;
+    if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
+}
+
+// Grows the mask to whole residues, parts, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
+// filed under a chain come after every polymer), so what is touched is found first and set after.
 static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     if (granularity == SelectionGranularity::Atom || md_bitmask_empty(mask)) return;
 
     switch(granularity) {
-    case SelectionGranularity::Component:
-        for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
-            md_urange_t range = md_system_component_atom_range(&sys, i);
+    case SelectionGranularity::Residue:
+        for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
+            md_urange_t range = md_system_residue_atom_range(&sys, i);
             if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
                 md_bitmask_set_range(mask, range.beg, range.end);
             }
         }
         break;
-    case SelectionGranularity::Instance:
-        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
-            md_urange_t range = md_system_instance_atom_range(&sys, i);
-            if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
+    case SelectionGranularity::Part:
+        // Without parts (a system without instances) a part is taken to be its residue
+        if (md_system_part_count(&sys) == 0) {
+            grow_mask_by_selection_granularity(mask, SelectionGranularity::Residue, sys);
+            break;
+        }
+        for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
+            const md_urange_t range = md_system_part_atom_range(&sys, i);
+            if (range.beg < range.end && md_bitmask_test_any_range(mask, range.beg, range.end)) {
                 md_bitmask_set_range(mask, range.beg, range.end);
             }
         }
         break;
+    case SelectionGranularity::Chain: {
+        // The residues touched, each chain (or molecule in none) taken once: a chain's waters are many residues
+        md_allocator_i* alloc = md_get_heap_allocator();
+        md_array(int32_t) touched = 0;
+        md_bitmask_t chain_done = md_bitmask_create(0, (uint32_t)md_system_chain_count(&sys), alloc);
+        for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
+            const md_urange_t range = md_system_residue_atom_range(&sys, i);
+            if (!md_bitmask_test_any_range(mask, range.beg, range.end)) continue;
+            const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, i);
+            if (chain >= 0) {
+                if (md_bitmask_test_bit(&chain_done, (uint32_t)chain)) continue;
+                md_bitmask_set_bit(&chain_done, (uint32_t)chain);
+            }
+            md_array_push(touched, (int32_t)i, alloc);
+        }
+        for (size_t k = 0; k < md_array_size(touched); ++k) {
+            mask_set_chain_of_res(mask, (size_t)touched[k], sys);
+        }
+        md_bitmask_free(&chain_done);
+        md_array_free(touched, alloc);
+        break;
+    }
+    case SelectionGranularity::Molecule: {
+        // Without molecules (no bonds) a molecule is taken to be its instance, as at Chain granularity outside a chain
+        if (sys.molecule.count == 0) {
+            grow_mask_by_selection_granularity(mask, SelectionGranularity::Chain, sys);
+            break;
+        }
+        // A molecule's atoms need not be one range, so each molecule is taken once whatever order its atoms come in
+        md_allocator_i* alloc = md_get_heap_allocator();
+        md_bitmask_t touched = md_bitmask_create(0, (uint32_t)sys.molecule.count, alloc);
+        md_bitset_iter_t it = md_bitmask_iter(mask);
+        while (md_bitset_iter_next(&it)) {
+            const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, it.idx);
+            if (mol >= 0) md_bitmask_set_bit(&touched, (uint32_t)mol);
+        }
+        md_bitset_iter_t mit = md_bitmask_iter(&touched);
+        while (md_bitset_iter_next(&mit)) {
+            mask_set_molecule(mask, mit.idx, sys);
+        }
+        md_bitmask_free(&touched);
+        break;
+    }
     default:
         ASSERT(false);
     }
 }
 
-// Sets the bits of the entity (atom, component or instance) containing atom_idx, according to granularity.
-// Cheaper than setting a single bit followed by grow_mask_by_selection_granularity, as it only looks up the owning entity.
+// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, its part, its chain (its molecule
+// where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
+// grow_mask_by_selection_granularity, as it only looks up the owner.
 static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     if (atom_idx >= sys.atom.count) return;
@@ -1974,18 +2061,39 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
     switch (granularity) {
     case SelectionGranularity::Atom:
         break;
-    case SelectionGranularity::Component: {
-        md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(&sys, atom_idx);
-        if (comp_idx >= 0) {
-            range = md_system_component_atom_range(&sys, comp_idx);
+    case SelectionGranularity::Residue: {
+        md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
+        if (res_idx >= 0) {
+            range = md_system_residue_atom_range(&sys, res_idx);
         }
         break;
     }
-    case SelectionGranularity::Instance: {
-        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
-        if (inst_idx >= 0) {
-            range = md_system_instance_atom_range(&sys, inst_idx);
+    case SelectionGranularity::Part: {
+        const int32_t part_idx = md_system_part_find_by_atom_idx(&sys, atom_idx);
+        if (part_idx >= 0) {
+            range = md_system_part_atom_range(&sys, (size_t)part_idx);
+        } else {
+            const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
+            if (res_idx >= 0) range = md_system_residue_atom_range(&sys, res_idx);
         }
+        break;
+    }
+    case SelectionGranularity::Chain: {
+        const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
+        if (res_idx >= 0) {
+            mask_set_chain_of_res(mask, (size_t)res_idx, sys);
+            return;
+        }
+        break;
+    }
+    case SelectionGranularity::Molecule: {
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atom_idx);
+        if (mol >= 0) {
+            mask_set_molecule(mask, (size_t)mol, sys);
+            return;
+        }
+        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
+        if (inst_idx >= 0) range = md_system_instance_atom_range(&sys, inst_idx);
         break;
     }
     default:
@@ -1994,19 +2102,19 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
     md_bitmask_set_range(mask, range.beg, range.end);
 }
 
-// Sets the bits of a component, or of its instance at Instance granularity, for a hit that names a component rather
+// Sets the bits of a residue, or of what holds it at a coarser granularity, for a hit that names a residue rather
 // than an atom (a backbone segment of the cartoon or ribbons). There is no atom to pick there, so Atom granularity
-// selects the component as well.
-static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mask, size_t comp_idx, SelectionGranularity granularity, const md_system_t& sys) {
+// selects the residue as well.
+static inline void mask_set_residue_by_selection_granularity(md_bitmask_t* mask, size_t res_idx, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
-    if (comp_idx >= sys.component.count) return;
+    if (res_idx >= sys.residue.count) return;
 
-    const md_urange_t range = md_system_component_atom_range(&sys, comp_idx);
+    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     if (range.beg == range.end) return;
     if (granularity == SelectionGranularity::Atom) {
-        granularity = SelectionGranularity::Component;
+        granularity = SelectionGranularity::Residue;
     }
-    // Any atom of the component finds the component, and its instance
+    // Any atom of the residue finds the residue, and its chain
     mask_set_atom_by_selection_granularity(mask, range.beg, granularity, sys);
 }
 
@@ -2227,7 +2335,7 @@ void remove_all_selections(ApplicationState* app);
 // pass cap 0 to count. Cheap enough to call per frame: it is a prefix query over a small sorted
 // array plus two lookups per group, and there is nothing to cache or invalidate because the
 // attribute table IS the state.
-// Groups missing either half, or whose shapes are not one 3-component value, are skipped.
+// Groups missing either half, or whose shapes are not one 3-residue value, are skipped.
 size_t dipole_groups_gather(DipoleGroup out[], size_t cap, const md_system_t& sys);
 
 // The same description for ONE group, straight from its vector attribute - for a representation or
@@ -2285,9 +2393,9 @@ int dipole_entry_label(char* buf, size_t cap, const DipoleGroup& group, uint32_t
 
 // Ids of the attributes under atom/ which are per atom scalar fields, in path order.
 // Returns the total number found and writes at most cap, so pass cap 0 to count.
-// An attribute qualifies when its values are single components and its LAST index axis is this
+// An attribute qualifies when its values are single residues and its LAST index axis is this
 // system's atom count; an optional leading axis is the variant axis. Everything else under atom/ -
-// a position, a velocity, anything several components wide - is data this colouring cannot express
+// a position, a velocity, anything several residues wide - is data this colouring cannot express
 // and is skipped rather than mangled. Cheap enough to call per frame.
 size_t atom_attribute_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys);
 

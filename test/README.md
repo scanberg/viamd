@@ -28,6 +28,7 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 | `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms, as inverse pairs |
 | `src/cartoon_glyphs.cpp` | `test_cartoon_glyphs.cpp` — the spheres and tubes of the lipid cartoon, built without the GL molecule they are derived from on the GPU |
 | `src/representation_tree.cpp` | `test_representation_tree.cpp` — the tree of the Representations window: sibling order, every placement a drag can ask for, and that a group never goes within itself |
+| `src/script_suggestions.cpp` | `test_script_suggestions.cpp` — the lines the Script menu of the context menu offers: each picks the selection or compiles, in real systems, and the forms which say what the atoms are come first |
 
 **Adding a test file:** drop a `.cpp` in this folder. It is globbed, so there is nothing to edit.
 

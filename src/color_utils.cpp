@@ -97,8 +97,8 @@ void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
 
 void color_atoms_type(uint32_t* colors, size_t count, const md_system_t& sys) {
     for (size_t i = 0; i < count; ++i) {
-		md_atom_type_idx_t idx = md_atom_type_idx(&sys.atom, i);
-        colors[i] = md_atom_type_color(&sys.atom.type, idx);
+		md_particle_type_idx_t idx = md_atom_particle_type_idx(&sys.atom, i);
+        colors[i] = md_particle_type_color(&sys.atom.type, idx);
     }
 }
 
@@ -108,65 +108,72 @@ void color_atoms_idx(uint32_t* colors, size_t count, const md_system_t&) {
     }
 }
 
-void color_atoms_comp_name(uint32_t* colors, size_t count, const md_system_t& sys) {
+void color_atoms_res_name(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.component.count; i++) {
-        str_t str = sys.component.name[i];
+    for (size_t i = 0; i < sys.residue.count; i++) {
+        str_t str = sys.residue.name[i];
         const uint32_t u32 = md_hash32(str.ptr, str.len, 0);
         const uint32_t color = u32_to_color(u32);
-        md_urange_t range = md_component_atom_range(&sys.component, i);
+        md_urange_t range = md_system_residue_atom_range(&sys, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_comp_type(uint32_t* colors, size_t count, const md_system_t& sys) {
+void color_atoms_res_type(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.component.count; i++) {
-        const md_component_type_idx_t type_idx = md_component_type_idx(&sys.component, i);
+    for (size_t i = 0; i < sys.residue.count; i++) {
+        const md_residue_type_idx_t type_idx = md_system_residue_type_idx(&sys, i);
         if (type_idx < 0) continue;
-        const uint32_t color = md_component_type_color(&sys.component.type, (size_t)type_idx) | 0xFF000000U;
-        md_urange_t range = md_component_atom_range(&sys.component, i);
+        const uint32_t color = md_residue_type_color(&sys.residue.type, (size_t)type_idx) | 0xFF000000U;
+        md_urange_t range = md_system_residue_atom_range(&sys, i);
         range.end = MIN(range.end, (uint32_t)count);
         if (range.beg < range.end) set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_comp_seq_id(uint32_t* colors, size_t count, const md_system_t& sys) {
+void color_atoms_res_seq_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.component.count; i++) {
-        const uint32_t color = u32_to_color(sys.component.seq_id[i]);
-        md_urange_t range = md_component_atom_range(&sys.component, i);
+    for (size_t i = 0; i < sys.residue.count; i++) {
+        const uint32_t color = u32_to_color(sys.residue.seq_id[i]);
+        md_urange_t range = md_system_residue_atom_range(&sys, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
-void color_atoms_comp_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+void color_atoms_res_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.component.count; i++) {
+    for (size_t i = 0; i < sys.residue.count; i++) {
         const uint32_t color = u32_to_color((uint32_t)i);
-        md_urange_t range = md_component_atom_range(&sys.component, i);
+        md_urange_t range = md_system_residue_atom_range(&sys, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
 
-void color_atoms_inst_id(uint32_t* colors, size_t count, const md_system_t& sys) {
-    set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.instance.count; i++) {
-        str_t str = sys.instance.id[i];
-        uint32_t u32 = 0;
-        for (size_t j = 0; j < str.len; ++j) {
-            u32 += str.ptr[j];
-        }
-        const uint32_t color = u32_to_color(u32);
-        md_urange_t range = md_system_instance_atom_range(&sys, i);
-        set_colors(colors + range.beg, range.end - range.beg, color);
+static void set_chain_colors(uint32_t* colors, size_t count, const md_system_t& sys, size_t chain_idx, uint32_t color) {
+    const md_urange_t* end = md_system_chain_run_end(&sys, chain_idx);
+    for (const md_urange_t* it = md_system_chain_run_beg(&sys, chain_idx); it && it < end; ++it) {
+        const md_urange_t range = md_system_chain_run_atom_range(&sys, *it);
+        if (range.beg < range.end && range.end <= count) set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
-void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+
+// The same id the same color, in any system: a hash of the id, as the qualitative palette takes one. An inferred chain
+// has none, and takes its position.
+void color_atoms_chain_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
-    for (size_t i = 0; i < sys.instance.count; i++) {
-        const uint32_t color = u32_to_color((uint32_t)i);
-        md_urange_t range = md_system_instance_atom_range(&sys, i);
-        set_colors(colors + range.beg, range.end - range.beg, color);
+    for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+        const str_t id = md_system_chain_id(&sys, c);
+        uint32_t u32 = 0;
+        for (size_t j = 0; j < id.len; ++j) {
+            u32 += (uint8_t)id.ptr[j];
+        }
+        set_chain_colors(colors, count, sys, c, u32_to_color(str_empty(id) ? (uint32_t)c : u32));
+    }
+}
+
+void color_atoms_chain_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+        set_chain_colors(colors, count, sys, c, u32_to_color((uint32_t)c));
     }
 }
 
@@ -220,12 +227,12 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
                     }
                 }
 #endif
-                md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[range_beg + j];
-                if (comp_idx >= 0) {
-                    md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
+                md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[range_beg + j];
+                if (res_idx >= 0) {
+                    md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
                     set_colors(colors + range.beg, range.end - range.beg, color);
                 } else {
-                    // No component (a backbone found from the bonds alone, as for an XYZ file): the atoms of the segment
+                    // No residue (a backbone found from the bonds alone, as for an XYZ file): the atoms of the segment
                     const md_amino_acid_atoms_t& a = sys.protein_backbone.segment.atoms[range_beg + j];
                     const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o, a.cb, a.hn };
                     for (md_atom_idx_t atom : atoms) {
