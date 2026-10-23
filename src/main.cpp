@@ -45,6 +45,7 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <surface_field.h>
 #include <md_gto_iso.h>
 
 #include <resource_path.h>
@@ -1619,6 +1620,8 @@ int main(int argc, char** argv) {
     isomesh::target_free(&iso_mesh_target);
     for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
         electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
+        // what its field has under way holds the GPU stream and pool tasks: both still here
+        surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
@@ -3834,6 +3837,10 @@ static void draw_async_task_window(ApplicationState* data) {
     float iso_fraction[8];
     const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
     any_task_label_visible |= num_iso > 0;
+    // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
+    SurfaceFieldProgress field_progress[8];
+    const size_t num_field = surface_field_progress(field_progress, ARRAY_SIZE(field_progress));
+    any_task_label_visible |= num_field > 0;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3869,6 +3876,17 @@ static void draw_async_task_window(ApplicationState* data) {
         for (size_t i = 0; i < num_iso; i++) {
             snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
             ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+        }
+        for (size_t i = 0; i < num_field; i++) {
+            const SurfaceFieldProgress& p = field_progress[i];
+            if (p.preparing) {
+                snprintf(buf, sizeof(buf), "%s: preparing", p.label);
+                // no fraction to show: an indeterminate bar (a negative fraction moving with time), to say it is not stuck
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            } else {
+                snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
+                ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            }
         }
 
         ImGui::End();
