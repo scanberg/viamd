@@ -233,7 +233,7 @@ struct PanelMeshes {
 static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
     iso_meshes_free(&pm->meshes, state);
     for (int i = 0; i < PanelMeshes::MAX; ++i) {
-        md_gto_iso_field_destroy(pm->field[i]);
+        iso_field_release(pm->field[i]);
         isomesh::target_free(&pm->target[i]);
     }
     *pm = {};
@@ -251,7 +251,7 @@ static void panel_meshes_field(PanelMeshes* pm, ApplicationState* state, int i, 
     if (pm->field_key[i] == key) return;
     // The extraction state holds the fields: let it go before one of them does
     iso_meshes_free(&pm->meshes, state);
-    md_gto_iso_field_destroy(pm->field[i]);
+    iso_field_release(pm->field[i]);
     pm->field[i] = key ? make() : nullptr;
     pm->field_key[i] = key;
 }

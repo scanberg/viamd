@@ -509,7 +509,8 @@ struct FieldSource {
 
 static void source_start(FieldSource* fs, FieldBuild* b) {
     fs->build = b;
-    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field charges"), [b]() { build_run(b); });
+    // and the worker's temp arenas given back after: the charges of a protein's density read its orbitals there
+    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field charges"), [b]() { build_run(b); md_temp_trim(); });
     task_system::enqueue_task(fs->task);
 }
 

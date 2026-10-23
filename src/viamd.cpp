@@ -2957,8 +2957,13 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 // The device scratch is grown here rather than allocated per dataset. A wider basis loaded later
 // grows it; a narrower one leaves it alone, because it is scratch and only the maximum matters.
 
+#if MD_ENABLE_GPU
+static bool dmat_build_take(ApplicationState* state, bool wait);
+#endif
+
 void system_gpu_data_free(ApplicationState* state) {
     ASSERT(state);
+    gpu_volume_jobs_drain(state);   // what the evaluations under way read goes below
 #if MD_ENABLE_GPU
     if (state->mold.gpu_basis) {
         md_gto_gpu_basis_destroy(state->gpu_stream, state->mold.gpu_basis);
@@ -2969,11 +2974,13 @@ void system_gpu_data_free(ApplicationState* state) {
         state->mold.gpu_atoms = 0;
     }
     state->mold.gpu_atoms_hash = 0;
+    dmat_build_take(state, true);   // what a worker has under way: taken, then freed below
     if (state->mold.gpu_dmat) {
         md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
         state->mold.gpu_dmat = nullptr;
     }
     state->mold.gpu_dmat_key = 0;
+    state->mold.gpu_dmat_failed_key = 0;
 #else
     (void)state;
 #endif
@@ -3384,6 +3391,40 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
     return ok;
 }
 
+static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid);
+
+// The density jobs not yet all issued: each, once its counts are there (wait: waited for), issued and its
+// readback queued. True when none is left.
+static bool gpu_density_jobs_issue(ApplicationState* state, bool wait) {
+    bool none = true;
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (!j.in_flight || !j.density_job) continue;
+        md_gto_gpu_job_t* dj = (md_gto_gpu_job_t*)j.density_job;
+        if (!md_gto_gpu_job_poll(dj, wait)) {
+            none = false;
+            continue;
+        }
+        md_gto_gpu_job_end(dj);
+        j.density_job = nullptr;
+        if (!gpu_volume_readback_issue(state, &j, j.tex_id, j.grid)) j.in_flight = false;
+    }
+    return none;
+}
+
+static bool gpu_density_job_pending(const ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        if (state->gpu_volume_jobs[i].in_flight && state->gpu_volume_jobs[i].density_job) return true;
+    }
+    return false;
+}
+
+// What the GPU evaluations share - the atom positions, the coefficients, the dmat, the scratch volume - is
+// only changed once every density job is issued: one not yet issued reads them when it is. Waits for those.
+static void gpu_density_jobs_settle(ApplicationState* state) {
+    if (gpu_density_job_pending(state)) gpu_density_jobs_issue(state, true);
+}
+
 // Queues a readback of the evaluated region of gpu_volume. Returns once the copy is recorded; the
 // GL texture is filled later, from gpu_volume_job_complete(), which md_gpu_device_poll() calls on
 // the GL thread.
@@ -3417,7 +3458,12 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
     if (!job) {
         return gpu_volume_readback_blocking(state, vol_tex, grid, size);
     }
+    return gpu_volume_readback_issue(state, job, vol_tex, grid);
+}
 
+// The copy of gpu_volume into job's staging and its completion, queued; job is acquired
+static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid) {
+    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
     md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
     if (!rb.cpu) {
         MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
@@ -3450,6 +3496,32 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         job->in_flight = false;
         return true;
     }
+    return true;
+}
+
+// The readback of a density job's evaluation: its slot now, the copy once the job is all issued
+// (gpu_volume_jobs_poll). Takes the job.
+static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj) {
+    if (md_gto_gpu_job_poll(dj, false)) {
+        md_gto_gpu_job_end(dj);
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+    if (gpu_volume_job_in_flight_for(state, vol_tex)) {
+        // not to be: the representations wait for the last one (gpu_volume_job_in_flight_for). Ordered as the
+        // plain readback is
+        md_gto_gpu_job_poll(dj, true);
+        md_gto_gpu_job_end(dj);
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+    ApplicationState::GpuVolumeJob* job = gpu_volume_job_acquire(state);
+    if (!job) {
+        md_gto_gpu_job_poll(dj, true);
+        md_gto_gpu_job_end(dj);
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+    job->tex_id = vol_tex;
+    job->grid = grid;
+    job->density_job = dj;
     return true;
 }
 
@@ -3505,10 +3577,27 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
 
 #endif // MD_ENABLE_GPU
 
+#if !MD_ENABLE_GPU
+bool density_dmat_preparing(const ApplicationState*, double* seconds) {
+    if (seconds) *seconds = 0.0;
+    return false;
+}
+#endif
+
+void gpu_volume_jobs_poll(ApplicationState* state) {
+    ASSERT(state);
+#if MD_ENABLE_GPU
+    if (state->gpu_stream) gpu_density_jobs_issue(state, false);
+#else
+    (void)state;
+#endif
+}
+
 void gpu_volume_jobs_drain(ApplicationState* state) {
     ASSERT(state);
 #if MD_ENABLE_GPU
     if (!state->gpu_stream || !gpu_volume_job_any_in_flight(state)) return;
+    gpu_density_jobs_issue(state, true);
     md_gpu_stream_sync(state->gpu_stream);
     md_gpu_device_poll(state->gpu_device);   // this is what actually runs the callbacks
 
@@ -3517,6 +3606,8 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
         if (j.in_flight) {
+            if (j.density_job) md_gto_gpu_job_end((md_gto_gpu_job_t*)j.density_job);
+            j.density_job = nullptr;
             if (j.rb.gpu) md_gpu_free(state->gpu_stream, j.rb.gpu);
             j.rb = {};
             j.in_flight = false;
@@ -3765,19 +3856,19 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
         // These are VIRTUAL: the slice is what tells the provider to reconstruct one state rather
         // than all of them, and it is the only reason asking for one is affordable.
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
-        return density_evaluate(state, tex_id, grid, path, &slice, MD_GTO_OP_SET);
+        return density_evaluate(state, tex_id, grid, path, &slice, MD_GTO_OP_SET, true);
     }
     case ElectronicStructureSource::ElectronDensity: {
         // A spin difference is signed, so it is the one density the magnitude toggle applies to.
         const bool magnitude = (es.spin == ElectronicStructureSpin::Difference) && es.use_magnitude;
-        return density_evaluate(state, tex_id, grid, es_electron_density_path(es.spin), nullptr, es_gto_op(magnitude));
+        return density_evaluate(state, tex_id, grid, es_electron_density_path(es.spin), nullptr, es_gto_op(magnitude), true);
     }
     case ElectronicStructureSource::DensityProperty: {
         const md_attribute_t* attr = md_attributes_get(&state->mold.sys.attributes, es.density_property_key);
         if (!attr) {
             return false;
         }
-        return density_evaluate(state, tex_id, grid, attr->path, nullptr, MD_GTO_OP_SET);
+        return density_evaluate(state, tex_id, grid, attr->path, nullptr, MD_GTO_OP_SET, true);
     }
     default:
         MD_LOG_ERROR("Unknown electronic structure source");
@@ -3864,10 +3955,16 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
 }
 
 // The values of a volume texture, read back. A volume the md_gpu path is still filling is waited
-// for first, and image stores of the GL compute path are made visible before the read.
+// for first (the caller waits for it without blocking: gpu_volume_job_in_flight_for), and image stores
+// of the GL compute path are made visible before the read.
 static bool volume_read_values(float* dst, ApplicationState* state, const Volume& vol) {
     if (!vol.tex_id) return false;
-    gpu_volume_jobs_drain(state);
+#if MD_ENABLE_GPU
+    // its own readback only: draining every one would wait for whatever else the stream holds
+    if (gpu_volume_job_in_flight_for(state, vol.tex_id)) gpu_volume_jobs_drain(state);
+#else
+    (void)state;
+#endif
     if (glMemoryBarrier) {
         glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     }
@@ -3884,12 +3981,13 @@ static bool volume_read_values(float* dst, ApplicationState* state, const Volume
 // frame - and on nothing else the representation chooses, so they are kept while the surfaces
 // change: a new isovalue, orbital, density or resolution evaluates only what its band adds, and on
 // the GPU, which evaluates the whole field once, nothing at all.
-static void electronic_structure_field_update(ApplicationState* state, Representation* rep) {
+// False while the density it reads is still being evaluated (to be called again)
+static bool electronic_structure_field_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     const md_system_t& sys = state->mold.sys;
     if (!surface_field_available(es.field_kind, sys)) {
         surface_field_free(&es.field_vol);
-        return;
+        return true;
     }
 
     IsoDesc iso;
@@ -3902,17 +4000,21 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
     uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
     band_hash = md_hash64_combine(band_hash, es.vol_hash);
     if (source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
-        return;     // what is under way is taken by electronic_structure_field_poll
+        return true;    // what is under way is taken by electronic_structure_field_poll
     }
 
     const size_t num_voxels = md_grid_num_points(&es.grid);
-    if (num_voxels == 0) return;
+    if (num_voxels == 0) return true;
+#if MD_ENABLE_GPU
+    // The density still being evaluated on the GPU: read once it is there, a later frame, rather than waited for
+    if (es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) return false;
+#endif
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
     float* density = (float*)md_temp_alloc(temp, sizeof(float) * num_voxels);
     if (!density || !volume_read_values(density, state, es.density_vol)) {
-        return;
+        return true;
     }
 
     SurfaceFieldDesc desc = {};
@@ -3941,6 +4043,7 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
                      fv.grid.dim[0], fv.grid.dim[1], fv.grid.dim[2], fv.on_gpu ? " on the GPU" : "", surface_field_busy(fv) ? ", more under way" : "",
                      md_tick_to_milliseconds(md_tick_now() - t0));
     }
+    return true;
 }
 
 void electronic_structure_field_poll(Representation* rep) {
@@ -4046,6 +4149,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
             MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and '" STR_FMT "' %zu", num_cgtos, STR_ARG(coefficient_path), num_ao);
             return false;
         }
+        gpu_density_jobs_settle(state);     // the inputs are changed below
         if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
             return false;
         }
@@ -4085,7 +4189,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 }
 
 #if MD_ENABLE_GPU
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat = nullptr);
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat = nullptr, md_gto_gpu_job_t** out_job = nullptr);
 
 bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
                                            const double* density_matrix, size_t dim, md_gto_op_t op) {
@@ -4102,6 +4206,7 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
         MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
         return false;
     }
+    gpu_density_jobs_settle(state);     // the inputs are changed below
     if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
         return false;
     }
@@ -4117,8 +4222,9 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
     return true;
 }
 
-// The density kernel over whatever was last uploaded to the coefficient buffer, or over a dmat
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat) {
+// The density kernel over whatever was last uploaded to the coefficient buffer, or over a dmat. out_job: as a job
+// (md_gto_gpu_density_job_begin), which the caller completes, instead of a launch that waits for its counts
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat, md_gto_gpu_job_t** out_job) {
     md_gto_gpu_density_desc_t desc = {
         .basis         = state->mold.gpu_basis,
         .atom_xyz      = state->mold.gpu_atoms,
@@ -4129,7 +4235,11 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
         .sample_offset = {0.5f, 0.5f, 0.5f},
         .op            = op,
     };
-    md_gto_gpu_density_launch(state->gpu_stream, &desc);
+    if (out_job) {
+        *out_job = md_gto_gpu_density_job_begin(state->gpu_stream, &desc);
+    } else {
+        md_gto_gpu_density_launch(state->gpu_stream, &desc);
+    }
 }
 
 // How far the atoms may move before the dmat's pattern is made again (bohr): the pattern keeps the AO pairs
@@ -4137,18 +4247,13 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
 // more than half of it.
 static constexpr double GPU_DMAT_MARGIN = 1.0;
 
-// The SCF density at density_path (orbital/{alpha,beta,total,difference}/density) in state->mold.gpu_dmat,
-// built on the device from its orbitals (md_qm_density_orbitals). False for any other density, or one
-// whose orbitals are not published or that is zero: those go through the packed matrix.
-static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
-    const bool scf = str_eq(density_path, es_path::alpha_density) || str_eq(density_path, es_path::beta_density) ||
-                     str_eq(density_path, es_path::total_density) || str_eq(density_path, es_path::difference_density);
-    if (!scf || !state->gpu_stream || !state->mold.gpu_basis) {
-        return false;
-    }
-    const md_system_t& sys = state->mold.sys;
+static bool density_is_scf(str_t density_path) {
+    return str_eq(density_path, es_path::alpha_density) || str_eq(density_path, es_path::beta_density) ||
+           str_eq(density_path, es_path::total_density) || str_eq(density_path, es_path::difference_density);
+}
 
-    // What the matrix holds: the density, and the versions of the orbitals and occupations it is made of
+// What a dmat holds: the density, and the versions of the orbitals and occupations it is made of
+static uint64_t density_dmat_key(const md_system_t& sys, str_t density_path) {
     uint64_t key = md_hash64(density_path.ptr, density_path.len, 0x5cf0d3a7);
     const str_t sources[4] = {es_path::alpha_coefficient, es_path::alpha_occupation, es_path::beta_coefficient, es_path::beta_occupation};
     for (const str_t& p : sources) {
@@ -4156,7 +4261,157 @@ static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
         const uint64_t v = a ? md_attributes_version(&sys.attributes, a->id) : 0;
         key = md_hash64(&v, sizeof(v), key);
     }
-    key = key ? key : 1;
+    return key ? key : 1;
+}
+
+// The density at density_path into dm, from its orbitals (md_qm_density_orbitals), on stream s
+static bool density_dmat_fill(md_gpu_stream_t s, md_gto_gpu_dmat_t dm, const md_system_t& sys, str_t density_path, size_t num_cgtos) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* rows = nullptr;
+    double* weights = nullptr;
+    size_t num_ao = 0;
+    const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, &sys, density_path, md_temp_allocator(temp));
+    if (count == 0 || num_ao != num_cgtos) {
+        return false;
+    }
+    return md_gto_gpu_dmat_build(s, dm, rows, weights, count);
+}
+
+// A dmat whose pattern is made where the atoms are (xyz, bohr), on stream s
+static md_gto_gpu_dmat_t density_dmat_pattern(md_gpu_stream_t s, const md_system_t& sys, const vec3_t* xyz) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        return nullptr;
+    }
+    // The cutoff of gpu_basis (system_gpu_data_update), whose radii the pattern is made with
+    const md_gto_gpu_dmat_desc_t desc = {
+        .basis = &basis, .atom_xyz = (const float*)xyz, .atom_xyz_stride = sizeof(vec3_t),
+        .cutoff = DEFAULT_GTO_CUTOFF_VALUE, .margin = GPU_DMAT_MARGIN,
+    };
+    return md_gto_gpu_dmat_create(s, &desc);
+}
+
+// A dmat made on a worker thread, on a GPU stream of its own: the pattern, the orbitals and the build are for a
+// protein's total density a third of a second of the CPU, more than a second the first time the orbitals are
+// read, which the representations' frames do not wait for (density_dmat_prepare). Made anew rather than
+// refilled, because the one in use may be read by an evaluation still on the GPU.
+struct DmatBuild {
+    task_system::ID task = task_system::INVALID_ID;
+    bool ran = false;
+    uint64_t key = 0;
+    str_t path = {};                    // an es_path constant
+    const md_system_t* sys = nullptr;
+    vec3_t* xyz = nullptr;              // bohr, its copy
+    size_t num_cgtos = 0;
+    md_gpu_stream_t stream = nullptr;   // the task's, destroyed by it once its work is done (its staging given back)
+    md_gto_gpu_dmat_t dmat = nullptr;
+    md_tick_t t0 = 0;
+};
+
+static void dmat_build_destroy(DmatBuild* b, md_gpu_stream_t gl_stream) {
+    // only once its task has ended (dmat_build_take)
+    if (b->dmat) md_gto_gpu_dmat_destroy(gl_stream, b->dmat);
+    if (b->stream) md_gpu_stream_destroy(b->stream);    // of a task that never ran: nothing on it
+    free(b->xyz);
+    delete b;
+}
+
+// The build under way, taken once it is done: its dmat becomes the one in use. wait: waited for if it is not
+// done. Returns false while it is under way.
+static bool dmat_build_take(ApplicationState* state, bool wait) {
+    DmatBuild* b = (DmatBuild*)state->mold.gpu_dmat_build;
+    if (!b) return true;
+    if (wait) task_system::task_wait_for(b->task);
+    if (task_system::task_is_running(b->task)) return false;
+    state->mold.gpu_dmat_build = nullptr;
+    if (b->ran && b->dmat) {
+        gpu_density_jobs_settle(state);     // one not yet issued reads the dmat in use
+        // its build is done on the GPU: the task waited for it before it ended (destroying its stream)
+        if (state->mold.gpu_dmat) md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
+        state->mold.gpu_dmat = b->dmat;
+        state->mold.gpu_dmat_key = b->key;
+        b->dmat = nullptr;
+        MD_LOG_DEBUG("The density matrix of '" STR_FMT "' made in %.1f ms (on a worker thread)", STR_ARG(b->path), md_tick_to_milliseconds(md_tick_now() - b->t0));
+    } else if (b->ran) {
+        state->mold.gpu_dmat_failed_key = b->key;     // made where it is asked for (density_dmat_ensure), which may fail as loudly
+    }
+    dmat_build_destroy(b, state->gpu_stream);
+    return true;
+}
+
+bool density_dmat_preparing(const ApplicationState* state, double* seconds) {
+    const DmatBuild* b = state ? (const DmatBuild*)state->mold.gpu_dmat_build : nullptr;
+    if (seconds) *seconds = b ? md_tick_to_seconds(md_tick_now() - b->t0) : 0.0;
+    return b != nullptr;
+}
+
+// For the representations' evaluations, which wait for it without waiting on it: true when the dmat holds the
+// SCF density at density_path for the atoms where they are (the evaluation can be issued), or when the density
+// does not go through one; false while it is being made on a worker thread, which this begins when it is not.
+static bool density_dmat_prepare(ApplicationState* state, str_t density_path) {
+    if (!density_is_scf(density_path) || !gpu_evaluation_ready(state) || !state->gpu_device) {
+        return true;
+    }
+    if (!dmat_build_take(state, false)) return false;
+    const md_system_t& sys = state->mold.sys;
+    const uint64_t key = density_dmat_key(sys, density_path);
+    if (key == state->mold.gpu_dmat_failed_key) return true;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t num_atoms = 0;
+    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
+        return true;    // the evaluation fails as it would have
+    }
+    if (state->mold.gpu_dmat && state->mold.gpu_dmat_key == key && md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(vec3_t))) {
+        return true;
+    }
+
+    DmatBuild* b = new DmatBuild();
+    b->key = key;
+    b->path = density_path;
+    b->sys = &state->mold.sys;
+    b->num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    b->t0 = md_tick_now();
+    b->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+    b->stream = b->xyz ? md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "density matrix") : nullptr;
+    if (!b->stream) {
+        free(b->xyz);
+        delete b;
+        return true;    // made where it is asked for
+    }
+    MEMCPY(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    b->task = task_system::create_pool_task(STR_LIT("##Density matrix"), [b]() {
+        b->ran = true;
+        b->dmat = density_dmat_pattern(b->stream, *b->sys, b->xyz);
+        if (b->dmat && !density_dmat_fill(b->stream, b->dmat, *b->sys, b->path, b->num_cgtos)) {
+            md_gto_gpu_dmat_destroy(b->stream, b->dmat);
+            b->dmat = nullptr;
+        }
+        md_gpu_stream_destroy(b->stream);   // once its work is done: the dmat is then ready for any stream
+        b->stream = nullptr;
+        md_temp_trim();     // the orbitals were read into this worker's temp arenas
+    });
+    task_system::enqueue_task(b->task);
+    state->mold.gpu_dmat_build = b;
+    return false;
+}
+
+// The SCF density at density_path (orbital/{alpha,beta,total,difference}/density) in state->mold.gpu_dmat,
+// built on the device from its orbitals (md_qm_density_orbitals): on this thread unless a worker has made it
+// (density_dmat_prepare), and one under way is waited for. False for any other density, or one whose orbitals
+// are not published or that is zero: those go through the packed matrix.
+static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
+    if (!density_is_scf(density_path) || !state->gpu_stream || !state->mold.gpu_basis) {
+        return false;
+    }
+    dmat_build_take(state, true);
+    const md_system_t& sys = state->mold.sys;
+    const uint64_t key = density_dmat_key(sys, density_path);
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
@@ -4171,30 +4426,14 @@ static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
         state->mold.gpu_dmat = nullptr;
     }
     if (!state->mold.gpu_dmat) {
-        md_gto_basis_t basis = {};
-        if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
-            return false;
-        }
-        // The cutoff of gpu_basis (system_gpu_data_update), whose radii the pattern is made with
-        const md_gto_gpu_dmat_desc_t desc = {
-            .basis = &basis, .atom_xyz = (const float*)xyz, .atom_xyz_stride = sizeof(vec3_t),
-            .cutoff = DEFAULT_GTO_CUTOFF_VALUE, .margin = GPU_DMAT_MARGIN,
-        };
-        state->mold.gpu_dmat = md_gto_gpu_dmat_create(state->gpu_stream, &desc);
+        state->mold.gpu_dmat = density_dmat_pattern(state->gpu_stream, sys, xyz);
         state->mold.gpu_dmat_key = 0;
         if (!state->mold.gpu_dmat) {
             return false;
         }
     }
     if (key != state->mold.gpu_dmat_key) {
-        double* rows = nullptr;
-        double* weights = nullptr;
-        size_t num_ao = 0;
-        const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, &sys, density_path, md_temp_allocator(temp));
-        if (count == 0 || num_ao != md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis)) {
-            return false;
-        }
-        if (!md_gto_gpu_dmat_build(state->gpu_stream, state->mold.gpu_dmat, rows, weights, count)) {
+        if (!density_dmat_fill(state->gpu_stream, state->mold.gpu_dmat, sys, density_path, md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis))) {
             return false;
         }
         state->mold.gpu_dmat_key = key;
@@ -4202,12 +4441,23 @@ static bool density_dmat_ensure(ApplicationState* state, str_t density_path) {
     return true;
 }
 
+static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+                                  const md_attribute_slice_t* slice, md_gto_op_t op, md_gto_gpu_job_t** out_job);
+
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op) {
+    return density_to_gpu_volume(state, grid, density_path, slice, op, nullptr);
+}
+
+// out_job: the evaluation as a job (density_gpu_launch), when it is one; nullptr: launched
+static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+                                  const md_attribute_slice_t* slice, md_gto_op_t op, md_gto_gpu_job_t** out_job) {
     ASSERT(state);
+    if (out_job) *out_job = nullptr;
     if (!gpu_evaluation_ready(state)) {
         return false;
     }
+    gpu_density_jobs_settle(state);     // the inputs are changed below
 
     const md_system_t&       sys       = state->mold.sys;
     const md_system_state_t& sys_state = state->mold.state;
@@ -4234,7 +4484,7 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
     // An SCF density through the dmat, built on the device from its orbitals: no matrix on the host, and
     // only the AO pairs the evaluation reads
     if (s.num_idx == 0 && density_dmat_ensure(state, density_path)) {
-        density_gpu_launch(state, grid, op, state->mold.gpu_dmat);
+        density_gpu_launch(state, grid, op, state->mold.gpu_dmat, out_job);
         return true;
     }
 
@@ -4250,7 +4500,7 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
         return false;
     }
 
-    density_gpu_launch(state, grid, op);
+    density_gpu_launch(state, grid, op, nullptr, out_job);
     return true;
 }
 #endif
@@ -4283,14 +4533,15 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
 }
 
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
-                      const md_attribute_slice_t* slice, md_gto_op_t op) {
+                      const md_attribute_slice_t* slice, md_gto_op_t op, bool async) {
     ASSERT(state);
 
 #if MD_ENABLE_GPU
     // Evaluate, then read back. The split exists because a consumer that runs another kernel over
     // the result - the critical point extraction does - wants the first half and not the second.
-    if (density_evaluate_to_gpu_volume(state, grid, density_path, slice, op)) {
-        return gpu_volume_readback(state, vol_tex, grid);
+    md_gto_gpu_job_t* job = nullptr;
+    if (density_to_gpu_volume(state, grid, density_path, slice, op, async ? &job : nullptr)) {
+        return job ? gpu_volume_readback_after(state, vol_tex, grid, job) : gpu_volume_readback(state, vol_tex, grid);
     }
     if (gpu_evaluation_ready(state)) {
         return false;   // the GPU path was available and failed; the GL one would fail the same way
@@ -4308,7 +4559,7 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
 // exactly those inputs - the frame included, since the geometry moves the grid.
-void electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
+bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
     ASSERT(state);
     ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
@@ -4331,10 +4582,30 @@ void electronic_structure_representation_update(ApplicationState* state, Represe
     const bool needs_volume = !mesh_mode || es.coloring == SurfaceColoring::AtomColors;
     vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
 
+    bool done = true;
     if (vol_hash != es.vol_hash) {
-        es.vol_hash = vol_hash;
+        bool ready = true;
+#if MD_ENABLE_GPU
+        // What the evaluation needs, which the frame does not wait for: the volume's last evaluation off the GPU
+        // (its readback in flight: a new one now would wait for it, and the volume's texture be remade under
+        // it), and an SCF density's dmat, made on a worker thread. Until then the volume shown stays, and
+        // this is asked again next frame.
         if (needs_volume) {
-            electronic_structure_evaluate(state, rep);
+            // (a density job under way of any representation: an evaluation now would wait for its counts)
+            if ((es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) || gpu_density_job_pending(state)) {
+                ready = false;
+            } else if (es.source == ElectronicStructureSource::ElectronDensity) {
+                ready = density_dmat_prepare(state, es_electron_density_path(es.spin));
+            }
+        }
+#endif
+        if (ready) {
+            es.vol_hash = vol_hash;
+            if (needs_volume) {
+                electronic_structure_evaluate(state, rep);
+            }
+        } else {
+            done = false;
         }
     }
 
@@ -4346,8 +4617,9 @@ void electronic_structure_representation_update(ApplicationState* state, Represe
             electronic_structure_color_volume_update(state, rep, atom_colors);
         }
     } else if (es.coloring == SurfaceColoring::Field && !mesh_mode) {
-        electronic_structure_field_update(state, rep);
+        done &= electronic_structure_field_update(state, rep);
     }
+    return done;
 }
 
 // Every leaf under the density property group is one property, in the table's own path order. The
