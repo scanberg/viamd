@@ -529,8 +529,9 @@ static void group_terms(md_array(str_t)* terms, md_array(int32_t) whole, const G
     }
 }
 
-// The selection by the structures which hold it: the chains and molecules it holds whole, the residues it holds whole of
-// the others, and what it holds of the residues it holds a part of (part_term). By id: the chains by their ids, the
+// The selection by the structures which hold it: the chains and molecules it holds whole, the parts of several residues
+// it holds whole of the others (a glycan, a strand bonded to another), the residues it holds whole of the rest, and what
+// it holds of the residues it holds a part of (part_term). By id: the chains by their ids, the
 // residues of a chain by their sequence ids within it and the atoms by their names, where those pick them alone. Else
 // everything by position. False when it does not make a line short enough to read.
 static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, bool by_id) {
@@ -572,9 +573,13 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     md_array(md_array(int32_t)) slot_whole = 0;
     md_array(Groups) slot_parts = 0;
 
-    // The residues which are written by their position in the system, whichever instance they are of
+    // The residues which are written by their position in the system, whichever instance they are of, and the parts of
+    // several residues it holds whole of them
     md_array(int32_t) whole = 0;
+    md_array(int32_t) whole_parts = 0;
     Groups parts = {};
+    int32_t cur_part = -1;
+    bool cur_part_whole = false;
 
     md_str_writer_t sb = md_str_writer_create(temp);
     const size_t num_comps = md_array_size(b.comp);
@@ -603,6 +608,15 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
         } else {
             const int32_t pos = b.comp[k] + 1;
             if (b.comp_full[k]) {
+                const int32_t part = md_system_part_find_by_comp_idx(c->sys, (size_t)b.comp[k]);
+                if (part >= 0 && part != cur_part) {
+                    cur_part = part;
+                    const md_urange_t pc = md_system_part_comp_range(c->sys, (size_t)part);
+                    const md_urange_t pa = md_system_part_atom_range(c->sys, (size_t)part);
+                    cur_part_whole = pc.end - pc.beg > 1 && md_bitset_test_all_range(c->sel, pa.beg, pa.end);
+                    if (cur_part_whole) md_array_push(whole_parts, part + 1, temp);
+                }
+                if (part >= 0 && cur_part_whole) continue;
                 md_array_push(whole, pos, temp);
             } else {
                 part_term(&sb, b.comp[k], *c, by_id);
@@ -624,6 +638,12 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
             if (len > c->limit) return false;
             md_array_push(terms, take(&sb, temp), temp);
         }
+    }
+    if (md_array_size(whole_parts)) {
+        sb += "part(";
+        write_ranges(&sb, whole_parts, md_array_size(whole_parts));
+        sb += ')';
+        md_array_push(terms, take(&sb, temp), temp);
     }
     group_terms(&terms, whole, parts, "residue", temp);
 
@@ -1108,6 +1128,52 @@ static bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
     return ok;
 }
 
+// Whole glycans (glycan(): the parts all of whose residues are sugars), alone and within the chains which hold them:
+// glycan(), glycan() in chain("A"). Whether they pick the selection is for the validation to tell.
+static void glycan_terms(md_array(str_t)* out, const Breakdown& b, Ctx* c) {
+    const md_system_t& sys = *c->sys;
+    if (!b.comps_full || md_array_size(b.loose) || md_array_size(b.comp) == 0 || md_system_part_count(&sys) == 0) return;
+
+    md_array(int32_t) chains = 0;
+    bool all_in_chain = true;
+    int32_t cur_part = -1;
+    for (size_t k = 0; k < md_array_size(b.comp); ++k) {
+        const md_component_kind_t kind = md_component_kind(&sys.component, (size_t)b.comp[k]);
+        if (kind == MD_COMPONENT_KIND_AMINO_ACID || kind == MD_COMPONENT_KIND_NUCLEOTIDE || kind == MD_COMPONENT_KIND_WATER ||
+            kind == MD_COMPONENT_KIND_ION || kind == MD_COMPONENT_KIND_LIPID) return;
+        const int32_t part = md_system_part_find_by_comp_idx(&sys, (size_t)b.comp[k]);
+        if (part < 0) return;
+        if (part != cur_part) {
+            cur_part = part;
+            const md_urange_t pa = md_system_part_atom_range(&sys, (size_t)part);
+            if (!md_bitset_test_all_range(c->sel, pa.beg, pa.end)) return;
+        }
+        const int32_t chain = comp_chain(*c, b.comp[k]);
+        if (chain < 0) all_in_chain = false;
+        else md_array_push(chains, chain, c->temp);
+    }
+    // All of them, else those of the chains which hold the selection
+    if (picks_exactly(STR_LIT("glycan()"), c->sel, sys, c->temp)) {
+        md_array_push(*out, STR_LIT("glycan()"), c->temp);
+        return;
+    }
+
+    const size_t num_chains = sort_unique(chains, md_array_size(chains));
+    if (!all_in_chain || num_chains == 0) return;
+    md_array(str_t) terms = 0;
+    md_array(int32_t) unwritten = 0;
+    if (!whole_terms(&terms, &unwritten, chains, num_chains, nullptr, 0, *c, true)) return;
+    md_str_writer_t sb = md_str_writer_create(c->temp);
+    md_str_writer_t ctx = md_str_writer_create(c->temp);
+    write_or(&ctx, terms, md_array_size(terms));
+    const bool paren = md_array_size(terms) > 1;
+    sb += "glycan() in ";
+    if (paren) sb += '(';
+    sb += md_str_writer_to_str(&ctx);
+    if (paren) sb += ')';
+    if (!too_long(&sb, c->limit)) md_array_push(*out, take(&sb, c->temp), c->temp);
+}
+
 static void push_suggestion(md_array(ScriptSuggestion)* out, str_t text, str_t hint, md_allocator_i* alloc) {
     for (size_t i = 0; i < md_array_size(*out); ++i) {
         if (str_eq((*out)[i].text, text)) return;
@@ -1137,6 +1203,7 @@ md_array(ScriptSuggestion) script_suggest_selection(str_t ident, md_bitset_t sel
     } else {
         // What they are, the shortest first
         md_array(str_t) desc = describe(b, &c);
+        glycan_terms(&desc, b, &c);
         for (size_t i = 1; i < md_array_size(desc); ++i) {
             for (size_t k = i; k > 0 && desc[k].len < desc[k - 1].len; --k) { str_t tmp = desc[k]; desc[k] = desc[k - 1]; desc[k - 1] = tmp; }
         }

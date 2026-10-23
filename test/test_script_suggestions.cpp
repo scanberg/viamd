@@ -236,6 +236,144 @@ UTEST(script_suggestions, strands_of_one_molecule) {
     unload(&l);
 }
 
+// A glycan bonded to a protein is of its molecule. Part granularity, part() and glycan() take the glycan alone: the
+// threonine of chains A and B, each with a tree of three sugars (CHARMM-GUI names) on its side chain.
+UTEST(script_suggestions, glycans) {
+    static const char pdb[] =
+        "CRYST1  246.108  246.108  398.534  90.00  90.00  90.00 P 1           1\n"
+        "ATOM      1  N   THR A 323     220.790 133.490 398.290  0.00  0.00           N\n"
+        "ATOM      2  CA  THR A 323     221.130 133.610   1.180  0.00  0.00           C\n"
+        "ATOM      3  CB  THR A 323     221.340 132.260   1.860  0.00  0.00           C\n"
+        "ATOM      4  OG1 THR A 323     221.250 132.440   3.290  0.00  0.00           O\n"
+        "ATOM      5  CG2 THR A 323     222.640 131.430   1.500  0.00  0.00           C\n"
+        "ATOM      6  C   THR A 323     222.370 134.490   1.350  0.00  0.00           C\n"
+        "ATOM      7  O   THR A 323     222.780 134.850   2.480  0.00  0.00           O\n"
+        "HETATM    8  C1  AGA A   1     219.860 132.350   3.670  0.00  0.00           C\n"
+        "HETATM    9  C5  AGA A   1     220.490 130.470   4.970  0.00  0.00           C\n"
+        "HETATM   10  O5  AGA A   1     219.510 131.000   4.050  0.00  0.00           O\n"
+        "HETATM   11  C2  AGA A   1     219.580 133.160   4.900  0.00  0.00           C\n"
+        "HETATM   12  N   AGA A   1     219.810 134.540   4.650  0.00  0.00           N\n"
+        "HETATM   13  C   AGA A   1     218.940 135.570   4.510  0.00  0.00           C\n"
+        "HETATM   14  O   AGA A   1     217.740 135.420   4.650  0.00  0.00           O\n"
+        "HETATM   15  CT  AGA A   1     219.560 136.840   4.100  0.00  0.00           C\n"
+        "HETATM   16  C3  AGA A   1     220.440 132.730   6.060  0.00  0.00           C\n"
+        "HETATM   17  O3  AGA A   1     220.000 133.320   7.220  0.00  0.00           O\n"
+        "HETATM   18  C4  AGA A   1     220.340 131.260   6.290  0.00  0.00           C\n"
+        "HETATM   19  O4  AGA A   1     219.110 130.940   6.950  0.00  0.00           O\n"
+        "HETATM   20  C6  AGA A   1     220.330 128.940   5.010  0.00  0.00           C\n"
+        "HETATM   21  O6  AGA A   1     221.420 128.290   5.660  0.00  0.00           O\n"
+        "HETATM   22  C1  BGA A   2     220.980 133.950   8.020  0.00  0.00           C\n"
+        "HETATM   23  C5  BGA A   2     222.980 133.600   9.080  0.00  0.00           C\n"
+        "HETATM   24  O5  BGA A   2     221.830 132.920   8.590  0.00  0.00           O\n"
+        "HETATM   25  C2  BGA A   2     220.370 134.620   9.240  0.00  0.00           C\n"
+        "HETATM   26  O2  BGA A   2     219.390 135.570   8.770  0.00  0.00           O\n"
+        "HETATM   27  C3  BGA A   2     221.470 135.380  10.000  0.00  0.00           C\n"
+        "HETATM   28  O3  BGA A   2     221.020 136.160  11.110  0.00  0.00           O\n"
+        "HETATM   29  C4  BGA A   2     222.510 134.290  10.390  0.00  0.00           C\n"
+        "HETATM   30  O4  BGA A   2     222.050 133.420  11.410  0.00  0.00           O\n"
+        "HETATM   31  C6  BGA A   2     223.980 132.600   9.440  0.00  0.00           C\n"
+        "HETATM   32  O6  BGA A   2     225.130 133.260   9.940  0.00  0.00           O\n"
+        "HETATM   33  C1  ANE A   3     222.110 138.250  10.680  0.00  0.00           C\n"
+        "HETATM   34  O11 ANE A   3     222.280 138.780   9.530  0.00  0.00           O\n"
+        "HETATM   35  O12 ANE A   3     223.000 138.210  11.610  0.00  0.00           O\n"
+        "HETATM   36  C2  ANE A   3     220.760 137.540  10.890  0.00  0.00           C\n"
+        "HETATM   37  C6  ANE A   3     219.270 139.080   9.760  0.00  0.00           C\n"
+        "HETATM   38  O6  ANE A   3     219.800 137.770   9.830  0.00  0.00           O\n"
+        "HETATM   39  C3  ANE A   3     219.980 137.800  12.220  0.00  0.00           C\n"
+        "HETATM   40  C4  ANE A   3     219.190 139.110  12.230  0.00  0.00           C\n"
+        "HETATM   41  O4  ANE A   3     218.530 139.270  13.500  0.00  0.00           O\n"
+        "HETATM   42  C5  ANE A   3     218.340 139.370  10.980  0.00  0.00           C\n"
+        "HETATM   43  N   ANE A   3     217.770 140.720  10.910  0.00  0.00           N\n"
+        "HETATM   44  C   ANE A   3     216.590 141.100  11.400  0.00  0.00           C\n"
+        "HETATM   45  O   ANE A   3     215.770 140.350  11.840  0.00  0.00           O\n"
+        "HETATM   46  CT  ANE A   3     216.270 142.580  11.320  0.00  0.00           C\n"
+        "HETATM   47  C7  ANE A   3     218.670 139.400   8.410  0.00  0.00           C\n"
+        "HETATM   48  O7  ANE A   3     217.770 138.390   8.060  0.00  0.00           O\n"
+        "HETATM   49  C8  ANE A   3     219.730 139.520   7.270  0.00  0.00           C\n"
+        "HETATM   50  O8  ANE A   3     220.710 138.450   7.350  0.00  0.00           O\n"
+        "HETATM   51  C9  ANE A   3     220.360 140.880   7.030  0.00  0.00           C\n"
+        "HETATM   52  O9  ANE A   3     221.100 141.240   8.210  0.00  0.00           O\n"
+        "ATOM     53  N   THR B 323     180.790 133.490 398.290  0.00  0.00           N\n"
+        "ATOM     54  CA  THR B 323     181.130 133.610   1.180  0.00  0.00           C\n"
+        "ATOM     55  CB  THR B 323     181.340 132.260   1.860  0.00  0.00           C\n"
+        "ATOM     56  OG1 THR B 323     181.250 132.440   3.290  0.00  0.00           O\n"
+        "ATOM     57  CG2 THR B 323     182.640 131.430   1.500  0.00  0.00           C\n"
+        "ATOM     58  C   THR B 323     182.370 134.490   1.350  0.00  0.00           C\n"
+        "ATOM     59  O   THR B 323     182.780 134.850   2.480  0.00  0.00           O\n"
+        "HETATM   60  C1  AGA B   1     179.860 132.350   3.670  0.00  0.00           C\n"
+        "HETATM   61  C5  AGA B   1     180.490 130.470   4.970  0.00  0.00           C\n"
+        "HETATM   62  O5  AGA B   1     179.510 131.000   4.050  0.00  0.00           O\n"
+        "HETATM   63  C2  AGA B   1     179.580 133.160   4.900  0.00  0.00           C\n"
+        "HETATM   64  N   AGA B   1     179.810 134.540   4.650  0.00  0.00           N\n"
+        "HETATM   65  C   AGA B   1     178.940 135.570   4.510  0.00  0.00           C\n"
+        "HETATM   66  O   AGA B   1     177.740 135.420   4.650  0.00  0.00           O\n"
+        "HETATM   67  CT  AGA B   1     179.560 136.840   4.100  0.00  0.00           C\n"
+        "HETATM   68  C3  AGA B   1     180.440 132.730   6.060  0.00  0.00           C\n"
+        "HETATM   69  O3  AGA B   1     180.000 133.320   7.220  0.00  0.00           O\n"
+        "HETATM   70  C4  AGA B   1     180.340 131.260   6.290  0.00  0.00           C\n"
+        "HETATM   71  O4  AGA B   1     179.110 130.940   6.950  0.00  0.00           O\n"
+        "HETATM   72  C6  AGA B   1     180.330 128.940   5.010  0.00  0.00           C\n"
+        "HETATM   73  O6  AGA B   1     181.420 128.290   5.660  0.00  0.00           O\n"
+        "HETATM   74  C1  BGA B   2     180.980 133.950   8.020  0.00  0.00           C\n"
+        "HETATM   75  C5  BGA B   2     182.980 133.600   9.080  0.00  0.00           C\n"
+        "HETATM   76  O5  BGA B   2     181.830 132.920   8.590  0.00  0.00           O\n"
+        "HETATM   77  C2  BGA B   2     180.370 134.620   9.240  0.00  0.00           C\n"
+        "HETATM   78  O2  BGA B   2     179.390 135.570   8.770  0.00  0.00           O\n"
+        "HETATM   79  C3  BGA B   2     181.470 135.380  10.000  0.00  0.00           C\n"
+        "HETATM   80  O3  BGA B   2     181.020 136.160  11.110  0.00  0.00           O\n"
+        "HETATM   81  C4  BGA B   2     182.510 134.290  10.390  0.00  0.00           C\n"
+        "HETATM   82  O4  BGA B   2     182.050 133.420  11.410  0.00  0.00           O\n"
+        "HETATM   83  C6  BGA B   2     183.980 132.600   9.440  0.00  0.00           C\n"
+        "HETATM   84  O6  BGA B   2     185.130 133.260   9.940  0.00  0.00           O\n"
+        "HETATM   85  C1  ANE B   3     182.110 138.250  10.680  0.00  0.00           C\n"
+        "HETATM   86  O11 ANE B   3     182.280 138.780   9.530  0.00  0.00           O\n"
+        "HETATM   87  O12 ANE B   3     183.000 138.210  11.610  0.00  0.00           O\n"
+        "HETATM   88  C2  ANE B   3     180.760 137.540  10.890  0.00  0.00           C\n"
+        "HETATM   89  C6  ANE B   3     179.270 139.080   9.760  0.00  0.00           C\n"
+        "HETATM   90  O6  ANE B   3     179.800 137.770   9.830  0.00  0.00           O\n"
+        "HETATM   91  C3  ANE B   3     179.980 137.800  12.220  0.00  0.00           C\n"
+        "HETATM   92  C4  ANE B   3     179.190 139.110  12.230  0.00  0.00           C\n"
+        "HETATM   93  O4  ANE B   3     178.530 139.270  13.500  0.00  0.00           O\n"
+        "HETATM   94  C5  ANE B   3     178.340 139.370  10.980  0.00  0.00           C\n"
+        "HETATM   95  N   ANE B   3     177.770 140.720  10.910  0.00  0.00           N\n"
+        "HETATM   96  C   ANE B   3     176.590 141.100  11.400  0.00  0.00           C\n"
+        "HETATM   97  O   ANE B   3     175.770 140.350  11.840  0.00  0.00           O\n"
+        "HETATM   98  CT  ANE B   3     176.270 142.580  11.320  0.00  0.00           C\n"
+        "HETATM   99  C7  ANE B   3     178.670 139.400   8.410  0.00  0.00           C\n"
+        "HETATM  100  O7  ANE B   3     177.770 138.390   8.060  0.00  0.00           O\n"
+        "HETATM  101  C8  ANE B   3     179.730 139.520   7.270  0.00  0.00           C\n"
+        "HETATM  102  O8  ANE B   3     180.710 138.450   7.350  0.00  0.00           O\n"
+        "HETATM  103  C9  ANE B   3     180.360 140.880   7.030  0.00  0.00           C\n"
+        "HETATM  104  O9  ANE B   3     181.100 141.240   8.210  0.00  0.00           O\n"
+        "END\n";
+    Loaded l;
+    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    l.sys = { .alloc = l.alloc };
+    md_system_state_t st = { .alloc = l.alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_EQ(2u, (unsigned)md_structure_count(&l.sys.structure));
+    ASSERT_EQ(4u, (unsigned)md_system_part_count(&l.sys));
+
+    const md_bitset_t all = select(l, "glycan()");
+    ASSERT_EQ(90u, (unsigned)md_bitset_count(all));
+    md_array(ScriptSuggestion) s = suggest(l, all);
+    print(s);
+    EXPECT_TRUE(all_pick(l, all, s));
+    EXPECT_TRUE(contains(s, "sel1 = glycan();"));
+
+    // The glycan of chain A: what a click on it selects at Part granularity
+    const md_bitset_t a = select(l, "part(atom(8))");
+    ASSERT_EQ(45u, (unsigned)md_bitset_count(a));
+    md_array(ScriptSuggestion) t = suggest(l, a);
+    print(t);
+    EXPECT_TRUE(all_pick(l, a, t));
+    EXPECT_TRUE(contains(t, "sel1 = glycan() in chain(\"A\");"));
+    EXPECT_TRUE(contains(t, "sel1 = part(2);"));
+    EXPECT_FALSE(any_contains(t, "molecule("));
+    unload(&l);
+}
+
 UTEST(script_suggestions, chains) {
     Loaded l;
     ASSERT_TRUE(load(&l, "1k4r.pdb"));

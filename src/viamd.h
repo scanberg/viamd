@@ -121,9 +121,11 @@ static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
 enum class PlaybackMode { Stopped, Playing, Count };
-// Chain: the chain of the atom (md_chain_data_t), or the molecule (its instance) for one in no chain. Molecule: the
-// molecule of the atom (md_structure_data_t), atoms joined by bonds with their residues and polymer chains whole.
-enum class SelectionGranularity { Atom, Residue, Chain, Molecule, Count };
+// Part: the part of the atom (md_part_data_t), a covalent piece of its molecule: a strand of a polymer with its caps, a
+// glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or the molecule (its instance) for one in no chain.
+// Molecule: the molecule of the atom (md_structure_data_t), atoms joined by bonds with their residues and polymer chains
+// whole. The values are those a workspace stores.
+enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
@@ -229,6 +231,7 @@ enum class RepresentationType {
 inline const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
     "Atom",
     "Residue",
+    "Part",
     "Chain",
     "Molecule",
 };
@@ -1971,7 +1974,7 @@ static inline void mask_set_chain_of_comp(md_bitmask_t* mask, size_t comp_idx, c
     if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
 }
 
-// Grows the mask to whole residues, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
+// Grows the mask to whole residues, parts, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
 // filed under a chain come after every polymer), so what is touched is found first and set after.
 static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
@@ -1982,6 +1985,19 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
             md_urange_t range = md_system_component_atom_range(&sys, i);
             if (md_bitmask_test_any_range(mask, range.beg, range.end)) {
+                md_bitmask_set_range(mask, range.beg, range.end);
+            }
+        }
+        break;
+    case SelectionGranularity::Part:
+        // Without parts (a system without instances) a part is taken to be its residue
+        if (md_system_part_count(&sys) == 0) {
+            grow_mask_by_selection_granularity(mask, SelectionGranularity::Residue, sys);
+            break;
+        }
+        for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
+            const md_urange_t range = md_system_part_atom_range(&sys, i);
+            if (range.beg < range.end && md_bitmask_test_any_range(mask, range.beg, range.end)) {
                 md_bitmask_set_range(mask, range.beg, range.end);
             }
         }
@@ -2034,9 +2050,9 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
     }
 }
 
-// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, or its chain (its molecule where it
-// is in no chain). Cheaper than setting a single bit followed by grow_mask_by_selection_granularity, as it only looks
-// up the owner.
+// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, its part, its chain (its molecule
+// where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
+// grow_mask_by_selection_granularity, as it only looks up the owner.
 static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     if (atom_idx >= sys.atom.count) return;
@@ -2049,6 +2065,16 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
         md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(&sys, atom_idx);
         if (comp_idx >= 0) {
             range = md_system_component_atom_range(&sys, comp_idx);
+        }
+        break;
+    }
+    case SelectionGranularity::Part: {
+        const int32_t part_idx = md_system_part_find_by_atom_idx(&sys, atom_idx);
+        if (part_idx >= 0) {
+            range = md_system_part_atom_range(&sys, (size_t)part_idx);
+        } else {
+            const md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(&sys, atom_idx);
+            if (comp_idx >= 0) range = md_system_component_atom_range(&sys, comp_idx);
         }
         break;
     }
@@ -2076,7 +2102,7 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
     md_bitmask_set_range(mask, range.beg, range.end);
 }
 
-// Sets the bits of a residue, or of its chain at Chain granularity, for a hit that names a component rather
+// Sets the bits of a residue, or of what holds it at a coarser granularity, for a hit that names a component rather
 // than an atom (a backbone segment of the cartoon or ribbons). There is no atom to pick there, so Atom granularity
 // selects the component as well.
 static inline void mask_set_component_by_selection_granularity(md_bitmask_t* mask, size_t comp_idx, SelectionGranularity granularity, const md_system_t& sys) {

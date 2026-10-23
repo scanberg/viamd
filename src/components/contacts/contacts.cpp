@@ -43,16 +43,18 @@
 namespace {
 
 // What the particles are grouped by: residues, molecules (md_structure_data_t: atoms joined by bonds, each residue and
-// polymer chain whole) or chains (md_chain_data_t: all that the data gives a chain id). A particle in no group of the
-// kind (an ion in no chain) is left out.
+// polymer chain whole), chains (md_chain_data_t: all that the data gives a chain id) or parts (md_part_data_t: the
+// covalent pieces of a molecule, a strand with its caps, a glycan, a ligand). A particle in no group of the kind (an
+// ion in no chain) is left out. The values are those a workspace stores.
 enum GroupBy {
     GroupBy_Residue,
     GroupBy_Molecule,
     GroupBy_Chain,
+    GroupBy_Part,
     GroupBy_Count
 };
 
-static const char* group_by_lbl[] = { "Residue", "Molecule", "Chain" };
+static const char* group_by_lbl[] = { "Residue", "Molecule", "Chain", "Part" };
 
 struct GroupResult {
     uint32_t contacts = 0;      // Groups in contact with
@@ -210,6 +212,11 @@ struct Contacts : viamd::EventHandler {
                 push_range(md_system_component_atom_range(&sys, c));
                 off.push_back((uint32_t)atoms.size());
             }
+        } else if (group_by == GroupBy_Part) {
+            for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+                push_range(md_system_part_atom_range(&sys, p));
+                off.push_back((uint32_t)atoms.size());
+            }
         } else if (group_by == GroupBy_Chain) {
             for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
                 const md_urange_t* end = md_system_chain_run_end(&sys, c);
@@ -301,7 +308,9 @@ struct Contacts : viamd::EventHandler {
             int gb = (int)group_by;
             if (ImGui::Combo("Groups", &gb, group_by_lbl, GroupBy_Count)) group_by = (GroupBy)gb;
             ImGui::SetItemTooltip("Residue: each residue.\nMolecule: atoms joined by bonds, each residue and polymer chain whole.\n"
-                                  "Chain: all that the file gives one chain id, or a polymer where it gives none.\nParticles in no group of the kind are left out.");
+                                  "Chain: all that the file gives one chain id, or a polymer where it gives none.\n"
+                                  "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
+                                  "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
             cutoff = CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");

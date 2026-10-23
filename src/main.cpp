@@ -2201,7 +2201,7 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
-            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
             size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);

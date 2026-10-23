@@ -277,18 +277,28 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
     }
 }
 
-// "residue(56) chain(1)", after whatever sb holds: the place in the script's terms. A molecule in no chain is given by
-// its position among the molecules.
+// "residue(56) part(3) chain(1)", after whatever sb holds: the place in the script's terms. The part is given where it is
+// less than its molecule (a glycan, a strand bonded to another), and a molecule in no chain by its position among the
+// molecules.
 static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
     const int chain = tooltip_place_chain(sys, place);
+    int atom = place.atom_idx;
+    if (atom == -1 && place.comp_idx != -1) atom = (int)md_component_atom_range(&sys.component, place.comp_idx).beg;
+    const int64_t mol = atom != -1 ? molecule_of_atom(sys, (size_t)atom) : -1;
+
     if (place.comp_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
+    const int32_t part = place.comp_idx != -1 ? md_system_part_find_by_comp_idx(&sys, (size_t)place.comp_idx) : -1;
+    if (part != -1 && mol != -1) {
+        const md_urange_t part_atoms = md_system_part_atom_range(&sys, (size_t)part);
+        const uint32_t mol_size = sys.structure.offset[mol + 1] - sys.structure.offset[mol];
+        if (part_atoms.end - part_atoms.beg < mol_size) {
+            md_str_writer_fmt(sb, "%spart(%d)", md_str_writer_empty(sb) ? "" : " ", part + 1);
+        }
+    }
     if (chain != -1) {
         md_str_writer_fmt(sb, "%schain(%d)", md_str_writer_empty(sb) ? "" : " ", chain + 1);
         return;
     }
-    int atom = place.atom_idx;
-    if (atom == -1 && place.comp_idx != -1) atom = (int)md_component_atom_range(&sys.component, place.comp_idx).beg;
-    const int64_t mol = atom != -1 ? molecule_of_atom(sys, (size_t)atom) : -1;
     if (mol != -1) md_str_writer_fmt(sb, "%smolecule(%lld)", md_str_writer_empty(sb) ? "" : " ", (long long)mol + 1);
 }
 
