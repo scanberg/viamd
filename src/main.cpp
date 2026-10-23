@@ -962,6 +962,10 @@ int main(int argc, char** argv) {
             md_gpu_device_poll(state.gpu_device);
         }
 #endif
+        // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
+        gpu_volume_jobs_poll(&state);
+        // What the isosurface meshes' pool tasks left behind that nobody wants any more
+        iso_meshes_collect();
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1624,6 +1628,7 @@ int main(int argc, char** argv) {
         // what its field has under way holds the GPU stream and pool tasks: both still here
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
+    iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
@@ -3484,6 +3489,10 @@ static void draw_async_task_window(ApplicationState* data) {
     float iso_fraction[8];
     const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
     any_task_label_visible |= num_iso > 0;
+    // the SCF density matrix a volume waits for, made on a worker thread
+    double dmat_seconds = 0.0;
+    const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
+    any_task_label_visible |= dmat_preparing;
     // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
     SurfaceFieldProgress field_progress[8];
     const size_t num_field = surface_field_progress(field_progress, ARRAY_SIZE(field_progress));
@@ -3521,8 +3530,16 @@ static void draw_async_task_window(ApplicationState* data) {
             }
         }
         for (size_t i = 0; i < num_iso; i++) {
-            snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
-            ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            if (iso_fraction[i] < 0.0f) {
+                // being prepared on a worker thread: an indeterminate bar
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Isosurface mesh: preparing");
+            } else {
+                snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
+                ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            }
+        }
+        if (dmat_preparing) {
+            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
         }
         for (size_t i = 0; i < num_field; i++) {
             const SurfaceFieldProgress& p = field_progress[i];

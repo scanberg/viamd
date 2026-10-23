@@ -832,6 +832,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
     defer { md_temp_end(temp); };
 
+    bool again = false;     // not all done: updated again next frame
     uint32_t* colors = 0;
     if (representation_uses_atom_colors(*rep)) {
         colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
@@ -886,7 +887,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::ElectronicStructure:
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
         if (rep->type_is_valid) {
-            electronic_structure_representation_update(state, rep, colors);
+            // what it waits for without blocking, asked again next frame
+            again = !electronic_structure_representation_update(state, rep, colors);
         }
         break;
     case RepresentationType::DipoleMoment:
@@ -924,7 +926,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         }
     }
 
-    rep->needs_update = false;
+    rep->needs_update = again;
 }
 
 void representation_set_weak_bonds(ApplicationState* state, Representation* rep) {

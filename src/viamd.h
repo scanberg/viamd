@@ -1154,6 +1154,10 @@ struct ApplicationState {
         uint32_t          tex_id    = 0;        // GL texture to receive the data
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
+        // A density evaluation not yet all issued (md_gto_gpu_job_t: its counting pass is): the readback is
+        // queued when it is (gpu_volume_jobs_poll), of this grid
+        void*             density_job = nullptr;
+        md_grid_t         grid      = {};
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -1329,6 +1333,10 @@ struct ApplicationState {
         // density asked for, or the orbitals it is made of, change.
         md_gto_gpu_dmat_t   gpu_dmat = nullptr;
         uint64_t            gpu_dmat_key = 0;      // the density and the orbitals' versions it holds, 0: none
+        // The next one, made on a worker thread for the representations (viamd.cpp, DmatBuild), and the key of
+        // one that could not be (made where it is asked for instead)
+        void*               gpu_dmat_build = nullptr;
+        uint64_t            gpu_dmat_failed_key = 0;
 #endif
     } mold;
 
@@ -2366,7 +2374,9 @@ void electronic_structure_field_poll(Representation* rep);
 // Brings what an electronic structure representation draws up to date: its volume, evaluated again only
 // when what it is evaluated from changed (the frame among it), and the colours of its surfaces - from
 // atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.
-void electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
+// False when something it waits for without blocking (the volume's last readback, a density matrix made on a
+// worker thread, the density a field update reads) is not there yet: it is to be called again next frame.
+bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
@@ -2456,6 +2466,13 @@ vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, co
 // the texture's contents NOW rather than next frame - an export, say. A no-op without the GPU
 // backend, where evaluation writes the texture directly.
 void gpu_volume_jobs_drain(ApplicationState* state);
+
+// Issues what the density jobs left once their counts are there, and queues their readbacks: once a frame.
+void gpu_volume_jobs_poll(ApplicationState* state);
+
+// Whether an SCF density's matrix is being made on a worker thread for a representation's volume, and for how
+// long: for a progress display. False without the GPU backend.
+bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
 
 // The QM ATOM DOMAIN: the atoms a quantum chemistry calculation covered, in its own order and at
@@ -2658,8 +2675,10 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
 // returns; gpu_volume_jobs_drain() forces it where the contents are needed immediately.
 bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+// async (the representations): on the GPU, the density is issued as a job (md_gto_gpu_job_t) the frame loop
+// completes (gpu_volume_jobs_poll), where the launch would wait for its counting pass
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
-                      const md_attribute_slice_t* slice, md_gto_op_t op);
+                      const md_attribute_slice_t* slice, md_gto_op_t op, bool async = false);
 
 // density_evaluate over a matrix the caller already holds - see density_matrix_evaluate_gl.
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
