@@ -207,12 +207,14 @@ static void tooltip_unit_suffix(char* buf, size_t cap, md_unit_t unit) {
 struct TooltipPlace {
     int comp_idx = -1;
     int inst_idx = -1;
+    int atom_idx = -1;      // An atom of it, which tells its molecule
 };
 
 static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_idx) {
     return {
         .comp_idx = md_component_find_by_atom_idx(&sys.component, atom_idx),
         .inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx),
+        .atom_idx = (int)atom_idx,
     };
 }
 
@@ -276,12 +278,18 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
 }
 
 // "residue(56) chain(1)", after whatever sb holds: the place in the script's terms. A molecule in no chain is given by
-// its instance.
+// its position among the molecules.
 static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
     const int chain = tooltip_place_chain(sys, place);
     if (place.comp_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.comp_idx + 1);
-    if (chain != -1)               md_str_writer_fmt(sb, "%schain(%d)",    md_str_writer_empty(sb) ? "" : " ", chain + 1);
-    else if (place.inst_idx != -1) md_str_writer_fmt(sb, "%sinstance(%d)", md_str_writer_empty(sb) ? "" : " ", place.inst_idx + 1);
+    if (chain != -1) {
+        md_str_writer_fmt(sb, "%schain(%d)", md_str_writer_empty(sb) ? "" : " ", chain + 1);
+        return;
+    }
+    int atom = place.atom_idx;
+    if (atom == -1 && place.comp_idx != -1) atom = (int)md_component_atom_range(&sys.component, place.comp_idx).beg;
+    const int64_t mol = atom != -1 ? molecule_of_atom(sys, (size_t)atom) : -1;
+    if (mol != -1) md_str_writer_fmt(sb, "%smolecule(%lld)", md_str_writer_empty(sb) ? "" : " ", (long long)mol + 1);
 }
 
 // The atom's name, else its element's symbol, else its index
@@ -630,8 +638,9 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     md_str_writer_t index = md_str_writer_create(req->alloc);
     md_str_writer_fmt(&index, "residue(%u) residue(%u)", comp_idx + 1, comp_idx + 2);
     const md_chain_idx_t chain = inst_idx != -1 ? md_system_chain_find_by_inst_idx(&sys, (size_t)inst_idx) : -1;
-    if (chain != -1)         md_str_writer_fmt(&index, " chain(%d)", chain + 1);
-    else if (inst_idx != -1) md_str_writer_fmt(&index, " instance(%d)", inst_idx + 1);
+    const int64_t mol = range.beg < range.end ? molecule_of_atom(sys, range.beg) : -1;
+    if (chain != -1)    md_str_writer_fmt(&index, " chain(%d)", chain + 1);
+    else if (mol != -1) md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 

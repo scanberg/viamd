@@ -143,12 +143,12 @@ md_array(ScriptSuggestion) measure(const Loaded& l, std::initializer_list<const 
 
 }  // namespace
 
-// The molecules which are not chains (a ligand, a water) are instances: chain() of their position does not pick them,
+// The molecules which are not chains (a ligand, a water) are no chain: chain() of their position does not pick them,
 // or picks another chain. This is what the menu used to write for a whole ligand.
 UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     Loaded l;
     ASSERT_TRUE(load(&l, "npt.gro"));
-    const md_bitset_t sel = select(l, "instance(2)");   // the ligand, after the protein
+    const md_bitset_t sel = select(l, "residue(resname(\"LIG\"))");   // the ligand, after the protein
     ASSERT_EQ(10u, (unsigned)md_bitset_count(sel));
     md_array(ScriptSuggestion) s = suggest(l, sel);
     print(s);
@@ -158,11 +158,11 @@ UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     EXPECT_TRUE(contains(s, "sel1 = resname(\"LIG\");"));
 
     // Waters likewise, the protein with them. A GRO file gives no chain ids: the protein is a chain by its position
-    const md_bitset_t mixed = select(l, "instance(1) or instance(5:9)");
+    const md_bitset_t mixed = select(l, "protein() or residue(resname(\"SOL\"))[1:5]");
     md_array(ScriptSuggestion) m = suggest(l, mixed);
     print(m);
     EXPECT_TRUE(all_pick(l, mixed, m));
-    EXPECT_TRUE(contains(m, "sel1 = chain(1) or molecule(5:9);"));
+    EXPECT_TRUE(contains(m, "sel1 = chain(1) or molecule(3:7);"));
     EXPECT_FALSE(any_contains(m, "chain(\""));
     unload(&l);
 }
@@ -199,6 +199,16 @@ UTEST(script_suggestions, chains_by_author_id) {
     EXPECT_TRUE(all_pick(l, mol, v));
     ASSERT_GT(md_array_size(v), 0u);
     EXPECT_TRUE(str_eq_cstr(v[0].text, "sel1 = molecule(2);"));
+
+    // The Mg of that molecule alone: a residue, not a molecule, and nothing the script has no word for
+    const md_bitset_t mg = select(l, "resname('MG') and chain('B')");
+    ASSERT_EQ(1u, (unsigned)md_bitset_count(mg));
+    md_array(ScriptSuggestion) w = suggest(l, mg);
+    print(w);
+    EXPECT_TRUE(all_pick(l, mg, w));
+    ASSERT_GT(md_array_size(w), 0u);
+    EXPECT_FALSE(any_contains(w, "instance("));
+    EXPECT_FALSE(any_contains(w, "molecule("));
     unload(&l);
 }
 
@@ -305,8 +315,8 @@ UTEST(script_suggestions, scattered) {
 UTEST(script_suggestions, every_line_picks_the_selection) {
     const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "2or2.cif", "nucl-dna.gro", "dppc64.pdb", "c60.pdb", "tryptophan.xyz", "1fez.cif", "tubulin-A-B.pdb"};
     const char* exprs[] = {
-        "all()", "atom(1)", "atom(1:7)", "atom({3, 9, 27})", "residue(1)", "residue(2:4)", "instance(1)", "instance(2)",
-        "instance(2:4)", "atom(2:3) in residue(2)", "element(\"C\")", "element(\"O\")", "protein()", "water()", "nucleic()",
+        "all()", "atom(1)", "atom(1:7)", "atom({3, 9, 27})", "residue(1)", "residue(2:4)", "chain(1)", "molecule(2)",
+        "molecule(2:4)", "atom(2:3) in residue(2)", "element(\"C\")", "element(\"O\")", "protein()", "water()", "nucleic()",
         "backbone()", "not element(\"H\") and residue(1:3)", "residue(3) or atom(1)", "lipid()", "ion()",
         "atom(1:5:400)", "name(\"CA\")", "within(5, atom(1))",
     };
@@ -327,7 +337,7 @@ UTEST(script_suggestions, every_line_picks_the_selection) {
     }
 }
 
-// Selections of no particular shape: some atoms of some residues, some residues whole, in any instance
+// Selections of no particular shape: some atoms of some residues, some residues whole, in any molecule
 UTEST(script_suggestions, every_line_picks_a_random_selection) {
     const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "nucl-dna.gro", "dppc64.pdb", "tubulin-A-B.pdb"};
     uint64_t rng = 0x9E3779B97F4A7C15ull;
@@ -410,7 +420,7 @@ UTEST(script_suggestions, measurement_within_a_residue) {
 
     // A residue of which there is only one: no count to give
     ASSERT_TRUE(load(&l, "npt.gro"));
-    md_array(ScriptSuggestion) t = measure(l, {"atom(1) in instance(2)", "atom(2) in instance(2)"});
+    md_array(ScriptSuggestion) t = measure(l, {"atom(1) in resname(\"LIG\")", "atom(2) in resname(\"LIG\")"});
     print(t);
     EXPECT_TRUE(contains(t, "m1 = distance(name(\"H00\"), name(\"C01\")) in resname(\"LIG\");"));
     for (size_t i = 0; i < md_array_size(t); ++i) EXPECT_TRUE(str_empty(t[i].hint));

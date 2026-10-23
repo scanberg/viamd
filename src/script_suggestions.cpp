@@ -321,10 +321,10 @@ static int32_t molecule_of_instance(const md_system_t& sys, int32_t inst) {
     return mol >= 0 && molecule_size(sys, mol) == r.end - r.beg ? mol : -1;
 }
 
-// The molecules an instance is part of, where they are not inside it: a protein and the metal bonded to it are two
-// instances of one molecule. Those which are wholly among the instances (sorted), else none: then the instance is
-// written by itself.
-static void molecules_beyond_instance(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
+// The molecules of an instance which is not one molecule: those inside it (the waters of a chain, which an mmCIF file
+// gives one instance), or those it is part of (a protein and the metal coordinated to it are two instances of one
+// molecule) where they are wholly among the instances (sorted). None where they are not: its residues are written then.
+static void molecules_of_instance(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
     const md_system_t& sys = *c.sys;
     const md_structure_data_t& st = sys.structure;
     const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
@@ -339,8 +339,11 @@ static void molecules_beyond_instance(md_array(int32_t)* mols, int32_t inst, con
     const size_t n = sort_unique(touched, md_array_size(touched));
     uint64_t size = 0;
     for (size_t k = 0; k < n; ++k) size += molecule_size(sys, touched[k]);
-    // Molecules inside the instance: it is the one to write
-    if (size == r.end - r.beg) return;
+    // Molecules inside the instance, which is whole
+    if (size == r.end - r.beg) {
+        for (size_t k = 0; k < n; ++k) md_array_push(*mols, touched[k], c.temp);
+        return;
+    }
     for (size_t k = 0; k < n; ++k) {
         for (uint32_t s = st.offset[touched[k]]; s < st.offset[touched[k] + 1]; ++s) {
             const md_instance_idx_t other = md_system_instance_find_by_atom_idx(&sys, (size_t)st.atom_idx[s]);
@@ -352,9 +355,10 @@ static void molecules_beyond_instance(md_array(int32_t)* mols, int32_t inst, con
 
 // Whole chains and molecules as terms of an 'or'. Chains by their ids: chain("A"), chain({"A", "B"}); a chain inferred
 // where the data gives none (or every chain, by_id false) by its position among the chains: chain(2). A molecule
-// which is in no chain, or whose chain is not whole, by its position among the molecules: molecule(5:9), and where it
-// is part of a larger molecule (a ligand bonded to a protein) by its position among the instances: instance(5).
-static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, const Ctx& c, bool by_id) {
+// which is in no chain, or whose chain is not whole, by its position among the molecules: molecule(5:9). An instance
+// which is part of a molecule not selected whole (a ligand bonded to a protein) is none of these: it is pushed to
+// unwritten, and its residues are written instead.
+static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, const Ctx& c, bool by_id) {
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_array(str_t)   ids = 0;
     md_array(int32_t) pos = 0;
@@ -363,7 +367,6 @@ static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t nu
         else md_array_push(pos, chains[i] + 1, c.temp);
     }
     md_array(int32_t) mols = 0;
-    md_array(int32_t) others = 0;
     md_array(int32_t) sorted = 0;
     size_t num_sorted = 0;
     for (size_t i = 0; i < num_insts; ++i) {
@@ -377,8 +380,8 @@ static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t nu
             num_sorted = sort_unique(sorted, num_insts);
         }
         const size_t before = md_array_size(mols);
-        molecules_beyond_instance(&mols, insts[i], sorted, num_sorted, c);
-        if (md_array_size(mols) == before) md_array_push(others, insts[i] + 1, c.temp);
+        molecules_of_instance(&mols, insts[i], sorted, num_sorted, c);
+        if (md_array_size(mols) == before) md_array_push(*unwritten, insts[i], c.temp);
         else for (size_t k = before; k < md_array_size(mols); ++k) mols[k] += 1;
     }
 
@@ -399,12 +402,6 @@ static bool whole_terms(md_array(str_t)* terms, const int32_t* chains, size_t nu
     if (md_array_size(mols)) {
         sb += "molecule(";
         write_ranges(&sb, mols, sort_unique(mols, md_array_size(mols)));
-        sb += ')';
-        md_array_push(*terms, take(&sb, c.temp), c.temp);
-    }
-    if (md_array_size(others)) {
-        sb += "instance(";
-        write_ranges(&sb, others, sort_unique(others, md_array_size(others)));
         sb += ')';
         md_array_push(*terms, take(&sb, c.temp), c.temp);
     }
@@ -525,8 +522,10 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
 
     md_array(int32_t) whole_chains = 0;
     md_array(int32_t) whole_insts = 0;
+    md_array(int32_t) unwritten = 0;
     whole_chains_and_insts(&whole_chains, &whole_insts, b, *c);
-    if (!whole_terms(&terms, whole_chains, md_array_size(whole_chains), whole_insts, md_array_size(whole_insts), *c, by_id)) return false;
+    if (!whole_terms(&terms, &unwritten, whole_chains, md_array_size(whole_chains), whole_insts, md_array_size(whole_insts), *c, by_id)) return false;
+    const size_t num_unwritten = sort_unique(unwritten, md_array_size(unwritten));
     // What the terms add up to: a selection held in thousands of chains is given up on before all of them are written
     size_t len = 0;
     for (size_t i = 0; i < md_array_size(terms); ++i) len += terms[i].len;
@@ -554,7 +553,8 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     for (size_t k = 0; k < num_comps; ++k) {
         const int32_t inst = b.comp_inst[k];
         const int32_t chain = inst_chain(*c, inst);
-        if (inst >= 0 && b.inst_full[b.comp_slot[k]]) continue;     // its instance is written whole
+        // Its instance is written whole, as a molecule or with its chain
+        if (inst >= 0 && b.inst_full[b.comp_slot[k]] && !bsearch(&inst, unwritten, num_unwritten, sizeof(int32_t), cmp_int32)) continue;
         if (chain >= 0 && chain_written[chain]) continue;
 
         if (by_id && chain_by_seq(c, chain)) {
@@ -853,7 +853,10 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     for (size_t i = 0; i < md_array_size(b.comp_inst); ++i) all_in_inst &= b.comp_inst[i] >= 0;
     if (all_in_inst && !scope_whole) {
         md_array(str_t) terms = 0;
-        const bool ok = whole_terms(&terms, chains, md_array_size(chains), loose_insts, md_array_size(loose_insts), *c, true);
+        md_array(int32_t) unwritten = 0;
+        // An instance which is not a molecule of its own, nor whole molecules, leaves no term to be the scope
+        const bool ok = whole_terms(&terms, &unwritten, chains, md_array_size(chains), loose_insts, md_array_size(loose_insts), *c, true) &&
+            md_array_size(unwritten) == 0;
         md_str_writer_t sb = md_str_writer_create(temp);
         write_or(&sb, terms, md_array_size(terms));
         if (ok && !too_long(&sb, c->limit)) {
