@@ -752,8 +752,18 @@ static bool pred_atom(const Pred& p, const md_system_t& sys, size_t i) {
     return ((uint32_t)md_atom_flags(&sys.atom, i) & p.flags) != 0;
 }
 
+// The class a residue is of, as the script selects it (class_selector): protein() is the peptide strands, caps and
+// modified residues included and free amino acids not, so a residue is of it by its part. -1 for none.
+static int residue_class(const md_system_t& sys, size_t res) {
+    const md_residue_kind_t kind = md_system_residue_kind(&sys, res);
+    const md_part_idx_t part = md_system_part_find_by_residue_idx(&sys, res);
+    if (part >= 0 && md_system_part_kind(&sys, (size_t)part) == MD_PART_KIND_PEPTIDE) return MD_RESIDUE_KIND_AMINO_ACID;
+    if (kind == MD_RESIDUE_KIND_AMINO_ACID) return -1;
+    return (int)kind;
+}
+
 static bool pred_res(const Pred& p, const md_system_t& sys, size_t res) {
-    if (p.res_kind >= 0) return (int)md_system_residue_kind(&sys, res) == p.res_kind;
+    if (p.res_kind >= 0) return residue_class(sys, res) == p.res_kind;
     return contains_str(p.res_names, md_array_size(p.res_names), md_system_residue_name(&sys, res));
 }
 
@@ -765,7 +775,7 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
 
     auto classify = [&](size_t ci) {
         uint32_t v = Scope_System;
-        if (s.class_kind >= 0 && (int)md_system_residue_kind(&sys, ci) == s.class_kind) v |= Scope_Class;
+        if (s.class_kind >= 0 && residue_class(sys, ci) == s.class_kind) v |= Scope_Class;
         if (md_array_size(s.resnames) && contains_str(s.resnames, md_array_size(s.resnames), md_system_residue_name(&sys, ci))) v |= Scope_Resname;
         if (s.res_in_scope[ci]) v |= Scope_Inst;
         if (s.res_touched[ci]) v |= Scope_Res;
@@ -808,11 +818,11 @@ static uint32_t pred_violations(const Pred& p, const Ctx& c, const Scopes& s) {
     return violated;
 }
 
-// The class of a kind of residue, as the script selects it
+// The class of a residue (residue_class), as the script selects it
 static const char* class_selector(int kind) {
     switch (kind) {
     case MD_RESIDUE_KIND_AMINO_ACID: return "protein()";
-    case MD_RESIDUE_KIND_NUCLEOTIDE: return "nucleic()";
+    case MD_RESIDUE_KIND_NUCLEOTIDE: return "nucleotide()";
     case MD_RESIDUE_KIND_WATER:        return "water()";
     case MD_RESIDUE_KIND_ION:          return "ion()";
     case MD_RESIDUE_KIND_LIPID:        return "lipid()";
@@ -866,7 +876,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     // Of one kind
     int kind = -1;
     for (size_t i = 0; i < md_array_size(b.res); ++i) {
-        const int k = (int)md_system_residue_kind(&sys, b.res[i]);
+        const int k = residue_class(sys, (size_t)b.res[i]);
         if (i == 0) kind = k;
         else if (k != kind) kind = -1;
     }
