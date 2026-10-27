@@ -102,6 +102,50 @@ constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
+// How a critical point of the electron density is shown, by type (md_topo_critical_point_type_t). Named as in
+// QTAIM, by the rank and signature of the Hessian there. The colours are Okabe and Ito's, told apart with each
+// common colour vision deficiency, and none of them is the selection's blue or the highlight's yellow: those mark
+// a point with a ring around it, so a marked point keeps the colour of its type. Size tells the type too: the
+// maxima, at the nuclei, are the largest.
+struct CriticalPointStyle {
+    const char* name;
+    const char* plural;
+    vec4_t      color;      // display referred: the overlay goes over the image after the display transform
+    float       radius;     // Å, at a point size of 1
+};
+
+static const CriticalPointStyle critical_point_styles[5] = {
+    { "Undefined",      "Undefined",          {0.60f, 0.60f, 0.60f, 1.0f}, 0.09f },
+    { "Maximum (3,-3)", "Maxima (3,-3)",      {0.80f, 0.47f, 0.65f, 1.0f}, 0.12f },   // MD_TOPO_MAXIMUM: reddish purple
+    { "Bond (3,-1)",    "Bond points (3,-1)", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
+    { "Cage (3,+3)",    "Cage points (3,+3)", {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
+    { "Ring (3,+1)",    "Ring points (3,+1)", {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
+};
+
+static inline const CriticalPointStyle& critical_point_style(int type) {
+    return critical_point_styles[(type >= 0 && type < (int)ARRAY_SIZE(critical_point_styles)) ? type : 0];
+}
+
+// The order the types are listed and sorted in: maxima, bond, ring and cage points
+static constexpr int critical_point_type_order[4] = { MD_TOPO_MAXIMUM, MD_TOPO_SPLIT_SADDLE, MD_TOPO_JOIN_SADDLE, MD_TOPO_MINIMUM };
+
+static inline int critical_point_type_rank(int type) {
+    for (int k = 0; k < 4; ++k) if (critical_point_type_order[k] == type) return k;
+    return 4;
+}
+
+// The type's marker as a swatch of the text's height, for a legend or a table cell
+static void critical_point_swatch(int type) {
+    const vec4_t c = critical_point_style(type).color;
+    const float h = ImGui::GetTextLineHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 center = ImVec2(p.x + 0.5f * h, p.y + 0.5f * h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddCircleFilled(center, 0.40f * h, IM_COL32(26, 26, 26, 230));
+    dl->AddCircleFilled(center, 0.31f * h, ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0f)));
+    ImGui::Dummy(ImVec2(h, h));
+}
+
 // This is the internal storage order of volumes and textures related to NTOs
 enum NTO {
     NTO_Attachment,
@@ -602,6 +646,10 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
         md_topo_extremum_graph_t raw_graph  = { 0 };
         md_topo_extremum_graph_t simp_graph = { 0 };
+
+        // How they are drawn (draw_critical_points)
+        float point_scale = 1.0f;       // the markers' size, times critical_point_styles' radii
+        bool  show_paths  = true;       // the bond paths and ring lines (the graph's edges)
 
         PickingRange picking_range = {};
 
@@ -1135,74 +1183,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
-                    // Render topology as points if available
-                    immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
-
-                    glDisable(GL_DEPTH_TEST);
-
-                    for (size_t i = 0; i < critical_points.simp_graph.num_edges; ++i) {
-						uint32_t i0 = critical_points.simp_graph.edges[i].from;
-						uint32_t i1 = critical_points.simp_graph.edges[i].to;
-                        vec3_t p0 = { critical_points.simp_graph.vertices[i0].x,
-                                      critical_points.simp_graph.vertices[i0].y,
-									  critical_points.simp_graph.vertices[i0].z };
-                        vec3_t p1 = { critical_points.simp_graph.vertices[i1].x,
-									  critical_points.simp_graph.vertices[i1].y,
-                                      critical_points.simp_graph.vertices[i1].z };
-						p0 *= BOHR_TO_ANGSTROM;
-						p1 *= BOHR_TO_ANGSTROM;
-                        immediate::line(scope, p0, p1, immediate::COLOR_BLACK);
-                    }
-
-                    /*
-                        MD_TOPO_UNDEFINED = 0,
-                        MD_TOPO_MAXIMUM = 1,
-                        MD_TOPO_SPLIT_SADDLE = 2,
-                        MD_TOPO_MINIMUM = 3,
-                        MD_TOPO_JOIN_SADDLE = 4,
-                    */
-                    const uint32_t type_colors[5] = {
-                        0xFF7A7A7A, // unknown
-                        0xFF5B5BD9, // maximum
-                        0xFF5FAE5C, // split saddle
-                        0xFFD49A4C, // minimum
-                        0xFFB9A14A  // join saddle
-                    };
-
-                    size_t num_verts = critical_points.simp_graph.num_vertices;
-                    immediate::Vertex* vertices = md_temp_alloc_array(temp, immediate::Vertex, num_verts);
-
-                    vec4_t selection_color = state.selection.color.selection.visible;
-                    vec4_t highlight_color = state.selection.color.highlight.visible;
-
-                    float saturation_scale = md_bitmask_count(&critical_points.selection_mask) > 0 ? state.selection.color.saturation : 1.0f;
-
-                    for (size_t i = 0; i < num_verts; ++i) {
-                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
-                        vec4_t base_color = vec4_from_u32(type_colors[type]);
-
-                        bool selected = md_bitmask_test_bit(&critical_points.selection_mask, i);
-                        bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
-
-                        vec4_t color = selected ? selection_color : tint_color(base_color, base_color, 0.0f, saturation_scale);
-                        color = highlighted ? vec4_lerp(color, highlight_color, highlight_color.w) : color;
-
-                        vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        vertices[i].coord *= BOHR_TO_ANGSTROM;
-                        vertices[i].color = u32_from_vec4(color);
-                        vertices[i].picking_idx = (uint32_t)i;
-                    }
-
-                    // Sort on view Z to improve picking, since we cannot use depth testing
-                    const mat4_t view = camera_world_to_view_matrix(state.view.camera);
-                    std::sort(vertices, vertices + num_verts, [&view](const immediate::Vertex& a, const immediate::Vertex& b) {
-                        float za = view[0][2] * a.coord.x + view[1][2] * a.coord.y + view[2][2] * a.coord.z + view[3][2];
-                        float zb = view[0][2] * b.coord.x + view[1][2] * b.coord.y + view[2][2] * b.coord.z + view[3][2];
-                        return za < zb;
-                    });
-
-                    immediate::points(scope, vertices, num_verts);
+                    draw_critical_points(state, temp);
                 }
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;
@@ -1222,6 +1203,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     h = md_bitset_hash64(md_bitmask_view(&critical_points.selection_mask), h);
                     h = md_bitset_hash64(md_bitmask_view(&critical_points.highlight_mask), h);
                     h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
+                    h = md_hash64(&critical_points.point_scale, sizeof(critical_points.point_scale), h);
+                    h = md_hash64(&critical_points.show_paths, sizeof(critical_points.show_paths), h);
+                    h = md_hash64(&rk->state->visuals.background.color, sizeof(rk->state->visuals.background.color), h);
                     rk->key = h;
                 }
                 break;
@@ -1317,13 +1301,15 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (cp_idx < critical_points.simp_graph.num_vertices) {
                         const md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
                         const md_topo_vert_t& v = critical_points.simp_graph.vertices[cp_idx];
-                        // The type in lower case, as the tooltip uses it as words ("split saddle")
+                        // The type in lower case, as the tooltip uses it as words ("bond (3,-1)")
                         char type_str[32];
-                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", md_topo_critical_point_type_str(type));
+                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", critical_point_style(type).name);
                         convert_to_lower(type_str, (size_t)CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
                         tooltip_title(req, "critical point" TOOLTIP_SEP "%s", type_str);
-                        tooltip_row(req, STR_LIT("value"), "%.6g", v.value);
-                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, v.x, v.y, v.z);
+                        tooltip_row(req, STR_LIT("density"), "%.6g au", v.value);
+                        // The graph is in bohr
+                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
+                                    v.x * BOHR_TO_ANGSTROM, v.y * BOHR_TO_ANGSTROM, v.z * BOHR_TO_ANGSTROM);
                     }
                 }
                 break;
@@ -1477,6 +1463,118 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
         }
+    }
+
+    // The critical points over the image, in the overlay: neither hidden by the atoms around them nor hiding them
+    // except where a marker is drawn, and picked wherever it is seen. Back to front: the paths as thin strips,
+    // then a disc per point facing the camera, in its type's colour (critical_point_styles) inside an outline
+    // that stands out from the background. The highlighted point is drawn larger, inside a ring of the
+    // highlight's colour, a selected one inside a ring of the selection's; while any are selected, the others
+    // keep only part of their colour, as atoms do. Sizes are in Å, so they scale with the view as the atoms do
+    // (and an orthographic view does not make them huge, as points of a size by depth did).
+    void draw_critical_points(const ApplicationState& state, md_temp_scope_t temp) {
+        const md_topo_extremum_graph_t& g = critical_points.simp_graph;
+        const size_t num_cp = g.num_vertices;
+
+        immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
+        immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
+
+        const mat4_t view = camera_world_to_view_matrix(state.view.camera);
+        const vec3_t right = {view[0][0], view[1][0], view[2][0]};
+        const vec3_t up    = {view[0][1], view[1][1], view[2][1]};
+        const vec3_t back  = {view[0][2], view[1][2], view[2][2]};    // towards the camera
+
+        const vec3_t bg = state.visuals.background.color;
+        const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
+        const vec4_t outline_color = dark_bg ? vec4_t{0.92f, 0.92f, 0.92f, 0.90f} : vec4_t{0.10f, 0.10f, 0.10f, 0.90f};
+        const vec4_t bond_path_color = dark_bg ? vec4_t{0.80f, 0.80f, 0.80f, 0.85f} : vec4_t{0.25f, 0.25f, 0.25f, 0.85f};
+        vec4_t ring_line_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
+        ring_line_color.w = 0.75f;
+        const float scale = critical_points.point_scale;
+
+        auto pos = [&g](size_t i) {
+            return vec3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
+        };
+
+        // The paths: from a bond point to its maxima, from a ring point to its cages
+        if (critical_points.show_paths && g.num_edges > 0) {
+            immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, 6 * g.num_edges);
+            size_t n = 0;
+            for (size_t i = 0; i < g.num_edges; ++i) {
+                const uint32_t i0 = g.edges[i].from, i1 = g.edges[i].to;
+                if (i0 >= num_cp || i1 >= num_cp) continue;
+                const bool bond = md_topo_vertex_type(&g, i0) == MD_TOPO_SPLIT_SADDLE;
+                const vec3_t p0 = pos(i0), p1 = pos(i1);
+                const vec3_t side = vec3_cross(p1 - p0, back);
+                const float len = vec3_length(side);
+                if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
+                const vec3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
+                const uint32_t col = convert_color(bond ? bond_path_color : ring_line_color);
+                const vec3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
+                const int tri[6] = {0, 1, 2, 0, 2, 3};
+                for (int k = 0; k < 6; ++k) {
+                    v[n].coord = q[tri[k]];
+                    v[n].color = col;
+                    v[n].normal = back;
+                    v[n].picking_idx = 0xFFFFFFFF;   // a path is not a point to pick
+                    n++;
+                }
+            }
+            immediate::triangles(scope, v, n);
+        }
+
+        // The points, farthest first
+        uint32_t* order = md_temp_alloc_array(temp, uint32_t, num_cp);
+        float* depth = md_temp_alloc_array(temp, float, num_cp);
+        for (size_t i = 0; i < num_cp; ++i) {
+            order[i] = (uint32_t)i;
+            depth[i] = vec3_dot(pos(i), back);
+        }
+        std::sort(order, order + num_cp, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
+
+        constexpr int SEG = 16;
+        vec2_t circle[SEG + 1];
+        for (int k = 0; k <= SEG; ++k) {
+            const float a = (float)(2.0 * PI * k / SEG);
+            circle[k] = {cosf(a), sinf(a)};
+        }
+
+        const vec4_t selection_color = state.selection.color.selection.outline;
+        const vec4_t highlight_color = state.selection.color.highlight.outline;
+        const bool any_selected = md_bitmask_count(&critical_points.selection_mask) > 0;
+        const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
+
+        // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
+        immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
+        size_t n = 0;
+        auto disc = [&](vec3_t c, float r, vec4_t color, uint32_t picking_idx) {
+            const uint32_t col = convert_color(color);
+            const vec3_t u = right * r, w = up * r;
+            for (int k = 0; k < SEG; ++k) {
+                const vec3_t e[3] = {c, c + u * circle[k].x + w * circle[k].y, c + u * circle[k + 1].x + w * circle[k + 1].y};
+                for (int j = 0; j < 3; ++j) {
+                    v[n].coord = e[j];
+                    v[n].color = col;
+                    v[n].normal = back;
+                    v[n].picking_idx = picking_idx;
+                    n++;
+                }
+            }
+        };
+        for (size_t j = 0; j < num_cp; ++j) {
+            const uint32_t i = order[j];
+            const CriticalPointStyle& style = critical_point_style(md_topo_vertex_type(&g, i));
+            const bool selected    = md_bitmask_test_bit(&critical_points.selection_mask, i);
+            const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
+            const float r = style.radius * scale * (highlighted ? 1.3f : 1.0f);
+            const vec3_t c = pos(i);
+            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), highlight_color, i);
+            if (selected)    disc(c, r * 1.4f, selection_color, i);
+            disc(c, r, outline_color, i);
+            const vec4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
+            disc(c, r * 0.78f, fill, i);
+        }
+        immediate::triangles(scope, v, n);
     }
 
     void reset_data() {
@@ -5082,12 +5180,19 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_topo_count_vertex_types(vertex_count, &critical_points.simp_graph);
 
                     const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
-                    ImGui::Text("Number of Edges:           %u", graph.num_edges);
-                    ImGui::Text("Number of Critical Points: %u", graph.num_vertices);
-                    ImGui::Text("\tNumber of Maxima:        %u", vertex_count[MD_TOPO_MAXIMUM]);
-                    ImGui::Text("\tNumber of Split Saddles: %u", vertex_count[MD_TOPO_SPLIT_SADDLE]);
-                    ImGui::Text("\tNumber of Minima:        %u", vertex_count[MD_TOPO_MINIMUM]);
-                    ImGui::Text("\tNumber of Join Saddles:  %u", vertex_count[MD_TOPO_JOIN_SADDLE]);
+                    ImGui::SliderFloat("Point size", &critical_points.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::Checkbox("Show paths", &critical_points.show_paths);
+                    ImGui::SetItemTooltip("The bond paths, from each bond point to the two maxima it joins, and the ring lines,\n"
+                                          "from each ring point to the cage points it joins");
+
+                    // The counts, as the legend of the markers
+                    ImGui::Text("Critical points: %u, paths: %u", graph.num_vertices, graph.num_edges);
+                    for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
+                        const int type = critical_point_type_order[k];
+                        critical_point_swatch(type);
+                        ImGui::SameLine();
+                        ImGui::Text("%-19s %u", critical_point_style(type).plural, vertex_count[type]);
+                    }
                     if (ImGui::Button("Print Critical Points Info")) {
                         for (size_t i = 0; i < graph.num_vertices; ++i) {
                             const md_topo_vert_t& v = graph.vertices[i];
@@ -5126,11 +5231,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                         if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags)) {
 							ImGui::TableSetupColumn("Idx",   ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_Idx);
-                            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_X);
-                            ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Y);
-                            ImGui::TableSetupColumn("Z",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Z);
+                            ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_X);
+                            ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_Y);
+                            ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_Z);
                             ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Type);
-                            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Value);
+                            ImGui::TableSetupColumn("Density", ImGuiTableColumnFlags_None,      0.0f, CriticalPointColumn_Value);
                             ImGui::TableSetupScrollFreeze(0, 1);
                             ImGui::TableHeadersRow();
 
@@ -5160,9 +5265,11 @@ struct QuantumChemistry : viamd::EventHandler {
                                             case CriticalPointColumn_Z:
                                                 cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
                                                 break;
-                                            case CriticalPointColumn_Type:
-                                                cmp = (graph.types[lhs_idx] < graph.types[rhs_idx]) ? -1 : (graph.types[lhs_idx] > graph.types[rhs_idx] ? 1 : 0);
+                                            case CriticalPointColumn_Type: {
+                                                const int a = critical_point_type_rank(graph.types[lhs_idx]), b = critical_point_type_rank(graph.types[rhs_idx]);
+                                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
                                                 break;
+                                            }
                                             case CriticalPointColumn_Value:
                                                 cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
                                                 break;
@@ -5225,14 +5332,17 @@ struct QuantumChemistry : viamd::EventHandler {
                                     }
                                 }
                                 ImGui::PopStyleColor(1);
+                                // Positions in \xC3\x85, as everywhere else in the application (the graph's are in bohr)
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.x);
+                                ImGui::Text("%.4f", v.x * BOHR_TO_ANGSTROM);
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.y);
+                                ImGui::Text("%.4f", v.y * BOHR_TO_ANGSTROM);
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.z);
+                                ImGui::Text("%.4f", v.z * BOHR_TO_ANGSTROM);
                                 ImGui::TableNextColumn();
-                                ImGui::TextUnformatted(md_topo_critical_point_type_str(type));
+                                critical_point_swatch(type);
+                                ImGui::SameLine();
+                                ImGui::TextUnformatted(critical_point_style(type).name);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.8f", v.value);                                
                             }
