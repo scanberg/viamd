@@ -754,6 +754,9 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
     case ColorMapping::ChainIndex:
         color_atoms_chain_idx(colors, num_atoms, sys);
         break;
+    case ColorMapping::PartIndex:
+        color_atoms_part_idx(colors, num_atoms, sys);
+        break;
     case ColorMapping::SecondaryStructure: {
         SecondaryStructurePalette palette = {
             .coil  = convert_color(rep->secondary_structure.color_coil),
@@ -1240,16 +1243,21 @@ void create_default_representations(ApplicationState* state) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        // Several chains are told apart by color; a short single chain (or none: free amino acids) is shown atom by atom
+        // Several strands are told apart by color; a short single strand (or none: free amino acids) is shown atom by atom
+        const md_system_t& sys = state->mold.sys;
         size_t num_chains = 0;
         size_t chain_res_count = 0;
-        for (size_t i = 0; i < state->mold.sys.instance.count; ++i) {
-            if (md_system_instance_entity_kind(&state->mold.sys, i) == MD_ENTITY_KIND_PEPTIDE) {
-                if (num_chains++ == 0) chain_res_count = md_system_instance_residue_count(&state->mold.sys, i);
+        for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
+            if (md_system_part_kind(&sys, i) == MD_PART_KIND_PEPTIDE) {
+                if (num_chains++ == 0) {
+                    const md_urange_t r = md_system_part_residue_range(&sys, i);
+                    chain_res_count = r.end - r.beg;
+                }
             }
         }
         if (num_chains > 1) {
-            color = ColorMapping::ChainId;
+            // By the chain ids the data gives, else by the strands themselves
+            color = md_system_chain_count(&sys) > 0 ? ColorMapping::ChainId : ColorMapping::PartIndex;
         } else if (chain_res_count < 20) {
             type = RepresentationType::BallAndStick;
             color = ColorMapping::Type;
@@ -2573,6 +2581,10 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
     }
     if (rep.color_mapping == ColorMapping::ResType) {
         ImGui::SetItemTooltip("The colors of the residue types, set in the Residue Types of the System window");
+    } else if ((rep.color_mapping == ColorMapping::ChainId || rep.color_mapping == ColorMapping::ChainIndex) && md_system_chain_count(&state->mold.sys) == 0) {
+        ImGui::SetItemTooltip("The data gives no chain ids, so the system has no chains: Part Index tells its strands apart");
+    } else if (rep.color_mapping == ColorMapping::PartIndex) {
+        ImGui::SetItemTooltip("One color per part: each strand of a polymer, each ligand, each water");
     }
 
     if (rep.color_mapping == ColorMapping::Uniform) {

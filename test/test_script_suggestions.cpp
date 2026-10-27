@@ -159,13 +159,14 @@ UTEST(script_suggestions, molecule_which_is_not_a_chain) {
     EXPECT_TRUE(contains(s, "sel1 = molecule(2);"));
     EXPECT_TRUE(contains(s, "sel1 = resname(\"LIG\");"));
 
-    // Waters likewise, the protein with them. A GRO file gives no chain ids: the protein is a chain by its position
+    // Waters likewise, the protein with them. A GRO file gives no chain ids, so it has no chains: the protein is a
+    // strand of a polymer by its position
     const md_bitset_t mixed = select(l, "protein() or residue(resname(\"SOL\"))[1:5]");
     md_array(ScriptSuggestion) m = suggest(l, mixed);
     print(m);
     EXPECT_TRUE(all_pick(l, mixed, m));
-    EXPECT_TRUE(contains(m, "sel1 = chain(1) or molecule(3:7);"));
-    EXPECT_FALSE(any_contains(m, "chain(\""));
+    EXPECT_TRUE(contains(m, "sel1 = polymer(1) or molecule(3:7);"));
+    EXPECT_FALSE(any_contains(m, "chain("));
     unload(&l);
 }
 
@@ -215,24 +216,25 @@ UTEST(script_suggestions, chains_by_author_id) {
     unload(&l);
 }
 
-// A DNA duplex which martinize-dna writes as one molecule type: one molecule, as GROMACS has it, of two chains, a strand
-// each, which the topology gives no ids
+// A DNA duplex which martinize-dna writes as one molecule type: one molecule, as GROMACS has it, of two strands, which
+// the topology gives no chain ids: they are polymer(1) and polymer(2)
 UTEST(script_suggestions, strands_of_one_molecule) {
     Loaded l;
     ASSERT_TRUE(load(&l, "martini/martini2_dna.tpr"));
-    const md_bitset_t strand = select(l, "chain(2)");
+    const md_bitset_t strand = select(l, "polymer(2)");
     md_array(ScriptSuggestion) s = suggest(l, strand);
     print(s);
     EXPECT_TRUE(all_pick(l, strand, s));
-    EXPECT_TRUE(contains(s, "sel1 = chain(2);"));
+    EXPECT_TRUE(contains(s, "sel1 = polymer(2);"));
     EXPECT_FALSE(any_contains(s, "molecule("));
+    EXPECT_FALSE(any_contains(s, "chain("));
 
     const md_bitset_t duplex = select(l, "molecule(1)");
-    EXPECT_EQ(md_bitset_count(duplex), md_bitset_count(select(l, "chain(1:2)")));
+    EXPECT_EQ(md_bitset_count(duplex), md_bitset_count(select(l, "polymer(1:2)")));
     md_array(ScriptSuggestion) t = suggest(l, duplex);
     print(t);
     EXPECT_TRUE(all_pick(l, duplex, t));
-    EXPECT_TRUE(contains(t, "sel1 = chain(1:2);") || contains(t, "sel1 = nucleic();"));
+    EXPECT_TRUE(contains(t, "sel1 = polymer(1:2);") || contains(t, "sel1 = nucleic();"));
     unload(&l);
 }
 

@@ -122,9 +122,9 @@ constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surfac
 
 enum class PlaybackMode { Stopped, Playing, Count };
 // Part: the part of the atom (md_part_data_t), a covalent piece of its molecule: a strand of a polymer with its caps, a
-// glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or the molecule (its instance) for one in no chain.
-// Molecule: the molecule of the atom (md_molecule_data_t), atoms joined by bonds with their residues and polymer chains
-// whole. The values are those a workspace stores.
+// glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or its part for one in no chain (the data gives no
+// chain ids: the strand it is of). Molecule: the molecule of the atom (md_molecule_data_t), atoms joined by bonds with
+// their residues and polymer strands whole. The values are those a workspace stores.
 enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
@@ -141,11 +141,12 @@ enum class ColorMapping {
     ResName,            // one per residue name, of no meaning
     ResSeqId,
     ResIndex,
-    ChainId,            // one per chain id the data gives (md_chain_data_t), inferred chains by their position
+    ChainId,            // one per chain id the data gives (md_chain_data_t)
     ChainIndex,         // one per chain, by its position
     SecondaryStructure,
     Attribute,          // a per atom attribute of the system, through a colour scale
     ResType,            // the colour of the residue type, from its standard monomer unless overridden (md_residue_type_data_t)
+    PartIndex,          // one per part (md_part_data_t), by its position: each strand, ligand and water
     Count
 };
 
@@ -255,7 +256,8 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Bonds",
 };
 
-// In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t), not the instances
+// In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
+// ligand or a water (md_part_data_t), which tells the strands of a system without chain ids apart
 inline const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform",
     "Atom Type",
@@ -268,6 +270,7 @@ inline const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Secondary Structure",
     "Attribute",
     "Res Type",
+    "Part Index",
 };
 
 // The order the colour mappings are listed in
@@ -281,6 +284,7 @@ inline const ColorMapping color_mapping_order[(int)ColorMapping::Count] = {
     ColorMapping::ResIndex,
     ColorMapping::ChainId,
     ColorMapping::ChainIndex,
+    ColorMapping::PartIndex,
     ColorMapping::SecondaryStructure,
     ColorMapping::Attribute,
 };
@@ -1218,19 +1222,19 @@ struct ApplicationState {
         md_array(mat4_t) periodic_transforms_prev = 0;
 
         // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
-        // they are. Shown in place of them and of the periodic images: each part of it the instances of the part, in the
+        // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
         // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
         // and select as. The operators place the coordinates as the file gives them, so the operations which move them
         // (centering, wrapping, making whole) are not applied while one is shown. The figure's: in the workspace.
         int assembly = -1;
 
-        // Of the assembly shown, set by update_view_param: the transforms of its copies, part by part, those of part p
-        // [assembly_copy_offset[p], assembly_copy_offset[p + 1]). Empty when none is shown.
+        // Of the assembly shown, set by update_view_param: the transforms of its copies, group by group, those of group g
+        // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
         md_array(mat4_t)   assembly_transforms  = 0;
         md_array(uint32_t) assembly_copy_offset = 0;
 
-        // Of the assembly shown, the instances of each part as a subset of the molecule (md_gl_subset_t), which its
-        // copies draw, and the subset of the cartoon glyphs which that makes. A part of all instances has none (0): the
+        // Of the assembly shown, the instances of each group as a subset of the molecule (md_gl_subset_t), which its
+        // copies draw, and the subset of the cartoon glyphs which that makes. A group of all instances has none (0): the
         // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
         md_array(md_gl_subset_t) assembly_subsets       = 0;
         md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
@@ -1955,22 +1959,17 @@ static inline void mask_set_chain(md_bitmask_t* mask, size_t chain_idx, const md
     }
 }
 
-// What Chain granularity takes of a residue: its chain (md_chain_data_t), else its molecule (a molecule the data gives
-// no chain id, which is not a polymer), else its instance
+// What Chain granularity takes of a residue: its chain (md_chain_data_t), else its part (the data gives it no chain
+// id: a strand of a polymer is a part, as polymer(i) of the script has it, and so is a ligand or a water), else the
+// residue itself
 static inline void mask_set_chain_of_res(md_bitmask_t* mask, size_t res_idx, const md_system_t& sys) {
     const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
     if (chain >= 0) {
         mask_set_chain(mask, (size_t)chain, sys);
         return;
     }
-    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-    const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
-    if (mol >= 0) {
-        mask_set_molecule(mask, (size_t)mol, sys);
-        return;
-    }
-    const md_instance_idx_t inst = md_system_instance_find_by_residue_idx(&sys, res_idx);
-    const md_urange_t r = inst >= 0 ? md_system_instance_atom_range(&sys, (size_t)inst) : range;
+    const md_part_idx_t part = md_system_part_find_by_residue_idx(&sys, res_idx);
+    const md_urange_t r = part >= 0 ? md_system_part_atom_range(&sys, (size_t)part) : md_system_residue_atom_range(&sys, res_idx);
     if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
 }
 
@@ -1990,7 +1989,7 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         }
         break;
     case SelectionGranularity::Part:
-        // Without parts (a system without instances) a part is taken to be its residue
+        // Without parts (a system whose parts were not inferred) a part is taken to be its residue
         if (md_system_part_count(&sys) == 0) {
             grow_mask_by_selection_granularity(mask, SelectionGranularity::Residue, sys);
             break;
@@ -2025,9 +2024,9 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         break;
     }
     case SelectionGranularity::Molecule: {
-        // Without molecules (no bonds) a molecule is taken to be its instance, as at Chain granularity outside a chain
+        // Without molecules a molecule is taken to be its part, as at Chain granularity outside a chain
         if (sys.molecule.count == 0) {
-            grow_mask_by_selection_granularity(mask, SelectionGranularity::Chain, sys);
+            grow_mask_by_selection_granularity(mask, SelectionGranularity::Part, sys);
             break;
         }
         // A molecule's atoms need not be one range, so each molecule is taken once whatever order its atoms come in
@@ -2050,7 +2049,7 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
     }
 }
 
-// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, its part, its chain (its molecule
+// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, its part, its chain (its part
 // where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
 // grow_mask_by_selection_granularity, as it only looks up the owner.
 static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
@@ -2092,8 +2091,8 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
             mask_set_molecule(mask, (size_t)mol, sys);
             return;
         }
-        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
-        if (inst_idx >= 0) range = md_system_instance_atom_range(&sys, inst_idx);
+        const md_part_idx_t part_idx = md_system_part_find_by_atom_idx(&sys, atom_idx);
+        if (part_idx >= 0) range = md_system_part_atom_range(&sys, (size_t)part_idx);
         break;
     }
     default:
@@ -2929,31 +2928,31 @@ void file_queue_process(ApplicationState* state);
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
 // camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (view.assembly,
-// -1 for none), of those atoms in the instances of each of its parts, in all of the copies of the part.
+// -1 for none), of those atoms in the instances of each of its groups, in all of the copies of the group.
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
 static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
     const md_bitset_t members = md_bitmask_view(mask);
     reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
 
-// ASSEMBLIES (view.assembly). The parts of assembly asm_idx are [a.part_offset[asm_idx], a.part_offset[asm_idx + 1]),
-// and the instances and operators of part p those assembly_part gives, pointers into the arrays of a. Both read from the
-// offsets as they are, not through the md_urange_t of md_assembly_part_range and its kin: MSVC 19.52 (/O2) compiled
+// ASSEMBLIES (view.assembly). The groups of assembly asm_idx are [a.group_offset[asm_idx], a.group_offset[asm_idx + 1]),
+// and the instances and operators of group g those assembly_group gives, pointers into the arrays of a. Both read from the
+// offsets as they are, not through the md_urange_t of md_assembly_group_range and its kin: MSVC 19.52 (/O2) compiled
 // loops from the beg of such a range to index with the 64 bits that held both of its ends, the end in the upper half,
 // and read far out of bounds (assembly_transforms, reset_view).
-struct AssemblyPart {
+struct AssemblyGroup {
     const md_instance_idx_t* inst;
     const md_instance_idx_t* inst_end;
     const uint32_t* oper;
     const uint32_t* oper_end;
 };
 
-static inline AssemblyPart assembly_part(const md_assembly_data_t& a, size_t p) {
-    ASSERT(p < a.part_count);
-    return {a.inst + a.part_inst_offset[p], a.inst + a.part_inst_offset[p + 1], a.oper + a.part_oper_offset[p], a.oper + a.part_oper_offset[p + 1]};
+static inline AssemblyGroup assembly_group(const md_assembly_data_t& a, size_t g) {
+    ASSERT(g < a.group_count);
+    return {a.inst + a.group_inst_offset[g], a.inst + a.group_inst_offset[g + 1], a.oper + a.group_oper_offset[g], a.oper + a.group_oper_offset[g + 1]};
 }
 
-// The transforms of the copies an assembly of the system makes, part by part, and with copy_offset (optional) where the
+// The transforms of the copies an assembly of the system makes, group by group, and with copy_offset (optional) where the
 // copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
 void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
 

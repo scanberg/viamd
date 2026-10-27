@@ -1889,16 +1889,23 @@ static void draw_main_menu(ApplicationState* data) {
                                           "The atoms of a copy are those of the file, and pick and select as them. The operators place\n"
                                           "the coordinates as the file gives them: centering, wrapping and making whole (Operations)\n"
                                           "are not applied while one is shown, and coordinates they moved before stay moved.");
-                    // A chain of an assembly: a copy of a polymer instance
+                    // A chain of an assembly: a copy of a polymer strand, a part of the instances it copies
                     auto num_chains = [&](size_t asm_idx) {
+                        const md_system_t& sys = data->mold.sys;
                         size_t n = 0;
-                        for (size_t p = assemblies.part_offset[asm_idx]; p < assemblies.part_offset[asm_idx + 1]; ++p) {
-                            const AssemblyPart part = assembly_part(assemblies, p);
+                        for (size_t g = assemblies.group_offset[asm_idx]; g < assemblies.group_offset[asm_idx + 1]; ++g) {
+                            const AssemblyGroup group = assembly_group(assemblies, g);
                             size_t polymers = 0;
-                            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
-                                polymers += md_entity_kind_is_polymer(md_system_instance_entity_kind(&data->mold.sys, (size_t)*k)) ? 1 : 0;
+                            for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
+                                const md_urange_t res = md_system_instance_residue_range(&sys, (size_t)*k);
+                                for (uint32_t r = res.beg; r < res.end;) {
+                                    const md_part_idx_t part = md_system_part_find_by_residue_idx(&sys, r);
+                                    if (part < 0) break;
+                                    polymers += md_part_kind_is_polymer(md_system_part_kind(&sys, (size_t)part)) ? 1 : 0;
+                                    r = md_system_part_residue_range(&sys, (size_t)part).end;
+                                }
                             }
-                            n += polymers * (size_t)(part.oper_end - part.oper);
+                            n += polymers * (size_t)(group.oper_end - group.oper);
                         }
                         return n;
                     };
@@ -2977,7 +2984,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
 
     uint64_t key = md_bitset_hash64(sel, 0);
     key = md_hash64(atoms, num_atoms * sizeof(int32_t), key);
-    const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.instance.count};
+    const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.part.count};
     key = md_hash64(counts, sizeof(counts), key);
     // The names the lines assign to are the first ones the script does not have
     key = md_hash64_combine(key, md_script_ir_fingerprint(state->script.ir));
@@ -7157,8 +7164,8 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
     const size_t end = md_array_size(*ops);
     const md_assembly_data_t& a = state.mold.sys.assembly;
     const bool shown = state.view.assembly >= 0 && (size_t)state.view.assembly < a.count;
-    const size_t part_beg = shown ? a.part_offset[state.view.assembly] : 0;
-    const size_t part_end = shown ? a.part_offset[state.view.assembly + 1] : 0;
+    const size_t part_beg = shown ? a.group_offset[state.view.assembly] : 0;
+    const size_t part_end = shown ? a.group_offset[state.view.assembly + 1] : 0;
     const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
     const md_gl_subset_t* subsets = glyphs ? state.view.assembly_glyph_subsets : state.view.assembly_subsets;
     // Without an assembly, or its copies or subsets not of it (yet)

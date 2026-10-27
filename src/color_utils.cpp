@@ -156,8 +156,7 @@ static void set_chain_colors(uint32_t* colors, size_t count, const md_system_t& 
     }
 }
 
-// The same id the same color, in any system: a hash of the id, as the qualitative palette takes one. An inferred chain
-// has none, and takes its position.
+// The same id the same color, in any system: a hash of the id, as the qualitative palette takes one
 void color_atoms_chain_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
@@ -174,6 +173,15 @@ void color_atoms_chain_idx(uint32_t* colors, size_t count, const md_system_t& sy
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
         set_chain_colors(colors, count, sys, c, u32_to_color((uint32_t)c));
+    }
+}
+
+void color_atoms_part_idx(uint32_t* colors, size_t count, const md_system_t& sys) {
+    set_colors(colors, count, 0xFFFFFFFFU);
+    for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+        md_urange_t range = md_system_part_atom_range(&sys, p);
+        range.end = MIN(range.end, (uint32_t)count);
+        if (range.beg < range.end) set_colors(colors + range.beg, range.end - range.beg, u32_to_color((uint32_t)p));
     }
 }
 

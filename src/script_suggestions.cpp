@@ -173,6 +173,9 @@ struct Ctx {
     // [chain] Whether the residues of the chain have sequence ids no other residue of it has, so that
     // resid(i) in chain("A") picks one: 0 not yet known, 1 they have, 2 they have not
     uint8_t* chain_seq = nullptr;
+    // [part] The position of a strand of a polymer among the strands, as polymer(i) counts them, -1 for a part which is
+    // none. Made when first asked for (strand_position).
+    int32_t* strand_pos = nullptr;
 };
 
 static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocator_i* temp) {
@@ -189,12 +192,25 @@ static int32_t res_chain(const Ctx& c, int32_t res) {
     return res >= 0 ? md_system_chain_find_by_residue_idx(c.sys, (size_t)res) : -1;
 }
 
-// The chain of an instance: that of its first residue. The residues of an instance are of one chain, or of none,
-// except in a molecule of a topology which holds several strands (a DNA duplex), whose chains are all inferred.
+// The chain of a part: that of its first residue. The residues of a part are of one chain, or of none.
 static int32_t inst_first_chain(const Ctx& c, int32_t inst) {
     if (inst < 0) return -1;
-    const md_urange_t residues = md_system_instance_residue_range(c.sys, (size_t)inst);
+    const md_urange_t residues = md_system_part_residue_range(c.sys, (size_t)inst);
     return residues.beg < residues.end ? res_chain(c, (int32_t)residues.beg) : -1;
+}
+
+// The position of a part among the strands of the polymers (polymer(i)), -1 for a part of no polymer
+static int32_t strand_position(Ctx* c, int32_t part) {
+    const size_t num_parts = md_system_part_count(c->sys);
+    if (part < 0 || (size_t)part >= num_parts) return -1;
+    if (!c->strand_pos) {
+        c->strand_pos = (int32_t*)md_alloc(c->temp, (num_parts + 1) * sizeof(int32_t));
+        int32_t n = 0;
+        for (size_t p = 0; p < num_parts; ++p) {
+            c->strand_pos[p] = md_part_kind_is_polymer(md_system_part_kind(c->sys, p)) ? n++ : -1;
+        }
+    }
+    return c->strand_pos[part];
 }
 
 // Every atom of the chain is selected
@@ -207,8 +223,8 @@ static bool chain_whole(const Ctx& c, int32_t chain) {
     return true;
 }
 
-// A chain is written by the id the data gives it: chain("A"), all of the atoms of the id. A chain inferred where the
-// data gives none is written by its position: chain(2).
+// A chain is written by the id the data gives it: chain("A"), all of the atoms of the id; one whose id cannot be quoted
+// by its position: chain(2).
 static bool chain_by_id(const Ctx& c, int32_t chain) {
     return chain >= 0 && quotable(md_system_chain_id(c.sys, (size_t)chain));
 }
@@ -239,18 +255,18 @@ static bool chain_by_seq(Ctx* c, int32_t chain) {
     return c->chain_seq[chain] == 1;
 }
 
-// What the selection holds: the residues with a selected atom, whole or in part, the instances which hold them,
+// What the selection holds: the residues with a selected atom, whole or in part, the parts which hold them,
 // and the selected atoms which are in no residue.
 struct Breakdown {
     md_array(int32_t) res       = 0;
     md_array(uint8_t) res_full = 0;     // [res] every atom of the residue is selected
-    md_array(int32_t) res_inst = 0;     // [res] its instance, -1 for none
-    md_array(int32_t) res_slot = 0;     // [res] where its instance is in inst, -1 for none
-    md_array(int32_t) inst      = 0;    // the instances of the residues, in order
-    md_array(uint8_t) inst_full = 0;    // [inst] every atom of the instance is selected
+    md_array(int32_t) res_inst = 0;     // [res] its part, -1 for none
+    md_array(int32_t) res_slot = 0;     // [res] where its part is in inst, -1 for none
+    md_array(int32_t) inst      = 0;    // the parts of the residues, in order
+    md_array(uint8_t) inst_full = 0;    // [inst] every atom of the part is selected
     md_array(int32_t) loose     = 0;    // selected atoms of no residue
     bool residues_full = true;          // the selection is whole residues (and nothing else)
-    bool insts_full = true;             // the selection is whole instances (and nothing else)
+    bool insts_full = true;             // the selection is whole parts (and nothing else)
 };
 
 static void breakdown_init(Breakdown* b, const Ctx& c) {
@@ -276,12 +292,12 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
             if (!n) continue;
             in_residues += n;
 
-            // The residues of an instance are consecutive, so the instance of the previous one is the likely one
+            // The residues of a part are consecutive, so the part of the previous one is the likely one
             if (!(inst_residues.beg <= i && i < inst_residues.end)) {
-                inst = md_system_instance_find_by_residue_idx(&sys, i);
-                inst_residues = inst >= 0 ? md_system_instance_residue_range(&sys, inst) : md_urange_t{0, 0};
+                inst = md_system_part_find_by_residue_idx(&sys, i);
+                inst_residues = inst >= 0 ? md_system_part_residue_range(&sys, inst) : md_urange_t{0, 0};
                 if (inst >= 0) {
-                    const md_urange_t ar = md_system_instance_atom_range(&sys, inst);
+                    const md_urange_t ar = md_system_part_atom_range(&sys, inst);
                     const bool full = md_bitset_test_all_range(sel, ar.beg, ar.end);
                     md_array_push(b->inst, inst, c.temp);
                     md_array_push(b->inst_full, (uint8_t)full, c.temp);
@@ -312,22 +328,22 @@ static void breakdown_init(Breakdown* b, const Ctx& c) {
 
 // ### THE STRUCTURES WHICH HOLD THE SELECTION ###
 
-// The molecule which an instance is all of, -1 when it is part of a larger one (a ligand bonded to a protein, a metal
-// to the residues around it), of several (the waters of an mmCIF file), or there are none
-static int32_t molecule_of_instance(const md_system_t& sys, int32_t inst) {
-    const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
+// The molecule which a part is all of, -1 when it is part of a larger one (a ligand bonded to a protein, a glycan of a
+// glycoprotein), or there are none
+static int32_t molecule_of_part(const md_system_t& sys, int32_t inst) {
+    const md_urange_t r = md_system_part_atom_range(&sys, (size_t)inst);
     if (r.beg >= r.end) return -1;
     const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, r.beg);
     return mol >= 0 && md_system_molecule_atom_count(&sys, mol) == r.end - r.beg ? mol : -1;
 }
 
-// The molecules of an instance which is not one molecule: those inside it (the waters of a chain, which an mmCIF file
-// gives one instance), or those it is part of (a protein and the metal coordinated to it are two instances of one
-// molecule) where they are wholly among the instances (sorted). None where they are not: its residues are written then.
-static void molecules_of_instance(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
+// The molecules of a part which is not one molecule: those it is part of (a protein and its glycans are parts of one
+// molecule) where they are wholly among the parts (sorted). None where they are not: its residues are written then. A
+// part is never more than one molecule (md_part_data_t), so what is inside one is the molecule itself.
+static void molecules_of_part(md_array(int32_t)* mols, int32_t inst, const int32_t* insts, size_t num_insts, const Ctx& c) {
     const md_system_t& sys = *c.sys;
     const md_molecule_data_t& st = sys.molecule;
-    const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)inst);
+    const md_urange_t r = md_system_part_atom_range(&sys, (size_t)inst);
     md_array(int32_t) touched = 0;
     int32_t prev = -1;
     for (uint32_t i = r.beg; i < r.end; ++i) {
@@ -339,26 +355,27 @@ static void molecules_of_instance(md_array(int32_t)* mols, int32_t inst, const i
     const size_t n = sort_unique(touched, md_array_size(touched));
     uint64_t size = 0;
     for (size_t k = 0; k < n; ++k) size += md_system_molecule_atom_count(&sys, touched[k]);
-    // Molecules inside the instance, which is whole
+    // Molecules inside the part, which is whole
     if (size == r.end - r.beg) {
         for (size_t k = 0; k < n; ++k) md_array_push(*mols, touched[k], c.temp);
         return;
     }
     for (size_t k = 0; k < n; ++k) {
         for (uint32_t s = st.offset[touched[k]]; s < st.offset[touched[k] + 1]; ++s) {
-            const md_instance_idx_t other = md_system_instance_find_by_atom_idx(&sys, (size_t)st.atom_idx[s]);
+            const md_part_idx_t other = md_system_part_find_by_atom_idx(&sys, (size_t)st.atom_idx[s]);
             if (other < 0 || !bsearch(&other, insts, num_insts, sizeof(int32_t), cmp_int32)) return;
         }
     }
     for (size_t k = 0; k < n; ++k) md_array_push(*mols, touched[k], c.temp);
 }
 
-// Whole chains and molecules as terms of an 'or'. Chains by their ids: chain("A"), chain({"A", "B"}); a chain inferred
-// where the data gives none (or every chain, by_id false) by its position among the chains: chain(2). A molecule
-// which is in no chain, or whose chain is not whole, by its position among the molecules: molecule(5:9). An instance
+// Whole chains, strands and molecules as terms of an 'or'. Chains by their ids: chain("A"), chain({"A", "B"}); a chain
+// whose id cannot be quoted (or every chain, by_id false) by its position among the chains: chain(2). A strand of a
+// polymer in no chain (the data gives no ids) by its position among the strands: polymer(2). A molecule
+// which is in no chain, or whose chain is not whole, by its position among the molecules: molecule(5:9). A part
 // which is part of a molecule not selected whole (a ligand bonded to a protein) is none of these: it is pushed to
 // unwritten, and its residues are written instead.
-static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, const Ctx& c, bool by_id) {
+static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, const int32_t* chains, size_t num_chains, const int32_t* insts, size_t num_insts, Ctx& c, bool by_id) {
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_array(str_t)   ids = 0;
     md_array(int32_t) pos = 0;
@@ -367,10 +384,18 @@ static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, co
         else md_array_push(pos, chains[i] + 1, c.temp);
     }
     md_array(int32_t) mols = 0;
+    md_array(int32_t) strands = 0;
     md_array(int32_t) sorted = 0;
     size_t num_sorted = 0;
     for (size_t i = 0; i < num_insts; ++i) {
-        const int32_t mol = molecule_of_instance(*c.sys, insts[i]);
+        if (inst_first_chain(c, insts[i]) < 0) {
+            const int32_t strand = strand_position(&c, insts[i]);
+            if (strand >= 0) {
+                md_array_push(strands, strand + 1, c.temp);
+                continue;
+            }
+        }
+        const int32_t mol = molecule_of_part(*c.sys, insts[i]);
         if (mol >= 0) {
             md_array_push(mols, mol + 1, c.temp);
             continue;
@@ -380,7 +405,7 @@ static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, co
             num_sorted = sort_unique(sorted, num_insts);
         }
         const size_t before = md_array_size(mols);
-        molecules_of_instance(&mols, insts[i], sorted, num_sorted, c);
+        molecules_of_part(&mols, insts[i], sorted, num_sorted, c);
         if (md_array_size(mols) == before) md_array_push(*unwritten, insts[i], c.temp);
         else for (size_t k = before; k < md_array_size(mols); ++k) mols[k] += 1;
     }
@@ -399,6 +424,12 @@ static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, co
         sb += ')';
         md_array_push(*terms, take(&sb, c.temp), c.temp);
     }
+    if (md_array_size(strands)) {
+        sb += "polymer(";
+        write_ranges(&sb, strands, sort_unique(strands, md_array_size(strands)));
+        sb += ')';
+        md_array_push(*terms, take(&sb, c.temp), c.temp);
+    }
     if (md_array_size(mols)) {
         sb += "molecule(";
         write_ranges(&sb, mols, sort_unique(mols, md_array_size(mols)));
@@ -410,7 +441,7 @@ static bool whole_terms(md_array(str_t)* terms, md_array(int32_t)* unwritten, co
     return len <= c.limit;
 }
 
-// The chains the selection holds whole, and the instances it holds whole which are not all of whole chains: in no
+// The chains the selection holds whole, and the parts it holds whole which are not all of whole chains: in no
 // chain, or in one which is not whole (a ligand of chain A, without the rest of A)
 static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)* insts, const Breakdown& b, const Ctx& c) {
     const size_t num_chains = md_system_chain_count(c.sys);
@@ -425,7 +456,7 @@ static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)*
     }
     for (size_t i = 0; i < md_array_size(b.inst); ++i) {
         if (!b.inst_full[i]) continue;
-        const md_urange_t residues = md_system_instance_residue_range(c.sys, (size_t)b.inst[i]);
+        const md_urange_t residues = md_system_part_residue_range(c.sys, (size_t)b.inst[i]);
         bool in_whole = true;
         for (uint32_t k = residues.beg; k < residues.end && in_whole; ++k) {
             const int32_t chain = res_chain(c, (int32_t)k);
@@ -548,7 +579,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     MEMSET(chain_written, 0, num_chains + 1);
     for (size_t i = 0; i < md_array_size(whole_chains); ++i) chain_written[whole_chains[i]] = 1;
 
-    // The residues of a chain by their sequence ids within it, gathered over all of its instances (they need not be
+    // The residues of a chain by their sequence ids within it, gathered over all of its parts (they need not be
     // consecutive): a slot per chain
     int32_t* chain_slot = (int32_t*)md_alloc(temp, (num_chains + 1) * sizeof(int32_t));
     for (size_t i = 0; i <= num_chains; ++i) chain_slot[i] = -1;
@@ -556,7 +587,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     md_array(md_array(int32_t)) slot_whole = 0;
     md_array(Groups) slot_parts = 0;
 
-    // The residues which are written by their position in the system, whichever instance they are of, and the parts of
+    // The residues which are written by their position in the system, whichever part they are of, and the parts of
     // several residues it holds whole of them
     md_array(int32_t) whole = 0;
     md_array(int32_t) whole_parts = 0;
@@ -569,7 +600,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     for (size_t k = 0; k < num_residues; ++k) {
         const int32_t inst = b.res_inst[k];
         const int32_t chain = res_chain(*c, b.res[k]);
-        // Its instance is written whole, as a molecule or with its chain
+        // Its part is written whole, as a molecule or with its chain
         if (inst >= 0 && b.inst_full[b.res_slot[k]] && !bsearch(&inst, unwritten, num_unwritten, sizeof(int32_t), cmp_int32)) continue;
         if (chain >= 0 && chain_written[chain]) continue;
 
@@ -675,7 +706,7 @@ static bool write_atoms(md_str_writer_t* out, const Ctx& c) {
 // A predicate holds for every selected atom: what they are by name or element, the part of a residue they are
 // (backbone()), or the kind or name of the residues they make up whole (water(), resname("HEM")). Where it holds for
 // nothing else in the system it is the selection by itself. Where it holds for other atoms as well, it is the
-// selection within a scope which leaves those out: the residues of its kind, of its names, the instances which hold
+// selection within a scope which leaves those out: the residues of its kind, of its names, the parts which hold
 // the selection, or the residues which do.
 
 enum Scope : uint32_t {
@@ -823,7 +854,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
             if (inst_first_chain(*c, b.inst[i]) >= 0) continue;
             md_array_push(loose_insts, b.inst[i], temp);
             scope_whole = scope_whole && b.inst_full[i] != 0;
-            const md_urange_t residues = md_system_instance_residue_range(&sys, (size_t)b.inst[i]);
+            const md_urange_t residues = md_system_part_residue_range(&sys, (size_t)b.inst[i]);
             for (uint32_t ci = residues.beg; ci < residues.end; ++ci) s->res_in_scope[ci] = 1;
         }
     }
@@ -873,7 +904,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     if (all_in_inst && !scope_whole) {
         md_array(str_t) terms = 0;
         md_array(int32_t) unwritten = 0;
-        // An instance which is not a molecule of its own, nor whole molecules, leaves no term to be the scope
+        // A part which is not a molecule of its own, nor whole molecules, leaves no term to be the scope
         const bool ok = whole_terms(&terms, &unwritten, chains, md_array_size(chains), loose_insts, md_array_size(loose_insts), *c, true) &&
             md_array_size(unwritten) == 0;
         md_str_writer_t sb = md_str_writer_create(temp);
@@ -890,7 +921,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
         whole.res_full = (uint8_t*)0;
         whole.inst_full = (uint8_t*)0;
         for (size_t i = 0; i < md_array_size(b.res); ++i) md_array_push(whole.res_full, (uint8_t)1, temp);
-        // An instance is whole when all of its residues hold the selection
+        // A part is whole when all of its residues hold the selection
         md_array(uint32_t) held = 0;
         md_array_resize(held, md_array_size(b.inst), temp);
         for (size_t i = 0; i < md_array_size(b.inst); ++i) held[i] = 0;
@@ -898,7 +929,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
             if (b.res_slot[k] >= 0) held[b.res_slot[k]] += 1;
         }
         for (size_t i = 0; i < md_array_size(b.inst); ++i) {
-            md_array_push(whole.inst_full, (uint8_t)(held[i] == md_system_instance_residue_count(&sys, b.inst[i])), temp);
+            md_array_push(whole.inst_full, (uint8_t)(held[i] == (md_system_part_residue_range(&sys, b.inst[i]).end - md_system_part_residue_range(&sys, b.inst[i]).beg)), temp);
         }
         md_str_writer_t sb = md_str_writer_create(temp);
         if (write_structures(&sb, whole, c, true)) {
@@ -1056,7 +1087,7 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
         const Pred& p = preds[i];
         const uint32_t violated = pred_violations(p, *c, s);
         uint32_t avail = s.avail & ~violated;
-        // Whole residues within the residues they are of, or within themselves, say nothing. Within the instances
+        // Whole residues within the residues they are of, or within themselves, say nothing. Within the parts
         // which hold them they say something of several (the HIS of chain A), and of one only that it is the one of
         // its name there, which its residue number says better.
         if (p.res_level) avail &= md_array_size(b.res) > 1 ? (Scope_System | Scope_Inst) : Scope_System;
@@ -1258,8 +1289,7 @@ static bool unique_name_in_res(str_t* out, const md_system_t& sys, int32_t atom,
     return true;
 }
 
-// The context which picks the residue alone, as the file numbers it: 'resid(42) in chain("A")' (or of an inferred
-// chain, 'resid(42) in chain(2)'), else 'resid(42)'
+// The context which picks the residue alone, as the file numbers it: 'resid(42) in chain("A")', else 'resid(42)'
 static bool resid_context(md_str_writer_t* sb, Ctx* c, int32_t res) {
     const md_system_t& sys = *c->sys;
     if (!sys.residue.seq_id) return false;

@@ -1123,30 +1123,34 @@ struct Dataset : viamd::EventHandler {
 
     // ## Composition: what the system is made of
     //
-    // One row per entity - a kind of molecule - with how many molecules of it there are, rather than a
-    // header per instance: a solvated protein is a handful of rows, not sixteen thousand waters.
-    // Molecules are counted as what the bonds connect (sys.molecule), since an instance is whatever
-    // the file or the inference grouped: all the waters of a box are typically one. Computed when the
-    // system changes, never per frame.
+    // One row per molecule type - the molecule types of a topology, or those inferred: the molecules made alike - with
+    // how many molecules of it there are, rather than a header per molecule: a solvated protein is a handful of rows,
+    // not sixteen thousand waters. A molecule type is what its parts are (md_part_data_t): a strand, its glycans, a
+    // ligand. Computed when the topology changes, never per frame.
 
-    struct EntityRow {
-        int         entity = -1;        // -1: the atoms no instance holds
-        const char* kind = "";
+    struct TypeRow {
+        int         type = -1;          // The molecule type, -1: the atoms of no molecule
+        char        kind[64] = "";
         char        name[96] = "";
-        uint32_t    num_instances = 0;
-        uint32_t    res_min = 0;        // residues per instance
+        uint32_t    res_min = 0;        // residues per molecule
         uint32_t    res_max = 0;
-        size_t      num_residues = 0;   // residues, all instances
-        size_t      num_molecules = 0;  // connected structures whose first atom is in the entity
+        size_t      num_residues = 0;   // residues, all molecules
+        size_t      num_molecules = 0;
         size_t      num_atoms = 0;
         double      mass = 0.0;         // amu
         double      charge = 0.0;       // e
-        bool        polymer = false;
+        bool        polymer = false;    // Its molecules have a strand of a polymer, whose sequence can be shown
     };
 
     struct Composition {
         uint64_t key = 0;
-        md_array(EntityRow) rows = nullptr;
+        md_array(TypeRow) rows = nullptr;
+        // The molecules of each row, and the parts of each molecule, in order: [row_mol_offset[r], row_mol_offset[r + 1])
+        // of row_mol, [mol_part_offset[m], mol_part_offset[m + 1]) of mol_part
+        md_array(uint32_t) row_mol_offset = nullptr;
+        md_array(uint32_t) row_mol = nullptr;
+        md_array(uint32_t) mol_part_offset = nullptr;
+        md_array(uint32_t) mol_part = nullptr;
 
         size_t num_atoms = 0;
         size_t num_components = 0;
@@ -1168,46 +1172,46 @@ struct Dataset : viamd::EventHandler {
         size_t unresolved_nucleic = 0;
     } composition;
 
-    int  expanded_entity = -1;
-    int  expanded_instance = -1;
+    int  expanded_row = -1;
+    int  expanded_molecule = -1;    // The molecule of the expanded row whose sequences are shown, by its position in the row
     bool use_short_labels = true;
 
-    // What an entity is: its kind, and for a small molecule what its residue is
-    struct EntityCounts {
-        size_t amino = 0;       // residues which are amino acids
-        size_t nucleic = 0;     // nucleotides
-        size_t ion = 0;         // ions
-        size_t beads = 0;       // coarse grained beads
-    };
-
-    static const char* entity_kind(md_entity_kind_t kind, const EntityCounts& n, size_t residues) {
-        switch (kind) {
-        case MD_ENTITY_KIND_WATER:      return "Water";
-        case MD_ENTITY_KIND_PEPTIDE:    return n.beads ? "Protein (CG)" : "Protein";
-        case MD_ENTITY_KIND_DNA:        return "DNA";
-        case MD_ENTITY_KIND_RNA:        return "RNA";
-        case MD_ENTITY_KIND_NUCLEIC:    return "Nucleic acid";
-        case MD_ENTITY_KIND_BRANCHED:   return "Oligosaccharide";
-        case MD_ENTITY_KIND_POLYMER:    return "Polymer";
+    // What a part is: its kind, and for a small molecule what its residues are
+    static const char* part_kind_label(const md_system_t& sys, size_t part_idx) {
+        const md_urange_t residues = md_system_part_residue_range(&sys, part_idx);
+        const md_urange_t atoms = md_system_part_atom_range(&sys, part_idx);
+        bool beads = false;
+        for (uint32_t a = atoms.beg; a < atoms.end && !beads; ++a) beads = md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD;
+        switch (md_system_part_kind(&sys, part_idx)) {
+        case MD_PART_KIND_WATER:      return "Water";
+        case MD_PART_KIND_PEPTIDE:    return beads ? "Protein (CG)" : "Protein";
+        case MD_PART_KIND_DNA:        return "DNA";
+        case MD_PART_KIND_RNA:        return "RNA";
+        case MD_PART_KIND_NUCLEIC:    return "Nucleic acid";
+        case MD_PART_KIND_BRANCHED:   return "Oligosaccharide";
+        case MD_PART_KIND_POLYMER:    return "Polymer";
         default: break;
         }
-        if (n.ion && n.ion == residues)         return "Ion";
-        if (n.amino && n.amino == residues)     return "Amino acid";
-        if (n.nucleic && n.nucleic == residues) return "Nucleotide";
-        if (n.beads)                            return "Coarse grained";
+        size_t ion = 0, amino = 0, nucleic = 0, lipid = 0;
+        for (uint32_t r = residues.beg; r < residues.end; ++r) {
+            const md_residue_kind_t kind = md_system_residue_kind(&sys, r);
+            ion     += kind == MD_RESIDUE_KIND_ION;
+            amino   += kind == MD_RESIDUE_KIND_AMINO_ACID;
+            nucleic += kind == MD_RESIDUE_KIND_NUCLEOTIDE;
+            lipid   += kind == MD_RESIDUE_KIND_LIPID;
+        }
+        const size_t n = residues.end - residues.beg;
+        if (n && ion == n)     return "Ion";
+        if (n && lipid == n)   return "Lipid";
+        if (n && amino == n)   return "Amino acid";
+        if (n && nucleic == n) return "Nucleotide";
+        if (beads)             return "Coarse grained";
         return "Other";
-    }
-
-    // The inference marks the entities it named with " (*)"; the kind column says what they are
-    static str_t entity_display_name(str_t desc) {
-        if (str_ends_with(desc, STR_LIT(" (*)"))) desc = str_substr(desc, 0, desc.len - 4);
-        return desc;
     }
 
     static uint64_t composition_key(const ApplicationState& data) {
         const md_system_t& sys = data.mold.sys;
-        const size_t counts[] = { sys.atom.count, sys.entity.count, sys.instance.count, sys.residue.count, sys.bond.count, sys.bond.noncovalent_count, sys.molecule.count };
-        uint64_t key = md_hash64(counts, sizeof(counts), 0);
+        uint64_t key = md_hash64(&sys.topology_version, sizeof(sys.topology_version), 0);
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
         const uint64_t charge_version = charge ? charge->version : 0;
         key = md_hash64(&charge_version, sizeof(charge_version), key);
@@ -1216,8 +1220,13 @@ struct Dataset : viamd::EventHandler {
 
     void compute_composition(ApplicationState& data) {
         const md_system_t& sys = data.mold.sys;
+        md_allocator_i* alloc = data.allocator.persistent;
         Composition& c = composition;
-        md_array_free(c.rows, data.allocator.persistent);
+        md_array_free(c.rows, alloc);
+        md_array_free(c.row_mol_offset, alloc);
+        md_array_free(c.row_mol, alloc);
+        md_array_free(c.mol_part_offset, alloc);
+        md_array_free(c.mol_part, alloc);
         c = Composition{};
         c.key = composition_key(data);
 
@@ -1238,83 +1247,116 @@ struct Dataset : viamd::EventHandler {
         c.num_components = sys.residue.count;
         c.num_molecules = sys.molecule.count;
 
-        // The row each atom counts toward; the last row is the atoms of no instance
-        int32_t* atom_row = md_temp_alloc_array(temp, int32_t, sys.atom.count + 1);
-        for (size_t a = 0; a < sys.atom.count; ++a) atom_row[a] = -1;
-        EntityCounts* counts = md_temp_alloc_array(temp, EntityCounts, sys.entity.count + 1);
-        for (size_t e = 0; e <= sys.entity.count; ++e) counts[e] = EntityCounts{};
-
-        for (size_t e = 0; e < sys.entity.count; ++e) {
-            EntityRow row = {};
-            row.entity = (int)e;
-            row.kind = "Other";
-            row.polymer = md_entity_kind_is_polymer(md_system_entity_kind(&sys, e));
-            str_t desc = entity_display_name(md_system_entity_description(&sys, e));
-            if (str_empty(desc)) desc = md_system_entity_id(&sys, e);
-            str_copy_to_char_buf(row.name, sizeof(row.name), desc);
+        // A row per molecule type, and the last for the atoms of no molecule
+        const size_t num_types = md_system_molecule_type_count(&sys);
+        for (size_t t = 0; t < num_types; ++t) {
+            TypeRow row = {};
+            row.type = (int)t;
+            str_copy_to_char_buf(row.name, sizeof(row.name), md_system_molecule_type_name(&sys, t));
             row.res_min = UINT32_MAX;
-            md_array_push(c.rows, row, data.allocator.persistent);
+            md_array_push(c.rows, row, alloc);
+        }
+        const size_t rest_row = num_types;
+
+        // The molecule of each part (a part is within one), and the parts of each molecule in order
+        const size_t num_mols = sys.molecule.count;
+        md_array_resize(c.mol_part_offset, num_mols + 1, alloc);
+        MEMSET(c.mol_part_offset, 0, (num_mols + 1) * sizeof(uint32_t));
+        int32_t* part_mol = md_temp_alloc_array(temp, int32_t, md_system_part_count(&sys) + 1);
+        for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+            const md_urange_t atoms = md_system_part_atom_range(&sys, p);
+            const md_molecule_idx_t m = atoms.beg < atoms.end ? md_system_molecule_find_by_atom_idx(&sys, atoms.beg) : -1;
+            part_mol[p] = m;
+            if (m >= 0) c.mol_part_offset[m + 1] += 1;
+        }
+        for (size_t m = 0; m < num_mols; ++m) c.mol_part_offset[m + 1] += c.mol_part_offset[m];
+        md_array_resize(c.mol_part, c.mol_part_offset[num_mols], alloc);
+        {
+            uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_mols + 1);
+            MEMCPY(fill, c.mol_part_offset, (num_mols + 1) * sizeof(uint32_t));
+            for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+                if (part_mol[p] >= 0) c.mol_part[fill[part_mol[p]]++] = (uint32_t)p;
+            }
         }
 
-        for (size_t i = 0; i < sys.instance.count; ++i) {
-            const int e = md_system_instance_entity_idx(&sys, i);
-            if (e < 0 || (size_t)e >= md_array_size(c.rows)) continue;
-            EntityRow& row = c.rows[e];
-            const md_urange_t atoms = md_system_instance_atom_range(&sys, i);
-            const md_urange_t res_range = md_system_instance_residue_range(&sys, i);
-            const uint32_t num_res = res_range.end - res_range.beg;
-            row.num_instances += 1;
-            row.res_min = MIN(row.res_min, num_res);
-            row.res_max = MAX(row.res_max, num_res);
-            row.num_residues += num_res;
-            row.num_atoms += atoms.end - atoms.beg;
-            for (uint32_t a = atoms.beg; a < atoms.end && a < sys.atom.count; ++a) {
+        // The row each atom counts toward
+        int32_t* atom_row = md_temp_alloc_array(temp, int32_t, sys.atom.count + 1);
+        for (size_t a = 0; a < sys.atom.count; ++a) atom_row[a] = (int32_t)rest_row;
+        uint32_t* mol_res = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
+        md_array_resize(c.row_mol_offset, num_types + 2, alloc);
+        MEMSET(c.row_mol_offset, 0, (num_types + 2) * sizeof(uint32_t));
+        for (size_t m = 0; m < num_mols; ++m) {
+            const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
+            if (t < 0 || (size_t)t >= num_types) continue;
+            TypeRow& row = c.rows[t];
+            const md_molecule_t mol = md_system_molecule(&sys, m);
+            row.num_molecules += 1;
+            row.num_atoms += mol.count;
+            c.row_mol_offset[t + 1] += 1;
+            for (size_t i = 0; i < mol.count; ++i) {
+                const int32_t a = mol.atom_idx[i];
+                atom_row[a] = t;
                 row.mass += md_atom_mass(&sys.atom, a);
                 if (charge && !atom_attribute_value_absent(charge[a])) row.charge += charge[a];
-                atom_row[a] = e;
-                counts[e].beads += md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD;
             }
-            for (uint32_t k = res_range.beg; k < res_range.end; ++k) {
-                const md_residue_kind_t kind = md_system_residue_kind(&sys, k);
-                counts[e].amino   += kind == MD_RESIDUE_KIND_AMINO_ACID;
-                counts[e].nucleic += kind == MD_RESIDUE_KIND_NUCLEOTIDE;
-                counts[e].ion     += kind == MD_RESIDUE_KIND_ION;
+            for (uint32_t k = c.mol_part_offset[m]; k < c.mol_part_offset[m + 1]; ++k) {
+                const md_urange_t r = md_system_part_residue_range(&sys, c.mol_part[k]);
+                mol_res[m] += r.end - r.beg;
+                row.polymer |= md_part_kind_is_polymer(md_system_part_kind(&sys, c.mol_part[k]));
+            }
+            row.num_residues += mol_res[m];
+            row.res_min = MIN(row.res_min, mol_res[m]);
+            row.res_max = MAX(row.res_max, mol_res[m]);
+            // What the type is: the kinds of the parts of its first molecule, the strand (the largest part) first
+            if (row.num_molecules == 1) {
+                const char* kinds[2] = {};
+                uint32_t largest = 0;
+                for (uint32_t k = c.mol_part_offset[m]; k < c.mol_part_offset[m + 1]; ++k) {
+                    const md_urange_t r = md_system_part_residue_range(&sys, c.mol_part[k]);
+                    if (r.end - r.beg > largest) {
+                        largest = r.end - r.beg;
+                        kinds[0] = part_kind_label(sys, c.mol_part[k]);
+                    }
+                }
+                for (uint32_t k = c.mol_part_offset[m]; k < c.mol_part_offset[m + 1] && kinds[0]; ++k) {
+                    const char* kind = part_kind_label(sys, c.mol_part[k]);
+                    if (strcmp(kind, kinds[0]) != 0) { kinds[1] = kind; break; }
+                }
+                if (kinds[1])      snprintf(row.kind, sizeof(row.kind), "%s, %s", kinds[0], kinds[1]);
+                else if (kinds[0]) snprintf(row.kind, sizeof(row.kind), "%s", kinds[0]);
+                else               snprintf(row.kind, sizeof(row.kind), "%s", "Other");
+            }
+        }
+        // The molecules of each row in order
+        for (size_t t = 0; t <= num_types; ++t) c.row_mol_offset[t + 1] += c.row_mol_offset[t];
+        md_array_resize(c.row_mol, c.row_mol_offset[num_types + 1], alloc);
+        {
+            uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_types + 1);
+            MEMCPY(fill, c.row_mol_offset, (num_types + 1) * sizeof(uint32_t));
+            for (size_t m = 0; m < num_mols; ++m) {
+                const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
+                if (t >= 0 && (size_t)t < num_types) c.row_mol[fill[t]++] = (uint32_t)m;
             }
         }
 
-        // Atoms no instance holds, so the rows add up to the system
-        EntityRow rest = {};
-        rest.kind = "Unassigned";
-        snprintf(rest.name, sizeof(rest.name), "%s", sys.entity.count ? "In no entity" : "All atoms");
-        const int32_t rest_row = (int32_t)md_array_size(c.rows);
+        // Atoms no molecule holds, so the rows add up to the system
+        TypeRow rest = {};
+        snprintf(rest.kind, sizeof(rest.kind), "%s", "Unassigned");
+        snprintf(rest.name, sizeof(rest.name), "%s", num_mols ? "In no molecule" : "All atoms");
         for (size_t a = 0; a < sys.atom.count; ++a) {
-            if (atom_row[a] >= 0) continue;
-            atom_row[a] = rest_row;
+            if (atom_row[a] != (int32_t)rest_row) continue;
             rest.num_atoms += 1;
             rest.mass += md_atom_mass(&sys.atom, a);
             // An atom without a charge (a QM atom beside an embedding's sites) adds none
             if (charge && !atom_attribute_value_absent(charge[a])) rest.charge += charge[a];
         }
         if (rest.num_atoms > 0) {
-            md_array_push(c.rows, rest, data.allocator.persistent);
-        }
-
-        // Molecules: each connected structure counts toward the row of its first atom
-        if (sys.molecule.count > 0 && sys.molecule.offset && sys.molecule.atom_idx) {
-            for (size_t k = 0; k < sys.molecule.count; ++k) {
-                const int32_t root = sys.molecule.atom_idx[sys.molecule.offset[k]];
-                if (root < 0 || (size_t)root >= sys.atom.count) continue;
-                const int32_t r = atom_row[root];
-                if (r >= 0 && (size_t)r < md_array_size(c.rows)) c.rows[r].num_molecules += 1;
-            }
+            md_array_push(c.rows, rest, alloc);
         }
 
         for (size_t i = 0; i < md_array_size(c.rows); ++i) {
-            EntityRow& row = c.rows[i];
+            TypeRow& row = c.rows[i];
             if (row.res_min == UINT32_MAX) row.res_min = 0;
-            if (row.entity >= 0) {
-                row.kind = entity_kind(md_system_entity_kind(&sys, row.entity), counts[row.entity], row.num_residues);
-            }
             c.mass += row.mass;
             c.charge += row.charge;
         }
@@ -1358,32 +1400,75 @@ struct Dataset : viamd::EventHandler {
         return md_atom_mass(&sys.atom, a) > 0.0f;
     }
 
-    static void highlight_entity(ApplicationState& data, int entity) {
+    static void highlight_row(ApplicationState& data, const Composition& c, size_t row_idx) {
         const md_system_t& sys = data.mold.sys;
         md_bitmask_t* hb = &data.selection.highlight_mask;
         md_bitmask_clear(hb);
-        if (entity < 0) {
-            // The atoms of no instance
+        const TypeRow& row = c.rows[row_idx];
+        if (row.type < 0) {
+            // The atoms of no molecule
             md_bitmask_set_range(hb, 0, (uint32_t)sys.atom.count);
-            for (size_t i = 0; i < sys.instance.count; ++i) {
-                const md_urange_t r = md_system_instance_atom_range(&sys, i);
-                md_bitmask_clear_range(hb, r.beg, r.end);
+            for (size_t m = 0; m < sys.molecule.count; ++m) {
+                const md_molecule_t mol = md_system_molecule(&sys, m);
+                for (size_t i = 0; i < mol.count; ++i) md_bitmask_clear_bit(hb, (uint32_t)mol.atom_idx[i]);
             }
         } else {
-            for (size_t i = 0; i < sys.instance.count; ++i) {
-                if (md_system_instance_entity_idx(&sys, i) == entity) {
-                    const md_urange_t r = md_system_instance_atom_range(&sys, i);
-                    md_bitmask_set_range(hb, r.beg, r.end);
-                }
+            for (uint32_t k = c.row_mol_offset[row.type]; k < c.row_mol_offset[row.type + 1]; ++k) {
+                const md_molecule_t mol = md_system_molecule(&sys, c.row_mol[k]);
+                for (size_t i = 0; i < mol.count; ++i) md_bitmask_set_bit(hb, (uint32_t)mol.atom_idx[i]);
             }
         }
     }
 
+    static void highlight_molecule(ApplicationState& data, uint32_t mol_idx) {
+        const md_molecule_t mol = md_system_molecule(&data.mold.sys, mol_idx);
+        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_clear(hb);
+        for (size_t i = 0; i < mol.count; ++i) md_bitmask_set_bit(hb, (uint32_t)mol.atom_idx[i]);
+    }
+
+    // Where a molecule is: the chain the data files its first residue under, else the strand of a polymer it begins with
+    // by its position among the strands (polymer(2) of the script), else its position in its row
+    void molecule_label(char* buf, size_t cap, const md_system_t& sys, const Composition& c, uint32_t mol_idx, int pos_in_row) {
+        const uint32_t beg = c.mol_part_offset[mol_idx], end = c.mol_part_offset[mol_idx + 1];
+        if (beg < end) {
+            const md_urange_t first = md_system_part_residue_range(&sys, c.mol_part[beg]);
+            const md_urange_t last  = md_system_part_residue_range(&sys, c.mol_part[end - 1]);
+            const md_chain_idx_t chain_a = first.beg < first.end ? md_system_chain_find_by_residue_idx(&sys, first.beg) : -1;
+            const md_chain_idx_t chain_b = last.beg < last.end ? md_system_chain_find_by_residue_idx(&sys, last.end - 1) : -1;
+            if (chain_a >= 0 && chain_b >= 0 && chain_b != chain_a) {
+                snprintf(buf, cap, "chains " STR_FMT ", " STR_FMT, STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)), STR_ARG(md_system_chain_id(&sys, (size_t)chain_b)));
+                return;
+            }
+            if (chain_a >= 0) {
+                snprintf(buf, cap, "chain " STR_FMT, STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)));
+                return;
+            }
+            const uint32_t p = c.mol_part[beg];
+            if (md_part_kind_is_polymer(md_system_part_kind(&sys, p))) {
+                int strand = 0;
+                for (uint32_t q = 0; q < p; ++q) strand += md_part_kind_is_polymer(md_system_part_kind(&sys, q)) ? 1 : 0;
+                snprintf(buf, cap, "polymer %d", strand + 1);
+                return;
+            }
+        }
+        snprintf(buf, cap, "#%d", pos_in_row + 1);
+    }
+
+    // The sequences of the strands of a molecule
+    void draw_molecule_sequences(ApplicationState& data, const Composition& c, uint32_t mol_idx) {
+        const md_system_t& sys = data.mold.sys;
+        for (uint32_t k = c.mol_part_offset[mol_idx]; k < c.mol_part_offset[mol_idx + 1]; ++k) {
+            if (!md_part_kind_is_polymer(md_system_part_kind(&sys, c.mol_part[k]))) continue;
+            draw_sequence(data, c.mol_part[k], use_short_labels);
+        }
+    }
+
     // A polymer's sequence, one chip per residue, wrapping to the window
-    void draw_sequence(ApplicationState& data, size_t inst_idx, bool short_labels) {
+    void draw_sequence(ApplicationState& data, size_t part_idx, bool short_labels) {
         const md_system_t& sys = data.mold.sys;
         const ImGuiStyle& style = ImGui::GetStyle();
-        const md_urange_t range = md_system_instance_residue_range(&sys, inst_idx);
+        const md_urange_t range = md_system_part_residue_range(&sys, part_idx);
         const uint32_t max_shown = 4000;
         const uint32_t end = MIN(range.end, range.beg + max_shown);
 
@@ -1453,8 +1538,8 @@ struct Dataset : viamd::EventHandler {
         }
         if (composition.key != composition_key(data)) {
             compute_composition(data);
-            expanded_entity = -1;
-            expanded_instance = -1;
+            expanded_row = -1;
+            expanded_molecule = -1;
         }
         const Composition& c = composition;
 
@@ -1464,7 +1549,7 @@ struct Dataset : viamd::EventHandler {
         const int num_cols = c.has_charge ? 7 : 6;
         if (ImGui::BeginTable("##composition", num_cols, flags)) {
             ImGui::TableSetupColumn("Kind",     ImGuiTableColumnFlags_WidthStretch, 1.3f);
-            ImGui::TableSetupColumn("Name",     ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableSetupColumn("Molecule type", ImGuiTableColumnFlags_WidthStretch, 2.0f);
             ImGui::TableSetupColumn("Molecules", ImGuiTableColumnFlags_WidthStretch, 1.0f);
             ImGui::TableSetupColumn("Residues",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
             ImGui::TableSetupColumn("Atoms",    ImGuiTableColumnFlags_WidthStretch, 1.0f);
@@ -1472,7 +1557,9 @@ struct Dataset : viamd::EventHandler {
             if (c.has_charge) ImGui::TableSetupColumn("Charge", ImGuiTableColumnFlags_WidthStretch, 0.9f);
             // The header, with what the less obvious columns count
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            const char* header_tips[7] = { nullptr, nullptr, "Molecules: atoms joined by bonds, each residue and polymer chain whole", "Residues, all molecules together",
+            const char* header_tips[7] = { "What the parts of the molecules are: a strand, its glycans, a ligand",
+                                           "The molecule type of a topology, or the molecules made alike: of the same parts, atoms and bonds",
+                                           "Molecules: atoms joined by bonds, each residue and polymer strand whole", "Residues, all molecules together",
                                            nullptr, "Of all molecules together", "Net charge of all molecules together, from the topology" };
             for (int col = 0; col < num_cols; ++col) {
                 if (!ImGui::TableSetColumnIndex(col)) continue;
@@ -1481,25 +1568,25 @@ struct Dataset : viamd::EventHandler {
             }
 
             for (size_t r = 0; r < md_array_size(c.rows); ++r) {
-                const EntityRow& row = c.rows[r];
+                const TypeRow& row = c.rows[r];
                 ImGui::TableNextRow();
                 ImGui::PushID((int)r);
                 ImGui::TableSetColumnIndex(0);
-                if (ImGui::Selectable(row.kind, expanded_entity == (int)r, ImGuiSelectableFlags_SpanAllColumns)) {
+                if (ImGui::Selectable(row.kind, expanded_row == (int)r, ImGuiSelectableFlags_SpanAllColumns)) {
                     if (!ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                        expanded_entity = expanded_entity == (int)r ? -1 : (int)r;
-                        expanded_instance = -1;
+                        expanded_row = expanded_row == (int)r ? -1 : (int)r;
+                        expanded_molecule = -1;
                     }
                 }
                 if (ImGui::IsItemHovered()) {
-                    highlight_entity(data, row.entity);
+                    highlight_row(data, c, r);
                     handle_item_click(data);
                 }
                 ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(row.name);
                 ImGui::TableSetColumnIndex(2);
                 if (row.num_molecules > 0) ImGui::Text("%zu", row.num_molecules); else ImGui::TextDisabled("-");
                 ImGui::TableSetColumnIndex(3);
-                if (row.entity >= 0) ImGui::Text("%zu", row.num_residues); else ImGui::TextDisabled("-");
+                if (row.type >= 0) ImGui::Text("%zu", row.num_residues); else ImGui::TextDisabled("-");
                 ImGui::TableSetColumnIndex(4); ImGui::Text("%zu", row.num_atoms);
                 ImGui::TableSetColumnIndex(5); ImGui::Text("%.4g Da", row.mass);
                 if (c.has_charge) {
@@ -1511,62 +1598,53 @@ struct Dataset : viamd::EventHandler {
             ImGui::EndTable();
         }
 
-        // The copies of the expanded entity, and a polymer's sequence
-        if (expanded_entity >= 0 && (size_t)expanded_entity < md_array_size(c.rows) && c.rows[expanded_entity].entity >= 0) {
-            const EntityRow& row = c.rows[expanded_entity];
-            md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
-            md_array(uint32_t) instances = 0;
-            for (size_t i = 0; i < sys.instance.count; ++i) {
-                if (md_system_instance_entity_idx(&sys, i) == row.entity) md_array_push(instances, (uint32_t)i, md_temp_allocator(temp));
-            }
-            const int count = (int)md_array_size(instances);
+        // The molecules of the expanded type, and the sequences of their strands
+        if (expanded_row >= 0 && (size_t)expanded_row < md_array_size(c.rows) && c.rows[expanded_row].type >= 0) {
+            const TypeRow& row = c.rows[expanded_row];
+            const uint32_t* mols = c.row_mol + c.row_mol_offset[row.type];
+            const int count = (int)(c.row_mol_offset[row.type + 1] - c.row_mol_offset[row.type]);
 
             ImGui::Indent();
-            ImGui::Text("%s: %d %s", row.name, count, count == 1 ? "copy" : "copies");
-            ImGui::SetItemTooltip("The copies of the molecule in the system: each polymer chain, or each molecule, on its own");
+            ImGui::Text("%s: %d %s", row.name, count, count == 1 ? "molecule" : "molecules");
+            ImGui::SetItemTooltip("The molecules of the type in the system, each on its own");
             if (row.polymer) {
                 ImGui::SameLine();
                 ImGui::Checkbox("One letter codes", &use_short_labels);
             }
 
             if (count == 1 && row.polymer) {
-                draw_sequence(data, instances[0], use_short_labels);
+                draw_molecule_sequences(data, c, mols[0]);
             } else {
                 const float line = ImGui::GetTextLineHeightWithSpacing();
                 const float height = line * (float)MIN(count, 10) + ImGui::GetStyle().WindowPadding.y * 2;
-                if (ImGui::BeginChild("##instances", ImVec2(0, height), ImGuiChildFlags_Borders)) {
+                if (ImGui::BeginChild("##molecules", ImVec2(0, height), ImGuiChildFlags_Borders)) {
                     ImGuiListClipper clipper;
                     clipper.Begin(count);
-                    if (expanded_instance >= 0) clipper.IncludeItemByIndex(expanded_instance);
+                    if (expanded_molecule >= 0) clipper.IncludeItemByIndex(expanded_molecule);
                     while (clipper.Step()) {
                         for (int k = clipper.DisplayStart; k < clipper.DisplayEnd; ++k) {
-                            const uint32_t inst = instances[k];
-                            const md_urange_t res_range = md_system_instance_residue_range(&sys, inst);
-                            const md_urange_t atoms = md_system_instance_atom_range(&sys, inst);
-                            // By its chain: the id the data gives, or the position of an inferred one; a molecule of a
-                            // topology may hold several (the two strands of a duplex); else by its number
-                            const md_chain_idx_t chain = res_range.beg < res_range.end ? md_system_chain_find_by_residue_idx(&sys, res_range.beg) : -1;
-                            const md_chain_idx_t last  = res_range.beg < res_range.end ? md_system_chain_find_by_residue_idx(&sys, res_range.end - 1) : -1;
-                            const str_t id = chain >= 0 ? md_system_chain_id(&sys, (size_t)chain) : str_t{};
-                            char where[48];
-                            if (!str_empty(id))  snprintf(where, sizeof(where), "chain " STR_FMT, STR_ARG(id));
-                            else if (chain >= 0 && last > chain) snprintf(where, sizeof(where), "chains %d-%d", chain + 1, last + 1);
-                            else if (chain >= 0) snprintf(where, sizeof(where), "chain %d", chain + 1);
-                            else                 snprintf(where, sizeof(where), "#%d", k + 1);
-                            char label[128];
-                            snprintf(label, sizeof(label), "%s   %u residue%s, %u atoms", where, res_range.end - res_range.beg, res_range.end - res_range.beg == 1 ? "" : "s", atoms.end - atoms.beg);
+                            const uint32_t mol = mols[k];
+                            uint32_t num_res = 0;
+                            for (uint32_t q = c.mol_part_offset[mol]; q < c.mol_part_offset[mol + 1]; ++q) {
+                                const md_urange_t r = md_system_part_residue_range(&sys, c.mol_part[q]);
+                                num_res += r.end - r.beg;
+                            }
+                            const size_t num_atoms = md_system_molecule_atom_count(&sys, mol);
+                            char where[64];
+                            molecule_label(where, sizeof(where), sys, c, mol, k);
+                            char label[160];
+                            snprintf(label, sizeof(label), "%s   %u residue%s, %zu atoms", where, num_res, num_res == 1 ? "" : "s", num_atoms);
                             ImGui::PushID(k);
-                            if (ImGui::Selectable(label, expanded_instance == k) && !ImGui::IsKeyDown(ImGuiMod_Shift) && row.polymer) {
-                                expanded_instance = expanded_instance == k ? -1 : k;
+                            if (ImGui::Selectable(label, expanded_molecule == k) && !ImGui::IsKeyDown(ImGuiMod_Shift) && row.polymer) {
+                                expanded_molecule = expanded_molecule == k ? -1 : k;
                             }
                             if (ImGui::IsItemHovered()) {
-                                md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range((uint32_t)(atoms.beg), (uint32_t)(atoms.end)));
+                                highlight_molecule(data, mol);
                                 handle_item_click(data);
                             }
-                            if (expanded_instance == k && row.polymer) {
+                            if (expanded_molecule == k && row.polymer) {
                                 ImGui::Indent();
-                                draw_sequence(data, inst, use_short_labels);
+                                draw_molecule_sequences(data, c, mol);
                                 ImGui::Unindent();
                             }
                             ImGui::PopID();

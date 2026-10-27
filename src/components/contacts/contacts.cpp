@@ -306,7 +306,7 @@ struct Contacts : viamd::EventHandler {
             int gb = (int)group_by;
             if (ImGui::Combo("Groups", &gb, group_by_lbl, GroupBy_Count)) group_by = (GroupBy)gb;
             ImGui::SetItemTooltip("Residue: each residue.\nMolecule: atoms joined by bonds, each residue and polymer chain whole.\n"
-                                  "Chain: all that the file gives one chain id, or a polymer where it gives none.\n"
+                                  "Chain: all that the file gives one chain id (none where it gives no ids: see Part).\n"
                                   "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
                                   "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");

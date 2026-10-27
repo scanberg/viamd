@@ -290,6 +290,8 @@ void color_atoms_res_idx            (uint32_t* colors, size_t count, const md_sy
 // By the chains (md_chain_data_t): their ids, or their positions. An atom in no chain is white.
 void color_atoms_chain_id           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_chain_idx          (uint32_t* colors, size_t count, const md_system_t& sys);
+// By the parts (md_part_data_t), their positions: each strand, ligand and water. An atom in no part is white.
+void color_atoms_part_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 // secondary_structure: one per segment of sys.protein_backbone, for the displayed state usually
 // displayed_secondary_structure (viamd.h); NULL colors everything as unknown
 void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette = SecondaryStructurePalette());

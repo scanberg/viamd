@@ -203,18 +203,25 @@ static void tooltip_unit_suffix(char* buf, size_t cap, md_unit_t unit) {
     }
 }
 
-// Where an atom sits: its residue and its chain, -1 for either it is not in
+// Where an atom sits: its residue and its part, -1 for either it is not in
 struct TooltipPlace {
     int res_idx = -1;
-    int inst_idx = -1;
+    int part_idx = -1;
     int atom_idx = -1;      // An atom of it, which tells its molecule
 };
 
 static TooltipPlace tooltip_place_of_atom(const md_system_t& sys, size_t atom_idx) {
     return {
         .res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx),
-        .inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx),
+        .part_idx = md_system_part_find_by_atom_idx(&sys, atom_idx),
         .atom_idx = (int)atom_idx,
+    };
+}
+
+static TooltipPlace tooltip_place_of_residue(const md_system_t& sys, int res_idx) {
+    return {
+        .res_idx = res_idx,
+        .part_idx = res_idx >= 0 ? md_system_part_find_by_residue_idx(&sys, (size_t)res_idx) : -1,
     };
 }
 
@@ -233,53 +240,75 @@ static int tooltip_place_chain(const md_system_t& sys, const TooltipPlace& place
     return place.res_idx >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)place.res_idx) : -1;
 }
 
-// "chain A", the id the data gives; "chain 2" for a chain inferred where it gives none, by its position, as chain(2)
-// finds it. A molecule in no chain (a water the data gives no chain id) is named by its residue alone.
-static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, int chain_idx) {
-    const str_t id = md_system_chain_id(&sys, (size_t)chain_idx);
-    if (!str_empty(id)) {
-        md_str_writer_fmt(sb, "chain " STR_FMT, STR_ARG(id));
-    } else {
-        md_str_writer_fmt(sb, "chain %d", chain_idx + 1);
+// The position of the part among the strands of the polymers, as polymer(i) counts them: -1 for a part which is no strand
+static int tooltip_polymer_position(const md_system_t& sys, int part_idx) {
+    if (part_idx < 0 || !md_part_kind_is_polymer(md_system_part_kind(&sys, (size_t)part_idx))) return -1;
+    int pos = 0;
+    for (int p = 0; p < part_idx; ++p) pos += md_part_kind_is_polymer(md_system_part_kind(&sys, (size_t)p)) ? 1 : 0;
+    return pos;
+}
+
+// What a place is filed under: "chain A", the id the data gives; where it gives none, the strand of a polymer it is of,
+// "polymer 2", by its position as polymer(2) finds it. A part of no polymer in no chain (a water the data gives no
+// chain id) is named by its residue alone: -1, nothing appended.
+static bool tooltip_append_label(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
+    const int chain = tooltip_place_chain(sys, place);
+    if (chain >= 0) {
+        md_str_writer_fmt(sb, "chain " STR_FMT, STR_ARG(md_system_chain_id(&sys, (size_t)chain)));
+        return true;
     }
+    const int pos = tooltip_polymer_position(sys, place.part_idx);
+    if (pos >= 0) {
+        md_str_writer_fmt(sb, "polymer %d", pos + 1);
+        return true;
+    }
+    return false;
+}
+
+// The label a place is filed under, as an identity to compare: its chain, else its strand, else none
+static int64_t tooltip_label_key(const md_system_t& sys, const TooltipPlace& place) {
+    const int chain = tooltip_place_chain(sys, place);
+    if (chain >= 0) return chain;
+    const int pos = tooltip_polymer_position(sys, place.part_idx);
+    return pos >= 0 ? ((int64_t)1 << 32) + pos : -1;
 }
 
 // The rest of a title: " · ALA 42 · chain A" for one place, and for the two ends of a bond that crosses over
 // " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B"
 static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
     auto sep = [sb]() { if (!md_str_writer_empty(sb)) *sb += TOOLTIP_SEP; };
-    const int chain_a = tooltip_place_chain(sys, a);
-    const int chain_b = b ? tooltip_place_chain(sys, *b) : -1;
-    const bool two_chains = b && chain_b != chain_a;
+    const int64_t label_a = tooltip_label_key(sys, a);
+    const int64_t label_b = b ? tooltip_label_key(sys, *b) : -1;
+    const bool two_labels = b && label_b != label_a;
     const bool two_residues = b && b->res_idx != a.res_idx;
 
     if (a.res_idx != -1) {
         sep();
         tooltip_append_residue(sb, sys, a.res_idx);
-        if (two_residues && !two_chains && b->res_idx != -1) {
+        if (two_residues && !two_labels && b->res_idx != -1) {
             *sb += " / ";
             tooltip_append_residue(sb, sys, b->res_idx);
         }
     }
-    if (chain_a != -1) {
+    if (label_a != -1) {
         sep();
-        tooltip_append_chain(sb, sys, chain_a);
+        tooltip_append_label(sb, sys, a);
     }
-    if (two_chains && (b->res_idx != -1 || chain_b != -1)) {
+    if (two_labels && (b->res_idx != -1 || label_b != -1)) {
         *sb += " / ";
         if (b->res_idx != -1) {
             tooltip_append_residue(sb, sys, b->res_idx);
-            if (chain_b != -1) *sb += TOOLTIP_SEP;
+            if (label_b != -1) *sb += TOOLTIP_SEP;
         }
-        if (chain_b != -1) {
-            tooltip_append_chain(sb, sys, chain_b);
+        if (label_b != -1) {
+            tooltip_append_label(sb, sys, *b);
         }
     }
 }
 
 // "residue(56) part(3) chain(1)", after whatever sb holds: the place in the script's terms. The part is given where it is
-// less than its molecule (a glycan, a strand bonded to another), and a molecule in no chain by its position among the
-// molecules.
+// less than its molecule (a glycan, a strand bonded to another). Then what it is filed under: its chain, else the strand
+// of a polymer it is by its position (polymer(2)), else its molecule by its position among the molecules.
 static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
     const int chain = tooltip_place_chain(sys, place);
     int atom = place.atom_idx;
@@ -287,7 +316,7 @@ static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, co
     const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
 
     if (place.res_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.res_idx + 1);
-    const int32_t part = place.res_idx != -1 ? md_system_part_find_by_residue_idx(&sys, (size_t)place.res_idx) : -1;
+    const int32_t part = place.part_idx;
     if (part != -1 && mol != -1) {
         const md_urange_t part_atoms = md_system_part_atom_range(&sys, (size_t)part);
         const size_t mol_size = md_system_molecule_atom_count(&sys, (size_t)mol);
@@ -299,7 +328,42 @@ static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, co
         md_str_writer_fmt(sb, "%schain(%d)", md_str_writer_empty(sb) ? "" : " ", chain + 1);
         return;
     }
+    const int pos = tooltip_polymer_position(sys, part);
+    if (pos >= 0) {
+        md_str_writer_fmt(sb, "%spolymer(%d)", md_str_writer_empty(sb) ? "" : " ", pos + 1);
+        return;
+    }
     if (mol != -1) md_str_writer_fmt(sb, "%smolecule(%lld)", md_str_writer_empty(sb) ? "" : " ", (long long)mol + 1);
+}
+
+// What a place is of: its part, by the type of it (an mmCIF entity, or inferred: the kind of a polymer, the residue names
+// of anything else), and its molecule, by its type, where that says more than the part (a glycoprotein, a molecule of a
+// topology, named as the topology names it)
+static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const md_system_t& sys, const TooltipPlace& place) {
+    str_t part_desc = {};
+    if (place.part_idx != -1) {
+        const md_part_type_idx_t type = md_system_part_type_idx(&sys, (size_t)place.part_idx);
+        if (type != -1) {
+            part_desc = md_system_part_type_description(&sys, (size_t)type);
+            const char* kind = md_part_kind_name(md_system_part_type_kind(&sys, (size_t)type));
+            if (str_empty(part_desc) || str_eq_cstr(part_desc, kind)) {
+                tooltip_row(req, STR_LIT("part"), "%s", kind);
+                part_desc = str_from_cstr(kind);
+            } else {
+                tooltip_row(req, STR_LIT("part"), STR_FMT " (%s)", STR_ARG(part_desc), kind);
+            }
+        }
+    }
+    int atom = place.atom_idx;
+    if (atom == -1 && place.res_idx != -1) atom = (int)md_system_residue_atom_range(&sys, place.res_idx).beg;
+    const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
+    if (mol != -1) {
+        const md_molecule_type_idx_t type = md_system_molecule_type_idx(&sys, (size_t)mol);
+        const str_t name = type != -1 ? md_system_molecule_type_name(&sys, (size_t)type) : str_t{};
+        if (!str_empty(name) && !str_eq(name, part_desc)) {
+            tooltip_row(req, STR_LIT("molecule"), STR_FMT, STR_ARG(name));
+        }
+    }
 }
 
 // The atom's name, else its element's symbol, else its index
@@ -555,10 +619,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         return;
     }
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-    const TooltipPlace place = {
-        .res_idx = res_idx,
-        .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
-    };
+    const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_place(&title, sys, place);
@@ -581,21 +642,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
 
     tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
 
-    // The molecule it is part of (the type of it: the entity), which the title names only by its chain
-    if (place.inst_idx != -1) {
-        const md_entity_idx_t ent_idx = md_system_instance_entity_idx(&sys, place.inst_idx);
-        if (ent_idx != -1) {
-            const str_t desc = md_system_entity_description(&sys, ent_idx);
-            const md_entity_flags_t ent_flags = md_system_entity_flags(&sys, ent_idx);
-            const char* ent_kind = md_entity_kind_name(md_system_entity_kind(&sys, ent_idx));
-            const char* inferred = (ent_flags & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "";
-            if (!str_empty(desc)) {
-                tooltip_row(req, STR_LIT("molecule"), STR_FMT " (%s%s)", STR_ARG(desc), ent_kind, inferred);
-            } else {
-                tooltip_row(req, STR_LIT("molecule"), "%s%s", ent_kind, inferred);
-            }
-        }
-    }
+    tooltip_part_and_molecule_rows(req, sys, place);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     tooltip_append_index(&index, sys, place);
@@ -613,10 +660,9 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     if (!(md_system_residue_flags(&sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return;
 
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-    const int inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1;
     const TooltipPlace place[2] = {
-        {.res_idx = (int)res_idx,       .inst_idx = inst_idx},
-        {.res_idx = (int)res_idx + 1, .inst_idx = inst_idx},
+        tooltip_place_of_residue(sys, (int)res_idx),
+        tooltip_place_of_residue(sys, (int)res_idx + 1),
     };
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
@@ -648,9 +694,11 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     md_str_writer_t index = md_str_writer_create(req->alloc);
     md_str_writer_fmt(&index, "residue(%u) residue(%u)", res_idx + 1, res_idx + 2);
     const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
+    const int strand = tooltip_polymer_position(sys, place[0].part_idx);
     const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
-    if (chain != -1)    md_str_writer_fmt(&index, " chain(%d)", chain + 1);
-    else if (mol != -1) md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
+    if (chain != -1)       md_str_writer_fmt(&index, " chain(%d)", chain + 1);
+    else if (strand != -1) md_str_writer_fmt(&index, " polymer(%d)", strand + 1);
+    else if (mol != -1)    md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
     tooltip_row_list(req, STR_LIT("index"), index);
 }
 
@@ -674,7 +722,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     TooltipPlace other = place;
     for (size_t i = 1; i < count; ++i) {
         const TooltipPlace p = tooltip_place_of_atom(sys, (size_t)atoms[i]);
-        if (p.res_idx != place.res_idx || p.inst_idx != place.inst_idx) {
+        if (p.res_idx != place.res_idx || p.part_idx != place.part_idx) {
             other = p;
             break;
         }
@@ -777,10 +825,7 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
         return;
     }
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-    const TooltipPlace place = {
-        .res_idx = res_idx,
-        .inst_idx = range.beg < range.end ? md_system_instance_find_by_atom_idx(&sys, range.beg) : -1,
-    };
+    const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_place(&title, sys, place);
@@ -1471,10 +1516,10 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
     const md_assembly_data_t& a = sys.assembly;
     if (assembly < 0 || (size_t)assembly >= a.count) return;
     if (copy_offset) md_array_push(*copy_offset, 0, alloc);
-    // The parts and their operators from the offsets as they are (assembly_part)
-    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
-        const AssemblyPart part = assembly_part(a, p);
-        for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
+    // The groups and their operators from the offsets as they are (assembly_group)
+    for (size_t p = a.group_offset[assembly]; p < a.group_offset[assembly + 1]; ++p) {
+        const AssemblyGroup group = assembly_group(a, p);
+        for (const uint32_t* o = group.oper; o < group.oper_end; ++o) {
             md_array_push(*transforms, a.oper_transform[*o], alloc);
         }
         if (copy_offset) md_array_push(*copy_offset, (uint32_t)md_array_size(*transforms), alloc);
@@ -1513,15 +1558,15 @@ void assembly_subsets_update(ApplicationState* app) {
     const CartoonGlyphs& glyphs = app->mold.cartoon_glyphs;
     const bool has_glyphs = cartoon_glyphs_valid(glyphs);
     uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MAX(sys.atom.count, (size_t)1));
-    // The parts and their instances from the offsets as they are (assembly_part), not from a range of them
-    for (size_t p = a.part_offset[assembly]; p < a.part_offset[assembly + 1]; ++p) {
-        const AssemblyPart part = assembly_part(a, p);
+    // The groups and their instances from the offsets as they are (assembly_group), not from a range of them
+    for (size_t p = a.group_offset[assembly]; p < a.group_offset[assembly + 1]; ++p) {
+        const AssemblyGroup group = assembly_group(a, p);
         md_gl_subset_t subset = {};
         md_gl_subset_t glyph_subset = {};
-        // A part of all instances (each once) shows the whole molecule
-        if ((size_t)(part.inst_end - part.inst) < sys.instance.count) {
+        // A group of all instances (each once) shows the whole system
+        if ((size_t)(group.inst_end - group.inst) < sys.instance.count) {
             uint32_t count = 0;
-            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+            for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
                 const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*k);
                 const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
                 for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
@@ -6312,32 +6357,32 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     defer { md_temp_end(temp); };
 
     if (sys && assembly >= 0 && (size_t)assembly < sys->assembly.count && sys->atom.count == state.num_atoms) {
-        // The atoms of the instances of each part where each of its operators puts them, framed as one: the cell has
+        // The atoms of the instances of each group where each of its operators puts them, framed as one: the cell has
         // nothing to say about an assembly. Of a large one (a virus) every k-th atom, at most about a million in all.
         const md_assembly_data_t& a = sys->assembly;
         const md_bitset_t* m = (mask && md_bitset_count(*mask) > 0) ? mask : nullptr;
-        // The parts, their instances and operators from the offsets as they are (assembly_part)
-        const size_t part_beg = a.part_offset[assembly];
-        const size_t part_end = a.part_offset[assembly + 1];
+        // The groups, their instances and operators from the offsets as they are (assembly_group)
+        const size_t part_beg = a.group_offset[assembly];
+        const size_t part_end = a.group_offset[assembly + 1];
         size_t total = 0;
         for (size_t p = part_beg; p < part_end; ++p) {
-            const AssemblyPart part = assembly_part(a, p);
+            const AssemblyGroup group = assembly_group(a, p);
             size_t atoms = 0;
-            for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+            for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
                 const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
                 atoms += r.end - r.beg;
             }
-            total += atoms * (size_t)(part.oper_end - part.oper);
+            total += atoms * (size_t)(group.oper_end - group.oper);
         }
         const size_t max_points = 1000000;
         const uint32_t stride = (uint32_t)MAX((size_t)1, DIV_UP(total, max_points));
         md_array(vec3_t) xyz = 0;
         md_array_ensure(xyz, MIN(total, max_points) + 1, md_temp_allocator(temp));
         for (size_t p = part_beg; p < part_end; ++p) {
-            const AssemblyPart part = assembly_part(a, p);
-            for (const uint32_t* o = part.oper; o < part.oper_end; ++o) {
+            const AssemblyGroup group = assembly_group(a, p);
+            for (const uint32_t* o = group.oper; o < group.oper_end; ++o) {
                 const mat4_t M = a.oper_transform[*o];
-                for (const md_instance_idx_t* k = part.inst; k < part.inst_end; ++k) {
+                for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
                     const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
                     for (uint32_t i = r.beg; i < r.end; i += stride) {
                         if (m && !md_bitset_test(*m, i)) continue;
