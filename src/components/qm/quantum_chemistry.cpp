@@ -103,30 +103,36 @@ constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
 // How a critical point of the electron density is shown, by type (md_topo_critical_point_type_t). Named as in
-// QTAIM, by the rank and signature of the Hessian there. The colours are Okabe and Ito's, told apart with each
-// common colour vision deficiency, and none of them is the selection's blue or the highlight's yellow: those mark
-// a point with a ring around it, so a marked point keeps the colour of its type. Size tells the type too: the
-// maxima, at the nuclei, are the largest.
+// Bader's QTAIM (and AIMAll): attractor, bond, ring and cage critical point, with the rank and signature of the
+// Hessian there, (3,-3) to (3,+3); beside it the topological name md_topo uses (maximum, split saddle, join
+// saddle, minimum). An attractor is not called nuclear: non-nuclear attractors exist. The colours are Okabe and
+// Ito's, told apart with each common colour vision deficiency, and none of them is the selection's blue or the
+// highlight's yellow: those mark a point with a ring around it, so a marked point keeps the colour of its type.
+// Size tells the type too: the attractors, at the nuclei, are the largest.
 struct CriticalPointStyle {
-    const char* name;
+    const char* name;       // QTAIM, as a title
+    const char* label;      // QTAIM, short, for the table and the legend
     const char* plural;
+    const char* signature;  // (rank, signature)
+    const char* topology;   // md_topo's name
+    const char* topology_plural;
     vec4_t      color;      // display referred: the overlay goes over the image after the display transform
     float       radius;     // Å, at a point size of 1
 };
 
 static const CriticalPointStyle critical_point_styles[5] = {
-    { "Undefined",      "Undefined",          {0.60f, 0.60f, 0.60f, 1.0f}, 0.09f },
-    { "Maximum (3,-3)", "Maxima (3,-3)",      {0.80f, 0.47f, 0.65f, 1.0f}, 0.12f },   // MD_TOPO_MAXIMUM: reddish purple
-    { "Bond (3,-1)",    "Bond points (3,-1)", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
-    { "Cage (3,+3)",    "Cage points (3,+3)", {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
-    { "Ring (3,+1)",    "Ring points (3,+1)", {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
+    { "Undefined",            "Undefined", "Undefined",  "",       "undefined",    "undefined",     {0.60f, 0.60f, 0.60f, 1.0f}, 0.09f },
+    { "Attractor",            "Attractor", "Attractors", "(3,-3)", "maximum",      "maxima",        {0.80f, 0.47f, 0.65f, 1.0f}, 0.12f },   // MD_TOPO_MAXIMUM: reddish purple
+    { "Bond critical point",  "BCP",       "Bond CPs",   "(3,-1)", "split saddle", "split saddles", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
+    { "Cage critical point",  "CCP",       "Cage CPs",   "(3,+3)", "minimum",      "minima",        {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
+    { "Ring critical point",  "RCP",       "Ring CPs",   "(3,+1)", "join saddle",  "join saddles",  {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
 };
 
 static inline const CriticalPointStyle& critical_point_style(int type) {
     return critical_point_styles[(type >= 0 && type < (int)ARRAY_SIZE(critical_point_styles)) ? type : 0];
 }
 
-// The order the types are listed and sorted in: maxima, bond, ring and cage points
+// The order the types are listed and sorted in: attractors, bond, ring and cage critical points
 static constexpr int critical_point_type_order[4] = { MD_TOPO_MAXIMUM, MD_TOPO_SPLIT_SADDLE, MD_TOPO_JOIN_SADDLE, MD_TOPO_MINIMUM };
 
 static inline int critical_point_type_rank(int type) {
@@ -649,7 +655,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // How they are drawn (draw_critical_points)
         float point_scale = 1.0f;       // the markers' size, times critical_point_styles' radii
-        bool  show_paths  = true;       // the bond paths and ring lines (the graph's edges)
+        bool  show_paths  = true;       // the bond paths and RCP attractor paths (the graph's edges)
 
         PickingRange picking_range = {};
 
@@ -1301,11 +1307,13 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (cp_idx < critical_points.simp_graph.num_vertices) {
                         const md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
                         const md_topo_vert_t& v = critical_points.simp_graph.vertices[cp_idx];
-                        // The type in lower case, as the tooltip uses it as words ("bond (3,-1)")
+                        // The title in lower case, as the tooltips have them ("bond critical point")
+                        const CriticalPointStyle& style = critical_point_style(type);
                         char type_str[32];
-                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", critical_point_style(type).name);
+                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", style.name);
                         convert_to_lower(type_str, (size_t)CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
-                        tooltip_title(req, "critical point" TOOLTIP_SEP "%s", type_str);
+                        tooltip_title(req, "%s", type_str);
+                        tooltip_row(req, STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
                         tooltip_row(req, STR_LIT("density"), "%.6g au", v.value);
                         // The graph is in bohr
                         tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
@@ -1488,15 +1496,17 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
         const vec4_t outline_color = dark_bg ? vec4_t{0.92f, 0.92f, 0.92f, 0.90f} : vec4_t{0.10f, 0.10f, 0.10f, 0.90f};
         const vec4_t bond_path_color = dark_bg ? vec4_t{0.80f, 0.80f, 0.80f, 0.85f} : vec4_t{0.25f, 0.25f, 0.25f, 0.85f};
-        vec4_t ring_line_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
-        ring_line_color.w = 0.75f;
+        vec4_t rcp_path_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
+        rcp_path_color.w = 0.75f;
         const float scale = critical_points.point_scale;
 
         auto pos = [&g](size_t i) {
             return vec3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
         };
 
-        // The paths: from a bond point to its maxima, from a ring point to its cages
+        // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
+        // paths, from a ring critical point to the cage critical points beside it (md_topo traces each from the
+        // saddle, so a graph's edge runs from it)
         if (critical_points.show_paths && g.num_edges > 0) {
             immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, 6 * g.num_edges);
             size_t n = 0;
@@ -1509,7 +1519,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 const float len = vec3_length(side);
                 if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
                 const vec3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
-                const uint32_t col = convert_color(bond ? bond_path_color : ring_line_color);
+                const uint32_t col = convert_color(bond ? bond_path_color : rcp_path_color);
                 const vec3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
                 const int tri[6] = {0, 1, 2, 0, 2, 3};
                 for (int k = 0; k < 6; ++k) {
@@ -4665,9 +4675,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 ImGui::SetItemTooltip("Centre of the region in \xC3\x85, %u cubes.\n"
                                       "The index sum is the degree of the density gradient on the region's boundary\n"
-                                      "(computed numerically): the sum over the critical points inside of -1 for a\n"
-                                      "maximum or ring point and +1 for a bond or cage point. Non-zero proves at least\n"
-                                      "one critical point is in there; zero means none, or pairs that cancel.", c.num_boxes);
+                                      "(computed numerically): the sum over the critical points inside of -1 for an\n"
+                                      "attractor (maximum) or RCP (join saddle) and +1 for a BCP (split saddle) or CCP\n"
+                                      "(minimum). Non-zero proves at least one critical point is in there; zero means\n"
+                                      "none, or pairs that cancel.", c.num_boxes);
             }
             if (info.clusters_truncated) {
                 ImGui::BulletText("...");
@@ -5182,8 +5193,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
                     ImGui::SliderFloat("Point size", &critical_points.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
                     ImGui::Checkbox("Show paths", &critical_points.show_paths);
-                    ImGui::SetItemTooltip("The bond paths, from each bond point to the two maxima it joins, and the ring lines,\n"
-                                          "from each ring point to the cage points it joins");
+                    ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
+                                          "RCP attractor paths, from each ring critical point to the cage critical points beside it");
 
                     // The counts, as the legend of the markers
                     ImGui::Text("Critical points: %u, paths: %u", graph.num_vertices, graph.num_edges);
@@ -5191,7 +5202,10 @@ struct QuantumChemistry : viamd::EventHandler {
                         const int type = critical_point_type_order[k];
                         critical_point_swatch(type);
                         ImGui::SameLine();
-                        ImGui::Text("%-19s %u", critical_point_style(type).plural, vertex_count[type]);
+                        const CriticalPointStyle& style = critical_point_style(type);
+                        ImGui::Text("%-10s %s %5u", style.plural, style.signature, vertex_count[type]);
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%s", style.topology_plural);
                     }
                     if (ImGui::Button("Print Critical Points Info")) {
                         for (size_t i = 0; i < graph.num_vertices; ++i) {
@@ -5340,9 +5354,13 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.4f", v.z * BOHR_TO_ANGSTROM);
                                 ImGui::TableNextColumn();
-                                critical_point_swatch(type);
-                                ImGui::SameLine();
-                                ImGui::TextUnformatted(critical_point_style(type).name);
+                                {
+                                    const CriticalPointStyle& style = critical_point_style(type);
+                                    critical_point_swatch(type);
+                                    ImGui::SameLine();
+                                    ImGui::Text("%s %s", style.label, style.signature);
+                                    ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
+                                }
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.8f", v.value);                                
                             }
