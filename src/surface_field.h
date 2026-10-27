@@ -51,8 +51,10 @@ enum class SurfaceFieldKind {
     // The electrostatic potential of the classical multipoles of the system: the charges
     // (atom/charge), and the dipoles and quadrupoles (atom/dipole, atom/quadrupole) where the
     // potential has them, with the atoms that carry none - the QM atoms of an embedding, NAN there -
-    // left out. For a polarizable embedding this is its PERMANENT part only: the induced dipoles are
-    // solved for during the calculation and not stored, so they are not in it.
+    // left out. For a polarizable embedding whose run kept its induced dipoles (atom/induced_dipole)
+    // those are part of it, added to the sites' dipoles: the total potential the QM region was
+    // embedded in. Without them it is the permanent part only - see
+    // surface_field_embedding_induced_sites for telling the two apart.
     EmbeddingPotential,
 
     // The electrostatic potential of the QM region itself, its nuclei and its ground state electron
@@ -146,6 +148,10 @@ md_unit_t surface_field_unit(SurfaceFieldKind kind);
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, not read.
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
+
+// How many of the environment's sites the Embedding Potential includes an induced dipole for: 0
+// when the dataset has none, and the potential is that of the permanent multipoles alone.
+size_t surface_field_embedding_induced_sites(const md_system_t& sys);
 
 // The first kind the system has what to make of, Count for none
 SurfaceFieldKind surface_field_first_available(const md_system_t& sys);

@@ -1885,11 +1885,21 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         ImGui::EndCombo();
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the environment's classical multipoles on the surface: the charges,\n"
-                              "and the dipoles and quadrupoles where the potential has them.\n"
-                              "The QM region is left out, whatever charges a topology gives its atoms.\n"
-                              "For a polarizable embedding this is the potential of its PERMANENT multipoles:\n"
-                              "the induced dipoles are solved for during the calculation and not stored.");
+        // What this dataset's potential is made of, since a polarizable run may or may not have kept its
+        // induced dipoles. Counted only while the tooltip shows: it reads a column over every atom.
+        if (ImGui::BeginItemTooltip()) {
+            ImGui::TextUnformatted("The electrostatic potential of the environment on the surface: its charges, the dipoles and\n"
+                                   "quadrupoles where the potential has them, and for a polarizable embedding the dipoles the\n"
+                                   "calculation induced, where it kept them - the potential the QM region was embedded in.\n"
+                                   "The QM region is left out, whatever charges a topology gives its atoms.");
+            const size_t num_induced = surface_field_embedding_induced_sites(sys);
+            if (num_induced > 0) {
+                ImGui::Text("Here: the charges and the dipoles induced on %zu polarizable sites, the total potential.", num_induced);
+            } else {
+                ImGui::TextUnformatted("Here: the permanent multipoles; the dataset has no induced dipoles.");
+            }
+            ImGui::EndTooltip();
+        }
     } else if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
         ImGui::SetItemTooltip("The electrostatic potential of the QM region on the surface: its nuclei and its ground state\n"
                               "electron density, exact over the basis. Negative (red) where the electrons dominate - lone pairs,\n"

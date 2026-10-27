@@ -96,8 +96,39 @@ static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path,
     return md_attribute_extract_f64(dst, n, attr, md_attribute_slice_all(), unit) == n;
 }
 
+// The dipoles a polarizable embedding induced on the environment's sites, over the system's atoms
+// (md_vlx publishes them for a run that kept them): zero on a site that is not polarizable, NAN on
+// the QM atoms. Part of the embedding potential - the QM region's Fock operator has the field of
+// the induced dipoles in it beside that of the charges, as bare point dipoles - so they are added to
+// the sites' permanent dipoles rather than offered as a field of their own: the permanent part alone
+// is not a potential the QM density was ever in, and not that of a non-polarizable run either.
+static const str_t EMBEDDING_INDUCED_DIPOLE_PATH = STR_INIT("atom/induced_dipole");
+
+size_t surface_field_embedding_induced_sites(const md_system_t& sys) {
+    const size_t num_atoms = md_system_atom_count(&sys);
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, EMBEDDING_INDUCED_DIPOLE_PATH);
+    if (!attr || attr->format.components != 3 || md_attribute_value_count(&attr->format) != num_atoms) {
+        return 0;
+    }
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* mu = (double*)md_temp_alloc(temp, sizeof(double) * 3 * MAX(num_atoms, (size_t)1));
+    if (!extract_atom_column(mu, sys, EMBEDDING_INDUCED_DIPOLE_PATH, 3, md_unit_elementary_charge_bohr())) {
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (!atom_in_environment(sys, i)) continue;
+        const double* m = mu + 3 * i;
+        if (is_finite_f64(m[0]) && is_finite_f64(m[1]) && is_finite_f64(m[2]) && (m[0] != 0.0 || m[1] != 0.0 || m[2] != 0.0)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
 // The environment's classical sites as points with their charge, and their dipole and quadrupole
-// where the potential has them
+// where the potential has them. A site's dipole is its permanent one and the one induced on it.
 static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc& desc, md_allocator_i* alloc) {
     const md_system_t& sys = *desc.sys;
     const md_attribute_t* attr = find_atom_charges(sys);
@@ -117,12 +148,14 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
     double* mu = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms);
     double* Q  = (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms);
     const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
-    const bool has_mu = extract_atom_column(mu, sys, STR_LIT("atom/dipole"),     3, md_unit_elementary_charge_bohr());
-    const bool has_Q  = extract_atom_column(Q,  sys, STR_LIT("atom/quadrupole"), 6, e_bohr2);
+    double* mu_ind = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms);
+    const bool has_mu  = extract_atom_column(mu, sys, STR_LIT("atom/dipole"),     3, md_unit_elementary_charge_bohr());
+    const bool has_ind = extract_atom_column(mu_ind, sys, EMBEDDING_INDUCED_DIPOLE_PATH, 3, md_unit_elementary_charge_bohr());
+    const bool has_Q   = extract_atom_column(Q,  sys, STR_LIT("atom/quadrupole"), 6, e_bohr2);
 
     float*  xyz    = (float*)md_temp_alloc(temp, sizeof(float) * 3 * num_atoms);
     double* charge = (double*)md_temp_alloc(temp, sizeof(double) * num_atoms);
-    double* dipole = has_mu ? (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms) : nullptr;
+    double* dipole = (has_mu || has_ind) ? (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms) : nullptr;
     double* quad   = has_Q  ? (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms) : nullptr;
     size_t  n = 0;
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -134,6 +167,7 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
         bool any = q[i] != 0.0;
         double m[9] = {};
         for (int k = 0; has_mu && k < 3; ++k) m[k]     = is_finite_f64(mu[3 * i + k]) ? mu[3 * i + k] : 0.0;
+        for (int k = 0; has_ind && k < 3; ++k) m[k]   += is_finite_f64(mu_ind[3 * i + k]) ? mu_ind[3 * i + k] : 0.0;
         for (int k = 0; has_Q  && k < 6; ++k) m[3 + k] = is_finite_f64(Q[6 * i + k])  ? Q[6 * i + k]  : 0.0;
         for (int k = 0; k < 9; ++k) any |= m[k] != 0.0;
         if (!any) continue;
