@@ -395,6 +395,7 @@ struct GtoCriticalPointJob {
     md_tick_t         start   = 0;
     bool              dropped = false;       // main thread only: superseded, never to be shown
     volatile int32_t  cancel  = 0;
+    volatile float    progress = 0.0f;       // written by the run: 0 to 1, an estimate (md_topo_gto_desc_t)
     std::atomic<bool> done    = false;
     task_system::ID   task    = task_system::INVALID_ID;
 #if MD_ENABLE_GPU
@@ -462,6 +463,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
     job->desc.cancel             = &job->cancel;   // num_threads 0: every core
+    job->desc.progress           = &job->progress;
 
     job->graph.alloc = md_get_heap_allocator();
     job->hash  = hash;
@@ -471,8 +473,9 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     if (use_gpu && app.gpu_device) job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
 #endif
 
-    // Hidden from the task overlay: its close button interrupts a task through a flag this run never
-    // sees. The Critical Points section has its own progress line and cancel button.
+    // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
+    // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
+    // instead (critical_points_progress), as does the Critical Points section, each with a cancel button.
     job->task = task_system::create_pool_task(STR_LIT("##Critical Points"), [job]() {
 #if MD_ENABLE_GPU
         if (job->stream) {
@@ -4508,9 +4511,14 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         if (cp.gto_job) {
-            ImGui::Text("Searching... %.1f s", md_tick_to_seconds(md_tick_now() - cp.gto_job->start));
+            const GtoCriticalPointJob* job = cp.gto_job;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Searching %.0f%% (%.0f s)", job->progress * 100.0f, md_tick_to_seconds(md_tick_now() - job->start));
+            const float cancel_width = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::ProgressBar(job->progress, ImVec2(ImGui::GetContentRegionAvail().x - cancel_width, 0), buf);
+            ImGui::SetItemTooltip("How far the search is: an estimate, as the work of the search unfolds as it goes");
             ImGui::SameLine();
-            if (ImGui::SmallButton("Cancel")) {
+            if (ImGui::Button("Cancel")) {
                 cp.gto_job->cancel = 1;   // collected as usual: what was found so far is shown, marked
             }
             return;
@@ -10683,3 +10691,15 @@ struct QuantumChemistry : viamd::EventHandler {
 };
 
 static QuantumChemistry instance = {};
+
+bool critical_points_progress(float* fraction) {
+    const GtoCriticalPointJob* job = instance.critical_points.gto_job;
+    // a run stopping, or done within a few frames, shows nothing
+    if (!job || job->cancel || job->dropped || md_tick_to_seconds(md_tick_now() - job->start) < 0.25) return false;
+    *fraction = CLAMP(job->progress, 0.0f, 1.0f);
+    return true;
+}
+
+void critical_points_cancel() {
+    if (instance.critical_points.gto_job) instance.critical_points.gto_job->cancel = 1;
+}

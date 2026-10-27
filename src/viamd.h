@@ -2473,6 +2473,12 @@ void gpu_volume_jobs_poll(ApplicationState* state);
 // long: for a progress display. False without the GPU backend.
 bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
+// The analytic critical point search under way (the QM component), for a progress display: true once it
+// has run for a moment, with how far it is (0 to 1, an estimate). critical_points_cancel stops it, as
+// the Cancel button beside it in the Critical Points section does.
+bool critical_points_progress(float* fraction);
+void critical_points_cancel();
+
 
 // The QM ATOM DOMAIN: the atoms a quantum chemistry calculation covered, in its own order and at
 // its own geometry. NOT the system's atoms - a calculation can cover part of a loaded system, so
