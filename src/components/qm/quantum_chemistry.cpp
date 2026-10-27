@@ -1498,7 +1498,17 @@ struct QuantumChemistry : viamd::EventHandler {
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
+        // The masks are made once, at initialisation, in the persistent allocator: carried across the
+        // value-initialisation and emptied. Zeroed, a mask has an empty domain and drops every index
+        // set in it, which left hovering, clicking and region-selecting critical points doing nothing
+        // once a system had been freed (any load after the first).
+        const md_bitmask_t cp_selection = critical_points.selection_mask;
+        const md_bitmask_t cp_highlight = critical_points.highlight_mask;
         critical_points = {};
+        critical_points.selection_mask = cp_selection;
+        critical_points.highlight_mask = cp_highlight;
+        md_bitmask_clear(&critical_points.selection_mask);
+        md_bitmask_clear(&critical_points.highlight_mask);
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
