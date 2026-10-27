@@ -104,27 +104,40 @@ static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path,
 // is not a potential the QM density was ever in, and not that of a non-polarizable run either.
 static const str_t EMBEDDING_INDUCED_DIPOLE_PATH = STR_INIT("atom/induced_dipole");
 
-size_t surface_field_embedding_induced_sites(const md_system_t& sys) {
+// Environment sites whose `components` values in `path` are finite and not all zero; 0 without the column
+static size_t count_environment_sites(const md_system_t& sys, double* scratch, str_t path, uint32_t components, md_unit_t unit) {
+    if (!extract_atom_column(scratch, sys, path, components, unit)) {
+        return 0;
+    }
     const size_t num_atoms = md_system_atom_count(&sys);
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, EMBEDDING_INDUCED_DIPOLE_PATH);
-    if (!attr || attr->format.components != 3 || md_attribute_value_count(&attr->format) != num_atoms) {
-        return 0;
-    }
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    double* mu = (double*)md_temp_alloc(temp, sizeof(double) * 3 * MAX(num_atoms, (size_t)1));
-    if (!extract_atom_column(mu, sys, EMBEDDING_INDUCED_DIPOLE_PATH, 3, md_unit_elementary_charge_bohr())) {
-        return 0;
-    }
     size_t count = 0;
     for (size_t i = 0; i < num_atoms; ++i) {
         if (!atom_in_environment(sys, i)) continue;
-        const double* m = mu + 3 * i;
-        if (is_finite_f64(m[0]) && is_finite_f64(m[1]) && is_finite_f64(m[2]) && (m[0] != 0.0 || m[1] != 0.0 || m[2] != 0.0)) {
-            count += 1;
+        const double* v = scratch + (size_t)components * i;
+        bool finite = true, nonzero = false;
+        for (uint32_t k = 0; k < components; ++k) {
+            finite  &= is_finite_f64(v[k]);
+            nonzero |= v[k] != 0.0;
         }
+        count += finite && nonzero;
     }
     return count;
+}
+
+SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& sys) {
+    SurfaceFieldEmbeddingContent c = {};
+    const size_t num_atoms = md_system_atom_count(&sys);
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* scratch = (double*)md_temp_alloc(temp, sizeof(double) * 6 * MAX(num_atoms, (size_t)1));
+    const md_unit_t e_bohr  = md_unit_elementary_charge_bohr();
+    const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
+    c.charges        = count_environment_sites(sys, scratch, STR_LIT("atom/charge"),        1, md_unit_elementary_charge());
+    c.dipoles        = count_environment_sites(sys, scratch, STR_LIT("atom/dipole"),        3, e_bohr);
+    c.quadrupoles    = count_environment_sites(sys, scratch, STR_LIT("atom/quadrupole"),    6, e_bohr2);
+    c.induced        = count_environment_sites(sys, scratch, EMBEDDING_INDUCED_DIPOLE_PATH, 3, e_bohr);
+    c.polarizable    = count_environment_sites(sys, scratch, STR_LIT("atom/polarizability"), 1, md_unit_none());
+    return c;
 }
 
 // The environment's classical sites as points with their charge, and their dipole and quadrupole

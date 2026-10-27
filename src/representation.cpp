@@ -1892,11 +1892,19 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                                    "quadrupoles where the potential has them, and for a polarizable embedding the dipoles the\n"
                                    "calculation induced, where it kept them - the potential the QM region was embedded in.\n"
                                    "The QM region is left out, whatever charges a topology gives its atoms.");
-            const size_t num_induced = surface_field_embedding_induced_sites(sys);
-            if (num_induced > 0) {
-                ImGui::Text("Here: the charges and the dipoles induced on %zu polarizable sites, the total potential.", num_induced);
-            } else {
-                ImGui::TextUnformatted("Here: the permanent multipoles; the dataset has no induced dipoles.");
+            // What this dataset's potential is made of: whatever it carries, as it carries it
+            const SurfaceFieldEmbeddingContent c = surface_field_embedding_content(sys);
+            ImGui::Separator();
+            ImGui::TextUnformatted("This dataset:");
+            if (c.charges)     ImGui::BulletText("charges on %zu sites", c.charges);
+            if (c.dipoles)     ImGui::BulletText("permanent dipoles on %zu sites", c.dipoles);
+            if (c.quadrupoles) ImGui::BulletText("quadrupoles on %zu sites", c.quadrupoles);
+            if (c.induced)     ImGui::BulletText("induced dipoles on %zu polarizable sites", c.induced);
+            if (c.induced) {
+                ImGui::TextUnformatted("The total potential the QM region was embedded in.");
+            } else if (c.polarizable) {
+                ImGui::Text("The PERMANENT part only: %zu sites are polarizable, but the file keeps no induced\n"
+                            "dipoles, so their part of what the QM region was embedded in is missing.", c.polarizable);
             }
             ImGui::EndTooltip();
         }

@@ -54,7 +54,7 @@ enum class SurfaceFieldKind {
     // left out. For a polarizable embedding whose run kept its induced dipoles (atom/induced_dipole)
     // those are part of it, added to the sites' dipoles: the total potential the QM region was
     // embedded in. Without them it is the permanent part only - see
-    // surface_field_embedding_induced_sites for telling the two apart.
+    // surface_field_embedding_content for telling the two apart.
     EmbeddingPotential,
 
     // The electrostatic potential of the QM region itself, its nuclei and its ground state electron
@@ -149,9 +149,20 @@ md_unit_t surface_field_unit(SurfaceFieldKind kind);
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, not read.
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
 
-// How many of the environment's sites the Embedding Potential includes an induced dipole for: 0
-// when the dataset has none, and the potential is that of the permanent multipoles alone.
-size_t surface_field_embedding_induced_sites(const md_system_t& sys);
+// What the Embedding Potential of a dataset is made of: how many of the environment's sites carry
+// each source (a finite value, not all zero). 'polarizable' counts the sites with a polarizability
+// above zero; with none of them 'induced', the dataset is a polarizable embedding that did not keep
+// its induced dipoles - VeloxChem writes them only from its fika embedding on - and the potential is
+// its permanent part only, short of what the QM region was embedded in. Reads a column over every
+// atom per source: for when it is shown, not every frame.
+struct SurfaceFieldEmbeddingContent {
+    size_t charges = 0;
+    size_t dipoles = 0;       // permanent
+    size_t quadrupoles = 0;
+    size_t induced = 0;       // induced dipoles
+    size_t polarizable = 0;
+};
+SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& sys);
 
 // The first kind the system has what to make of, Count for none
 SurfaceFieldKind surface_field_first_available(const md_system_t& sys);
