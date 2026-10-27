@@ -254,10 +254,10 @@ struct TubeRoot {
 // rings cannot lay it out (fewer than three ring atoms, no reference positions): a round tube then.
 static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_data_t& L, uint32_t t, uint32_t head_point, int32_t ref,
                         const uint8_t* in_ring, md_allocator_i* temp_alloc) {
-    const int32_t* atoms = md_index_range_beg(&L.tail.atoms, t);
-    const size_t num_atoms = md_index_range_size(&L.tail.atoms, t);
-    const int32_t* spine = md_index_range_beg(&L.tail.spine, t);
-    const size_t len = md_index_range_size(&L.tail.spine, t);
+    const int32_t* atoms = md_lipid_tail_atoms(&L, t);
+    const size_t num_atoms = md_lipid_tail_atom_count(&L, t);
+    const int32_t* spine = md_lipid_tail_spine(&L, t);
+    const size_t len = md_lipid_tail_spine_size(&L, t);
     const md_system_state_t& refs = sys.reference;
     if (!refs.xyz || refs.num_atoms != sys.atom.count || len == 0) return false;
 
@@ -389,21 +389,21 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     // The atoms of rings, which lay out the ring system of a sterol
     uint8_t* in_ring = nullptr;
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     if (num_rings > 0) {
         in_ring = (uint8_t*)md_alloc(temp_alloc, sys.atom.count);
         MEMSET(in_ring, 0, sys.atom.count);
         for (size_t r = 0; r < num_rings; ++r) {
-            const int32_t* ra = md_index_range_beg(&sys.ring, r);
-            for (size_t k = 0; k < md_index_range_size(&sys.ring, r); ++k) in_ring[ra[k]] = 1;
+            const int32_t* ra = md_ring_atoms(&sys.ring, r);
+            for (size_t k = 0; k < md_ring_size(&sys.ring, r); ++k) in_ring[ra[k]] = 1;
         }
     }
     md_array(TubeRoot) roots = nullptr;     // Of the heads of the lipid
     md_array(int32_t) anchors = nullptr;
     md_array(int32_t) whole = nullptr;
     for (size_t l = 0; l < L.count; ++l) {
-        const int32_t* residues = md_index_range_beg(&L.residues, l);
-        const size_t num_residues = md_index_range_size(&L.residues, l);
+        const int32_t* residues = md_lipid_residues(&L, l);
+        const size_t num_residues = md_lipid_residue_count(&L, l);
         const uint32_t h0 = L.head_offset[l];
         const uint32_t h1 = L.head_offset[l + 1];
         const uint32_t t0 = L.tail_offset[l];
@@ -427,11 +427,11 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
         }
         md_array_shrink(roots, 0);
         // Every point of the lipid in the image of its first head atom
-        const int32_t ref = md_index_range_beg(&L.head.atoms, h0)[0];
+        const int32_t ref = md_lipid_head_atoms(&L, h0)[0];
 
         for (uint32_t h = h0; h < h1; ++h) {
-            const int32_t* atoms = md_index_range_beg(&L.head.atoms, h);
-            const size_t n = md_index_range_size(&L.head.atoms, h);
+            const int32_t* atoms = md_lipid_head_atoms(&L, h);
+            const size_t n = md_lipid_head_atom_count(&L, h);
             const int32_t color = head_color_atom(sys, atoms, n);
             const int32_t res = residue_of_atom(sys, color);
 
@@ -482,8 +482,8 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
         };
 
         for (uint32_t t = t0; t < t1; ++t) {
-            const int32_t* spine = md_index_range_beg(&L.tail.spine, t);
-            const size_t len = md_index_range_size(&L.tail.spine, t);
+            const int32_t* spine = md_lipid_tail_spine(&L, t);
+            const size_t len = md_lipid_tail_spine_size(&L, t);
             if (len == 0) continue;
             const bool skeleton = L.tail.kind[t] == MD_LIPID_TAIL_SKELETON;
             const CartoonGlyphKind kind = skeleton ? CartoonGlyph_SterolSkeleton : CartoonGlyph_LipidTail;
@@ -541,10 +541,10 @@ struct ResRing {
 
 static md_array(ResRing) rings_by_residue(const md_system_t& sys, md_allocator_i* alloc) {
     md_array(ResRing) out = nullptr;
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
-        const size_t n = md_index_range_size(&sys.ring, r);
+        const int32_t* atoms = md_ring_atoms(&sys.ring, r);
+        const size_t n = md_ring_size(&sys.ring, r);
         if (n < 3) continue;
         const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)atoms[0]);
         if (res < 0) continue;
@@ -570,8 +570,8 @@ static md_array(ResRing) rings_by_residue(const md_system_t& sys, md_allocator_i
 }
 
 static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
-    const int32_t* atoms = md_index_range_beg(&sys.ring, ring);
-    const size_t n = md_index_range_size(&sys.ring, ring);
+    const int32_t* atoms = md_ring_atoms(&sys.ring, ring);
+    const size_t n = md_ring_size(&sys.ring, ring);
     for (size_t k = 0; k < n; ++k) {
         if (atoms[k] == atom) return true;
     }
@@ -588,12 +588,12 @@ struct AtomRings {
 static AtomRings rings_by_atom(const md_system_t& sys, md_allocator_i* alloc) {
     AtomRings out;
     const size_t num_atoms = sys.atom.count;
-    const size_t num_rings = md_index_data_num_ranges(&sys.ring);
+    const size_t num_rings = md_ring_data_count(&sys.ring);
     md_array_resize(out.offset, num_atoms + 1, alloc);
     MEMSET(out.offset, 0, sizeof(uint32_t) * (num_atoms + 1));
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
-        const size_t n = md_index_range_size(&sys.ring, r);
+        const int32_t* atoms = md_ring_atoms(&sys.ring, r);
+        const size_t n = md_ring_size(&sys.ring, r);
         if (n < 3 || n > 7) continue;
         for (size_t k = 0; k < n; ++k) out.offset[atoms[k] + 1] += 1;
     }
@@ -602,8 +602,8 @@ static AtomRings rings_by_atom(const md_system_t& sys, md_allocator_i* alloc) {
     uint32_t* cursor = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
     MEMCPY(cursor, out.offset, sizeof(uint32_t) * num_atoms);
     for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* atoms = md_index_range_beg(&sys.ring, r);
-        const size_t n = md_index_range_size(&sys.ring, r);
+        const int32_t* atoms = md_ring_atoms(&sys.ring, r);
+        const size_t n = md_ring_size(&sys.ring, r);
         if (n < 3 || n > 7) continue;
         for (size_t k = 0; k < n; ++k) out.ring[cursor[atoms[k]]++] = (uint32_t)r;
     }
@@ -645,8 +645,8 @@ static void nucleotide_rings(md_array(uint32_t)* out, const AtomRings& ar, const
     }
     for (size_t i = first; i < md_array_size(*out); ++i) {
         const uint32_t ring = (*out)[i];
-        const int32_t* atoms = md_index_range_beg(&sys.ring, ring);
-        const size_t n = md_index_range_size(&sys.ring, ring);
+        const int32_t* atoms = md_ring_atoms(&sys.ring, ring);
+        const size_t n = md_ring_size(&sys.ring, ring);
         for (size_t k = 0; k < n; ++k) {
             for (uint32_t j = ar.offset[atoms[k]]; j < ar.offset[atoms[k] + 1]; ++j) {
                 const uint32_t other = ar.ring[j];
@@ -820,8 +820,8 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
             uint32_t sugar_c1 = UINT32_MAX;
             for (size_t i = 0; i < md_array_size(seg_rings); ++i) {
                 const uint32_t ring = seg_rings[i];
-                const int32_t* ring_atoms = md_index_range_beg(&sys.ring, ring);
-                const size_t n = md_index_range_size(&sys.ring, ring);
+                const int32_t* ring_atoms = md_ring_atoms(&sys.ring, ring);
+                const size_t n = md_ring_size(&sys.ring, ring);
                 if (n > 7) continue;
                 const bool sugar = atoms.c1 >= 0 && ring_has_atom(sys, ring, atoms.c1);
                 const CartoonGlyphKind kind = sugar ? CartoonGlyph_NucleicSugar : CartoonGlyph_NucleicBase;

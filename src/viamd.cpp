@@ -667,7 +667,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     for (size_t i = 0; i < count; ++i) {
         if (atoms[i] < 0 || (size_t)atoms[i] >= sys.atom.count) return;
     }
-    const bool frame_ring = ring_idx >= md_index_data_num_ranges(&sys.ring);
+    const bool frame_ring = ring_idx >= md_ring_data_count(&sys.ring);
 
     // Where it is: the place of its first atom, and of another where the ring reaches over (a ring is mostly in one)
     const TooltipPlace place = tooltip_place_of_atom(sys, (size_t)atoms[0]);
@@ -5596,19 +5596,19 @@ md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, i
 
 bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags) {
     const md_system_t& sys = app.mold.sys;
-    const size_t num = md_index_data_num_ranges(&sys.ring);
+    const size_t num = md_ring_data_count(&sys.ring);
     if (idx < num) {
-        *atoms = md_index_range_beg(&sys.ring, idx);
-        *count = md_index_range_size(&sys.ring, idx);
+        *atoms = md_ring_atoms(&sys.ring, idx);
+        *count = md_ring_size(&sys.ring, idx);
         *flags = md_system_ring_flags(&sys, idx);
         return true;
     }
     const md_chem_delta_t* chem = bond_tracking_chem(&app);
     idx -= num;
-    if (chem && idx < md_index_data_num_ranges(&chem->ring)) {
-        *atoms = md_index_range_beg(&chem->ring, idx);
-        *count = md_index_range_size(&chem->ring, idx);
-        *flags = chem->ring_flags[idx];
+    if (chem && idx < md_ring_data_count(&chem->ring)) {
+        *atoms = md_ring_atoms(&chem->ring, idx);
+        *count = md_ring_size(&chem->ring, idx);
+        *flags = md_ring_flags(&chem->ring, idx);
         return true;
     }
     return false;
@@ -5705,7 +5705,7 @@ void bond_tracking_update(ApplicationState* app) {
         if (!md_chem_perceive_delta(&bt.chem, &sys, &state, &bt.delta, MD_CHEM_FLAG_PROTONATE_PH7, app->allocator.persistent)) {
             md_chem_delta_free(&bt.chem, app->allocator.persistent);
         }
-        bt.ring_capacity = MAX(bt.ring_capacity, md_index_data_num_ranges(&bt.chem.ring));
+        bt.ring_capacity = MAX(bt.ring_capacity, md_ring_data_count(&bt.chem.ring));
         bt.time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
         app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
@@ -6417,7 +6417,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
             // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
             const size_t num_frame_rings = delta ? state->operations.bond_tracking.ring_capacity : 0;
-            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_index_data_num_ranges(&state->mold.sys.ring) + num_frame_rings);
+            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
             picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));

@@ -1182,7 +1182,7 @@ void create_default_representations(ApplicationState* state) {
             num_lipid_residues += md_system_residue_kind(&state->mold.sys, i) == MD_RESIDUE_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
-            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_index_range_size(&lipids.residues, i);
+            if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_lipid_residue_count(&lipids, i);
         }
         lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_residues) ligand_present = true;

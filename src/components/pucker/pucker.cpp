@@ -242,11 +242,11 @@ struct Pucker : viamd::EventHandler {
     void compute() {
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& state = app_state->mold.state;
-        num_rings = md_index_data_num_ranges(&sys.ring);
+        num_rings = md_ring_data_count(&sys.ring);
         rows.clear();
         if (!state.xyz) return;
         for (size_t i = 0; i < num_rings; ++i) {
-            const size_t n = md_index_range_size(&sys.ring, i);
+            const size_t n = md_ring_size(&sys.ring, i);
             if (n < 5 || n > 7) continue;
             Row row;
             row.ring_idx = (uint32_t)i;
@@ -350,7 +350,7 @@ struct Pucker : viamd::EventHandler {
             return;
         }
         const md_system_t& sys = app_state->mold.sys;
-        if (md_index_data_num_ranges(&sys.ring) != num_rings) dirty = true;
+        if (md_ring_data_count(&sys.ring) != num_rings) dirty = true;
         if (dirty) compute();
         update_shown();
 

@@ -2907,7 +2907,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_array_free(mol->bond.conn.bond_idx, data->mold.sys.alloc);
 
     md_index_data_free(&mol->molecule);
-    md_index_data_free(&mol->ring);
+    md_ring_data_free(&mol->ring, data->mold.sys.alloc);
     
     md_system_state_t mol_state = {0};
     md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT);
