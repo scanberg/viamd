@@ -25,6 +25,7 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_os.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -41,6 +42,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <app/IconsFontAwesome6.h>
 
 #define BLK_DIM 8
@@ -365,6 +367,141 @@ struct FlowData {
     const double* C_nto_part  = nullptr; // {K,A}
 };
 
+// The density whose critical points are reported. QTAIM is defined on the total density; a
+// calculation that publishes a single spin channel publishes only the alpha one, and that one is then
+// the total.
+static str_t critical_points_density_path(const md_system_t& sys) {
+    return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+}
+
+// One run of the analytic critical point search (md_topo_compute_extremum_graph_gto) on the task pool.
+// Everything the run reads - basis, geometry, density matrix - is copied in here before it starts, so
+// it never touches the attribute table, the component's arena or the system while the main thread
+// carries on, and a system freed or reloaded underneath it takes nothing away from it. The main thread
+// reads graph and info only once 'done' is set, and frees the job only after waiting for the task.
+struct GtoCriticalPointJob {
+    md_allocator_i*    arena    = nullptr;   // owns the input copies below
+    md_gto_basis_t     basis    = {};
+    float*             atom_xyz = nullptr;   // [3 * num_atoms] Bohr
+    double*            density  = nullptr;   // [num_ao * num_ao]
+    md_topo_gto_desc_t desc     = {};
+
+    md_topo_extremum_graph_t graph   = {};   // heap, filled by the run
+    md_topo_gto_info_t       info    = {};
+    bool                     ok      = false;
+    double                   seconds = 0.0;
+
+    uint64_t          hash    = 0;           // the inputs this run was started for
+    md_tick_t         start   = 0;
+    bool              dropped = false;       // main thread only: superseded, never to be shown
+    volatile int32_t  cancel  = 0;
+    volatile float    progress = 0.0f;       // written by the run: 0 to 1, an estimate (md_topo_gto_desc_t)
+    std::atomic<bool> done    = false;
+    task_system::ID   task    = task_system::INVALID_ID;
+#if MD_ENABLE_GPU
+    md_gpu_stream_t   stream  = nullptr;   // own stream: the sweep runs on the GPU, used by the task only
+#endif
+};
+
+// Starts a search of the system as it is now. Returns null, with the reason logged, when the system
+// does not carry what the search needs.
+static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
+    const md_system_t& sys = app.mold.sys;
+    const md_system_state_t& state = app.mold.state;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        MD_LOG_ERROR("Critical points: the system carries no GTO basis");
+        return nullptr;
+    }
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+
+    size_t num_atoms = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, sys, state);
+    if (!atom_pos || num_atoms != md_gto_basis_num_atoms(&basis)) {
+        MD_LOG_ERROR("Critical points: no positions for the atoms the basis is centred on");
+        return nullptr;
+    }
+
+    const str_t path = critical_points_density_path(sys);
+    size_t dim = 0;
+    const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
+    if (!density || dim != num_ao) {
+        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" STR_FMT "'", num_ao, STR_ARG(path));
+        return nullptr;
+    }
+
+    GtoCriticalPointJob* job = new GtoCriticalPointJob();
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = job->arena;
+
+    job->basis.num_shells     = basis.num_shells;
+    job->basis.num_primitives = basis.num_primitives;
+    job->basis.shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
+    job->basis.alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    job->basis.coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    MEMCPY(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
+    MEMCPY(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
+    MEMCPY(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
+
+    job->atom_xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        job->atom_xyz[3 * i + 0] = atom_pos[i].x;
+        job->atom_xyz[3 * i + 1] = atom_pos[i].y;
+        job->atom_xyz[3 * i + 2] = atom_pos[i].z;
+    }
+
+    job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
+    MEMCPY(job->density, density, sizeof(double) * num_ao * num_ao);
+
+    job->desc.basis              = &job->basis;
+    job->desc.atom_xyz           = job->atom_xyz;
+    job->desc.atom_xyz_stride    = sizeof(float) * 3;
+    job->desc.density_matrix     = job->density;
+    job->desc.rho_min            = rho_min;
+    job->desc.trace_separatrices = true;
+    job->desc.cancel             = &job->cancel;   // num_threads 0: every core
+    job->desc.progress           = &job->progress;
+
+    job->graph.alloc = md_get_heap_allocator();
+    job->hash  = hash;
+    job->start = md_tick_now();
+#if MD_ENABLE_GPU
+    // The octree sweep goes to the GPU when there is one; the CPU keeps the double precision parts.
+    if (use_gpu && app.gpu_device) job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
+#endif
+
+    // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
+    // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
+    // instead (critical_points_progress), as does the Critical Points section, each with a cancel button.
+    job->task = task_system::create_pool_task(STR_LIT("##Critical Points"), [job]() {
+#if MD_ENABLE_GPU
+        if (job->stream) {
+            job->ok = md_topo_compute_extremum_graph_gto_gpu(&job->graph, &job->info, &job->desc, job->stream);
+        } else
+#endif
+        job->ok = md_topo_compute_extremum_graph_gto(&job->graph, &job->info, &job->desc);
+        job->seconds = md_tick_to_seconds(md_tick_now() - job->start);
+        job->done.store(true, std::memory_order_release);   // the last access: the job may be freed after this
+    });
+    task_system::enqueue_task(job->task);
+    return job;
+}
+
+static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
+    if (!job) return;
+    job->cancel = 1;
+    task_system::task_wait_for(job->task);
+#if MD_ENABLE_GPU
+    if (job->stream) md_gpu_stream_destroy(job->stream);
+#endif
+    md_topo_extremum_graph_free(&job->graph);
+    if (job->arena) md_arena_allocator_destroy(job->arena);
+    delete job;
+}
+
 // Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
 // no second parse of the file: whatever loaded the system published what it carried, and these
 // windows are consumers of that table like any other - which is what lets a system published by
@@ -439,8 +576,25 @@ struct QuantumChemistry : viamd::EventHandler {
     struct CriticalPoints {
         bool enabled = false;
 
+        // How they are found. Analytic searches the GTO density itself and proves what it reports
+        // (md_topo_compute_extremum_graph_gto); Volume samples the density onto a grid first and can
+        // place a critical point no better than to the voxel it falls in.
+        enum Method : int { Method_Analytic = 0, Method_Volume = 1 };
+        int method = Method_Analytic;
+
         uint64_t raw_hash = 0;
         uint64_t simp_hash = 0;
+
+        // Analytic: the threshold, the run in flight, the inputs wanted now and the inputs the shown
+        // graph was computed for, and what that run reported about itself.
+        float                rho_min     = 1.0e-4f;
+        bool                 gto_use_gpu = true;      // only consulted when the app has a GPU device
+        GtoCriticalPointJob* gto_job     = nullptr;
+        uint64_t             gto_want    = 0;
+        uint64_t             gto_have    = 0;
+        md_topo_gto_info_t   gto_info    = {};
+        bool                 gto_failed  = false;
+        double               gto_seconds = 0.0;
 
 #if MD_ENABLE_GPU
         md_topo_gpu_context_t* topo_ctx      = nullptr;
@@ -920,6 +1074,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Nothing is freed here: the device scratch and the dataset's uploaded basis are
                 // both the application's, and it destroys them.
 #endif
+                gto_critical_point_job_destroy(critical_points.gto_job);
+                critical_points.gto_job = nullptr;
                 md_arena_allocator_destroy(arena);
                 md_bitmask_free(&critical_points.selection_mask);
                 md_bitmask_free(&critical_points.highlight_mask);
@@ -931,6 +1087,10 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
+
+                // Here rather than in the window that started it, so a result lands whether or not
+                // that window is open.
+                critical_points_poll_gto();
 
                 // What the SYSTEM holds, not what this component parsed. Orbitals are what every
                 // window here is ultimately about, and the transition windows want their own data on
@@ -1320,6 +1480,10 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     void reset_data() {
+        // First: the run holds nothing of the system's, but its result would land in a graph that
+        // belongs to the next one.
+        gto_critical_point_job_destroy(critical_points.gto_job);
+        critical_points.gto_job = nullptr;
 #if MD_ENABLE_GPU
         // The topo context is the only GPU object this component owns. The uploaded basis goes with
         // the system it was built from, released by free_system_data.
@@ -4258,6 +4422,268 @@ struct QuantumChemistry : viamd::EventHandler {
         return OPT_NONE;
     }
 
+    // Forgets the shown graph and whatever produced it, so the next frame starts from nothing. A run
+    // in flight is told to stop and is dropped when the poll collects it.
+    void critical_points_reset() {
+        CriticalPoints& cp = critical_points;
+        if (cp.gto_job) {
+            cp.gto_job->cancel  = 1;
+            cp.gto_job->dropped = true;
+        }
+        cp.gto_want  = 0;
+        cp.gto_have  = 0;
+        cp.raw_hash  = 0;
+        cp.simp_hash = 0;
+        md_topo_extremum_graph_free(&cp.raw_graph);
+        md_topo_extremum_graph_free(&cp.simp_graph);
+        // Indices into the graph just freed
+        md_bitmask_clear(&cp.selection_mask);
+        md_bitmask_clear(&cp.highlight_mask);
+    }
+
+    // Collects a finished analytic run: shown if it is still what is wanted, dropped otherwise.
+    void critical_points_poll_gto() {
+        CriticalPoints& cp = critical_points;
+        GtoCriticalPointJob* job = cp.gto_job;
+        if (!job || !job->done.load(std::memory_order_acquire)) return;
+        cp.gto_job = nullptr;
+
+        if (!job->dropped && job->hash == cp.gto_want) {
+            md_topo_extremum_graph_free(&cp.raw_graph);
+            md_topo_extremum_graph_free(&cp.simp_graph);
+            if (job->graph.num_vertices > 0) {
+                md_topo_extremum_graph_copy(&cp.raw_graph,  &job->graph);
+                // Nothing to simplify: every vertex is a proven critical point, and two saddles
+                // between the same pair of maxima are two saddles, not a sampling artefact.
+                md_topo_extremum_graph_copy(&cp.simp_graph, &job->graph);
+            }
+            cp.gto_have    = job->hash;
+            cp.gto_info    = job->info;
+            cp.gto_failed  = !job->ok && !job->info.cancelled;
+            cp.gto_seconds = job->seconds;
+        }
+        gto_critical_point_job_destroy(job);
+    }
+
+    // The analytic search. A new run starts whenever what the result depends on changes - the geometry
+    // the basis sits on, the threshold, the orbitals - and a run made stale by such a change is stopped
+    // and dropped, never shown.
+    void update_critical_points_gto(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+
+        ImGui::SliderFloat("Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "%.1e", ImGuiSliderFlags_Logarithmic);
+        // Every value is a new search, so none is started while the slider is held.
+        const bool editing = ImGui::IsItemActive();
+        ImGui::SetItemTooltip("Critical points where the total electron density is below this (au) are neither\n"
+                              "searched for nor reported. A lower threshold searches a larger region and takes longer.");
+
+#if MD_ENABLE_GPU
+        if (state.gpu_device) {
+            ImGui::Checkbox("Use GPU", &cp.gto_use_gpu);
+            ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
+                                  "the critical points in double. Off: everything runs on the CPU. Same result either way.");
+        }
+#endif
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        size_t num_atoms = 0;
+        const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
+        uint64_t hash = md_hash64(&cp.rho_min, sizeof(cp.rho_min), qm_version);
+        hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
+        if (atom_pos) hash = md_hash64(atom_pos, sizeof(vec3_t) * num_atoms, hash);
+
+        if (!editing && hash != cp.gto_want) {
+            // A point drawn where it was for other inputs would read as a result.
+            critical_points_reset();
+            cp.gto_want = hash;
+        }
+        if (!cp.gto_job && cp.gto_have != cp.gto_want) {
+            cp.gto_job = gto_critical_point_job_start(state, cp.rho_min, cp.gto_use_gpu, cp.gto_want);
+            if (!cp.gto_job) {
+                // Logged by the start. Remembered, so it is not retried every frame.
+                cp.gto_have    = cp.gto_want;
+                cp.gto_info    = {};
+                cp.gto_failed  = true;
+                cp.gto_seconds = 0.0;
+            }
+        }
+
+        if (cp.gto_job) {
+            const GtoCriticalPointJob* job = cp.gto_job;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Searching %.0f%% (%.0f s)", job->progress * 100.0f, md_tick_to_seconds(md_tick_now() - job->start));
+            const float cancel_width = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::ProgressBar(job->progress, ImVec2(ImGui::GetContentRegionAvail().x - cancel_width, 0), buf);
+            ImGui::SetItemTooltip("How far the search is: an estimate, as the work of the search unfolds as it goes");
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                cp.gto_job->cancel = 1;   // collected as usual: what was found so far is shown, marked
+            }
+            return;
+        }
+
+        const ImVec4 amber = ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+        const md_topo_gto_info_t& info = cp.gto_info;
+        if (cp.gto_failed) {
+            ImGui::TextColored(IM_RED, "The search could not run, see the log");
+            return;
+        }
+        if (info.cancelled) {
+            ImGui::TextColored(amber, "Cancelled: only what was found so far is shown");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Restart")) {
+                cp.gto_have = 0;
+            }
+        } else if (info.complete) {
+            ImGui::TextColored(IM_GREEN, "Complete");
+            ImGui::SetItemTooltip("Every critical point above the threshold is shown. Each was proven to be the only\n"
+                                  "critical point in the cube it was found in, and every other cube to hold none.");
+        } else {
+            ImGui::TextColored(amber, "Incomplete: %u region%s left undecided", info.num_clusters, info.num_clusters == 1 ? "" : "s");
+            ImGui::SetItemTooltip("Everything outside these regions is decided. Inside one, the gradient is too close to\n"
+                                  "zero to separate critical points at the smallest cube size - typically a nearly\n"
+                                  "degenerate pair, such as a bond and a ring critical point about to annihilate.");
+            for (uint32_t i = 0; i < info.num_clusters; ++i) {
+                const md_topo_gto_cluster_t& c = info.clusters[i];
+                const double x = 0.5 * (c.lo[0] + c.hi[0]) * BOHR_TO_ANGSTROM;
+                const double y = 0.5 * (c.lo[1] + c.hi[1]) * BOHR_TO_ANGSTROM;
+                const double z = 0.5 * (c.lo[2] + c.hi[2]) * BOHR_TO_ANGSTROM;
+                if (c.degree_residual < 0.1f) {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum %+d", x, y, z, c.degree);
+                } else {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum undetermined", x, y, z);
+                }
+                ImGui::SetItemTooltip("Centre of the region in \xC3\x85, %u cubes.\n"
+                                      "The index sum is the degree of the density gradient on the region's boundary\n"
+                                      "(computed numerically): the sum over the critical points inside of -1 for a\n"
+                                      "maximum or ring point and +1 for a bond or cage point. Non-zero proves at least\n"
+                                      "one critical point is in there; zero means none, or pairs that cancel.", c.num_boxes);
+            }
+            if (info.clusters_truncated) {
+                ImGui::BulletText("...");
+            }
+        }
+        if (info.used_gpu) {
+            ImGui::TextDisabled("%.2f s on the GPU, %llu cubes", cp.gto_seconds, (unsigned long long)info.num_box_evals);
+        } else {
+            ImGui::TextDisabled("%.2f s on %u CPU threads, %llu cubes", cp.gto_seconds, info.num_threads, (unsigned long long)info.num_box_evals);
+        }
+        if (ImGui::BeginItemTooltip()) {
+            // where the time went, to see which part to work on
+            ImGui::Text("Setup: %.1f ms", info.ms_setup);
+            ImGui::Text("Octree sweep: %.1f ms", info.ms_sweep);
+            if (info.used_gpu) {
+                const double host = info.ms_sweep - info.ms_sweep_gpu_wait - info.ms_sweep_polish - info.ms_sweep_cpu;
+                ImGui::BulletText("GPU: %.1f ms, %llu cubes in %u dispatches", info.ms_sweep_gpu_wait, (unsigned long long)info.num_gpu_box_evals, info.num_gpu_dispatches);
+                ImGui::BulletText("Root polish (CPU, double): %.1f ms", info.ms_sweep_polish);
+                ImGui::BulletText("Escalated subtrees (CPU, double): %.1f ms, %llu cubes from %u", info.ms_sweep_cpu,
+                                  (unsigned long long)(info.num_box_evals - info.num_gpu_box_evals), info.num_escalated_boxes);
+                ImGui::BulletText("Other host work: %.1f ms", host > 0.0 ? host : 0.0);
+            }
+            ImGui::Text("Separatrices: %.1f ms", info.ms_separatrices);
+            ImGui::Text("Clusters: %.1f ms", info.ms_clusters);
+            if (info.used_gpu && info.num_escalated_boxes > 0) {
+                ImGui::TextDisabled("Escalated: cubes too close to a critical point for fp32, finished in double on the CPU.");
+            }
+            ImGui::EndTooltip();
+        }
+    }
+
+    // The discrete pipeline: the density sampled onto a grid, the critical points of the samples
+    // (md_topo), then md_topo_simplify.
+    void update_critical_points_volume(ApplicationState& state, VolumeResolution vol_res, md_temp_scope_t temp) {
+        static bool  reevaluate_graph_per_frame = false;
+        static bool  enable_simplification = true;
+        static float simp_threshold = 1.0E-4f;
+
+        ImGui::Checkbox("Extract graph per frame", &reevaluate_graph_per_frame);
+        if (reevaluate_graph_per_frame) {
+            critical_points.raw_hash = 0;
+        }
+
+        // Update volume if required
+        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
+        md_grid_t grid = { 0 };
+#if USE_OABB_GRID
+        init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
+#else
+        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#endif
+
+        // Compute a hash of the current state
+        size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+        uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
+
+        if (critical_points.raw_hash != raw_hash) {
+            critical_points.raw_hash = raw_hash;
+            md_topo_extremum_graph_free(&critical_points.raw_graph);
+
+            // The density comes out of the attribute table, evaluated by the same code
+            // path a representation uses. The only thing special here is the tail: the
+            // topology pass reads what the density pass wrote, on the same stream, so
+            // the volume is never read back to the host at all.
+#if MD_ENABLE_GPU
+            // Ensure the topo context exists with the correct volume dimensions
+            uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
+            if (!critical_points.topo_ctx ||
+                critical_points.topo_dims[0] != new_dims[0] ||
+                critical_points.topo_dims[1] != new_dims[1] ||
+                critical_points.topo_dims[2] != new_dims[2])
+            {
+                md_topo_gpu_context_destroy(critical_points.topo_ctx);
+                critical_points.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
+                critical_points.topo_dims[0] = new_dims[0];
+                critical_points.topo_dims[1] = new_dims[1];
+                critical_points.topo_dims[2] = new_dims[2];
+            }
+
+            if (!critical_points.topo_ctx) {
+                MD_LOG_ERROR("Failed to create topo GPU context for electron density");
+            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                // Program order on the stream is the only dependency needed.
+                md_topo_gpu_record(state.gpu_stream, critical_points.topo_ctx, state.gpu_volume, &grid, 0.0f);
+                md_gpu_stream_sync(state.gpu_stream);
+                md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
+            } else {
+                MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
+            }
+#else
+            uint32_t tex_id = 0;
+            if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
+                size_t num_atom_pos = 0;
+                const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
+                if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                    if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
+                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+                    }
+                }
+                glDeleteTextures(1, &tex_id);
+            }
+#endif
+        }
+
+        ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
+
+        uint64_t simp_hash = raw_hash;
+        if (enable_simplification) {
+            ImGui::SliderFloat("CP threshold", &simp_threshold, 0.0f, 1.0E-2f, "%.6f", ImGuiSliderFlags_Logarithmic);
+            simp_hash = md_hash64(&simp_threshold, sizeof(simp_threshold), raw_hash);
+        }
+
+        if (critical_points.simp_hash != simp_hash) {
+            critical_points.simp_hash = simp_hash;
+
+            md_topo_extremum_graph_free(&critical_points.simp_graph);
+            if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
+                md_topo_simplify(&critical_points.simp_graph, &critical_points.raw_graph, simp_threshold, true);
+            } else {
+                md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
+            }
+        }
+    }
+
     void draw_summary_window(ApplicationState& state) {
         const md_system_t& sys = state.mold.sys;
 
@@ -4616,97 +5042,30 @@ struct QuantumChemistry : viamd::EventHandler {
             if (ImGui::TreeNode("Critical Points")) {
                 ImGui::Checkbox("Enable Critical Points Analysis", &critical_points.enabled);
 
+                static const char* method_str[] = { "Analytic", "Volume" };
+                if (ImGui::Combo("Method", &critical_points.method, method_str, (int)ARRAY_SIZE(method_str))) {
+                    critical_points_reset();   // what is shown came from the other method
+                }
+                ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
+                                      "found and placed to numerical precision, with a proof that none was missed.\n"
+                                      "Volume: samples the density onto a grid and finds critical points of the samples,\n"
+                                      "placed no better than to the voxel.");
+
                 static VolumeResolution vol_res = VolumeResolution::Mid;
-                ImGui::Combo("Volume Resolution", (int*)&vol_res, volume_resolution_str, (int)VolumeResolution::Count);
+                if (critical_points.method == CriticalPoints::Method_Volume) {
+                    ImGui::Combo("Volume Resolution", (int*)&vol_res, volume_resolution_str, (int)VolumeResolution::Count);
+                }
+
+                // Switched off mid search: nothing is going to show the result.
+                if (!critical_points.enabled && critical_points.gto_job) {
+                    critical_points_reset();
+                }
 
                 if (critical_points.enabled) {
-                    static bool  reevaluate_graph_per_frame = false;
-                    static bool  enable_simplification = true;
-                    static float simp_threshold = 1.0E-4f;
-
-                    ImGui::Checkbox("Extract graph per frame", &reevaluate_graph_per_frame);
-                    if (reevaluate_graph_per_frame) {
-                        critical_points.raw_hash = 0;
-                    }
-
-                    // Update volume if required
-                    const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
-                    md_grid_t grid = { 0 };
-#if USE_OABB_GRID
-                    init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
-#else
-                    init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
-#endif
-
-                    // Compute a hash of the current state
-                    size_t frame_idx = (size_t)(state.animation.frame + 0.5);
-                    uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
-
-                    if (critical_points.raw_hash != raw_hash) {
-                        critical_points.raw_hash = raw_hash;
-                        md_topo_extremum_graph_free(&critical_points.raw_graph);
-
-                        // The density comes out of the attribute table, evaluated by the same code
-                        // path a representation uses. The only thing special here is the tail: the
-                        // topology pass reads what the density pass wrote, on the same stream, so
-                        // the volume is never read back to the host at all.
-#if MD_ENABLE_GPU
-                        // Ensure the topo context exists with the correct volume dimensions
-                        uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
-                        if (!critical_points.topo_ctx ||
-                            critical_points.topo_dims[0] != new_dims[0] ||
-                            critical_points.topo_dims[1] != new_dims[1] ||
-                            critical_points.topo_dims[2] != new_dims[2])
-                        {
-                            md_topo_gpu_context_destroy(critical_points.topo_ctx);
-                            critical_points.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
-                            critical_points.topo_dims[0] = new_dims[0];
-                            critical_points.topo_dims[1] = new_dims[1];
-                            critical_points.topo_dims[2] = new_dims[2];
-                        }
-
-                        if (!critical_points.topo_ctx) {
-                            MD_LOG_ERROR("Failed to create topo GPU context for electron density");
-                        } else if (density_evaluate_to_gpu_volume(&state, grid, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
-                            // Program order on the stream is the only dependency needed.
-                            md_topo_gpu_record(state.gpu_stream, critical_points.topo_ctx, state.gpu_volume, &grid, 0.0f);
-                            md_gpu_stream_sync(state.gpu_stream);
-                            md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
-                        } else {
-                            MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
-                        }
-#else
-                        uint32_t tex_id = 0;
-                        if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                            size_t num_atom_pos = 0;
-                            const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
-                            if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
-                                if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
-                                    MD_LOG_ERROR("Failed to compute extremum graph for electron density");
-                                }
-                            }
-                            glDeleteTextures(1, &tex_id);
-                        }
-#endif
-                    }
-
-                    ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
-
-                    uint64_t simp_hash = raw_hash;
-                    if (enable_simplification) {
-                        ImGui::SliderFloat("CP threshold", &simp_threshold, 0.0f, 1.0E-2f, "%.6f", ImGuiSliderFlags_Logarithmic);
-                        simp_hash = md_hash64(&simp_threshold, sizeof(simp_threshold), raw_hash);
-                    }
-
-                    if (critical_points.simp_hash != simp_hash) {
-                        critical_points.simp_hash = simp_hash;
-
-                        md_topo_extremum_graph_free(&critical_points.simp_graph);
-                        if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
-                            md_topo_simplify(&critical_points.simp_graph, &critical_points.raw_graph, simp_threshold, true);
-                        } else {
-                            md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
-                        }
+                    if (critical_points.method == CriticalPoints::Method_Analytic) {
+                        update_critical_points_gto(state);
+                    } else {
+                        update_critical_points_volume(state, vol_res, temp);
                     }
 
                     uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
@@ -10332,3 +10691,15 @@ struct QuantumChemistry : viamd::EventHandler {
 };
 
 static QuantumChemistry instance = {};
+
+bool critical_points_progress(float* fraction) {
+    const GtoCriticalPointJob* job = instance.critical_points.gto_job;
+    // a run stopping, or done within a few frames, shows nothing
+    if (!job || job->cancel || job->dropped || md_tick_to_seconds(md_tick_now() - job->start) < 0.25) return false;
+    *fraction = CLAMP(job->progress, 0.0f, 1.0f);
+    return true;
+}
+
+void critical_points_cancel() {
+    if (instance.critical_points.gto_job) instance.critical_points.gto_job->cancel = 1;
+}

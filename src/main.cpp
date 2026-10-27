@@ -3504,6 +3504,10 @@ static void draw_async_task_window(ApplicationState* data) {
     SurfaceFieldProgress field_progress[8];
     const size_t num_field = surface_field_progress(field_progress, ARRAY_SIZE(field_progress));
     any_task_label_visible |= num_field > 0;
+    // the analytic critical point search, on a worker thread (and the GPU)
+    float cp_fraction = 0.0f;
+    const bool cp_searching = critical_points_progress(&cp_fraction);
+    any_task_label_visible |= cp_searching;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3557,6 +3561,14 @@ static void draw_async_task_window(ApplicationState* data) {
             } else {
                 snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
                 ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            }
+        }
+        if (cp_searching) {
+            snprintf(buf, sizeof(buf), "Critical points %.0f%%", cp_fraction * 100.f);
+            ImGui::ProgressBar(cp_fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            ImGui::SameLine();
+            if (ImGui::DeleteButton((const char*)ICON_FA_XMARK "##Critical points", ImVec2(size, size))) {
+                critical_points_cancel();   // what was found so far is shown, marked as cancelled
             }
         }
 
