@@ -852,7 +852,8 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     tooltip_title(req, "dipole" TOOLTIP_SEP "%.*s", label_len, label);
 
     vec3_t vec = {0, 0, 0};
-    if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
+    vec3_t org = {0, 0, 0};
+    if (dipole_moment_read(&vec, &org, sys, group.key, hit.local_idx)) {
         char unit[32];
         if (md_unit_is_atomic(group.unit)) {
             snprintf(unit, sizeof(unit), " a.u.");
@@ -861,6 +862,8 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
         }
         tooltip_row(req, STR_LIT("magnitude"), "%.3f%s", vec3_length(vec), unit);
         tooltip_row(req, STR_LIT("vector"), "%.3f, %.3f, %.3f%s", vec.x, vec.y, vec.z, unit);
+        // Where it is anchored: the centre of charge of a molecular moment, the site of an induced dipole
+        tooltip_row(req, STR_LIT("origin"), (const char*)u8"%.3f, %.3f, %.3f Å", org.x, org.y, org.z);
     }
 }
 
@@ -2914,6 +2917,29 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
     if (out_vec)    *out_vec    = vec3_set(v[0], v[1], v[2]);
     if (out_origin) *out_origin = vec3_set(o[0], o[1], o[2]);
     return true;
+}
+
+size_t dipole_moments_read_all(vec3_t* out_vec, vec3_t* out_origin, size_t cap, const md_system_t& sys, md_attribute_id_t key) {
+    const md_attribute_t* vec = md_attributes_get(&sys.attributes, key);
+    if (!vec) return 0;
+    const md_attribute_t* org = dipole_origin_of(sys, vec);
+    if (!dipole_group_qualifies(vec, org)) return 0;
+    const size_t n = md_attribute_value_count(&vec->format);
+    if (n == 0 || n > cap) return 0;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    float* v = (float*)md_temp_alloc(temp, sizeof(float) * 3 * n);
+    float* o = (float*)md_temp_alloc(temp, sizeof(float) * 3 * n);
+    const size_t num_org = md_attribute_value_count(&org->format);
+    if (md_attribute_extract_f32(v, 3 * n, vec, md_attribute_slice_all(), md_unit_none()) != 3 * n) return 0;
+    if (md_attribute_extract_f32(o, 3 * num_org, org, md_attribute_slice_all(), md_unit_angstrom()) != 3 * num_org) return 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float* oi = o + 3 * (num_org == n ? i : 0);
+        if (out_vec)    out_vec[i]    = vec3_set(v[3 * i + 0], v[3 * i + 1], v[3 * i + 2]);
+        if (out_origin) out_origin[i] = vec3_set(oi[0], oi[1], oi[2]);
+    }
+    return n;
 }
 
 

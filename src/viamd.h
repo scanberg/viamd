@@ -929,6 +929,8 @@ struct DipoleRepresentation {
     vec3_t offset = { 0, 0, 0 };
     double scale = 1.0;
 	float radius = 0.05f;
+    bool all = false;       // Every moment of the group at once, each at its own origin (the induced dipoles of an
+                            // embedding, one per site), rather than the one dipole_index names
 };
 
 // The edges of the unit cell, of the frame shown (it may change with it)
@@ -2347,6 +2349,10 @@ bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribut
 // index is past the end. This is the whole read path - drawing and the picking tooltip both take
 // the (key, index) they already hold and come straight here.
 bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index);
+
+// Every moment of a group at once, as dipole_moment_read reads one: [count] vectors as stored and origins in Angstrom
+// (a shared origin repeated). Returns the group's count, 0 when the key names no group or it has more than cap.
+size_t dipole_moments_read_all(vec3_t* out_vec, vec3_t* out_origin, size_t cap, const md_system_t& sys, md_attribute_id_t key);
 
 // Every density property the system carries, in the attribute table's own path order. Returns how
 // many there are, which may exceed 'cap' - only the first 'cap' are written. Pass (NULL, 0) to count.

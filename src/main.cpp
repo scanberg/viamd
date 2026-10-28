@@ -7213,6 +7213,41 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
 // the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
 // does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
 // The cells out of view are left out.
+// Every moment of the representation's group as an arrow from its own origin, each picking as its element of the group
+// (the range reserved under the group's key, as for one): the induced dipoles of an embedding at their sites, to see
+// where they are, which way they point and how large they are. An arrow whose vector is zero is not drawn.
+static void draw_dipole_moments_all(ApplicationState* state, const Representation& rep) {
+    const md_system_t& sys = state->mold.sys;
+    DipoleGroup group = {};
+    if (!dipole_group_from_key(&group, sys, rep.dipole.dipole_key) || group.count == 0) return;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    vec3_t* vec = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * group.count);
+    vec3_t* org = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * group.count);
+    const size_t n = dipole_moments_read_all(vec, org, group.count, sys, rep.dipole.dipole_key);
+    if (n == 0) return;
+
+    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
+    immediate::Scope scope(state->gfx.world, "dipole_moments_all");
+    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+
+    const float body_scale  = 0.8f;
+    const float body_radius = rep.dipole.radius;
+    const float head_radius = body_radius * 1.5f;
+    const uint32_t color = convert_color(rep.dipole.color);
+    for (size_t i = 0; i < n; ++i) {
+        const vec3_t v = vec[i] * (float)rep.dipole.scale;
+        if (!(vec3_length(v) > 0.0f)) continue;
+        const vec3_t beg = rep.dipole.offset + org[i];
+        const vec3_t mid = beg + v * body_scale;
+        const vec3_t end = beg + v;
+        const uint32_t picking_idx = range ? (uint32_t)i : INVALID_PICKING_IDX;
+        immediate::cylinder(scope, beg, mid, body_radius, color, picking_idx, 8);
+        immediate::cone(scope, mid, end, head_radius, color, picking_idx, 8);
+    }
+}
+
 static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
@@ -7373,7 +7408,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                     place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
-                if (representation_shown(*state, rep)) {
+                if (representation_shown(*state, rep) && rep.dipole.all) {
+                    draw_dipole_moments_all(state, rep);
+                } else if (representation_shown(*state, rep)) {
                     // immediate draw of dipole moment as arrow
                     vec3_t dipole_vec = { 0, 0, 0 };
                     vec3_t dipole_org = { 0, 0, 0 };
@@ -7483,6 +7520,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
             h = md_hash64(&rep.dipole.dipole_index, sizeof(rep.dipole.dipole_index), h);
+            h = md_hash64(&rep.dipole.all, sizeof(rep.dipole.all), h);
             h = md_hash64(&rep.dipole.offset, sizeof(rep.dipole.offset), h);
             h = md_hash64(&rep.dipole.scale, sizeof(rep.dipole.scale), h);
             h = md_hash64(&rep.dipole.radius, sizeof(rep.dipole.radius), h);

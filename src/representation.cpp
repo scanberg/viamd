@@ -1448,6 +1448,8 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_dbl(rep->dipole.scale, arg);
     } else if (str_eq(ident, STR_LIT("DipoleRadius"))) {
         viamd::extract_flt(rep->dipole.radius, arg);
+    } else if (str_eq(ident, STR_LIT("DipoleAll"))) {
+        viamd::extract_bool(rep->dipole.all, arg);
     } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
         viamd::extract_bool(rep->periodic_images, arg);
     } else if (str_eq(ident, STR_LIT("BoxColor"))) {
@@ -1652,6 +1654,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_vec3(state, STR_LIT("DipoleOffset"), rep.dipole.offset);
         viamd::write_dbl(state,  STR_LIT("DipoleScale"), rep.dipole.scale);
         viamd::write_flt(state,  STR_LIT("DipoleRadius"), rep.dipole.radius);
+        viamd::write_bool(state, STR_LIT("DipoleAll"), rep.dipole.all);
     }
 
     if (rep.type == RepresentationType::SimulationBox) {
@@ -2937,12 +2940,17 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             // Only an array of moments has an index to choose. One moment is addressed by the
             // group alone, and a slider from 1 to 1 is a control that cannot do anything.
             if (has_selection && selected.count > 1) {
+                prop::row("all", "Every moment of the group at once, each at its own origin - the induced dipoles of an embedding\n"
+                                 "at their sites - rather than the one the index picks. Hover one for its values.");
+                if (ImGui::Checkbox("##all", &rep.dipole.all)) update_rep = true;
+                ImGui::BeginDisabled(rep.dipole.all);
                 int index = (int)rep.dipole.dipole_index + 1;
                 prop::row("index");
                 if (ImGui::SliderInt("##index", &index, 1, (int)selected.count)) {
                     rep.dipole.dipole_index = (uint32_t)CLAMP(index - 1, 0, (int)selected.count - 1);
                     update_rep = true;
                 }
+                ImGui::EndDisabled();
             }
             if (num_groups == 0) {
                 prop::hint("no dipole moments in this dataset");
