@@ -9,7 +9,7 @@
 // is drawn as points, as contours of its density (at levels of the fraction of the samples they enclose), or as a heat
 // map of it. The layers are drawn bottom up, the first one on top.
 //
-// The density of a layer is estimated off the main thread (DensityJob): the angles of its residues over its frames are
+// The density of a layer is estimated off the main thread (density_map.h): the angles of its residues over its frames are
 // binned on a periodic grid, smoothed with a gaussian of the layer's bandwidth, and normalized per class. What its
 // contours are drawn at is found from the cumulative distribution of the density (the highest density regions): a level
 // of 90% is the line that encloses 90% of the samples, whatever the number of frames or the bandwidth. The jobs are keyed
@@ -48,6 +48,7 @@
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
 #include <task_system.h>
+#include <density_map.h>
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
@@ -55,6 +56,7 @@
 #include <implot_internal.h>
 
 #include <atomic>
+#include <memory>
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
@@ -77,11 +79,8 @@ constexpr int NUM_PANELS = NUM_TYPES + 1;
 
 static const char* panel_names[NUM_PANELS]       = { "General", "Glycine", "Proline", "Pre-proline", "All residues" };
 
-constexpr uint32_t DENSITY_DIM  = 512;      // Texels of the density grid over 360 degrees, a power of two
 constexpr int MAX_LAYERS        = 16;
-constexpr int MAX_LEVELS        = 8;
-constexpr int MASS_TABLE_SIZE   = 256;      // Samples of a density's cumulative distribution (see mass_level)
-constexpr int MAX_CHUNKS        = 16;       // Of a density job: the parts its frames are binned in, in parallel
+constexpr int MAX_LEVELS        = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS     = 100000;   // Of a layer of points over frames, in one plot: frames are skipped beyond
 
 // The reference: densities normalized to a maximum of 1 on grids of 2 degree bins centred on -179, -177, ..., 179,
@@ -160,134 +159,9 @@ static inline bool has_angles(md_backbone_angles_t a) {
     return !(a.phi == 0.0f && a.psi == 0.0f);
 }
 
-// ## Density estimation
 
-// The cumulative distribution of a density, as the density the region of everything denser than it encloses a fraction
-// of the samples at: mass_level(k) for entry k. The levels crowd towards 1 (up to 99.9%), where contours of rare
-// conformations are drawn.
-static inline double mass_level(int k) {
-    return 1.0 - pow(10.0, -3.0 * k / (MASS_TABLE_SIZE - 1));
-}
-
-// The density the region enclosing the fraction 'level' of the samples ends at
-static float mass_threshold(const float table[MASS_TABLE_SIZE], float level) {
-    level = CLAMP(level, 0.0f, 0.999f);
-    const double x = -log10(1.0 - level) / 3.0 * (MASS_TABLE_SIZE - 1);
-    const int k = (int)x;
-    if (k >= MASS_TABLE_SIZE - 1) return table[MASS_TABLE_SIZE - 1];
-    return (float)lerp((double)table[k], (double)table[k + 1], x - k);
-}
-
-// Fills the table of a density (every 'stride'th value of v): sorts its mass into bins over 8 decades below its maximum,
-// and walks them from the densest
-static void density_mass_table(float table[MASS_TABLE_SIZE], float* out_max, const float* v, size_t count, size_t stride) {
-    float vmax = 0.0f;
-    double total = 0.0;
-    for (size_t i = 0; i < count; ++i) {
-        const float x = v[i * stride];
-        vmax = MAX(vmax, x);
-        total += x;
-    }
-    *out_max = vmax;
-    if (vmax <= 0.0f || total <= 0.0) {
-        MEMSET(table, 0, sizeof(float) * MASS_TABLE_SIZE);
-        return;
-    }
-
-    constexpr int NUM_BINS = 4096;
-    constexpr double DECADES = 8.0;
-    const double bins_per_decade = NUM_BINS / DECADES;
-    double* hist = (double*)md_alloc(md_get_heap_allocator(), sizeof(double) * NUM_BINS);
-    MEMSET(hist, 0, sizeof(double) * NUM_BINS);
-    const double inv_max = 1.0 / vmax;
-    for (size_t i = 0; i < count; ++i) {
-        const float x = v[i * stride];
-        if (x <= 0.0f) continue;
-        const int b = (int)(-log10(x * inv_max) * bins_per_decade);
-        hist[CLAMP(b, 0, NUM_BINS - 1)] += x;
-    }
-
-    table[0] = vmax;
-    int b = 0;
-    double cum = 0.0;
-    for (int k = 1; k < MASS_TABLE_SIZE; ++k) {
-        const double m = mass_level(k) * total;
-        while (b < NUM_BINS && cum + hist[b] < m) {
-            cum += hist[b];
-            ++b;
-        }
-        if (b >= NUM_BINS) {
-            table[k] = (float)(vmax * pow(10.0, -DECADES));
-            continue;
-        }
-        const double frac = hist[b] > 0.0 ? (m - cum) / hist[b] : 0.0;
-        table[k] = (float)(vmax * pow(10.0, -(b + frac) / bins_per_decade));
-    }
-    md_free(md_get_heap_allocator(), hist, sizeof(double) * NUM_BINS);
-}
-
-// A row-wise running box filter of half-width r over a periodic grid of dim x dim
-static void blur_rows(vec4_t* out, const vec4_t* in, int dim, int r) {
-    const int mask = dim - 1;
-    const float scl = 1.0f / (2 * r + 1);
-    for (int row = 0; row < dim; ++row) {
-        const vec4_t* src = in + dim * row;
-        vec4_t* dst = out + dim * row;
-        vec4_t acc = vec4_zero();
-        for (int x = -r; x <= r; ++x) {
-            acc = acc + src[x & mask];
-        }
-        for (int x = 0; x < dim; ++x) {
-            dst[x] = acc * scl;
-            acc = vec4_max(vec4_zero(), acc - src[(x - r) & mask] + src[(x + r + 1) & mask]);
-        }
-    }
-}
-
-static void transpose(vec4_t* dst, const vec4_t* src, int n) {
-    const int block = 8;
-    ASSERT(n % block == 0);
-    for (int i = 0; i < n; i += block) {
-        for (int j = 0; j < n; j += block) {
-            for (int k = i; k < i + block; ++k) {
-                for (int l = j; l < j + block; ++l) {
-                    dst[k + l * n] = src[l + k * n];
-                }
-            }
-        }
-    }
-}
-
-// The half-widths of n boxes whose succession approximates a gaussian of sigma (in texels)
-static void boxes_for_gauss(int* half_w, int n, float sigma) {
-    const float w_ideal = sqrtf((12 * sigma * sigma / n) + 1);
-    int wl = (int)w_ideal;
-    if (wl % 2 == 0) wl--;
-    const int wu = wl + 2;
-    const float m_ideal = (12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4);
-    const int m = (int)(m_ideal + 0.5f);
-    for (int i = 0; i < n; i++) {
-        const int w = i < m ? wl : wu;
-        half_w[i] = MAX(0, (w - 1) / 2);
-    }
-}
-
-// A gaussian blur of the grid, in place: three boxes along each axis
-static void blur_gaussian(vec4_t* data, int dim, float sigma) {
-    ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    vec4_t* tmp = (vec4_t*)md_temp_alloc_aligned(temp, dim * dim * sizeof(vec4_t), 16);
-
-    int r[3];
-    boxes_for_gauss(r, 3, sigma);
-    for (int pass = 0; pass < 2; ++pass) {
-        blur_rows(tmp, data, dim, r[0]);
-        blur_rows(data, tmp, dim, r[1]);
-        blur_rows(tmp, data, dim, r[2]);
-        transpose(data, tmp, dim);
-    }
-}
+// The plane of the angles, in degrees: periodic
+static const DensityMapDomain rama_domain = { -180.0f, 180.0f, -180.0f, 180.0f, true };
 
 // ## Layers
 
@@ -323,16 +197,13 @@ static const char* style_names[LayerStyle_Count] = { "Points", "Contours", "Heat
 static const char* point_coloring_names[PointColoring_Count] = { "Layer color", "Region", "Time" };
 
 // What a density job found
+// A density job's: the density's distribution by class (a channel each, and all of them in PANEL_ALL), and where its
+// samples fall in the reference
 struct DensityResult {
-    float    table[NUM_PANELS][MASS_TABLE_SIZE] = {};   // See density_mass_table
-    float    max[NUM_PANELS] = {};
-    float    weights_all[NUM_TYPES] = {};               // Of each class in the plot of all residues: its share of the samples
-    uint64_t samples[NUM_PANELS] = {};
+    DensityMapResult map = {};
     uint64_t regions[NUM_PANELS][Region_Count] = {};
     uint32_t num_frames = 0;
 };
-
-struct DensityJob;
 
 struct Layer {
     uint32_t id = 0;            // Unique while it lives, never 0
@@ -380,264 +251,13 @@ struct Layer {
     bool     has_result = false;
     uint64_t shown_hash = 0;        // Of the inputs of the density in tex
     uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none (as for points)
-    DensityJob* job = nullptr;      // Under way
+    DensityMapJob* job = nullptr;   // Under way
 
     // Of the points shown: how many fall in each region, by plot
     uint32_t point_regions[NUM_PANELS][Region_Count] = {};
     uint32_t point_count[NUM_PANELS] = {};
     uint32_t point_stride = 1;      // Frames skipped to keep the points within MAX_POINTS
 };
-
-struct DensityJob {
-    uint32_t layer_id = 0;
-    uint64_t hash = 0;
-
-    const md_backbone_angles_t* angles = nullptr;
-    size_t   stride = 0;
-    uint32_t frame_beg = 0;
-    uint32_t frame_end = 0;
-    md_array(uint32_t) segs[NUM_TYPES] = {};
-    float    sigma = 1.0f;          // Texels
-
-    uint32_t num_chunks = 0;
-    uint32_t num_bufs = 0;          // The chunks', and at least one more for the plot of all residues (job_finalize)
-    float*   bins[MAX_CHUNKS] = {}; // DENSITY_DIM^2 of rgba, a channel per class
-    uint64_t samples[MAX_CHUNKS][NUM_TYPES] = {};
-    uint64_t regions[MAX_CHUNKS][NUM_TYPES][Region_Count] = {};
-
-    std::atomic<int32_t>  cancel{0};
-    std::atomic<uint32_t> chunks_done{0};
-    bool ok = false;
-    DensityResult result = {};
-
-    task_system::ID bin_task = task_system::INVALID_ID;
-};
-
-static size_t density_bytes() { return sizeof(float) * 4 * DENSITY_DIM * DENSITY_DIM; }
-
-static void job_free(DensityJob* job) {
-    md_allocator_i* heap = md_get_heap_allocator();
-    for (uint32_t i = 0; i < job->num_bufs; ++i) {
-        if (job->bins[i]) md_free(heap, job->bins[i], density_bytes());
-    }
-    for (int t = 0; t < NUM_TYPES; ++t) md_array_free(job->segs[t], heap);
-    delete job;
-}
-
-// Bins chunk c of the frames of the job
-static void job_bin_chunk(DensityJob* job, uint32_t c) {
-    const uint32_t num_frames = job->frame_end - job->frame_beg;
-    const uint32_t beg = job->frame_beg + (uint32_t)((uint64_t)num_frames * c / job->num_chunks);
-    const uint32_t end = job->frame_beg + (uint32_t)((uint64_t)num_frames * (c + 1) / job->num_chunks);
-    float* bins = job->bins[c];
-    const float scale = DENSITY_DIM / (2.0f * PI);
-    const uint32_t mask = DENSITY_DIM - 1;
-
-    for (uint32_t f = beg; f < end; ++f) {
-        if (job->cancel.load(std::memory_order_relaxed)) return;
-        const md_backbone_angles_t* a = job->angles + (size_t)f * job->stride;
-        for (int t = 0; t < NUM_TYPES; ++t) {
-            const uint32_t* segs = job->segs[t];
-            const size_t n = md_array_size(segs);
-            for (size_t i = 0; i < n; ++i) {
-                const md_backbone_angles_t ang = a[segs[i]];
-                if (!has_angles(ang)) continue;
-                const uint32_t x = (uint32_t)(int)floorf((ang.phi + PI) * scale) & mask;
-                const uint32_t y = (uint32_t)(int)floorf((ang.psi + PI) * scale) & mask;
-                bins[4 * (y * DENSITY_DIM + x) + t] += 1.0f;
-                job->samples[c][t] += 1;
-                job->regions[c][t][ref_region(t, ang.phi, ang.psi)] += 1;
-            }
-        }
-    }
-    job->chunks_done.fetch_add(1);
-}
-
-// Merges the chunks, normalizes, smooths and finds the distribution of the density
-static void job_finalize(DensityJob* job) {
-    if (job->cancel.load() || job->chunks_done.load() != job->num_chunks) return;
-
-    const size_t num_texels = (size_t)DENSITY_DIM * DENSITY_DIM;
-    float* d = job->bins[0];
-    for (uint32_t c = 1; c < job->num_chunks; ++c) {
-        const float* s = job->bins[c];
-        for (size_t i = 0; i < num_texels * 4; ++i) d[i] += s[i];
-    }
-
-    DensityResult& r = job->result;
-    uint64_t total = 0;
-    for (int t = 0; t < NUM_TYPES; ++t) {
-        for (uint32_t c = 0; c < job->num_chunks; ++c) {
-            r.samples[t] += job->samples[c][t];
-            for (int k = 0; k < Region_Count; ++k) r.regions[t][k] += job->regions[c][t][k];
-        }
-        total += r.samples[t];
-        r.samples[PANEL_ALL] += r.samples[t];
-        for (int k = 0; k < Region_Count; ++k) r.regions[PANEL_ALL][k] += r.regions[t][k];
-    }
-    r.num_frames = job->frame_end - job->frame_beg;
-
-    // Each class a probability density of its own: the plots of the classes compare their shapes, whatever their counts
-    float inv[4];
-    for (int t = 0; t < NUM_TYPES; ++t) {
-        inv[t] = r.samples[t] ? 1.0f / (float)r.samples[t] : 0.0f;
-        r.weights_all[t] = total ? (float)((double)r.samples[t] / (double)total) : 0.0f;
-    }
-    for (size_t i = 0; i < num_texels; ++i) {
-        for (int t = 0; t < NUM_TYPES; ++t) d[4 * i + t] *= inv[t];
-    }
-
-    if (job->cancel.load()) return;
-    blur_gaussian((vec4_t*)d, DENSITY_DIM, job->sigma);
-    if (job->cancel.load()) return;
-
-    for (int t = 0; t < NUM_TYPES; ++t) {
-        density_mass_table(r.table[t], &r.max[t], d + t, num_texels, 4);
-    }
-    // Every class in one: the sum of theirs weighted by their shares, in the second buffer (merged into the first)
-    ASSERT(job->num_bufs >= 2);
-    float* all = job->bins[1];
-    for (size_t i = 0; i < num_texels; ++i) {
-        all[i] = d[4 * i + 0] * r.weights_all[0] + d[4 * i + 1] * r.weights_all[1] + d[4 * i + 2] * r.weights_all[2] + d[4 * i + 3] * r.weights_all[3];
-    }
-    density_mass_table(r.table[PANEL_ALL], &r.max[PANEL_ALL], all, num_texels, 1);
-
-    job->ok = true;
-}
-
-// ## Shaders
-
-constexpr str_t v_fs_triangle_src = STR_LIT(R"(
-#version 150 core
-
-void main() {
-    uint idx = uint(gl_VertexID) % 3U;
-    gl_Position = vec4(
-        (float( idx     &1U)) * 4.0 - 1.0,
-        (float((idx>>1U)&1U)) * 4.0 - 1.0,
-        0, 1.0);
-}
-)");
-
-// A layer of densities over the target, premultiplied: contours (fills of the regions above the levels, lines along
-// them), or a heat map. The density is sampled with a cubic B-spline, so that contours stay smooth when zoomed in on.
-constexpr str_t f_layer_src = STR_LIT(R"(
-#version 330 core
-
-out vec4 out_color;
-
-uniform sampler2D u_tex;
-uniform vec2  u_tex_size;
-uniform vec4  u_uv_rect;        // The uv of the lower left corner, and the extent
-uniform vec2  u_inv_res;
-uniform vec4  u_weights;        // Of the channels (the classes)
-
-uniform int   u_mode;           // 0: contours, 1: heat map
-uniform int   u_fill;
-uniform int   u_lines;
-uniform int   u_num_levels;
-uniform float u_levels[8];      // Densities, the highest first
-uniform vec4  u_fill_colors[8];
-uniform vec4  u_line_color;
-uniform float u_line_width;     // Pixels
-
-uniform vec4  u_cmap[16];
-uniform int   u_cmap_count;
-uniform float u_cmap_max;
-uniform int   u_cmap_log;
-
-uniform float u_opacity;
-
-float sample_density(vec2 uv) {
-    vec2 st = uv * u_tex_size - 0.5;
-    vec2 i  = floor(st);
-    vec2 f  = st - i;
-    vec2 f2 = f * f;
-    vec2 f3 = f2 * f;
-    vec2 w0 = (1.0 / 6.0) * (-f3 + 3.0 * f2 - 3.0 * f + 1.0);
-    vec2 w1 = (1.0 / 6.0) * (3.0 * f3 - 6.0 * f2 + 4.0);
-    vec2 w2 = (1.0 / 6.0) * (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0);
-    vec2 w3 = (1.0 / 6.0) * f3;
-    vec2 g0 = w0 + w1;
-    vec2 g1 = w2 + w3;
-    vec2 h0 = (i - 1.0 + w1 / g0 + 0.5) / u_tex_size;
-    vec2 h1 = (i + 1.0 + w3 / g1 + 0.5) / u_tex_size;
-    vec4 t00 = texture(u_tex, vec2(h0.x, h0.y));
-    vec4 t10 = texture(u_tex, vec2(h1.x, h0.y));
-    vec4 t01 = texture(u_tex, vec2(h0.x, h1.y));
-    vec4 t11 = texture(u_tex, vec2(h1.x, h1.y));
-    vec4 t = g0.y * (g0.x * t00 + g1.x * t10) + g1.y * (g0.x * t01 + g1.x * t11);
-    return dot(t, u_weights);
-}
-
-vec4 over(vec4 src, vec4 dst) {
-    return src + dst * (1.0 - src.a);
-}
-
-vec4 premultiply(vec4 c) {
-    return vec4(c.rgb * c.a, c.a);
-}
-
-void main() {
-    vec2 uv = u_uv_rect.xy + gl_FragCoord.xy * u_inv_res * u_uv_rect.zw;
-    float d = sample_density(uv);
-    float g = max(length(vec2(dFdx(d), dFdy(d))), 1.0e-30);
-
-    vec4 c = vec4(0.0);
-    if (u_mode == 0) {
-        if (u_fill != 0) {
-            for (int i = u_num_levels - 1; i >= 0; --i) {
-                float cov = clamp((d - u_levels[i]) / g + 0.5, 0.0, 1.0);
-                c = over(premultiply(u_fill_colors[i]) * cov, c);
-            }
-        }
-        if (u_lines != 0) {
-            float a = 0.0;
-            for (int i = 0; i < u_num_levels; ++i) {
-                float dist = abs(d - u_levels[i]) / g;
-                a = max(a, clamp(0.5 * u_line_width + 0.5 - dist, 0.0, 1.0));
-            }
-            c = over(premultiply(u_line_color) * a, c);
-        }
-    } else {
-        float v = d / max(u_cmap_max, 1.0e-30);
-        if (u_cmap_log != 0) v = 1.0 + log(max(v, 1.0e-4)) / log(10.0) * 0.25;
-        v = clamp(v, 0.0, 1.0);
-        float s = v * float(u_cmap_count - 1);
-        int i0 = int(floor(s));
-        int i1 = min(i0 + 1, u_cmap_count - 1);
-        vec4 col = mix(u_cmap[i0], u_cmap[i1], s - float(i0));
-        col.a *= smoothstep(0.0, 0.06, v);
-        c = premultiply(col);
-    }
-    out_color = c * u_opacity;
-}
-)");
-
-// What a layer is drawn with in a plot: the uniforms of f_layer_src. Zeroed whole before it is filled, as the plot is
-// drawn again only when the bytes of these change.
-struct LayerDraw {
-    uint32_t tex;
-    int32_t  mode;
-    int32_t  fill;
-    int32_t  lines;
-    int32_t  num_levels;
-    int32_t  cmap_count;
-    int32_t  cmap_log;
-    float    line_width;
-    float    weights[4];
-    float    levels[MAX_LEVELS];
-    vec4_t   fill_colors[MAX_LEVELS];
-    vec4_t   line_color;
-    vec4_t   cmap[16];
-    float    cmap_max;
-    float    opacity;
-    uint64_t content;   // Of what is in tex
-};
-
-static void imgui_blend_premultiplied(const ImDrawList*, const ImDrawCmd*) {
-    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-}
 
 // ## Masks
 
@@ -690,22 +310,16 @@ struct Ramachandran : viamd::EventHandler {
     // Fitting the view: the whole domain, centred, extended along the longer side of the plots. Kept fitted as the
     // plots change shape until it is panned or zoomed.
     bool  fit_view = true;
+
+    // The highlight is whoever sets it to clear: what this window highlighted and no longer does is cleared once
+    bool  owns_highlight = false;
+    bool  highlights_now = false;
     bool  view_fitted = false;
     float plot_aspect = 0.0f;       // Width over height of the plots, the last frame
 
-    // GL
-    GLuint program = 0;
-    struct {
-        GLint tex, tex_size, uv_rect, inv_res, weights, mode, fill, lines, num_levels, levels, fill_colors, line_color,
-              line_width, cmap, cmap_count, cmap_max, cmap_log, opacity;
-    } loc = {};
-    GLuint fbo = 0;
-    GLuint vao = 0;
-    GLuint ref_tex = 0;
-    GLuint sprite_tex = 0;          // The marks of points (see init_sprites)
-    GLuint panel_tex[NUM_PANELS] = {};
-    int    panel_size[NUM_PANELS][2] = {};
-    uint64_t panel_hash[NUM_PANELS] = {};
+    // GL: the reference's densities, and the densities of the layers composited by plot
+    uint32_t ref_tex = 0;
+    DensityMapCanvas canvas[NUM_PANELS] = {};
 
     // Box selection, in the plot it started in
     struct {
@@ -809,41 +423,8 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void initialize() {
-        GLuint v_shader = gl::compile_shader_from_source(v_fs_triangle_src, GL_VERTEX_SHADER);
-        GLuint f_shader = gl::compile_shader_from_source(f_layer_src, GL_FRAGMENT_SHADER);
-        defer {
-            glDeleteShader(v_shader);
-            glDeleteShader(f_shader);
-        };
-        program = glCreateProgram();
-        const GLuint shaders[] = { v_shader, f_shader };
-        gl::attach_link_detach(program, shaders, (int)ARRAY_SIZE(shaders));
-
-        loc.tex         = glGetUniformLocation(program, "u_tex");
-        loc.tex_size    = glGetUniformLocation(program, "u_tex_size");
-        loc.uv_rect     = glGetUniformLocation(program, "u_uv_rect");
-        loc.inv_res     = glGetUniformLocation(program, "u_inv_res");
-        loc.weights     = glGetUniformLocation(program, "u_weights");
-        loc.mode        = glGetUniformLocation(program, "u_mode");
-        loc.fill        = glGetUniformLocation(program, "u_fill");
-        loc.lines       = glGetUniformLocation(program, "u_lines");
-        loc.num_levels  = glGetUniformLocation(program, "u_num_levels");
-        loc.levels      = glGetUniformLocation(program, "u_levels");
-        loc.fill_colors = glGetUniformLocation(program, "u_fill_colors");
-        loc.line_color  = glGetUniformLocation(program, "u_line_color");
-        loc.line_width  = glGetUniformLocation(program, "u_line_width");
-        loc.cmap        = glGetUniformLocation(program, "u_cmap");
-        loc.cmap_count  = glGetUniformLocation(program, "u_cmap_count");
-        loc.cmap_max    = glGetUniformLocation(program, "u_cmap_max");
-        loc.cmap_log    = glGetUniformLocation(program, "u_cmap_log");
-        loc.opacity     = glGetUniformLocation(program, "u_opacity");
-
-        glGenFramebuffers(1, &fbo);
-        glGenVertexArrays(1, &vao);
-
-        ref_tex = create_density_texture();
+        ref_tex = density_map_texture_create(true);
         init_reference(ref_tex);
-        sprite_tex = create_sprites();
 
         create_default_layers();
     }
@@ -852,88 +433,31 @@ struct Ramachandran : viamd::EventHandler {
         cancel_all_jobs(true);
         clear_layers();
         md_array_free(seg_type, md_get_heap_allocator());
-        if (ref_tex) glDeleteTextures(1, &ref_tex);
-        if (sprite_tex) glDeleteTextures(1, &sprite_tex);
-        for (int i = 0; i < NUM_PANELS; ++i) {
-            if (panel_tex[i]) glDeleteTextures(1, &panel_tex[i]);
-        }
-        if (program) glDeleteProgram(program);
-        if (fbo) glDeleteFramebuffers(1, &fbo);
-        if (vao) glDeleteVertexArrays(1, &vao);
-    }
-
-    static GLuint create_density_texture() {
-        GLuint tex = 0;
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, DENSITY_DIM, DENSITY_DIM);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        return tex;
-    }
-
-    // The marks points are drawn with, as textured quads (thousands of them cost what as many anti-aliased circles
-    // would cost in vertices alone): side by side, a disc with a dark rim (tinted with the point's colour, the rim
-    // staying dark) and a ring (tinted with the colour of the selection or the highlight)
-    static GLuint create_sprites() {
-        constexpr int S = 64;
-        uint32_t pixels[S * 2 * S];
-        for (int y = 0; y < S; ++y) {
-            for (int x = 0; x < 2 * S; ++x) {
-                const int cx = x < S ? S / 2 : S + S / 2;
-                const float dx = (x + 0.5f - cx) / (S * 0.5f - 2.0f);
-                const float dy = (y + 0.5f - S / 2) / (S * 0.5f - 2.0f);
-                const float r = sqrtf(dx * dx + dy * dy);
-                const float aa = 1.5f / (S * 0.5f);
-                float lum = 1.0f, alpha = 0.0f;
-                if (x < S) {
-                    // White inside 0.72, a dark rim out to 1
-                    const float rim = CLAMP((r - 0.72f) / aa + 0.5f, 0.0f, 1.0f);
-                    lum = 1.0f - rim;
-                    alpha = CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * (1.0f - 0.25f * rim);
-                } else {
-                    // A ring from 0.7 to 1
-                    alpha = CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * CLAMP((r - 0.7f) / aa + 0.5f, 0.0f, 1.0f);
-                }
-                const uint32_t l8 = (uint32_t)(lum * 255.0f + 0.5f);
-                const uint32_t a8 = (uint32_t)(alpha * 255.0f + 0.5f);
-                pixels[y * 2 * S + x] = l8 | (l8 << 8) | (l8 << 16) | (a8 << 24);
-            }
-        }
-        GLuint tex = 0;
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2 * S, S, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        return tex;
+        density_map_texture_free(&ref_tex);
+        for (int i = 0; i < NUM_PANELS; ++i) density_map_canvas_free(&canvas[i]);
+        density_map_shutdown();
     }
 
     // The reference densities, resampled onto the grid of the densities (texel centres) and smoothed a little: they are
     // tabulated at 2 degrees
-    static void init_reference(GLuint tex) {
+    static void init_reference(uint32_t tex) {
+        STATIC_ASSERT(NUM_TYPES == DENSITY_MAP_CHANNELS, "a channel for each class");
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
-        vec4_t* data = (vec4_t*)md_temp_alloc_aligned(temp, sizeof(vec4_t) * DENSITY_DIM * DENSITY_DIM, 16);
-        for (uint32_t y = 0; y < DENSITY_DIM; ++y) {
-            const double psi = (y + 0.5) * 360.0 / DENSITY_DIM - 180.0;
-            for (uint32_t x = 0; x < DENSITY_DIM; ++x) {
-                const double phi = (x + 0.5) * 360.0 / DENSITY_DIM - 180.0;
-                vec4_t& v = data[y * DENSITY_DIM + x];
+        const int dim = DENSITY_MAP_DIM;
+        float* data = (float*)md_temp_alloc_aligned(temp, sizeof(float) * 4 * dim * dim, 16);
+        for (int y = 0; y < dim; ++y) {
+            const double psi = (y + 0.5) * 360.0 / dim - 180.0;
+            for (int x = 0; x < dim; ++x) {
+                const double phi = (x + 0.5) * 360.0 / dim - 180.0;
+                float* v = data + 4 * (y * dim + x);
                 for (int t = 0; t < NUM_TYPES; ++t) {
-                    v.elem[t] = (float)ref_density(t, phi, psi);
+                    v[t] = (float)ref_density(t, phi, psi);
                 }
             }
         }
-        blur_gaussian(data, DENSITY_DIM, 1.5f);
-        gl::set_texture_2D_data(tex, 0, data, GL_RGBA32F);
+        density_map_blur(data, dim, 1.5f, true);
+        density_map_texture_upload(tex, data);
     }
 
     // ## Layers
@@ -1090,9 +614,8 @@ struct Ramachandran : viamd::EventHandler {
 
     void cancel_job(Layer& l, bool wait) {
         if (!l.job) return;
-        l.job->cancel.store(1);
-        if (wait) task_system::task_interrupt_and_wait_for(l.job->bin_task);
-        // Freed by its last task, which finds the layer gone or the job not its own
+        // Its callback still comes, and finds the layer gone or the job not its own
+        density_map_cancel(l.job, wait);
         l.job = nullptr;
         l.want_hash = 0;
     }
@@ -1103,73 +626,83 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
+    // The density of the angles of the layer's residues over frames [frame_beg, frame_end): a channel for each class.
+    // Where the samples fall in the reference is counted along, by chunk.
     void launch_job(Layer& l, uint64_t hash, uint32_t frame_beg, uint32_t frame_end) {
         ASSERT(!l.job);
-        const size_t stride = app->trajectory_data.backbone_angles.stride;
         const md_backbone_angles_t* angles = app->trajectory_data.backbone_angles.data;
         ASSERT(angles && frame_end > frame_beg);
 
-        md_allocator_i* heap = md_get_heap_allocator();
-        DensityJob* job = new DensityJob();
-        job->layer_id = l.id;
-        job->hash = hash;
-        job->angles = angles;
-        job->stride = stride;
-        job->frame_beg = frame_beg;
-        job->frame_end = frame_end;
-        job->sigma = MAX(0.25f, l.bandwidth * DENSITY_DIM / 360.0f);
-
+        struct Input {
+            const md_backbone_angles_t* angles = nullptr;
+            size_t   stride = 0;
+            uint32_t frame_beg = 0, frame_end = 0;
+            md_array(uint32_t) segs[NUM_TYPES] = {};
+            uint64_t regions[8][NUM_TYPES][Region_Count] = {};     // By chunk
+            ~Input() { for (int t = 0; t < NUM_TYPES; ++t) md_array_free(segs[t], md_get_heap_allocator()); }
+        };
+        std::shared_ptr<Input> in = std::make_shared<Input>();
+        in->angles = angles;
+        in->stride = app->trajectory_data.backbone_angles.stride;
+        in->frame_beg = frame_beg;
+        in->frame_end = frame_end;
         uint64_t num_samples = 0;
         for (int t = 0; t < NUM_TYPES; ++t) {
-            md_array_push_array(job->segs[t], l.segs[t], md_array_size(l.segs[t]), heap);
+            md_array_push_array(in->segs[t], l.segs[t], md_array_size(l.segs[t]), md_get_heap_allocator());
             num_samples += md_array_size(l.segs[t]);
         }
         num_samples *= (frame_end - frame_beg);
+        // A chunk for every 2M samples, no more than there are frames
+        const uint32_t num_chunks = (uint32_t)MIN((uint64_t)MIN(8u, frame_end - frame_beg), (num_samples >> 21) + 1);
 
-        const uint64_t samples_per_chunk = 1 << 21;
-        // At most 8: each holds a grid of its own (4 MB)
-        const uint32_t max_chunks = (uint32_t)CLAMP(task_system::pool_num_threads(), (size_t)1, (size_t)8);
-        job->num_chunks = (uint32_t)CLAMP((num_samples + samples_per_chunk - 1) / samples_per_chunk, (uint64_t)1, (uint64_t)max_chunks);
-        job->num_chunks = MIN(job->num_chunks, frame_end - frame_beg);
-        job->num_bufs = MAX(job->num_chunks, 2u);
-        for (uint32_t i = 0; i < job->num_bufs; ++i) {
-            job->bins[i] = (float*)md_alloc(heap, density_bytes());
-            MEMSET(job->bins[i], 0, density_bytes());
-        }
-        const uint32_t num_chunks = job->num_chunks;
-
-        task_system::ID bin_task = task_system::create_pool_task(STR_LIT("Ramachandran density"), num_chunks,
-            [job](uint32_t beg, uint32_t end, uint32_t) {
-                for (uint32_t c = beg; c < end; ++c) job_bin_chunk(job, c);
-            });
-        task_system::ID finalize_task = task_system::create_pool_task(STR_LIT("##Ramachandran density finalize"), [job]() {
-            job_finalize(job);
-        });
-        task_system::ID upload_task = task_system::create_main_task(STR_LIT("##Ramachandran density upload"), [this, job]() {
-            Layer* layer = find_layer(job->layer_id);
-            if (layer && layer->job == job) {
-                layer->job = nullptr;
-                if (job->ok) {
-                    if (!layer->tex) layer->tex = create_density_texture();
-                    gl::set_texture_2D_data(layer->tex, 0, job->bins[0], GL_RGBA32F);
-                    layer->result = job->result;
-                    layer->has_result = true;
-                    layer->shown_hash = job->hash;
-                } else {
-                    // Interrupted: tried again
-                    layer->want_hash = 0;
+        auto source = [in](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
+            const uint32_t n = in->frame_end - in->frame_beg;
+            const uint32_t beg = in->frame_beg + (uint32_t)((uint64_t)n * chunk / chunks);
+            const uint32_t end = in->frame_beg + (uint32_t)((uint64_t)n * (chunk + 1) / chunks);
+            for (uint32_t f = beg; f < end; ++f) {
+                if (cancel.load(std::memory_order_relaxed)) return;
+                const md_backbone_angles_t* a = in->angles + (size_t)f * in->stride;
+                for (int t = 0; t < NUM_TYPES; ++t) {
+                    const uint32_t* segs = in->segs[t];
+                    const size_t num = md_array_size(segs);
+                    for (size_t i = 0; i < num; ++i) {
+                        const md_backbone_angles_t ang = a[segs[i]];
+                        if (!has_angles(ang)) continue;
+                        bins.add(t, RAD_TO_DEG(ang.phi), RAD_TO_DEG(ang.psi));
+                        in->regions[chunk][t][ref_region(t, ang.phi, ang.psi)] += 1;
+                    }
                 }
             }
-            job_free(job);
-        });
-
-        job->bin_task = bin_task;
-        task_system::set_task_dependency(finalize_task, bin_task);
-        task_system::set_task_dependency(upload_task, finalize_task);
-        task_system::enqueue_task(bin_task);
-
-        l.job = job;
+        };
+        const uint32_t id = l.id;
+        auto done = [this, in, id, hash](const DensityMapResult* result, const float* grid) {
+            Layer* layer = find_layer(id);
+            if (!layer || !layer->job || layer->want_hash != hash) return;
+            layer->job = nullptr;
+            if (!result) {
+                // Interrupted: tried again
+                layer->want_hash = 0;
+                return;
+            }
+            if (!layer->tex) layer->tex = density_map_texture_create(true);
+            density_map_texture_upload(layer->tex, grid);
+            DensityResult& r = layer->result;
+            r = {};
+            r.map = *result;
+            r.num_frames = in->frame_end - in->frame_beg;
+            for (int c = 0; c < 8; ++c) {
+                for (int t = 0; t < NUM_TYPES; ++t) {
+                    for (int k = 0; k < Region_Count; ++k) {
+                        r.regions[t][k] += in->regions[c][t][k];
+                        r.regions[PANEL_ALL][k] += in->regions[c][t][k];
+                    }
+                }
+            }
+            layer->has_result = true;
+            layer->shown_hash = hash;
+        };
         l.want_hash = hash;
+        l.job = density_map_launch(STR_LIT("Ramachandran density"), rama_domain, l.bandwidth, num_chunks, source, done);
     }
 
     // ## Update
@@ -1613,40 +1146,21 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void panel_hash_reset() {
-        MEMSET(panel_hash, 0, sizeof(panel_hash));
-    }
-
-    // The fills of the regions of a layer of the system, the densest first: each a share of its colour, so that they
-    // add up to most of it in the middle
-    static void layer_fill_colors(vec4_t* out, const Layer& l) {
-        const int n = l.num_levels;
-        const float a = 1.0f - powf(0.2f, 1.0f / (float)n);
-        for (int i = 0; i < n; ++i) {
-            out[i] = l.color;
-            out[i].w = l.color.w * a;
-        }
+        for (int i = 0; i < NUM_PANELS; ++i) density_map_canvas_invalidate(&canvas[i]);
     }
 
     // Fills what layer l is drawn with in the plot, false when there is nothing of it to draw there
-    bool layer_draw(LayerDraw* d, const Layer& l, int panel) const {
-        MEMSET(d, 0, sizeof(LayerDraw));
+    bool layer_draw(DensityMapDraw* d, const Layer& l, int panel) const {
+        density_map_draw_init(d);
         const int type = panel == PANEL_ALL ? -1 : panel;
         d->opacity = l.opacity;
         d->line_width = l.line_width;
-        d->line_color = l.color;
+        MEMCPY(d->line_color, l.color.elem, sizeof(d->line_color));
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
-
         if (l.style == LayerStyle_Heatmap) {
-            // Its colours, or 16 samples of it where it has more
-            const int size = ImPlot::GetColormapSize(l.colormap);
-            const int n = MIN(size, 16);
-            d->cmap_count = n;
-            for (int i = 0; i < n; ++i) {
-                d->cmap[i] = vec_cast(size <= 16 ? ImPlot::GetColormapColor(i, l.colormap) : ImPlot::SampleColormap((float)i / (n - 1), l.colormap));
-            }
-            d->cmap_log = l.log_scale;
+            density_map_draw_colormap(d, l.colormap, l.log_scale);
         }
 
         if (l.source == LayerSource_Reference) {
@@ -1657,37 +1171,26 @@ struct Ramachandran : viamd::EventHandler {
             d->num_levels = 2;
             d->levels[0] = ref_favored[t];
             d->levels[1] = ref_allowed[t];
-            d->fill_colors[0] = ref_fill_favored[t];
-            d->fill_colors[1] = ref_fill_allowed[t];
+            MEMCPY(d->fill_colors[0], ref_fill_favored[t].elem, sizeof(float) * 4);
+            MEMCPY(d->fill_colors[1], ref_fill_allowed[t].elem, sizeof(float) * 4);
             d->cmap_max = 1.0f;
             d->content = 1;
             return true;
         }
 
         if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.segs_valid || !angles_available()) return false;
-        const DensityResult& r = l.result;
+        const DensityMapResult& r = l.result.map;
         if (r.samples[panel] == 0 || r.max[panel] <= 0.0f) return false;
         d->tex = l.tex;
-        if (type < 0) {
-            for (int t = 0; t < NUM_TYPES; ++t) d->weights[t] = r.weights_all[t];
-        } else {
-            d->weights[type] = 1.0f;
-        }
-        d->num_levels = l.num_levels;
-        for (int i = 0; i < l.num_levels; ++i) {
-            // Levels increase in what they enclose, so their densities decrease: the densest first
-            d->levels[i] = mass_threshold(r.table[panel], l.levels[i]);
-        }
-        layer_fill_colors(d->fill_colors, l);
-        d->cmap_max = r.max[panel];
+        density_map_draw_levels(d, r, panel, l.levels, l.num_levels);
+        density_map_draw_fills_from(d, vec_cast(l.color));
         d->content = l.shown_hash;
         return true;
     }
 
-    // Composites the densities of the layers into the texture of the plot, over the view, when anything it shows changed.
-    // Returns the texture, 0 when there is nothing to show.
-    GLuint render_panel(int panel, int width, int height, const ImPlotRect& view_rect) {
-        LayerDraw draws[MAX_LAYERS];
+    // The densities of the layers in the plot, composited (density_map_composite): 0 when there are none
+    uint32_t render_panel(int panel) {
+        DensityMapDraw draws[MAX_LAYERS];
         int num_draws = 0;
         // Bottom up: the first layer is on top
         for (int i = num_layers - 1; i >= 0; --i) {
@@ -1695,92 +1198,12 @@ struct Ramachandran : viamd::EventHandler {
             if (!l.visible || l.style == LayerStyle_Points || l.opacity <= 0.0f) continue;
             if (layer_draw(&draws[num_draws], l, panel)) ++num_draws;
         }
-        if (num_draws == 0) return 0;
-
-        width = CLAMP(width, 1, 4096);
-        height = CLAMP(height, 1, 4096);
-        if (!panel_tex[panel] || panel_size[panel][0] != width || panel_size[panel][1] != height) {
-            if (panel_tex[panel]) glDeleteTextures(1, &panel_tex[panel]);
-            glGenTextures(1, &panel_tex[panel]);
-            glBindTexture(GL_TEXTURE_2D, panel_tex[panel]);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            panel_size[panel][0] = width;
-            panel_size[panel][1] = height;
-            panel_hash[panel] = 0;
-        }
-
-        const float uv_rect[4] = {
-            (float)((view_rect.X.Min + 180.0) / 360.0),
-            (float)((view_rect.Y.Min + 180.0) / 360.0),
-            (float)(view_rect.Size().x / 360.0),
-            (float)(view_rect.Size().y / 360.0),
-        };
-
-        uint64_t h = md_hash64(draws, sizeof(LayerDraw) * num_draws, (uint64_t)panel_tex[panel]);
-        h = md_hash64(uv_rect, sizeof(uv_rect), h);
-        if (h == panel_hash[panel]) return panel_tex[panel];
-        panel_hash[panel] = h;
-
-        PUSH_GPU_SECTION("Ramachandran");
-        GLint last_fbo = 0;
-        GLint last_viewport[4];
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
-        glGetIntegerv(GL_VIEWPORT, last_viewport);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, panel_tex[panel], 0);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glViewport(0, 0, width, height);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_CULL_FACE);
-        glDisable(GL_SCISSOR_TEST);
-        glClearColor(0, 0, 0, 0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
-        glUseProgram(program);
-        glBindVertexArray(vao);
-        glActiveTexture(GL_TEXTURE0);
-        glUniform1i(loc.tex, 0);
-        glUniform2f(loc.tex_size, (float)DENSITY_DIM, (float)DENSITY_DIM);
-        glUniform4fv(loc.uv_rect, 1, uv_rect);
-        glUniform2f(loc.inv_res, 1.0f / width, 1.0f / height);
-
-        for (int i = 0; i < num_draws; ++i) {
-            const LayerDraw& d = draws[i];
-            glBindTexture(GL_TEXTURE_2D, d.tex);
-            glUniform4fv(loc.weights, 1, d.weights);
-            glUniform1i(loc.mode, d.mode);
-            glUniform1i(loc.fill, d.fill);
-            glUniform1i(loc.lines, d.lines);
-            glUniform1i(loc.num_levels, d.num_levels);
-            glUniform1fv(loc.levels, MAX_LEVELS, d.levels);
-            glUniform4fv(loc.fill_colors, MAX_LEVELS, d.fill_colors[0].elem);
-            glUniform4fv(loc.line_color, 1, d.line_color.elem);
-            glUniform1f(loc.line_width, d.line_width);
-            glUniform4fv(loc.cmap, 16, d.cmap[0].elem);
-            glUniform1i(loc.cmap_count, MAX(d.cmap_count, 1));
-            glUniform1f(loc.cmap_max, d.cmap_max);
-            glUniform1i(loc.cmap_log, d.cmap_log);
-            glUniform1f(loc.opacity, d.opacity);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-        }
-
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindVertexArray(0);
-        glUseProgram(0);
-        glDisable(GL_BLEND);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)last_fbo);
-        glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
-        POP_GPU_SECTION();
-
-        return panel_tex[panel];
+        int w = 0, h = 0;
+        density_map_plot_canvas_size(&w, &h);
+        if (num_draws == 0 || w <= 0 || h <= 0) return 0;
+        float view_uv[4];
+        density_map_plot_view_uv(view_uv, rama_domain);
+        return density_map_composite(&canvas[panel], w, h, view_uv, draws, num_draws);
     }
 
     // ### Points
@@ -1978,6 +1401,7 @@ struct Ramachandran : viamd::EventHandler {
         // The highlight: what the box covers, or what is under the pointer
         if (hovered || (box.active && box.panel == panel)) {
             md_bitmask_clear(highlight_mask);
+            highlights_now = true;
         }
         // Not moved from where it was pressed: a click, on the point pressed on (if any)
         bool box_is_click = false;
@@ -2014,15 +1438,7 @@ struct Ramachandran : viamd::EventHandler {
         // Drawn bottom up, then what is selected and highlighted over all of them
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
-        dl->PushTexture(ImTextureRef((ImTextureID)(intptr_t)sprite_tex));
-        // The disc, the ring, and a texel in the middle of the disc for plain squares
-        const ImVec2 disc_uv0 = ImVec2(0.0f, 0.0f), disc_uv1 = ImVec2(0.5f, 1.0f);
-        const ImVec2 ring_uv0 = ImVec2(0.5f, 0.0f), ring_uv1 = ImVec2(1.0f, 1.0f);
-        const ImVec2 solid_uv = ImVec2(0.25f, 0.5f);
-        auto sprite = [dl](ImVec2 p, float r, ImVec2 uv0, ImVec2 uv1, ImU32 col) {
-            dl->PrimReserve(6, 4);
-            dl->PrimRectUV(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), uv0, uv1, col);
-        };
+        density_map_marks_begin(dl);
         const vec4_t sel_col = app->selection.color.selection.outline;
         const vec4_t hl_col = app->selection.color.highlight.outline;
         for (int i = num_layers - 1; i >= 0; --i) {
@@ -2044,9 +1460,9 @@ struct Ramachandran : viamd::EventHandler {
                 l.point_count[PANEL_ALL] += 1;
                 for_images(ang, [&](ImVec2 p) {
                     if (many) {
-                        sprite(p, r, solid_uv, solid_uv, col);
+                        density_map_mark(dl, p, r, DensityMapMark_Square, col);
                     } else {
-                        sprite(p, r + 1.0f, disc_uv0, disc_uv1, col);
+                        density_map_mark(dl, p, r + 1.0f, DensityMapMark_Disc, col);
                     }
                 });
             });
@@ -2067,12 +1483,12 @@ struct Ramachandran : viamd::EventHandler {
                     if (!hl && !sel) return;
                     const ImU32 c = ImGui::ColorConvertFloat4ToU32(vec_cast(hl ? hl_col : sel_col));
                     for_images(ang, [&](ImVec2 p) {
-                        sprite(p, r + 1.0f, ring_uv0, ring_uv1, c);
+                        density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, c);
                     });
                 });
             }
         }
-        dl->PopTexture();
+        density_map_marks_end(dl);
         ImPlot::PopPlotClipRect();
 
         if (hover.layer >= 0) {
@@ -2163,21 +1579,7 @@ struct Ramachandran : viamd::EventHandler {
         if (psize.x > 1.0f && psize.y > 1.0f) plot_aspect = psize.x / psize.y;
 
         // The densities, composited, under everything else
-        // Of the viewport the window is in, where the backend says (multiple viewports), else of the display
-        ImVec2 fb_scale = ImGui::GetWindowViewport()->FramebufferScale;
-        if (fb_scale.x <= 0.0f || fb_scale.y <= 0.0f) fb_scale = ImGui::GetIO().DisplayFramebufferScale;
-        const int w = (int)(psize.x * fb_scale.x + 0.5f);
-        const int h = (int)(psize.y * fb_scale.y + 0.5f);
-        if (w > 0 && h > 0) {
-            const GLuint tex = render_panel(panel, w, h, lim);
-            if (tex) {
-                ImPlot::PushPlotClipRect();
-                dl->AddCallback(imgui_blend_premultiplied, nullptr);
-                dl->AddImage((ImTextureID)(intptr_t)tex, pos, ImVec2(pos.x + psize.x, pos.y + psize.y), ImVec2(0, 1), ImVec2(1, 0));
-                dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
-                ImPlot::PopPlotClipRect();
-            }
-        }
+        density_map_plot_canvas(render_panel(panel));
 
         // The edges of the periodic domain, where the view goes past them
         {
@@ -2363,28 +1765,6 @@ struct Ramachandran : viamd::EventHandler {
 
     // ### The window
 
-    // A row of buttons of which one is on. With fill, they share the width left on the row equally.
-    static bool segmented(const char* id, const char* const* labels, const int* values, int count, int* value, const char* const* tooltips = nullptr, bool fill = false) {
-        bool changed = false;
-        ImGui::PushID(id);
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1, ImGui::GetStyle().ItemSpacing.y));
-        const float w = fill ? MAX(1.0f, (ImGui::GetContentRegionAvail().x - (count - 1)) / count) : 0.0f;
-        for (int i = 0; i < count; ++i) {
-            const bool on = *value == values[i];
-            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::Button(labels[i], ImVec2(w, 0))) {
-                *value = values[i];
-                changed = true;
-            }
-            if (on) ImGui::PopStyleColor();
-            if (tooltips && tooltips[i]) ImGui::SetItemTooltip("%s", tooltips[i]);
-            if (i + 1 < count) ImGui::SameLine();
-        }
-        ImGui::PopStyleVar();
-        ImGui::PopID();
-        return changed;
-    }
-
     void draw_toolbar() {
         static const char* labels[] = { ICON_FA_TABLE_CELLS_LARGE, "All", "General", "Gly", "Pro", "Pre-Pro" };
         static const int values[] = { -1, PANEL_ALL, Type_General, Type_Glycine, Type_Proline, Type_PreProline };
@@ -2403,7 +1783,7 @@ struct Ramachandran : viamd::EventHandler {
         }
         ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
         ImGui::SameLine();
-        segmented("view", labels, values, (int)ARRAY_SIZE(labels), &view, tooltips);
+        density_map_segmented("view", labels, values, (int)ARRAY_SIZE(labels), &view, tooltips);
 
         // On the right: fitting the view and the settings
         ImGui::SameLine();
@@ -2452,7 +1832,7 @@ struct Ramachandran : viamd::EventHandler {
             count = l.point_count[panel];
             for (int k = 0; k < Region_Count; ++k) regions[k] = l.point_regions[panel][k];
         } else if (l.has_result) {
-            count = l.result.samples[panel];
+            count = l.result.map.samples[panel];
             for (int k = 0; k < Region_Count; ++k) regions[k] = l.result.regions[panel][k];
         }
         if (count == 0) {
@@ -2505,7 +1885,7 @@ struct Ramachandran : viamd::EventHandler {
                     count = l.point_count[p];
                     for (int k = 0; k < Region_Count; ++k) regions[k] = l.point_regions[p][k];
                 } else if (l.has_result) {
-                    count = l.result.samples[p];
+                    count = l.result.map.samples[p];
                     for (int k = 0; k < Region_Count; ++k) regions[k] = l.result.regions[p][k];
                 }
                 ImGui::TableNextRow();
@@ -2603,31 +1983,8 @@ struct Ramachandran : viamd::EventHandler {
             dl->AddRectFilled(sw_min, sw_max, ImGui::ColorConvertFloat4ToU32(ImVec4(a.x, a.y, a.z, a.w * vis_alpha)), 3.0f);
             dl->AddCircleFilled(sw_mid, line_h * 0.28f, ImGui::ColorConvertFloat4ToU32(ImVec4(f.x * 0.8f, f.y * 0.8f, f.z * 0.9f, f.w * vis_alpha)));
         } else {
-            vec4_t c = l.color;
-            c.w *= vis_alpha;
-            const ImU32 col = ImGui::ColorConvertFloat4ToU32(vec_cast(c));
-            if (l.style == LayerStyle_Points) {
-                dl->AddCircleFilled(ImVec2(sw_min.x + line_h * 0.3f, sw_min.y + line_h * 0.35f), 2.5f, col);
-                dl->AddCircleFilled(ImVec2(sw_min.x + line_h * 0.7f, sw_min.y + line_h * 0.45f), 2.5f, col);
-                dl->AddCircleFilled(ImVec2(sw_min.x + line_h * 0.45f, sw_min.y + line_h * 0.75f), 2.5f, col);
-            } else if (l.style == LayerStyle_Contours) {
-                if (l.fill) {
-                    vec4_t f = c;
-                    f.w *= 0.45f;
-                    dl->AddCircleFilled(sw_mid, line_h * 0.46f, ImGui::ColorConvertFloat4ToU32(vec_cast(f)));
-                }
-                dl->AddCircle(sw_mid, line_h * 0.46f, col, 0, 1.5f);
-                dl->AddCircle(sw_mid, line_h * 0.22f, col, 0, 1.5f);
-            } else {
-                const int n = 5;
-                for (int k = 0; k < n; ++k) {
-                    ImVec4 cc = ImPlot::SampleColormap((float)k / (n - 1), l.colormap);
-                    cc.w *= vis_alpha;
-                    const float x0 = sw_min.x + (sw_max.x - sw_min.x) * k / n;
-                    const float x1 = sw_min.x + (sw_max.x - sw_min.x) * (k + 1) / n;
-                    dl->AddRectFilled(ImVec2(x0, sw_min.y), ImVec2(x1, sw_max.y), ImGui::ColorConvertFloat4ToU32(cc));
-                }
-            }
+            const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
+            density_map_swatch(dl, sw_min, sw_max, kind, vec_cast(l.color), l.fill, l.colormap, vis_alpha);
         }
 
         // The name, and below it what it holds
@@ -2691,42 +2048,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void draw_levels(Layer& l) {
         prop::row("levels", "The contours enclose these fractions of the samples (highest density regions)");
-        bool changed = false;
-        const float w = ImGui::CalcTextSize("99.9%").x + ImGui::GetStyle().FramePadding.x * 2;
-        int remove = -1;
-        for (int i = 0; i < l.num_levels; ++i) {
-            ImGui::PushID(i);
-            if (i > 0) ImGui::SameLine(0, 2);
-            if (ImGui::GetContentRegionAvail().x < w) ImGui::NewLine();
-            float pct = l.levels[i] * 100.0f;
-            ImGui::SetNextItemWidth(w);
-            if (ImGui::DragFloat("##lvl", &pct, 0.2f, 1.0f, 99.9f, pct < 99.0f ? "%.0f%%" : "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) {
-                l.levels[i] = pct / 100.0f;
-                changed = true;
-            }
-            if (ImGui::IsItemDeactivatedAfterEdit()) sort_levels(l);
-            if (ImGui::BeginPopupContextItem("##lvl_menu")) {
-                if (ImGui::MenuItem("Remove", nullptr, false, l.num_levels > 1)) remove = i;
-                ImGui::EndPopup();
-            }
-            ImGui::SetItemTooltip("Drag to change, right-click to remove");
-            ImGui::PopID();
-        }
-        ImGui::SameLine(0, 2);
-        ImGui::BeginDisabled(l.num_levels >= MAX_LEVELS);
-        if (ImGui::Button("+##add_level")) {
-            // Halfway between the outermost and all of them
-            const float last = l.levels[l.num_levels - 1];
-            l.levels[l.num_levels++] = MIN(0.999f, last + (1.0f - last) * 0.5f);
-            changed = true;
-        }
-        ImGui::EndDisabled();
-        if (remove >= 0 && l.num_levels > 1) {
-            for (int i = remove; i + 1 < l.num_levels; ++i) l.levels[i] = l.levels[i + 1];
-            l.num_levels -= 1;
-            changed = true;
-        }
-        (void)changed;
+        density_map_levels_editor(l.levels, &l.num_levels);
     }
 
     void draw_inspector(Layer& l) {
@@ -2748,7 +2070,7 @@ struct Ramachandran : viamd::EventHandler {
         {
             int s = (int)l.source;
             static const int values[] = { LayerSource_Reference, LayerSource_System };
-            if (segmented("##source", source_names, values, LayerSource_Count, &s, nullptr, true)) {
+            if (density_map_segmented("##source", source_names, values, LayerSource_Count, &s, nullptr, true)) {
                 l.source = (LayerSource)s;
                 if (l.source == LayerSource_Reference && l.style == LayerStyle_Points) {
                     l.style = LayerStyle_Contours;
@@ -2820,10 +2142,10 @@ struct Ramachandran : viamd::EventHandler {
             int s = (int)l.style;
             if (l.source == LayerSource_Reference) {
                 static const int values[] = { LayerStyle_Contours, LayerStyle_Heatmap };
-                segmented("##style", style_names + 1, values, 2, &s, nullptr, true);
+                density_map_segmented("##style", style_names + 1, values, 2, &s, nullptr, true);
             } else {
                 static const int values[] = { LayerStyle_Points, LayerStyle_Contours, LayerStyle_Heatmap };
-                segmented("##style", style_names, values, LayerStyle_Count, &s, nullptr, true);
+                density_map_segmented("##style", style_names, values, LayerStyle_Count, &s, nullptr, true);
             }
             l.style = (LayerStyle)s;
         }
@@ -2920,6 +2242,13 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void draw() {
+        highlights_now = false;
+        draw_window();
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
+        owns_highlight = highlights_now;
+    }
+
+    void draw_window() {
         if (!show_window || !app) return;
 
         ImGui::SetNextWindowSize(ImVec2(760, 480), ImGuiCond_FirstUseEver);
