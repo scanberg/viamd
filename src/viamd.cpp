@@ -19,6 +19,7 @@
 #include <color_utils.h>
 #include <display_units.h>
 #include <serialization_utils.h>
+#include <plot_periodic.h>
 
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
@@ -2109,6 +2110,7 @@ static void workspace_reset(ApplicationState* data) {
 
     plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
+    periodic_views_clear();
     data->timeline.num_subplots = 1;
     data->distributions.num_subplots = 1;
     data->timeline.periods = TimelinePeriods{};
@@ -2403,6 +2405,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
             }
         } else if (plot_layout_deserialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), data, data->timeline.subplots, &data->timeline.num_subplots)) {
         } else if (plot_layout_deserialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), data, data->distributions.subplots, &data->distributions.num_subplots)) {
+        } else if (periodic_views_deserialize(state)) {
         } else {
             const char* before = state.text.ptr;
             viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
@@ -2633,6 +2636,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
     plot_layout_serialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), app_state->distributions.subplots, app_state->distributions.num_subplots);
+    periodic_views_serialize(state);
 
     {
         // In frames: a time is in whatever unit it happens to be shown in

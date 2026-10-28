@@ -27,6 +27,7 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 | `src/file_list.cpp` | `test_file_list.cpp` — the files of a system and its runs: the role a file takes from its place, and the workspace's `[System]`, `[Run]` and `[Input]` |
 | `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms, as inverse pairs |
 | `src/cartoon_glyphs.cpp` | `test_cartoon_glyphs.cpp` — the spheres and tubes of the lipid cartoon, built without the GL molecule they are derived from on the GPU |
+| `src/plot_periodic_core.cpp` | `test_plot_periodic.cpp` — periodic values laid out flat: the polyline cut where it crosses the cut of the circle, the gaps, the bands unwrapped around it, and where the values are least populated |
 | `src/representation_tree.cpp` | `test_representation_tree.cpp` — the tree of the Representations window: sibling order, every placement a drag can ask for, and that a group never goes within itself |
 | `src/script_suggestions.cpp` | `test_script_suggestions.cpp` — the lines the Script menu of the context menu offers: each picks the selection or compiles, in real systems, and the forms which say what the atoms are come first |
 
