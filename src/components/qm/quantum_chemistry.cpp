@@ -780,7 +780,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
 
     // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
     // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
-    // instead (critical_points_progress), as does the Critical Points section, each with a cancel button.
+    // instead (EventType_ViamdTaskProgressRequest), as does the Critical Points window, each with a cancel button.
     job->task = task_system::create_pool_task(STR_LIT("##Critical Points"), [job]() {
 #if MD_ENABLE_GPU
         if (job->stream) {
@@ -1696,6 +1696,17 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (critical_points.enabled) {
                     size_t num_cp = md_topo_num_critical_points(&critical_points.simp_graph);
                     picking_range_reserve(&critical_points.picking_range, space, PickingDomain_CriticalPoints, num_cp);
+                }
+                break;
+            }
+            case viamd::EventType_ViamdTaskProgressRequest: {
+                // The analytic critical point search, for the task overlay: once it has run for a moment, with the
+                // flag its cancel button raises (collected as usual: what was found so far is shown, marked)
+                ASSERT(e.payload_type == viamd::EventPayloadType_TaskProgressRequest);
+                TaskProgressRequest* req = (TaskProgressRequest*)e.payload;
+                GtoCriticalPointJob* job = critical_points.gto_job;
+                if (job && !job->cancel && !job->dropped && md_tick_to_seconds(md_tick_now() - job->start) >= 0.25) {
+                    task_progress_add(req, "Critical points", job->progress, &job->cancel);
                 }
                 break;
             }
@@ -11242,15 +11253,3 @@ struct QuantumChemistry : viamd::EventHandler {
 };
 
 static QuantumChemistry instance = {};
-
-bool critical_points_progress(float* fraction) {
-    const GtoCriticalPointJob* job = instance.critical_points.gto_job;
-    // a run stopping, or done within a few frames, shows nothing
-    if (!job || job->cancel || job->dropped || md_tick_to_seconds(md_tick_now() - job->start) < 0.25) return false;
-    *fraction = CLAMP(job->progress, 0.0f, 1.0f);
-    return true;
-}
-
-void critical_points_cancel() {
-    if (instance.critical_points.gto_job) instance.critical_points.gto_job->cancel = 1;
-}

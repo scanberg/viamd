@@ -2473,11 +2473,26 @@ void gpu_volume_jobs_poll(ApplicationState* state);
 // long: for a progress display. False without the GPU backend.
 bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
-// The analytic critical point search under way (the QM component), for a progress display: true once it
-// has run for a moment, with how far it is (0 to 1, an estimate). critical_points_cancel stops it, as
-// the Cancel button beside it in the Critical Points section does.
-bool critical_points_progress(float* fraction);
-void critical_points_cancel();
+// A line of the task overlay from a component, given in answer to EventType_ViamdTaskProgressRequest: what is
+// under way, how far it is (0 to 1), and optionally a flag the overlay's close button raises to stop it. Read in
+// the frame it is given in, so the flag only has to live that long. This is how a component shows its work
+// there: main.cpp asks rather than calls, as a component may not be built (the QM module is a build option).
+struct TaskProgress {
+    const char*       label    = "";
+    float             fraction = 0.0f;
+    volatile int32_t* cancel   = nullptr;
+};
+
+struct TaskProgressRequest {
+    TaskProgress items[8];
+    size_t       count = 0;
+};
+
+static inline void task_progress_add(TaskProgressRequest* req, const char* label, float fraction, volatile int32_t* cancel) {
+    if (req->count < ARRAY_SIZE(req->items)) {
+        req->items[req->count++] = TaskProgress{ label, CLAMP(fraction, 0.0f, 1.0f), cancel };
+    }
+}
 
 
 // The QM ATOM DOMAIN: the atoms a quantum chemistry calculation covered, in its own order and at
