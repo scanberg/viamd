@@ -135,6 +135,45 @@ static void inset_text(ImDrawList* dl, ImFont* font, float size, ImVec2 p, const
     dl->AddText(font, size, p, col, text);
 }
 
+// Where the inset axes of the plots were drawn last: what IsInsetAxisHovered tests. Kept for a few frames, overwritten as
+// they are drawn again.
+struct InsetBand {
+    ImGuiID id;
+    ImRect  rect;
+    int     frame;
+};
+static ImVector<InsetBand> inset_bands;
+
+static ImGuiID inset_band_id(const ImPlotPlot& plot, int axis) {
+    return ImHashData(&axis, sizeof(axis), plot.ID);
+}
+
+static void inset_band_store(ImGuiID id, const ImRect& rect) {
+    const int frame = ImGui::GetFrameCount();
+    for (int i = 0; i < inset_bands.Size; ++i) {
+        if (inset_bands[i].id == id || frame - inset_bands[i].frame > 2) {
+            inset_bands[i] = InsetBand{ id, rect, frame };
+            return;
+        }
+    }
+    inset_bands.push_back(InsetBand{ id, rect, frame });
+}
+
+IMPLOT_API bool IsInsetAxisHovered(ImAxis axis) {
+    ImPlotContext& gp = *GImPlot;
+    IM_ASSERT_USER_ERROR(gp.CurrentPlot != nullptr, "IsInsetAxisHovered() needs to be called between BeginPlot() and EndPlot()!");
+    const ImPlotPlot& plot = *gp.CurrentPlot;
+    if (!plot.Hovered) return false;
+    const ImGuiID id = inset_band_id(plot, (int)axis);
+    const int frame = ImGui::GetFrameCount();
+    for (int i = 0; i < inset_bands.Size; ++i) {
+        if (inset_bands[i].id == id) {
+            return frame - inset_bands[i].frame <= 1 && inset_bands[i].rect.Contains(ImGui::GetIO().MousePos);
+        }
+    }
+    return false;
+}
+
 IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, float font_scale) {
     ImPlotContext& gp = *GImPlot;
     IM_ASSERT_USER_ERROR(gp.CurrentPlot != nullptr, "DrawInsetAxes() needs to be called between BeginPlot() and EndPlot()!");
@@ -151,14 +190,18 @@ IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, flo
     const ImU32 name_col = ImGui::ColorConvertFloat4ToU32(text);
     text.w *= 0.75f;
     const ImU32 tick_col = ImGui::ColorConvertFloat4ToU32(text);
-    const bool ticks = !(flags & ImPlotInsetFlags_NoTickLabels);
-    const bool names = !(flags & ImPlotInsetFlags_NoAxisLabels);
 
-    auto has_ticks = [&](const ImPlotAxis& ax) {
-        return ticks && ax.Enabled && ax.Ticker.TickCount() > 0;
+    // What is drawn within: of each axis, what ImPlot does not draw itself, unless left out
+    auto excluded = [&](const ImPlotAxis& ax, bool x) {
+        return !ax.Enabled || (x ? (flags & ImPlotInsetFlags_NoX) : (flags & ImPlotInsetFlags_NoY));
     };
-    auto name_of = [&](const ImPlotAxis& ax) -> const char* {
-        return names && ax.Enabled && ax.LabelOffset != -1 ? plot.GetAxisLabel(ax) : nullptr;
+    auto has_ticks = [&](const ImPlotAxis& ax, bool x) {
+        return !excluded(ax, x) && !(flags & ImPlotInsetFlags_NoTickLabels) && !ax.HasTickLabels() && ax.Ticker.TickCount() > 0;
+    };
+    auto name_of = [&](const ImPlotAxis& ax, bool x) -> const char* {
+        const bool own = !(flags & ImPlotInsetFlags_NoAxisLabels) && ImHasFlag(ax.Flags, ImPlotAxisFlags_NoLabel) && ax.LabelOffset != -1;
+        const char* name = !excluded(ax, x) && own ? plot.GetAxisLabel(ax) : nullptr;
+        return name && name[0] ? name : nullptr;
     };
     auto label_width = [&](const ImPlotAxis& ax) {
         float w = 0.0f;
@@ -169,19 +212,43 @@ IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, flo
         return w;
     };
 
+    // What the labels keep out of: the region asked for, and the legend where it is within the plot (as of the last frame)
+    ImRect avoid[2];
+    int num_avoid = 0;
+    if (clear_top_left.x > 0.0f && clear_top_left.y > 0.0f) {
+        avoid[num_avoid++] = ImRect(r.Min, ImVec2(r.Min.x + clear_top_left.x, r.Min.y + clear_top_left.y));
+    }
+    const ImPlotLegend& legend = plot.Items.Legend;
+    if (!ImHasFlag(plot.Flags, ImPlotFlags_NoLegend) && !ImHasFlag(legend.Flags, ImPlotLegendFlags_Outside) && legend.Indices.Size > 0 &&
+        legend.RectClamped.GetWidth() > 0.0f && legend.RectClamped.GetHeight() > 0.0f) {
+        avoid[num_avoid++] = legend.RectClamped;
+    }
+    auto blocked = [&](const ImRect& rect) {
+        for (int k = 0; k < num_avoid; ++k) {
+            if (avoid[k].Overlaps(rect)) return true;
+        }
+        return false;
+    };
+    // The lowest edge of what is to be kept clear over the x range [x0, x1] from the top, for the names of y axes
+    auto clear_below = [&](float x0, float x1, float y) {
+        for (int k = 0; k < num_avoid; ++k) {
+            if (avoid[k].Min.x < x1 && x0 < avoid[k].Max.x && avoid[k].Min.y <= y + line_h) y = ImMax(y, avoid[k].Max.y + pad);
+        }
+        return y;
+    };
+
     // The rows and columns the axes take along the edges, from the outside in: what the others keep clear of
     float row_bottom = 0.0f, row_top = 0.0f, col_left = 0.0f, col_right = 0.0f;
     for (int i = 0; i < IMPLOT_NUM_X_AXES; ++i) {
         const ImPlotAxis& ax = plot.XAxis(i);
-        if (!has_ticks(ax) && !name_of(ax)) continue;
+        if (!has_ticks(ax, true) && !name_of(ax, true)) continue;
         (ax.IsOpposite() ? row_top : row_bottom) += line_h + pad;
     }
     for (int i = 0; i < IMPLOT_NUM_Y_AXES; ++i) {
         const ImPlotAxis& ax = plot.YAxis(i);
-        if (!has_ticks(ax)) continue;
+        if (!has_ticks(ax, false)) continue;
         (ax.IsOpposite() ? col_right : col_left) += label_width(ax) + pad * 2;
     }
-    const float top_clear = ImMax(clear_top_left.y, row_top);
 
     PushPlotClipRect();
     ImDrawList* dl = GetPlotDrawList();
@@ -189,31 +256,40 @@ IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, flo
     float off_bottom = 0.0f, off_top = 0.0f;
     for (int i = 0; i < IMPLOT_NUM_X_AXES; ++i) {
         const ImPlotAxis& ax = plot.XAxis(i);
-        const char* name = name_of(ax);
-        if (!has_ticks(ax) && !name) continue;
+        const char* name = name_of(ax, true);
+        const bool ticks = has_ticks(ax, true);
+        if (!ticks && !name) continue;
         const bool top = ax.IsOpposite();
         float& off = top ? off_top : off_bottom;
         const float y = top ? r.Min.y + off + pad : r.Max.y - off - line_h - pad;
         off += line_h + pad;
-        // A top row starts right of what is kept clear
-        const float x_min = r.Min.x + (top ? ImMax(col_left, clear_top_left.x) : col_left) + pad;
+        inset_band_store(inset_band_id(plot, ImAxis_X1 + i), ImRect(r.Min.x, y - pad * 0.5f, r.Max.x, y + line_h + pad * 0.5f));
+
+        const float x_min = r.Min.x + col_left + pad;
         float x_max = r.Max.x - col_right - pad;
         if (name) {
             const ImVec2 ns = font->CalcTextSizeA(name_fs, FLT_MAX, 0.0f, name);
-            x_max -= ns.x;
-            inset_text(dl, font, name_fs, ImVec2(x_max, y + line_h - ns.y), name, name_col);
-            x_max -= pad * 2;
+            ImRect nr(ImVec2(x_max - ns.x, y + line_h - ns.y), ImVec2(x_max, y + line_h));
+            // Left of what it would run into
+            for (int k = 0; k < num_avoid; ++k) {
+                if (avoid[k].Overlaps(nr)) nr.TranslateX(avoid[k].Min.x - pad - nr.Max.x);
+            }
+            if (nr.Min.x >= x_min) {
+                inset_text(dl, font, name_fs, nr.Min, name, name_col);
+                x_max = ImMin(x_max, nr.Min.x - pad * 2);
+            }
         }
-        if (!has_ticks(ax)) continue;
+        if (!ticks) continue;
         float last = -FLT_MAX;
         for (int j = 0; j < ax.Ticker.TickCount(); ++j) {
             const ImPlotTick& tk = ax.Ticker.Ticks[j];
             if (!tk.ShowLabel || tk.TextOffset == -1) continue;
-            const char* text = ax.Ticker.GetText(j);
-            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+            const char* label = ax.Ticker.GetText(j);
+            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, label).x;
             const float x = IM_ROUND(ax.PlotToPixels(tk.PlotPos) - w * 0.5f);
             if (x < x_min || x + w > x_max || x < last + pad * 2) continue;
-            inset_text(dl, font, fs, ImVec2(x, y), text, tick_col);
+            if (blocked(ImRect(x, y, x + w, y + line_h))) continue;
+            inset_text(dl, font, fs, ImVec2(x, y), label, tick_col);
             last = x + w;
         }
     }
@@ -221,32 +297,37 @@ IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, flo
     float off_left = 0.0f, off_right = 0.0f;
     for (int i = 0; i < IMPLOT_NUM_Y_AXES; ++i) {
         const ImPlotAxis& ax = plot.YAxis(i);
-        const char* name = name_of(ax);
-        if (!has_ticks(ax) && !name) continue;
+        const char* name = name_of(ax, false);
+        const bool ticks = has_ticks(ax, false);
+        if (!ticks && !name) continue;
         const bool right = ax.IsOpposite();
-        const float w_col = has_ticks(ax) ? label_width(ax) : 0.0f;
+        const ImVec2 ns = name ? font->CalcTextSizeA(name_fs, FLT_MAX, 0.0f, name) : ImVec2(0, 0);
+        const float w_col = ImMax(ticks ? label_width(ax) : 0.0f, ns.x);
         float& off = right ? off_right : off_left;
         const float x0 = right ? r.Max.x - off - pad - w_col : r.Min.x + off + pad;
-        off += w_col + pad * 2;
-        // Below what is kept clear at the top (on the left), above the rows of the x axes
-        float y_min = r.Min.y + (right ? row_top : top_clear) + pad;
+        off += (ticks ? label_width(ax) : 0.0f) + pad * 2;
+        inset_band_store(inset_band_id(plot, ImAxis_Y1 + i), ImRect(x0 - pad, r.Min.y, x0 + w_col + pad, r.Max.y - row_bottom));
+
+        // Below what is kept clear at the top, above the rows of the x axes
+        float y_min = clear_below(x0, x0 + w_col, r.Min.y + row_top + pad);
         const float y_max = r.Max.y - row_bottom - pad;
         if (name) {
-            const ImVec2 ns = font->CalcTextSizeA(name_fs, FLT_MAX, 0.0f, name);
             inset_text(dl, font, name_fs, ImVec2(right ? x0 + w_col - ns.x : x0, y_min), name, name_col);
             y_min += ns.y + pad;
         }
-        if (!has_ticks(ax)) continue;
-        float last = FLT_MAX;   // The top of the label drawn before, going up
+        if (!ticks) continue;
+        float last = FLT_MAX;   // The top of the label drawn before
         for (int j = 0; j < ax.Ticker.TickCount(); ++j) {
             const ImPlotTick& tk = ax.Ticker.Ticks[j];
             if (!tk.ShowLabel || tk.TextOffset == -1) continue;
-            const char* text = ax.Ticker.GetText(j);
-            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+            const char* label = ax.Ticker.GetText(j);
+            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, label).x;
             const float y = IM_ROUND(ax.PlotToPixels(tk.PlotPos) - line_h * 0.5f);
             if (y < y_min || y + line_h > y_max) continue;
             if (last != FLT_MAX && y + line_h > last - pad && y < last + line_h + pad) continue;
-            inset_text(dl, font, fs, ImVec2(right ? x0 + w_col - w : x0, y), text, tick_col);
+            const float x = right ? x0 + w_col - w : x0;
+            if (blocked(ImRect(x, y, x + w, y + line_h))) continue;
+            inset_text(dl, font, fs, ImVec2(x, y), label, tick_col);
             last = y;
         }
     }

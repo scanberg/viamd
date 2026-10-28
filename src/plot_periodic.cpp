@@ -1,4 +1,5 @@
 #include <plot_periodic.h>
+#include <implot_widgets.h>
 
 #include <serialization_utils.h>
 
@@ -127,10 +128,17 @@ bool periodic_axis_popup(ImAxis axis, PeriodicView* view) {
     ASSERT(view);
     char id[48];
     snprintf(id, sizeof(id), "##periodic_axis_%d", (int)axis);
-    if (ImPlot::IsAxisHovered(axis) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0.0f) {
+    // Its margin, or where its labels are within the plot (DrawInsetAxes): there it is over the plot, whose menu the
+    // right click would open as well, after this one, and so in its place
+    const bool inset = !ImPlot::IsAxisHovered(axis) && ImPlot::IsInsetAxisHovered(axis);
+    const bool hovered = ImPlot::IsAxisHovered(axis) || inset;
+    if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right).x == 0.0f) {
         ImGui::OpenPopup(id);
+        if (inset) GImPlot->OpenContextThisFrame = false;
     }
-    if (ImPlot::IsAxisHovered(axis)) {
+    if (inset) {
+        if (!ImGui::IsPopupOpen(id)) ImGui::SetTooltip("Periodic: drag to turn it, right-click for where to cut it");
+    } else if (hovered) {
         ImGui::SetItemTooltip("Periodic: drag to turn it, right-click for where to cut it");
     }
 

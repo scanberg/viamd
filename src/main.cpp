@@ -4259,7 +4259,8 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
             const ImPlotFlags plot_flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch;
+            // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
+            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlot::InsetAxisFlags;
             const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_Opposite | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
 
             for (int i = 0; i < num_subplots; ++i) {
@@ -4296,11 +4297,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x_value, max_x_value);
 
-                    ImPlotAxisFlags axis_flags_x = axis_flags | ImPlotAxisFlags_NoLabel;
-                    if (i < num_subplots - 1) {
-                        // Only show label and ticklabels for the last plot, since they are all synced on x-axis
-                        axis_flags_x |= ImPlotAxisFlags_NoTickLabels;
-                    }
+                    const ImPlotAxisFlags axis_flags_x = axis_flags;
 
                     // When every series in the subplot is shown in the same unit, that unit labels the y axis
                     char y_unit_str[32] = "";
@@ -4642,6 +4639,9 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
                     }
 
+                    // Over everything else. The x axis labelled only under the last plot: they all share it.
+                    ImPlot::DrawInsetAxes(i < num_subplots - 1 ? ImPlotInsetFlags_NoX : 0);
+
                     ImPlot::EndPlot();
                 }
 
@@ -4959,7 +4959,8 @@ static void draw_distribution_window(ApplicationState* data) {
             ImGui::EndMenuBar();
         }
 
-        const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
+        // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
+        const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight | ImPlot::InsetAxisFlags;
         const ImPlotAxisFlags axis_flags_x = axis_flags;
         const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
         const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
@@ -5415,6 +5416,9 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                         ImPlot::PopPlotClipRect();
                     }
+
+                    // Over everything else
+                    ImPlot::DrawInsetAxes();
 
                     ImPlot::EndPlot();
                 }
