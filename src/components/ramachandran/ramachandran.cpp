@@ -252,6 +252,7 @@ struct Layer {
     uint64_t shown_hash = 0;        // Of the inputs of the density in tex
     uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none (as for points)
     DensityMapJob* job = nullptr;   // Under way
+    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
 
     // Of the points shown: how many fall in each region, by plot
     uint32_t point_regions[NUM_PANELS][Region_Count] = {};
@@ -675,9 +676,10 @@ struct Ramachandran : viamd::EventHandler {
             }
         };
         const uint32_t id = l.id;
-        auto done = [this, in, id, hash](const DensityMapResult* result, const float* grid) {
+        const uint64_t serial = ++l.job_serial;
+        auto done = [this, in, id, hash, serial](const DensityMapResult* result, const float* grid) {
             Layer* layer = find_layer(id);
-            if (!layer || !layer->job || layer->want_hash != hash) return;
+            if (!layer || !layer->job || layer->job_serial != serial || layer->want_hash != hash) return;
             layer->job = nullptr;
             if (!result) {
                 // Interrupted: tried again

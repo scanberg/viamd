@@ -18,7 +18,7 @@
 //   hover                  highlights the structure of the point under the pointer, and says what it is
 //   click                  on a point of a frame, goes to that frame
 //   shift-drag             selects the structures of the points in the box (right button: deselects them)
-//   shift-click            on a point, selects its structure (right button: deselects it); right click elsewhere clears
+//   shift-click            on a point, selects its structure (right button: deselects it); shift-right click elsewhere clears
 //   double-click           fits the view
 //   a period dropped       from the timeline on the plot, a new layer of the density over it; on a layer, its frames
 
@@ -68,13 +68,14 @@ static const vec2_t tri_iso = { 0.5f, 0.86602540378f };
 // The plane the densities are over: square, around the triangle, with room for the images of the samples near its
 // edges that keep the density from leaking out of it (density_map.h), some 4 sigma
 static const DensityMapDomain shape_domain = {
-    -0.25f, 1.25f, 0.433f - 0.75f, 0.433f + 0.75f, false,
+    -0.25f, 1.25f, 0.433f - 0.75f, 0.433f + 0.75f, false,     // 0.25 = 4 * MAX_BANDWIDTH, past the corners
     true, { tri_lin.x, tri_lin.y, tri_pla.x, tri_pla.y, tri_iso.x, tri_iso.y },
 };
 
 constexpr int MAX_LAYERS      = 16;
 constexpr int MAX_LEVELS      = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS   = 100000;     // Of a layer of points over frames: frames are skipped beyond
+constexpr float MAX_BANDWIDTH = 0.06f;      // The domain has room around the triangle for images within 4 sigma of it
 
 static const ImVec4 layer_palette[] = {
     {0.95f, 0.95f, 0.95f, 1.0f},
@@ -140,7 +141,12 @@ struct Evaluation {
     task_system::ID task = task_system::INVALID_ID;
 
     bool complete() const { return num_frames > 0 && frames_done.load() >= num_frames; }
+    // Stopped before all of its frames were done (interrupted from the task overlay, or by a load): never will be
+    // (Asked in this order: a task that has stopped has counted all the frames it did.)
+    bool failed() const { return !task_system::task_is_running(task) && !complete(); }
 
+    // Waits for its task, which on the main thread may run pool work meanwhile: what is dropped in use goes through
+    // Shapespace::retired first, freed once its task has stopped
     ~Evaluation() {
         cancel.store(1);
         task_system::task_interrupt_and_wait_for(task);
@@ -223,6 +229,7 @@ struct Layer {
     uint64_t shown_hash = 0;
     uint64_t want_hash = 0;
     DensityMapJob* job = nullptr;
+    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
 
     // The bandwidth found for the samples (Scott's rule), and what of
     float    auto_bandwidth = 0.0f;
@@ -253,7 +260,7 @@ static float scott_bandwidth(const Evaluation& e, uint32_t beg, uint32_t end) {
     const double var = MAX(0.0, (sxx - sx * sx / n) + (syy - sy * sy / n)) / (2.0 * (n - 1));
     // n: of all the samples, not of those the spread was taken from
     const double h = sqrt(var) * pow((double)total, -1.0 / 6.0);
-    return CLAMP((float)h, 0.005f, 0.1f);
+    return CLAMP((float)h, 0.005f, MAX_BANDWIDTH);
 }
 
 struct Shapespace : viamd::EventHandler {
@@ -266,7 +273,9 @@ struct Shapespace : viamd::EventHandler {
     uint32_t selected_layer = 0;
 
     std::vector<EvaluationRef> evaluations;
+    std::vector<EvaluationRef> retired;     // Cancelled, freed once their tasks have stopped
     uint64_t system_generation = 1;
+    uint64_t state_generation = 1;          // Of the state shown: its coordinates may change with nothing else
 
     bool show_sidebar = true;
     bool show_grid = true;
@@ -274,6 +283,7 @@ struct Shapespace : viamd::EventHandler {
     // The highlight is whoever sets it to clear: what this window highlighted and no longer does is cleared once
     bool owns_highlight = false;
     bool highlights_now = false;
+    bool plot_drawn = false;                // This frame: a box selection is of a plot that is drawn
 
     // The view: fitted to the triangle (and its labels) at the plot's shape, until it is panned or zoomed
     bool   fit_view = true;
@@ -337,6 +347,21 @@ struct Shapespace : viamd::EventHandler {
                 release_all(true);
                 system_generation += 1;
                 break;
+            case viamd::EventType_ViamdLoadData: {
+                // A system or a run loaded in place of the one there: a run of another file may have as many frames
+                // as the one before, and is opened without a SystemInit or SystemFree (the tasks reading the old one
+                // were interrupted and waited for already)
+                const LoadDataPayload* load = (const LoadDataPayload*)e.payload;
+                if (load && (load->loader_state.flags & (LoaderFlag_System | LoaderFlag_Trajectory))) {
+                    release_all(true);
+                    system_generation += 1;
+                }
+                break;
+            }
+            case viamd::EventType_ViamdSystemStateChanged:
+                // Coordinates written in place (a QM optimization step, a vibration), the frame the same
+                state_generation += 1;
+                break;
             case viamd::EventType_ViamdSerialize:
                 serialize(*(viamd::serialization_state_t*)e.payload);
                 break;
@@ -360,7 +385,8 @@ struct Shapespace : viamd::EventHandler {
             }
             case viamd::EventType_ViamdDeserializeEnd:
                 if (!read_layers && !layers_declared) {
-                    if (legacy.present) create_legacy_layers();
+                    // Over the timeline filter of a workspace from before there were periods, as it was
+                    if (legacy.present || (app && app->timeline.periods.legacy_filter_id != 0)) create_legacy_layers();
                     else create_default_layers();
                 }
                 break;
@@ -382,11 +408,12 @@ struct Shapespace : viamd::EventHandler {
             l.structs_key = 0;
             l.current_key = 0;
         }
-        for (EvaluationRef& e : evaluations) {
-            e->cancel.store(1);
-            task_system::task_interrupt_and_wait_for(e->task);
-        }
+        for (EvaluationRef& e : evaluations) e->cancel.store(1);
+        for (EvaluationRef& e : retired) e->cancel.store(1);
+        for (EvaluationRef& e : evaluations) task_system::task_interrupt_and_wait_for(e->task);
+        for (EvaluationRef& e : retired) task_system::task_interrupt_and_wait_for(e->task);
         evaluations.clear();
+        retired.clear();
         density_map_canvas_invalidate(&canvas);
     }
 
@@ -568,9 +595,10 @@ struct Shapespace : viamd::EventHandler {
             }
         };
         const uint32_t id = l.id;
-        auto done = [this, id, hash](const DensityMapResult* result, const float* grid) {
+        const uint64_t serial = ++l.job_serial;
+        auto done = [this, id, hash, serial](const DensityMapResult* result, const float* grid) {
             Layer* layer = find_layer(id);
-            if (!layer || !layer->job || layer->want_hash != hash) return;
+            if (!layer || !layer->job || layer->job_serial != serial || layer->want_hash != hash) return;
             layer->job = nullptr;
             if (!result) {
                 layer->want_hash = 0;
@@ -597,7 +625,7 @@ struct Shapespace : viamd::EventHandler {
         // What depends on the coordinates follows the frame shown as points of it, but is taken once for frames that
         // are many (all of them would have to be evaluated again at every frame)
         if (l.filter.text[0] && l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
-            key = md_hash64_combine(key, (uint64_t)(app->animation.frame * 4096.0));
+            key = md_hash64_combine(key, md_hash64_combine((uint64_t)(app->animation.frame * 4096.0), state_generation));
         }
         if (key == l.structs_key) return;
         l.structs_key = key;
@@ -631,13 +659,18 @@ struct Shapespace : viamd::EventHandler {
             return;
         }
         const uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, num_frames));
-        if (l.eval && l.eval->key == key) return;
-        for (const EvaluationRef& e : evaluations) {
-            if (e->key == key) {
-                l.eval = e;
-                return;
+        if (l.eval && l.eval->key == key && !l.eval->failed()) return;
+        for (size_t i = 0; i < evaluations.size(); ++i) {
+            if (evaluations[i]->key != key) continue;
+            if (evaluations[i]->failed()) {
+                // Started again, for every layer over it
+                retire(i);
+                break;
             }
+            l.eval = evaluations[i];
+            return;
         }
+        l.eval.reset();
         EvaluationRef e = std::make_shared<Evaluation>();
         e->key = key;
         e->use_mass = l.use_mass;
@@ -702,7 +735,7 @@ struct Shapespace : viamd::EventHandler {
         const md_system_state_t& st = app->mold.state;
         uint64_t key = md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22);
         key = md_hash64_combine(key, md_hash64(&st.frame, sizeof(st.frame), (uint64_t)(uintptr_t)st.xyz));
-        key = md_hash64_combine(key, system_generation);
+        key = md_hash64_combine(key, md_hash64_combine(system_generation, state_generation));
         if (key == l.current_key) return;
         l.current_key = key;
         const size_t n = l.structs_valid ? md_array_size(l.structures) : 0;
@@ -786,15 +819,27 @@ struct Shapespace : viamd::EventHandler {
             if (h == l.shown_hash || h == l.want_hash || l.job) continue;
             launch_job(l, h, beg, end, sigma);
         }
-        // Evaluations no layer holds any longer
+        // Evaluations no layer holds any longer (nor a density job: they hold them too)
         for (size_t i = 0; i < evaluations.size();) {
-            if (evaluations[i].use_count() == 1) {
-                evaluations[i] = evaluations.back();
-                evaluations.pop_back();
+            if (evaluations[i].use_count() == 1) retire(i);
+            else ++i;
+        }
+        for (size_t i = 0; i < retired.size();) {
+            if (retired[i].use_count() == 1 && !task_system::task_is_running(retired[i]->task)) {
+                retired[i] = std::move(retired.back());
+                retired.pop_back();
             } else {
                 ++i;
             }
         }
+    }
+
+    // Out of evaluations[i]: cancelled, and freed once its task has stopped
+    void retire(size_t i) {
+        evaluations[i]->cancel.store(1);
+        retired.push_back(std::move(evaluations[i]));
+        evaluations[i] = std::move(evaluations.back());
+        evaluations.pop_back();
     }
 
     // ## Workspace
@@ -931,7 +976,7 @@ struct Shapespace : viamd::EventHandler {
         l.style = (LayerStyle)CLAMP((int)l.style, 0, LayerStyle_Count - 1);
         l.opacity = CLAMP(l.opacity, 0.0f, 1.0f);
         l.line_width = CLAMP(l.line_width, 0.5f, 8.0f);
-        l.bandwidth = l.bandwidth > 0.0f ? CLAMP(l.bandwidth, 0.002f, 0.2f) : 0.0f;
+        l.bandwidth = l.bandwidth > 0.0f ? CLAMP(l.bandwidth, 0.005f, MAX_BANDWIDTH) : 0.0f;
         l.point_size = CLAMP(l.point_size, 1.0f, 16.0f);
         l.num_levels = CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = CLAMP(l.levels[i], 0.01f, 0.999f);
@@ -1142,6 +1187,7 @@ struct Shapespace : viamd::EventHandler {
     }
 
     void draw_points(bool hovered) {
+        plot_drawn = true;
         md_bitmask_t* selection_mask = &app->selection.selection_mask;
         md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
 
@@ -1748,7 +1794,7 @@ struct Shapespace : viamd::EventHandler {
             float pct = (automatic ? l.auto_bandwidth : l.bandwidth) * 100.0f;
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (automatic) ImGui::BeginDisabled();
-            if (ImGui::SliderFloat("##bandwidth", &pct, 0.5f, 10.0f, "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) l.bandwidth = pct / 100.0f;
+            if (ImGui::SliderFloat("##bandwidth", &pct, 0.5f, MAX_BANDWIDTH * 100.0f, "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) l.bandwidth = pct / 100.0f;
             if (automatic) ImGui::EndDisabled();
         }
         if (l.style == LayerStyle_Points) {
@@ -1801,7 +1847,14 @@ struct Shapespace : viamd::EventHandler {
 
     void draw() {
         highlights_now = false;
+        plot_drawn = false;
         draw_window();
+        // Collapsed, hidden or closed in the middle of a box: no selection from it once it is back
+        if (!plot_drawn && box.active) {
+            box.active = false;
+            box.click_layer = -1;
+            box.click_structure = -1;
+        }
         if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
         owns_highlight = highlights_now;
     }
