@@ -943,6 +943,14 @@ struct SurfacePointsRepresentation {
     ColorScale     scale = surface_points_default_scale(SurfacePointsGroup::Cpcm);
     ColorScaleSpan span = {};       // of the amplitudes, refreshed with the representation
     float          radius = 0.1f;   // Å
+
+    // The points as md_gl particles, drawn as implicit spheres (MD_GL_REP_SPACE_FILL): one per gaussian, owned by the
+    // representation and made when first drawn, uploaded again only when what they show changes
+    md_gl_mol_t gl_mol = {};
+    md_gl_rep_t gl_rep = {};
+    uint32_t    gl_count = 0;
+    uint64_t    gl_position_hash = 0;   // of the positions uploaded
+    uint64_t    gl_style_hash = 0;      // of the radii and colours uploaded
 };
 
 // The edges of the unit cell, of the frame shown (it may change with it)

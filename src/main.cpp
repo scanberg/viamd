@@ -7207,7 +7207,7 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
 // the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
 // does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
 // The cells out of view are left out.
-static void draw_surface_points(ApplicationState* state, const Representation& rep);
+static void draw_surface_points(ApplicationState* state, Representation& rep, md_gl_draw_args_t args);
 
 static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
@@ -7411,9 +7411,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                     draw_simulation_box(state, rep);
                 }
             } else if (rep.type == RepresentationType::SurfacePoints) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    draw_surface_points(state, rep);
-                }
+                // Drawn after the atoms, with the same arguments and a picking range of their own (below)
             }
         }
 
@@ -7442,6 +7440,13 @@ static void draw_representations_opaque(ApplicationState* state) {
             args.picking_offset = gl_picking_offset_glyphs(*state);
             draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
+
+        for (size_t i = 0; i < num_representations; ++i) {
+            Representation& rep = state->representation.reps[i];
+            if (rep.type == RepresentationType::SurfacePoints && representation_shown(*state, rep) && rep.type_is_valid) {
+                draw_surface_points(state, rep, args);
+            }
+        }
 #if EXPERIMENTAL_GFX_API
     }
 #endif
@@ -7449,10 +7454,13 @@ static void draw_representations_opaque(ApplicationState* state) {
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
 // the depth of what the representations draw (draw_representations_opaque): not what is highlighted or selected
-// The gaussians of a CPCM or GOSTSHYP surface as spheres, coloured by their amplitudes, carried along with the QM atoms
-// as the surface fields are. Coarse spheres: a protein's cavity is tens of thousands of them.
-static void draw_surface_points(ApplicationState* state, const Representation& rep) {
-    const SurfacePointsRepresentation& sp = rep.surface_points;
+// The gaussians of a CPCM or GOSTSHYP surface as implicit spheres - md_gl particles, ray cast and lit as the atoms are -
+// coloured by their amplitudes and carried along with the QM atoms as the surface fields are. The particles are the
+// representation's own; what changed since the last frame is uploaded, which is nothing while the view alone moves.
+// Each point picks as its gaussian: the group's range was reserved under its key this frame (atom_base), and particle k
+// writes base + k. A group that did not fit in the picking space writes indices no range holds.
+static void draw_surface_points(ApplicationState* state, Representation& rep, md_gl_draw_args_t args) {
+    SurfacePointsRepresentation& sp = rep.surface_points;
     const md_system_t& sys = state->mold.sys;
     const size_t n = surface_points_count(sp.group, sys);
     if (n == 0) return;
@@ -7464,17 +7472,47 @@ static void draw_surface_points(ApplicationState* state, const Representation& r
     const vec3_t* basis_xyz = basis_atom_positions_extract(&num_basis_atoms, temp, sys, state->mold.state);
     if (!xyz || !amp || surface_points_extract(xyz, amp, n, sp.group, sys, basis_xyz, num_basis_atoms) != n) return;
 
-    // Picked as the gaussian it is: the group's range was reserved under its key this frame, and a point writes its
-    // index within the group. A group that did not fit in the picking space draws unpickable.
+    if (!sp.gl_mol.id || sp.gl_count != (uint32_t)n) {
+        surface_points_gl_free(&sp);
+        sp.gl_mol   = md_gl_mol_create_particles((uint32_t)n);
+        sp.gl_rep   = md_gl_rep_create(sp.gl_mol);
+        sp.gl_count = (uint32_t)n;
+    }
+    const uint64_t position_hash = md_hash64(xyz, sizeof(vec3_t) * n, 0x5e7f);
+    if (position_hash != sp.gl_position_hash) {
+        md_gl_mol_set_atom_position(sp.gl_mol, 0, (uint32_t)n, xyz);
+        md_gl_mol_zero_velocity(sp.gl_mol);     // they stand still: a recentred system jumps, it does not move
+        sp.gl_position_hash = position_hash;
+    }
+    uint64_t style_hash = md_hash64(amp, sizeof(float) * n, 0x5e7f);
+    style_hash = md_hash64(&sp.radius, sizeof(sp.radius), style_hash);
+    style_hash = md_hash64(&sp.scale, sizeof(sp.scale), style_hash);
+    if (style_hash != sp.gl_style_hash) {
+        float*    radius = (float*)md_temp_alloc(temp, sizeof(float) * n);
+        uint32_t* color  = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * n);
+        for (size_t k = 0; k < n; ++k) {
+            radius[k] = sp.radius;
+            color[k]  = color_scale_color_u32(sp.scale, amp[k]) | 0xFF000000u;   // opaque: md_gl hides an alpha of 0
+        }
+        md_gl_mol_set_atom_radius(sp.gl_mol, 0, (uint32_t)n, radius, 0);
+        md_gl_rep_set_atom_colors(sp.gl_rep, 0, (uint32_t)n, color, 0);
+        sp.gl_style_hash = style_hash;
+    }
+
     const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
     const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_SurfacePoint, surface_points_key(sp.group, sys)) : nullptr;
+    args.picking_offset = {};
+    args.picking_offset.atom_base = range ? range->beg : INVALID_PICKING_IDX - (uint32_t)n - 1;
+    args.atom_mask = 0;
 
-    immediate::Scope scope(state->gfx.world, "surface_points");
-    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
-    for (size_t k = 0; k < n; ++k) {
-        const uint32_t picking_idx = range ? (uint32_t)k : INVALID_PICKING_IDX;
-        immediate::sphere(scope, xyz[k], sp.radius, color_scale_color_u32(sp.scale, amp[k]), picking_idx, 6, 10);
-    }
+    md_gl_draw_op_t op = {};
+    op.type = MD_GL_REP_SPACE_FILL;
+    op.args.space_fill.radius_scale = 1.0f;
+    op.rep = sp.gl_rep;
+    args.draw_operations = { .count = 1, .ops = &op };
+    PUSH_GPU_SECTION("Surface Points");
+    md_gl_draw(&args);
+    POP_GPU_SECTION();
 }
 
 static uint64_t opaque_scene_hash(const ApplicationState* state) {

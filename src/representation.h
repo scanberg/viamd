@@ -27,6 +27,9 @@ Representation* create_representation(ApplicationState* app, RepresentationType 
 // Placed just after the original, in the same group
 Representation* clone_representation(ApplicationState* app, const Representation& rep);
 void remove_representation(ApplicationState* app, size_t idx);
+
+// The md_gl particles a Surface Points representation draws its points as, freed (made again when next drawn)
+void surface_points_gl_free(SurfacePointsRepresentation* sp);
 // The representations and the groups
 void remove_all_representations(ApplicationState* app);
 void create_default_representations(ApplicationState* app);

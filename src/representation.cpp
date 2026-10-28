@@ -248,6 +248,16 @@ bool representation_move(ApplicationState* app, bool group, uint32_t id, bool ta
 // Representations
 // ---------------------------------------------------------------------------------------------------------
 
+void surface_points_gl_free(SurfacePointsRepresentation* sp) {
+    md_gl_rep_destroy(sp->gl_rep);
+    if (sp->gl_mol.id) md_gl_mol_destroy(sp->gl_mol);
+    sp->gl_rep = {};
+    sp->gl_mol = {};
+    sp->gl_count = 0;
+    sp->gl_position_hash = 0;
+    sp->gl_style_hash = 0;
+}
+
 static void init_representation(ApplicationState* state, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
     rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
@@ -270,6 +280,9 @@ static void init_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
+    // The points of the surface of the system before, if it had one: made again when drawn
+    surface_points_gl_free(&rep->surface_points);
+
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
@@ -290,6 +303,9 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.color_vol.tex_id   = 0;
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.iso_mesh           = nullptr;
+    rep->surface_points.gl_mol   = {};
+    rep->surface_points.gl_rep   = {};
+    rep->surface_points.gl_count = 0;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -354,6 +370,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     md_array_free(rep.bond_pairs, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
     md_gl_rep_destroy(rep.glyph_rep);
+    surface_points_gl_free(&rep.surface_points);
     // A readback queued for this representation's volume would land in a texture that no longer
     // exists, so let the queue run out first.
     gpu_volume_jobs_drain(state);
