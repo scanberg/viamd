@@ -563,6 +563,45 @@ size_t surface_points_extract(vec3_t* out_xyz, float* out_amplitude, size_t cap,
     return num;
 }
 
+md_attribute_id_t surface_points_key(SurfacePointsGroup group, const md_system_t& sys) {
+    if (surface_points_count(group, sys) == 0) return MD_ATTRIBUTE_INVALID;
+    const md_attribute_t* a = surface_gaussians_leaf(sys, surface_points_group_name(group), "amplitude");
+    return a ? a->id : MD_ATTRIBUTE_INVALID;
+}
+
+bool surface_points_group_from_key(SurfacePointsGroup* out, const md_system_t& sys, md_attribute_id_t key) {
+    if (key == MD_ATTRIBUTE_INVALID) return false;
+    for (int g = 0; g < (int)SurfacePointsGroup::Count; ++g) {
+        if (surface_points_key((SurfacePointsGroup)g, sys) == key) {
+            if (out) *out = (SurfacePointsGroup)g;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool surface_points_read(SurfacePoint* out, SurfacePointsGroup group, const md_system_t& sys, size_t index,
+                         const vec3_t* basis_atom_xyz, size_t num_basis_atoms) {
+    ASSERT(out);
+    const str_t name = surface_points_group_name(group);
+    if (index >= surface_gaussians_count(sys, name)) return false;
+    const md_attribute_slice_t one = md_attribute_slice_1((uint32_t)index);
+    const md_unit_t bohr = md_unit_bohr_radius();
+    double xyz[3];
+    if (md_attribute_extract_f64(xyz, 3, surface_gaussians_leaf(sys, name, "center"), one, bohr) != 3 ||
+        md_attribute_extract_f64(&out->amplitude, 1, surface_gaussians_leaf(sys, name, "amplitude"), one, surface_points_unit(group)) != 1 ||
+        md_attribute_extract_f64(&out->exponent, 1, surface_gaussians_leaf(sys, name, "exponent"), one, md_unit_pow(bohr, -2)) != 1 ||
+        md_attribute_extract_f64(&out->normalization, 1, surface_gaussians_leaf(sys, name, "normalization"), one, md_unit_pow(bohr, -3)) != 1) {
+        return false;
+    }
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double shift[3];
+    surface_gaussians_shift(shift, sys, basis_atom_xyz, num_basis_atoms, temp);
+    for (int c = 0; c < 3; ++c) out->xyz.elem[c] = (float)((xyz[c] + shift[c]) / ANGSTROM_TO_BOHR_D);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Kinds
 // ---------------------------------------------------------------------------

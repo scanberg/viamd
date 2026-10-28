@@ -8,6 +8,7 @@
 #include <core/md_gpu.h>
 
 #include <color_scale.h>
+#include <md_attributes.h>
 
 struct md_system_t;
 struct md_system_state_t;
@@ -212,6 +213,22 @@ bool      surface_points_signed(SurfacePointsGroup group);                      
 // SurfaceFieldDesc) may be NULL, and the points are then where the calculation had them.
 size_t surface_points_extract(vec3_t* out_xyz, float* out_amplitude, size_t cap, SurfacePointsGroup group, const md_system_t& sys,
                               const vec3_t* basis_atom_xyz, size_t num_basis_atoms);
+
+// What picking keys a group's points by: the id of its amplitude attribute, stable across a reload.
+// MD_ATTRIBUTE_INVALID without them; the group of a key, false when it names none.
+md_attribute_id_t surface_points_key(SurfacePointsGroup group, const md_system_t& sys);
+bool surface_points_group_from_key(SurfacePointsGroup* out, const md_system_t& sys, md_attribute_id_t key);
+
+// One point as surface_points_extract has it (centre in Angstrom, carried along), with its gaussian's
+// exponent (bohr^-2) and normalisation (bohr^-3). False when there is no such point.
+struct SurfacePoint {
+    vec3_t xyz = {};
+    double amplitude = 0.0;         // surface_points_unit
+    double exponent = 0.0;
+    double normalization = 0.0;
+};
+bool surface_points_read(SurfacePoint* out, SurfacePointsGroup group, const md_system_t& sys, size_t index,
+                         const vec3_t* basis_atom_xyz, size_t num_basis_atoms);
 
 static inline ColorScale surface_points_default_scale(SurfacePointsGroup group) {
     ColorScale scale;

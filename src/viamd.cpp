@@ -864,6 +864,56 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     }
 }
 
+#define BOHR_TO_ANGSTROM_TOOLTIP 0.529177210544
+
+// A gaussian of a surface model, as it is in the file: its amplitude, its gaussian, and where it sits - the nearest QM
+// atom, whose scaled sphere it is on
+static void tooltip_surface_point(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+    const md_system_t& sys = state.mold.sys;
+    SurfacePointsGroup group;
+    if (!surface_points_group_from_key(&group, sys, hit.key)) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t num_basis = 0;
+    const vec3_t* basis_xyz = basis_atom_positions_extract(&num_basis, temp, sys, state.mold.state);   // bohr
+    SurfacePoint p;
+    if (!surface_points_read(&p, group, sys, hit.local_idx, basis_xyz, num_basis)) return;
+
+    const bool cpcm = group == SurfacePointsGroup::Cpcm;
+    tooltip_title(req, "%s" TOOLTIP_SEP "gaussian %u", surface_points_group_str[(int)group], hit.local_idx + 1);
+
+    char unit[32], peak_unit[32];
+    tooltip_unit_suffix(unit, sizeof(unit), surface_points_unit(group));
+    tooltip_unit_suffix(peak_unit, sizeof(peak_unit), md_unit_mul(surface_points_unit(group), md_unit_pow(md_unit_bohr_radius(), -3)));
+    tooltip_row(req, cpcm ? STR_LIT("charge") : STR_LIT("amplitude"), "%.4g%s", p.amplitude, unit);
+    // The gaussian: its width as a standard deviation, and its value at its centre - the field's unit
+    const double sigma = p.exponent > 0.0 ? 1.0 / sqrt(2.0 * p.exponent) : 0.0;
+    tooltip_row(req, STR_LIT("width"), (const char*)u8"σ %.3f bohr (exponent %.4g)", sigma, p.exponent);
+    tooltip_row(req, STR_LIT("peak"), "%.4g%s", p.amplitude * p.normalization, peak_unit);
+    tooltip_row(req, STR_LIT("position"), (const char*)u8"%.3f, %.3f, %.3f Å", p.xyz.x, p.xyz.y, p.xyz.z);
+
+    // The QM atom it is nearest, by the positions the density is drawn at
+    if (basis_xyz && num_basis > 0) {
+        const md_attribute_t* z_attr = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/atomic_number"));
+        size_t best = 0;
+        double best_d2 = 1.0e300;
+        for (size_t i = 0; i < num_basis; ++i) {
+            const double dx = basis_xyz[i].x * BOHR_TO_ANGSTROM_TOOLTIP - p.xyz.x;
+            const double dy = basis_xyz[i].y * BOHR_TO_ANGSTROM_TOOLTIP - p.xyz.y;
+            const double dz = basis_xyz[i].z * BOHR_TO_ANGSTROM_TOOLTIP - p.xyz.z;
+            const double d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best_d2) { best_d2 = d2; best = i; }
+        }
+        double z = 0.0;
+        str_t sym = STR_LIT("atom");
+        if (z_attr && md_attribute_extract_f64(&z, 1, z_attr, md_attribute_slice_1((uint32_t)best), md_unit_none()) == 1 && z > 0.0) {
+            sym = md_atomic_number_symbol((md_atomic_number_t)z);
+        }
+        tooltip_row(req, STR_LIT("nearest"), (const char*)u8"QM atom %zu (%.*s), %.3f Å", best + 1, (int)sym.len, sym.ptr, sqrt(best_d2));
+    }
+}
+
 static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
     ASSERT(req);
     const md_system_t& sys = state.mold.sys;
@@ -886,6 +936,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
+    } else if (hit.domain == PickingDomain_SurfacePoint) {
+        tooltip_surface_point(req, state, hit);
     }
 }
 
@@ -6477,6 +6529,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
             for (size_t j = 0; j < num_groups; ++j) {
                 picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key);
+            }
+            // One range per group of surface gaussians, keyed the same way: an index is the gaussian's
+            for (int g = 0; g < (int)SurfacePointsGroup::Count; ++g) {
+                const SurfacePointsGroup group = (SurfacePointsGroup)g;
+                const size_t n = surface_points_count(group, state->mold.sys);
+                if (n > 0) picking_range_reserve(NULL, space, PickingDomain_SurfacePoint, n, surface_points_key(group, state->mold.sys));
             }
             break;
         }

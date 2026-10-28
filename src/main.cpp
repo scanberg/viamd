@@ -7464,9 +7464,16 @@ static void draw_surface_points(ApplicationState* state, const Representation& r
     const vec3_t* basis_xyz = basis_atom_positions_extract(&num_basis_atoms, temp, sys, state->mold.state);
     if (!xyz || !amp || surface_points_extract(xyz, amp, n, sp.group, sys, basis_xyz, num_basis_atoms) != n) return;
 
+    // Picked as the gaussian it is: the group's range was reserved under its key this frame, and a point writes its
+    // index within the group. A group that did not fit in the picking space draws unpickable.
+    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_SurfacePoint, surface_points_key(sp.group, sys)) : nullptr;
+
     immediate::Scope scope(state->gfx.world, "surface_points");
+    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
     for (size_t k = 0; k < n; ++k) {
-        immediate::sphere(scope, xyz[k], sp.radius, color_scale_color_u32(sp.scale, amp[k]), INVALID_PICKING_IDX, 6, 10);
+        const uint32_t picking_idx = range ? (uint32_t)k : INVALID_PICKING_IDX;
+        immediate::sphere(scope, xyz[k], sp.radius, color_scale_color_u32(sp.scale, amp[k]), picking_idx, 6, 10);
     }
 }
 

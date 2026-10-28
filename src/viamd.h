@@ -97,6 +97,9 @@ typedef uint64_t InteractionSurfaceID;
 constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
+// A gaussian of a CPCM or GOSTSHYP surface, as the Surface Points representation draws it: one range per group, keyed
+// by the group's amplitude attribute (surface_points_key), so a hit names the group and the gaussian outright.
+constexpr PickingDomainID PickingDomain_SurfacePoint = HASH_STR_LIT64("picking domain surface point");
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
 // drawn per segment, not per atom, so a hit names the segment and resolves to the residue it stems from.
 constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("picking domain backbone segment");
