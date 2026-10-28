@@ -123,9 +123,9 @@ struct CriticalPointStyle {
 static const CriticalPointStyle critical_point_styles[5] = {
     { "Undefined",            "Undefined", "Undefined",  "",       "undefined",    "undefined",     {0.60f, 0.60f, 0.60f, 1.0f}, 0.09f },
     { "Attractor",            "Attractor", "Attractors", "(3,-3)", "maximum",      "maxima",        {0.80f, 0.47f, 0.65f, 1.0f}, 0.12f },   // MD_TOPO_MAXIMUM: reddish purple
-    { "Bond critical point",  "BCP",       "Bond CPs",   "(3,-1)", "split saddle", "split saddles", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
-    { "Cage critical point",  "CCP",       "Cage CPs",   "(3,+3)", "minimum",      "minima",        {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
-    { "Ring critical point",  "RCP",       "Ring CPs",   "(3,+1)", "join saddle",  "join saddles",  {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
+    { "Bond critical point",  "BCP",       "BCPs",       "(3,-1)", "split saddle", "split saddles", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
+    { "Cage critical point",  "CCP",       "CCPs",       "(3,+3)", "minimum",      "minima",        {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
+    { "Ring critical point",  "RCP",       "RCPs",       "(3,+1)", "join saddle",  "join saddles",  {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
 };
 
 static inline const CriticalPointStyle& critical_point_style(int type) {
@@ -150,6 +150,261 @@ static void critical_point_swatch(int type) {
     dl->AddCircleFilled(center, 0.40f * h, IM_COL32(26, 26, 26, 230));
     dl->AddCircleFilled(center, 0.31f * h, ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0f)));
     ImGui::Dummy(ImVec2(h, h));
+}
+
+// --- Export of the critical points (QuantumChemistry::critical_points_export)
+//
+// Every number is written at the precision it was computed in, so that it reads back to the same bits: the
+// analytic search's points come in double (md_topo_extremum_graph_t::vertices_f64: positions, density and the
+// Hessian there), written with 17 significant digits; the volume pipeline's in float, with 9. Lengths in bohr,
+// the units of the computation, the density in au (e bohr^-3), its second derivatives in e bohr^-5.
+struct CriticalPointsExport {
+    const md_topo_extremum_graph_t* graph = nullptr;
+    bool   analytic  = false;   // else the volume pipeline
+    double rho_min   = 0.0;     // analytic: the threshold of the search
+    bool   complete  = false;   // analytic: every critical point above the threshold is there
+    bool   cancelled = false;
+    str_t  field     = {};      // the density's attribute path
+};
+
+// The Morse index (negative eigenvalues of the Hessian): TTK's CellDimension of a critical point
+static int critical_point_morse_index(int type) {
+    switch (type) {
+    case MD_TOPO_MAXIMUM:      return 3;
+    case MD_TOPO_SPLIT_SADDLE: return 2;
+    case MD_TOPO_JOIN_SADDLE:  return 1;
+    case MD_TOPO_MINIMUM:      return 0;
+    default:                   return -1;
+    }
+}
+
+// A point's position and density in double, from vertices_f64 where the graph has it
+static void critical_point_xyzv(double out[4], const md_topo_extremum_graph_t& g, size_t i) {
+    if (g.vertices_f64) {
+        out[0] = g.vertices_f64[i].x; out[1] = g.vertices_f64[i].y; out[2] = g.vertices_f64[i].z; out[3] = g.vertices_f64[i].value;
+    } else {
+        out[0] = g.vertices[i].x; out[1] = g.vertices[i].y; out[2] = g.vertices[i].z; out[3] = g.vertices[i].value;
+    }
+}
+
+// A number as JSON and VTK read it back exactly: 17 significant digits of a double, 9 of a float. Not finite
+// (which neither format has a literal for in common): JSON null, VTK 0.
+static void write_number(md_file_t file, double x, bool f64, bool json) {
+    if (!isfinite(x)) {
+        md_file_printf(file, json ? "null" : "0");
+    } else {
+        md_file_printf(file, f64 ? "%.17g" : "%.9g", x);
+    }
+}
+
+static void critical_points_write_json(md_file_t f, const CriticalPointsExport& ex) {
+    const md_topo_extremum_graph_t& g = *ex.graph;
+    const bool f64 = g.vertices_f64 != nullptr;
+    md_file_printf(f, "{\n");
+    md_file_printf(f, "  \"format\": \"viamd-critical-points\",\n");
+    md_file_printf(f, "  \"format_version\": 1,\n");
+    md_file_printf(f, "  \"description\": \"Critical points of the electron density and the paths between them, as VIAMD found them (QTAIM terms; md_topo's in topology)\",\n");
+    md_file_printf(f, "  \"units\": {\"length\": \"bohr\", \"density\": \"e bohr^-3\", \"hessian\": \"e bohr^-5\"},\n");
+    md_file_printf(f, "  \"precision\": \"%s\",\n", f64 ? "float64" : "float32");
+    md_file_printf(f, "  \"field\": \"" STR_FMT "\",\n", STR_ARG(ex.field));
+    md_file_printf(f, "  \"method\": \"%s\",\n", ex.analytic ? "analytic" : "volume");
+    if (ex.analytic) {
+        md_file_printf(f, "  \"rho_min\": ");
+        write_number(f, ex.rho_min, true, true);
+        md_file_printf(f, ",\n  \"complete\": %s,\n", ex.complete ? "true" : "false");
+        md_file_printf(f, "  \"cancelled\": %s,\n", ex.cancelled ? "true" : "false");
+    }
+    md_file_printf(f, "  \"critical_points\": [");
+    for (size_t i = 0; i < g.num_vertices; ++i) {
+        const int type = g.types[i];
+        const CriticalPointStyle& s = critical_point_style(type);
+        const int index = critical_point_morse_index(type);
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "%s\n    {\"index\": %zu, \"type\": \"%s\", \"name\": \"%s\", \"rank\": 3, \"signature\": %d, \"topology\": \"%s\", \"morse_index\": %d, \"position\": [",
+                       i ? "," : "", i, s.label, s.name, index >= 0 ? 3 - 2 * index : 0, s.topology, index);
+        for (int k = 0; k < 3; ++k) {
+            if (k) md_file_printf(f, ", ");
+            write_number(f, p[k], f64, true);
+        }
+        md_file_printf(f, "], \"rho\": ");
+        write_number(f, p[3], f64, true);
+        if (f64) {
+            const md_topo_vert_f64_t& d = g.vertices_f64[i];
+            const double* ev = d.hessian_eigenvalues;
+            md_file_printf(f, ", \"laplacian\": ");
+            write_number(f, ev[0] + ev[1] + ev[2], true, true);
+            md_file_printf(f, ", \"hessian_eigenvalues\": [");
+            for (int k = 0; k < 3; ++k) {
+                if (k) md_file_printf(f, ", ");
+                write_number(f, ev[k], true, true);
+            }
+            md_file_printf(f, "], \"hessian_eigenvectors\": [");
+            for (int k = 0; k < 3; ++k) {
+                md_file_printf(f, "%s[", k ? ", " : "");
+                for (int j = 0; j < 3; ++j) {
+                    if (j) md_file_printf(f, ", ");
+                    write_number(f, d.hessian_eigenvectors[k][j], true, true);
+                }
+                md_file_printf(f, "]");
+            }
+            md_file_printf(f, "]");
+            if (type == MD_TOPO_SPLIT_SADDLE) {
+                // lambda1 / lambda2 - 1 of the two negative eigenvalues, |lambda1| >= |lambda2|
+                md_file_printf(f, ", \"ellipticity\": ");
+                write_number(f, ev[0] / ev[1] - 1.0, true, true);
+            }
+        }
+        md_file_printf(f, "}");
+    }
+    md_file_printf(f, "\n  ],\n");
+    md_file_printf(f, "  \"paths\": [");
+    for (size_t i = 0; i < g.num_edges; ++i) {
+        const md_topo_edge_t e = g.edges[i];
+        const bool bond = e.from < g.num_vertices && g.types[e.from] == MD_TOPO_SPLIT_SADDLE;
+        md_file_printf(f, "%s\n    {\"index\": %zu, \"type\": \"%s\", \"saddle\": %u, \"extremum\": %u}",
+                       i ? "," : "", i, bond ? "bond path" : "RCP attractor path", e.from, e.to);
+    }
+    md_file_printf(f, "\n  ],\n");
+    md_file_printf(f, "  \"notes\": [\n");
+    md_file_printf(f, "    \"index: the point's index in this file, which paths refer to. position: bohr.\",\n");
+    md_file_printf(f, "    \"rank, signature: QTAIM's (rank, signature) of the Hessian; morse_index: its number of negative eigenvalues.\",\n");
+    md_file_printf(f, "    \"hessian_eigenvalues: ascending; hessian_eigenvectors[k]: the unit eigenvector of eigenvalue k. ellipticity: bond critical points only.\",\n");
+    md_file_printf(f, "    \"paths: which points a gradient path joins (a bond path from a BCP to an attractor, an RCP attractor path between an RCP and a CCP), not the path's geometry.\"\n");
+    md_file_printf(f, "  ]\n");
+    md_file_printf(f, "}\n");
+}
+
+// VTK XML PolyData: a vertex cell per critical point, a line cell per path, from the saddle to the extremum.
+// The arrays are named as the Topology ToolKit names those of a Morse-Smale complex where they mean the same
+// (CellDimension, CellId; SeparatrixType, SeparatrixId, SourceId, DestinationId), and after QTAIM where TTK
+// has none. A cell array is per cell, vertices first: -1 for a vertex where it is a path's.
+static void critical_points_write_vtp(md_file_t f, const CriticalPointsExport& ex) {
+    const md_topo_extremum_graph_t& g = *ex.graph;
+    const bool f64 = g.vertices_f64 != nullptr;
+    const size_t n = g.num_vertices, m = g.num_edges;
+    const char* real = f64 ? "Float64" : "Float32";
+
+    md_file_printf(f, "<?xml version=\"1.0\"?>\n");
+    md_file_printf(f, "<!-- Critical points of the electron density (" STR_FMT ") and the paths between them, as VIAMD found them\n", STR_ARG(ex.field));
+    md_file_printf(f, "     (%s). Lengths in bohr, the density in au (e bohr^-3), the Hessian in e bohr^-5; %s.\n",
+                   ex.analytic ? "the analytic search" : "the volume pipeline", f64 ? "every number in double, to 17 digits" : "in float, to 9 digits");
+    if (ex.analytic) {
+        md_file_printf(f, "     The search: rho_min %.17g, %s.\n", ex.rho_min, ex.cancelled ? "cancelled" : (ex.complete ? "complete" : "incomplete"));
+    }
+    md_file_printf(f, "     CellDimension: the Morse index (3 attractor, 2 BCP, 1 RCP, 0 CCP); Signature: QTAIM's (3, Signature).\n");
+    md_file_printf(f, "     SeparatrixType: 2 a bond path, 0 an RCP attractor path; the lines join their points, they are not the paths' geometry. -->\n");
+    md_file_printf(f, "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n");
+    md_file_printf(f, "  <PolyData>\n");
+    md_file_printf(f, "    <Piece NumberOfPoints=\"%zu\" NumberOfVerts=\"%zu\" NumberOfLines=\"%zu\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">\n", n, n, m);
+
+    // --- per point
+    md_file_printf(f, "      <PointData Scalars=\"Density\">\n");
+    md_file_printf(f, "        <DataArray type=\"%s\" Name=\"Density\" format=\"ascii\">\n", real);
+    for (size_t i = 0; i < n; ++i) {
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "          ");
+        write_number(f, p[3], f64, false);
+        md_file_printf(f, "\n");
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int32\" Name=\"CellDimension\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %d\n", critical_point_morse_index(g.types[i]));
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int32\" Name=\"Signature\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) {
+        const int index = critical_point_morse_index(g.types[i]);
+        md_file_printf(f, "          %d\n", index >= 0 ? 3 - 2 * index : 0);
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"CellId\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i);
+    md_file_printf(f, "        </DataArray>\n");
+    if (f64) {
+        md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"Laplacian\" format=\"ascii\">\n");
+        for (size_t i = 0; i < n; ++i) {
+            const double* ev = g.vertices_f64[i].hessian_eigenvalues;
+            md_file_printf(f, "          ");
+            write_number(f, ev[0] + ev[1] + ev[2], true, false);
+            md_file_printf(f, "\n");
+        }
+        md_file_printf(f, "        </DataArray>\n");
+        md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"HessianEigenvalues\" NumberOfComponents=\"3\" format=\"ascii\">\n");
+        for (size_t i = 0; i < n; ++i) {
+            md_file_printf(f, "          ");
+            for (int k = 0; k < 3; ++k) {
+                if (k) md_file_printf(f, " ");
+                write_number(f, g.vertices_f64[i].hessian_eigenvalues[k], true, false);
+            }
+            md_file_printf(f, "\n");
+        }
+        md_file_printf(f, "        </DataArray>\n");
+        for (int k = 0; k < 3; ++k) {
+            md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"HessianEigenvector%d\" NumberOfComponents=\"3\" format=\"ascii\">\n", k);
+            for (size_t i = 0; i < n; ++i) {
+                md_file_printf(f, "          ");
+                for (int j = 0; j < 3; ++j) {
+                    if (j) md_file_printf(f, " ");
+                    write_number(f, g.vertices_f64[i].hessian_eigenvectors[k][j], true, false);
+                }
+                md_file_printf(f, "\n");
+            }
+            md_file_printf(f, "        </DataArray>\n");
+        }
+    }
+    md_file_printf(f, "      </PointData>\n");
+
+    // --- per cell: the vertices, then the lines
+    struct { const char* name; } cell_arrays[] = { {"SeparatrixType"}, {"SeparatrixId"}, {"SourceId"}, {"DestinationId"} };
+    md_file_printf(f, "      <CellData>\n");
+    for (int a = 0; a < 4; ++a) {
+        md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"%s\" format=\"ascii\">\n", cell_arrays[a].name);
+        for (size_t i = 0; i < n; ++i) md_file_printf(f, "          -1\n");
+        for (size_t i = 0; i < m; ++i) {
+            const md_topo_edge_t e = g.edges[i];
+            const bool bond = e.from < n && g.types[e.from] == MD_TOPO_SPLIT_SADDLE;
+            const int64_t v = a == 0 ? (bond ? 2 : 0) : a == 1 ? (int64_t)i : a == 2 ? (int64_t)e.from : (int64_t)e.to;
+            md_file_printf(f, "          %lld\n", (long long)v);
+        }
+        md_file_printf(f, "        </DataArray>\n");
+    }
+    md_file_printf(f, "      </CellData>\n");
+
+    md_file_printf(f, "      <Points>\n");
+    md_file_printf(f, "        <DataArray type=\"%s\" Name=\"Points\" NumberOfComponents=\"3\" format=\"ascii\">\n", real);
+    for (size_t i = 0; i < n; ++i) {
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "          ");
+        for (int k = 0; k < 3; ++k) {
+            if (k) md_file_printf(f, " ");
+            write_number(f, p[k], f64, false);
+        }
+        md_file_printf(f, "\n");
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Points>\n");
+
+    md_file_printf(f, "      <Verts>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i + 1);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Verts>\n");
+    md_file_printf(f, "      <Lines>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n");
+    for (size_t i = 0; i < m; ++i) md_file_printf(f, "          %u %u\n", g.edges[i].from, g.edges[i].to);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n");
+    for (size_t i = 0; i < m; ++i) md_file_printf(f, "          %zu\n", 2 * (i + 1));
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Lines>\n");
+    md_file_printf(f, "    </Piece>\n");
+    md_file_printf(f, "  </PolyData>\n");
+    md_file_printf(f, "</VTKFile>\n");
 }
 
 // This is the internal storage order of volumes and textures related to NTOs
@@ -624,6 +879,7 @@ struct QuantumChemistry : viamd::EventHandler {
     } summary;
 
     struct CriticalPoints {
+        bool show_window = false;       // its window (draw_critical_points_window)
         bool enabled = false;
 
         // How they are found. Analytic searches the GTO density itself and proves what it reports
@@ -638,6 +894,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // Analytic: the threshold, the run in flight, the inputs wanted now and the inputs the shown
         // graph was computed for, and what that run reported about itself.
         float                rho_min     = 1.0e-4f;
+        bool                 rho_min_editing = false; // its slider is held: no search is started for every value
         bool                 gto_use_gpu = true;      // only consulted when the app has a GPU device
         GtoCriticalPointJob* gto_job     = nullptr;
         uint64_t             gto_want    = 0;
@@ -645,6 +902,13 @@ struct QuantumChemistry : viamd::EventHandler {
         md_topo_gto_info_t   gto_info    = {};
         bool                 gto_failed  = false;
         double               gto_seconds = 0.0;
+        double               gto_rho_min = 0.0;       // the threshold the shown graph was searched with
+
+        // Volume: the grid, and what is left out of the graph of its samples
+        VolumeResolution vol_res            = VolumeResolution::Mid;
+        bool             vol_per_frame      = false;  // sampled and extracted again every frame
+        bool             vol_simplify       = true;
+        float            vol_simp_threshold = 1.0E-4f;
 
 #if MD_ENABLE_GPU
         md_topo_gpu_context_t* topo_ctx      = nullptr;
@@ -1155,8 +1419,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     // neither has to be open for the other to have data.
                     update_nto_derived_data(state.mold.sys);
 
+                    update_critical_points(state);
+
                     draw_orb_window(state);
                     draw_summary_window(state);
+                    draw_critical_points_window(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
                         draw_nto_window(state);
@@ -1170,6 +1437,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     if (ImGui::BeginMenu("Quantum Chemistry")) {
                         ImGui::Checkbox("Summary", &summary.show_window);
+                        ImGui::Checkbox("Critical Points", &critical_points.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
                         if (num_excited > 0) {
@@ -1610,11 +1878,18 @@ struct QuantumChemistry : viamd::EventHandler {
         // value-initialisation and emptied. Zeroed, a mask has an empty domain and drops every index
         // set in it, which left hovering, clicking and region-selecting critical points doing nothing
         // once a system had been freed (any load after the first).
+        // The window and how the points are drawn are the user's, not the system's: carried across too.
         const md_bitmask_t cp_selection = critical_points.selection_mask;
         const md_bitmask_t cp_highlight = critical_points.highlight_mask;
+        const bool  cp_show_window = critical_points.show_window;
+        const float cp_point_scale = critical_points.point_scale;
+        const bool  cp_show_paths  = critical_points.show_paths;
         critical_points = {};
         critical_points.selection_mask = cp_selection;
         critical_points.highlight_mask = cp_highlight;
+        critical_points.show_window    = cp_show_window;
+        critical_points.point_scale    = cp_point_scale;
+        critical_points.show_paths     = cp_show_paths;
         md_bitmask_clear(&critical_points.selection_mask);
         md_bitmask_clear(&critical_points.highlight_mask);
         critical_points.raw_graph.alloc = arena;
@@ -4579,29 +4854,16 @@ struct QuantumChemistry : viamd::EventHandler {
             cp.gto_info    = job->info;
             cp.gto_failed  = !job->ok && !job->info.cancelled;
             cp.gto_seconds = job->seconds;
+            cp.gto_rho_min = job->desc.rho_min;
         }
         gto_critical_point_job_destroy(job);
     }
 
-    // The analytic search. A new run starts whenever what the result depends on changes - the geometry
-    // the basis sits on, the threshold, the orbitals - and a run made stale by such a change is stopped
-    // and dropped, never shown.
+    // The analytic search, once a frame while it is enabled, whether or not its window is open. A new run starts
+    // whenever what the result depends on changes - the geometry the basis sits on, the threshold, the orbitals -
+    // and a run made stale by such a change is stopped and dropped, never shown.
     void update_critical_points_gto(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
-
-        ImGui::SliderFloat("Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "%.1e", ImGuiSliderFlags_Logarithmic);
-        // Every value is a new search, so none is started while the slider is held.
-        const bool editing = ImGui::IsItemActive();
-        ImGui::SetItemTooltip("Critical points where the total electron density is below this (au) are neither\n"
-                              "searched for nor reported. A lower threshold searches a larger region and takes longer.");
-
-#if MD_ENABLE_GPU
-        if (state.gpu_device) {
-            ImGui::Checkbox("Use GPU", &cp.gto_use_gpu);
-            ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
-                                  "the critical points in double. Off: everything runs on the CPU. Same result either way.");
-        }
-#endif
 
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
@@ -4612,7 +4874,8 @@ struct QuantumChemistry : viamd::EventHandler {
         hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
         if (atom_pos) hash = md_hash64(atom_pos, sizeof(vec3_t) * num_atoms, hash);
 
-        if (!editing && hash != cp.gto_want) {
+        // Every threshold is a new search, so none is started while its slider is held.
+        if (!cp.rho_min_editing && hash != cp.gto_want) {
             // A point drawn where it was for other inputs would read as a result.
             critical_points_reset();
             cp.gto_want = hash;
@@ -4627,7 +4890,115 @@ struct QuantumChemistry : viamd::EventHandler {
                 cp.gto_seconds = 0.0;
             }
         }
+    }
 
+    // The discrete pipeline, once a frame while it is enabled: the density sampled onto a grid, the critical
+    // points of the samples (md_topo), then md_topo_simplify.
+    void update_critical_points_volume(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        if (cp.vol_per_frame) {
+            cp.raw_hash = 0;
+        }
+
+        // Update volume if required
+        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)cp.vol_res] * BOHR_TO_ANGSTROM);
+        md_grid_t grid = { 0 };
+#if USE_OABB_GRID
+        init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
+#else
+        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#endif
+
+        // Compute a hash of the current state
+        size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+        uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
+
+        if (cp.raw_hash != raw_hash) {
+            cp.raw_hash = raw_hash;
+            md_topo_extremum_graph_free(&cp.raw_graph);
+
+            // The density comes out of the attribute table, evaluated by the same code
+            // path a representation uses. The only thing special here is the tail: the
+            // topology pass reads what the density pass wrote, on the same stream, so
+            // the volume is never read back to the host at all.
+#if MD_ENABLE_GPU
+            // Ensure the topo context exists with the correct volume dimensions
+            uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
+            if (!cp.topo_ctx ||
+                cp.topo_dims[0] != new_dims[0] ||
+                cp.topo_dims[1] != new_dims[1] ||
+                cp.topo_dims[2] != new_dims[2])
+            {
+                md_topo_gpu_context_destroy(cp.topo_ctx);
+                cp.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
+                cp.topo_dims[0] = new_dims[0];
+                cp.topo_dims[1] = new_dims[1];
+                cp.topo_dims[2] = new_dims[2];
+            }
+
+            if (!cp.topo_ctx) {
+                MD_LOG_ERROR("Failed to create topo GPU context for electron density");
+            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                // Program order on the stream is the only dependency needed.
+                md_topo_gpu_record(state.gpu_stream, cp.topo_ctx, state.gpu_volume, &grid, 0.0f);
+                md_gpu_stream_sync(state.gpu_stream);
+                md_topo_gpu_context_extract(&cp.raw_graph, cp.topo_ctx);
+            } else {
+                MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
+            }
+#else
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+            uint32_t tex_id = 0;
+            if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
+                size_t num_atom_pos = 0;
+                const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
+                if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                    if (!md_topo_compute_extremum_graph_GPU(&cp.raw_graph, tex_id, &grid, 0.0f)) {
+                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+                    }
+                }
+                glDeleteTextures(1, &tex_id);
+            }
+#endif
+        }
+
+        uint64_t simp_hash = raw_hash;
+        if (cp.vol_simplify) {
+            simp_hash = md_hash64(&cp.vol_simp_threshold, sizeof(cp.vol_simp_threshold), raw_hash);
+        }
+
+        if (cp.simp_hash != simp_hash) {
+            cp.simp_hash = simp_hash;
+
+            md_topo_extremum_graph_free(&cp.simp_graph);
+            if (cp.vol_simplify && cp.raw_graph.num_vertices > 0) {
+                md_topo_simplify(&cp.simp_graph, &cp.raw_graph, cp.vol_simp_threshold, true);
+            } else {
+                md_topo_extremum_graph_copy(&cp.simp_graph, &cp.raw_graph);
+            }
+        }
+    }
+
+    // Once a frame: the search of the selected method while enabled, whether or not the window is open, so what
+    // is drawn follows the geometry and the orbitals.
+    void update_critical_points(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        if (!cp.enabled) {
+            // Switched off mid search: nothing is going to show the result.
+            if (cp.gto_job) critical_points_reset();
+            return;
+        }
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            update_critical_points_gto(state);
+        } else {
+            update_critical_points_volume(state);
+        }
+    }
+
+    // Where the analytic search is: its progress and a cancel button while it runs, else its outcome and what it took
+    void draw_critical_points_gto_status() {
+        CriticalPoints& cp = critical_points;
         if (cp.gto_job) {
             const GtoCriticalPointJob* job = cp.gto_job;
             char buf[64];
@@ -4648,6 +5019,9 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::TextColored(IM_RED, "The search could not run, see the log");
             return;
         }
+        if (cp.gto_have == 0) {
+            return;     // nothing searched yet
+        }
         if (info.cancelled) {
             ImGui::TextColored(amber, "Cancelled: only what was found so far is shown");
             ImGui::SameLine();
@@ -4663,27 +5037,8 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SetItemTooltip("Everything outside these regions is decided. Inside one, the gradient is too close to\n"
                                   "zero to separate critical points at the smallest cube size - typically a nearly\n"
                                   "degenerate pair, such as a bond and a ring critical point about to annihilate.");
-            for (uint32_t i = 0; i < info.num_clusters; ++i) {
-                const md_topo_gto_cluster_t& c = info.clusters[i];
-                const double x = 0.5 * (c.lo[0] + c.hi[0]) * BOHR_TO_ANGSTROM;
-                const double y = 0.5 * (c.lo[1] + c.hi[1]) * BOHR_TO_ANGSTROM;
-                const double z = 0.5 * (c.lo[2] + c.hi[2]) * BOHR_TO_ANGSTROM;
-                if (c.degree_residual < 0.1f) {
-                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum %+d", x, y, z, c.degree);
-                } else {
-                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum undetermined", x, y, z);
-                }
-                ImGui::SetItemTooltip("Centre of the region in \xC3\x85, %u cubes.\n"
-                                      "The index sum is the degree of the density gradient on the region's boundary\n"
-                                      "(computed numerically): the sum over the critical points inside of -1 for an\n"
-                                      "attractor (maximum) or RCP (join saddle) and +1 for a BCP (split saddle) or CCP\n"
-                                      "(minimum). Non-zero proves at least one critical point is in there; zero means\n"
-                                      "none, or pairs that cancel.", c.num_boxes);
-            }
-            if (info.clusters_truncated) {
-                ImGui::BulletText("...");
-            }
         }
+        ImGui::SameLine();
         if (info.used_gpu) {
             ImGui::TextDisabled("%.2f s on the GPU, %llu cubes", cp.gto_seconds, (unsigned long long)info.num_box_evals);
         } else {
@@ -4708,99 +5063,375 @@ struct QuantumChemistry : viamd::EventHandler {
             }
             ImGui::EndTooltip();
         }
+        if (!info.cancelled && !info.complete && info.num_clusters > 0 && ImGui::TreeNode("Undecided regions")) {
+            for (uint32_t i = 0; i < info.num_clusters; ++i) {
+                const md_topo_gto_cluster_t& c = info.clusters[i];
+                const double x = 0.5 * (c.lo[0] + c.hi[0]) * BOHR_TO_ANGSTROM;
+                const double y = 0.5 * (c.lo[1] + c.hi[1]) * BOHR_TO_ANGSTROM;
+                const double z = 0.5 * (c.lo[2] + c.hi[2]) * BOHR_TO_ANGSTROM;
+                if (c.degree_residual < 0.1f) {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum %+d", x, y, z, c.degree);
+                } else {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum undetermined", x, y, z);
+                }
+                ImGui::SetItemTooltip("Centre of the region in \xC3\x85, %u cubes.\n"
+                                      "The index sum is the degree of the density gradient on the region's boundary\n"
+                                      "(computed numerically): the sum over the critical points inside of -1 for an\n"
+                                      "attractor (maximum) or RCP (join saddle) and +1 for a BCP (split saddle) or CCP\n"
+                                      "(minimum). Non-zero proves at least one critical point is in there; zero means\n"
+                                      "none, or pairs that cancel.", c.num_boxes);
+            }
+            if (info.clusters_truncated) {
+                ImGui::BulletText("...");
+            }
+            ImGui::TreePop();
+        }
     }
 
-    // The discrete pipeline: the density sampled onto a grid, the critical points of the samples
-    // (md_topo), then md_topo_simplify.
-    void update_critical_points_volume(ApplicationState& state, VolumeResolution vol_res, md_temp_scope_t temp) {
-        static bool  reevaluate_graph_per_frame = false;
-        static bool  enable_simplification = true;
-        static float simp_threshold = 1.0E-4f;
-
-        ImGui::Checkbox("Extract graph per frame", &reevaluate_graph_per_frame);
-        if (reevaluate_graph_per_frame) {
-            critical_points.raw_hash = 0;
+    // The critical points of the density in a window of their own: what is searched and how, how the points are
+    // drawn and the export on two lines, where the search is, the legend, and the rest for the table of the points
+    // (hovered and selected with the 3D view, both ways). The search runs whether or not this window is open
+    // (update_critical_points).
+    void draw_critical_points_window(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        cp.rho_min_editing = false;
+        if (!cp.show_window) {
+            return;
         }
+        ImGui::SetNextWindowSize({ 640, 600 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Critical Points", &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_critical_points_window_contents(state);
+        }
+        ImGui::End();
+    }
 
-        // Update volume if required
-        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
-        md_grid_t grid = { 0 };
-#if USE_OABB_GRID
-        init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
-#else
-        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
-#endif
+    void draw_critical_points_window_contents(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        const float em = ImGui::GetFontSize();
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
 
-        // Compute a hash of the current state
-        size_t frame_idx = (size_t)(state.animation.frame + 0.5);
-        uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
 
-        if (critical_points.raw_hash != raw_hash) {
-            critical_points.raw_hash = raw_hash;
-            md_topo_extremum_graph_free(&critical_points.raw_graph);
-
-            // The density comes out of the attribute table, evaluated by the same code
-            // path a representation uses. The only thing special here is the tail: the
-            // topology pass reads what the density pass wrote, on the same stream, so
-            // the volume is never read back to the host at all.
+        // --- what is searched, and how
+        ImGui::Checkbox("Enabled", &cp.enabled);
+        ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
+        ImGui::SameLine();
+        static const char* method_str[] = { "Analytic", "Volume" };
+        ImGui::SetNextItemWidth(6.5f * em);
+        if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
+            critical_points_reset();   // what is shown came from the other method
+        }
+        ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
+                              "found and placed to numerical precision, with a proof that none was missed.\n"
+                              "Volume: samples the density onto a grid and finds critical points of the samples,\n"
+                              "placed no better than to the voxel.");
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(8.0f * em);
+            ImGui::SliderFloat("##Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+            cp.rho_min_editing = ImGui::IsItemActive();
+            ImGui::SetItemTooltip("The density threshold: critical points where the total electron density is below this (au)\n"
+                                  "are neither searched for nor reported. A lower threshold searches a larger region and takes longer.");
 #if MD_ENABLE_GPU
-            // Ensure the topo context exists with the correct volume dimensions
-            uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
-            if (!critical_points.topo_ctx ||
-                critical_points.topo_dims[0] != new_dims[0] ||
-                critical_points.topo_dims[1] != new_dims[1] ||
-                critical_points.topo_dims[2] != new_dims[2])
-            {
-                md_topo_gpu_context_destroy(critical_points.topo_ctx);
-                critical_points.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
-                critical_points.topo_dims[0] = new_dims[0];
-                critical_points.topo_dims[1] = new_dims[1];
-                critical_points.topo_dims[2] = new_dims[2];
-            }
-
-            if (!critical_points.topo_ctx) {
-                MD_LOG_ERROR("Failed to create topo GPU context for electron density");
-            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
-                // Program order on the stream is the only dependency needed.
-                md_topo_gpu_record(state.gpu_stream, critical_points.topo_ctx, state.gpu_volume, &grid, 0.0f);
-                md_gpu_stream_sync(state.gpu_stream);
-                md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
-            } else {
-                MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
-            }
-#else
-            uint32_t tex_id = 0;
-            if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                size_t num_atom_pos = 0;
-                const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
-                if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
-                    if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
-                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
-                    }
-                }
-                glDeleteTextures(1, &tex_id);
+            if (state.gpu_device) {
+                ImGui::SameLine();
+                ImGui::Checkbox("GPU", &cp.gto_use_gpu);
+                ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
+                                      "the critical points in double. Off: everything runs on the CPU. Same result either way.");
             }
 #endif
-        }
-
-        ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
-
-        uint64_t simp_hash = raw_hash;
-        if (enable_simplification) {
-            ImGui::SliderFloat("CP threshold", &simp_threshold, 0.0f, 1.0E-2f, "%.6f", ImGuiSliderFlags_Logarithmic);
-            simp_hash = md_hash64(&simp_threshold, sizeof(simp_threshold), raw_hash);
-        }
-
-        if (critical_points.simp_hash != simp_hash) {
-            critical_points.simp_hash = simp_hash;
-
-            md_topo_extremum_graph_free(&critical_points.simp_graph);
-            if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
-                md_topo_simplify(&critical_points.simp_graph, &critical_points.raw_graph, simp_threshold, true);
-            } else {
-                md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
+        } else {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(5.5f * em);
+            ImGui::Combo("##Resolution", (int*)&cp.vol_res, volume_resolution_str, (int)VolumeResolution::Count);
+            ImGui::SetItemTooltip("The resolution of the grid the density is sampled on");
+            ImGui::SameLine();
+            ImGui::Checkbox("Per frame", &cp.vol_per_frame);
+            ImGui::SetItemTooltip("Sample the density and extract the graph again every frame");
+            ImGui::SameLine();
+            ImGui::Checkbox("Simplify", &cp.vol_simplify);
+            ImGui::SetItemTooltip("Leave out the critical points below a density threshold, and duplicate saddles");
+            if (cp.vol_simplify) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(7.0f * em);
+                ImGui::SliderFloat("##Simplification threshold", &cp.vol_simp_threshold, 0.0f, 1.0E-2f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+                ImGui::SetItemTooltip("The density below which critical points are left out (au)");
             }
         }
+
+        // --- how they are drawn, and the export at the end of the line
+        ImGui::SetNextItemWidth(6.0f * em);
+        ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The size of the markers");
+        ImGui::SameLine();
+        ImGui::Checkbox("Paths", &cp.show_paths);
+        ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
+                              "RCP attractor paths, from each ring critical point to the cage critical points beside it");
+        {
+            const char* lbl = "Export...";
+            const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+            ImGui::SameLine();
+            const float avail = ImGui::GetContentRegionAvail().x;
+            if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
+            ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
+            if (ImGui::Button(lbl)) {
+                critical_points_export(state);
+            }
+            ImGui::EndDisabled();
+            ImGui::SetItemTooltip("The critical points and the paths between them, every number at the precision it was\n"
+                                  "computed in: positions (bohr), density and, from the analytic search, the Hessian there.\n"
+                                  ".json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes a Morse-Smale\n"
+                                  "complex) for ParaView");
+        }
+
+        if (!cp.enabled) {
+            ImGui::TextDisabled("Not searched: tick Enabled to search the density for its critical points");
+            return;
+        }
+
+        // --- where the search is
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            draw_critical_points_gto_status();
+        }
+
+        // --- the counts, as the legend of the markers: two by two
+        uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
+        md_topo_count_vertex_types(vertex_count, &graph);
+        if (ImGui::BeginTable("##Critical point legend", 2, ImGuiTableFlags_SizingStretchSame)) {
+            for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
+                const int type = critical_point_type_order[k];
+                const CriticalPointStyle& style = critical_point_style(type);
+                ImGui::TableNextColumn();
+                critical_point_swatch(type);
+                ImGui::SameLine();
+                ImGui::Text("%s %s  %u", style.plural, style.signature, vertex_count[type]);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", style.topology_plural);
+                ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
+            }
+            ImGui::EndTable();
+        }
+
+        if (graph.num_vertices == 0) {
+            return;
+        }
+
+        // --- the table of the points, in the rest of the window
+        enum CriticalPointColumn {
+            CriticalPointColumn_Idx,
+            CriticalPointColumn_Type,
+            CriticalPointColumn_Value,
+            CriticalPointColumn_Laplacian,
+            CriticalPointColumn_X,
+            CriticalPointColumn_Y,
+            CriticalPointColumn_Z,
+            CriticalPointColumn_Count
+        };
+        // The Laplacian where the producer has the Hessian (the analytic search)
+        const md_topo_vert_f64_t* f64 = graph.vertices_f64;
+
+        uint32_t* row_indices = md_temp_alloc_array(temp, uint32_t, graph.num_vertices);
+        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+            row_indices[i] = i;
+        }
+
+        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
+                                                   ImGuiTableFlags_Borders |
+                                                   ImGuiTableFlags_ScrollY |
+                                                   ImGuiTableFlags_Sortable |
+                                                   ImGuiTableFlags_SortMulti |
+                                                   ImGuiTableFlags_Resizable |
+                                                   ImGuiTableFlags_SizingStretchProp;
+
+        if (ImGui::IsWindowHovered()) {
+            md_bitmask_clear(&critical_points.highlight_mask);
+        }
+
+        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {
+            ImGui::TableSetupColumn("Idx",          ImGuiTableColumnFlags_DefaultSort, 0.55f, CriticalPointColumn_Idx);
+            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_None,        1.15f, CriticalPointColumn_Type);
+            ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None,       1.0f,  CriticalPointColumn_Value);
+            ImGui::TableSetupColumn("Laplacian",    f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_Disabled, 1.25f, CriticalPointColumn_Laplacian);
+            ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_X);
+            ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Y);
+            ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Z);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            if (ImGui::IsWindowHovered()) {
+                md_bitmask_clear(&critical_points.highlight_mask);
+            }
+
+            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                if (sort_specs->SpecsCount > 0) {
+                    auto laplacian = [f64](uint32_t i) {
+                        return f64 ? f64[i].hessian_eigenvalues[0] + f64[i].hessian_eigenvalues[1] + f64[i].hessian_eigenvalues[2] : 0.0;
+                    };
+                    auto compare_rows = [&graph, sort_specs, &laplacian](uint32_t lhs_idx, uint32_t rhs_idx) {
+                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
+                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
+
+                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
+                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
+                            int cmp = 0;
+                            switch ((CriticalPointColumn)spec.ColumnUserID) {
+                            case CriticalPointColumn_Idx:
+                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Type: {
+                                const int a = critical_point_type_rank(graph.types[lhs_idx]), b = critical_point_type_rank(graph.types[rhs_idx]);
+                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
+                                break;
+                            }
+                            case CriticalPointColumn_Value:
+                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Laplacian: {
+                                const double a = laplacian(lhs_idx), b = laplacian(rhs_idx);
+                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
+                                break;
+                            }
+                            case CriticalPointColumn_X:
+                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Y:
+                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Z:
+                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
+                                break;
+                            default:
+                                break;
+                            }
+
+                            if (cmp != 0) {
+                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+                            }
+                        }
+
+                        return lhs_idx < rhs_idx;
+                    };
+
+                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
+                    sort_specs->SpecsDirty = false;
+                }
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+
+            ImGuiListClipper clipper;
+            clipper.Begin((int)graph.num_vertices);
+            while (clipper.Step()) {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                    const uint32_t idx = row_indices[row];
+                    const md_topo_vert_t& v = graph.vertices[idx];
+                    const int type = graph.types[idx];
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    bool is_sel = md_bitmask_test_bit(&critical_points.selection_mask, idx);
+                    bool is_hov = md_bitmask_test_bit(&critical_points.highlight_mask, idx);
+
+                    if (is_hov) {
+                        ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
+                    }
+                    else {
+                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                    }
+
+                    char lbl[16];
+                    snprintf(lbl, sizeof(lbl), "%u", idx);
+                    ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
+
+                    // The selectable spans the row: hovered anywhere on it (a clipped table's row numbers are not the rows')
+                    if (ImGui::IsItemHovered()) {
+                        md_bitmask_clear(&critical_points.highlight_mask);
+                        md_bitmask_or(&critical_points.highlight_mask, md_bitset_range(idx, idx + 1));
+
+                        //Selection
+                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
+                                md_bitmask_or(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
+                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
+                                md_bitmask_andnot(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
+                            }
+                        }
+                    }
+                    ImGui::PopStyleColor(1);
+
+                    ImGui::TableNextColumn();
+                    {
+                        const CriticalPointStyle& style = critical_point_style(type);
+                        critical_point_swatch(type);
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(style.label);
+                        ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.6g", f64 ? f64[idx].value : (double)v.value);
+                    ImGui::TableNextColumn();
+                    if (f64) {
+                        const double* ev = f64[idx].hessian_eigenvalues;
+                        ImGui::Text("%.6g", ev[0] + ev[1] + ev[2]);
+                        ImGui::SetItemTooltip("The Laplacian of the density, the sum of the Hessian's eigenvalues:\n%.6g, %.6g, %.6g (au)", ev[0], ev[1], ev[2]);
+                    }
+                    // Positions in \xC3\x85, as everywhere else in the application (the graph's are in bohr). Shown to
+                    // four decimals; the export has them in full.
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].x : (double)v.x) * BOHR_TO_ANGSTROM);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].y : (double)v.y) * BOHR_TO_ANGSTROM);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].z : (double)v.z) * BOHR_TO_ANGSTROM);
+                }
+            }
+
+            ImGui::PopStyleColor(2);
+            ImGui::EndTable();
+        }
+    }
+
+    // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
+    void critical_points_export(const ApplicationState& state) {
+        char path_buf[2048];
+        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("json,vtp"))) {
+            critical_points_write(state, str_from_cstr(path_buf));
+        }
+    }
+
+    // The critical points and the paths between them, in the file at path: .vtp for VTK PolyData as the Topology
+    // ToolKit writes a Morse-Smale complex (ParaView, TTK), anything else as JSON. No format for this is standard:
+    // QTAIM programs have their own (AIMAll's .sum), and VTK is what topological data analysis exchanges.
+    bool critical_points_write(const ApplicationState& state, str_t path) {
+        const CriticalPoints& cp = critical_points;
+        str_t ext = {};
+        const bool vtp = extract_ext(&ext, path) && str_eq_cstr_ignore_case(ext, "vtp");
+
+        md_file_t file = {};
+        if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+            MD_LOG_ERROR("Critical points: could not open '" STR_FMT "' for writing", STR_ARG(path));
+            return false;
+        }
+        defer { md_file_close(&file); };
+
+        CriticalPointsExport ex = {};
+        ex.graph     = &cp.simp_graph;
+        ex.analytic  = cp.method == CriticalPoints::Method_Analytic;
+        ex.rho_min   = cp.gto_rho_min;
+        ex.complete  = cp.gto_info.complete;
+        ex.cancelled = cp.gto_info.cancelled;
+        ex.field     = critical_points_density_path(state.mold.sys);
+        if (vtp) {
+            critical_points_write_vtp(file, ex);
+        } else {
+            critical_points_write_json(file, ex);
+        }
+        MD_LOG_INFO("Critical points: %u points and %u paths written to '" STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, STR_ARG(path));
+        return true;
     }
 
     void draw_summary_window(ApplicationState& state) {
@@ -5156,224 +5787,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::PopStyleColor(2);
                     ImGui::EndTable();
                 }
-                ImGui::TreePop();
-            }
-            if (ImGui::TreeNode("Critical Points")) {
-                ImGui::Checkbox("Enable Critical Points Analysis", &critical_points.enabled);
-
-                static const char* method_str[] = { "Analytic", "Volume" };
-                if (ImGui::Combo("Method", &critical_points.method, method_str, (int)ARRAY_SIZE(method_str))) {
-                    critical_points_reset();   // what is shown came from the other method
-                }
-                ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
-                                      "found and placed to numerical precision, with a proof that none was missed.\n"
-                                      "Volume: samples the density onto a grid and finds critical points of the samples,\n"
-                                      "placed no better than to the voxel.");
-
-                static VolumeResolution vol_res = VolumeResolution::Mid;
-                if (critical_points.method == CriticalPoints::Method_Volume) {
-                    ImGui::Combo("Volume Resolution", (int*)&vol_res, volume_resolution_str, (int)VolumeResolution::Count);
-                }
-
-                // Switched off mid search: nothing is going to show the result.
-                if (!critical_points.enabled && critical_points.gto_job) {
-                    critical_points_reset();
-                }
-
-                if (critical_points.enabled) {
-                    if (critical_points.method == CriticalPoints::Method_Analytic) {
-                        update_critical_points_gto(state);
-                    } else {
-                        update_critical_points_volume(state, vol_res, temp);
-                    }
-
-                    uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
-                    md_topo_count_vertex_types(vertex_count, &critical_points.simp_graph);
-
-                    const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
-                    ImGui::SliderFloat("Point size", &critical_points.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::Checkbox("Show paths", &critical_points.show_paths);
-                    ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
-                                          "RCP attractor paths, from each ring critical point to the cage critical points beside it");
-
-                    // The counts, as the legend of the markers
-                    ImGui::Text("Critical points: %u, paths: %u", graph.num_vertices, graph.num_edges);
-                    for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
-                        const int type = critical_point_type_order[k];
-                        critical_point_swatch(type);
-                        ImGui::SameLine();
-                        const CriticalPointStyle& style = critical_point_style(type);
-                        ImGui::Text("%-10s %s %5u", style.plural, style.signature, vertex_count[type]);
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("%s", style.topology_plural);
-                    }
-                    if (ImGui::Button("Print Critical Points Info")) {
-                        for (size_t i = 0; i < graph.num_vertices; ++i) {
-                            const md_topo_vert_t& v = graph.vertices[i];
-                            const md_topo_critical_point_type_t type = md_topo_vertex_type(&graph, i);
-                            const char* type_cstr = md_topo_critical_point_type_str(type);
-                            printf("Vertex %zu: Type=%s, Value=%.6f, Pos=(%.4f, %.4f, %.4f)\n", i, type_cstr, v.value, v.x, v.y, v.z);
-                        }
-                    }
-
-                    if (graph.num_vertices > 0) {
-                        enum CriticalPointColumn {
-                            CriticalPointColumn_Idx,
-                            CriticalPointColumn_X,
-                            CriticalPointColumn_Y,
-                            CriticalPointColumn_Z,
-                            CriticalPointColumn_Type,
-                            CriticalPointColumn_Value,
-							CriticalPointColumn_Count
-                        };
-
-                        uint32_t* row_indices = md_temp_alloc_array(temp, uint32_t, graph.num_vertices);
-                        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
-                            row_indices[i] = i;
-                        }
-
-                        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
-                                                                   ImGuiTableFlags_Borders |
-                                                                   ImGuiTableFlags_ScrollY |
-                                                                   ImGuiTableFlags_Sortable |
-                                                                   ImGuiTableFlags_SortMulti |
-                                                                   ImGuiTableFlags_SizingStretchProp;
-
-                        if (ImGui::IsWindowHovered()) {
-                            md_bitmask_clear(&critical_points.highlight_mask);
-                        }
-
-                        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags)) {
-							ImGui::TableSetupColumn("Idx",   ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_Idx);
-                            ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_X);
-                            ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_Y);
-                            ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None,  0.0f, CriticalPointColumn_Z);
-                            ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Type);
-                            ImGui::TableSetupColumn("Density", ImGuiTableColumnFlags_None,      0.0f, CriticalPointColumn_Value);
-                            ImGui::TableSetupScrollFreeze(0, 1);
-                            ImGui::TableHeadersRow();
-
-                            if (ImGui::IsWindowHovered()) {
-                                md_bitmask_clear(&critical_points.highlight_mask);
-                            }
-
-                            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
-                                if (sort_specs->SpecsCount > 0) {
-                                    auto compare_rows = [&graph, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
-                                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
-                                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
-
-                                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
-                                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
-                                            int cmp = 0;
-                                            switch ((CriticalPointColumn)spec.ColumnUserID) {
-                                            case CriticalPointColumn_Idx:
-                                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
-												break;
-                                            case CriticalPointColumn_X:
-                                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Y:
-                                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Z:
-                                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Type: {
-                                                const int a = critical_point_type_rank(graph.types[lhs_idx]), b = critical_point_type_rank(graph.types[rhs_idx]);
-                                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
-                                                break;
-                                            }
-                                            case CriticalPointColumn_Value:
-                                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
-                                                break;
-                                            default:
-                                                break;
-                                            }
-
-                                            if (cmp != 0) {
-                                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
-                                            }
-                                        }
-
-                                        return lhs_idx < rhs_idx;
-                                    };
-
-                                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
-                                    sort_specs->SpecsDirty = false;
-                                }
-                            }
-
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-
-                            for (size_t row = 0; row < graph.num_vertices; ++row) {
-                                const uint32_t idx = row_indices[row];
-                                const md_topo_vert_t& v = graph.vertices[idx];
-                                const int type = graph.types[idx];
-
-                                ImGui::TableNextRow();
-                                ImGui::TableNextColumn();
-
-                                ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                                bool is_sel = md_bitmask_test_bit(&critical_points.selection_mask, idx);
-                                bool is_hov = md_bitmask_test_bit(&critical_points.highlight_mask, idx);
-
-                                if (is_hov) {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
-                                }
-                                else {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                                }
-
-                                char lbl[16];
-                                snprintf(lbl, sizeof(lbl), "%u", idx);
-                                ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
-
-                                if (ImGui::TableGetHoveredRow() == (int)(row + 1)) {
-                                    if (idx < graph.num_vertices) {
-                                        md_bitmask_clear(&critical_points.highlight_mask);
-                                        md_bitmask_or(&critical_points.highlight_mask, md_bitset_range((uint32_t)(idx), (uint32_t)(idx) + 1));
-
-                                        //Selection
-                                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
-                                                md_bitmask_or(&critical_points.selection_mask, md_bitset_range((uint32_t)(idx), (uint32_t)(idx) + 1));
-                                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
-                                                md_bitmask_andnot(&critical_points.selection_mask, md_bitset_range((uint32_t)(idx), (uint32_t)(idx) + 1));
-                                            }
-                                        }
-                                    }
-                                }
-                                ImGui::PopStyleColor(1);
-                                // Positions in \xC3\x85, as everywhere else in the application (the graph's are in bohr)
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.4f", v.x * BOHR_TO_ANGSTROM);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.4f", v.y * BOHR_TO_ANGSTROM);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.4f", v.z * BOHR_TO_ANGSTROM);
-                                ImGui::TableNextColumn();
-                                {
-                                    const CriticalPointStyle& style = critical_point_style(type);
-                                    critical_point_swatch(type);
-                                    ImGui::SameLine();
-                                    ImGui::Text("%s %s", style.label, style.signature);
-                                    ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
-                                }
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.8f", v.value);                                
-                            }
-
-                            ImGui::PopStyleColor(2);
-
-                            ImGui::EndTable();
-                        }
-                    }
-
-
-                }
-
                 ImGui::TreePop();
             }
         }
