@@ -4,6 +4,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stddef.h>
 
 double periodic_wrap(double x, double beg, double len) {
     if (!(len > 0.0)) return x;
