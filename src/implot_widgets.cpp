@@ -129,6 +129,131 @@ IMPLOT_API bool DragRangeX(const char* id, double* x_range_min, double* x_range_
     return dragging;
 }
 
+// Text with a dark shadow, legible over whatever is plotted under it
+static void inset_text(ImDrawList* dl, ImFont* font, float size, ImVec2 p, const char* text, ImU32 col) {
+    dl->AddText(font, size, ImVec2(p.x + 1, p.y + 1), IM_COL32(0, 0, 0, 170), text);
+    dl->AddText(font, size, p, col, text);
+}
+
+IMPLOT_API void DrawInsetAxes(ImPlotInsetFlags flags, ImVec2 clear_top_left, float font_scale) {
+    ImPlotContext& gp = *GImPlot;
+    IM_ASSERT_USER_ERROR(gp.CurrentPlot != nullptr, "DrawInsetAxes() needs to be called between BeginPlot() and EndPlot()!");
+    SetupLock();
+    ImPlotPlot& plot = *gp.CurrentPlot;
+    const ImRect r = plot.PlotRect;
+
+    ImFont* font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize() * font_scale;
+    const float name_fs = fs * 1.15f;
+    const float pad = 3.0f;
+    const float line_h = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "0").y;
+    ImVec4 text = GetStyleColorVec4(ImPlotCol_AxisText);
+    const ImU32 name_col = ImGui::ColorConvertFloat4ToU32(text);
+    text.w *= 0.75f;
+    const ImU32 tick_col = ImGui::ColorConvertFloat4ToU32(text);
+    const bool ticks = !(flags & ImPlotInsetFlags_NoTickLabels);
+    const bool names = !(flags & ImPlotInsetFlags_NoAxisLabels);
+
+    auto has_ticks = [&](const ImPlotAxis& ax) {
+        return ticks && ax.Enabled && ax.Ticker.TickCount() > 0;
+    };
+    auto name_of = [&](const ImPlotAxis& ax) -> const char* {
+        return names && ax.Enabled && ax.LabelOffset != -1 ? plot.GetAxisLabel(ax) : nullptr;
+    };
+    auto label_width = [&](const ImPlotAxis& ax) {
+        float w = 0.0f;
+        for (int j = 0; j < ax.Ticker.TickCount(); ++j) {
+            const ImPlotTick& tk = ax.Ticker.Ticks[j];
+            if (tk.ShowLabel && tk.TextOffset != -1) w = ImMax(w, font->CalcTextSizeA(fs, FLT_MAX, 0.0f, ax.Ticker.GetText(j)).x);
+        }
+        return w;
+    };
+
+    // The rows and columns the axes take along the edges, from the outside in: what the others keep clear of
+    float row_bottom = 0.0f, row_top = 0.0f, col_left = 0.0f, col_right = 0.0f;
+    for (int i = 0; i < IMPLOT_NUM_X_AXES; ++i) {
+        const ImPlotAxis& ax = plot.XAxis(i);
+        if (!has_ticks(ax) && !name_of(ax)) continue;
+        (ax.IsOpposite() ? row_top : row_bottom) += line_h + pad;
+    }
+    for (int i = 0; i < IMPLOT_NUM_Y_AXES; ++i) {
+        const ImPlotAxis& ax = plot.YAxis(i);
+        if (!has_ticks(ax)) continue;
+        (ax.IsOpposite() ? col_right : col_left) += label_width(ax) + pad * 2;
+    }
+    const float top_clear = ImMax(clear_top_left.y, row_top);
+
+    PushPlotClipRect();
+    ImDrawList* dl = GetPlotDrawList();
+
+    float off_bottom = 0.0f, off_top = 0.0f;
+    for (int i = 0; i < IMPLOT_NUM_X_AXES; ++i) {
+        const ImPlotAxis& ax = plot.XAxis(i);
+        const char* name = name_of(ax);
+        if (!has_ticks(ax) && !name) continue;
+        const bool top = ax.IsOpposite();
+        float& off = top ? off_top : off_bottom;
+        const float y = top ? r.Min.y + off + pad : r.Max.y - off - line_h - pad;
+        off += line_h + pad;
+        // A top row starts right of what is kept clear
+        const float x_min = r.Min.x + (top ? ImMax(col_left, clear_top_left.x) : col_left) + pad;
+        float x_max = r.Max.x - col_right - pad;
+        if (name) {
+            const ImVec2 ns = font->CalcTextSizeA(name_fs, FLT_MAX, 0.0f, name);
+            x_max -= ns.x;
+            inset_text(dl, font, name_fs, ImVec2(x_max, y + line_h - ns.y), name, name_col);
+            x_max -= pad * 2;
+        }
+        if (!has_ticks(ax)) continue;
+        float last = -FLT_MAX;
+        for (int j = 0; j < ax.Ticker.TickCount(); ++j) {
+            const ImPlotTick& tk = ax.Ticker.Ticks[j];
+            if (!tk.ShowLabel || tk.TextOffset == -1) continue;
+            const char* text = ax.Ticker.GetText(j);
+            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+            const float x = IM_ROUND(ax.PlotToPixels(tk.PlotPos) - w * 0.5f);
+            if (x < x_min || x + w > x_max || x < last + pad * 2) continue;
+            inset_text(dl, font, fs, ImVec2(x, y), text, tick_col);
+            last = x + w;
+        }
+    }
+
+    float off_left = 0.0f, off_right = 0.0f;
+    for (int i = 0; i < IMPLOT_NUM_Y_AXES; ++i) {
+        const ImPlotAxis& ax = plot.YAxis(i);
+        const char* name = name_of(ax);
+        if (!has_ticks(ax) && !name) continue;
+        const bool right = ax.IsOpposite();
+        const float w_col = has_ticks(ax) ? label_width(ax) : 0.0f;
+        float& off = right ? off_right : off_left;
+        const float x0 = right ? r.Max.x - off - pad - w_col : r.Min.x + off + pad;
+        off += w_col + pad * 2;
+        // Below what is kept clear at the top (on the left), above the rows of the x axes
+        float y_min = r.Min.y + (right ? row_top : top_clear) + pad;
+        const float y_max = r.Max.y - row_bottom - pad;
+        if (name) {
+            const ImVec2 ns = font->CalcTextSizeA(name_fs, FLT_MAX, 0.0f, name);
+            inset_text(dl, font, name_fs, ImVec2(right ? x0 + w_col - ns.x : x0, y_min), name, name_col);
+            y_min += ns.y + pad;
+        }
+        if (!has_ticks(ax)) continue;
+        float last = FLT_MAX;   // The top of the label drawn before, going up
+        for (int j = 0; j < ax.Ticker.TickCount(); ++j) {
+            const ImPlotTick& tk = ax.Ticker.Ticks[j];
+            if (!tk.ShowLabel || tk.TextOffset == -1) continue;
+            const char* text = ax.Ticker.GetText(j);
+            const float w = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+            const float y = IM_ROUND(ax.PlotToPixels(tk.PlotPos) - line_h * 0.5f);
+            if (y < y_min || y + line_h > y_max) continue;
+            if (last != FLT_MAX && y + line_h > last - pad && y < last + line_h + pad) continue;
+            inset_text(dl, font, fs, ImVec2(right ? x0 + w_col - w : x0, y), text, tick_col);
+            last = y;
+        }
+    }
+
+    PopPlotClipRect();
+}
+
 IMPLOT_API bool ColormapSelection(const char* id, ImPlotColormap* idx, ImVec2 size) {
     IM_ASSERT(id);
     IM_ASSERT(idx);

@@ -2130,68 +2130,16 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     // An angle as it is labelled: within [-180, 180), but 180 where the domain ends on the right
-    static void format_angle(char* buf, size_t cap, double v) {
+    static int format_angle(double v, char* buf, int size, void*) {
         double w = v - 360.0 * floor((v + 180.0) / 360.0);
         if (v > 0.0 && w == -180.0) w = 180.0;
-        snprintf(buf, cap, "%g\xc2\xb0", w);
-    }
-
-    // Small text inside the plot, legible over whatever is under it
-    static void plot_text(ImDrawList* dl, float size, ImVec2 p, const char* text, ImU32 col) {
-        dl->AddText(ImGui::GetFont(), size, ImVec2(p.x + 1, p.y + 1), IM_COL32(0, 0, 0, 170), text);
-        dl->AddText(ImGui::GetFont(), size, p, col, text);
-    }
-
-    // The tick labels and the names of the axes, inside the plot along its bottom and left edges: the plot keeps all of
-    // its area. 'top_reserved' is what the corner label takes at the top.
-    void draw_inside_labels(ImDrawList* dl, const double* xt, int nx, const double* yt, int ny, float top_reserved) const {
-        const ImVec2 pos = ImPlot::GetPlotPos();
-        const ImVec2 size = ImPlot::GetPlotSize();
-        const float fs = ImGui::GetFontSize() * 0.78f;
-        const float pad = 3.0f;
-        const ImU32 col = IM_COL32(255, 255, 255, 190);
-        const ImU32 axis_col = IM_COL32(255, 255, 255, 235);
-        const float right = pos.x + size.x;
-        const float bottom = pos.y + size.y;
-        char text[32];
-
-        ImPlot::PushPlotClipRect();
-        // The names of the axes, at the ends the angles grow towards
-        const ImVec2 phi_size = ImGui::GetFont()->CalcTextSizeA(fs * 1.15f, FLT_MAX, 0.0f, "\xcf\x86");
-        const float phi_x = right - phi_size.x - pad - 2;
-        plot_text(dl, fs * 1.15f, ImVec2(phi_x, bottom - phi_size.y - pad), "\xcf\x86", axis_col);
-        const float psi_y = pos.y + top_reserved + pad;
-        plot_text(dl, fs * 1.15f, ImVec2(pos.x + pad + 1, psi_y), "\xcf\x88", axis_col);
-        const float label_h = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "0").y;
-
-        if (show_ticks) {
-            const float y_text = bottom - label_h - pad;
-            float last_x = -FLT_MAX;
-            for (int i = 0; i < nx; ++i) {
-                format_angle(text, sizeof(text), xt[i]);
-                const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, text);
-                const float x = ImPlot::PlotToPixels(xt[i], 0).x - ts.x * 0.5f;
-                // Clear of the edges, of the label before it, of the name of the axis and of the labels of the other
-                if (x < pos.x + ts.x * 0.5f + pad * 4 || x + ts.x > phi_x - pad || x < last_x + pad * 2) continue;
-                plot_text(dl, fs, ImVec2(x, y_text), text, col);
-                last_x = x + ts.x;
-            }
-            float last_y = -FLT_MAX;
-            for (int i = ny - 1; i >= 0; --i) {
-                format_angle(text, sizeof(text), yt[i]);
-                const float y = ImPlot::PlotToPixels(0, yt[i]).y - label_h * 0.5f;
-                if (y < psi_y + label_h * 1.6f || y + label_h > y_text - pad || y < last_y + pad) continue;
-                plot_text(dl, fs, ImVec2(pos.x + pad + 1, y), text, col);
-                last_y = y + label_h;
-            }
-        }
-        ImPlot::PopPlotClipRect();
+        return snprintf(buf, size, "%g\xc2\xb0", w);
     }
 
     void draw_panel(int panel, ImVec2 size, bool small) {
         constexpr ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
-        // No labels outside the plot: they are drawn within it (draw_inside_labels)
-        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
+        // No labels outside the plot: they are drawn within it (DrawInsetAxes)
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlot::InsetAxisFlags;
 
         char id[32];
         snprintf(id, sizeof(id), "##rama_%d", panel);
@@ -2200,10 +2148,12 @@ struct Ramachandran : viamd::EventHandler {
         ImPlot::SetupAxesLimits(-180, 180, -180, 180, ImPlotCond_Once);
         ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
         ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
-        ImPlot::SetupAxes(nullptr, nullptr, axis_flags, axis_flags);
-        double x_ticks[64], y_ticks[64];
-        const int nx = setup_ticks(x_ticks, 64, ImAxis_X1, viewrect.X.Min, viewrect.X.Max);
-        const int ny = setup_ticks(y_ticks, 64, ImAxis_Y1, viewrect.Y.Min, viewrect.Y.Max);
+        ImPlot::SetupAxes("\xcf\x86", "\xcf\x88", axis_flags, axis_flags);
+        ImPlot::SetupAxisFormat(ImAxis_X1, format_angle);
+        ImPlot::SetupAxisFormat(ImAxis_Y1, format_angle);
+        double ticks[64];
+        setup_ticks(ticks, 64, ImAxis_X1, viewrect.X.Min, viewrect.X.Max);
+        setup_ticks(ticks, 64, ImAxis_Y1, viewrect.Y.Min, viewrect.Y.Max);
         ImPlot::SetupFinish();
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
@@ -2250,7 +2200,7 @@ struct Ramachandran : viamd::EventHandler {
         draw_points(panel, hovered);
 
         // The class and how many residues of it there are, in the corner; the labels of the axes along the edges
-        float top_reserved = 0.0f;
+        ImVec2 title_size = ImVec2(0, 0);
         {
             char text[64];
             snprintf(text, sizeof(text), "%s  %u", panel_names[panel], seg_count[panel]);
@@ -2261,10 +2211,10 @@ struct Ramachandran : viamd::EventHandler {
             dl->AddRectFilled(ImVec2(p.x - 3, p.y - 1), ImVec2(p.x + ts.x + 3, p.y + ts.y + 1), IM_COL32(0, 0, 0, 120), 3.0f);
             dl->AddText(ImGui::GetFont(), fs, p, IM_COL32(255, 255, 255, 225), text);
             ImPlot::PopPlotClipRect();
-            top_reserved = ts.y + 6;
+            title_size = ImVec2(ts.x + 9, ts.y + 6);
         }
         if (psize.x > 120.0f && psize.y > 120.0f) {
-            draw_inside_labels(dl, x_ticks, nx, y_ticks, ny, top_reserved);
+            ImPlot::DrawInsetAxes(show_ticks ? 0 : ImPlotInsetFlags_NoTickLabels, title_size, 0.78f);
         }
 
         // A period from the timeline: a new layer of the density over it
@@ -2327,6 +2277,29 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
+    // The zoom of the wheel this frame, so that the view ends exactly at its limits (the whole domain along the
+    // shorter side, out; 10 degrees, in) rather than going past them to be pulled back after: the plots would show the
+    // view past the limit for a frame, and pulled back about its middle it would no longer be where the pointer zoomed.
+    //
+    // ImPlot zooms one step per frame whatever the wheel's amount: with equal axes, both sides by (1 + r/2)^2 for a rate
+    // r, out, and by (1 - r/(2(1 + 2r)))^2 in (ImPlot's UpdateInput). Solved here for the rate that reaches the limit.
+    void limit_zoom_rate(float* rate) const {
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel == 0.0f || *rate <= 0.0f) return;
+        const double short_side = MIN(viewrect.Size().x, viewrect.Size().y);
+        if (short_side <= 0.0) return;
+        double r = *rate;
+        if (wheel < 0.0f) {
+            const double f = 360.0 / short_side;                // What is left to zoom out
+            r = f <= 1.0 + 1e-9 ? 0.0 : MIN(r, 2.0 * (sqrt(f) - 1.0));
+        } else {
+            const double f = 10.0 / short_side;                 // What is left to zoom in
+            const double q = f >= 1.0 - 1e-9 ? 0.0 : 1.0 - sqrt(f);
+            r = q <= 0.0 ? 0.0 : q < 0.25 ? MIN(r, 2.0 * q / (1.0 - 4.0 * q)) : r;
+        }
+        *rate = (float)r;
+    }
+
     void draw_plots() {
         // Counted again as the points are drawn
         for (int i = 0; i < num_layers; ++i) {
@@ -2349,6 +2322,7 @@ struct Ramachandran : viamd::EventHandler {
         const ImPlotInputMap saved_input = input;
         // Shift is for selecting: the plots do not pan or zoom meanwhile
         input.OverrideMod = ImGuiMod_Shift;
+        limit_zoom_rate(&input.ZoomRate);
 
         // Edge to edge: the labels are within the plots
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
