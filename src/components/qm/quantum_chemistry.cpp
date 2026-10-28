@@ -710,9 +710,11 @@ struct GtoCriticalPointJob {
 #endif
 };
 
-// Starts a search of the system as it is now. Returns null, with the reason logged, when the system
-// does not carry what the search needs.
-static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
+// Copies what an analytic run reads - basis, geometry in Bohr, density matrix - from the system as it
+// is now into 'alloc', and points 'desc' at the copies. False, with the reason logged, when the system
+// does not carry them.
+static bool gto_inputs_copy(md_topo_gto_desc_t* desc, md_gto_basis_t* out_basis, float** out_xyz, double** out_density,
+                            md_allocator_i* alloc, ApplicationState& app) {
     const md_system_t& sys = app.mold.sys;
     const md_system_state_t& state = app.mold.state;
     md_temp_scope_t temp = md_temp_begin();
@@ -721,7 +723,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
         MD_LOG_ERROR("Critical points: the system carries no GTO basis");
-        return nullptr;
+        return false;
     }
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
@@ -729,7 +731,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, sys, state);
     if (!atom_pos || num_atoms != md_gto_basis_num_atoms(&basis)) {
         MD_LOG_ERROR("Critical points: no positions for the atoms the basis is centred on");
-        return nullptr;
+        return false;
     }
 
     const str_t path = critical_points_density_path(sys);
@@ -737,36 +739,47 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
     if (!density || dim != num_ao) {
         MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" STR_FMT "'", num_ao, STR_ARG(path));
+        return false;
+    }
+
+    out_basis->num_shells     = basis.num_shells;
+    out_basis->num_primitives = basis.num_primitives;
+    out_basis->shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
+    out_basis->alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    out_basis->coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    MEMCPY(out_basis->shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
+    MEMCPY(out_basis->alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
+    MEMCPY(out_basis->coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
+
+    float* xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        xyz[3 * i + 0] = atom_pos[i].x;
+        xyz[3 * i + 1] = atom_pos[i].y;
+        xyz[3 * i + 2] = atom_pos[i].z;
+    }
+    double* dm = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
+    MEMCPY(dm, density, sizeof(double) * num_ao * num_ao);
+    *out_xyz     = xyz;
+    *out_density = dm;
+
+    desc->basis           = out_basis;
+    desc->atom_xyz        = xyz;
+    desc->atom_xyz_stride = sizeof(float) * 3;
+    desc->density_matrix  = dm;
+    return true;
+}
+
+// Starts a search of the system as it is now. Returns null, with the reason logged, when the system
+// does not carry what the search needs.
+static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
+    GtoCriticalPointJob* job = new GtoCriticalPointJob();
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    if (!gto_inputs_copy(&job->desc, &job->basis, &job->atom_xyz, &job->density, job->arena, app)) {
+        md_arena_allocator_destroy(job->arena);
+        delete job;
         return nullptr;
     }
 
-    GtoCriticalPointJob* job = new GtoCriticalPointJob();
-    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-    md_allocator_i* alloc = job->arena;
-
-    job->basis.num_shells     = basis.num_shells;
-    job->basis.num_primitives = basis.num_primitives;
-    job->basis.shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
-    job->basis.alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
-    job->basis.coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
-    MEMCPY(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
-    MEMCPY(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
-    MEMCPY(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
-
-    job->atom_xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
-    for (size_t i = 0; i < num_atoms; ++i) {
-        job->atom_xyz[3 * i + 0] = atom_pos[i].x;
-        job->atom_xyz[3 * i + 1] = atom_pos[i].y;
-        job->atom_xyz[3 * i + 2] = atom_pos[i].z;
-    }
-
-    job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    MEMCPY(job->density, density, sizeof(double) * num_ao * num_ao);
-
-    job->desc.basis              = &job->basis;
-    job->desc.atom_xyz           = job->atom_xyz;
-    job->desc.atom_xyz_stride    = sizeof(float) * 3;
-    job->desc.density_matrix     = job->density;
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
     job->desc.cancel             = &job->cancel;   // num_threads 0: every core
@@ -804,6 +817,66 @@ static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
 #if MD_ENABLE_GPU
     if (job->stream) md_gpu_stream_destroy(job->stream);
 #endif
+    md_topo_extremum_graph_free(&job->graph);
+    if (job->arena) md_arena_allocator_destroy(job->arena);
+    delete job;
+}
+
+// Traces the ring surfaces of the ring critical points labelling left tied between equally small cycles
+// (md_topo_gto_ring_surface_maxima), on the task pool, from its own copies of the inputs and the graph.
+struct GtoRingSurfaceJob {
+    static constexpr uint32_t capacity = 32;   // maxima kept per ring surface
+
+    md_allocator_i*          arena    = nullptr;
+    md_gto_basis_t           basis    = {};
+    float*                   atom_xyz = nullptr;
+    double*                  density  = nullptr;
+    md_topo_gto_desc_t       desc     = {};
+    md_topo_extremum_graph_t graph    = {};
+    std::vector<uint32_t>    rcps;
+    std::vector<uint32_t>    maxima;            // [rcps.size() * capacity]
+    std::vector<uint32_t>    counts;            // per RCP
+
+    uint64_t          hash    = 0;              // the search (gto_have) the graph is from
+    md_tick_t         start   = 0;
+    bool              ok      = false;
+    volatile int32_t  cancel  = 0;
+    std::atomic<bool> done    = false;
+    task_system::ID   task    = task_system::INVALID_ID;
+};
+
+static GtoRingSurfaceJob* gto_ring_surface_job_start(ApplicationState& app, const md_topo_extremum_graph_t& graph,
+                                                     std::vector<uint32_t> rcps, double rho_min, uint64_t hash) {
+    GtoRingSurfaceJob* job = new GtoRingSurfaceJob();
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    if (!gto_inputs_copy(&job->desc, &job->basis, &job->atom_xyz, &job->density, job->arena, app)) {
+        md_arena_allocator_destroy(job->arena);
+        delete job;
+        return nullptr;
+    }
+    job->desc.rho_min = rho_min;
+    job->desc.cancel  = &job->cancel;
+    job->graph.alloc = md_get_heap_allocator();
+    md_topo_extremum_graph_copy(&job->graph, &graph);
+    job->rcps   = std::move(rcps);
+    job->maxima.assign(job->rcps.size() * GtoRingSurfaceJob::capacity, 0);
+    job->counts.assign(job->rcps.size(), 0);
+    job->hash   = hash;
+    job->start  = md_tick_now();
+
+    job->task = task_system::create_pool_task(STR_LIT("##Ring surfaces"), [job]() {
+        job->ok = md_topo_gto_ring_surface_maxima(job->maxima.data(), job->counts.data(), GtoRingSurfaceJob::capacity,
+                                                  &job->desc, &job->graph, job->rcps.data(), job->rcps.size());
+        job->done.store(true, std::memory_order_release);
+    });
+    task_system::enqueue_task(job->task);
+    return job;
+}
+
+static void gto_ring_surface_job_destroy(GtoRingSurfaceJob* job) {
+    if (!job) return;
+    job->cancel = 1;
+    task_system::task_wait_for(job->task);
     md_topo_extremum_graph_free(&job->graph);
     if (job->arena) md_arena_allocator_destroy(job->arena);
     delete job;
@@ -920,6 +993,11 @@ struct QuantumChemistry : viamd::EventHandler {
         bool                 gto_failed  = false;
         double               gto_seconds = 0.0;
         double               gto_rho_min = 0.0;       // the threshold the shown graph was searched with
+        // The ring surfaces of the ring CPs left tied between equally small cycles, per vertex (the maxima
+        // they reach), traced once for the search gto_have after its first labelling
+        GtoRingSurfaceJob*                 ring_job = nullptr;
+        uint64_t                           ring_hash = 0;   // the search they were traced, or are being traced, for
+        std::vector<std::vector<uint32_t>> ring_surfaces;
 
         // Volume: the grid, and what is left out of the graph of its samples
         VolumeResolution vol_res            = VolumeResolution::Mid;
@@ -970,7 +1048,7 @@ struct QuantumChemistry : viamd::EventHandler {
         uint64_t list_hash = 0;
         bool color_by_environment = false;      // viewport markers take their environment's colour
         bool show_labels = false;               // viewport tags the selected CPs with their environment
-        // Asked for in the Export menu or a table's context menu, done once the table has its rows this frame
+        // Asked for in the Export menu, done once the table has its rows this frame
         int export_environments = 0, export_points = 0;   // CriticalPointTableExport
 
         PickingRange picking_range = {};
@@ -1477,6 +1555,8 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
                 gto_critical_point_job_destroy(critical_points.gto_job);
                 critical_points.gto_job = nullptr;
+                gto_ring_surface_job_destroy(critical_points.ring_job);
+                critical_points.ring_job = nullptr;
                 md_arena_allocator_destroy(arena);
                 md_bitmask_free(&critical_points.selection_mask);
                 md_bitmask_free(&critical_points.highlight_mask);
@@ -1492,6 +1572,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Here rather than in the window that started it, so a result lands whether or not
                 // that window is open.
                 critical_points_poll_gto();
+                critical_points_poll_ring_surfaces();
 
                 // What the SYSTEM holds, not what this component parsed. Orbitals are what every
                 // window here is ultimately about, and the transition windows want their own data on
@@ -2053,6 +2134,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // belongs to the next one.
         gto_critical_point_job_destroy(critical_points.gto_job);
         critical_points.gto_job = nullptr;
+        gto_ring_surface_job_destroy(critical_points.ring_job);
+        critical_points.ring_job = nullptr;
+        critical_points.ring_hash = 0;
+        critical_points.ring_surfaces.clear();
 #if MD_ENABLE_GPU
         // The topo context is the only GPU object this component owns. The uploaded basis goes with
         // the system it was built from, released by free_system_data.
@@ -5016,6 +5101,9 @@ struct QuantumChemistry : viamd::EventHandler {
             cp.gto_job->cancel  = 1;
             cp.gto_job->dropped = true;
         }
+        if (cp.ring_job) cp.ring_job->cancel = 1;   // dropped when collected: its hash is no longer gto_have
+        cp.ring_hash = 0;
+        cp.ring_surfaces.clear();
         cp.gto_want  = 0;
         cp.gto_have  = 0;
         cp.raw_hash  = 0;
@@ -5056,6 +5144,27 @@ struct QuantumChemistry : viamd::EventHandler {
             cp.gto_rho_min = job->desc.rho_min;
         }
         gto_critical_point_job_destroy(job);
+    }
+
+    // Collects the ring surfaces: kept, and the CPs labelled again with them, if the graph is still the one they were
+    // traced on.
+    void critical_points_poll_ring_surfaces() {
+        CriticalPoints& cp = critical_points;
+        GtoRingSurfaceJob* job = cp.ring_job;
+        if (!job || !job->done.load(std::memory_order_acquire)) return;
+        cp.ring_job = nullptr;
+        if (job->ok && !job->cancel && job->hash == cp.gto_have && job->hash == cp.ring_hash &&
+            cp.method == CriticalPoints::Method_Analytic && cp.simp_graph.num_vertices == job->graph.num_vertices) {
+            cp.ring_surfaces.assign(cp.simp_graph.num_vertices, {});
+            for (size_t k = 0; k < job->rcps.size(); ++k) {
+                const uint32_t* m = job->maxima.data() + k * GtoRingSurfaceJob::capacity;
+                cp.ring_surfaces[job->rcps[k]].assign(m, m + MIN(job->counts[k], GtoRingSurfaceJob::capacity));
+            }
+            cp.distributions_dirty = true;
+            MD_LOG_INFO("Critical points: traced the ring surfaces of %zu tied ring critical point%s in %.1f s", job->rcps.size(),
+                        job->rcps.size() == 1 ? "" : "s", md_tick_to_seconds(md_tick_now() - job->start));
+        }
+        gto_ring_surface_job_destroy(job);
     }
 
     // The analytic search, once a frame while it is enabled, whether or not its window is open. A new run starts
@@ -5264,6 +5373,12 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::TextDisabled("Escalated: cubes too close to a critical point for fp32, finished in double on the CPU.");
             }
             ImGui::EndTooltip();
+        }
+        if (cp.ring_job) {
+            ImGui::TextDisabled("Tracing the ring surfaces of %zu tied ring critical point%s (%.0f s)", cp.ring_job->rcps.size(),
+                                cp.ring_job->rcps.size() == 1 ? "" : "s", md_tick_to_seconds(md_tick_now() - cp.ring_job->start));
+            ImGui::SetItemTooltip("Ring CPs that equally small cycles of bonds enclose are labelled once their ring surface\n"
+                                  "shows which of the cycles' nuclei it reaches");
         }
         if (!info.cancelled && !info.complete && info.num_clusters > 0 && ImGui::TreeNode("Undecided regions")) {
             for (uint32_t i = 0; i < info.num_clusters; ++i) {
@@ -5763,7 +5878,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     using CriticalPointTable = std::vector<std::vector<std::string>>;
 
-    // A table as text: comma-separated for a file, tab-separated for the clipboard (a spreadsheet splits it into columns)
+    // A table as CSV text
     static std::string critical_point_table_text(const CriticalPointTable& table, char sep) {
         std::string out;
         const char special[] = {sep, '"', '\n', '\r', 0};
@@ -5788,24 +5903,10 @@ struct QuantumChemistry : viamd::EventHandler {
         return buf;
     }
 
-    enum CriticalPointTableExport { CPExport_None, CPExport_Copy, CPExport_Csv };
-
-    // Right-click on a row (not Shift, which removes in the list; the header has its own menu): copy the table
-    static void critical_point_table_context(bool row_hovered, int& request) {
-        if (row_hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
-            ImGui::OpenPopup("##Table context");
-        }
-        if (ImGui::BeginPopup("##Table context")) {
-            if (ImGui::MenuItem("Copy table")) request = CPExport_Copy;
-            ImGui::SetItemTooltip("Its rows as listed and sorted, tab-separated: pastes into a spreadsheet as columns");
-            ImGui::EndPopup();
-        }
-    }
+    enum CriticalPointTableExport { CPExport_None, CPExport_Csv };
 
     static void critical_point_table_export(CriticalPointTableExport request, const CriticalPointTable& table, const char* what) {
-        if (request == CPExport_Copy) {
-            ImGui::SetClipboardText(critical_point_table_text(table, '\t').c_str());
-        } else if (request == CPExport_Csv) {
+        if (request == CPExport_Csv) {
             char path[2048];
             if (!application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
             md_file_t file = {};
@@ -5939,7 +6040,6 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::PopID();
         }
         ImGui::EndTable();
-        critical_point_table_context(hovered >= 0, cp.export_environments);
         if (cp.export_environments != CPExport_None) {
             const auto request = (CriticalPointTableExport)cp.export_environments;
             cp.export_environments = CPExport_None;
@@ -6136,7 +6236,6 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
         ImGui::EndTable();
-        critical_point_table_context(hovered >= 0, cp.export_points);
         if (cp.export_points != CPExport_None) {
             const auto request = (CriticalPointTableExport)cp.export_points;
             cp.export_points = CPExport_None;
@@ -6308,11 +6407,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (ImGui::MenuItem("Critical points as CSV...")) cp.export_points = CPExport_Csv;
                 ImGui::SetItemTooltip("The critical point list as listed and sorted, at full precision, with each CP's environment\n"
                                       "and the reason for its label. Its index joins it to the topology export.");
-                ImGui::SeparatorText("Copy to clipboard");
-                if (ImGui::MenuItem("Environments")) cp.export_environments = CPExport_Copy;
-                ImGui::SetItemTooltip("Tab-separated: pastes into a spreadsheet as columns");
-                if (ImGui::MenuItem("Critical points")) cp.export_points = CPExport_Copy;
-                ImGui::SetItemTooltip("Tab-separated: pastes into a spreadsheet as columns");
                 ImGui::EndDisabled();
                 ImGui::EndPopup();
             }
@@ -6328,7 +6422,25 @@ struct QuantumChemistry : viamd::EventHandler {
                 const auto& xyz = state.mold.state.xyz[i];
                 atoms[i] = {xyz.x, xyz.y, xyz.z};
             }
-            cp.chemical_labels = critical_point_distribution::chemical_labels(graph, state.mold.sys, atoms);
+            const bool surfaces = cp.method == CriticalPoints::Method_Analytic && cp.ring_hash == cp.gto_have &&
+                                  cp.ring_surfaces.size() == graph.num_vertices;
+            cp.chemical_labels = critical_point_distribution::chemical_labels(graph, state.mold.sys, atoms,
+                                                                              surfaces ? std::span<const std::vector<uint32_t>>(cp.ring_surfaces)
+                                                                                       : std::span<const std::vector<uint32_t>>());
+            // Ring CPs tied between equally small cycles: their ring surfaces may decide, traced once per search
+            if (cp.method == CriticalPoints::Method_Analytic && graph.vertices_f64 && cp.gto_have != 0 && !cp.gto_job &&
+                cp.ring_hash != cp.gto_have && cp.chemical_labels.size() == graph.num_vertices) {
+                std::vector<uint32_t> rcps;
+                for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                    if (graph.types[i] == MD_TOPO_JOIN_SADDLE && critical_point_distribution::ring_surface_may_decide(cp.chemical_labels[i])) rcps.push_back(i);
+                }
+                cp.ring_hash = cp.gto_have;
+                cp.ring_surfaces.clear();
+                if (!rcps.empty()) {
+                    gto_ring_surface_job_destroy(cp.ring_job);
+                    cp.ring_job = gto_ring_surface_job_start(state, graph, std::move(rcps), cp.gto_rho_min, cp.gto_have);
+                }
+            }
         }
 
         // --- where the search is

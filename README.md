@@ -94,16 +94,14 @@ the table above, else of the bars clicked, else every CP the environments table
 counts (List all returns to that), with the same first columns (Type, Kind,
 Chemical environment, index) and then density, Laplacian, ellipticity and
 position. Both tables sort by clicking a header, Shift-click further headers to
-sort by several columns; right-click a header to hide columns, right-click a row
-for Copy table.
+sort by several columns; right-click a header to hide columns.
 
 The Export menu at the top writes two kinds of data. Topology (JSON or VTP) is
 every critical point and path, unfiltered and without chemical labels, for scripts
 and ParaView. Chemical analysis (CSV) is either table as listed and sorted, every
 column at full precision (hidden ones too); the environments add their CP indices,
 the CP list each CP's label detail, and the CP index joins it to the topology
-export. Copy to clipboard puts either table on the clipboard tab-separated, for
-pasting into a spreadsheet.
+export.
 
 Selection works at both levels. Click an environment to choose it, Shift-click to
 add or remove one: its CPs are listed below and become the selection. Click a
@@ -160,7 +158,11 @@ and as a prefix elsewhere ("Bond: C aromatic – C aromatic"):
   Matching is global: smallest and closest pairs first, each cycle claimed by one
   ring CP. Between free cycles of the same size about as close, the one whose face
   holds no atom of the others wins, else the smallest by area; if the two smallest
-  differ by less than 15% the ring CP stays unassigned. Bonded
+  differ by less than 15% the ring CP is tied. With the analytic search, a tied
+  ring CP's ring surface is then traced in the background (the gradient paths
+  leaving it in the plane of its two positive curvatures, bisected down to the
+  narrowest sectors) and the cycle holding every nucleus it reaches wins; if none
+  or several do, the ring CP stays unassigned. Bonded
   cycles are named "Bonded 8-ring"; cycles closed by contacts are named by their
   strongest contact class ("Closed by Hydrogen bond", in the order Hydrogen bond,
   Halogen bond, π···π, X–H···π, C–H···π, C–H···X, H···H, Other contact), with size,

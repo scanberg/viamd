@@ -42,9 +42,15 @@ struct ChemicalLabel {
 // "Bond: C – O"; unassigned groups already name their topology ("Unassigned BCP")
 std::string display_name(const ChemicalLabel& label);
 
+// ring_surfaces, by vertex, is optional: for a ring CP, the maxima its ring surface reaches
+// (md_topo_gto_ring_surface_maxima), empty when not traced. They decide between equally small cycles.
 std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph,
                                          const md_system_t& system,
-                                         std::span<const Position> atoms_angstrom);
+                                         std::span<const Position> atoms_angstrom,
+                                         std::span<const std::vector<uint32_t>> ring_surfaces = {});
+
+// A ring CP left between equally small cycles, which its ring surface may decide
+bool ring_surface_may_decide(const ChemicalLabel& label);
 
 struct Range {
     double min = 0.0;

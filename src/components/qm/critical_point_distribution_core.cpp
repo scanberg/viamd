@@ -258,9 +258,16 @@ static bool bond_path_cycles(const std::vector<std::vector<PathEdge>>& adjacency
     return true;
 }
 
+static const char tied_ring_detail[] = "Equally small bond-path cycles of about the same area enclose it: ";
+
+bool ring_surface_may_decide(const ChemicalLabel& label) {
+    return label.kind == Kind::Unassigned && label.detail.rfind(tied_ring_detail, 0) == 0;
+}
+
 std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph,
                                          const md_system_t& system,
-                                         std::span<const Position> atoms_angstrom) {
+                                         std::span<const Position> atoms_angstrom,
+                                         std::span<const std::vector<uint32_t>> ring_surfaces) {
     std::vector<ChemicalLabel> labels(graph.num_vertices);
     const double bohr_to_angstrom = md_unit_scale(md_unit_bohr_radius()) / md_unit_scale(md_unit_angstrom());
     const size_t num_atoms = std::min(system.atom.count, atoms_angstrom.size());
@@ -505,6 +512,12 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         return a.score != b.score ? a.score < b.score : a.rcp < b.rcp;
     });
     std::vector<std::pair<int, double>> chosen(graph.num_vertices, {-1, 0.0});
+    std::vector<std::string> surface_note(graph.num_vertices);
+    auto atom_list = [](const std::vector<int>& atoms) {
+        std::string list;
+        for (int a : atoms) list += (list.empty() ? "" : ", ") + std::to_string(a + 1);
+        return list;
+    };
     for (const Candidate& c : candidates) {
         if (!pending[c.rcp] || cycle_claimed[c.cycle]) continue;
         // Equally good cycles of the same size: one nested in another shares most of its path and detours around
@@ -535,6 +548,32 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
             }
             if (empty.size() == 1) rivals = empty;
         }
+        // The ring surface of a ring CP ends at the nuclei of its ring: of the cycles, only one may hold all those it reaches.
+        // Its paths can stray to a neighbouring nucleus (the angles to some nuclei are very narrow), so the nuclei in no
+        // cycle are left out.
+        if (rivals.size() > 1 && rivals[1]->area < 1.15 * rivals[0]->area && c.rcp < ring_surfaces.size() && !ring_surfaces[c.rcp].empty()) {
+            auto holds = [&](const Candidate* x, int a) {
+                const std::vector<int>& own = cycle_atoms[x->cycle];
+                return std::find(own.begin(), own.end(), a) != own.end();
+            };
+            std::vector<int> reached;
+            for (uint32_t v : ring_surfaces[c.rcp]) {
+                if (v >= graph.num_vertices || labels[v].kind != Kind::Atom) continue;
+                const int a = labels[v].atom[0];
+                const bool in_cycle = std::any_of(rivals.begin(), rivals.end(), [&](const Candidate* x) { return holds(x, a); });
+                if (in_cycle && std::find(reached.begin(), reached.end(), a) == reached.end()) reached.push_back(a);
+            }
+            std::vector<const Candidate*> holding;
+            for (const Candidate* x : rivals) {
+                if (std::all_of(reached.begin(), reached.end(), [&](int a) { return holds(x, a); })) holding.push_back(x);
+            }
+            if (!reached.empty() && holding.size() == 1) {
+                surface_note[c.rcp] = " Of " + std::to_string(rivals.size()) + " equally small cycles around it, the only one with every nucleus its ring surface reaches (atoms " + atom_list(reached) + ").";
+                rivals = holding;
+            } else if (!reached.empty()) {
+                surface_note[c.rcp] = " Its ring surface reaches atoms " + atom_list(reached) + ", in more than one of them.";
+            }
+        }
         if (rivals.size() > 1 && rivals[1]->area < 1.15 * rivals[0]->area) {
             auto describe = [&](const Candidate& x) {
                 std::string list;
@@ -543,9 +582,9 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
                 snprintf(buf, sizeof(buf), " (%.2f Angstrom off, %.1f Angstrom\xC2\xB2)", x.offset, x.area);
                 return "atoms " + list + buf;
             };
-            std::string text = "Equally small bond-path cycles of about the same area enclose it: ";
+            std::string text = tied_ring_detail;
             for (size_t k = 0; k < rivals.size(); ++k) text += (k ? "; " : "") + describe(*rivals[k]);
-            labels[c.rcp].detail = text + ".";
+            labels[c.rcp].detail = text + "." + surface_note[c.rcp];
             continue;
         }
         const Candidate& best = *rivals[0];
@@ -599,6 +638,7 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         label.detail = "Cycle of bond paths around it: atoms " + list + " (" + atoms_formula + ")" + buf;
         if (contacts) label.detail += "; " + size + ", " + std::to_string(contacts) + (contacts == 1 ? " contact: " : " contacts: ") + closed_by + ".";
         else label.detail += ".";
+        label.detail += surface_note[i];
         if (coalescing != UINT32_MAX) {
             label.group += " (near-degenerate)";
             snprintf(buf, sizeof(buf), " Its density is within 2%% of BCP %u on the ring: the pair is close to annihilating.", coalescing);

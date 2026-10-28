@@ -7,6 +7,7 @@
 #include <core/md_allocator.h>
 
 #include <cmath>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -215,7 +216,7 @@ struct Scene {
     }
     uint32_t bond(int a, int b) { bonds.push_back({a, b}); return path(a, b, 0.3f); }
 
-    std::vector<critical_point_distribution::ChemicalLabel> labels() {
+    std::vector<critical_point_distribution::ChemicalLabel> labels(std::span<const std::vector<uint32_t>> ring_surfaces = {}) {
         const size_t n = atoms.size();
         offsets.assign(n + 1, 0);
         others.assign(2 * bonds.size(), 0);
@@ -243,7 +244,7 @@ struct Scene {
         graph.num_vertices = (uint32_t)vertices.size();
         graph.edges = edges.data();
         graph.num_edges = (uint32_t)edges.size();
-        return critical_point_distribution::chemical_labels(graph, sys, atoms);
+        return critical_point_distribution::chemical_labels(graph, sys, atoms, ring_surfaces);
     }
 };
 }
@@ -371,6 +372,24 @@ UTEST(critical_point_chemistry, ring_cp_between_cycles_of_the_same_size) {
     labels = m.labels();
     EXPECT_TRUE(labels[folded].kind == Kind::Unassigned);
     EXPECT_NE(labels[folded].detail.find("Equally small"), std::string::npos);
+    EXPECT_TRUE(critical_point_distribution::ring_surface_may_decide(labels[folded]));
+
+    // Its ring surface reaching c (vertex 2) decides for a-b-c-d
+    std::vector<std::vector<uint32_t>> surfaces(m.vertices.size());
+    surfaces[folded] = {0, 1, 2};
+    labels = m.labels(surfaces);
+    EXPECT_TRUE(labels[folded].kind == Kind::Ring);
+    EXPECT_NE(labels[folded].detail.find("atoms 1, 2, 3, 4 "), std::string::npos);
+    EXPECT_NE(labels[folded].detail.find("ring surface"), std::string::npos);
+
+    // Reaching only the shared a and b, or nuclei of both squares, decides nothing
+    surfaces[folded] = {0, 1};
+    labels = m.labels(surfaces);
+    EXPECT_TRUE(labels[folded].kind == Kind::Unassigned);
+    EXPECT_NE(labels[folded].detail.find("ring surface"), std::string::npos);
+    surfaces[folded] = {2, 0, 4};
+    labels = m.labels(surfaces);
+    EXPECT_TRUE(labels[folded].kind == Kind::Unassigned);
 }
 
 UTEST(critical_point_chemistry, cage_cp_from_its_assigned_faces) {
