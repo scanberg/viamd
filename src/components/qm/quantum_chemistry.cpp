@@ -1654,6 +1654,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     h = md_hash64(&critical_points.color_by_environment, sizeof(critical_points.color_by_environment), h);
                     if (critical_points.color_by_environment) {
                         for (const auto& env : critical_points.environments) h = md_hash64(&env.color, sizeof(env.color), h);
+                        if (!critical_points.environment_of.empty()) {
+                            h = md_hash64(critical_points.environment_of.data(), critical_points.environment_of.size() * sizeof(uint32_t), h);
+                        }
                     }
                     for (int type : critical_point_type_order) {
                         const auto& filter = critical_points.density_filter[type];
