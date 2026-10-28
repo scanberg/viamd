@@ -65,12 +65,31 @@ enum class SurfaceFieldKind {
     // the atomic numbers - too much charge by the core electrons of an effective core potential the
     // file leaves unstated, which is checked for and reported.
     ElectrostaticPotential,
+
+    // CPCM's reaction potential: the potential of the solvent's surface charges (cpcm/), each the
+    // normalised spherical gaussian the model makes it, sum_k q_k erf(zeta_k r) / r - exact, and what
+    // the QM region feels of the solvent. Smooth on a surface inside the cavity, unlike the charges.
+    CpcmPotential,
+
+    // CPCM's surface charge density itself, sum_k q_k N_k exp(-zeta_k^2 r^2). The gaussians are
+    // narrow (sigma ~0.1 bohr) and ~1 bohr apart on the cavity, which lies outside an isodensity
+    // surface: spots where the two come close, and next to nothing elsewhere.
+    CpcmChargeDensity,
+
+    // GOSTSHYP's pressure potential, sum_j p_j N_j exp(-w_j r^2) (gostshyp/): the repulsive potential
+    // on the electrons that exerts the pressure, positive throughout. Its gaussians are as wide as
+    // their tesserae and tile the surface. (The part of the Fock operator that comes from the
+    // amplitudes' dependence on the density is not a field and not in it.)
+    GostshypPotential,
     Count
 };
 
 inline const char* surface_field_kind_str[(int)SurfaceFieldKind::Count] = {
     "Embedding Potential",
     "Electrostatic Potential",
+    "CPCM Potential",
+    "CPCM Charge Density",
+    "GOSTSHYP Potential",
 };
 
 // How a field is mapped to colour starts out as fits a potential: a range centred on zero, following
@@ -166,6 +185,41 @@ SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& 
 
 // The first kind the system has what to make of, Count for none
 SurfaceFieldKind surface_field_first_available(const md_system_t& sys);
+
+// Whether the field wants SurfaceFieldDesc::basis_atom_xyz, the QM atoms where the density is drawn:
+// the electrostatic potential evaluates the density there, the surface gaussians move with them.
+bool surface_field_needs_basis_atoms(SurfaceFieldKind kind);
+
+// Whether the field takes both signs, and wants a scale centred on zero; GOSTSHYP's is positive
+bool surface_field_signed(SurfaceFieldKind kind);
+
+// THE SURFACE GAUSSIANS AS POINTS
+//
+// What the CPCM and GOSTSHYP fields are made of, as it is: a point per gaussian at its centre, with
+// its amplitude (cpcm/ or gostshyp/ amplitude - a surface charge in e, a pressure amplitude in
+// hartree bohr^3). For the Surface Points representation, which shows the input with nothing
+// sampled or summed in between. The centres are carried along with the QM atoms as the fields' are.
+enum class SurfacePointsGroup { Cpcm, Gostshyp, Count };
+
+inline const char* surface_points_group_str[(int)SurfacePointsGroup::Count] = { "CPCM", "GOSTSHYP" };
+
+size_t    surface_points_count(SurfacePointsGroup group, const md_system_t& sys);   // 0 without them
+md_unit_t surface_points_unit(SurfacePointsGroup group);                            // of the amplitudes
+bool      surface_points_signed(SurfacePointsGroup group);                          // CPCM's charges are; GOSTSHYP's amplitudes are positive
+
+// The centres (Angstrom) and amplitudes (surface_points_unit), surface_points_count of each; 0 when
+// they are more than cap. basis_atom_xyz (bohr, the QM atoms where they are now, as for
+// SurfaceFieldDesc) may be NULL, and the points are then where the calculation had them.
+size_t surface_points_extract(vec3_t* out_xyz, float* out_amplitude, size_t cap, SurfacePointsGroup group, const md_system_t& sys,
+                              const vec3_t* basis_atom_xyz, size_t num_basis_atoms);
+
+static inline ColorScale surface_points_default_scale(SurfacePointsGroup group) {
+    ColorScale scale;
+    scale.colormap   = surface_points_signed(group) ? COLOR_SCALE_COLORMAP_RDBU : COLOR_SCALE_COLORMAP_VIRIDIS;
+    scale.symmetric  = surface_points_signed(group);
+    scale.auto_range = true;
+    return scale;
+}
 
 // The grid a field is sampled on, given the grid of the volume its surfaces are drawn from: that
 // grid, or for the electrostatic potential the same box at about 0.4 bohr (never finer than the

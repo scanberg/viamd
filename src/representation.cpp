@@ -602,6 +602,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
         case RepresentationType::SimulationBox:
+        case RepresentationType::SurfacePoints:
             return false;
         default:
             return true;
@@ -903,6 +904,26 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
         break;
+    case RepresentationType::SurfacePoints: {
+        // What the amplitudes span, for the colour scale: they do not change while the system is loaded
+        SurfacePointsRepresentation& sp = rep->surface_points;
+        const size_t n = surface_points_count(sp.group, sys);
+        rep->type_is_valid = n > 0;
+        sp.span = {};
+        if (n > 0) {
+            md_temp_scope_t temp = md_temp_begin();
+            vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * n);
+            float*  amp = (float*)md_temp_alloc(temp, sizeof(float) * n);
+            if (surface_points_extract(xyz, amp, n, sp.group, sys, nullptr, 0) == n) {
+                float lo = amp[0], hi = amp[0];
+                for (size_t k = 1; k < n; ++k) { lo = MIN(lo, amp[k]); hi = MAX(hi, amp[k]); }
+                sp.span = color_scale_span(lo, hi);
+                color_scale_update_range(&sp.scale, sp.span);
+            }
+            md_temp_end(temp);
+        }
+        break;
+    }
     default:
         ASSERT(false);
         break;
@@ -1502,6 +1523,22 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_eq(ident, STR_LIT("ElectronicStructureColoring"))) {
         int c;
         if (viamd::extract_int(c, arg) && c >= 0 && c < (int)SurfaceColoring::Count) rep->electronic_structure.coloring = (SurfaceColoring)c;
+    } else if (str_eq(ident, STR_LIT("SurfacePointsGroup"))) {
+        int g;
+        if (viamd::extract_int(g, arg) && g >= 0 && g < (int)SurfacePointsGroup::Count) rep->surface_points.group = (SurfacePointsGroup)g;
+    } else if (str_eq(ident, STR_LIT("SurfacePointsRadius"))) {
+        viamd::extract_flt(rep->surface_points.radius, arg);
+    } else if (str_eq(ident, STR_LIT("SurfacePointsColormap"))) {
+        viamd::extract_int(rep->surface_points.scale.colormap, arg);
+    } else if (str_eq(ident, STR_LIT("SurfacePointsRange"))) {
+        float r[2];
+        if (viamd::extract_flt_vec(r, 2, arg)) { rep->surface_points.scale.range_beg = r[0]; rep->surface_points.scale.range_end = r[1]; }
+    } else if (str_eq(ident, STR_LIT("SurfacePointsSymmetric"))) {
+        viamd::extract_bool(rep->surface_points.scale.symmetric, arg);
+    } else if (str_eq(ident, STR_LIT("SurfacePointsAutoRange"))) {
+        viamd::extract_bool(rep->surface_points.scale.auto_range, arg);
+    } else if (str_eq(ident, STR_LIT("SurfacePointsLegend"))) {
+        viamd::extract_bool(rep->surface_points.scale.show_legend, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldKind"))) {
         int k;
         if (viamd::extract_int(k, arg) && k >= 0 && k < (int)SurfaceFieldKind::Count) rep->electronic_structure.field_kind = (SurfaceFieldKind)k;
@@ -1652,6 +1689,18 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_vec3(state, STR_LIT("DipoleOffset"), rep.dipole.offset);
         viamd::write_dbl(state,  STR_LIT("DipoleScale"), rep.dipole.scale);
         viamd::write_flt(state,  STR_LIT("DipoleRadius"), rep.dipole.radius);
+    }
+
+    if (rep.type == RepresentationType::SurfacePoints) {
+        const SurfacePointsRepresentation& sp = rep.surface_points;
+        viamd::write_int(state,  STR_LIT("SurfacePointsGroup"), (int)sp.group);
+        viamd::write_flt(state,  STR_LIT("SurfacePointsRadius"), sp.radius);
+        viamd::write_int(state,  STR_LIT("SurfacePointsColormap"), sp.scale.colormap);
+        const float range[2] = { sp.scale.range_beg, sp.scale.range_end };
+        viamd::write_flt_vec(state, STR_LIT("SurfacePointsRange"), range, 2);
+        viamd::write_bool(state, STR_LIT("SurfacePointsSymmetric"), sp.scale.symmetric);
+        viamd::write_bool(state, STR_LIT("SurfacePointsAutoRange"), sp.scale.auto_range);   // after the range, as for the atoms
+        viamd::write_bool(state, STR_LIT("SurfacePointsLegend"), sp.scale.show_legend);
     }
 
     if (rep.type == RepresentationType::SimulationBox) {
@@ -1842,7 +1891,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             }
             ImGui::EndDisabled();
             if (!enabled && c == SurfaceColoring::Field) {
-                ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
+                ImGui::SetItemTooltip("Nothing in this dataset to make a field from - the CPCM and GOSTSHYP fields need their gaussians (cpcm/, gostshyp/):\n"
                                       "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
                                       "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
@@ -1877,6 +1926,11 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             const SurfaceFieldKind kind = (SurfaceFieldKind)k;
             ImGui::BeginDisabled(!surface_field_available(kind, sys));
             if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
+                // A field of one sign wants a scale from zero, one of both a scale centred on it
+                if (surface_field_signed(kind) != surface_field_signed(es.field_kind)) {
+                    es.field_map.symmetric = surface_field_signed(kind);
+                    es.field_map.colormap  = surface_field_signed(kind) ? COLOR_SCALE_COLORMAP_RDBU : COLOR_SCALE_COLORMAP_VIRIDIS;
+                }
                 es.field_kind = kind;
                 update_rep = true;
             }
@@ -1914,6 +1968,21 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
                               "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
                               "An embedding's environment is not part of it.");
+    } else if (es.field_kind == SurfaceFieldKind::CpcmPotential) {
+        ImGui::SetItemTooltip("CPCM's reaction potential on the surface: the potential of the solvent's polarisation charges on the\n"
+                              "cavity, each smeared into a gaussian as the model makes it - sum q erf(zeta r) / r, exact. This is what\n"
+                              "the QM region feels of the solvent. Largely the electrostatic potential mirrored and screened, since\n"
+                              "the charges are solved for to cancel it on the cavity (by (eps - 1) / eps); what differs comes from the\n"
+                              "cavity's shape.");
+    } else if (es.field_kind == SurfaceFieldKind::CpcmChargeDensity) {
+        ImGui::SetItemTooltip("CPCM's surface charge density, the charges' gaussians themselves sampled on the surface. They are\n"
+                              "narrow (sigma ~0.1 bohr), about a bohr apart, and on the cavity, outside an isodensity surface:\n"
+                              "expect spots where the two come close and next to nothing elsewhere. The CPCM Potential is the\n"
+                              "smooth field the charges make.");
+    } else if (es.field_kind == SurfaceFieldKind::GostshypPotential) {
+        ImGui::SetItemTooltip("GOSTSHYP's pressure potential on the surface: the repulsive potential its gaussians put on the\n"
+                              "electrons to exert the pressure, sum p N exp(-w r^2), positive throughout. High where the electron\n"
+                              "density pushes against the compressing cavity.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
@@ -2818,8 +2887,17 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 // one, and a file without an SCF block can still carry density properties
                 if (es_source_mask(state->mold.sys) == 0) continue;
             }
+            if (i == (int)RepresentationType::SurfacePoints && i != (int)rep.type &&
+                !surface_points_count(SurfacePointsGroup::Cpcm, state->mold.sys) && !surface_points_count(SurfacePointsGroup::Gostshyp, state->mold.sys)) {
+                continue;   // nothing to show
+            }
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
+                if (rep.type == RepresentationType::SurfacePoints && !surface_points_count(rep.surface_points.group, state->mold.sys)) {
+                    // The group this system has
+                    rep.surface_points.group = surface_points_count(SurfacePointsGroup::Cpcm, state->mold.sys) ? SurfacePointsGroup::Cpcm : SurfacePointsGroup::Gostshyp;
+                    rep.surface_points.scale = surface_points_default_scale(rep.surface_points.group);
+                }
                 if (rep.type == RepresentationType::ElectronicStructure) {
                     // The default source is orbitals, which this system may not have
                     electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
@@ -2959,6 +3037,42 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             ImGui::SliderFloat("##radius", &rep.dipole.radius, 0.01f, 0.5f, "%.2f");
             prop::row("offset");
             ImGui::DragFloat3("##offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f, "%.2f");
+            prop::section_end();
+        }
+        break;
+    case RepresentationType::SurfacePoints:
+        if (prop::section("Surface Points")) {
+            SurfacePointsRepresentation& sp = rep.surface_points;
+            const md_system_t& sys = state->mold.sys;
+            char hint[96] = "";
+            const size_t num = surface_points_count(sp.group, sys);
+            if (num) snprintf(hint, sizeof(hint), "%zu gaussians", num);
+            prop::row("surface", num ? hint : nullptr);
+            if (ImGui::BeginCombo("##surface", surface_points_group_str[(int)sp.group])) {
+                for (int g = 0; g < (int)SurfacePointsGroup::Count; ++g) {
+                    const SurfacePointsGroup group = (SurfacePointsGroup)g;
+                    ImGui::BeginDisabled(surface_points_count(group, sys) == 0);
+                    if (ImGui::Selectable(surface_points_group_str[g], sp.group == group) && sp.group != group) {
+                        sp.group = group;
+                        sp.scale = surface_points_default_scale(group);
+                        update_rep = true;
+                    }
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("The gaussians of a surface model as they are in the file: a sphere at each centre, coloured by its\n"
+                                  "amplitude - the surface charge q for CPCM, the amplitude p for GOSTSHYP - with nothing sampled or\n"
+                                  "summed in between. The surface fields of an Electronic Structure representation are made of these.");
+            if (num == 0) prop::hint("no gaussians of this kind in the dataset");
+            // Drawn from the attributes every frame: none of these is an update of the representation
+            prop::row("radius");
+            ImGui::SliderFloat("##radius", &sp.radius, 0.01f, 0.5f, (const char*)u8"%.2f Å");
+            prop::section_end();
+        }
+        if (prop::section("Color")) {
+            SurfacePointsRepresentation& sp = rep.surface_points;
+            color_scale_draw_controls(&sp.scale, sp.span, surface_points_unit(sp.group), "of the points", "their extremes");
             prop::section_end();
         }
         break;
@@ -3298,6 +3412,16 @@ void draw_representation_legends(ApplicationState& state) {
                 color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
+        }
+
+        if (rep.type == RepresentationType::SurfacePoints) {
+            const SurfacePointsRepresentation& sp = rep.surface_points;
+            if (rep.type_is_valid && sp.scale.show_legend) {
+                char label[64];
+                snprintf(label, sizeof(label), "%s %s", surface_points_group_str[(int)sp.group], sp.group == SurfacePointsGroup::Cpcm ? "Surface Charge" : "Amplitude");
+                color_scale_draw_legend(sp.scale, surface_points_unit(sp.group), label, rep.name, (int)rep.node.id, slot++);
+            }
+            continue;
         }
 
         if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {

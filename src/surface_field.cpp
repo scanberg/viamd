@@ -48,8 +48,13 @@ static inline bool is_finite_f64(double v) {
 
 md_unit_t surface_field_unit(SurfaceFieldKind kind) {
     switch (kind) {
+    case SurfaceFieldKind::CpcmChargeDensity:
+        return md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3));
+    case SurfaceFieldKind::GostshypPotential:
+        return md_unit_hartree();
     case SurfaceFieldKind::EmbeddingPotential:
     case SurfaceFieldKind::ElectrostaticPotential:
+    case SurfaceFieldKind::CpcmPotential:
     default:
         return md_unit_div(md_unit_hartree(), md_unit_elementary_charge());
     }
@@ -337,6 +342,228 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
 }
 
 // ---------------------------------------------------------------------------
+// Surface gaussians: CPCM and GOSTSHYP
+// ---------------------------------------------------------------------------
+// md_vlx publishes the gaussians these environment models put on a surface around the molecule as
+// <group>/{center,exponent,normalization,amplitude}: g_k(r) = a_k N_k exp(-w_k |r - s_k|^2), with
+// N_k = (w_k/pi)^(3/2) so that g_k integrates to a_k. For CPCM a_k is a surface charge, and the
+// gaussians are the solvent's polarisation smeared out: the field is either their potential (the
+// reaction potential, Coulomb, through md_gto_int) or the charge density itself. For GOSTSHYP the
+// sum of the gaussians IS the field, the potential that exerts the pressure on the electrons.
+//
+// The centres are where the calculation had the molecule. The density is drawn where the system has
+// it now, so the gaussians are carried along with the QM atoms: shifted by how far the centroid of
+// the QM atoms' current positions is from that of their positions in the calculation
+// (qm/atom/coordinate) - a recentred or unwrapped system keeps its cavity around it.
+
+static const str_t QM_ATOM_COORDINATE_PATH = STR_INIT("qm/atom/coordinate");
+
+static str_t surface_gaussians_group(SurfaceFieldKind kind) {
+    switch (kind) {
+    case SurfaceFieldKind::CpcmPotential:
+    case SurfaceFieldKind::CpcmChargeDensity: return STR_LIT("cpcm");
+    case SurfaceFieldKind::GostshypPotential: return STR_LIT("gostshyp");
+    default: return (str_t){0};
+    }
+}
+
+// The field is the sum of the gaussians as they are, not a potential md_gto_int evaluates
+static bool kind_is_gaussian_sum(SurfaceFieldKind kind) {
+    return kind == SurfaceFieldKind::CpcmChargeDensity || kind == SurfaceFieldKind::GostshypPotential;
+}
+
+static const md_attribute_t* surface_gaussians_leaf(const md_system_t& sys, str_t group, const char* leaf) {
+    char path[64];
+    snprintf(path, sizeof(path), STR_FMT "/%s", STR_ARG(group), leaf);
+    return md_attributes_find(&sys.attributes, str_from_cstr(path));
+}
+
+// How many gaussians the group has: 0 unless all four columns are there, the centre 3-vectors and
+// the others scalars, all of the same length
+static size_t surface_gaussians_count(const md_system_t& sys, str_t group) {
+    if (str_empty(group)) return 0;
+    const md_attribute_t* c = surface_gaussians_leaf(sys, group, "center");
+    const md_attribute_t* w = surface_gaussians_leaf(sys, group, "exponent");
+    const md_attribute_t* n = surface_gaussians_leaf(sys, group, "normalization");
+    const md_attribute_t* a = surface_gaussians_leaf(sys, group, "amplitude");
+    if (!c || !w || !n || !a || c->format.components != 3) return 0;
+    const size_t num = md_attribute_value_count(&c->format);
+    for (const md_attribute_t* x : { w, n, a }) {
+        if (x->format.components != 1 || md_attribute_value_count(&x->format) != num) return 0;
+    }
+    return num;
+}
+
+// The unit the amplitudes are read in, which makes amplitude x normalization the field's unit
+static md_unit_t surface_gaussians_amplitude_unit(SurfaceFieldKind kind) {
+    const md_unit_t bohr3 = md_unit_pow(md_unit_bohr_radius(), 3);
+    return kind == SurfaceFieldKind::GostshypPotential ? md_unit_mul(md_unit_hartree(), bohr3) : md_unit_elementary_charge();
+}
+
+// The shift that carries the calculation's geometry to where the QM atoms are now (bohr); zero
+// without the positions of both
+static void surface_gaussians_shift(double out[3], const md_system_t& sys, const vec3_t* basis_atom_xyz, size_t num_basis_atoms, md_temp_scope_t temp) {
+    out[0] = out[1] = out[2] = 0.0;
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, QM_ATOM_COORDINATE_PATH);
+    if (!attr || attr->format.components != 3 || !basis_atom_xyz) return;
+    const size_t num = md_attribute_value_count(&attr->format);
+    if (num == 0 || num != num_basis_atoms) return;
+    double* ref = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num);
+    if (md_attribute_extract_f64(ref, 3 * num, attr, md_attribute_slice_all(), md_unit_bohr_radius()) != 3 * num) return;
+    for (size_t i = 0; i < num; ++i) {
+        for (int a = 0; a < 3; ++a) out[a] += ((double)basis_atom_xyz[i].elem[a] - ref[3 * i + a]) / (double)num;
+    }
+}
+
+// The group's gaussians: centres (bohr, carried along), exponents (bohr^-2), normalisations
+// (bohr^-3) and amplitudes (surface_gaussians_amplitude_unit), each [count]
+static size_t surface_gaussians_extract(double** xyz, double** w, double** n, double** a, const SurfaceFieldDesc& desc, md_temp_scope_t temp) {
+    const md_system_t& sys = *desc.sys;
+    const str_t group = surface_gaussians_group(desc.kind);
+    const size_t num = surface_gaussians_count(sys, group);
+    if (num == 0) return 0;
+    *xyz = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num);
+    *w   = (double*)md_temp_alloc(temp, sizeof(double) * num);
+    *n   = (double*)md_temp_alloc(temp, sizeof(double) * num);
+    *a   = (double*)md_temp_alloc(temp, sizeof(double) * num);
+    const md_unit_t bohr = md_unit_bohr_radius();
+    const md_attribute_slice_t all = md_attribute_slice_all();
+    if (md_attribute_extract_f64(*xyz, 3 * num, surface_gaussians_leaf(sys, group, "center"),        all, bohr) != 3 * num ||
+        md_attribute_extract_f64(*w,   num, surface_gaussians_leaf(sys, group, "exponent"),          all, md_unit_pow(bohr, -2)) != num ||
+        md_attribute_extract_f64(*n,   num, surface_gaussians_leaf(sys, group, "normalization"),     all, md_unit_pow(bohr, -3)) != num ||
+        md_attribute_extract_f64(*a,   num, surface_gaussians_leaf(sys, group, "amplitude"),         all, surface_gaussians_amplitude_unit(desc.kind)) != num) {
+        MD_LOG_ERROR("Surface field: the " STR_FMT " gaussians could not be read in the units they are evaluated in", STR_ARG(group));
+        return 0;
+    }
+    double shift[3];
+    surface_gaussians_shift(shift, sys, desc.basis_atom_xyz, desc.num_basis_atoms, temp);
+    for (size_t k = 0; k < num; ++k) {
+        for (int c = 0; c < 3; ++c) (*xyz)[3 * k + c] += shift[c];
+    }
+    return num;
+}
+
+// CPCM's reaction potential: the surface charges as the normalised spherical gaussians they are,
+// whose potential md_gto_int evaluates exactly, sum_k q_k erf(zeta_k r) / r - on the GPU as well.
+// The normalisation is (w/pi)^(3/2) by construction (md_vlx says so where a file disagrees), which
+// is what md_gto_int's gaussian charges are.
+static bool build_cpcm_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc& desc, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    defer { md_temp_end(temp); };
+    double *xyz = nullptr, *w = nullptr, *n = nullptr, *q = nullptr;
+    const size_t num = surface_gaussians_extract(&xyz, &w, &n, &q, desc, temp);
+    if (num == 0) return false;
+    md_gto_int_charges_desc_t cd = {};
+    cd.gaussian_xyz         = xyz;
+    cd.gaussian_exponent    = w;
+    cd.gaussian_charge      = q;
+    cd.num_gaussian_charges = num;
+    cd.far_field_theta      = num > 2000 ? MD_GTO_INT_FAR_FIELD_THETA : 0.0;   // a protein's cavity is tens of thousands
+    return md_gto_int_charges_init(out, &cd, alloc);
+}
+
+// A plain sum of gaussians, sum_k c_k exp(-w_k |r - s_k|^2), the field evaluated as it is
+struct SurfaceGaussians {
+    size_t  count = 0;
+    double* xyz = nullptr;        // [count * 3] bohr
+    double* exponent = nullptr;   // [count] bohr^-2
+    double* coeff = nullptr;      // [count] amplitude x normalisation, in the field's unit
+};
+
+static void surface_gaussians_destroy(SurfaceGaussians* g) {
+    if (!g) return;
+    free(g->xyz);
+    free(g->exponent);
+    free(g->coeff);
+    delete g;
+}
+
+static SurfaceGaussians* build_surface_gaussians(const SurfaceFieldDesc& desc) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double *xyz = nullptr, *w = nullptr, *n = nullptr, *a = nullptr;
+    const size_t num = surface_gaussians_extract(&xyz, &w, &n, &a, desc, temp);
+    if (num == 0) return nullptr;
+    SurfaceGaussians* g = new SurfaceGaussians();
+    g->xyz      = (double*)malloc(sizeof(double) * 3 * num);
+    g->exponent = (double*)malloc(sizeof(double) * num);
+    g->coeff    = (double*)malloc(sizeof(double) * num);
+    if (!g->xyz || !g->exponent || !g->coeff) {
+        surface_gaussians_destroy(g);
+        return nullptr;
+    }
+    size_t m = 0;
+    for (size_t k = 0; k < num; ++k) {
+        const double c = a[k] * n[k];
+        if (!(w[k] > 0.0) || c == 0.0 || !is_finite_f64(c)) continue;
+        MEMCPY(g->xyz + 3 * m, xyz + 3 * k, sizeof(double) * 3);
+        g->exponent[m] = w[k];
+        g->coeff[m]    = c;
+        m += 1;
+    }
+    g->count = m;
+    return g;
+}
+
+// exp(-x) below this relative to the largest term is not added: 1e-16 of it
+#define SURFACE_GAUSSIAN_CUTOFF 36.8
+
+static void surface_gaussians_evaluate(double* out, const float* xyz, size_t num_xyz, const SurfaceGaussians* g) {
+    for (size_t i = 0; i < num_xyz; ++i) {
+        const double x = xyz[3 * i + 0], y = xyz[3 * i + 1], z = xyz[3 * i + 2];
+        double v = 0.0;
+        for (size_t k = 0; k < g->count; ++k) {
+            const double dx = x - g->xyz[3 * k + 0], dy = y - g->xyz[3 * k + 1], dz = z - g->xyz[3 * k + 2];
+            const double e = g->exponent[k] * (dx * dx + dy * dy + dz * dz);
+            if (e < SURFACE_GAUSSIAN_CUTOFF) v += g->coeff[k] * exp(-e);
+        }
+        out[i] = v;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The surface gaussians as points
+// ---------------------------------------------------------------------------
+
+static str_t surface_points_group_name(SurfacePointsGroup group) {
+    return group == SurfacePointsGroup::Gostshyp ? STR_LIT("gostshyp") : STR_LIT("cpcm");
+}
+
+size_t surface_points_count(SurfacePointsGroup group, const md_system_t& sys) {
+    return surface_gaussians_count(sys, surface_points_group_name(group));
+}
+
+md_unit_t surface_points_unit(SurfacePointsGroup group) {
+    return surface_gaussians_amplitude_unit(group == SurfacePointsGroup::Gostshyp ? SurfaceFieldKind::GostshypPotential : SurfaceFieldKind::CpcmPotential);
+}
+
+bool surface_points_signed(SurfacePointsGroup group) {
+    return group != SurfacePointsGroup::Gostshyp;
+}
+
+size_t surface_points_extract(vec3_t* out_xyz, float* out_amplitude, size_t cap, SurfacePointsGroup group, const md_system_t& sys,
+                              const vec3_t* basis_atom_xyz, size_t num_basis_atoms) {
+    const str_t name = surface_points_group_name(group);
+    const size_t num = surface_gaussians_count(sys, name);
+    if (num == 0 || num > cap) return 0;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* xyz = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num);
+    double* a   = (double*)md_temp_alloc(temp, sizeof(double) * num);
+    if (md_attribute_extract_f64(xyz, 3 * num, surface_gaussians_leaf(sys, name, "center"), md_attribute_slice_all(), md_unit_bohr_radius()) != 3 * num ||
+        md_attribute_extract_f64(a, num, surface_gaussians_leaf(sys, name, "amplitude"), md_attribute_slice_all(), surface_points_unit(group)) != num) {
+        return 0;
+    }
+    double shift[3];
+    surface_gaussians_shift(shift, sys, basis_atom_xyz, num_basis_atoms, temp);
+    for (size_t k = 0; k < num; ++k) {
+        for (int c = 0; c < 3; ++c) out_xyz[k].elem[c] = (float)((xyz[3 * k + c] + shift[c]) / ANGSTROM_TO_BOHR_D);
+        out_amplitude[k] = (float)a[k];
+    }
+    return num;
+}
+
+// ---------------------------------------------------------------------------
 // Kinds
 // ---------------------------------------------------------------------------
 
@@ -346,9 +573,22 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
         return find_atom_charges(sys) != nullptr && has_environment(sys);
     case SurfaceFieldKind::ElectrostaticPotential:
         return esp_available(sys);
+    case SurfaceFieldKind::CpcmPotential:
+    case SurfaceFieldKind::CpcmChargeDensity:
+    case SurfaceFieldKind::GostshypPotential:
+        return surface_gaussians_count(sys, surface_gaussians_group(kind)) > 0;
     default:
         return false;
     }
+}
+
+bool surface_field_needs_basis_atoms(SurfaceFieldKind kind) {
+    // The ESP evaluates the density there; the surface gaussians are carried along with them
+    return kind == SurfaceFieldKind::ElectrostaticPotential || !str_empty(surface_gaussians_group(kind));
+}
+
+bool surface_field_signed(SurfaceFieldKind kind) {
+    return kind != SurfaceFieldKind::GostshypPotential;
 }
 
 SurfaceFieldKind surface_field_first_available(const md_system_t& sys) {
@@ -362,6 +602,7 @@ static bool build_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc& des
     switch (desc.kind) {
     case SurfaceFieldKind::EmbeddingPotential:     return build_embedding_charges(out, desc, alloc);
     case SurfaceFieldKind::ElectrostaticPotential: return build_esp_charges(out, desc, alloc);
+    case SurfaceFieldKind::CpcmPotential:          return build_cpcm_charges(out, desc, alloc);
     default: return false;
     }
 }
@@ -471,8 +712,9 @@ struct FieldBuild {
     size_t             num_basis_atoms = 0;
     vec3_t*            state_xyz = nullptr;
     size_t             num_state_atoms = 0;
-    // made by the task
+    // made by the task: the one or the other (kind_is_gaussian_sum)
     md_gto_int_charges_t* charges = nullptr;
+    SurfaceGaussians*  gaussians = nullptr;
     bool               ran = false;     // an interrupted pool task never runs its function
     bool               ok = false;
     double             seconds = 0.0;
@@ -488,6 +730,7 @@ static void charges_destroy(md_gto_int_charges_t* q) {
 static void build_destroy(FieldBuild* b) {
     if (!b) return;
     charges_destroy(b->charges);
+    surface_gaussians_destroy(b->gaussians);
     free(b->basis_atom_xyz);
     free(b->state_xyz);
     delete b;
@@ -529,6 +772,12 @@ static void build_run(FieldBuild* b) {
     desc.basis_atom_xyz  = b->basis_atom_xyz;
     desc.num_basis_atoms = b->num_basis_atoms;
     desc.source_hash     = b->hash;
+    if (kind_is_gaussian_sum(b->kind)) {
+        b->gaussians = build_surface_gaussians(desc);
+        b->ok = b->gaussians != nullptr;
+        b->seconds = md_tick_to_seconds(md_tick_now() - t0);
+        return;
+    }
     md_allocator_i* heap = md_get_heap_allocator();
     md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
     if (q) {
@@ -544,8 +793,9 @@ static void build_run(FieldBuild* b) {
 }
 
 struct FieldSource {
-    uint64_t              hash = 0;          // what charges is of
+    uint64_t              hash = 0;          // what charges (or gaussians) is of
     md_gto_int_charges_t* charges = nullptr;
+    SurfaceGaussians*     gaussians = nullptr;   // instead, for a field that is a sum of gaussians
     void*                 gpu = nullptr;     // md_gto_int_gpu_charges_t, made when first wanted
     bool                  gpu_failed = false;
     uint64_t              failed_hash = 0;   // a source whose build failed: not tried again
@@ -572,10 +822,12 @@ static void source_drop_charges(FieldSource* fs, md_gpu_stream_t stream) {
     fs->gpu_failed = false;
     charges_destroy(fs->charges);
     fs->charges = nullptr;
+    surface_gaussians_destroy(fs->gaussians);
+    fs->gaussians = nullptr;
     fs->hash = 0;
 }
 
-static bool source_ready(const FieldSource& fs, uint64_t hash)  { return fs.charges && fs.hash == hash; }
+static bool source_ready(const FieldSource& fs, uint64_t hash)  { return (fs.charges || fs.gaussians) && fs.hash == hash; }
 static bool source_failed(const FieldSource& fs, uint64_t hash) { return hash != 0 && fs.failed_hash == hash; }
 static bool source_building(const FieldSource& fs)              { return fs.build != nullptr || fs.next != nullptr; }
 
@@ -614,13 +866,19 @@ static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream
         if (b->ran && b->hash == wanted) {
             if (b->ok) {
                 source_drop_charges(fs, stream);
-                fs->charges = b->charges;
-                fs->hash    = b->hash;
-                b->charges  = nullptr;
+                fs->charges   = b->charges;
+                fs->gaussians = b->gaussians;
+                fs->hash      = b->hash;
+                b->charges    = nullptr;
+                b->gaussians  = nullptr;
                 changed = true;
-                MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
-                             fs->charges->num_gaussians, fs->charges->num_points, (unsigned long long)md_gto_int_charges_work_per_point(fs->charges),
-                             b->seconds * 1.0e3);
+                if (fs->charges) {
+                    MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
+                                 fs->charges->num_gaussians, fs->charges->num_points, (unsigned long long)md_gto_int_charges_work_per_point(fs->charges),
+                                 b->seconds * 1.0e3);
+                } else {
+                    MD_LOG_DEBUG("Surface field '%s': a sum of %zu gaussians, made in %.1f ms on a worker thread", what, fs->gaussians->count, b->seconds * 1.0e3);
+                }
             } else {
                 fs->failed_hash = b->hash;
                 MD_LOG_ERROR("Surface field: the system has nothing to make '%s' of", what);
@@ -664,6 +922,13 @@ static md_gto_int_gpu_charges_t source_gpu(FieldSource* fs, md_gpu_stream_t stre
 }
 #endif
 
+// What a CPU evaluation reads: the source's charges, whose potential the field is, or its gaussians,
+// whose sum it is
+struct FieldValues {
+    const md_gto_int_charges_t* charges = nullptr;
+    const SurfaceGaussians*     gaussians = nullptr;
+};
+
 // ---------------------------------------------------------------------------
 // The volume's work
 // ---------------------------------------------------------------------------
@@ -697,16 +962,27 @@ struct SurfaceFieldWork {
     float*    cpu_xyz = nullptr;
     double*   cpu_out = nullptr;
     size_t    cpu_count = 0;
-    const md_gto_int_charges_t* cpu_charges = nullptr;
+    FieldValues cpu_values;
 };
 
-// The potential at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
+// The field at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
 // interrupt is only looked at between the ranges it hands out, which can be a good part of the task.
-static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const md_gto_int_charges_t* q, const std::atomic<bool>& cancel) {
+static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, FieldValues v, const std::atomic<bool>& cancel) {
     for (uint32_t b = beg; b < end && !cancel.load(std::memory_order_relaxed); b += 8) {
         const uint32_t e = MIN(b + 8, end);
-        md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, q);
+        if (v.charges) {
+            md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, v.charges);
+        } else if (v.gaussians) {
+            surface_gaussians_evaluate(out + b, xyz + 3 * (size_t)b, e - b, v.gaussians);
+        }
     }
+}
+
+// Work of one point, in md_gto_int's unit (a few flops): for a sum of gaussians one per gaussian, ~10
+static uint64_t field_work_per_point(FieldValues v) {
+    if (v.charges)   return md_gto_int_charges_work_per_point(v.charges);
+    if (v.gaussians) return 10 * (uint64_t)v.gaussians->count;
+    return 1;
 }
 
 static void work_cpu_free(SurfaceFieldWork* w) {
@@ -1008,13 +1284,13 @@ static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         w->cpu_index[m++] = (uint32_t)idx;
     }
     w->cpu_count   = m;
-    w->cpu_charges = w->source.charges;
+    w->cpu_values = { w->source.charges, w->source.gaussians };
     // A point of a QM density's potential is ~0.1-1 ms of work, of a few point charges microseconds
-    const uint64_t work = md_gto_int_charges_work_per_point(w->cpu_charges);
+    const uint64_t work = field_work_per_point(w->cpu_values);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_cancel = false;
     w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field"), (uint32_t)m, [w](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_charges, w->cpu_cancel);
+        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_values, w->cpu_cancel);
     }, grain);
     task_system::enqueue_task(w->cpu_task);
     w->stage = SurfaceFieldWork::Cpu;
@@ -1430,12 +1706,12 @@ static bool points_start_cpu(SurfaceFieldPointsWork* w) {
     if (!w->xyz) return false;
     w->cpu_out = (double*)malloc(sizeof(double) * w->count);
     if (!w->cpu_out) return false;
-    const md_gto_int_charges_t* q = w->source.charges;
-    const uint64_t work = md_gto_int_charges_work_per_point(q);
+    const FieldValues v = { w->source.charges, w->source.gaussians };
+    const uint64_t work = field_work_per_point(v);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_cancel = false;
-    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, q](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->xyz, beg, end, q, w->cpu_cancel);
+    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, v](uint32_t beg, uint32_t end, uint32_t) {
+        evaluate_points_range(w->cpu_out, w->xyz, beg, end, v, w->cpu_cancel);
     }, grain);
     task_system::enqueue_task(w->cpu_task);
     w->stage = SurfaceFieldPointsWork::Cpu;

@@ -1036,7 +1036,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
-            if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+            if (surface_field_needs_basis_atoms(es.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
 #if MD_ENABLE_GPU

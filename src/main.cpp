@@ -7207,6 +7207,8 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
 // the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
 // does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
 // The cells out of view are left out.
+static void draw_surface_points(ApplicationState* state, const Representation& rep);
+
 static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
@@ -7408,6 +7410,10 @@ static void draw_representations_opaque(ApplicationState* state) {
                 if (representation_shown(*state, rep) && rep.type_is_valid) {
                     draw_simulation_box(state, rep);
                 }
+            } else if (rep.type == RepresentationType::SurfacePoints) {
+                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                    draw_surface_points(state, rep);
+                }
             }
         }
 
@@ -7443,6 +7449,27 @@ static void draw_representations_opaque(ApplicationState* state) {
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
 // the depth of what the representations draw (draw_representations_opaque): not what is highlighted or selected
+// The gaussians of a CPCM or GOSTSHYP surface as spheres, coloured by their amplitudes, carried along with the QM atoms
+// as the surface fields are. Coarse spheres: a protein's cavity is tens of thousands of them.
+static void draw_surface_points(ApplicationState* state, const Representation& rep) {
+    const SurfacePointsRepresentation& sp = rep.surface_points;
+    const md_system_t& sys = state->mold.sys;
+    const size_t n = surface_points_count(sp.group, sys);
+    if (n == 0) return;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * n);
+    float*  amp = (float*)md_temp_alloc(temp, sizeof(float) * n);
+    size_t num_basis_atoms = 0;
+    const vec3_t* basis_xyz = basis_atom_positions_extract(&num_basis_atoms, temp, sys, state->mold.state);
+    if (!xyz || !amp || surface_points_extract(xyz, amp, n, sp.group, sys, basis_xyz, num_basis_atoms) != n) return;
+
+    immediate::Scope scope(state->gfx.world, "surface_points");
+    for (size_t k = 0; k < n; ++k) {
+        immediate::sphere(scope, xyz[k], sp.radius, color_scale_color_u32(sp.scale, amp[k]), INVALID_PICKING_IDX, 6, 10);
+    }
+}
+
 static uint64_t opaque_scene_hash(const ApplicationState* state) {
     uint64_t h = md_hash64(&state->mold.gpu_scene_version, sizeof(state->mold.gpu_scene_version), state->representation.gl_version);
     h = md_hash64(&state->representation.visibility_mask_hash, sizeof(state->representation.visibility_mask_hash), h);
@@ -7473,6 +7500,12 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         if (rep.type == RepresentationType::SimulationBox) {
             h = md_hash64(&rep.box.thickness, sizeof(rep.box.thickness), h);
             h = md_hash64(&rep.box.axes, sizeof(rep.box.axes), h);
+        }
+        if (rep.type == RepresentationType::SurfacePoints) {
+            const SurfacePointsRepresentation& sp = rep.surface_points;
+            h = md_hash64(&sp.group, sizeof(sp.group), h);
+            h = md_hash64(&sp.radius, sizeof(sp.radius), h);
+            h = md_hash64(&sp.scale, sizeof(sp.scale), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);

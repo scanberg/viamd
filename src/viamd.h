@@ -226,6 +226,7 @@ enum class RepresentationType {
     DipoleMoment,
     SimulationBox,
     Bonds,              // The bonds its filter picks (md_filter_bonds), as sticks or dashed, without the atoms
+    SurfacePoints,      // The gaussians of a CPCM or GOSTSHYP surface as points, coloured by their amplitude
     Count
 };
 
@@ -254,6 +255,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
+    "Surface Points",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -931,6 +933,15 @@ struct DipoleRepresentation {
 	float radius = 0.05f;
 };
 
+// The gaussians of a CPCM or GOSTSHYP surface as they are in the file: a sphere at each centre, coloured by its
+// amplitude (surface_field.h)
+struct SurfacePointsRepresentation {
+    SurfacePointsGroup group = SurfacePointsGroup::Cpcm;
+    ColorScale     scale = surface_points_default_scale(SurfacePointsGroup::Cpcm);
+    ColorScaleSpan span = {};       // of the amplitudes, refreshed with the representation
+    float          radius = 0.1f;   // Å
+};
+
 // The edges of the unit cell, of the frame shown (it may change with it)
 struct BoxRepresentation {
     vec4_t color = { 0.25f, 0.25f, 0.25f, 1.0f };
@@ -1006,6 +1017,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
+    SurfacePointsRepresentation surface_points = {};
     bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 
