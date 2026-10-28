@@ -2324,8 +2324,8 @@ struct Ramachandran : viamd::EventHandler {
         input.OverrideMod = ImGuiMod_Shift;
         limit_zoom_rate(&input.ZoomRate);
 
-        // Edge to edge: the labels are within the plots
-        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
+        // Edge to edge: the labels are within the plots. Side by side, a few pixels between them to tell them apart.
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, view < 0 ? ImVec2(3, 3) : ImVec2(1, 1));
         ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
         // Opaque, whatever the windows are: what is behind the window is not to show through the data
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
