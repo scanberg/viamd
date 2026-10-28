@@ -1,17 +1,39 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
+// SHAPESPACE
+//
+// The shapes of structures (sets of atoms) as the eigenvalues of their gyration tensors put them: how linear, planar or
+// spherical each is, a point in the triangle with those three at its corners.
+//
+// What is plotted is a stack of LAYERS the user defines, as in the Ramachandran window: the structures a filter gives
+// (one for each set of atoms it picks: residue(:) is a structure per residue), weighted by mass or not, over the current
+// frame, all frames, or the frames of a timeline period, drawn as points (in the layer's colour, by structure, or by
+// time), as contours of their density (at levels of the fraction of the samples they enclose) or as a heat map of it.
+// The first layer is drawn on top.
+//
+// The shapes over every frame are an EVALUATION, made once for the structures and the weighting, off the main thread,
+// and shared by every layer of the same: frames are read once whatever the number of layers over them. The points of
+// the frames done are shown as it goes. The shapes of the frame shown are found from its state, as it changes.
+//
+// The densities are density_map.h's, over a bounded plane clipped to the triangle.
+//
+//   hover                  highlights the structure of the point under the pointer, and says what it is
+//   click                  on a point of a frame, goes to that frame
+//   shift-drag             selects the structures of the points in the box (right button: deselects them)
+//   shift-click            on a point, selects its structure (right button: deselects it); right click elsewhere clears
+//   double-click           fits the view
+//   a period dropped       from the timeline on the plot, a new layer of the density over it; on a layer, its frames
 
 #include <core/md_log.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
 #include <core/md_bitset.h>
-#include <core/md_arena_allocator.h>
+#include <core/md_hash.h>
 #include <core/md_os.h>
 
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <md_util.h>
-#include <md_script.h>
 #include <md_filter.h>
 
 #include <viamd_event.h>
@@ -20,542 +42,1789 @@
 
 #include <serialization_utils.h>
 #include <timeline_periods_ui.h>
+#include <filter_input.h>
+#include <property_grid.h>
+#include <density_map.h>
 #include <imgui_widgets.h>
+#include <implot_widgets.h>
 #include <implot_internal.h>
+#include <task_system.h>
 
-/*
-    @NOTE:
-    It would be nice to have a colormap applied to the points in the plot where they are graded by t=time
-    However, the current implot api for scatterplot does not currently support that.
-    Bummer!
-*/
+#include <atomic>
+#include <memory>
+#include <vector>
+#include <math.h>
+#include <string.h>
 
-enum ColorMode {
-    ColorMode_Uniform,
-    ColorMode_Colormap,
-    ColorMode_Count,
+namespace shapespace {
+
+// ## Constants
+
+// The corners of the triangle, in the plot's coordinates: an equilateral triangle of side 1
+static const vec2_t tri_lin = { 0.0f, 0.0f };
+static const vec2_t tri_pla = { 1.0f, 0.0f };
+static const vec2_t tri_iso = { 0.5f, 0.86602540378f };
+
+// The plane the densities are over: square, around the triangle, with room for the images of the samples near its
+// edges that keep the density from leaking out of it (density_map.h), some 4 sigma
+static const DensityMapDomain shape_domain = {
+    -0.25f, 1.25f, 0.433f - 0.75f, 0.433f + 0.75f, false,
+    true, { tri_lin.x, tri_lin.y, tri_pla.x, tri_pla.y, tri_iso.x, tri_iso.y },
 };
 
-/*
-static const char* colormode_lbl[] = {
-    "Uniform",
-    "Colormap",
+constexpr int MAX_LAYERS      = 16;
+constexpr int MAX_LEVELS      = DENSITY_MAP_MAX_LEVELS;
+constexpr size_t MAX_POINTS   = 100000;     // Of a layer of points over frames: frames are skipped beyond
+
+static const ImVec4 layer_palette[] = {
+    {0.95f, 0.95f, 0.95f, 1.0f},
+    {1.00f, 0.62f, 0.20f, 1.0f},
+    {0.35f, 0.80f, 1.00f, 1.0f},
+    {0.95f, 0.42f, 0.80f, 1.0f},
+    {0.55f, 0.90f, 0.35f, 1.0f},
+    {1.00f, 0.88f, 0.30f, 1.0f},
+    {0.68f, 0.58f, 1.00f, 1.0f},
+    {1.00f, 0.42f, 0.42f, 1.0f},
 };
-*/
+
+static inline vec2_t shape_coord(vec3_t w) {
+    return tri_lin * w.x + tri_pla * w.y + tri_iso * w.z;
+}
+
+// The weights back from the point: they sum to one (md_util_shape_weights), which the corners' barycentric coordinates
+// are, so the point is all there is to keep
+static inline vec3_t shape_weights_of(vec2_t c) {
+    const float iso = c.y / tri_iso.y;
+    const float pla = c.x - tri_iso.x * iso;
+    return { 1.0f - pla - iso, pla, iso };
+}
+
+static inline bool coord_valid(vec2_t c) {
+    return c.x == c.x && c.y == c.y;    // Not NaN: the frames not evaluated yet are
+}
+
+// The shape weights (linear, planar, isotropic) of the atoms of a structure in a state: the eigenvalues of the gyration
+// tensor about their centre, placed as one where the cell is periodic. masses may be NULL. NaN where there is no shape
+// (fewer than two atoms, or all in one place).
+static vec3_t structure_shape(md_bitset_t atoms, const vec3_t* xyz, const md_unitcell_t* cell, const float* masses, md_temp_scope_t temp) {
+    const size_t count = md_bitset_count(atoms);
+    if (count < 2) return { NAN, NAN, NAN };   // No shape: not a point
+    vec4_t* xyzw = (vec4_t*)md_temp_alloc_aligned(temp, sizeof(vec4_t) * count, 16);
+    md_bitset_iter_t it = md_bitset_iter(atoms);
+    size_t k = 0;
+    while (md_bitset_iter_next(&it) && k < count) {
+        xyzw[k++] = vec4_from_vec3(xyz[it.idx], masses ? masses[it.idx] : 1.0f);
+    }
+    // Covariance about the mean of the placed points, not the circular mean the placement is seeded from (their offset
+    // enters the covariance squared)
+    vec3_t com = vec3_zero();
+    md_util_deperiodize_self_vec4(xyzw, k, cell, &com);
+    const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, k, com);
+    return md_util_shape_weights(&M);
+}
+
+// ## Evaluations
+
+// The shapes of a set of structures over every frame of the run, weighted by mass or not: shared by the layers of the
+// same structures and weighting, and freed when none uses it
+struct Evaluation {
+    uint64_t key = 0;                       // Of the structures and the weighting
+    md_allocator_i* arena = nullptr;
+    md_array(md_bitset_t) structures = 0;   // In arena
+    bool     use_mass = true;
+    size_t   num_frames = 0;
+    size_t   num_structures = 0;
+    vec2_t*  coords = nullptr;              // [structure * num_frames + frame], in the triangle: NaN for frames not done
+    std::atomic<uint32_t> frames_done{0};
+    std::atomic<int32_t>  cancel{0};
+    task_system::ID task = task_system::INVALID_ID;
+
+    bool complete() const { return num_frames > 0 && frames_done.load() >= num_frames; }
+
+    ~Evaluation() {
+        cancel.store(1);
+        task_system::task_interrupt_and_wait_for(task);
+        if (arena) md_arena_allocator_destroy(arena);
+    }
+};
+
+using EvaluationRef = std::shared_ptr<Evaluation>;
+
+// ## Layers
+
+enum LayerFrames : int {
+    LayerFrames_Current = 0,
+    LayerFrames_All,
+    LayerFrames_Period,
+    LayerFrames_Count,
+};
+
+enum LayerStyle : int {
+    LayerStyle_Points = 0,
+    LayerStyle_Contours,
+    LayerStyle_Heatmap,
+    LayerStyle_Count,
+};
+
+enum PointColoring : int {
+    PointColoring_Layer = 0,    // The layer's colour
+    PointColoring_Structure,    // A colour for each structure
+    PointColoring_Time,         // The frame, through the layer's colour map
+    PointColoring_Count,
+};
+
+static const char* style_names[LayerStyle_Count] = { "Points", "Contours", "Heatmap" };
+static const char* point_coloring_names[PointColoring_Count] = { "Layer color", "Structure", "Time" };
+
+struct Layer {
+    uint32_t id = 0;
+    char     name[64] = "";
+    bool     visible = true;
+
+    AtomFilter  filter = {};        // The structures: a set of atoms each. Empty: all atoms, as one.
+    bool        use_mass = true;    // Weighted by mass
+    LayerFrames frames = LayerFrames_All;
+    uint32_t    period = 0;
+
+    LayerStyle style = LayerStyle_Points;
+    ImVec4   color = {1, 1, 1, 1};
+    float    opacity = 1.0f;
+
+    bool     fill = false;
+    bool     lines = true;
+    float    line_width = 1.5f;
+    int      num_levels = 3;
+    float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };
+    float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
+
+    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    bool     log_scale = false;
+
+    PointColoring point_coloring = PointColoring_Layer;
+    float    point_size = 4.0f;
+
+    // ### Derived, not saved
+
+    md_array(md_bitset_t) structures = 0;   // Heap allocated, as the filter gave them
+    uint64_t structs_key = 0;       // Of what they were found from
+    uint64_t structs_hash = 0;      // Of the structures themselves
+    bool     structs_valid = false;
+
+    EvaluationRef eval;             // Of frames: over the run
+
+    // Of the frame shown
+    md_array(vec2_t) current_coords = 0;
+    uint64_t current_key = 0;
+
+    // The density
+    uint32_t tex = 0;
+    DensityMapResult result = {};
+    bool     has_result = false;
+    uint64_t shown_hash = 0;
+    uint64_t want_hash = 0;
+    DensityMapJob* job = nullptr;
+
+    // The bandwidth found for the samples (Scott's rule), and what of
+    float    auto_bandwidth = 0.0f;
+    uint64_t auto_key = 0;
+
+    uint32_t point_stride = 1;
+    uint64_t point_count = 0;
+};
+
+// Scott's rule for two dimensions, sigma n^(-1/6), of the spread of the samples (both axes alike, as the plane is
+// isotropic): what smooths a single gaussian best, and much of anything else well enough. From at most some 100k of them.
+static float scott_bandwidth(const Evaluation& e, uint32_t beg, uint32_t end) {
+    const uint64_t total = (uint64_t)e.num_structures * (end - beg);
+    const uint32_t step = (uint32_t)MAX((uint64_t)1, total / 100000);
+    double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0;
+    for (size_t s = 0; s < e.num_structures; ++s) {
+        const vec2_t* c = e.coords + s * e.num_frames;
+        for (uint32_t f = beg; f < end; f += step) {
+            if (!coord_valid(c[f])) continue;
+            n += 1;
+            sx += c[f].x;
+            sy += c[f].y;
+            sxx += (double)c[f].x * c[f].x;
+            syy += (double)c[f].y * c[f].y;
+        }
+    }
+    if (n < 2) return 0.02f;
+    const double var = MAX(0.0, (sxx - sx * sx / n) + (syy - sy * sy / n)) / (2.0 * (n - 1));
+    // n: of all the samples, not of those the spread was taken from
+    const double h = sqrt(var) * pow((double)total, -1.0 / 6.0);
+    return CLAMP((float)h, 0.005f, 0.1f);
+}
 
 struct Shapespace : viamd::EventHandler {
-    // The structures: one for each set the filter gives
-    AtomFilter filter = {"all"};
-
+    ApplicationState* app = nullptr;
     bool show_window = false;
 
-    //md_system_state_t app_state = {0};
-    // Used to compare against the current 'app_state' if things should be reevaluated
-    uint64_t eval_hash   = 0;
+    Layer layers[MAX_LAYERS];
+    int   num_layers = 0;
+    uint32_t next_layer_id = 1;
+    uint32_t selected_layer = 0;
 
-    // coords and weights should be of size num_frames * num_structures
-    size_t num_frames = 0;
-    size_t num_structures = 0;
+    std::vector<EvaluationRef> evaluations;
+    uint64_t system_generation = 1;
 
-    md_array(vec3_t) weights = 0;
-    md_array(vec2_t) coords  = 0;
-    md_array(md_bitset_t) bitfields = 0;
-    md_bitset_t joined_bitfield = {};
+    bool show_sidebar = true;
+    bool show_grid = true;
 
-    md_allocator_i* arena = 0;
+    // The highlight is whoever sets it to clear: what this window highlighted and no longer does is cleared once
+    bool owns_highlight = false;
+    bool highlights_now = false;
 
-    // Settings
-    float marker_size = 1.5f;
-    bool  use_mass = true;
-    ColorMode mode = ColorMode_Colormap;
-    ImPlotColormap colormap = 0;
-    ImVec4 color = {0.5f,1.0f,0.5f,1.0f};
-    uint32_t frames_period = 0;  // the timeline period whose frames are shown, by id, 0 for every frame
+    // The view: fitted to the triangle (and its labels) at the plot's shape, until it is panned or zoomed
+    bool   fit_view = true;
+    bool   view_fitted = false;
+    ImVec2 plot_size = {};
+    ImPlotRect fitted_rect;
+    DensityMapCanvas canvas = {};
 
-    task_system::ID evaluate_task = 0;
+    // Box selection
+    struct {
+        bool active = false;
+        SelectionOperator op = SelectionOperator::Or;
+        ImPlotPoint p0, p1;
+        int64_t click_structure = -1;   // Of the layer click_layer: the point pressed on
+        int click_layer = -1;
+    } box;
 
-    ApplicationState* app_state = 0;
+    // Of a workspace from before there were layers
+    struct {
+        bool  present = false;
+        char  filter[256] = "all";
+        float marker_size = 1.5f;
+        bool  use_mass = true;
+        int   period = 0;
+    } legacy;
+    bool read_layers = false;
+    bool layers_declared = false;
 
     Shapespace() { viamd::event_system_register_handler(*this); }
+
+    // ## Events
 
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
             const viamd::Event& e = events[i];
-
             switch (e.type) {
-            case viamd::EventType_ViamdInitialize: {
-                app_state = (ApplicationState*)e.payload;
-                arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
-                joined_bitfield = md_bitset_empty_set();
+            case viamd::EventType_ViamdInitialize:
+                app = (ApplicationState*)e.payload;
                 workspace_register_window("ShapeSpace", &show_window);
-                break;
-            }
-            case viamd::EventType_ViamdDeserializeBegin:
-                str_copy_to_char_buf(filter.text, sizeof(filter.text), STR_LIT("all"));
-                marker_size = 1.5f;
-                use_mass = true;
-                frames_period = 0;
-                break;
-            case viamd::EventType_ViamdDeserializeEnd:
-                // Over the timeline filter, from before there were periods: over the period it followed
-                if (frames_period == 0) frames_period = app_state->timeline.periods.legacy_filter_id;
+                create_default_layers();
                 break;
             case viamd::EventType_ViamdShutdown:
-                task_system::task_interrupt_and_wait_for(evaluate_task);
-                md_arena_allocator_destroy(arena);
+                release_all(true);
+                clear_layers();
+                density_map_canvas_free(&canvas);
+                density_map_shutdown();
                 break;
             case viamd::EventType_ViamdFrameTick:
-                draw_window();
+                update();
+                draw();
                 break;
             case viamd::EventType_ViamdWindowDrawMenu:
                 ImGui::Checkbox("Shapespace", &show_window);
                 break;
+            case viamd::EventType_ViamdSystemInit:
+                system_generation += 1;
+                break;
+            case viamd::EventType_ViamdSystemFree:
+            case viamd::EventType_ViamdTrajectoryFree:
+                // What the evaluations read goes with it
+                release_all(true);
+                system_generation += 1;
+                break;
+            case viamd::EventType_ViamdSerialize:
+                serialize(*(viamd::serialization_state_t*)e.payload);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                clear_layers();
+                legacy = {};
+                read_layers = false;
+                layers_declared = false;
+                show_sidebar = true;
+                show_grid = true;
+                break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("ShapeSpace"))) {
-                    str_t ident, arg;
-                    while (viamd::next_entry(ident, arg, state)) {
-                        if (str_eq(ident, STR_LIT("Filter"))) {
-                            str_t text;
-                            viamd::extract_str(text, arg);
-                            str_copy_to_char_buf(filter.text, sizeof(filter.text), text);
-                        } else if (str_eq(ident, STR_LIT("MarkerSize"))) {
-                            viamd::extract_flt(marker_size, arg);
-                        } else if (str_eq(ident, STR_LIT("UseMass"))) {
-                            viamd::extract_bool(use_mass, arg);
-                        } else if (str_eq(ident, STR_LIT("Period"))) {
-                            int id = 0;
-                            if (viamd::extract_int(id, arg)) frames_period = (uint32_t)MAX(id, 0);
-                        }
-                    }
+                const str_t section = viamd::section_header(state);
+                if (str_eq(section, STR_LIT("ShapeSpace"))) {
+                    deserialize_settings(state);
+                } else if (str_eq(section, STR_LIT("ShapeSpaceLayer"))) {
+                    deserialize_layer(state);
                 }
                 break;
             }
-            case viamd::EventType_ViamdSerialize: {
-                viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-                viamd::write_section_header(state, STR_LIT("ShapeSpace"));
-                viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(filter.text));
-                viamd::write_flt(state, STR_LIT("MarkerSize"), marker_size);
-                viamd::write_bool(state, STR_LIT("UseMass"), use_mass);
-                if (frames_period != 0) {
-                    viamd::write_int(state, STR_LIT("Period"), (int)frames_period);
+            case viamd::EventType_ViamdDeserializeEnd:
+                if (!read_layers && !layers_declared) {
+                    if (legacy.present) create_legacy_layers();
+                    else create_default_layers();
                 }
                 break;
-            }
             default:
                 break;
             }
         }
     }
 
-    void draw_window() {
-        if (!show_window) return;
+    // Every evaluation and density let go: what they were of is gone
+    void release_all(bool wait) {
+        for (int i = 0; i < num_layers; ++i) {
+            Layer& l = layers[i];
+            cancel_job(l, wait);
+            l.eval.reset();
+            l.has_result = false;
+            l.shown_hash = 0;
+            l.want_hash = 0;
+            l.structs_key = 0;
+            l.current_key = 0;
+        }
+        for (EvaluationRef& e : evaluations) {
+            e->cancel.store(1);
+            task_system::task_interrupt_and_wait_for(e->task);
+        }
+        evaluations.clear();
+        density_map_canvas_invalidate(&canvas);
+    }
 
-        ImGui::SetNextWindowSize({300,350}, ImGuiCond_FirstUseEver);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
-        defer { ImGui::PopStyleVar(1); };
+    // ## Layers
 
-        if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
-            if (ImGui::BeginMenuBar()) {
-                if (ImGui::BeginMenu("Export")) {
-                    if (ImGui::MenuItem("XVG")) {
-                        export_shape_space(STR_LIT("xvg"));
-                    }
-                    if (ImGui::MenuItem("CSV")) {
-                        export_shape_space(STR_LIT("csv"));
-                    }
-                    ImGui::EndMenu();
-                }
-                if (ImGui::BeginMenu("Settings")) {
-                    static constexpr float marker_min_size = 0.01f;
-                    static constexpr float marker_max_size = 10.0f;
-#if 0
-                    if (ImGui::BeginCombo("Color", colormode_lbl[mode])) {
-                        for (int i = 0; i < (int)ColorMode_Count; ++i) {
-                            if (ImGui::Selectable(colormode_lbl[i], (int)mode == i)) {
-                                mode = (ColorMode)i;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (mode == ColorMode_Colormap) {
-                        ImPlot::ColormapSelection("Colormap Picker", &colormap);
-                    } else if (mode == ColorMode_Uniform) {
-                        ImGui::ColorPicker4("Uniform Color", &color.x);
-                    }
-#endif
-                    ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
-                    ImGui::Checkbox("Use Mass", &use_mass);
+    Layer* find_layer(uint32_t id) {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return &layers[i];
+        }
+        return nullptr;
+    }
 
-                    // Every frame, or those of a timeline period
-                    const TimelinePeriods& rs = app_state->timeline.periods;
-                    const TimelinePeriod* cur = timeline_periods_find(&rs, frames_period);
-                    if (ImGui::BeginCombo("Frames", cur ? cur->name : "All frames")) {
-                        if (ImGui::Selectable("All frames", cur == nullptr)) frames_period = 0;
-                        for (int r = 0; r < rs.count; ++r) {
-                            char label[TIMELINE_PERIOD_NAME_CAP + 16];
-                            snprintf(label, sizeof(label), "%s###period%u", rs.items[r].name, rs.items[r].id);
-                            if (ImGui::Selectable(label, rs.items[r].id == frames_period)) frames_period = rs.items[r].id;
-                            if (ImGui::IsItemHovered()) timeline_periods_highlight(rs.items[r].id);
-                        }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMenuBar();
+    int layer_index(uint32_t id) const {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return i;
+        }
+        return -1;
+    }
+
+    ImVec4 next_layer_color() const {
+        int best = 0, best_uses = INT32_MAX;
+        for (int p = 0; p < (int)ARRAY_SIZE(layer_palette); ++p) {
+            int uses = 0;
+            for (int i = 0; i < num_layers; ++i) {
+                const ImVec4 c = layers[i].color;
+                if (c.x == layer_palette[p].x && c.y == layer_palette[p].y && c.z == layer_palette[p].z) ++uses;
             }
-
-            const float item_width = MAX(ImGui::GetContentRegionAvail().x, 150.f);
-            ImGui::PushItemWidth(item_width);
-            filter_input("##input", &filter, filter_context(app_state));
-            ImGui::PopItemWidth();
-            if (ImGui::IsItemHovered() && filter.result.success) {
-                md_bitmask_assign(&app_state->selection.highlight_mask, joined_bitfield);
-            }
-
-            ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2,2));
-            defer { ImPlot::PopStyleVar(1); };
-
-            const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoMouseText;
-            const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks;
-
-            const float x_reset[2] = {-0.10f, 1.10f};
-            const float y_reset[2] = {-0.10f, 0.98f};
-            const double zoom_constraints[2] = {0.1, 1.5};
-
-            if (ImPlot::BeginPlot("##Shapespace Plot", ImVec2(-1,-1), flags)) {
-                ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -1.0f, 2.0f);
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -1.0f, 2.0f);
-                ImPlot::SetupAxisZoomConstraints(ImAxis_X1, zoom_constraints[0], zoom_constraints[1]);
-                ImPlot::SetupAxisZoomConstraints(ImAxis_Y1, zoom_constraints[0], zoom_constraints[1]);
-                ImPlot::SetupAxes(0, 0, axis_flags, axis_flags);
-                ImPlot::SetupFinish();
-
-                const ImPlotPoint lin(0.0, 0.0);
-                const ImPlotPoint pla(1.0, 0.0);
-                const ImPlotPoint iso(0.5, 0.86602540378);
-
-                const ImVec2 p0 = ImPlot::PlotToPixels(lin);
-                const ImVec2 p1 = ImPlot::PlotToPixels(pla);
-                const ImVec2 p2 = ImPlot::PlotToPixels(iso);
-
-                const ImVec2 pos_iso = ImPlot::PlotToPixels(iso);
-                const ImVec2 pos_pla = ImPlot::PlotToPixels(pla);
-                const ImVec2 pos_lin = ImPlot::PlotToPixels(lin);
-
-                static const char* text_sph = "Spherical";
-                static const char* text_pla = "Planar";
-                static const char* text_lin = "Linear";
-
-                const ImVec2 text_sph_offset = pos_iso + ImGui::CalcTextSize(text_sph) * ImVec2(-0.5f, -1.2f);
-                const ImVec2 text_pla_offset = pos_pla + ImGui::CalcTextSize(text_pla) * ImVec2(-0.5f,  0.2f);
-                const ImVec2 text_lin_offset = pos_lin + ImGui::CalcTextSize(text_lin) * ImVec2(-0.5f,  0.2f);
-
-                ImPlot::PushPlotClipRect();
-                ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
-                ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
-
-                ImPlot::GetPlotDrawList()->AddText(text_sph_offset, IM_COL32(255, 255, 255, 255), text_sph);
-                ImPlot::GetPlotDrawList()->AddText(text_pla_offset, IM_COL32(255, 255, 255, 255), text_pla);
-                ImPlot::GetPlotDrawList()->AddText(text_lin_offset, IM_COL32(255, 255, 255, 255), text_lin);
-                ImPlot::PopPlotClipRect();
-
-                ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
-                ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
-                ImPlot::PlotScatter("##Hidden reset helper", x_reset, y_reset, 2);
-                ImPlot::PopStyleColor(2);
-                ImPlot::PopStyleVar();
-
-                auto getter = [](int idx, void* user_data) -> ImPlotPoint {
-                    const vec2_t* coords = (vec2_t*)user_data;
-                    return {coords[idx].x, coords[idx].y};
-                    };
-
-                int     hovered_structure_idx = -1;
-                int     hovered_point_idx = -1;
-                float   hovered_point_min_dist = FLT_MAX;
-
-                vec2_t mouse_coord = {(float)ImPlot::GetPlotMousePos().x, (float)ImPlot::GetPlotMousePos().y};
-
-                ImPlotRect lim = ImPlot::GetPlotLimits();
-                const float scl = (float)lim.X.Max - (float)lim.X.Min;
-                const float MAX_D2 = 0.0001f * scl * scl;
-
-                // The frames shown: every frame, or those of the period where it is now
-                int frame_beg = 0;
-                int frame_count = (int)num_frames;
-                if (const TimelinePeriod* r = timeline_periods_find(&app_state->timeline.periods, frames_period)) {
-                    int beg, end;
-                    if (timeline_period_frames(&beg, &end, *r, app_state->animation.frame, (int)num_frames)) {
-                        frame_beg = beg;
-                        frame_count = end - beg + 1;
-                    } else {
-                        frame_count = 0;
-                    }
-                }
-
-                ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size);
-                ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                for (int i = 0; i < (int)num_structures; ++i) {
-                    const int offset = (int)num_frames * i + frame_beg;
-                    const int count  = frame_count;
-                    vec2_t* coordinates = coords + offset;
-                    char buf[32] = "";
-                    if (num_structures == 1) {
-                        snprintf(buf, sizeof(buf), "##%i", i+1);
-                    } else {
-                        snprintf(buf, sizeof(buf), "%i", i+1);
-                    }
-                    ImPlot::PlotScatterG(buf, getter, coordinates, count);
-
-                    ImPlotItem* item = ImPlot::GetItem(buf);
-                    if (item) {
-                        if (item->LegendHovered) {
-                            hovered_structure_idx = i;
-                        }
-
-                        if (item->Show) {
-                            for (int32_t j = offset; j < offset + count; ++j ) {
-                                vec2_t delta = mouse_coord - coords[j];
-                                float d2 = vec2_dot(delta, delta);
-                                if (d2 < MAX_D2 && d2 < hovered_point_min_dist) {
-                                    hovered_point_min_dist = d2;
-                                    hovered_point_idx = j;
-                                }
-                            }
-                        }
-                    }
-                }
-                ImPlot::PopStyleVar(2);
-
-                if (ImPlot::IsPlotHovered()) {
-                    md_bitmask_clear(&app_state->selection.highlight_mask);
-                }
-
-                // Redraw hovered index
-                ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size * 1.1f);
-                ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(1,1,1,1));
-                if (hovered_structure_idx != -1) {
-                    const int offset = (int)num_frames * hovered_structure_idx + frame_beg;
-                    const int count  = frame_count;
-                    vec2_t* coordinates = coords + offset;
-                    ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
-                    if (hovered_structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitmask_assign(&app_state->selection.highlight_mask, bitfields[hovered_structure_idx]);
-                    }
-                }
-                if (hovered_point_idx != -1) {
-                    vec2_t* coordinates = coords + hovered_point_idx;
-                    ImPlot::PlotScatterG("##hovered idx", getter, coordinates, 1);
-                    char buf[128] = "";
-                    int len = 0;
-                    int structure_idx = hovered_point_idx / (int)num_frames;
-                    int frame_idx = hovered_point_idx % num_frames;
-                    vec3_t w = weights[hovered_point_idx];
-                    if (num_structures > 1) {
-                        len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx + 1);
-                    }
-                    snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
-                    ImGui::SetTooltip("%s", buf);
-
-                    if (structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitmask_assign(&app_state->selection.highlight_mask, bitfields[structure_idx]);
-                    }
-
-                    if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
-                        app_state->animation.frame = frame_idx;
-                    }
-                }
-                ImPlot::PopStyleColor();
-                ImPlot::PopStyleVar(2);
-
-                ImPlot::EndPlot();
+            if (uses < best_uses) {
+                best = p;
+                best_uses = uses;
             }
         }
-        ImGui::End();
+        return layer_palette[best];
+    }
 
-        // Create a hash from everything which dictates the app_state of an evaluation to compare against
-        uint64_t hash = md_hash64(filter.text, sizeof(filter.text), app_state->script.ir_fingerprint ^ (1ULL << (uint64_t)use_mass));
-        if (hash != eval_hash) {
-            if (task_system::task_is_running(evaluate_task)) {
-                task_system::task_interrupt (evaluate_task);
-            } else {
-                bitfields = 0;
-                weights = 0;
-                coords = 0;
-                num_frames = 0;
-                num_structures = 0;
-                md_arena_allocator_reset(arena);
-                joined_bitfield = md_bitset_empty_set();
+    Layer* add_layer(LayerFrames frames, LayerStyle style, int at = -1) {
+        if (num_layers >= MAX_LAYERS) return nullptr;
+        at = (at < 0 || at > num_layers) ? num_layers : at;
+        for (int i = num_layers; i > at; --i) move_into(layers[i], layers[i - 1]);
+        num_layers += 1;
+        Layer& l = layers[at];
+        new (&l) Layer();
+        l.id = next_layer_id++;
+        l.frames = frames;
+        l.style = style;
+        l.color = next_layer_color();
+        return &l;
+    }
 
-                // Not again until something changes, whether it picked atoms or not
-                eval_hash = hash;
-                if (filter_evaluate_sets(&filter, &bitfields, filter_context(app_state), arena)) {
-                    num_structures = md_array_size(bitfields);
-                    if (!num_structures) {
-                        MD_LOG_ERROR("No structures present when attempting to populate shape space");
-                        return;
-                    }
-                    num_frames = run_num_frames(app_state);
-                    if (!num_frames) {
-                        MD_LOG_ERROR("No trajectory frames present when attempting to populate shape space");
-                        return;
-                    }
-                    {
-                        md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, arena);
-                        for (size_t i = 0; i < num_structures; ++i) {
-                            md_bitmask_or(&b, bitfields[i]);
-                        }
-                        joined_bitfield = md_bitmask_extract(&b, arena);
-                    }
+    void free_layer(Layer& l) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        cancel_job(l, true);
+        density_map_texture_free(&l.tex);
+        for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitset_free(&l.structures[i], heap);
+        md_array_free(l.structures, heap);
+        md_array_free(l.current_coords, heap);
+        l.eval.reset();
+    }
 
-                    md_array_resize(weights, num_frames * num_structures, arena);
-                    md_array_resize(coords,  num_frames * num_structures, arena);
-                    MEMSET(weights, 0, md_array_bytes(weights));
-                    MEMSET(coords,  0, md_array_bytes(coords));
-                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                        (void)thread_num;
-                        ApplicationState* app_state = shapespace->app_state;
-                        const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
-                        const size_t bytes = stride * sizeof(vec3_t);
-                        md_temp_scope_t temp_scope = md_temp_begin();
-                        md_allocator_i* alloc = md_temp_allocator(temp_scope);
-                        defer { md_temp_end(temp_scope); };
+    // Layers are moved as bytes but for their evaluation, which is counted: moved from one to the other
+    static void move_into(Layer& dst, Layer& src) {
+        EvaluationRef e = std::move(src.eval);
+        dst.eval.reset();
+        MEMCPY((void*)&dst, (const void*)&src, sizeof(Layer));
+        new (&dst.eval) EvaluationRef(std::move(e));
+        new (&src.eval) EvaluationRef();
+    }
 
-                        vec3_t* xyz = (vec3_t*)md_temp_alloc(temp_scope, bytes);
-                        float* w = 0;
-                        if (shapespace->use_mass) {
-                            w = (float*)md_temp_alloc(temp_scope, stride * sizeof(float));
-                            md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
-                        }
+    void remove_layer(uint32_t id) {
+        const int idx = layer_index(id);
+        if (idx < 0) return;
+        free_layer(layers[idx]);
+        for (int i = idx; i + 1 < num_layers; ++i) move_into(layers[i], layers[i + 1]);
+        num_layers -= 1;
+        layers[num_layers].eval.reset();
+        new (&layers[num_layers]) Layer();
+        if (selected_layer == id) selected_layer = num_layers > 0 ? layers[MIN(idx, num_layers - 1)].id : 0;
+        density_map_canvas_invalidate(&canvas);
+    }
 
-                        const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
+    void duplicate_layer(uint32_t id) {
+        const int idx = layer_index(id);
+        if (idx < 0 || num_layers >= MAX_LAYERS) return;
+        Layer* l = add_layer(layers[idx].frames, layers[idx].style, idx);
+        if (!l) return;
+        const Layer& src = layers[idx + 1];
+        const uint32_t new_id = l->id;
+        // What is set, not what is derived (found again)
+        STATIC_ASSERT(sizeof(l->name) == sizeof(src.name), "");
+        MEMCPY(l->name, src.name, sizeof(l->name));
+        l->visible = src.visible;
+        l->filter = src.filter;
+        l->use_mass = src.use_mass;
+        l->frames = src.frames;
+        l->period = src.period;
+        l->style = src.style;
+        l->color = src.color;
+        l->opacity = src.opacity;
+        l->fill = src.fill;
+        l->lines = src.lines;
+        l->line_width = src.line_width;
+        l->num_levels = src.num_levels;
+        MEMCPY(l->levels, src.levels, sizeof(l->levels));
+        l->bandwidth = src.bandwidth;
+        l->colormap = src.colormap;
+        l->log_scale = src.log_scale;
+        l->point_coloring = src.point_coloring;
+        l->point_size = src.point_size;
+        l->id = new_id;
+        selected_layer = new_id;
+    }
 
-                        // One context for the range, so the run's files stay open across its frames.
-                        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-                        md_system_extract_t* ex = md_system_extract_begin(&app_state->mold.sys, str_from_cstr(app_state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
-                        if (!ex) {
-                            return;
-                        }
-                        defer { md_system_extract_end(ex); };
+    void move_layer(int from, int to) {
+        if (from < 0 || from >= num_layers || to < 0 || to >= num_layers || from == to) return;
+        Layer tmp;
+        move_into(tmp, layers[from]);
+        if (from < to) {
+            for (int i = from; i < to; ++i) move_into(layers[i], layers[i + 1]);
+        } else {
+            for (int i = from; i > to; --i) move_into(layers[i], layers[i - 1]);
+        }
+        move_into(layers[to], tmp);
+        density_map_canvas_invalidate(&canvas);
+    }
 
-                        md_array(vec4_t) xyzw = 0;
-                        for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                            md_system_state_t frame_state = {};
-                            frame_state.num_atoms = app_state->mold.sys.atom.count;
-                            frame_state.xyz = xyz;
-                            if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
-                                continue;
-                            }
+    void clear_layers() {
+        for (int i = 0; i < num_layers; ++i) {
+            free_layer(layers[i]);
+            new (&layers[i]) Layer();
+        }
+        num_layers = 0;
+        selected_layer = 0;
+        density_map_canvas_invalidate(&canvas);
+    }
 
-                            for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
-                                const md_bitset_t* bf = &shapespace->bitfields[i];
-                                size_t count = md_bitset_count(*bf);
-                                md_array_resize(xyzw, count, alloc);
+    // The shape of the frame shown, its trajectory as points coloured by time, and the density over it
+    void create_default_layers() {
+        clear_layers();
+        if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points)) {
+            cur->color = ImVec4(1, 1, 1, 1);
+            cur->point_size = 7.0f;
+            selected_layer = cur->id;
+        }
+        if (Layer* pts = add_layer(LayerFrames_All, LayerStyle_Points)) {
+            pts->point_coloring = PointColoring_Time;
+            pts->point_size = 3.0f;
+            pts->opacity = 0.8f;
+        }
+        if (Layer* den = add_layer(LayerFrames_All, LayerStyle_Contours)) {
+            den->color = ImVec4(1.0f, 0.62f, 0.20f, 1.0f);
+        }
+    }
 
-                                md_bitset_iter_t iter = md_bitset_iter(*bf);
-                                size_t dst_idx = 0;
-                                while (md_bitset_iter_next(&iter)) {
-                                    const size_t src_idx = iter.idx;
-                                    xyzw[dst_idx++] = vec4_from_vec3(xyz[src_idx], w ? w[src_idx] : 1.0f);
-                                }
+    // ## Jobs
 
-                                // Covariance about the mean of the placed points, not the circular mean the
-                                // placement is seeded from (their offset enters the covariance squared)
-                                vec3_t com = vec3_zero();
-                                md_util_deperiodize_self_vec4(xyzw, count, &frame_state.unitcell, &com);
+    void cancel_job(Layer& l, bool wait) {
+        if (!l.job) return;
+        density_map_cancel(l.job, wait);
+        l.job = nullptr;
+        l.want_hash = 0;
+    }
 
-                                const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
-                                const vec3_t weights = md_util_shape_weights(&M);
-
-                                dst_idx = shapespace->num_frames * i + frame_idx;
-                                shapespace->weights[dst_idx] = weights;
-                                shapespace->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
-                            }
-                        }
-                    });
-
-                    task_system::enqueue_task(evaluate_task);
+    // The density of the shapes of the layer's evaluation over frames [beg, end)
+    void launch_job(Layer& l, uint64_t hash, uint32_t beg, uint32_t end, float sigma) {
+        ASSERT(!l.job && l.eval && l.eval->complete());
+        EvaluationRef eval = l.eval;
+        const uint64_t num_samples = (uint64_t)eval->num_structures * (end - beg);
+        const uint32_t num_chunks = (uint32_t)MIN((uint64_t)MIN(8u, end - beg), (num_samples >> 20) + 1);
+        auto source = [eval, beg, end](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
+            const uint32_t n = end - beg;
+            const uint32_t f0 = beg + (uint32_t)((uint64_t)n * chunk / chunks);
+            const uint32_t f1 = beg + (uint32_t)((uint64_t)n * (chunk + 1) / chunks);
+            for (size_t s = 0; s < eval->num_structures; ++s) {
+                if (cancel.load(std::memory_order_relaxed)) return;
+                const vec2_t* c = eval->coords + s * eval->num_frames;
+                for (uint32_t f = f0; f < f1; ++f) {
+                    if (coord_valid(c[f])) bins.add(0, c[f].x, c[f].y);
                 }
+            }
+        };
+        const uint32_t id = l.id;
+        auto done = [this, id, hash](const DensityMapResult* result, const float* grid) {
+            Layer* layer = find_layer(id);
+            if (!layer || !layer->job || layer->want_hash != hash) return;
+            layer->job = nullptr;
+            if (!result) {
+                layer->want_hash = 0;
+                return;
+            }
+            if (!layer->tex) layer->tex = density_map_texture_create(false);
+            density_map_texture_upload(layer->tex, grid);
+            layer->result = *result;
+            layer->has_result = true;
+            layer->shown_hash = hash;
+        };
+        l.want_hash = hash;
+        // The bandwidth is of the triangle's side, which is 1
+        l.job = density_map_launch(STR_LIT("Shapespace density"), shape_domain, sigma, num_chunks, source, done);
+    }
+
+    // ## Update
+
+    // The structures of the layer: found again when what they are found from changes
+    void update_structures(Layer& l) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        uint64_t key = md_hash64_combine(system_generation, md_hash64(l.filter.text, strlen(l.filter.text), app->script.ir_fingerprint));
+        key = md_hash64_combine(key, app->mold.sys.topology_version);
+        // What depends on the coordinates follows the frame shown as points of it, but is taken once for frames that
+        // are many (all of them would have to be evaluated again at every frame)
+        if (l.filter.text[0] && l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
+            key = md_hash64_combine(key, (uint64_t)(app->animation.frame * 4096.0));
+        }
+        if (key == l.structs_key) return;
+        l.structs_key = key;
+
+        for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitset_free(&l.structures[i], heap);
+        md_array_shrink(l.structures, 0);
+        l.structs_valid = false;
+
+        const size_t num_atoms = app->mold.sys.atom.count;
+        if (num_atoms == 0) return;
+        if (l.filter.text[0] == '\0') {
+            md_array_push(l.structures, md_bitset_range(0, (uint32_t)num_atoms), heap);
+            l.structs_valid = true;
+        } else {
+            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, filter_context(app), heap) && md_array_size(l.structures) > 0;
+        }
+        uint64_t h = 0x5A9E;
+        for (size_t i = 0; i < md_array_size(l.structures); ++i) h = md_bitset_hash64(l.structures[i], h + i);
+        l.structs_hash = h;
+    }
+
+    // The evaluation of the layer's structures and weighting over the run: one shared, or a new one started
+    void update_evaluation(Layer& l) {
+        if (l.frames == LayerFrames_Current || !l.structs_valid) {
+            l.eval.reset();
+            return;
+        }
+        const size_t num_frames = run_num_frames(app);
+        if (num_frames == 0) {
+            l.eval.reset();
+            return;
+        }
+        const uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, num_frames));
+        if (l.eval && l.eval->key == key) return;
+        for (const EvaluationRef& e : evaluations) {
+            if (e->key == key) {
+                l.eval = e;
+                return;
+            }
+        }
+        EvaluationRef e = std::make_shared<Evaluation>();
+        e->key = key;
+        e->use_mass = l.use_mass;
+        e->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        for (size_t i = 0; i < md_array_size(l.structures); ++i) {
+            md_array_push(e->structures, md_bitset_copy(l.structures[i], e->arena), e->arena);
+        }
+        e->num_structures = md_array_size(e->structures);
+        e->num_frames = num_frames;
+        const size_t n = e->num_structures * num_frames;
+        e->coords = (vec2_t*)md_alloc(e->arena, sizeof(vec2_t) * n);
+        for (size_t i = 0; i < n; ++i) e->coords[i] = { NAN, NAN };
+
+        Evaluation* ev = e.get();
+        ApplicationState* state = app;
+        e->task = task_system::create_pool_task(STR_LIT("Shapespace"), (uint32_t)num_frames, [ev, state](uint32_t beg, uint32_t end, uint32_t) {
+            const md_system_t& sys = state->mold.sys;
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+            vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * ALIGN_TO(sys.atom.count, 8));
+            float* masses = nullptr;
+            if (ev->use_mass) {
+                masses = (float*)md_temp_alloc(temp, sizeof(float) * ALIGN_TO(sys.atom.count, 8));
+                md_atom_extract_masses(masses, 0, sys.atom.count, &sys.atom);
+            }
+            // One context for the range, so the run's files stay open across its frames
+            const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
+            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+            if (!ex) {
+                // Nothing to read them from: done, without shapes
+                ev->frames_done.fetch_add(end - beg);
+                return;
+            }
+            defer { md_system_extract_end(ex); };
+            for (uint32_t f = beg; f < end; ++f) {
+                if (ev->cancel.load(std::memory_order_relaxed)) return;
+                md_system_state_t frame = {};
+                frame.num_atoms = sys.atom.count;
+                frame.xyz = xyz;
+                if (!md_system_extract_frame(ex, f, &frame)) {
+                    ev->frames_done.fetch_add(1);
+                    continue;
+                }
+                for (size_t s = 0; s < ev->num_structures; ++s) {
+                    md_temp_scope_t inner = md_temp_begin();
+                    const vec3_t w = structure_shape(ev->structures[s], xyz, &frame.unitcell, masses, inner);
+                    md_temp_end(inner);
+                    // Degenerate (one atom, or all in one place): no shape, NaN
+                    ev->coords[s * ev->num_frames + f] = shape_coord(w);
+                }
+                ev->frames_done.fetch_add(1);
+            }
+        });
+        task_system::enqueue_task(e->task);
+        evaluations.push_back(e);
+        l.eval = e;
+    }
+
+    // The shapes of the structures in the state shown: found again when it changes
+    void update_current(Layer& l) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        const md_system_state_t& st = app->mold.state;
+        uint64_t key = md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22);
+        key = md_hash64_combine(key, md_hash64(&st.frame, sizeof(st.frame), (uint64_t)(uintptr_t)st.xyz));
+        key = md_hash64_combine(key, system_generation);
+        if (key == l.current_key) return;
+        l.current_key = key;
+        const size_t n = l.structs_valid ? md_array_size(l.structures) : 0;
+        md_array_resize(l.current_coords, n, heap);
+        if (n == 0 || !st.xyz || st.num_atoms != app->mold.sys.atom.count) {
+            md_array_shrink(l.current_coords, 0);
+            return;
+        }
+        md_temp_scope_t temp = md_temp_begin();
+        float* masses = nullptr;
+        if (l.use_mass) {
+            masses = (float*)md_temp_alloc(temp, sizeof(float) * ALIGN_TO(app->mold.sys.atom.count, 8));
+            md_atom_extract_masses(masses, 0, app->mold.sys.atom.count, &app->mold.sys.atom);
+        }
+        for (size_t s = 0; s < n; ++s) {
+            md_temp_scope_t inner = md_temp_begin();
+            l.current_coords[s] = shape_coord(structure_shape(l.structures[s], st.xyz, &st.unitcell, masses, inner));
+            md_temp_end(inner);
+        }
+        md_temp_end(temp);
+    }
+
+    // The frames [beg, end) of the layer, false when it covers none
+    bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
+        const int num_frames = (int)run_num_frames(app);
+        if (num_frames <= 0) return false;
+        switch (l.frames) {
+        case LayerFrames_Current: {
+            const int f = CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            *beg = (uint32_t)f;
+            *end = (uint32_t)f + 1;
+            return true;
+        }
+        case LayerFrames_All:
+            *beg = 0;
+            *end = (uint32_t)num_frames;
+            return true;
+        case LayerFrames_Period: {
+            const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
+            int b = 0, e = 0;
+            if (!p || !timeline_period_frames(&b, &e, *p, app->animation.frame, num_frames)) return false;
+            *beg = (uint32_t)b;
+            *end = (uint32_t)e + 1;
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    // A density over frames, with frames to find it over
+    bool layer_draws_density(const Layer& l) const {
+        return l.style != LayerStyle_Points && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
+    }
+
+    void update() {
+        if (!app || !show_window) return;
+        for (int i = 0; i < num_layers; ++i) {
+            Layer& l = layers[i];
+            update_structures(l);
+            if (!l.visible) continue;
+            if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
+                update_current(l);
+            }
+            update_evaluation(l);
+
+            if (!layer_draws_density(l) || !l.eval || !l.eval->complete()) continue;
+            uint32_t beg = 0, end = 0;
+            if (!layer_frame_range(l, &beg, &end)) continue;
+            uint64_t h = l.eval->key;
+            const uint32_t frames[2] = { beg, end };
+            h = md_hash64(frames, sizeof(frames), h);
+            // Found once for the samples, not at every frame
+            if (h != l.auto_key) {
+                l.auto_key = h;
+                l.auto_bandwidth = scott_bandwidth(*l.eval, beg, end);
+            }
+            const float sigma = l.bandwidth > 0.0f ? l.bandwidth : l.auto_bandwidth;
+            h = md_hash64(&sigma, sizeof(sigma), h);
+            h |= 1;
+            if (h == l.shown_hash || h == l.want_hash || l.job) continue;
+            launch_job(l, h, beg, end, sigma);
+        }
+        // Evaluations no layer holds any longer
+        for (size_t i = 0; i < evaluations.size();) {
+            if (evaluations[i].use_count() == 1) {
+                evaluations[i] = evaluations.back();
+                evaluations.pop_back();
+            } else {
+                ++i;
             }
         }
     }
 
-    void export_shape_space(str_t ext) {
-        char path_buf[2048];
-        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
-            str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
-            md_array(str_t)  column_labels = 0;
-            md_array(float*) column_values = 0;
+    // ## Workspace
 
-            md_temp_scope_t temp_scope = md_temp_begin();
-            md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-            defer { md_temp_end(temp_scope); };
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("ShapeSpace"));
+        viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
+        viamd::write_bool(state, STR_LIT("ShowGrid"), show_grid);
+        viamd::write_int(state, STR_LIT("Layers"), num_layers);
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            viamd::write_section_header(state, STR_LIT("ShapeSpaceLayer"));
+            if (l.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(l.name));
+            viamd::write_bool(state, STR_LIT("Visible"), l.visible);
+            if (l.filter.text[0]) viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(l.filter.text));
+            viamd::write_bool(state, STR_LIT("UseMass"), l.use_mass);
+            static const str_t frames[LayerFrames_Count] = { STR_LIT("current"), STR_LIT("all"), STR_LIT("period") };
+            viamd::write_str(state, STR_LIT("Frames"), frames[l.frames]);
+            if (l.frames == LayerFrames_Period) viamd::write_int(state, STR_LIT("Period"), (int)l.period);
+            static const str_t styles[LayerStyle_Count] = { STR_LIT("points"), STR_LIT("contours"), STR_LIT("heatmap") };
+            viamd::write_str(state, STR_LIT("Style"), styles[l.style]);
+            viamd::write_vec4(state, STR_LIT("Color"), vec4_set(l.color.x, l.color.y, l.color.z, l.color.w));
+            viamd::write_flt(state, STR_LIT("Opacity"), l.opacity);
+            viamd::write_bool(state, STR_LIT("Fill"), l.fill);
+            viamd::write_bool(state, STR_LIT("Lines"), l.lines);
+            viamd::write_flt(state, STR_LIT("LineWidth"), l.line_width);
+            viamd::write_flt_vec(state, STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
+            if (l.bandwidth > 0.0f) viamd::write_flt(state, STR_LIT("Bandwidth"), l.bandwidth);
+            else                    viamd::write_str(state, STR_LIT("Bandwidth"), STR_LIT("auto"));
+            viamd::write_str(state, STR_LIT("Colormap"), str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_bool(state, STR_LIT("LogScale"), l.log_scale);
+            static const str_t colorings[PointColoring_Count] = { STR_LIT("layer"), STR_LIT("structure"), STR_LIT("time") };
+            viamd::write_str(state, STR_LIT("PointColoring"), colorings[l.point_coloring]);
+            viamd::write_flt(state, STR_LIT("PointSize"), l.point_size);
+        }
+    }
 
-            // The time column below is timeline.x_values, which is held in display units, so the
-            // label has to come from the same place rather than from the trajectory.
-            md_unit_t time_unit = app_state->timeline.time_unit;
-
-            str_t x_label = STR_INIT("Frame");
-            if (!md_unit_is_none(time_unit)) {
-                char unit_buf[64];
-                md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-                x_label = str_printf(temp_arena, "Time (%s)", unit_buf);
+    void deserialize_settings(viamd::deserialization_state_t& state) {
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "ShowLayers")) {
+                viamd::extract_bool(show_sidebar, arg);
+            } else if (str_eq_cstr(ident, "ShowGrid")) {
+                viamd::extract_bool(show_grid, arg);
+            } else if (str_eq_cstr(ident, "Layers")) {
+                layers_declared = true;
             }
-            md_array_push(column_labels, x_label, temp_arena);
-            md_array_push(column_values, NULL, temp_arena);
-
-            size_t num_structs = num_structures;
-            size_t num_rows    = num_frames;
-
-            for (size_t i = 0; i < num_structs; ++i) {
-                md_array_push(column_labels, str_printf(temp_arena, "linear",  i + 1), temp_arena);
-                md_array_push(column_values, NULL, temp_arena);
-                md_array_push(column_labels, str_printf(temp_arena, "planar", i + 1), temp_arena);
-                md_array_push(column_values, NULL, temp_arena);
-                md_array_push(column_labels, str_printf(temp_arena, "isotropic",  i + 1), temp_arena);
-                md_array_push(column_values, NULL, temp_arena);
-            }
-
-            const float* time = app_state->timeline.x_values;
-
-            for (size_t i = 0; i < num_rows; ++i) {
-                float t = time ? time[i] : (float)i;
-                md_array_push(column_values[0], t, temp_arena);
-
-                for (size_t j = 0; j < num_structs; ++j) {
-                    size_t idx = num_rows * j + i;
-                    vec3_t w = weights[idx];
-                    md_array_push(column_values[1 + j * 3 + 0], w.x, temp_arena);
-                    md_array_push(column_values[1 + j * 3 + 1], w.y, temp_arena);
-                    md_array_push(column_values[1 + j * 3 + 2], w.z, temp_arena);
-                }
-            }
-
-            size_t num_cols = num_structs * 3 + 1;
-            ASSERT(num_cols == md_array_size(column_values));
-            ASSERT(num_cols == md_array_size(column_labels));
-            if (str_eq(ext, STR_LIT("csv"))) {
-                md_csv_write_to_file(column_values, column_labels, num_cols, num_rows, path);
-            } else if (str_eq(ext, STR_LIT("xvg"))) {
-                str_t title = STR_INIT("Shape Space");
-                str_t y_label = STR_INIT("Shape Weight Ratio");
-                str_t header = md_xvg_format_header(title, x_label, y_label, md_array_size(column_labels) - 1, column_labels + 1, temp_arena);
-                str_t xvg    = md_xvg_format(header, num_cols, num_rows, column_values, temp_arena);
-                md_file_t file = {0};
-                if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                    md_file_write(file, xvg.ptr, xvg.len);
-                    md_file_close(&file);
-                }
-            } else {
-                MD_LOG_DEBUG("Unrecognized export format");
-                ASSERT(false);
+            // From before there were layers
+            else if (str_eq_cstr(ident, "Filter")) {
+                legacy.present = true;
+                viamd::extract_to_char_buf(legacy.filter, sizeof(legacy.filter), arg);
+            } else if (str_eq_cstr(ident, "MarkerSize")) {
+                legacy.present = true;
+                viamd::extract_flt(legacy.marker_size, arg);
+            } else if (str_eq_cstr(ident, "UseMass")) {
+                legacy.present = true;
+                viamd::extract_bool(legacy.use_mass, arg);
+            } else if (str_eq_cstr(ident, "Period")) {
+                legacy.present = true;
+                viamd::extract_int(legacy.period, arg);
             }
         }
+    }
+
+    void deserialize_layer(viamd::deserialization_state_t& state) {
+        if (!read_layers) {
+            clear_layers();
+            read_layers = true;
+        }
+        Layer* l = add_layer(LayerFrames_All, LayerStyle_Points);
+        str_t ident, arg;
+        if (!l) {
+            while (viamd::next_entry(ident, arg, state)) {}
+            return;
+        }
+        while (viamd::next_entry(ident, arg, state)) {
+            str_t s = {};
+            if (str_eq_cstr(ident, "Name")) {
+                viamd::extract_to_char_buf(l->name, sizeof(l->name), arg);
+            } else if (str_eq_cstr(ident, "Visible")) {
+                viamd::extract_bool(l->visible, arg);
+            } else if (str_eq_cstr(ident, "Filter")) {
+                viamd::extract_to_char_buf(l->filter.text, sizeof(l->filter.text), arg);
+            } else if (str_eq_cstr(ident, "UseMass")) {
+                viamd::extract_bool(l->use_mass, arg);
+            } else if (str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
+                l->frames = str_eq_cstr(s, "current") ? LayerFrames_Current : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
+            } else if (str_eq_cstr(ident, "Period")) {
+                int id = 0;
+                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MAX(id, 0);
+            } else if (str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
+                l->style = str_eq_cstr(s, "contours") ? LayerStyle_Contours : str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
+            } else if (str_eq_cstr(ident, "Color")) {
+                vec4_t c;
+                if (viamd::extract_vec4(c, arg)) l->color = ImVec4(c.x, c.y, c.z, c.w);
+            } else if (str_eq_cstr(ident, "Opacity")) {
+                viamd::extract_flt(l->opacity, arg);
+            } else if (str_eq_cstr(ident, "Fill")) {
+                viamd::extract_bool(l->fill, arg);
+            } else if (str_eq_cstr(ident, "Lines")) {
+                viamd::extract_bool(l->lines, arg);
+            } else if (str_eq_cstr(ident, "LineWidth")) {
+                viamd::extract_flt(l->line_width, arg);
+            } else if (str_eq_cstr(ident, "Levels")) {
+                float v[MAX_LEVELS];
+                for (int k = MAX_LEVELS; k > 0; --k) {
+                    if (viamd::extract_flt_vec(v, (size_t)k, arg)) {
+                        l->num_levels = k;
+                        MEMCPY(l->levels, v, sizeof(float) * k);
+                        break;
+                    }
+                }
+            } else if (str_eq_cstr(ident, "Bandwidth")) {
+                if (!viamd::extract_flt(l->bandwidth, arg)) l->bandwidth = 0.0f;  // auto
+            } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->colormap = cm;
+            } else if (str_eq_cstr(ident, "LogScale")) {
+                viamd::extract_bool(l->log_scale, arg);
+            } else if (str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
+                l->point_coloring = str_eq_cstr(s, "structure") ? PointColoring_Structure : str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Layer;
+            } else if (str_eq_cstr(ident, "PointSize")) {
+                viamd::extract_flt(l->point_size, arg);
+            }
+        }
+        sanitize_layer(*l);
+        if (!selected_layer) selected_layer = l->id;
+    }
+
+    static void sanitize_layer(Layer& l) {
+        l.frames = (LayerFrames)CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
+        l.style = (LayerStyle)CLAMP((int)l.style, 0, LayerStyle_Count - 1);
+        l.opacity = CLAMP(l.opacity, 0.0f, 1.0f);
+        l.line_width = CLAMP(l.line_width, 0.5f, 8.0f);
+        l.bandwidth = l.bandwidth > 0.0f ? CLAMP(l.bandwidth, 0.002f, 0.2f) : 0.0f;
+        l.point_size = CLAMP(l.point_size, 1.0f, 16.0f);
+        l.num_levels = CLAMP(l.num_levels, 1, MAX_LEVELS);
+        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = CLAMP(l.levels[i], 0.01f, 0.999f);
+        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+    }
+
+    // From before there were layers: the structures of the filter over every frame (or the period), a colour each
+    void create_legacy_layers() {
+        clear_layers();
+        Layer* pts = add_layer(LayerFrames_All, LayerStyle_Points);
+        if (!pts) return;
+        // "all" was the default: all atoms as one structure, which an empty filter is
+        if (strcmp(legacy.filter, "all") != 0) {
+            snprintf(pts->filter.text, sizeof(pts->filter.text), "%s", legacy.filter);
+        }
+        pts->use_mass = legacy.use_mass;
+        pts->point_coloring = PointColoring_Structure;
+        // ImPlot's marker size is a radius
+        pts->point_size = CLAMP(legacy.marker_size * 2.0f, 1.0f, 16.0f);
+        uint32_t period = (uint32_t)MAX(legacy.period, 0);
+        if (period == 0 && app) period = app->timeline.periods.legacy_filter_id;
+        if (period != 0) {
+            pts->frames = LayerFrames_Period;
+            pts->period = period;
+        }
+        selected_layer = pts->id;
+    }
+
+    // ## Drawing
+
+    void layer_label(char* buf, size_t cap, const Layer& l) const {
+        if (l.name[0]) {
+            snprintf(buf, cap, "%s", l.name);
+            return;
+        }
+        const char* frames = "Current frame";
+        char period_name[TIMELINE_PERIOD_NAME_CAP + 8];
+        if (l.frames == LayerFrames_All) {
+            frames = "All frames";
+        } else if (l.frames == LayerFrames_Period) {
+            const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
+            snprintf(period_name, sizeof(period_name), "%s", p ? p->name : "No period");
+            frames = period_name;
+        }
+        if (l.filter.text[0]) snprintf(buf, cap, "%s \xc2\xb7 %s", frames, l.filter.text);
+        else                  snprintf(buf, cap, "%s", frames);
+    }
+
+    void layer_stats(char* buf, size_t cap, const Layer& l) const {
+        if (!l.structs_valid) {
+            snprintf(buf, cap, "%s", l.filter.result.error[0] ? l.filter.result.error : "no structures");
+            return;
+        }
+        const size_t n = md_array_size(l.structures);
+        const char* what = n == 1 ? "structure" : "structures";
+        if (l.frames != LayerFrames_Current && run_num_frames(app) >= 2) {
+            if (l.eval && !l.eval->complete()) {
+                snprintf(buf, cap, "%zu %s \xc2\xb7 %u%% evaluated", n, what, (uint32_t)(100.0 * l.eval->frames_done.load() / MAX((size_t)1, l.eval->num_frames)));
+                return;
+            }
+            uint32_t beg = 0, end = 0;
+            if (layer_frame_range(l, &beg, &end)) {
+                snprintf(buf, cap, "%zu %s \xc2\xb7 %u frames", n, what, end - beg);
+                return;
+            }
+            snprintf(buf, cap, "%zu %s \xc2\xb7 no frames", n, what);
+            return;
+        }
+        snprintf(buf, cap, "%zu %s", n, what);
+    }
+
+    bool layer_draw(DensityMapDraw* d, const Layer& l) const {
+        if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.eval || !l.eval->complete()) return false;
+        if (l.result.samples[0] == 0 || l.result.max[0] <= 0.0f) return false;
+        density_map_draw_init(d);
+        d->tex = l.tex;
+        d->opacity = l.opacity;
+        d->line_width = l.line_width;
+        d->line_color[0] = l.color.x;
+        d->line_color[1] = l.color.y;
+        d->line_color[2] = l.color.z;
+        d->line_color[3] = l.color.w;
+        d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
+        d->fill = l.fill;
+        d->lines = l.lines;
+        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+        density_map_draw_levels(d, l.result, 0, l.levels, l.num_levels);
+        density_map_draw_fills_from(d, l.color);
+        d->content = l.shown_hash;
+        return true;
+    }
+
+    uint32_t render_densities() {
+        DensityMapDraw draws[MAX_LAYERS];
+        int num_draws = 0;
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!l.visible || l.style == LayerStyle_Points || l.opacity <= 0.0f) continue;
+            if (layer_draw(&draws[num_draws], l)) ++num_draws;
+        }
+        int w = 0, h = 0;
+        density_map_plot_canvas_size(&w, &h);
+        if (num_draws == 0 || w <= 0 || h <= 0) return 0;
+        float view_uv[4];
+        density_map_plot_view_uv(view_uv, shape_domain);
+        // Within the triangle only: the smoothing spreads the density past its edges, where there are no shapes
+        const DensityMapDomain& D = shape_domain;
+        auto u = [&](vec2_t p) { return (p.x - D.x_min) / (D.x_max - D.x_min); };
+        auto v = [&](vec2_t p) { return (p.y - D.y_min) / (D.y_max - D.y_min); };
+        const float clip[6] = { u(tri_lin), v(tri_lin), u(tri_pla), v(tri_pla), u(tri_iso), v(tri_iso) };
+        return density_map_composite(&canvas, w, h, view_uv, draws, num_draws, clip);
+    }
+
+    // ### Points
+
+    struct PointSource {
+        const vec2_t* coords = nullptr;     // [structure * stride + frame]
+        size_t   stride = 0;
+        size_t   num_structures = 0;
+        uint32_t frame_beg = 0, frame_end = 0, frame_step = 1;
+        bool     current = false;
+    };
+
+    bool point_source(PointSource* ps, Layer& l) const {
+        if (l.style != LayerStyle_Points || !l.structs_valid) return false;
+        if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
+            if (md_array_size(l.current_coords) == 0) return false;
+            ps->coords = l.current_coords;
+            ps->stride = 1;
+            ps->num_structures = md_array_size(l.current_coords);
+            ps->frame_beg = 0;
+            ps->frame_end = 1;
+            ps->frame_step = 1;
+            ps->current = true;
+            l.point_stride = 1;
+            return true;
+        }
+        if (!l.eval) return false;
+        uint32_t beg = 0, end = 0;
+        if (!layer_frame_range(l, &beg, &end)) return false;
+        end = MIN(end, (uint32_t)l.eval->num_frames);
+        if (end <= beg) return false;
+        ps->coords = l.eval->coords;
+        ps->stride = l.eval->num_frames;
+        ps->num_structures = l.eval->num_structures;
+        ps->frame_beg = beg;
+        ps->frame_end = end;
+        const uint64_t total = (uint64_t)ps->num_structures * (end - beg);
+        ps->frame_step = (uint32_t)MAX((uint64_t)1, (total + MAX_POINTS - 1) / MAX_POINTS);
+        ps->current = false;
+        l.point_stride = ps->frame_step;
+        return true;
+    }
+
+    template <typename F>
+    static void for_each_point(const PointSource& ps, F&& f) {
+        for (size_t s = 0; s < ps.num_structures; ++s) {
+            const vec2_t* c = ps.coords + s * ps.stride;
+            for (uint32_t frame = ps.frame_beg; frame < ps.frame_end; frame += ps.frame_step) {
+                const vec2_t p = ps.current ? c[0] : c[frame];
+                if (coord_valid(p)) f((uint32_t)s, frame, p);
+            }
+        }
+    }
+
+    ImVec4 point_color(const Layer& l, const PointSource& ps, uint32_t s, uint32_t frame) const {
+        switch (l.point_coloring) {
+        case PointColoring_Structure:
+            return ImPlot::GetColormapColor((int)s % ImPlot::GetColormapSize(ImPlotColormap_Deep), ImPlotColormap_Deep);
+        case PointColoring_Time:
+            if (ps.current || ps.frame_end - ps.frame_beg <= 1) return l.color;
+            return ImPlot::SampleColormap((float)(frame - ps.frame_beg) / (float)(ps.frame_end - ps.frame_beg - 1), l.colormap);
+        default:
+            return l.color;
+        }
+    }
+
+    // The atoms of the structure s of layer l
+    md_bitset_t structure_atoms(const Layer& l, const PointSource& ps, uint32_t s) const {
+        if (!ps.current && l.eval && s < l.eval->num_structures) return l.eval->structures[s];
+        if (s < md_array_size(l.structures)) return l.structures[s];
+        return md_bitset_empty_set();
+    }
+
+    struct Hover {
+        int      layer = -1;
+        uint32_t structure = 0;
+        uint32_t frame = 0;
+        bool     current = true;
+        vec2_t   coord = {};
+    };
+
+    void draw_tooltip(const Hover& h, const PointSource& ps) const {
+        const Layer& l = layers[h.layer];
+        const size_t ns = ps.num_structures;
+        const vec3_t w = shape_weights_of(h.coord);
+        const md_bitset_t atoms = structure_atoms(l, ps, h.structure);
+        ImGui::BeginTooltip();
+        if (ns > 1) ImGui::Text("Structure %u of %zu  \xc2\xb7  %u atoms", h.structure + 1, ns, (uint32_t)md_bitset_count(atoms));
+        else        ImGui::Text("%u atoms", (uint32_t)md_bitset_count(atoms));
+        ImGui::Text("linear %.2f   planar %.2f   spherical %.2f", w.x, w.y, w.z);
+        if (h.current) ImGui::TextDisabled("frame shown");
+        else           ImGui::TextDisabled("frame %u  \xc2\xb7  click to go there", h.frame);
+        char label[128];
+        layer_label(label, sizeof(label), l);
+        ImGui::TextDisabled("%s", label);
+        ImGui::EndTooltip();
+    }
+
+    void draw_points(bool hovered) {
+        md_bitmask_t* selection_mask = &app->selection.selection_mask;
+        md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
+
+        const ImPlotRect lim = ImPlot::GetPlotLimits();
+        const ImVec2 pos = ImPlot::GetPlotPos();
+        const ImVec2 size = ImPlot::GetPlotSize();
+        const double sx = size.x / lim.Size().x;
+        const double sy = size.y / lim.Size().y;
+        auto to_pixels = [&](vec2_t c) {
+            return ImVec2((float)(pos.x + (c.x - lim.X.Min) * sx), (float)(pos.y + (lim.Y.Max - c.y) * sy));
+        };
+
+        PointSource sources[MAX_LAYERS];
+        bool has_source[MAX_LAYERS] = {};
+        for (int i = 0; i < num_layers; ++i) {
+            layers[i].point_count = 0;
+            if (layers[i].visible) has_source[i] = point_source(&sources[i], layers[i]);
+        }
+
+        // What the pointer is on: the nearest point within reach, of the layer on top
+        Hover hover;
+        if (hovered && !box.active) {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
+                if (!has_source[i]) continue;
+                const float r = MAX(8.0f, layers[i].point_size);
+                float best = r * r;
+                for_each_point(sources[i], [&](uint32_t s, uint32_t frame, vec2_t c) {
+                    const ImVec2 p = to_pixels(c);
+                    const float d2 = (p.x - mouse.x) * (p.x - mouse.x) + (p.y - mouse.y) * (p.y - mouse.y);
+                    if (d2 < best) {
+                        best = d2;
+                        hover = Hover{ i, s, frame, sources[i].current, c };
+                    }
+                });
+            }
+        }
+
+        // Not moved from where it was pressed: a click, on the point pressed on (if any)
+        bool box_is_click = false;
+        if (box.active) {
+            const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+            const ImVec2 m = ImGui::GetMousePos();
+            box_is_click = fabsf(a.x - m.x) < 3.0f && fabsf(a.y - m.y) < 3.0f;
+        }
+
+        // The highlight: what the box covers, or the structure under the pointer
+        if (hovered || box.active) {
+            md_bitmask_clear(highlight_mask);
+            highlights_now = true;
+        }
+        if (box.active && box_is_click) {
+            if (box.click_layer >= 0 && box.click_layer < num_layers && box.click_structure >= 0 && has_source[box.click_layer]) {
+                md_bitmask_or(highlight_mask, structure_atoms(layers[box.click_layer], sources[box.click_layer], (uint32_t)box.click_structure));
+            }
+        } else if (box.active) {
+            const double x0 = MIN(box.p0.x, box.p1.x), x1 = MAX(box.p0.x, box.p1.x);
+            const double y0 = MIN(box.p0.y, box.p1.y), y1 = MAX(box.p0.y, box.p1.y);
+            for (int i = 0; i < num_layers; ++i) {
+                if (!has_source[i]) continue;
+                // A structure once, however many of its points are in
+                md_allocator_i* temp = md_get_heap_allocator();
+                md_bitmask_t taken = md_bitmask_create(0, (uint32_t)sources[i].num_structures, temp);
+                for_each_point(sources[i], [&](uint32_t s, uint32_t, vec2_t c) {
+                    if (x0 <= c.x && c.x <= x1 && y0 <= c.y && c.y <= y1 && !md_bitmask_test_bit(&taken, s)) {
+                        md_bitmask_set_bit(&taken, s);
+                        md_bitmask_or(highlight_mask, structure_atoms(layers[i], sources[i], s));
+                    }
+                });
+                md_bitmask_free(&taken);
+            }
+        } else if (hover.layer >= 0) {
+            md_bitmask_or(highlight_mask, structure_atoms(layers[hover.layer], sources[hover.layer], hover.structure));
+        }
+
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        density_map_marks_begin(dl);
+        for (int i = num_layers - 1; i >= 0; --i) {
+            if (!has_source[i]) continue;
+            Layer& l = layers[i];
+            const PointSource& ps = sources[i];
+            const float r = l.point_size * 0.5f;
+            for_each_point(ps, [&](uint32_t s, uint32_t frame, vec2_t c) {
+                ImVec4 col = point_color(l, ps, s, frame);
+                col.w *= l.opacity;
+                const ImU32 u = ImGui::ColorConvertFloat4ToU32(col);
+                l.point_count += 1;
+                if (ps.current) density_map_mark(dl, to_pixels(c), r + 1.0f, DensityMapMark_Disc, u);
+                else            density_map_mark(dl, to_pixels(c), r, DensityMapMark_Square, u);
+            });
+        }
+        // Rings around the points of the frame shown of what is selected and highlighted
+        const vec4_t sel_col = app->selection.color.selection.outline;
+        const vec4_t hl_col = app->selection.color.highlight.outline;
+        const bool any_sel = !md_bitmask_empty(selection_mask);
+        const bool any_hl = !md_bitmask_empty(highlight_mask);
+        for (int i = num_layers - 1; i >= 0 && (any_sel || any_hl); --i) {
+            if (!has_source[i] || !sources[i].current) continue;
+            const Layer& l = layers[i];
+            const float r = MAX(l.point_size * 0.5f + 3.0f, 5.0f);
+            for_each_point(sources[i], [&](uint32_t s, uint32_t, vec2_t c) {
+                const md_bitset_t atoms = structure_atoms(l, sources[i], s);
+                const uint32_t first = md_bitset_first(atoms);
+                if (md_bitset_empty(atoms)) return;
+                const bool hl = any_hl && md_bitmask_test_bit(highlight_mask, first);
+                const bool sel = any_sel && md_bitmask_test_bit(selection_mask, first);
+                if (!hl && !sel) return;
+                density_map_mark(dl, to_pixels(c), r, DensityMapMark_Ring, ImGui::ColorConvertFloat4ToU32(vec_cast(hl ? hl_col : sel_col)));
+            });
+        }
+        // The point under the pointer
+        if (hover.layer >= 0) {
+            density_map_mark(dl, to_pixels(hover.coord), MAX(layers[hover.layer].point_size * 0.5f + 3.0f, 5.0f), DensityMapMark_Ring, ImGui::ColorConvertFloat4ToU32(vec_cast(hl_col)));
+        }
+        density_map_marks_end(dl);
+        ImPlot::PopPlotClipRect();
+
+        if (hover.layer >= 0) {
+            draw_tooltip(hover, sources[hover.layer]);
+            // A click on a point of a frame: that frame
+            if (!hover.current && !ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                app->animation.frame = hover.frame;
+            }
+        }
+
+        // Selecting: shift-drag a box, shift-click a point; the right button takes away; a right click on nothing clears
+        const bool shift = ImGui::GetIO().KeyShift;
+        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+        if (!box.active && hovered && shift && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+            box.active = true;
+            box.op = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ? SelectionOperator::Or : SelectionOperator::AndNot;
+            box.p0 = box.p1 = mouse;
+            box.click_layer = hover.layer;
+            box.click_structure = hover.layer >= 0 ? (int64_t)hover.structure : -1;
+        }
+        if (box.active) {
+            box.p1 = mouse;
+            if (!box_is_click) {
+                const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+                const ImVec2 b = ImPlot::PlotToPixels(box.p1);
+                const vec4_t c = box.op == SelectionOperator::Or ? sel_col : vec4_t{1.0f, 0.4f, 0.4f, 0.9f};
+                ImPlot::PushPlotClipRect();
+                dl->AddRectFilled(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.12f)));
+                dl->AddRect(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
+                ImPlot::PopPlotClipRect();
+            }
+            const ImGuiMouseButton button = box.op == SelectionOperator::Or ? ImGuiMouseButton_Left : ImGuiMouseButton_Right;
+            if (ImGui::IsMouseReleased(button) || !ImGui::IsMouseDown(button)) {
+                if (!box_is_click || box.click_structure >= 0) {
+                    grow_mask_by_selection_granularity(highlight_mask, app->selection.granularity, app->mold.sys);
+                    modify_field(selection_mask, md_bitmask_view(highlight_mask), box.op);
+                } else if (box.op == SelectionOperator::AndNot) {
+                    md_bitmask_clear(selection_mask);
+                }
+                box.active = false;
+                box.click_layer = -1;
+                box.click_structure = -1;
+            }
+        }
+    }
+
+    // The triangle, its grid (lines of equal weight, a quarter apart) and its corners
+    void draw_triangle() {
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        auto px = [](vec2_t p) { return ImPlot::PlotToPixels(ImPlotPoint(p.x, p.y)); };
+        const ImVec2 a = px(tri_lin), b = px(tri_pla), c = px(tri_iso);
+        ImPlot::PushPlotClipRect();
+        dl->AddTriangleFilled(a, b, c, IM_COL32(255, 255, 255, 14));
+        if (show_grid) {
+            const ImU32 grid = IM_COL32(255, 255, 255, 28);
+            for (int k = 1; k < 4; ++k) {
+                const float t = k / 4.0f;
+                // Of equal weight of each corner: parallel to the side opposite it
+                dl->AddLine(ImLerp(a, b, t), ImLerp(a, c, t), grid);
+                dl->AddLine(ImLerp(b, a, t), ImLerp(b, c, t), grid);
+                dl->AddLine(ImLerp(c, a, t), ImLerp(c, b, t), grid);
+            }
+        }
+        dl->AddTriangle(a, b, c, IM_COL32(255, 255, 255, 70), 1.0f);
+        const ImU32 text = IM_COL32(255, 255, 255, 220);
+        const char* t_lin = "Linear";
+        const char* t_pla = "Planar";
+        const char* t_iso = "Spherical";
+        dl->AddText(c + ImGui::CalcTextSize(t_iso) * ImVec2(-0.5f, -1.2f), text, t_iso);
+        dl->AddText(b + ImGui::CalcTextSize(t_pla) * ImVec2(-0.5f, 0.2f), text, t_pla);
+        dl->AddText(a + ImGui::CalcTextSize(t_lin) * ImVec2(-0.5f, 0.2f), text, t_lin);
+        ImPlot::PopPlotClipRect();
+    }
+
+    Layer* add_period_layer(uint32_t period_id) {
+        const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, period_id);
+        if (!p) return nullptr;
+        // Of the structures of the layer selected
+        const Layer* like = find_layer(selected_layer);
+        char filter[sizeof(AtomFilter::text)] = "";
+        bool use_mass = true;
+        if (like) {
+            MEMCPY(filter, like->filter.text, sizeof(filter));
+            use_mass = like->use_mass;
+        }
+        Layer* l = add_layer(LayerFrames_Period, LayerStyle_Contours, 0);
+        if (!l) return nullptr;
+        l->period = period_id;
+        l->color = ImVec4(p->color.x, p->color.y, p->color.z, 1.0f);
+        MEMCPY(l->filter.text, filter, sizeof(filter));
+        l->use_mass = use_mass;
+        selected_layer = l->id;
+        return l;
+    }
+
+    // The view of the triangle and its corners' labels, centred, at the plot's shape (pixels)
+    static ImPlotRect fit_rect(ImVec2 size) {
+        const float line = ImGui::GetTextLineHeight();
+        const float mx = ImGui::CalcTextSize("Spherical").x * 0.5f + 8.0f;    // The labels are centred on the corners
+        const float mt = line * 1.6f + 6.0f;
+        const float mb = line * 1.4f + 6.0f;
+        const double h_tri = tri_iso.y;
+        const double s = MAX(1.0, MIN((size.x - 2.0 * mx) / 1.0, (size.y - mt - mb) / h_tri));     // Pixels per unit
+        const double w = size.x / s;
+        const double h = size.y / s;
+        const double extra = (size.y - s * h_tri - mt - mb) * 0.5;
+        const double y0 = -(mb + MAX(0.0, extra)) / s;
+        return ImPlotRect(0.5 - w * 0.5, 0.5 + w * 0.5, y0, y0 + h);
+    }
+
+    void draw_plot() {
+        constexpr ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+        constexpr ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoDecorations;
+
+        ImPlotInputMap& input = ImPlot::GetInputMap();
+        const ImPlotInputMap saved_input = input;
+        input.OverrideMod = ImGuiMod_Shift;     // Shift is for selecting
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(1, 1));
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
+
+        if (ImPlot::BeginPlot("##Shapespace", ImVec2(-1, -1), flags)) {
+            // Fitted to the shape of the plot of the last frame: ImPlot's equal axes would otherwise keep the width
+            // asked for and cut the triangle at the top and bottom of a wide plot
+            if (fit_view && plot_size.x > 0 && plot_size.y > 0) {
+                fitted_rect = fit_rect(plot_size);
+                ImPlot::SetupAxesLimits(fitted_rect.X.Min, fitted_rect.X.Max, fitted_rect.Y.Min, fitted_rect.Y.Max, ImGuiCond_Always);
+                fit_view = false;
+                view_fitted = true;
+            } else {
+                ImPlot::SetupAxesLimits(-0.10, 1.10, -0.10, 0.98, ImGuiCond_Once);
+            }
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -4.0, 5.0);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -4.0, 5.0);
+            ImPlot::SetupAxisZoomConstraints(ImAxis_X1, 0.02, 8.0);
+            ImPlot::SetupAxisZoomConstraints(ImAxis_Y1, 0.02, 8.0);
+            ImPlot::SetupAxes(nullptr, nullptr, axis_flags, axis_flags);
+            ImPlot::SetupFinish();
+
+            draw_triangle();
+            density_map_plot_canvas(render_densities());
+            draw_points(ImPlot::IsPlotHovered());
+
+            if (ImPlot::BeginDragDropTargetPlot()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
+                    add_period_layer(*(const uint32_t*)payload->Data);
+                }
+                ImPlot::EndDragDropTarget();
+            }
+            // Double-click: fitted (ImPlot's own fit has no items to fit to)
+            if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) fit_view = true;
+
+            // Panned or zoomed: no longer fitted. Fitted and of another shape: fitted again.
+            const ImVec2 size = ImPlot::GetPlotSize();
+            const ImPlotRect lim = ImPlot::GetPlotLimits();
+            const bool reshaped = fabsf(size.x - plot_size.x) > 0.5f || fabsf(size.y - plot_size.y) > 0.5f;
+            if (view_fitted && !fit_view) {
+                const double eps = 1e-6 * MAX(1e-6, fitted_rect.X.Size());
+                const bool moved = fabs(lim.X.Min - fitted_rect.X.Min) > eps || fabs(lim.X.Max - fitted_rect.X.Max) > eps ||
+                                   fabs(lim.Y.Min - fitted_rect.Y.Min) > eps || fabs(lim.Y.Max - fitted_rect.Y.Max) > eps;
+                if (reshaped) fit_view = true;
+                else if (moved) view_fitted = false;
+            }
+            if (plot_size.x <= 0.0f) fit_view = true;
+            plot_size = size;
+            ImPlot::EndPlot();
+        }
+
+        ImPlot::PopStyleColor();
+        ImPlot::PopStyleVar();
+        input = saved_input;
+    }
+
+    // ### The window
+
+    void export_layer(const Layer& l, str_t ext) {
+        const EvaluationRef& eval = l.eval;
+        if (!eval || !eval->complete()) return;
+        char path_buf[2048];
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) return;
+        const str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+
+        md_temp_scope_t temp_scope = md_temp_begin();
+        md_allocator_i* temp = md_temp_allocator(temp_scope);
+        defer { md_temp_end(temp_scope); };
+
+        // The time column is timeline.x_values, held in display units: its label is from the same place
+        const md_unit_t time_unit = app->timeline.time_unit;
+        str_t x_label = STR_INIT("Frame");
+        if (!md_unit_is_none(time_unit)) {
+            char unit_buf[64];
+            md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
+            x_label = str_printf(temp, "Time (%s)", unit_buf);
+        }
+        md_array(str_t)  labels = 0;
+        md_array(float*) values = 0;
+        md_array_push(labels, x_label, temp);
+        md_array_push(values, NULL, temp);
+        const size_t ns = eval->num_structures;
+        const size_t nf = eval->num_frames;
+        for (size_t s = 0; s < ns; ++s) {
+            md_array_push(labels, ns > 1 ? str_printf(temp, "linear %zu", s + 1)    : STR_LIT("linear"),    temp);
+            md_array_push(labels, ns > 1 ? str_printf(temp, "planar %zu", s + 1)    : STR_LIT("planar"),    temp);
+            md_array_push(labels, ns > 1 ? str_printf(temp, "isotropic %zu", s + 1) : STR_LIT("isotropic"), temp);
+            for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
+        }
+        const float* time = app->timeline.x_values;
+        const bool has_time = time && md_array_size(app->timeline.x_values) >= nf;
+        for (size_t f = 0; f < nf; ++f) {
+            md_array_push(values[0], has_time ? time[f] : (float)f, temp);
+            for (size_t s = 0; s < ns; ++s) {
+                const vec3_t w = shape_weights_of(eval->coords[s * nf + f]);
+                md_array_push(values[1 + s * 3 + 0], w.x, temp);
+                md_array_push(values[1 + s * 3 + 1], w.y, temp);
+                md_array_push(values[1 + s * 3 + 2], w.z, temp);
+            }
+        }
+        const size_t num_cols = ns * 3 + 1;
+        if (str_eq(ext, STR_LIT("csv"))) {
+            md_csv_write_to_file(values, labels, num_cols, nf, path);
+        } else {
+            const str_t header = md_xvg_format_header(STR_LIT("Shape Space"), x_label, STR_LIT("Shape Weight"), num_cols - 1, labels + 1, temp);
+            const str_t xvg = md_xvg_format(header, num_cols, nf, values, temp);
+            md_file_t file = {0};
+            if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+                md_file_write(file, xvg.ptr, xvg.len);
+                md_file_close(&file);
+            }
+        }
+    }
+
+    void draw_toolbar() {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+        if (ImGui::Button(ICON_FA_LAYER_GROUP "##layers")) show_sidebar = !show_sidebar;
+        ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
+        ImGui::SameLine();
+
+        const Layer* sel = find_layer(selected_layer);
+        const bool can_export = sel && sel->frames != LayerFrames_Current && sel->eval && sel->eval->complete();
+        if (ImGui::Button("Export " ICON_FA_CARET_DOWN)) ImGui::OpenPopup("##export");
+        if (ImGui::BeginPopup("##export")) {
+            ImGui::TextDisabled("The shapes of the selected layer's structures, every frame");
+            if (ImGui::MenuItem("CSV", nullptr, false, can_export)) export_layer(*sel, STR_LIT("csv"));
+            if (ImGui::MenuItem("XVG", nullptr, false, can_export)) export_layer(*sel, STR_LIT("xvg"));
+            if (!can_export) ImGui::TextDisabled("Select a layer over frames, once evaluated");
+            ImGui::EndPopup();
+        }
+
+        ImGui::SameLine();
+        const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
+        if (ImGui::Button(ICON_FA_EXPAND)) fit_view = true;
+        ImGui::SetItemTooltip("Fit the view (or double-click the plot)");
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
+        if (ImGui::BeginPopup("##settings")) {
+            ImGui::Checkbox("Grid of equal weights", &show_grid);
+            ImGui::Separator();
+            ImGui::TextDisabled("Click a point of a frame to go there.");
+            ImGui::TextDisabled("Shift-drag to select structures, with the right button to deselect them.");
+            ImGui::TextDisabled("Drop a period from the timeline on the plot to add its density.");
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar();
+    }
+
+    void draw_layer_row(int idx, int* drag_from, int* drag_to, uint32_t* remove_id, uint32_t* duplicate_id) {
+        Layer& l = layers[idx];
+        ImGui::PushID((int)l.id);
+        const float line_h = ImGui::GetTextLineHeight();
+        const float row_h = line_h * 2.0f + 8.0f;
+        const ImVec2 row_min = ImGui::GetCursorScreenPos();
+        const float row_w = ImGui::GetContentRegionAvail().x;
+
+        ImGui::SetNextItemAllowOverlap();
+        if (ImGui::Selectable("##row", selected_layer == l.id, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h))) {
+            selected_layer = l.id;
+        }
+        const bool row_hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemActive() && !ImGui::IsItemHovered()) {
+            const float dy = ImGui::GetMouseDragDelta(0).y;
+            if (fabsf(dy) > row_h * 0.6f) {
+                *drag_from = idx;
+                *drag_to = idx + (dy < 0 ? -1 : 1);
+                ImGui::ResetMouseDragDelta();
+            }
+        }
+        if (ImGui::BeginPopupContextItem("##menu")) {
+            selected_layer = l.id;
+            if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, num_layers < MAX_LAYERS)) *duplicate_id = l.id;
+            if (ImGui::MenuItem("Move up", nullptr, false, idx > 0)) { *drag_from = idx; *drag_to = idx - 1; }
+            if (ImGui::MenuItem("Move down", nullptr, false, idx + 1 < num_layers)) { *drag_from = idx; *drag_to = idx + 1; }
+            ImGui::Separator();
+            if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) *remove_id = l.id;
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
+                l.frames = LayerFrames_Period;
+                l.period = *(const uint32_t*)payload->Data;
+                selected_layer = l.id;
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (row_hovered && l.frames == LayerFrames_Period) timeline_periods_highlight(l.period);
+        // Hovering a layer lights its structures up
+        if (row_hovered && l.structs_valid) {
+            highlights_now = true;
+            md_bitmask_clear(&app->selection.highlight_mask);
+            for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->selection.highlight_mask, l.structures[i]);
+        }
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float pad = 4.0f;
+        ImGui::SetCursorScreenPos(ImVec2(row_min.x + pad, row_min.y + (row_h - ImGui::GetFrameHeight()) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
+        if (ImGui::Button(l.visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) l.visible = !l.visible;
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip(l.visible ? "Hide" : "Show");
+
+        const ImVec2 sw_min = ImVec2(row_min.x + pad + line_h + 8, row_min.y + (row_h - line_h) * 0.5f);
+        const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
+        const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
+        const bool by_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time;
+        density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, l.colormap, l.visible ? 1.0f : 0.35f);
+
+        char label[128], stats[128];
+        layer_label(label, sizeof(label), l);
+        layer_stats(stats, sizeof(stats), l);
+        const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
+        const ImVec4 clip = ImVec4(text_min.x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), text_min, ImGui::GetColorU32(l.visible ? ImGuiCol_Text : ImGuiCol_TextDisabled), label, nullptr, 0.0f, &clip);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(text_min.x, text_min.y + line_h + 1),
+                    !l.structs_valid ? IM_COL32(255, 110, 110, 255) : ImGui::GetColorU32(ImGuiCol_TextDisabled), stats, nullptr, 0.0f, &clip);
+        // Working on it: its evaluation or its density
+        if (l.job || (l.eval && !l.eval->complete())) {
+            const float t = (float)ImGui::GetTime();
+            const ImVec2 c = ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9);
+            dl->PathArcTo(c, 4.5f, t * 6.0f, t * 6.0f + 4.0f, 10);
+            dl->PathStroke(ImGui::GetColorU32(ImGuiCol_TextDisabled), 0, 1.5f);
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + row_h + 2));
+        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::PopID();
+    }
+
+    void draw_add_menu() {
+        // Of the structures of the layer selected
+        const Layer* like = find_layer(selected_layer);
+        auto add = [&](LayerFrames frames, LayerStyle style) -> Layer* {
+            char filter[sizeof(AtomFilter::text)] = "";
+            bool use_mass = true;
+            if (like) {
+                MEMCPY(filter, like->filter.text, sizeof(filter));
+                use_mass = like->use_mass;
+            }
+            Layer* l = add_layer(frames, style, 0);
+            if (l) {
+                MEMCPY(l->filter.text, filter, sizeof(filter));
+                l->use_mass = use_mass;
+                selected_layer = l->id;
+            }
+            return l;
+        };
+        const bool room = num_layers < MAX_LAYERS;
+        if (ImGui::MenuItem("Current frame", nullptr, false, room)) {
+            if (Layer* l = add(LayerFrames_Current, LayerStyle_Points)) l->point_size = 7.0f;
+        }
+        if (ImGui::MenuItem("All frames", nullptr, false, room)) add(LayerFrames_All, LayerStyle_Contours);
+        const TimelinePeriods& ps = app->timeline.periods;
+        if (ImGui::BeginMenu("Period", ps.count > 0 && room)) {
+            for (int i = 0; i < ps.count; ++i) {
+                char label[TIMELINE_PERIOD_NAME_CAP + 16];
+                snprintf(label, sizeof(label), "%s###p%u", ps.items[i].name, ps.items[i].id);
+                if (ImGui::MenuItem(label)) add_period_layer(ps.items[i].id);
+                if (ImGui::IsItemHovered()) timeline_periods_highlight(ps.items[i].id);
+            }
+            ImGui::EndMenu();
+        }
+        if (ps.count == 0) ImGui::SetItemTooltip("Mark periods in the timeline (shift-drag) to show the shapes over them");
+    }
+
+    void draw_inspector(Layer& l) {
+        prop::begin("shapespace");
+        ImGui::PushID((int)l.id);
+
+        char auto_name[128];
+        {
+            char saved[sizeof(l.name)];
+            MEMCPY(saved, l.name, sizeof(saved));
+            l.name[0] = '\0';
+            layer_label(auto_name, sizeof(auto_name), l);
+            MEMCPY(l.name, saved, sizeof(saved));
+        }
+        prop::row("name");
+        ImGui::InputTextWithHint("##name", auto_name, l.name, sizeof(l.name));
+
+        prop::row("structures", "A structure for each set of atoms the filter gives: residue(:) a structure per residue. Empty: all atoms, as one.");
+        {
+            const bool invalid = !l.structs_valid && l.filter.text[0];
+            if (invalid) ImGui::PushInvalid();
+            filter_input("##filter", &l.filter, filter_context(app), 0, nullptr, "all atoms, as one");
+            if (invalid) ImGui::PopInvalid();
+            if (ImGui::IsItemHovered() && l.structs_valid) {
+                highlights_now = true;
+                md_bitmask_clear(&app->selection.highlight_mask);
+                for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->selection.highlight_mask, l.structures[i]);
+            }
+            if (l.filter.result.is_dynamic && l.frames != LayerFrames_Current) {
+                prop::hint("Depends on the coordinates: taken in the frame it was evaluated in");
+            }
+        }
+        prop::row("by mass", "Atoms weighted by their mass, or alike");
+        ImGui::Checkbox("##mass", &l.use_mass);
+
+        prop::row("frames");
+        {
+            char preview[TIMELINE_PERIOD_NAME_CAP + 16];
+            const TimelinePeriods& ps = app->timeline.periods;
+            const TimelinePeriod* cur = timeline_periods_find(&ps, l.period);
+            if (l.frames == LayerFrames_Current)  snprintf(preview, sizeof(preview), "Current frame");
+            else if (l.frames == LayerFrames_All) snprintf(preview, sizeof(preview), "All frames");
+            else snprintf(preview, sizeof(preview), "%s", cur ? cur->name : "Period (missing)");
+            if (ImGui::BeginCombo("##frames", preview)) {
+                if (ImGui::Selectable("Current frame", l.frames == LayerFrames_Current)) l.frames = LayerFrames_Current;
+                if (ImGui::Selectable("All frames", l.frames == LayerFrames_All)) l.frames = LayerFrames_All;
+                if (ps.count > 0) ImGui::SeparatorText("Periods");
+                for (int i = 0; i < ps.count; ++i) {
+                    char label[TIMELINE_PERIOD_NAME_CAP + 16];
+                    snprintf(label, sizeof(label), "%s###p%u", ps.items[i].name, ps.items[i].id);
+                    if (ImGui::Selectable(label, l.frames == LayerFrames_Period && l.period == ps.items[i].id)) {
+                        l.frames = LayerFrames_Period;
+                        l.period = ps.items[i].id;
+                    }
+                    if (ImGui::IsItemHovered()) timeline_periods_highlight(ps.items[i].id);
+                }
+                ImGui::EndCombo();
+            }
+            if (l.frames != LayerFrames_Current && run_num_frames(app) < 2) {
+                prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
+            }
+        }
+
+        prop::row("style");
+        {
+            int s = (int)l.style;
+            static const int values[] = { LayerStyle_Points, LayerStyle_Contours, LayerStyle_Heatmap };
+            density_map_segmented("##style", style_names, values, LayerStyle_Count, &s, nullptr, true);
+            l.style = (LayerStyle)s;
+        }
+        if (l.style != LayerStyle_Heatmap && !(l.style == LayerStyle_Points && l.point_coloring != PointColoring_Layer)) {
+            prop::row("color");
+            prop::color("##color", &l.color.x, true);
+        }
+        prop::row("opacity");
+        ImGui::SliderFloat("##opacity", &l.opacity, 0.0f, 1.0f, "%.2f");
+
+        if (l.style == LayerStyle_Contours) {
+            prop::row("draw");
+            ImGui::Checkbox("fill", &l.fill);
+            ImGui::SameLine();
+            ImGui::Checkbox("lines", &l.lines);
+            if (l.lines) {
+                prop::row("line width");
+                ImGui::SliderFloat("##line_width", &l.line_width, 0.5f, 6.0f, "%.1f px");
+            }
+            prop::row("levels", "The contours enclose these fractions of the samples (highest density regions)");
+            density_map_levels_editor(l.levels, &l.num_levels);
+        }
+        if (l.style == LayerStyle_Heatmap || (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time)) {
+            prop::row("colormap");
+            ImPlot::ColormapSelection("##cmap", &l.colormap);
+        }
+        if (l.style == LayerStyle_Heatmap) {
+            prop::row("log scale", "Four decades below the maximum");
+            ImGui::Checkbox("##log", &l.log_scale);
+        }
+        if (l.style != LayerStyle_Points) {
+            prop::row("bandwidth", "The standard deviation of the gaussian the density is smoothed with, of the triangle's side. "
+                                   "Auto: from the spread and the number of the samples (Scott's rule).");
+            bool automatic = l.bandwidth <= 0.0f;
+            if (ImGui::Checkbox("auto", &automatic)) {
+                l.bandwidth = automatic ? 0.0f : (l.auto_bandwidth > 0.0f ? l.auto_bandwidth : 0.02f);
+            }
+            ImGui::SameLine();
+            float pct = (automatic ? l.auto_bandwidth : l.bandwidth) * 100.0f;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (automatic) ImGui::BeginDisabled();
+            if (ImGui::SliderFloat("##bandwidth", &pct, 0.5f, 10.0f, "%.1f%%", ImGuiSliderFlags_AlwaysClamp)) l.bandwidth = pct / 100.0f;
+            if (automatic) ImGui::EndDisabled();
+        }
+        if (l.style == LayerStyle_Points) {
+            prop::row("point size");
+            ImGui::SliderFloat("##point_size", &l.point_size, 1.0f, 12.0f, "%.0f px");
+            prop::row("color by");
+            int c = (int)l.point_coloring;
+            if (ImGui::Combo("##coloring", &c, point_coloring_names, PointColoring_Count)) l.point_coloring = (PointColoring)c;
+            if (l.frames != LayerFrames_Current && l.point_stride > 1) {
+                prop::hint("Every %u frames, to keep to %u points", l.point_stride, (uint32_t)MAX_POINTS);
+            }
+        }
+
+        ImGui::PopID();
+        prop::end();
+    }
+
+    void draw_sidebar() {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("LAYERS");
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
+        if (ImGui::Button(ICON_FA_PLUS "##add", ImVec2(ImGui::GetFrameHeight(), 0))) ImGui::OpenPopup("##add_menu");
+        ImGui::SetItemTooltip("Add a layer, of the structures of the one selected");
+        if (ImGui::BeginPopup("##add_menu")) {
+            draw_add_menu();
+            ImGui::EndPopup();
+        }
+
+        int drag_from = -1, drag_to = -1;
+        uint32_t remove_id = 0, duplicate_id = 0;
+        for (int i = 0; i < num_layers; ++i) draw_layer_row(i, &drag_from, &drag_to, &remove_id, &duplicate_id);
+        if (num_layers == 0) ImGui::TextDisabled("No layers: add one with +");
+
+        if (drag_from >= 0) move_layer(drag_from, CLAMP(drag_to, 0, num_layers - 1));
+        if (duplicate_id) duplicate_layer(duplicate_id);
+        if (remove_id) remove_layer(remove_id);
+
+        if (Layer* l = find_layer(selected_layer)) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            draw_inspector(*l);
+        }
+
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) && selected_layer) {
+            remove_layer(selected_layer);
+        }
+    }
+
+    void draw() {
+        highlights_now = false;
+        draw_window();
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
+        owns_highlight = highlights_now;
+    }
+
+    void draw_window() {
+        if (!show_window || !app) return;
+        ImGui::SetNextWindowSize(ImVec2(720, 480), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar)) {
+            draw_toolbar();
+            if (show_sidebar) {
+                ImGui::BeginChild("##sidebar", ImVec2(320, 0), ImGuiChildFlags_ResizeX | ImGuiChildFlags_Borders);
+                draw_sidebar();
+                ImGui::EndChild();
+                ImGui::SameLine();
+            }
+            ImGui::BeginChild("##plot", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            draw_plot();
+            ImGui::EndChild();
+        }
+        ImGui::End();
     }
 };
 
 static Shapespace instance = {};
+
+}  // namespace shapespace
