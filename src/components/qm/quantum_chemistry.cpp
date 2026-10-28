@@ -37,12 +37,14 @@
 #include <imgui_internal.h>
 
 #include "flow_draw.h"
+#include "critical_point_distribution_core.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
 
 #include <algorithm>
 #include <atomic>
+#include <vector>
 #include <app/IconsFontAwesome6.h>
 
 #define BLK_DIM 8
@@ -252,7 +254,7 @@ static void critical_points_write_json(md_file_t f, const CriticalPointsExport& 
             if (type == MD_TOPO_SPLIT_SADDLE) {
                 // lambda1 / lambda2 - 1 of the two negative eigenvalues, |lambda1| >= |lambda2|
                 md_file_printf(f, ", \"ellipticity\": ");
-                write_number(f, ev[0] / ev[1] - 1.0, true, true);
+                write_number(f, critical_point_distribution::ellipticity(ev), true, true);
             }
         }
         md_file_printf(f, "}");
@@ -878,6 +880,21 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_window = false;
     } summary;
 
+    // The numbers a CP is listed and sorted by; NaN where a value does not apply
+    struct CriticalPointRow {
+        uint32_t i;
+        int order;      // of its type in critical_point_type_order
+        double rho, laplacian, ellipticity, xyz[3];
+    };
+
+    // A distinct chemical environment: a category and a label, as the tables and the viewport show it
+    struct CriticalPointEnvironment {
+        int type, order;
+        critical_point_distribution::Kind kind;
+        std::string name;       // the label's group
+        vec4_t color;           // its layer's in the category's plot
+    };
+
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
         bool enabled = false;
@@ -920,6 +937,41 @@ struct QuantumChemistry : viamd::EventHandler {
         // How they are drawn (draw_critical_points)
         float point_scale = 1.0f;       // the markers' size, times critical_point_styles' radii
         bool  show_paths  = true;       // the bond paths and RCP attractor paths (the graph's edges)
+        bool  type_visible[MD_TOPO_NUM_TYPES] = {true, true, true, true, true};
+        critical_point_distribution::Filter density_filter[MD_TOPO_NUM_TYPES];
+
+        struct Distribution {
+            std::vector<uint32_t> indices;
+            critical_point_distribution::Curve curve;
+            std::vector<std::string> component_names;   // chemical environments, largest first; the curve's components
+            std::vector<uint32_t> component_of;         // per index, its component
+            double view_min = 0.0, view_max = 0.0;      // the plot's density axis, as last drawn
+            bool fit = true;
+        };
+        Distribution distributions[MD_TOPO_NUM_TYPES];
+        bool distributions_dirty = true;
+        // What the viewport shows of the selection: everything, only the selection, or its 3 Å vicinity
+        enum Show : int { Show_All = 0, Show_Selected = 1, Show_Vicinity = 2 };
+        int show = Show_Selected;
+        std::vector<uint32_t> focus_indices;    // sorted; the selection, unless everything is shown (critical_point_focus_sync)
+        int inspected = -1;                     // the CP clicked in the list, explained in the details and ringed in the viewport
+        // What the list of CPs shows: the CPs of the environments selected in the table above it, else those of the
+        // bars clicked, else every listed CP (critical_point_listed)
+        std::vector<uint32_t> environment_selection;    // environment ids
+        std::vector<uint32_t> list_scope;
+        float top_height = 0.0f;                // the environments' and distributions' height, once the splitter is dragged
+        std::vector<critical_point_distribution::ChemicalLabel> chemical_labels;
+        // Built with the distributions (update_critical_point_distributions), so nothing per frame is per-CP strings
+        std::vector<CriticalPointRow> rows;                     // per CP
+        std::vector<uint32_t> environment_of;                   // per CP, into environments
+        std::vector<CriticalPointEnvironment> environments;
+        // The list's rows in their sorted order, kept while the rows and the sort stay the same
+        std::vector<uint32_t> list_order;
+        uint64_t list_hash = 0;
+        bool color_by_environment = false;      // viewport markers take their environment's colour
+        bool show_labels = false;               // viewport tags the selected CPs with their environment
+        // Asked for in the Export menu or a table's context menu, done once the table has its rows this frame
+        int export_environments = 0, export_points = 0;   // CriticalPointTableExport
 
         PickingRange picking_range = {};
 
@@ -927,6 +979,37 @@ struct QuantumChemistry : viamd::EventHandler {
         md_bitmask_t selection_mask = {};
         md_bitmask_t highlight_mask = {};
     } critical_points;
+
+    bool critical_point_visible(size_t i) const {
+        const auto& cp = critical_points;
+        const auto& graph = cp.simp_graph;
+        if (i >= graph.num_vertices) return false;
+        const int type = md_topo_vertex_type(&graph, i);
+        const double density = graph.vertices_f64 ? graph.vertices_f64[i].value : (double)graph.vertices[i].value;
+        if (cp.show == CriticalPoints::Show_Selected && !cp.focus_indices.empty() &&
+            !std::binary_search(cp.focus_indices.begin(), cp.focus_indices.end(), (uint32_t)i)) {
+            return false;
+        }
+        return cp.type_visible[type] && cp.density_filter[type].accepts(density);
+    }
+
+    void critical_point_scope_clear() {
+        critical_points.environment_selection.clear();
+        critical_points.list_scope.clear();
+        critical_points.inspected = -1;
+    }
+
+    // The focus is the selection, unless the viewport shows every CP
+    void critical_point_focus_sync() {
+        CriticalPoints& cp = critical_points;
+        cp.focus_indices.clear();
+        if (cp.show == CriticalPoints::Show_All) return;
+        md_bitset_iter_t it = md_bitmask_iter(&cp.selection_mask);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx < cp.simp_graph.num_vertices) cp.focus_indices.push_back((uint32_t)it.idx);
+        }
+        std::sort(cp.focus_indices.begin(), cp.focus_indices.end());
+    }
 
     struct Opt {
         int hovered = -1;
@@ -1424,6 +1507,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_orb_window(state);
                     draw_summary_window(state);
                     draw_critical_points_window(state);
+                    draw_critical_point_labels(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
                         draw_nto_window(state);
@@ -1479,6 +1563,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
                     h = md_hash64(&critical_points.point_scale, sizeof(critical_points.point_scale), h);
                     h = md_hash64(&critical_points.show_paths, sizeof(critical_points.show_paths), h);
+                    h = md_hash64(critical_points.type_visible, sizeof(critical_points.type_visible), h);
+                    critical_point_focus_sync();
+                    if (!critical_points.focus_indices.empty()) {
+                        h = md_hash64(critical_points.focus_indices.data(), critical_points.focus_indices.size() * sizeof(uint32_t), h);
+                    }
+                    h = md_hash64(&critical_points.show, sizeof(critical_points.show), h);
+                    h = md_hash64(&critical_points.inspected, sizeof(critical_points.inspected), h);
+                    h = md_hash64(&critical_points.color_by_environment, sizeof(critical_points.color_by_environment), h);
+                    if (critical_points.color_by_environment) {
+                        for (const auto& env : critical_points.environments) h = md_hash64(&env.color, sizeof(env.color), h);
+                    }
+                    for (int type : critical_point_type_order) {
+                        const auto& filter = critical_points.density_filter[type];
+                        h = md_hash64(&filter.enabled, sizeof(filter.enabled), h);
+                        if (filter.enabled && !filter.ranges.empty()) {
+                            h = md_hash64(filter.ranges.data(), filter.ranges.size() * sizeof(filter.ranges[0]), h);
+                        }
+                    }
                     h = md_hash64(&rk->state->visuals.background.color, sizeof(rk->state->visuals.background.color), h);
                     rk->key = h;
                 }
@@ -1494,7 +1596,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         case InteractionSurfaceEventKind::Hover: [[fallthrough]];
                         case InteractionSurfaceEventKind::Click: {
                             md_bitmask_clear(&critical_points.highlight_mask);
-                            if (event->hit.domain == PickingDomain_CriticalPoints) {
+                            if (event->hit.domain == PickingDomain_CriticalPoints && critical_point_visible(event->hit.local_idx)) {
                                 md_bitmask_or(&critical_points.highlight_mask, md_bitset_range((uint32_t)(event->hit.local_idx), (uint32_t)(event->hit.local_idx) + 1));
                             }
 
@@ -1521,6 +1623,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 md_bitset_iter_t it = md_bitmask_iter(&critical_points.selection_mask);
                                 while (md_bitset_iter_next(&it)) {
                                     size_t idx = it.idx;
+                                    if (!critical_point_visible(idx)) continue;
                                     vec3_t xyz = { critical_points.simp_graph.vertices[idx].x,
                                                    critical_points.simp_graph.vertices[idx].y,
                                                    critical_points.simp_graph.vertices[idx].z };
@@ -1534,6 +1637,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 }
                             } else {
                                 for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
+                                    if (!critical_point_visible(i)) continue;
                                     vec3_t xyz = { critical_points.simp_graph.vertices[i].x,
                                                    critical_points.simp_graph.vertices[i].y,
                                                    critical_points.simp_graph.vertices[i].z };
@@ -1729,17 +1833,22 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (critical_points.enabled) {
                         size_t popcount = bf ? md_bitmask_count(bf) : 0;
                         if (popcount > 0) {
+                            const size_t old_size = md_array_size(req->xyzw);
                             vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                             if (dst_xyzw) {
+                                size_t count = 0;
                                 md_bitset_iter_t it = md_bitmask_iter(bf);
                                 while (md_bitset_iter_next(&it)) {
                                     size_t idx = it.idx;
+                                    if (!critical_point_visible(idx)) continue;
                                     dst_xyzw->x = (float)(critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM);
                                     dst_xyzw->y = (float)(critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM);
                                     dst_xyzw->z = (float)(critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM);
                                     dst_xyzw->w = 1.0f;
                                     dst_xyzw++;
+                                    count++;
                                 }
+                                md_array_shrink(req->xyzw, old_size + count);
                             }
                         }
                     }
@@ -1782,6 +1891,35 @@ struct QuantumChemistry : viamd::EventHandler {
         auto pos = [&g](size_t i) {
             return vec3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
         };
+        using critical_point_distribution::Position;
+        auto position_angstrom = [&g](size_t i) {
+            double xyzv[4];
+            critical_point_xyzv(xyzv, g, i);
+            return Position{xyzv[0] * BOHR_TO_ANGSTROM, xyzv[1] * BOHR_TO_ANGSTROM, xyzv[2] * BOHR_TO_ANGSTROM};
+        };
+        critical_point_focus_sync();
+        const bool focus_active = !critical_points.focus_indices.empty();
+        Position* centers = md_temp_alloc_array(temp, Position, critical_points.focus_indices.size());
+        size_t center_count = 0;
+        for (uint32_t i : critical_points.focus_indices) {
+            if (i < num_cp) centers[center_count++] = position_angstrom(i);
+        }
+        bool* nearby = md_temp_alloc_array(temp, bool, num_cp);
+        const bool dim_far = focus_active && critical_points.show == CriticalPoints::Show_Vicinity;
+        for (size_t i = 0; i < num_cp; ++i) {
+            nearby[i] = !dim_far || critical_point_distribution::within_focus(position_angstrom(i), {centers, center_count});
+        }
+        auto focused_color = [](vec4_t color, bool near) {
+            if (!near) color.w *= 0.15f;
+            return color;
+        };
+        bool any_selected = false;
+        for (size_t i = 0; i < num_cp; ++i) {
+            if (critical_point_visible(i) && md_bitmask_test_bit(&critical_points.selection_mask, (uint32_t)i)) {
+                any_selected = true;
+                break;
+            }
+        }
 
         // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
         // paths, from a ring critical point to the cage critical points beside it (md_topo traces each from the
@@ -1792,13 +1930,14 @@ struct QuantumChemistry : viamd::EventHandler {
             for (size_t i = 0; i < g.num_edges; ++i) {
                 const uint32_t i0 = g.edges[i].from, i1 = g.edges[i].to;
                 if (i0 >= num_cp || i1 >= num_cp) continue;
+                if (!critical_point_visible(i0)) continue;
                 const bool bond = md_topo_vertex_type(&g, i0) == MD_TOPO_SPLIT_SADDLE;
                 const vec3_t p0 = pos(i0), p1 = pos(i1);
                 const vec3_t side = vec3_cross(p1 - p0, back);
                 const float len = vec3_length(side);
                 if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
                 const vec3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
-                const uint32_t col = convert_color(bond ? bond_path_color : rcp_path_color);
+                const uint32_t col = convert_color(focused_color(bond ? bond_path_color : rcp_path_color, nearby[i0] && nearby[i1]));
                 const vec3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
                 const int tri[6] = {0, 1, 2, 0, 2, 3};
                 for (int k = 0; k < 6; ++k) {
@@ -1830,8 +1969,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
         const vec4_t selection_color = state.selection.color.selection.outline;
         const vec4_t highlight_color = state.selection.color.highlight.outline;
-        const bool any_selected = md_bitmask_count(&critical_points.selection_mask) > 0;
         const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
+        // The environments are those of the graph drawn only once the window has labelled it
+        const bool by_environment = critical_points.color_by_environment && critical_points.environment_of.size() == num_cp;
 
         // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
         immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
@@ -1852,21 +1992,63 @@ struct QuantumChemistry : viamd::EventHandler {
         };
         for (size_t j = 0; j < num_cp; ++j) {
             const uint32_t i = order[j];
+            if (!critical_point_visible(i)) continue;
             const CriticalPointStyle& style = critical_point_style(md_topo_vertex_type(&g, i));
+            const vec4_t base = by_environment ? critical_points.environments[critical_points.environment_of[i]].color : style.color;
             const bool selected    = md_bitmask_test_bit(&critical_points.selection_mask, i);
-            const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
+            const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i) || (int)i == critical_points.inspected;
             const float r = style.radius * scale * (highlighted ? 1.3f : 1.0f);
             const vec3_t c = pos(i);
-            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), highlight_color, i);
-            if (selected)    disc(c, r * 1.4f, selection_color, i);
-            disc(c, r, outline_color, i);
-            const vec4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
-            disc(c, r * 0.78f, fill, i);
+            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), focused_color(highlight_color, nearby[i]), i);
+            if (selected)    disc(c, r * 1.4f, focused_color(selection_color, nearby[i]), i);
+            disc(c, r, focused_color(outline_color, nearby[i]), i);
+            const vec4_t fill = (!focus_active && any_selected && !selected) ? tint_color(base, base, 0.0f, saturation) : base;
+            disc(c, r * 0.78f, focused_color(fill, nearby[i]), i);
         }
         immediate::triangles(scope, v, n);
     }
 
+    // The selected CPs' environments, over the scene and under every window
+    void draw_critical_point_labels(const ApplicationState& state) {
+        const CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& g = cp.simp_graph;
+        if (!cp.enabled || !cp.show_labels || g.num_vertices == 0 || cp.environment_of.size() != g.num_vertices) return;
+        constexpr size_t max_labels = 200;   // past this, text only hides the scene
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList(viewport);
+        const mat4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
+        const vec3_t bg = state.visuals.background.color;
+        const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
+        const ImU32 text_color = dark_bg ? IM_COL32(235, 235, 235, 255) : IM_COL32(20, 20, 20, 255);
+        const ImU32 rect_color = dark_bg ? IM_COL32(0, 0, 0, 150) : IM_COL32(255, 255, 255, 170);
+        const float h = ImGui::GetTextLineHeight();
+        size_t drawn = 0;
+        md_bitset_iter_t it = md_bitmask_iter(&cp.selection_mask);
+        while (md_bitset_iter_next(&it) && drawn < max_labels) {
+            const size_t i = it.idx;
+            if (!critical_point_visible(i)) continue;
+            const vec3_t p = vec3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
+            const vec4_t clip = mat4_mul_vec4(mvp, vec4_from_vec3(p, 1.0f));
+            if (clip.w <= 0.0f) continue;
+            const vec4_t c = clip / clip.w;
+            if (c.x < -1 || c.x > 1 || c.y < -1 || c.y > 1 || c.z < -1 || c.z > 1) continue;
+            const CriticalPointEnvironment& env = cp.environments[cp.environment_of[i]];
+            const char* text = env.name.c_str();
+            const ImVec2 size = ImGui::CalcTextSize(text);
+            // Beside the marker rather than on it
+            const ImVec2 at = ImVec2(viewport->Pos.x + (c.x * 0.5f + 0.5f) * viewport->Size.x + 0.6f * h,
+                                     viewport->Pos.y + (-c.y * 0.5f + 0.5f) * viewport->Size.y - 0.5f * size.y);
+            const ImVec2 pad = ImVec2(0.25f * h, 0.05f * h);
+            dl->AddRectFilled(at - pad, at + size + pad, rect_color, 0.2f * h);
+            dl->AddText(at, text_color, text);
+            ++drawn;
+        }
+    }
+
     void reset_data() {
+        critical_points.distributions_dirty = true;
+        critical_point_scope_clear();
+        critical_points.focus_indices.clear();
         // First: the run holds nothing of the system's, but its result would land in a graph that
         // belongs to the next one.
         gto_critical_point_job_destroy(critical_points.gto_job);
@@ -4838,6 +5020,9 @@ struct QuantumChemistry : viamd::EventHandler {
         cp.gto_have  = 0;
         cp.raw_hash  = 0;
         cp.simp_hash = 0;
+        cp.distributions_dirty = true;
+        cp.focus_indices.clear();
+        critical_point_scope_clear();
         md_topo_extremum_graph_free(&cp.raw_graph);
         md_topo_extremum_graph_free(&cp.simp_graph);
         // Indices into the graph just freed
@@ -4853,6 +5038,9 @@ struct QuantumChemistry : viamd::EventHandler {
         cp.gto_job = nullptr;
 
         if (!job->dropped && job->hash == cp.gto_want) {
+            cp.distributions_dirty = true;
+            cp.focus_indices.clear();
+            critical_point_scope_clear();
             md_topo_extremum_graph_free(&cp.raw_graph);
             md_topo_extremum_graph_free(&cp.simp_graph);
             if (job->graph.num_vertices > 0) {
@@ -4981,6 +5169,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (cp.simp_hash != simp_hash) {
             cp.simp_hash = simp_hash;
+            cp.distributions_dirty = true;
+            cp.focus_indices.clear();
+            critical_point_scope_clear();
 
             md_topo_extremum_graph_free(&cp.simp_graph);
             if (cp.vol_simplify && cp.raw_graph.num_vertices > 0) {
@@ -5116,6 +5307,920 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::End();
     }
 
+    double critical_point_density(uint32_t i) const {
+        const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
+        return graph.vertices_f64 ? graph.vertices_f64[i].value : (double)graph.vertices[i].value;
+    }
+
+    // Click: the CPs become the selection. Shift-click: they are added, or removed if all of them already are.
+    void select_critical_points(const std::vector<uint32_t>& indices) {
+        CriticalPoints& cp = critical_points;
+        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+            bool all = !indices.empty();
+            for (uint32_t i : indices) all &= md_bitmask_test_bit(&cp.selection_mask, i);
+            for (uint32_t i : indices) {
+                if (all) md_bitmask_clear_bit(&cp.selection_mask, i);
+                else md_bitmask_set_bit(&cp.selection_mask, i);
+            }
+        } else {
+            md_bitmask_clear(&cp.selection_mask);
+            for (uint32_t i : indices) md_bitmask_set_bit(&cp.selection_mask, i);
+        }
+    }
+
+    void highlight_critical_points(const std::vector<uint32_t>& indices) {
+        CriticalPoints& cp = critical_points;
+        md_bitmask_clear(&cp.highlight_mask);
+        for (uint32_t i : indices) md_bitmask_set_bit(&cp.highlight_mask, i);
+    }
+
+    // The colour of an environment's layer in its category's plot: the key between the plots and the table
+    ImVec4 critical_point_environment_color(int type, const std::string& name) const {
+        const auto& distribution = critical_points.distributions[type];
+        if (distribution.curve.components.size() > 1 && !distribution.component_names.empty()) {
+            size_t k = 0;   // not among the named ones: pooled into the last, Other environments
+            while (k + 1 < distribution.component_names.size() && distribution.component_names[k] != name) ++k;
+            return ImPlot::GetColormapColor((int)k);
+        }
+        const vec4_t c = critical_point_style(type).color;
+        return ImVec4(c.x, c.y, c.z, 1.0f);
+    }
+
+    static void environment_swatch(ImVec4 color) {
+        const float h = ImGui::GetTextLineHeight();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        color.w = 1.0f;
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 0.15f * h, p.y + 0.2f * h), ImVec2(p.x + 0.75f * h, p.y + 0.8f * h),
+                                                  ImGui::ColorConvertFloat4ToU32(color), 0.15f * h);
+        ImGui::Dummy(ImVec2(0.85f * h, h));
+    }
+
+    // Whether CP i is listed in the table and counted in the inspector's context: its category is shown, its
+    // density passes the category's filter and lies in the plot's density window
+    bool critical_point_listed(uint32_t i) const {
+        const CriticalPoints& cp = critical_points;
+        const int type = md_topo_vertex_type(&cp.simp_graph, i);
+        if (!cp.type_visible[type]) return false;
+        const double rho = critical_point_density(i);
+        if (!cp.density_filter[type].accepts(rho)) return false;
+        const auto& distribution = cp.distributions[type];
+        const bool windowed = distribution.curve.valid && distribution.view_max > distribution.view_min;
+        return !windowed || (rho >= distribution.view_min && rho <= distribution.view_max);
+    }
+
+    void update_critical_point_distributions() {
+        CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        auto density = [this](uint32_t i) { return critical_point_density(i); };
+        const bool labelled = cp.chemical_labels.size() == graph.num_vertices;
+        auto environment = [&](uint32_t i) -> std::string {
+            return labelled ? critical_point_distribution::display_name(cp.chemical_labels[i]) : std::string("Unassigned");
+        };
+        // The curves are split into at most this many chemical environments; the smallest are pooled
+        constexpr size_t max_components = 6;
+        if (cp.distributions_dirty) {
+            for (auto& distribution : cp.distributions) {
+                distribution.indices.clear();
+                distribution.curve = {};
+                distribution.component_names.clear();
+                distribution.component_of.clear();
+                distribution.fit = true;
+            }
+            for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                cp.distributions[md_topo_vertex_type(&graph, i)].indices.push_back(i);
+            }
+            std::vector<double> values;
+            for (int type : critical_point_type_order) {
+                auto& distribution = cp.distributions[type];
+                std::vector<std::pair<std::string, size_t>> counts;
+                for (uint32_t i : distribution.indices) {
+                    const std::string name = environment(i);
+                    auto it = std::find_if(counts.begin(), counts.end(), [&](const auto& c) { return c.first == name; });
+                    if (it == counts.end()) counts.push_back({name, 1});
+                    else it->second++;
+                }
+                std::sort(counts.begin(), counts.end(), [](const auto& a, const auto& b) {
+                    return a.second != b.second ? a.second > b.second : a.first < b.first;
+                });
+                const bool pooled = counts.size() > max_components;
+                const size_t named = pooled ? max_components - 1 : counts.size();
+                for (size_t k = 0; k < named; ++k) distribution.component_names.push_back(counts[k].first);
+                if (pooled) distribution.component_names.push_back("Other environments");
+                auto component = [&](uint32_t i) {
+                    const std::string name = environment(i);
+                    for (size_t k = 0; k < named; ++k) {
+                        if (distribution.component_names[k] == name) return (uint32_t)k;
+                    }
+                    return (uint32_t)(distribution.component_names.size() - 1);
+                };
+
+                values.clear();
+                distribution.component_of.clear();
+                for (uint32_t i : distribution.indices) {
+                    values.push_back(density(i));
+                    distribution.component_of.push_back(component(i));
+                }
+                distribution.curve = critical_point_distribution::estimate(values, distribution.component_of,
+                                                                           distribution.component_names.size());
+                if (distribution.curve.valid) {
+                    std::sort(distribution.indices.begin(), distribution.indices.end(), [&](uint32_t a, uint32_t b) {
+                        return density(a) < density(b);
+                    });
+                    for (size_t j = 0; j < distribution.indices.size(); ++j) distribution.component_of[j] = component(distribution.indices[j]);
+                }
+            }
+            build_critical_point_cache();
+            cp.distributions_dirty = false;
+        }
+    }
+
+    // The rows and environments the tables and the viewport read every frame
+    void build_critical_point_cache() {
+        CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        cp.rows.clear();
+        cp.environment_of.clear();
+        cp.environments.clear();
+        cp.environment_selection.clear();
+        cp.list_order.clear();
+        cp.list_hash = 0;
+        cp.rows.reserve(graph.num_vertices);
+        for (uint32_t i = 0; i < graph.num_vertices; ++i) cp.rows.push_back(critical_point_row(i));
+        if (cp.chemical_labels.size() != graph.num_vertices) return;
+        cp.environment_of.assign(graph.num_vertices, 0);
+        std::vector<std::pair<std::string, uint32_t>> ids;   // "type|display name", sorted
+        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+            const int type = md_topo_vertex_type(&graph, i);
+            const auto& label = cp.chemical_labels[i];
+            const std::string display = critical_point_distribution::display_name(label);
+            const std::string key = std::to_string(type) + "|" + display;
+            auto it = std::lower_bound(ids.begin(), ids.end(), key, [](const auto& a, const std::string& k) { return a.first < k; });
+            if (it == ids.end() || it->first != key) {
+                const ImVec4 c = critical_point_environment_color(type, display);
+                it = ids.insert(it, {key, (uint32_t)cp.environments.size()});
+                cp.environments.push_back({type, critical_point_type_rank(type), label.kind, label.group, vec4_set(c.x, c.y, c.z, 1.0f)});
+            }
+            cp.environment_of[i] = it->second;
+        }
+    }
+
+    // Adds a range over the middle third of the plot's current view
+    void add_critical_point_filter_range(int type) {
+        CriticalPoints& cp = critical_points;
+        auto& distribution = cp.distributions[type];
+        const auto& curve = distribution.curve;
+        double lo = distribution.view_min, hi = distribution.view_max;
+        if (!(hi > lo) || (curve.logarithmic && lo <= 0.0)) {
+            lo = critical_point_density(distribution.indices.front());
+            hi = critical_point_density(distribution.indices.back());
+        }
+        critical_point_distribution::Range range;
+        if (curve.logarithmic && lo > 0.0) {
+            const double ratio = hi / lo;
+            range = {lo * std::cbrt(ratio), lo * std::cbrt(ratio * ratio)};
+        } else {
+            range = {lo + (hi - lo) / 3.0, lo + 2.0 * (hi - lo) / 3.0};
+        }
+        auto& filter = cp.density_filter[type];
+        if (!filter.enabled) filter.ranges.clear();
+        filter.ranges.push_back(range);
+        filter.enabled = true;
+    }
+
+    // A category's density filter as a line of chips, one per range: click a chip to edit it, x removes it
+    void draw_critical_point_filter(int type) {
+        CriticalPoints& cp = critical_points;
+        auto& filter = cp.density_filter[type];
+        const auto& distribution = cp.distributions[type];
+        const CriticalPointStyle& style = critical_point_style(type);
+        ImGui::PushID(type);
+        critical_point_swatch(type);
+        ImGui::SameLine();
+        size_t passing = 0;
+        for (uint32_t i : distribution.indices) passing += filter.accepts(critical_point_density(i));
+        if (filter.enabled) ImGui::Text("%s %zu/%zu", style.plural, passing, distribution.indices.size());
+        else ImGui::Text("%s %zu", style.plural, distribution.indices.size());
+        ImGui::BeginDisabled(!distribution.curve.valid);
+        int remove = -1;
+        if (filter.enabled) {
+            for (size_t k = 0; k < filter.ranges.size(); ++k) {
+                auto& range = filter.ranges[k];
+                ImGui::PushID((int)k);
+                ImGui::SameLine();
+                char label[64];
+                snprintf(label, sizeof(label), "%.3g \xE2\x80\x93 %.3g", range.min, range.max);
+                if (ImGui::SmallButton(label)) ImGui::OpenPopup("Range");
+                if (ImGui::BeginPopup("Range")) {
+                    ImGui::SetNextItemWidth(8.0f * ImGui::GetFontSize());
+                    double lower = range.min;
+                    if (ImGui::InputDouble("Min (au)", &lower, 0.0, 0.0, "%.6g") && isfinite(lower)) range.min = MIN(lower, range.max);
+                    ImGui::SetNextItemWidth(8.0f * ImGui::GetFontSize());
+                    double upper = range.max;
+                    if (ImGui::InputDouble("Max (au)", &upper, 0.0, 0.0, "%.6g") && isfinite(upper)) range.max = MAX(upper, range.min);
+                    size_t inside = 0;
+                    for (uint32_t i : distribution.indices) {
+                        const double rho = critical_point_density(i);
+                        inside += rho >= range.min && rho <= range.max;
+                    }
+                    ImGui::TextDisabled("%zu %s inside", inside, style.plural);
+                    ImGui::EndPopup();
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+                if (ImGui::SmallButton("\xC3\x97")) remove = (int)k;
+                ImGui::PopID();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(filter.enabled ? "+" : "+ Filter")) add_critical_point_filter_range(type);
+        ImGui::SetItemTooltip("Add a density range over the middle third of the plot's view (zoom onto a peak first),\n"
+                              "then drag its handles in the plot. A CP passes if it lies in any range of its category.");
+        ImGui::EndDisabled();
+        if (remove >= 0) {
+            filter.ranges.erase(filter.ranges.begin() + remove);
+            if (filter.ranges.empty()) filter.enabled = false;
+        }
+        ImGui::PopID();
+    }
+
+    void draw_critical_point_distribution_plot(const ApplicationState& state, md_temp_scope_t temp, int type) {
+        CriticalPoints& cp = critical_points;
+        auto density = [this](uint32_t i) { return critical_point_density(i); };
+        const float em = ImGui::GetFontSize();
+        auto& distribution = cp.distributions[type];
+        const auto& curve = distribution.curve;
+        const auto& indices = distribution.indices;
+        auto& filter = cp.density_filter[type];
+        const CriticalPointStyle& style = critical_point_style(type);
+        if (distribution.fit) ImPlot::SetNextAxesToFit();
+        if (!ImPlot::BeginPlot(style.plural, ImVec2(-1, -1), ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame | ImPlotFlags_NoLegend)) return;
+        distribution.fit = false;
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
+        ImPlot::SetupAxes(curve.logarithmic ? "Density (au, log scale)" : "Density (au)",
+                          curve.logarithmic ? "Probability / decade" : "Probability / au",
+                          axis_flags, axis_flags | ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxisScale(ImAxis_X1, curve.logarithmic ? ImPlotScale_Log10 : ImPlotScale_Linear);
+        if (!curve.valid) {
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, 1.0, ImPlotCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0, ImPlotCond_Always);
+            ImPlot::PlotText(indices.empty() ? "No critical points" : "Invalid density values", 0.5, 0.5);
+            ImPlot::EndPlot();
+            return;
+        }
+        const ImPlotRect limits = ImPlot::GetPlotLimits();
+        distribution.view_min = limits.X.Min;
+        distribution.view_max = limits.X.Max;
+
+        const vec4_t c = style.color;
+        const ImVec4 color(c.x, c.y, c.z, c.w);
+        const int n = curve.sample_count;
+        const bool split = curve.components.size() > 1;
+        auto component_color = [&](size_t k) { return ImPlot::GetColormapColor((int)k); };
+        const bool bar_click = ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                               ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] <
+                                   ImGui::GetIO().MouseDragThreshold * ImGui::GetIO().MouseDragThreshold;
+        // The layers are keyed by the colour swatches of the table's environments, not by a legend
+        if (split) {
+            double* lower = md_temp_alloc_array(temp, double, n);
+            double* upper = md_temp_alloc_array(temp, double, n);
+            for (int j = 0; j < n; ++j) lower[j] = 0.0;
+            for (size_t k = 0; k < curve.components.size(); ++k) {
+                for (int j = 0; j < n; ++j) upper[j] = lower[j] + curve.components[k][j];
+                char id[24];
+                snprintf(id, sizeof(id), "##Layer %zu", k);
+                ImPlot::SetNextFillStyle(component_color(k), 0.55f);
+                ImPlot::PlotShaded(id, curve.density.data(), lower, upper, n);
+                for (int j = 0; j < n; ++j) lower[j] = upper[j];
+            }
+            ImPlot::SetNextLineStyle(color, 2.0f);
+            ImPlot::PlotLine("##Total", curve.density.data(), curve.probability.data(), n);
+        } else {
+            ImPlot::SetNextFillStyle(color, 0.3f);
+            ImPlot::PlotShaded("##Distribution", curve.density.data(), curve.probability.data(), n);
+            ImPlot::SetNextLineStyle(color);
+            ImPlot::PlotLine("##Distribution", curve.density.data(), curve.probability.data(), n);
+        }
+
+        bool handle_active = false;
+        if (filter.enabled) {
+            const double front = curve.density.front(), back = curve.density.back();
+            for (size_t k = 0; k < filter.ranges.size(); ++k) {
+                auto& range = filter.ranges[k];
+                double lower = CLAMP(range.min, front, back);
+                double upper = CLAMP(range.max, front, back);
+                bool hovered[2] = {}, held[2] = {};
+                if (ImPlot::DragLineX(2 * (int)k, &lower, color, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered[0], &held[0])) {
+                    range.min = MIN(CLAMP(lower, front, back), range.max);
+                }
+                if (ImPlot::DragLineX(2 * (int)k + 1, &upper, color, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered[1], &held[1])) {
+                    range.max = MAX(CLAMP(upper, front, back), range.min);
+                }
+                handle_active |= hovered[0] || hovered[1] || held[0] || held[1];
+            }
+        }
+
+        struct Group { size_t begin, end; float x; int component; };
+        Group* groups = md_temp_alloc_array(temp, Group, indices.size());
+        size_t num_groups = 0;
+        for (size_t begin = 0; begin < indices.size();) {
+            const float first_x = ImPlot::PlotToPixels(density(indices[begin]), 0.0).x;
+            float last_x = first_x;
+            size_t end = begin + 1;
+            int component = (int)distribution.component_of[begin];
+            while (end < indices.size()) {
+                const float x = ImPlot::PlotToPixels(density(indices[end]), 0.0).x;
+                if (x - first_x > 6.0f) break;
+                last_x = x;
+                if ((int)distribution.component_of[end] != component) component = -1;
+                ++end;
+            }
+            groups[num_groups++] = {begin, end, (first_x + last_x) * 0.5f, component};
+            begin = end;
+        }
+
+        const ImVec2 pos = ImPlot::GetPlotPos();
+        const ImVec2 size = ImPlot::GetPlotSize();
+        const float bottom = pos.y + size.y - 2.0f;
+        size_t max_count = 1;
+        for (size_t k = 0; k < num_groups; ++k) max_count = MAX(max_count, groups[k].end - groups[k].begin);
+        const float max_bar_height = size.y * 0.35f;
+        auto bar_height = [&](const Group& group) {
+            return max_bar_height * (float)(group.end - group.begin) / (float)max_count;
+        };
+        const ImVec2 mouse = ImGui::GetMousePos();
+        int hovered = -1;
+        float distance = 5.0f;
+        const bool plot_free = ImPlot::IsPlotHovered() && !handle_active;
+        if (plot_free) {
+            for (size_t k = 0; k < num_groups; ++k) {
+                const float d = fabsf(mouse.x - groups[k].x);
+                if (d < distance && mouse.y >= bottom - MAX(bar_height(groups[k]), 4.0f) - em) {
+                    distance = d;
+                    hovered = (int)k;
+                }
+            }
+        }
+        // Hover only highlights; what a bar holds is read in the table and the inspector
+        if (hovered >= 0) {
+            const Group& group = groups[hovered];
+            const std::vector<uint32_t> members(indices.begin() + group.begin, indices.begin() + group.end);
+            highlight_critical_points(members);
+            if (bar_click) {
+                select_critical_points(members);
+                // The list shows the bars clicked: Shift adds this one's CPs to it
+                cp.environment_selection.clear();
+                if (!ImGui::IsKeyDown(ImGuiMod_Shift)) cp.list_scope.clear();
+                cp.list_scope.insert(cp.list_scope.end(), members.begin(), members.end());
+                std::sort(cp.list_scope.begin(), cp.list_scope.end());
+                cp.list_scope.erase(std::unique(cp.list_scope.begin(), cp.list_scope.end()), cp.list_scope.end());
+            }
+            if (ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                for (uint32_t i : members) md_bitmask_clear_bit(&cp.selection_mask, i);
+            }
+        } else if (plot_free && bar_click) {
+            md_bitmask_clear(&cp.selection_mask);
+            critical_point_scope_clear();
+        }
+
+        ImPlot::PushPlotClipRect();
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        if (filter.enabled) {
+            for (const auto& range : filter.ranges) {
+                const float lower_x = CLAMP(ImPlot::PlotToPixels(MAX(range.min, curve.density.front()), 0.0).x, pos.x, pos.x + size.x);
+                const float upper_x = CLAMP(ImPlot::PlotToPixels(MAX(range.max, curve.density.front()), 0.0).x, pos.x, pos.x + size.x);
+                dl->AddRectFilled(ImVec2(lower_x, pos.y), ImVec2(upper_x, bottom), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.10f)));
+            }
+        }
+        char scale_label[48];
+        snprintf(scale_label, sizeof(scale_label), "Bar scale: tallest = %zu CPs", max_count);
+        dl->AddText(ImVec2(pos.x + 5.0f, pos.y + 3.0f), ImGui::GetColorU32(ImGuiCol_Text), scale_label);
+        for (size_t k = 0; k < num_groups; ++k) {
+            const Group& group = groups[k];
+            bool selected = false, highlighted = false;
+            size_t passing = 0;
+            for (size_t j = group.begin; j < group.end; ++j) {
+                selected |= md_bitmask_test_bit(&cp.selection_mask, indices[j]);
+                highlighted |= md_bitmask_test_bit(&cp.highlight_mask, indices[j]);
+                passing += filter.accepts(density(indices[j]));
+            }
+            ImVec4 base = color;
+            if (split && group.component >= 0) base = component_color(group.component);
+            const vec4_t accent = highlighted ? state.selection.color.highlight.outline : state.selection.color.selection.outline;
+            const ImVec4 bar = highlighted || selected ? ImVec4(accent.x, accent.y, accent.z, 1.0f) : base;
+            const float alpha = passing < group.end - group.begin || !cp.type_visible[type] ? 0.25f : 1.0f;
+            const ImU32 bar_color = ImGui::ColorConvertFloat4ToU32(ImVec4(bar.x, bar.y, bar.z, alpha));
+            const size_t count = group.end - group.begin;
+            const float height = bar_height(group);
+            const float thickness = highlighted || selected ? 3.0f : 1.5f;
+            dl->AddLine(ImVec2(group.x, bottom), ImVec2(group.x, bottom - height), bar_color, thickness);
+            if (passing > 0 && passing < count && cp.type_visible[type]) {
+                const ImU32 accepted_color = ImGui::ColorConvertFloat4ToU32(ImVec4(bar.x, bar.y, bar.z, 1.0f));
+                const float accepted_height = height * (float)passing / (float)count;
+                dl->AddLine(ImVec2(group.x, bottom), ImVec2(group.x, bottom - accepted_height), accepted_color, thickness);
+            }
+            if (count > 1) {
+                char text[24];
+                snprintf(text, sizeof(text), "%zu", count);
+                const float width = ImGui::CalcTextSize(text).x;
+                dl->AddText(ImVec2(group.x - width * 0.5f, bottom - height - em), bar_color, text);
+            }
+        }
+        ImPlot::PopPlotClipRect();
+        ImPlot::EndPlot();
+    }
+
+    CriticalPointRow critical_point_row(uint32_t i) const {
+        const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
+        const int type = md_topo_vertex_type(&graph, i);
+        CriticalPointRow row = {i, critical_point_type_rank(type), critical_point_density(i), NAN, NAN, {}};
+        if (graph.vertices_f64) {
+            const double* ev = graph.vertices_f64[i].hessian_eigenvalues;
+            row.laplacian = ev[0] + ev[1] + ev[2];
+            if (type == MD_TOPO_SPLIT_SADDLE) row.ellipticity = critical_point_distribution::ellipticity(ev);
+        }
+        double xyzv[4];
+        critical_point_xyzv(xyzv, graph, i);
+        for (int k = 0; k < 3; ++k) row.xyz[k] = xyzv[k] * BOHR_TO_ANGSTROM;
+        return row;
+    }
+
+    // NaN (not applicable) sorts last
+    static int compare_values(double a, double b) {
+        const bool na = std::isnan(a), nb = std::isnan(b);
+        if (na || nb) return (int)na - (int)nb;
+        return (a > b) - (a < b);
+    }
+
+    enum CriticalPointColumn { CPColumn_Type, CPColumn_Kind, CPColumn_Environment, CPColumn_Count, CPColumn_Density,
+                               CPColumn_Laplacian, CPColumn_Ellipticity, CPColumn_X, CPColumn_Y, CPColumn_Z };
+
+    // The first cell of a row: the type's swatch and a selectable spanning the row
+    static bool critical_point_row_selectable(int type, bool selected, bool highlighted, ImU32 highlight_bg) {
+        if (highlighted) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, highlight_bg);
+        critical_point_swatch(type);
+        ImGui::SameLine();
+        return ImGui::Selectable(critical_point_style(type).label, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+    }
+
+    using CriticalPointTable = std::vector<std::vector<std::string>>;
+
+    // A table as text: comma-separated for a file, tab-separated for the clipboard (a spreadsheet splits it into columns)
+    static std::string critical_point_table_text(const CriticalPointTable& table, char sep) {
+        std::string out;
+        const char special[] = {sep, '"', '\n', '\r', 0};
+        for (const auto& row : table) {
+            for (size_t k = 0; k < row.size(); ++k) {
+                if (k) out += sep;
+                const std::string& f = row[k];
+                if (f.find_first_of(special) == std::string::npos) { out += f; continue; }
+                out += '"';
+                for (char c : f) { if (c == '"') out += '"'; out += c; }
+                out += '"';
+            }
+            out += '\n';
+        }
+        return out;
+    }
+
+    static std::string critical_point_number(double v) {
+        if (std::isnan(v)) return {};
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.12g", v);
+        return buf;
+    }
+
+    enum CriticalPointTableExport { CPExport_None, CPExport_Copy, CPExport_Csv };
+
+    // Right-click on a row (not Shift, which removes in the list; the header has its own menu): copy the table
+    static void critical_point_table_context(bool row_hovered, int& request) {
+        if (row_hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+            ImGui::OpenPopup("##Table context");
+        }
+        if (ImGui::BeginPopup("##Table context")) {
+            if (ImGui::MenuItem("Copy table")) request = CPExport_Copy;
+            ImGui::SetItemTooltip("Its rows as listed and sorted, tab-separated: pastes into a spreadsheet as columns");
+            ImGui::EndPopup();
+        }
+    }
+
+    static void critical_point_table_export(CriticalPointTableExport request, const CriticalPointTable& table, const char* what) {
+        if (request == CPExport_Copy) {
+            ImGui::SetClipboardText(critical_point_table_text(table, '\t').c_str());
+        } else if (request == CPExport_Csv) {
+            char path[2048];
+            if (!application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
+            md_file_t file = {};
+            if (!md_file_open(&file, str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+                MD_LOG_ERROR("Critical points: could not open '%s' for writing", path);
+                return;
+            }
+            const std::string text = critical_point_table_text(table, ',');
+            md_file_write(file, text.data(), text.size());
+            md_file_close(&file);
+            MD_LOG_INFO("Critical points: %zu %s written to '%s'", table.size() - 1, what, path);
+        }
+    }
+
+    // The chemical environments of the CPs listed (critical_point_listed), one row each. Click selects an
+    // environment's CPs, Shift-click adds or removes it.
+    void draw_critical_point_environments(const ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        if (cp.chemical_labels.size() != graph.num_vertices) return;
+        if (cp.environment_of.size() != graph.num_vertices) return;
+        // Per frame only counts and sums by environment id, over the cached rows
+        struct Environment {
+            uint32_t id;
+            std::vector<uint32_t> members;
+            double min = HUGE_VAL, max = -HUGE_VAL, laplacian = 0.0, ellipticity = 0.0;
+            size_t n_lap = 0, n_eps = 0;
+        };
+        std::vector<int> slot(cp.environments.size(), -1);
+        std::vector<Environment> environments;
+        size_t listed = 0;
+        for (int o = 0; o < 4; ++o) {
+            for (uint32_t i : cp.distributions[critical_point_type_order[o]].indices) {
+                if (!critical_point_listed(i)) continue;
+                ++listed;
+                const uint32_t id = cp.environment_of[i];
+                if (slot[id] < 0) {
+                    slot[id] = (int)environments.size();
+                    environments.push_back({id});
+                }
+                Environment& e = environments[slot[id]];
+                const CriticalPointRow& row = cp.rows[i];
+                e.members.push_back(i);
+                e.min = MIN(e.min, row.rho);
+                e.max = MAX(e.max, row.rho);
+                if (!std::isnan(row.laplacian)) { e.laplacian += row.laplacian; ++e.n_lap; }
+                if (!std::isnan(row.ellipticity)) { e.ellipticity += row.ellipticity; ++e.n_eps; }
+            }
+        }
+        for (Environment& e : environments) {
+            e.laplacian = e.n_lap ? e.laplacian / e.n_lap : NAN;
+            e.ellipticity = e.n_eps ? e.ellipticity / e.n_eps : NAN;
+        }
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Chemical environments");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%zu, with %zu of %u CPs", environments.size(), listed, graph.num_vertices);
+        ImGui::SetItemTooltip("The CPs of the shown categories that pass their density filter and lie inside their\n"
+                              "plot's density view: zoom a plot to narrow the list.");
+
+        const bool f64 = graph.vertices_f64 != nullptr;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
+                                      ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable("##Chemical environments", 7, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_DefaultSort, 0.7f, CPColumn_Type);
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
+        ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
+        ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_PreferSortDescending, 0.45f, CPColumn_Count);
+        ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None, 1.2f, CPColumn_Density);
+        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
+        ImGui::TableSetupColumn("\xCE\xB5 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        const ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs();
+        const int spec_count = specs ? specs->SpecsCount : 0;
+        std::stable_sort(environments.begin(), environments.end(), [&](const Environment& a, const Environment& b) {
+            const CriticalPointEnvironment& ea = cp.environments[a.id];
+            const CriticalPointEnvironment& eb = cp.environments[b.id];
+            for (int s = 0; s < spec_count; ++s) {
+                const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
+                int cmp = 0;
+                switch (spec.ColumnUserID) {
+                case CPColumn_Type:        cmp = ea.order - eb.order; break;
+                case CPColumn_Kind:        cmp = (int)ea.kind - (int)eb.kind; break;
+                case CPColumn_Environment: cmp = ea.name.compare(eb.name); break;
+                case CPColumn_Count:       cmp = (a.members.size() > b.members.size()) - (a.members.size() < b.members.size()); break;
+                case CPColumn_Density:     cmp = compare_values(a.min, b.min); break;
+                case CPColumn_Laplacian:   cmp = compare_values(a.laplacian, b.laplacian); break;
+                case CPColumn_Ellipticity: cmp = compare_values(a.ellipticity, b.ellipticity); break;
+                default: break;
+                }
+                if (cmp != 0) return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+            }
+            return a.members.size() > b.members.size();
+        });
+
+        const vec4_t hc = state.selection.color.highlight.outline;
+        const ImU32 highlight_bg = ImGui::ColorConvertFloat4ToU32(ImVec4(hc.x, hc.y, hc.z, 0.30f));
+        auto& chosen = cp.environment_selection;
+        auto is_chosen = [&](uint32_t id) { return std::find(chosen.begin(), chosen.end(), id) != chosen.end(); };
+        int clicked = -1, hovered = -1;
+        for (size_t k = 0; k < environments.size(); ++k) {
+            const Environment& e = environments[k];
+            const CriticalPointEnvironment& env = cp.environments[e.id];
+            const bool selected = is_chosen(e.id);
+            bool highlighted = false;
+            for (uint32_t i : e.members) highlighted |= md_bitmask_test_bit(&cp.highlight_mask, i);
+            ImGui::PushID((int)k);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (critical_point_row_selectable(env.type, selected, highlighted, highlight_bg)) clicked = (int)k;
+            if (ImGui::IsItemHovered()) hovered = (int)k;
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(critical_point_distribution::kind_name(env.kind));
+            ImGui::TableNextColumn();
+            environment_swatch(ImVec4(env.color.x, env.color.y, env.color.z, 1.0f));
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::TextUnformatted(env.name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", e.members.size());
+            ImGui::TableNextColumn();
+            if (e.min == e.max) ImGui::Text("%.6g", e.min);
+            else ImGui::Text("%.4g \xE2\x80\x93 %.4g", e.min, e.max);
+            ImGui::TableNextColumn();
+            if (!std::isnan(e.laplacian)) ImGui::Text("%.4g", e.laplacian);
+            ImGui::TableNextColumn();
+            if (!std::isnan(e.ellipticity)) ImGui::Text("%.3f", e.ellipticity);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+        critical_point_table_context(hovered >= 0, cp.export_environments);
+        if (cp.export_environments != CPExport_None) {
+            const auto request = (CriticalPointTableExport)cp.export_environments;
+            cp.export_environments = CPExport_None;
+            CriticalPointTable table = {{"type", "kind", "chemical environment", "count", "rho min (au)", "rho max (au)",
+                                         "laplacian mean (au)", "ellipticity mean", "critical points"}};
+            for (const Environment& e : environments) {
+                const CriticalPointEnvironment& env = cp.environments[e.id];
+                std::string members;
+                for (uint32_t i : e.members) members += (members.empty() ? "" : " ") + std::to_string(i);
+                table.push_back({critical_point_style(env.type).label, critical_point_distribution::kind_name(env.kind), env.name,
+                                 std::to_string(e.members.size()), critical_point_number(e.min), critical_point_number(e.max),
+                                 critical_point_number(e.laplacian), critical_point_number(e.ellipticity), members});
+            }
+            critical_point_table_export(request, table, "chemical environments");
+        }
+        if (hovered >= 0) highlight_critical_points(environments[hovered].members);
+        // Click: this environment; Shift-click: add or remove it. Its CPs become the selection and the list's.
+        if (clicked >= 0) {
+            const uint32_t id = environments[clicked].id;
+            if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                auto it = std::find(chosen.begin(), chosen.end(), id);
+                if (it == chosen.end()) chosen.push_back(id);
+                else chosen.erase(it);
+            } else {
+                chosen = {id};
+            }
+            cp.list_scope.clear();
+            md_bitmask_clear(&cp.selection_mask);
+            for (const Environment& e : environments) {
+                if (!is_chosen(e.id)) continue;
+                for (uint32_t i : e.members) md_bitmask_set_bit(&cp.selection_mask, i);
+            }
+        }
+    }
+
+    // The CPs of the environments chosen above, else of the bars clicked, else every listed one. Click selects a CP
+    // and explains it in the details, Shift-click adds or removes it, Shift-right-click removes it.
+    void draw_critical_point_list(const ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        if (cp.chemical_labels.size() != graph.num_vertices || cp.environment_of.size() != graph.num_vertices) return;
+        const auto& chosen = cp.environment_selection;
+        std::vector<uint32_t> rows;
+        if (!chosen.empty()) {
+            std::vector<bool> is_chosen(cp.environments.size(), false);
+            for (uint32_t id : chosen) if (id < is_chosen.size()) is_chosen[id] = true;
+            for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                if (is_chosen[cp.environment_of[i]] && critical_point_listed(i)) rows.push_back(i);
+            }
+        } else if (!cp.list_scope.empty()) {
+            for (uint32_t i : cp.list_scope) {
+                if (i < graph.num_vertices) rows.push_back(i);
+            }
+        } else {
+            for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                if (critical_point_listed(i)) rows.push_back(i);
+            }
+        }
+        const bool scoped = !chosen.empty() || !cp.list_scope.empty();
+        size_t selected_count = 0;
+        bool inspected_listed = false;
+        for (uint32_t i : rows) {
+            selected_count += md_bitmask_test_bit(&cp.selection_mask, i);
+            inspected_listed |= (int)i == cp.inspected;
+        }
+        if (!inspected_listed) cp.inspected = -1;
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Critical points");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(md_bitmask_empty(&cp.selection_mask));
+        if (ImGui::SmallButton("Clear selection")) {
+            md_bitmask_clear(&cp.selection_mask);
+            cp.inspected = -1;
+        }
+        ImGui::EndDisabled();
+        if (scoped) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("List all")) {
+                cp.environment_selection.clear();
+                cp.list_scope.clear();
+            }
+        }
+        ImGui::SameLine();
+        if (!chosen.empty()) ImGui::TextDisabled("%zu of %zu environment%s, %zu selected", rows.size(), chosen.size(), chosen.size() == 1 ? "" : "s", selected_count);
+        else if (scoped) ImGui::TextDisabled("%zu of the bars clicked, %zu selected", rows.size(), selected_count);
+        else ImGui::TextDisabled("%zu listed, %zu selected; choose environments or bars to narrow", rows.size(), selected_count);
+
+        const bool f64 = graph.vertices_f64 != nullptr;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
+                                      ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable("##Critical points", 10, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Type);
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
+        ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_None, 0.5f, CPColumn_Count);
+        ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 0.9f, CPColumn_Density);
+        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
+        ImGui::TableSetupColumn("\xCE\xB5", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
+        ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_X);
+        ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Y);
+        ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Z);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        // Sorted again only when the rows (which follow the selection, the filters and the plots' density windows)
+        // or the sort change
+        ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs();
+        const int spec_count = specs ? specs->SpecsCount : 0;
+        uint64_t hash = 14695981039346656037ull;
+        for (uint32_t i : rows) hash = (hash ^ i) * 1099511628211ull;
+        hash = (hash ^ rows.size()) * 1099511628211ull;
+        if (hash != cp.list_hash || (specs && specs->SpecsDirty) || cp.list_order.size() != rows.size()) {
+            cp.list_hash = hash;
+            if (specs) specs->SpecsDirty = false;
+            cp.list_order = std::move(rows);
+            std::sort(cp.list_order.begin(), cp.list_order.end(), [&](uint32_t ia, uint32_t ib) {
+                const CriticalPointRow& a = cp.rows[ia];
+                const CriticalPointRow& b = cp.rows[ib];
+                const CriticalPointEnvironment& la = cp.environments[cp.environment_of[ia]];
+                const CriticalPointEnvironment& lb = cp.environments[cp.environment_of[ib]];
+                for (int s = 0; s < spec_count; ++s) {
+                    const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
+                    int cmp = 0;
+                    switch (spec.ColumnUserID) {
+                    case CPColumn_Type:        cmp = a.order - b.order; break;
+                    case CPColumn_Kind:        cmp = (int)la.kind - (int)lb.kind; break;
+                    case CPColumn_Environment: cmp = la.name.compare(lb.name); break;
+                    case CPColumn_Count:       cmp = (a.i > b.i) - (a.i < b.i); break;
+                    case CPColumn_Density:     cmp = compare_values(a.rho, b.rho); break;
+                    case CPColumn_Laplacian:   cmp = compare_values(a.laplacian, b.laplacian); break;
+                    case CPColumn_Ellipticity: cmp = compare_values(a.ellipticity, b.ellipticity); break;
+                    case CPColumn_X: case CPColumn_Y: case CPColumn_Z:
+                        cmp = compare_values(a.xyz[spec.ColumnUserID - CPColumn_X], b.xyz[spec.ColumnUserID - CPColumn_X]); break;
+                    }
+                    if (cmp != 0) return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+                }
+                return a.i < b.i;
+            });
+        }
+        const std::vector<uint32_t>& order = cp.list_order;
+
+        const vec4_t hc = state.selection.color.highlight.outline;
+        const ImU32 highlight_bg = ImGui::ColorConvertFloat4ToU32(ImVec4(hc.x, hc.y, hc.z, 0.30f));
+        int hovered = -1;
+        ImGuiListClipper clipper;
+        clipper.Begin((int)order.size());
+        while (clipper.Step()) {
+            for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                const CriticalPointRow& row = cp.rows[order[r]];
+                const int type = md_topo_vertex_type(&graph, row.i);
+                const CriticalPointEnvironment& env = cp.environments[cp.environment_of[row.i]];
+                ImGui::PushID((int)row.i);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const bool selected = md_bitmask_test_bit(&cp.selection_mask, row.i);
+                if (critical_point_row_selectable(type, selected, md_bitmask_test_bit(&cp.highlight_mask, row.i), highlight_bg)) {
+                    if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                        if (selected) md_bitmask_clear_bit(&cp.selection_mask, row.i);
+                        else md_bitmask_set_bit(&cp.selection_mask, row.i);
+                    } else {
+                        md_bitmask_clear(&cp.selection_mask);
+                        md_bitmask_set_bit(&cp.selection_mask, row.i);
+                    }
+                    cp.inspected = md_bitmask_test_bit(&cp.selection_mask, row.i) ? (int)row.i : -1;
+                }
+                if (ImGui::IsItemHovered()) {
+                    hovered = (int)row.i;
+                    if (ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                        md_bitmask_clear_bit(&cp.selection_mask, row.i);
+                        if (cp.inspected == (int)row.i) cp.inspected = -1;
+                    }
+                }
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(critical_point_distribution::kind_name(env.kind));
+                ImGui::TableNextColumn();
+                environment_swatch(ImVec4(env.color.x, env.color.y, env.color.z, 1.0f));
+                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::TextUnformatted(env.name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", row.i);
+                ImGui::TableNextColumn();
+                ImGui::Text("%.6g", row.rho);
+                ImGui::TableNextColumn();
+                if (!std::isnan(row.laplacian)) ImGui::Text("%.4g", row.laplacian);
+                ImGui::TableNextColumn();
+                if (!std::isnan(row.ellipticity)) ImGui::Text("%.3f", row.ellipticity);
+                for (int k = 0; k < 3; ++k) {
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.3f", row.xyz[k]);
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+        critical_point_table_context(hovered >= 0, cp.export_points);
+        if (cp.export_points != CPExport_None) {
+            const auto request = (CriticalPointTableExport)cp.export_points;
+            cp.export_points = CPExport_None;
+            CriticalPointTable table = {{"type", "kind", "chemical environment", "index", "rho (au)", "laplacian (au)", "ellipticity",
+                                         "x (angstrom)", "y (angstrom)", "z (angstrom)", "detail"}};
+            for (uint32_t i : order) {
+                const CriticalPointRow& row = cp.rows[i];
+                const CriticalPointEnvironment& env = cp.environments[cp.environment_of[i]];
+                table.push_back({critical_point_style(md_topo_vertex_type(&graph, i)).label, critical_point_distribution::kind_name(env.kind),
+                                 env.name, std::to_string(i), critical_point_number(row.rho), critical_point_number(row.laplacian),
+                                 critical_point_number(row.ellipticity), critical_point_number(row.xyz[0]), critical_point_number(row.xyz[1]),
+                                 critical_point_number(row.xyz[2]), cp.chemical_labels[i].detail});
+            }
+            critical_point_table_export(request, table, "critical points");
+        }
+        if (hovered >= 0) highlight_critical_points({(uint32_t)hovered});
+    }
+
+    // The CP clicked in the list, or the only selected one: its numbers and why it got its label
+    void draw_critical_point_details() {
+        CriticalPoints& cp = critical_points;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        if (cp.chemical_labels.size() != graph.num_vertices) return;
+        int i = cp.inspected >= 0 && (uint32_t)cp.inspected < graph.num_vertices ? cp.inspected : -1;
+        if (i < 0) {
+            md_bitset_iter_t it = md_bitmask_iter(&cp.selection_mask);
+            int count = 0;
+            while (md_bitset_iter_next(&it) && count < 2) {
+                if (it.idx < graph.num_vertices) {
+                    i = (int)it.idx;
+                    ++count;
+                }
+            }
+            if (count != 1) i = -1;
+        }
+        if (i < 0) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Details");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextWrapped("Click a CP in the list to see its values and why it got its label. "
+                               "Labels come from nuclei, connectivity and bond paths, not density thresholds; "
+                               "anything ambiguous stays unassigned, with the reason.");
+            ImGui::PopStyleColor();
+            return;
+        }
+        const int type = md_topo_vertex_type(&graph, i);
+        const CriticalPointStyle& style = critical_point_style(type);
+        const auto& label = cp.chemical_labels[i];
+        const CriticalPointRow row = critical_point_row((uint32_t)i);
+        critical_point_swatch(type);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%s %d", style.label, i);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(critical_point_distribution::display_name(label).c_str());
+        if (ImGui::BeginTable("##Values", 2, ImGuiTableFlags_SizingFixedFit)) {
+            auto key = [](const char* text) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", text);
+                ImGui::TableNextColumn();
+            };
+            key("\xCF\x81");
+            ImGui::Text("%.9g au", row.rho);
+            if (graph.vertices_f64) {
+                const double* ev = graph.vertices_f64[i].hessian_eigenvalues;
+                key("\xE2\x88\x87\xC2\xB2\xCF\x81");
+                if (type == MD_TOPO_SPLIT_SADDLE) ImGui::Text("%.6g au (%s)", row.laplacian, row.laplacian < 0.0 ? "shared-shell" : "closed-shell");
+                else ImGui::Text("%.6g au", row.laplacian);
+                key("\xCE\xBB");
+                ImGui::Text("%.4g, %.4g, %.4g", ev[0], ev[1], ev[2]);
+                if (type == MD_TOPO_SPLIT_SADDLE) {
+                    key("\xCE\xB5");
+                    ImGui::Text("%.4f", row.ellipticity);
+                }
+            }
+            key("Position");
+            ImGui::Text("%.4f, %.4f, %.4f \xC3\x85", row.xyz[0], row.xyz[1], row.xyz[2]);
+            ImGui::EndTable();
+        }
+        ImGui::SeparatorText("Why this label");
+        ImGui::TextWrapped("%s", label.detail.c_str());
+    }
+
     void draw_critical_points_window_contents(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
         const float em = ImGui::GetFontSize();
@@ -5180,25 +6285,50 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
                               "RCP attractor paths, from each ring critical point to the cage critical points beside it");
         {
-            const char* lbl = "Export...";
+            const char* lbl = "Export " ICON_FA_CARET_DOWN;
             const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
             ImGui::SameLine();
             const float avail = ImGui::GetContentRegionAvail().x;
             if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
             ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
-            if (ImGui::Button(lbl)) {
-                critical_points_export(state);
-            }
+            if (ImGui::Button(lbl)) ImGui::OpenPopup("##Critical point export");
             ImGui::EndDisabled();
-            ImGui::SetItemTooltip("The critical points and the paths between them, every number at the precision it was\n"
-                                  "computed in: positions (bohr), density and, from the analytic search, the Hessian there.\n"
-                                  ".json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes a Morse-Smale\n"
-                                  "complex) for ParaView");
+            if (ImGui::BeginPopup("##Critical point export")) {
+                const bool labelled = cp.chemical_labels.size() == graph.num_vertices && cp.environment_of.size() == graph.num_vertices;
+                ImGui::SeparatorText("Topology");
+                if (ImGui::MenuItem("JSON or VTP...")) critical_points_export(state);
+                ImGui::SetItemTooltip("Every critical point and the paths between them, unfiltered, every number at the precision\n"
+                                      "it was computed in: positions (bohr), density and, from the analytic search, the Hessian.\n"
+                                      "No chemical labels. .json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes\n"
+                                      "a Morse-Smale complex) for ParaView.");
+                ImGui::SeparatorText("Chemical analysis");
+                ImGui::BeginDisabled(!labelled);
+                if (ImGui::MenuItem("Environments as CSV...")) cp.export_environments = CPExport_Csv;
+                ImGui::SetItemTooltip("The environments table as listed and sorted, at full precision, with each one's CP indices");
+                if (ImGui::MenuItem("Critical points as CSV...")) cp.export_points = CPExport_Csv;
+                ImGui::SetItemTooltip("The critical point list as listed and sorted, at full precision, with each CP's environment\n"
+                                      "and the reason for its label. Its index joins it to the topology export.");
+                ImGui::SeparatorText("Copy to clipboard");
+                if (ImGui::MenuItem("Environments")) cp.export_environments = CPExport_Copy;
+                ImGui::SetItemTooltip("Tab-separated: pastes into a spreadsheet as columns");
+                if (ImGui::MenuItem("Critical points")) cp.export_points = CPExport_Copy;
+                ImGui::SetItemTooltip("Tab-separated: pastes into a spreadsheet as columns");
+                ImGui::EndDisabled();
+                ImGui::EndPopup();
+            }
         }
 
         if (!cp.enabled) {
             ImGui::TextDisabled("Not searched: tick Enabled to search the density for its critical points");
             return;
+        }
+        if (cp.distributions_dirty) {
+            std::vector<critical_point_distribution::Position> atoms(state.mold.state.num_atoms);
+            for (size_t i = 0; i < atoms.size(); ++i) {
+                const auto& xyz = state.mold.state.xyz[i];
+                atoms[i] = {xyz.x, xyz.y, xyz.z};
+            }
+            cp.chemical_labels = critical_point_distribution::chemical_labels(graph, state.mold.sys, atoms);
         }
 
         // --- where the search is
@@ -5206,204 +6336,118 @@ struct QuantumChemistry : viamd::EventHandler {
             draw_critical_points_gto_status();
         }
 
-        // --- the counts, as the legend of the markers: two by two
+        // --- the categories: shown in the viewport or not, with their counts; and what is shown of the selection
         uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
         md_topo_count_vertex_types(vertex_count, &graph);
-        if (ImGui::BeginTable("##Critical point legend", 2, ImGuiTableFlags_SizingStretchSame)) {
-            for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
-                const int type = critical_point_type_order[k];
-                const CriticalPointStyle& style = critical_point_style(type);
-                ImGui::TableNextColumn();
-                critical_point_swatch(type);
-                ImGui::SameLine();
-                ImGui::Text("%s %s  %u", style.plural, style.signature, vertex_count[type]);
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", style.topology_plural);
-                ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
-            }
-            ImGui::EndTable();
+        for (int type : critical_point_type_order) {
+            const CriticalPointStyle& style = critical_point_style(type);
+            ImGui::PushID(type);
+            ImGui::Checkbox("##Visible", &cp.type_visible[type]);
+            ImGui::SetItemTooltip("Show %s %s (%s) in the viewport, with the paths from them, and list them in the table.",
+                                  style.plural, style.signature, style.topology_plural);
+            ImGui::PopID();
+            ImGui::SameLine(0.0f, 0.2f * em);
+            critical_point_swatch(type);
+            ImGui::SameLine(0.0f, 0.2f * em);
+            ImGui::Text("%s %u", style.plural, vertex_count[type]);
+            ImGui::SameLine(0.0f, 1.2f * em);
+        }
+        {
+            static const char* show_str[] = { "All CPs", "Selected CPs", "Selected + 3 \xC3\x85" };
+            const float w = 9.5f * em;
+            const ImGuiStyle& st = ImGui::GetStyle();
+            const float box = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x;
+            const float toggles = 2.0f * box + ImGui::CalcTextSize("Environment colours").x + ImGui::CalcTextSize("Labels").x + 2.0f * 1.2f * em;
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float label = ImGui::CalcTextSize("Show").x + st.ItemInnerSpacing.x;
+            if (avail > toggles + w + label) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - toggles - w - label);
+            ImGui::Checkbox("Environment colours", &cp.color_by_environment);
+            ImGui::SetItemTooltip("Fill the markers in the viewport with their chemical environment's colour, as in the plots\n"
+                                  "and the tables, rather than their category's.");
+            ImGui::SameLine(0.0f, 1.2f * em);
+            ImGui::Checkbox("Labels", &cp.show_labels);
+            ImGui::SetItemTooltip("Name the chemical environment of each selected CP beside it in the viewport (at most 200).");
+            ImGui::SameLine(0.0f, 1.2f * em);
+            ImGui::SetNextItemWidth(w);
+            ImGui::Combo("Show", &cp.show, show_str, (int)ARRAY_SIZE(show_str));
+            ImGui::SetItemTooltip("What the viewport shows while something is selected: every CP (the selection ringed),\n"
+                                  "only the selected CPs, or every CP with those beyond 3.0 \xC3\x85 of the selection dimmed.\n"
+                                  "With nothing selected every CP is shown.");
         }
 
         if (graph.num_vertices == 0) {
+            ImGui::TextDisabled("No critical points");
             return;
         }
+        critical_point_focus_sync();
+        update_critical_point_distributions();
+        // Whatever is hovered in the window highlights; nothing hovered, nothing highlighted
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) md_bitmask_clear(&cp.highlight_mask);
 
-        // --- the table of the points, in the rest of the window
-        enum CriticalPointColumn {
-            CriticalPointColumn_Idx,
-            CriticalPointColumn_Type,
-            CriticalPointColumn_Value,
-            CriticalPointColumn_Laplacian,
-            CriticalPointColumn_X,
-            CriticalPointColumn_Y,
-            CriticalPointColumn_Z,
-            CriticalPointColumn_Count
-        };
-        // The Laplacian where the producer has the Hessian (the analytic search)
-        const md_topo_vert_f64_t* f64 = graph.vertices_f64;
-
-        uint32_t* row_indices = md_temp_alloc_array(temp, uint32_t, graph.num_vertices);
-        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
-            row_indices[i] = i;
-        }
-
-        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
-                                                   ImGuiTableFlags_Borders |
-                                                   ImGuiTableFlags_ScrollY |
-                                                   ImGuiTableFlags_Sortable |
-                                                   ImGuiTableFlags_SortMulti |
-                                                   ImGuiTableFlags_Resizable |
-                                                   ImGuiTableFlags_SizingStretchProp;
-
-        if (ImGui::IsWindowHovered()) {
-            md_bitmask_clear(&critical_points.highlight_mask);
-        }
-
-        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {
-            ImGui::TableSetupColumn("Idx",          ImGuiTableColumnFlags_DefaultSort, 0.55f, CriticalPointColumn_Idx);
-            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_None,        1.15f, CriticalPointColumn_Type);
-            ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None,       1.0f,  CriticalPointColumn_Value);
-            ImGui::TableSetupColumn("Laplacian",    f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_Disabled, 1.25f, CriticalPointColumn_Laplacian);
-            ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_X);
-            ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Y);
-            ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Z);
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableHeadersRow();
-
-            if (ImGui::IsWindowHovered()) {
-                md_bitmask_clear(&critical_points.highlight_mask);
+        // --- top: the environments and the distributions; bottom: the CPs and the details of one
+        const float em_split = ImGui::GetFontSize();
+        const float avail = ImGui::GetContentRegionAvail().y;
+        const float splitter = 0.5f * em_split;
+        if (cp.top_height <= 0.0f) cp.top_height = 0.55f * avail;
+        cp.top_height = CLAMP(cp.top_height, 14.0f * em_split, MAX(14.0f * em_split, avail - 8.0f * em_split));
+        const ImGuiTableFlags pane_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV;
+        if (ImGui::BeginTable("##Critical point top", 2, pane_flags, ImVec2(0, cp.top_height))) {
+            ImGui::TableSetupColumn("##Environments", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableSetupColumn("##Distributions", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableNextColumn();
+            if (ImGui::BeginChild("##Environments pane", ImVec2(0, cp.top_height))) {
+                draw_critical_point_environments(state);
             }
-
-            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
-                if (sort_specs->SpecsCount > 0) {
-                    auto laplacian = [f64](uint32_t i) {
-                        return f64 ? f64[i].hessian_eigenvalues[0] + f64[i].hessian_eigenvalues[1] + f64[i].hessian_eigenvalues[2] : 0.0;
-                    };
-                    auto compare_rows = [&graph, sort_specs, &laplacian](uint32_t lhs_idx, uint32_t rhs_idx) {
-                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
-                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
-
-                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
-                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
-                            int cmp = 0;
-                            switch ((CriticalPointColumn)spec.ColumnUserID) {
-                            case CriticalPointColumn_Idx:
-                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
-                                break;
-                            case CriticalPointColumn_Type: {
-                                const int a = critical_point_type_rank(graph.types[lhs_idx]), b = critical_point_type_rank(graph.types[rhs_idx]);
-                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
-                                break;
-                            }
-                            case CriticalPointColumn_Value:
-                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
-                                break;
-                            case CriticalPointColumn_Laplacian: {
-                                const double a = laplacian(lhs_idx), b = laplacian(rhs_idx);
-                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
-                                break;
-                            }
-                            case CriticalPointColumn_X:
-                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
-                                break;
-                            case CriticalPointColumn_Y:
-                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
-                                break;
-                            case CriticalPointColumn_Z:
-                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
-                                break;
-                            default:
-                                break;
-                            }
-
-                            if (cmp != 0) {
-                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
-                            }
-                        }
-
-                        return lhs_idx < rhs_idx;
-                    };
-
-                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
-                    sort_specs->SpecsDirty = false;
+            ImGui::EndChild();
+            ImGui::TableNextColumn();
+            if (ImGui::BeginChild("##Distributions pane", ImVec2(0, cp.top_height))) {
+                if (ImGui::BeginTable("##Density filters", 2, ImGuiTableFlags_SizingStretchSame)) {
+                    for (int type : critical_point_type_order) {
+                        ImGui::TableNextColumn();
+                        draw_critical_point_filter(type);
+                    }
+                    ImGui::EndTable();
+                }
+                if (ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(ImGui::GetContentRegionAvail().y, 10.0f * em_split)))) {
+                    for (int type : critical_point_type_order) {
+                        draw_critical_point_distribution_plot(state, temp, type);
+                    }
+                    ImPlot::EndSubplots();
                 }
             }
-
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-
-            ImGuiListClipper clipper;
-            clipper.Begin((int)graph.num_vertices);
-            while (clipper.Step()) {
-                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-                    const uint32_t idx = row_indices[row];
-                    const md_topo_vert_t& v = graph.vertices[idx];
-                    const int type = graph.types[idx];
-
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-
-                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                    bool is_sel = md_bitmask_test_bit(&critical_points.selection_mask, idx);
-                    bool is_hov = md_bitmask_test_bit(&critical_points.highlight_mask, idx);
-
-                    if (is_hov) {
-                        ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
-                    }
-                    else {
-                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                    }
-
-                    char lbl[16];
-                    snprintf(lbl, sizeof(lbl), "%u", idx);
-                    ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
-
-                    // The selectable spans the row: hovered anywhere on it (a clipped table's row numbers are not the rows')
-                    if (ImGui::IsItemHovered()) {
-                        md_bitmask_clear(&critical_points.highlight_mask);
-                        md_bitmask_or(&critical_points.highlight_mask, md_bitset_range(idx, idx + 1));
-
-                        //Selection
-                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
-                                md_bitmask_or(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
-                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
-                                md_bitmask_andnot(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
-                            }
-                        }
-                    }
-                    ImGui::PopStyleColor(1);
-
-                    ImGui::TableNextColumn();
-                    {
-                        const CriticalPointStyle& style = critical_point_style(type);
-                        critical_point_swatch(type);
-                        ImGui::SameLine();
-                        ImGui::TextUnformatted(style.label);
-                        ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
-                    }
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.6g", f64 ? f64[idx].value : (double)v.value);
-                    ImGui::TableNextColumn();
-                    if (f64) {
-                        const double* ev = f64[idx].hessian_eigenvalues;
-                        ImGui::Text("%.6g", ev[0] + ev[1] + ev[2]);
-                        ImGui::SetItemTooltip("The Laplacian of the density, the sum of the Hessian's eigenvalues:\n%.6g, %.6g, %.6g (au)", ev[0], ev[1], ev[2]);
-                    }
-                    // Positions in \xC3\x85, as everywhere else in the application (the graph's are in bohr). Shown to
-                    // four decimals; the export has them in full.
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", (f64 ? f64[idx].x : (double)v.x) * BOHR_TO_ANGSTROM);
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", (f64 ? f64[idx].y : (double)v.y) * BOHR_TO_ANGSTROM);
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", (f64 ? f64[idx].z : (double)v.z) * BOHR_TO_ANGSTROM);
-                }
-            }
-
-            ImGui::PopStyleColor(2);
+            ImGui::EndChild();
             ImGui::EndTable();
         }
+
+        // Drag to share the height between the top and the bottom
+        ImGui::InvisibleButton("##Splitter", ImVec2(-1, splitter));
+        if (ImGui::IsItemActive()) cp.top_height += ImGui::GetIO().MouseDelta.y;
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        {
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            const float y = 0.5f * (a.y + b.y);
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x, y), ImVec2(b.x, y),
+                ImGui::GetColorU32(ImGui::IsItemActive() || ImGui::IsItemHovered() ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), 2.0f);
+        }
+
+        const float bottom_height = MAX(ImGui::GetContentRegionAvail().y - 2.0f * ImGui::GetStyle().CellPadding.y, 6.0f * em_split);
+        if (ImGui::BeginTable("##Critical point bottom", 2, pane_flags, ImVec2(0, bottom_height))) {
+            ImGui::TableSetupColumn("##Points", ImGuiTableColumnFlags_WidthStretch, 0.65f);
+            ImGui::TableSetupColumn("##Details", ImGuiTableColumnFlags_WidthStretch, 0.35f);
+            ImGui::TableNextColumn();
+            if (ImGui::BeginChild("##Points pane", ImVec2(0, bottom_height))) {
+                draw_critical_point_list(state);
+            }
+            ImGui::EndChild();
+            ImGui::TableNextColumn();
+            if (ImGui::BeginChild("##Details pane", ImVec2(0, bottom_height))) {
+                draw_critical_point_details();
+            }
+            ImGui::EndChild();
+            ImGui::EndTable();
+        }
+        // A table that was not drawn this frame does not keep a request for later
+        cp.export_environments = cp.export_points = CPExport_None;
     }
 
     // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
