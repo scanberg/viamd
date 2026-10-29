@@ -837,7 +837,7 @@ struct GtoRingSurfaceJob {
     std::vector<uint32_t>    maxima;            // [rcps.size() * capacity]
     std::vector<uint32_t>    counts;            // per RCP
 
-    uint64_t          hash    = 0;              // the search (gto_have) the graph is from
+    uint64_t          generation = 0;           // the shown graph (CriticalPoints::graph_generation) it was traced on
     md_tick_t         start   = 0;
     bool              ok      = false;
     volatile int32_t  cancel  = 0;
@@ -846,7 +846,7 @@ struct GtoRingSurfaceJob {
 };
 
 static GtoRingSurfaceJob* gto_ring_surface_job_start(ApplicationState& app, const md_topo_extremum_graph_t& graph,
-                                                     std::vector<uint32_t> rcps, double rho_min, uint64_t hash) {
+                                                     std::vector<uint32_t> rcps, double rho_min, uint64_t generation) {
     GtoRingSurfaceJob* job = new GtoRingSurfaceJob();
     job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     if (!gto_inputs_copy(&job->desc, &job->basis, &job->atom_xyz, &job->density, job->arena, app)) {
@@ -861,7 +861,7 @@ static GtoRingSurfaceJob* gto_ring_surface_job_start(ApplicationState& app, cons
     job->rcps   = std::move(rcps);
     job->maxima.assign(job->rcps.size() * GtoRingSurfaceJob::capacity, 0);
     job->counts.assign(job->rcps.size(), 0);
-    job->hash   = hash;
+    job->generation = generation;
     job->start  = md_tick_now();
 
     job->task = task_system::create_pool_task(STR_LIT("##Ring surfaces"), [job]() {
@@ -993,10 +993,12 @@ struct QuantumChemistry : viamd::EventHandler {
         bool                 gto_failed  = false;
         double               gto_seconds = 0.0;
         double               gto_rho_min = 0.0;       // the threshold the shown graph was searched with
+        // Counts the graphs shown (critical_points_graph_changed), so what is derived from one is never applied to another
+        uint64_t graph_generation = 0;
         // The ring surfaces of the ring CPs left tied between equally small cycles, per vertex (the maxima
-        // they reach), traced once for the search gto_have after its first labelling
+        // they reach), traced once per analytic graph after its first labelling
         GtoRingSurfaceJob*                 ring_job = nullptr;
-        uint64_t                           ring_hash = 0;   // the search they were traced, or are being traced, for
+        uint64_t                           ring_generation = 0;   // the graph they were traced, or are being traced, on
         std::vector<std::vector<uint32_t>> ring_surfaces;
 
         // Volume: the grid, and what is left out of the graph of its samples
@@ -2139,8 +2141,8 @@ struct QuantumChemistry : viamd::EventHandler {
         critical_points.gto_job = nullptr;
         gto_ring_surface_job_destroy(critical_points.ring_job);
         critical_points.ring_job = nullptr;
-        critical_points.ring_hash = 0;
         critical_points.ring_surfaces.clear();
+        critical_points.graph_generation++;
 #if MD_ENABLE_GPU
         // The topo context is the only GPU object this component owns. The uploaded basis goes with
         // the system it was built from, released by free_system_data.
@@ -5096,6 +5098,15 @@ struct QuantumChemistry : viamd::EventHandler {
         return OPT_NONE;
     }
 
+    // Whenever the shown graph is replaced: what was derived from the previous one goes with it
+    void critical_points_graph_changed() {
+        CriticalPoints& cp = critical_points;
+        cp.graph_generation++;
+        cp.distributions_dirty = true;
+        if (cp.ring_job) cp.ring_job->cancel = 1;   // dropped when collected: traced on another graph
+        cp.ring_surfaces.clear();
+    }
+
     // Forgets the shown graph and whatever produced it, so the next frame starts from nothing. A run
     // in flight is told to stop and is dropped when the poll collects it.
     void critical_points_reset() {
@@ -5104,9 +5115,7 @@ struct QuantumChemistry : viamd::EventHandler {
             cp.gto_job->cancel  = 1;
             cp.gto_job->dropped = true;
         }
-        if (cp.ring_job) cp.ring_job->cancel = 1;   // dropped when collected: its hash is no longer gto_have
-        cp.ring_hash = 0;
-        cp.ring_surfaces.clear();
+        critical_points_graph_changed();
         cp.gto_want  = 0;
         cp.gto_have  = 0;
         cp.raw_hash  = 0;
@@ -5129,7 +5138,7 @@ struct QuantumChemistry : viamd::EventHandler {
         cp.gto_job = nullptr;
 
         if (!job->dropped && job->hash == cp.gto_want) {
-            cp.distributions_dirty = true;
+            critical_points_graph_changed();
             cp.focus_indices.clear();
             critical_point_scope_clear();
             md_topo_extremum_graph_free(&cp.raw_graph);
@@ -5156,12 +5165,14 @@ struct QuantumChemistry : viamd::EventHandler {
         GtoRingSurfaceJob* job = cp.ring_job;
         if (!job || !job->done.load(std::memory_order_acquire)) return;
         cp.ring_job = nullptr;
-        if (job->ok && !job->cancel && job->hash == cp.gto_have && job->hash == cp.ring_hash &&
-            cp.method == CriticalPoints::Method_Analytic && cp.simp_graph.num_vertices == job->graph.num_vertices) {
+        if (job->ok && !job->cancel && job->generation == cp.graph_generation && job->generation == cp.ring_generation &&
+            cp.simp_graph.num_vertices == job->graph.num_vertices) {
             cp.ring_surfaces.assign(cp.simp_graph.num_vertices, {});
             for (size_t k = 0; k < job->rcps.size(); ++k) {
+                // A surface reaching more maxima than were kept is incomplete evidence: left empty, its CP stays tied
+                if (job->counts[k] > GtoRingSurfaceJob::capacity) continue;
                 const uint32_t* m = job->maxima.data() + k * GtoRingSurfaceJob::capacity;
-                cp.ring_surfaces[job->rcps[k]].assign(m, m + MIN(job->counts[k], GtoRingSurfaceJob::capacity));
+                cp.ring_surfaces[job->rcps[k]].assign(m, m + job->counts[k]);
             }
             cp.distributions_dirty = true;
             MD_LOG_INFO("Critical points: traced the ring surfaces of %zu tied ring critical point%s in %.1f s", job->rcps.size(),
@@ -5281,7 +5292,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (cp.simp_hash != simp_hash) {
             cp.simp_hash = simp_hash;
-            cp.distributions_dirty = true;
+            critical_points_graph_changed();
             cp.focus_indices.clear();
             critical_point_scope_clear();
 
@@ -5308,6 +5319,39 @@ struct QuantumChemistry : viamd::EventHandler {
         } else {
             update_critical_points_volume(state);
         }
+        update_critical_point_analysis(state);
+    }
+
+    // The chemical labels, distributions and environments of the shown graph, rebuilt whenever it changes whether or
+    // not the window is open, as the viewport's colours and tags read them
+    void update_critical_point_analysis(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        if (!cp.distributions_dirty) return;
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        std::vector<critical_point_distribution::Position> atoms(state.mold.state.num_atoms);
+        for (size_t i = 0; i < atoms.size(); ++i) {
+            const auto& xyz = state.mold.state.xyz[i];
+            atoms[i] = {xyz.x, xyz.y, xyz.z};
+        }
+        const bool surfaces = cp.ring_generation == cp.graph_generation && cp.ring_surfaces.size() == graph.num_vertices;
+        cp.chemical_labels = critical_point_distribution::chemical_labels(graph, state.mold.sys, atoms,
+                                                                          surfaces ? std::span<const std::vector<uint32_t>>(cp.ring_surfaces)
+                                                                                   : std::span<const std::vector<uint32_t>>());
+        // Ring CPs tied between equally small cycles: their ring surfaces may decide, traced once per analytic graph
+        if (cp.method == CriticalPoints::Method_Analytic && graph.vertices_f64 && !cp.gto_job &&
+            cp.ring_generation != cp.graph_generation && cp.chemical_labels.size() == graph.num_vertices) {
+            std::vector<uint32_t> rcps;
+            for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                if (graph.types[i] == MD_TOPO_JOIN_SADDLE && critical_point_distribution::ring_surface_may_decide(cp.chemical_labels[i])) rcps.push_back(i);
+            }
+            cp.ring_generation = cp.graph_generation;
+            cp.ring_surfaces.clear();
+            if (!rcps.empty()) {
+                gto_ring_surface_job_destroy(cp.ring_job);
+                cp.ring_job = gto_ring_surface_job_start(state, graph, std::move(rcps), cp.gto_rho_min, cp.graph_generation);
+            }
+        }
+        update_critical_point_distributions();
     }
 
     // Where the analytic search is: its progress and a cancel button while it runs, else its outcome and what it took
@@ -5902,7 +5946,7 @@ struct QuantumChemistry : viamd::EventHandler {
     static std::string critical_point_number(double v) {
         if (std::isnan(v)) return {};
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.12g", v);
+        snprintf(buf, sizeof(buf), "%.17g", v);
         return buf;
     }
 
@@ -5976,7 +6020,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                                       ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
         if (!ImGui::BeginTable("##Chemical environments", 7, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
-        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_DefaultSort, 0.7f, CPColumn_Type);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_NoHide, 0.7f, CPColumn_Type);
         ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
         ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
         ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_PreferSortDescending, 0.45f, CPColumn_Count);
@@ -6136,7 +6180,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                                       ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
         if (!ImGui::BeginTable("##Critical points", 10, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
-        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Type);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_NoHide, 0.7f, CPColumn_Type);
         ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
         ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_None, 0.5f, CPColumn_Count);
@@ -6419,33 +6463,6 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::TextDisabled("Not searched: tick Enabled to search the density for its critical points");
             return;
         }
-        if (cp.distributions_dirty) {
-            std::vector<critical_point_distribution::Position> atoms(state.mold.state.num_atoms);
-            for (size_t i = 0; i < atoms.size(); ++i) {
-                const auto& xyz = state.mold.state.xyz[i];
-                atoms[i] = {xyz.x, xyz.y, xyz.z};
-            }
-            const bool surfaces = cp.method == CriticalPoints::Method_Analytic && cp.ring_hash == cp.gto_have &&
-                                  cp.ring_surfaces.size() == graph.num_vertices;
-            cp.chemical_labels = critical_point_distribution::chemical_labels(graph, state.mold.sys, atoms,
-                                                                              surfaces ? std::span<const std::vector<uint32_t>>(cp.ring_surfaces)
-                                                                                       : std::span<const std::vector<uint32_t>>());
-            // Ring CPs tied between equally small cycles: their ring surfaces may decide, traced once per search
-            if (cp.method == CriticalPoints::Method_Analytic && graph.vertices_f64 && cp.gto_have != 0 && !cp.gto_job &&
-                cp.ring_hash != cp.gto_have && cp.chemical_labels.size() == graph.num_vertices) {
-                std::vector<uint32_t> rcps;
-                for (uint32_t i = 0; i < graph.num_vertices; ++i) {
-                    if (graph.types[i] == MD_TOPO_JOIN_SADDLE && critical_point_distribution::ring_surface_may_decide(cp.chemical_labels[i])) rcps.push_back(i);
-                }
-                cp.ring_hash = cp.gto_have;
-                cp.ring_surfaces.clear();
-                if (!rcps.empty()) {
-                    gto_ring_surface_job_destroy(cp.ring_job);
-                    cp.ring_job = gto_ring_surface_job_start(state, graph, std::move(rcps), cp.gto_rho_min, cp.gto_have);
-                }
-            }
-        }
-
         // --- where the search is
         if (cp.method == CriticalPoints::Method_Analytic) {
             draw_critical_points_gto_status();

@@ -342,6 +342,21 @@ UTEST(critical_point_chemistry, ring_cp_denser_than_a_bcp_of_its_cycle) {
     EXPECT_NE(labels[rcp].detail.find("less dense than it"), std::string::npos);
 }
 
+UTEST(critical_point_chemistry, ring_cp_with_parallel_bond_paths) {
+    // d-a joined by a weak path and a stronger parallel one: the stronger one satisfies the density rule
+    Scene s;
+    const int a = s.atom(6, {0.0, 0.0, 0.0});
+    const int b = s.atom(6, {1.5, 0.0, 0.0});
+    const int c = s.atom(6, {1.5, 1.5, 0.0});
+    const int d = s.atom(6, {0.0, 1.5, 0.0});
+    s.bond(a, b); s.bond(b, c); s.bond(c, d);
+    s.path(d, a, 0.005f);
+    s.path(d, a, 0.05f);
+    const uint32_t rcp = s.point(MD_TOPO_JOIN_SADDLE, {0.75, 0.75, 0.0}, 0.01f);
+    const auto labels = s.labels();
+    EXPECT_TRUE(labels[rcp].kind == Kind::Ring);
+}
+
 UTEST(critical_point_chemistry, ring_cp_between_cycles_of_the_same_size) {
     // Squares a-b-c-d and a-b-e-f share a-b; the larger one holds c and d in its face, so the smaller is the ring
     Scene s;

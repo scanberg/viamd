@@ -437,19 +437,28 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
 
     // Ring CPs not at a perceived ring's centroid: inside the smallest cycle of bond paths (bonds and contacts) around
     // them. Bond paths are taken as straight lines between the nuclei.
+    auto density = [&](uint32_t i) { return graph.vertices_f64 ? graph.vertices_f64[i].value : (double)graph.vertices[i].value; };
+    // One edge per pair of nuclei: of parallel bond paths, the densest BCP, which the density rule below should see
     std::vector<std::vector<PathEdge>> adjacency(num_atoms);
+    auto add_edge = [&](int a, int b, Kind kind, uint32_t bcp) {
+        for (PathEdge& e : adjacency[a]) {
+            if (e.atom != b) continue;
+            if (density(bcp) > density(e.bcp)) e = {b, kind, bcp};
+            return;
+        }
+        adjacency[a].push_back({b, kind, bcp});
+    };
     for (uint32_t i = 0; i < graph.num_vertices; ++i) {
         const auto& l = labels[i];
         if (md_topo_vertex_type(&graph, i) != MD_TOPO_SPLIT_SADDLE || l.atom[0] < 0 || l.atom[1] < 0) continue;
         if ((size_t)std::max(l.atom[0], l.atom[1]) >= num_atoms) continue;
-        adjacency[l.atom[0]].push_back({l.atom[1], l.kind, i});
-        adjacency[l.atom[1]].push_back({l.atom[0], l.kind, i});
+        add_edge(l.atom[0], l.atom[1], l.kind, i);
+        add_edge(l.atom[1], l.atom[0], l.kind, i);
     }
     auto edge = [&](int a, int b) {
         for (const PathEdge& e : adjacency[a]) if (e.atom == b) return e;
         return PathEdge{b, Kind::Unassigned, UINT32_MAX};
     };
-    auto density = [&](uint32_t i) { return graph.vertices_f64 ? graph.vertices_f64[i].value : (double)graph.vertices[i].value; };
     // Every enclosing cycle of every remaining ring CP is a candidate, scored by its size and the CP's distance from
     // its plane (0.25 Angstrom counts as one atom). The best-scoring pairs are matched first and each cycle takes one
     // ring CP, so a CP whose best cycle is taken falls back to its next one rather than both being dropped.
