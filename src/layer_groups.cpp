@@ -49,7 +49,8 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
         g->atoms = {};
     }
 
-    uint64_t h = md_hash64_combine(key, g->valid ? 0x600D : 0xBAD);
+    // Of what was found, not of what it was found from: the same atoms found again change nothing within
+    uint64_t h = g->valid ? 0x600D : 0xBAD;
     h = md_bitset_hash64(g->atoms, h);
     for (size_t i = 0; i < md_array_size(g->sets); ++i) h = md_bitset_hash64(g->sets[i], h + i);
     g->hash = h;
@@ -79,9 +80,20 @@ void layer_group_label(char* buf, size_t cap, const LayerGroup& g) {
     else                          snprintf(buf, cap, "Group");
 }
 
+bool layer_group_keeps_filter(const char* layer_filter, bool layer_follows_selection, const LayerGroup& g) {
+    if (!layer_group_has_context(g)) return true;
+    if (g.follow_selection) return !layer_filter[0] && !layer_follows_selection;   // It takes the selection on
+    if (layer_follows_selection) return false;                                       // The selection within a filter
+    if (!layer_filter[0]) return true;                                               // The group's filter, as it is
+    // 'in' takes its right side when it compiles: one that depends on the coordinates it cannot have
+    if (g.filter.result.is_dynamic) return false;
+    return strlen(layer_filter) + strlen(g.filter.text) + sizeof("() in union()") <= sizeof(AtomFilter::text);
+}
+
 bool layer_group_compose_filter(char* layer_filter, size_t cap, const LayerGroup& g) {
     if (g.follow_selection) return false;
     if (!g.filter.text[0]) return true;
+    if (layer_filter[0] && g.filter.result.is_dynamic) return false;
     char out[sizeof(AtomFilter::text)];
     int n = 0;
     if (!layer_filter[0]) n = snprintf(out, sizeof(out), "%s", g.filter.text);
@@ -175,7 +187,29 @@ bool layer_tree_drop_target(const ImRect& row, float x0, LayerNodeRef target, bo
     return delivered;
 }
 
-LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, const char* summary, bool invalid) {
+bool layer_tree_drop_target_end(const ImRect& rect, float x0, uint32_t window, uint32_t parent, RepresentationNode* const nodes[], size_t count,
+                                LayerNodeRef* dropped) {
+    if (!ImGui::BeginDragDropTargetCustom(rect, ImGui::GetID("##drop_end"))) return false;
+    bool delivered = false;
+    const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(LAYER_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+    if (payload && payload->DataSize == (int)sizeof(LayerNodeRef)) {
+        LayerNodeRef src;
+        MEMCPY(&src, payload->Data, sizeof(src));
+        const int si = representation_tree_find(nodes, count, src.group, src.id);
+        const int ti = parent ? representation_tree_find(nodes, count, true, parent) : -1;
+        if (src.window == window && si >= 0 && (parent == 0 || ti >= 0) && layer_tree_can_move(nodes, count, (size_t)si, ti, RepresentationDrop_IntoLast)) {
+            ImGui::GetWindowDrawList()->AddLine({x0, rect.Min.y + 1}, {rect.Max.x, rect.Min.y + 1}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+            if (payload->IsDelivery()) {
+                *dropped = src;
+                delivered = true;
+            }
+        }
+    }
+    ImGui::EndDragDropTarget();
+    return delivered;
+}
+
+LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, const char* summary, bool invalid, const char* ungroup_warning) {
     LayerGroupRow r;
     ImGui::PushID("group");
     ImGui::PushID((int)g.node.id);
@@ -199,8 +233,14 @@ LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, con
     if (ImGui::BeginPopupContextItem("##menu")) {
         r.clicked = true;
         if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false)) r.action = LayerGroupAction_Duplicate;
-        if (ImGui::MenuItem("Ungroup")) r.action = LayerGroupAction_Ungroup;
-        ImGui::SetItemTooltip("Take the layers out of the group, each with a filter that keeps what it shows");
+        if (ImGui::MenuItem(ungroup_warning ? "Ungroup " ICON_FA_TRIANGLE_EXCLAMATION : "Ungroup")) r.action = LayerGroupAction_Ungroup;
+        if (ImGui::BeginItemTooltip()) {
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+            if (ungroup_warning) ImGui::Text("Take the layers out of the group. %s", ungroup_warning);
+            else                 ImGui::TextUnformatted("Take the layers out of the group, each with a filter that keeps what it shows");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) r.action = LayerGroupAction_Remove;
         ImGui::SetItemTooltip("Remove the group and its layers");
@@ -283,12 +323,13 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
         if (invalid) ImGui::PopInvalid();
         ImGui::EndDisabled();
         ImGui::SameLine(0, 2);
-        if (g.follow_selection) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        const bool pushed = g.follow_selection;
+        if (pushed) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         if (ImGui::Button(ICON_FA_ARROW_POINTER "##follow", ImVec2(btn_w, 0))) {
             g.follow_selection = !g.follow_selection;
             changed = true;
         }
-        if (g.follow_selection) ImGui::PopStyleColor();
+        if (pushed) ImGui::PopStyleColor();
         ImGui::SetItemTooltip(g.follow_selection ? "Following the selection: click to use the filter" : "Follow the selection instead of the filter");
         if (!g.follow_selection && g.filter.text[0] && g.valid) {
             prop::hint("%llu atoms", (unsigned long long)md_bitset_count(g.atoms));

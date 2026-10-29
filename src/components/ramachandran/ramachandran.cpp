@@ -744,8 +744,8 @@ struct Ramachandran : viamd::EventHandler {
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
         const size_t n = tree_nodes(nodes);
         const int si = representation_tree_find(nodes, n, src.group, src.id);
-        const int ti = representation_tree_find(nodes, n, target.group, target.id);
-        if (si < 0 || ti < 0) return;
+        const int ti = target.id ? representation_tree_find(nodes, n, target.group, target.id) : -1;    // None: the end of the list
+        if (si < 0 || (target.id && ti < 0)) return;
         if (layer_tree_move(nodes, n, (size_t)si, ti, drop)) {
             if (!src.group) {
                 if (Layer* l = find_layer(src.id)) entered_group(*l);
@@ -773,9 +773,13 @@ struct Ramachandran : viamd::EventHandler {
             copy->filter.text[0] = '\0';
             MEMCPY(copy->filter.text, src.filter.text, sizeof(copy->filter.text));
             copy->follow_selection = src.follow_selection;
-            const int count = num_layers;
-            for (int i = 0; i < count; ++i) {
-                if (layers[i].node.parent == id) copy_layer(layers[i], copy_id, layers[i].node.order);
+            // In the order they are in, each last in the copy
+            RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t n = tree_nodes(nodes);
+            int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, n, id);
+            for (size_t k = 0; k < nk; ++k) {
+                if (kids[k] < num_layers) copy_layer(layers[kids[k]], copy_id, LAYER_TREE_LAST);
             }
             selected_group = copy_id;
             selected_layer = 0;
@@ -790,10 +794,10 @@ struct Ramachandran : viamd::EventHandler {
             for (int i = 0; i < num_layers; ++i) {
                 Layer& l = layers[i];
                 if (l.node.parent != id) continue;
-                if (g->follow_selection) {
-                    if (!l.filter.text[0] && !l.follow_selection) l.follow_selection = true;
-                } else if (!l.follow_selection) {
-                    layer_group_compose_filter(l.filter.text, sizeof(l.filter.text), *g);
+                // What can be kept is (layer_group_keeps_filter); what cannot is left as it is, as the menu warned
+                if (l.source == LayerSource_System && layer_group_keeps_filter(l.filter.text, l.follow_selection, *g)) {
+                    if (g->follow_selection) l.follow_selection = true;
+                    else layer_group_compose_filter(l.filter.text, sizeof(l.filter.text), *g);
                 }
                 l.node.parent = 0;
                 l.node.order = at;
@@ -819,14 +823,15 @@ struct Ramachandran : viamd::EventHandler {
 
     // The reference, the current frame as points, and the whole trajectory as contours (shown when there is one)
     //
-    // The two of the system in a group of the protein, as an example of one: what is added to it shows the protein's
-    // residues, and its subset is where to narrow them all at once
+    // The two of the system in a group, as an example of one: its subset is where to narrow them all at once, and what
+    // is added to it shows the same residues. All of them to begin with, which every system with a backbone has (one
+    // read from an XYZ file, whose backbone is found from its bonds, has no protein to name).
     void create_default_layers() {
         clear_layers();
         uint32_t group = 0;
         if (LayerGroup* g = add_group(LAYER_TREE_LAST)) {
-            snprintf(g->name, sizeof(g->name), "Protein");
-            snprintf(g->filter.text, sizeof(g->filter.text), "protein()");
+            snprintf(g->name, sizeof(g->name), "Residues");
+            snprintf(g->filter.text, sizeof(g->filter.text), "all");
             group = g->node.id;
         }
         Layer* cur = add_layer(LayerSource_System, LayerFrames_Current, LayerStyle_Points, -1, group);
@@ -2403,7 +2408,17 @@ struct Ramachandran : viamd::EventHandler {
         else if (context) snprintf(summary, sizeof(summary), "%u res", group_residue_count(g));
         else              snprintf(summary, sizeof(summary), "%d layer%s", num_in, num_in == 1 ? "" : "s");
 
-        const LayerGroupRow row = layer_group_row(g, LIST_ID, selected_group == g.node.id, summary, invalid);
+        // What ungrouping would not keep
+        bool exact = true;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (l.node.parent == g.node.id && l.source == LayerSource_System) exact = exact && layer_group_keeps_filter(l.filter.text, l.follow_selection, g);
+        }
+        const char* warning = exact ? nullptr :
+            "Some of its layers cannot be given a filter that keeps what they show: one following the selection within a filter, "
+            "or one of their own within the selection or within a filter that depends on the coordinates. Those keep their own, "
+            "over the whole system.";
+        const LayerGroupRow row = layer_group_row(g, LIST_ID, selected_group == g.node.id, summary, invalid, warning);
         if (row.clicked) {
             selected_group = g.node.id;
             selected_layer = 0;
@@ -2451,6 +2466,16 @@ struct Ramachandran : viamd::EventHandler {
         if (nk == 0) {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetStyle().IndentSpacing);
             ImGui::TextDisabled("Empty: drag layers here, or add with +");
+            const ImRect r(ImGui::GetItemRectMin(), ImVec2(ImGui::GetItemRectMin().x + ImGui::GetContentRegionAvail().x, ImGui::GetItemRectMax().y));
+            ImGui::PushID((int)g.node.id);
+            LayerNodeRef src;
+            if (layer_tree_drop_target_end(r, r.Min.x, LIST_ID, g.node.id, nodes, num_nodes, &src)) {
+                act->move = true;
+                act->move_src = src;
+                act->move_target = {LIST_ID, g.node.id, true};
+                act->move_drop = RepresentationDrop_IntoLast;
+            }
+            ImGui::PopID();
         }
         if (!g.visible) ImGui::PopStyleVar();
     }
@@ -2570,12 +2595,13 @@ struct Ramachandran : viamd::EventHandler {
                 if (invalid) ImGui::PopInvalid();
                 ImGui::EndDisabled();
                 ImGui::SameLine(0, 2);
-                if (l.follow_selection) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                const bool pushed = l.follow_selection;
+                if (pushed) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
                 if (ImGui::Button(ICON_FA_ARROW_POINTER "##follow", ImVec2(btn_w, 0))) {
                     l.follow_selection = !l.follow_selection;
                     l.segs_key = 0;
                 }
-                if (l.follow_selection) ImGui::PopStyleColor();
+                if (pushed) ImGui::PopStyleColor();
                 ImGui::SetItemTooltip(l.follow_selection ? "Following the selection: click to use the filter" : "Follow the selection instead of the filter");
                 if (!l.follow_selection && l.filter.result.is_dynamic && l.frames != LayerFrames_Current) {
                     prop::hint("Depends on the coordinates: taken in the frame it was evaluated in");
@@ -2704,6 +2730,21 @@ struct Ramachandran : viamd::EventHandler {
         }
         if (num_layers == 0 && num_groups == 0) {
             ImGui::TextDisabled("No layers: add one with +");
+        }
+        // Below the list: the end of it, out of any group
+        {
+            RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t n = tree_nodes(nodes);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const ImRect r(p, ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y + ImGui::GetFrameHeight()));
+            ImGui::Dummy(ImVec2(0, ImGui::GetFrameHeight() * 0.25f));
+            LayerNodeRef src;
+            if (layer_tree_drop_target_end(r, r.Min.x, LIST_ID, 0, nodes, n, &src)) {
+                act.move = true;
+                act.move_src = src;
+                act.move_target = {};
+                act.move_drop = RepresentationDrop_IntoLast;
+            }
         }
 
         if (act.move) move_node(act.move_src, act.move_target, act.move_drop);

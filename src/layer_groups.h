@@ -73,6 +73,11 @@ void layer_group_label(char* buf, size_t cap, const LayerGroup& g);
 // or the group's for one without. Unchanged for a group without a filter. Returns false when it does not fit.
 bool layer_group_compose_filter(char* layer_filter, size_t cap, const LayerGroup& g);
 
+// Whether a layer taken out of g can be given a filter that shows what it does within g (layer_group_compose_filter):
+// not one that follows the selection within a filter, nor one of its own within a group following the selection or
+// within a filter that depends on the coordinates ('in' takes its right side when it compiles)
+bool layer_group_keeps_filter(const char* layer_filter, bool layer_follows_selection, const LayerGroup& g);
+
 // ## The tree
 //
 // The nodes of a window's layers and groups, as representation_tree takes them. One level: what puts a group within a
@@ -104,6 +109,11 @@ void layer_tree_drag_source(LayerNodeRef ref, const char* label);
 bool layer_tree_drop_target(const ImRect& row, float x0, LayerNodeRef target, bool open, RepresentationNode* const nodes[], size_t count,
                             LayerNodeRef* dropped, RepresentationDrop* drop);
 
+// A place to drop at the end of the group 'parent' (0: of the list): its empty row, or the space below the list.
+// Returns true on the drop, with what was dropped; it goes last in 'parent'.
+bool layer_tree_drop_target_end(const ImRect& rect, float x0, uint32_t window, uint32_t parent, RepresentationNode* const nodes[], size_t count,
+                                LayerNodeRef* dropped);
+
 enum LayerGroupAction : int {
     LayerGroupAction_None = 0,
     LayerGroupAction_Duplicate,
@@ -120,8 +130,8 @@ struct LayerGroupRow {
 };
 
 // A group's row: open or not, shown or not, its name and what it is of (summary, one line). Its menu (duplicate,
-// ungroup, remove) is the window's to act on.
-LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, const char* summary, bool invalid);
+// ungroup, remove) is the window's to act on. ungroup_warning, if given: what ungrouping will not keep.
+LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, const char* summary, bool invalid, const char* ungroup_warning = nullptr);
 
 // The inspector's rows of a group: its name and its subset. 'what' names what the window's layers are of ("residues",
 // "structures"). Returns true when the subset changed.
