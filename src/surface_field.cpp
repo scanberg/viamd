@@ -49,14 +49,48 @@ static inline bool is_finite_f64(double v) {
     return (u & 0x7FF0000000000000ull) != 0x7FF0000000000000ull;
 }
 
-md_unit_t surface_field_unit(SurfaceFieldKind kind) {
-    switch (kind) {
-    case SurfaceFieldKind::AverageLocalIonizationEnergy:
-        return md_unit_hartree();
-    case SurfaceFieldKind::EmbeddingPotential:
-    case SurfaceFieldKind::ElectrostaticPotential:
-    default:
-        return md_unit_div(md_unit_hartree(), md_unit_elementary_charge());
+// ---------------------------------------------------------------------------
+// The kinds
+// ---------------------------------------------------------------------------
+
+static const SurfaceFieldKindInfo* kind_table() {
+    // made once: the units are functions of md_unit
+    static const SurfaceFieldKindInfo table[(int)SurfaceFieldKind::Count] = {
+        // EmbeddingPotential
+        { "Embedding Potential",     md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU },
+        // ElectrostaticPotential
+        { "Electrostatic Potential", md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU },
+        // AverageLocalIonizationEnergy
+        { "Local Ionization Energy", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
+    };
+    return table;
+}
+
+const SurfaceFieldKindInfo& surface_field_kind_info(SurfaceFieldKind kind) {
+    const int k = (int)kind;
+    ASSERT(0 <= k && k < (int)SurfaceFieldKind::Count);
+    return kind_table()[CLAMP(k, 0, (int)SurfaceFieldKind::Count - 1)];
+}
+
+ColorScale surface_field_default_scale(SurfaceFieldKind kind) {
+    const SurfaceFieldKindInfo& info = surface_field_kind_info(kind);
+    ColorScale scale;
+    scale.colormap   = info.colormap;
+    scale.symmetric  = info.scale == SurfaceFieldScale::Diverging;
+    scale.auto_range = true;
+    // until the first values say otherwise, in the field's unit
+    scale.range_beg  = scale.symmetric ? -0.05f : 0.0f;
+    scale.range_end  = scale.symmetric ?  0.05f : 1.0f;
+    return scale;
+}
+
+void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind from, SurfaceFieldKind to) {
+    if (!scale) return;
+    const SurfaceFieldKindInfo& next = surface_field_kind_info(to);
+    scale->symmetric  = next.scale == SurfaceFieldScale::Diverging;
+    scale->auto_range = true;
+    if (scale->colormap == surface_field_kind_info(from).colormap) {
+        scale->colormap = next.colormap;
     }
 }
 
@@ -1384,7 +1418,7 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
     ASSERT(vol);
     SurfaceFieldWork* w = vol->work;
     if (!w) return false;
-    const char* name = surface_field_kind_str[(int)w->kind];
+    const char* name = surface_field_kind_info(w->kind).label;
     source_poll(&w->source, vol->source_hash, w->stream, name);
 
     bool changed = false;
@@ -1812,7 +1846,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
     ASSERT(fp);
     SurfaceFieldPointsWork* w = fp->work;
     if (!w) return SurfaceFieldPointsStatus::None;
-    const char* name = surface_field_kind_str[(int)w->kind];
+    const char* name = surface_field_kind_info(w->kind).label;
     source_poll(&w->source, w->source_hash, w->stream, name);
 
     switch (w->stage) {

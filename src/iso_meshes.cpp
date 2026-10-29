@@ -1062,7 +1062,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_str[(int)es.field_kind], nv,
+                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
                 isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);

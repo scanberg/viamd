@@ -598,7 +598,7 @@ struct ElectronicStructureRepresentation {
     // SurfaceColoring::Field: the field, how it maps to colour, and its values on the grid of
     // density_vol - evaluated only around the isosurfaces this representation draws
     SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
-    ColorScale          field_map  = surface_field_default_scale();
+    ColorScale          field_map  = surface_field_default_scale(SurfaceFieldKind::EmbeddingPotential);
     ColorScaleIsolines  field_isolines = {};    // lines on the surfaces where the field takes given values
     SurfaceFieldVolume  field_vol  = {};
 

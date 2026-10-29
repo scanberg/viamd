@@ -2353,8 +2353,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                 es.coloring = c;
                 // A field this dataset can make, if the one the representation names is not
                 if (c == SurfaceColoring::Field && !surface_field_available(es.field_kind, sys)) {
-                    es.field_kind = surface_field_first_available(sys);
-                    surface_field_scale_for_kind(&es.field_map, es.field_kind);
+                    const SurfaceFieldKind first = surface_field_first_available(sys);
+                    surface_field_scale_for_kind(&es.field_map, es.field_kind, first);
+                    es.field_kind = first;
                 }
                 update_rep = true;
             }
@@ -2391,12 +2392,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
     prop::row("field", status);
-    if (ImGui::BeginCombo("##field", surface_field_kind_str[(int)es.field_kind])) {
+    if (ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
         for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
             const SurfaceFieldKind kind = (SurfaceFieldKind)k;
             ImGui::BeginDisabled(!surface_field_available(kind, sys));
-            if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
-                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, kind);
+            if (ImGui::Selectable(surface_field_kind_info(kind).label, es.field_kind == kind)) {
+                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
                 es.field_kind = kind;
                 update_rep = true;
             }
@@ -2446,9 +2447,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     // nothing re-evaluated: it is not an update of the representation
     // With mesh rendering the field is evaluated at the vertices of the meshes, not on a volume
     color_scale_draw_controls(&es.field_map, mesh_mode ? electronic_structure_mesh_field_span(es) : surface_field_span(vol),
-                              surface_field_unit(es.field_kind), "on surface", "its 1st to 99th percentile on the surface");
+                              surface_field_kind_info(es.field_kind).unit, "on surface", "its 1st to 99th percentile on the surface");
     // Drawn as the surface is shaded, like the colours: nothing to re-evaluate
-    color_scale_draw_isoline_controls(&es.field_isolines, es.field_map, surface_field_unit(es.field_kind));
+    color_scale_draw_isoline_controls(&es.field_isolines, es.field_map, surface_field_kind_info(es.field_kind).unit);
 
     return update_rep;
 }
@@ -3821,7 +3822,7 @@ void draw_representation_legends(ApplicationState& state) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
             const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
             if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
-                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++, &es.field_isolines);
+                color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
         }

@@ -46,7 +46,7 @@ struct SurfaceFieldPointsWork;
 //
 // Values outside the band are never sampled by a surface of that band and are left at 0.
 //
-// UNITS: positions in bohr (the grid's), values in the field's unit (surface_field_unit).
+// UNITS: positions in bohr (the grid's), values in the field's unit (surface_field_kind_info).
 
 enum class SurfaceFieldKind {
     // The electrostatic potential of the classical multipoles of the system: the charges
@@ -78,33 +78,40 @@ enum class SurfaceFieldKind {
     Count
 };
 
-inline const char* surface_field_kind_str[(int)SurfaceFieldKind::Count] = {
-    "Embedding Potential",
-    "Electrostatic Potential",
-    "Local Ionization Energy",
+// THE KINDS
+// What the rest of viamd needs to know of a field it has not heard of, one entry per kind in one table
+// (surface_field.cpp): its name, its unit, and how its values read. The last is the producer's to say,
+// because the values cannot: a cation's electrostatic potential can be positive all over its surface and
+// zero is still what it is read against, while an energy that is positive everywhere has no value that is
+// special. Deciding it from the values, as atom attributes do for want of anyone to ask (viamd.cpp,
+// atom_attribute_select), would get the first wrong. It is a presentation default and nothing more: no
+// code reads it to interpret the values (docs/data-model-design.md, section 5, axis 3).
+enum class SurfaceFieldScale {
+    // Zero is the reference the values are read against - a potential, whose sign is the physics: a range
+    // centred on zero, on a diverging map whose middle is zero (red below, blue above)
+    Diverging,
+    // No value is special: a range from the lowest values on the surface to the highest, on a map without
+    // a middle. A diverging map would put its middle wherever the middle of the range fell and suggest a
+    // reference there is not.
+    Sequential,
 };
 
-// How a field is mapped to colour starts out as fits a potential: a range centred on zero, following
-// the field's spread on the surface, on a diverging map - red for negative, blue for positive.
-static inline ColorScale surface_field_default_scale() {
-    ColorScale scale;
-    scale.colormap   = COLOR_SCALE_COLORMAP_RDBU;
-    scale.range_beg  = -0.05f;      // in the field's unit
-    scale.range_end  =  0.05f;
-    scale.symmetric  = true;
-    scale.auto_range = true;
-    return scale;
-}
+struct SurfaceFieldKindInfo {
+    const char*       label = "";
+    md_unit_t         unit = {};
+    SurfaceFieldScale scale = SurfaceFieldScale::Diverging;
+    int               colormap = COLOR_SCALE_COLORMAP_RDBU;   // the colour map it starts out on
+};
 
-// What a scale should be for a kind of field, when the kind is chosen: a potential's range centred on zero;
-// the ionization energy's from its lowest values on the surface (red: the least tightly held electrons) to
-// its highest (blue), which a range about zero would squeeze into its upper half. The colour map stays the
-// user's.
-static inline void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind kind) {
-    if (!scale) return;
-    scale->symmetric  = kind != SurfaceFieldKind::AverageLocalIonizationEnergy;
-    scale->auto_range = true;
-}
+const SurfaceFieldKindInfo& surface_field_kind_info(SurfaceFieldKind kind);
+
+// The scale a representation starts out with for a kind
+ColorScale surface_field_default_scale(SurfaceFieldKind kind);
+
+// The scale when the field goes from one kind to another: centred on zero or not as the new kind reads, the
+// range automatic again. The colour map follows the kind unless it is one the user chose: a map that is not
+// the old kind's own is kept.
+void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind from, SurfaceFieldKind to);
 
 struct SurfaceFieldVolume {
     uint32_t  tex_id = 0;           // GL_R32F, the dimensions of grid
@@ -165,8 +172,6 @@ struct SurfaceFieldDesc {
     // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
 };
-
-md_unit_t surface_field_unit(SurfaceFieldKind kind);
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
