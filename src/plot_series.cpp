@@ -640,6 +640,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     md_unit_t shown;
     out->y_scale = (float)display_units::factor(&shown, attr->unit);
     md_unit_print(out->unit_str, sizeof(out->unit_str), shown);
+    series_periodic(&out->periodic, app, key, out->y_scale);
 
     // ### x
     const size_t num_frames = md_array_size(app->timeline.x_values);
@@ -731,6 +732,13 @@ int series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView&
         if (v.y2) {
             return snprintf(buf, cap, "%.4g +- %.4g", 0.5 * (lo + hi), 0.5 * (hi - lo));
         }
+        if (series_periodic_valid(v.periodic)) {
+            // The arc from lo around to hi, which may cross the end of the period: both as the values are given
+            const double len = series_periodic_length(v.periodic);
+            const double a = lo - len * floor((lo - v.periodic.beg) / len);
+            const double b = hi - len * floor((hi - v.periodic.beg) / len);
+            return snprintf(buf, cap, "%.4g .. %.4g", a, b);
+        }
         return snprintf(buf, cap, "%.4g .. %.4g", lo, hi);
     }
     return snprintf(buf, cap, "%.4g", series_temporal_point(v, i, k).y);
@@ -738,9 +746,97 @@ int series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView&
 
 // ## As a distribution
 
+// x moved by whole periods of length len into [beg, beg + len[
+static inline double wrap_periodic(double x, double beg, double len) {
+    const double t = x - beg;
+    return beg + (t - len * floor(t / len));
+}
+
+// The bandwidth of a Gaussian kernel density estimate of n values whose density is binned in bins (num_bins over
+// [lo, hi]): Silverman's rule of thumb, 0.9 min(sd, IQR / 1.34) n^(-1/5), from the bins themselves. Of periodic values,
+// [lo, hi[ the period, from the circular standard deviation.
+static double kde_bandwidth(const float* bins, int num_bins, double lo, double hi, size_t n, bool periodic) {
+    const double w = (hi - lo) / num_bins;
+    double mass = 0.0;
+    for (int b = 0; b < num_bins; ++b) mass += bins[b];
+    if (mass <= 0.0 || n == 0) return 0.0;
+
+    double sd = 0.0, iqr = 0.0;
+    if (periodic) {
+        double c = 0.0, s = 0.0;
+        for (int b = 0; b < num_bins; ++b) {
+            const double a = 2.0 * PI * (b + 0.5) / num_bins;
+            c += bins[b] * cos(a);
+            s += bins[b] * sin(a);
+        }
+        const double R = sqrt(c * c + s * s) / mass;
+        sd = (R > 0.0 ? sqrt(MIN(-2.0 * log(R), PI * PI)) : PI) * (hi - lo) / (2.0 * PI);
+    } else {
+        double mean = 0.0;
+        for (int b = 0; b < num_bins; ++b) mean += bins[b] * (lo + (b + 0.5) * w);
+        mean /= mass;
+        double var = 0.0;
+        for (int b = 0; b < num_bins; ++b) {
+            const double d = lo + (b + 0.5) * w - mean;
+            var += bins[b] * d * d;
+        }
+        sd = sqrt(var / mass);
+        // The quartiles, interpolated within the bin they fall in
+        double q[2] = {lo, hi};
+        const double at[2] = {0.25 * mass, 0.75 * mass};
+        double cum = 0.0;
+        int qi = 0;
+        for (int b = 0; b < num_bins && qi < 2; ++b) {
+            while (qi < 2 && cum + bins[b] >= at[qi]) {
+                q[qi] = lo + (b + (bins[b] > 0.0f ? (at[qi] - cum) / bins[b] : 0.0)) * w;
+                qi += 1;
+            }
+            cum += bins[b];
+        }
+        iqr = q[1] - q[0];
+    }
+    const double spread = (iqr > 0.0) ? MIN(sd, iqr / 1.34) : sd;
+    return 0.9 * spread * pow((double)n, -0.2);
+}
+
+// Convolves the bins with a Gaussian of standard deviation sigma bins, normalized over the bins it covers: around the
+// period for periodic values, which then lose nothing over the ends
+static void gaussian_smooth(float* bins, int num_bins, double sigma, bool periodic) {
+    if (sigma < 0.25 || num_bins < 2) return;
+    const int r = MIN((int)ceil(4.0 * sigma), num_bins);
+    md_temp_scope_t temp = md_temp_begin();
+    float* kernel = md_temp_alloc_array(temp, float, 2 * r + 1);
+    float* src    = md_temp_alloc_array(temp, float, num_bins);
+    double ksum = 0.0;
+    for (int i = -r; i <= r; ++i) {
+        kernel[i + r] = (float)exp(-0.5 * (i / sigma) * (i / sigma));
+        ksum += kernel[i + r];
+    }
+    for (int i = 0; i <= 2 * r; ++i) kernel[i] = (float)(kernel[i] / ksum);
+    MEMCPY(src, bins, sizeof(float) * num_bins);
+    for (int b = 0; b < num_bins; ++b) {
+        double acc = 0.0;
+        for (int i = -r; i <= r; ++i) {
+            int s = b + i;
+            if (periodic) {
+                s %= num_bins;
+                if (s < 0) s += num_bins;
+            } else if (s < 0 || s >= num_bins) {
+                continue;
+            }
+            acc += kernel[i + r] * src[s];
+        }
+        bins[b] = (float)acc;
+    }
+    md_temp_end(temp);
+}
+
 // Density of values[f * stride + k] over the frames f in mask (all num_frames without one), per
-// member k or over all of them at once. Values outside [lo, hi] are not counted.
-static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride, const md_bitset_t* mask) {
+// member k or over all of them at once. Values outside [lo, hi] are not counted; periodic values in
+// [lo, hi[, the period, are all counted, moved into it by whole periods. A smoothing above 0 makes it
+// a kernel density estimate of that bandwidth in Silverman's (kde_bandwidth).
+static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride,
+                         const md_bitset_t* mask, bool periodic, float smoothing) {
     const bool aggregate = dim_out == 1 && stride > 1;
     MEMSET(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
 
@@ -753,8 +849,13 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
         const float* row = values + f * stride;
         const size_t members = aggregate ? stride : (size_t)dim_out;
         for (size_t k = 0; k < members; ++k) {
-            const double val = row[k];
-            if (!(lo <= val && val <= hi)) continue;
+            double val = row[k];
+            if (periodic) {
+                if (!(val == val)) continue;   // a frame not evaluated
+                val = wrap_periodic(val, lo, hi - lo);
+            } else if (!(lo <= val && val <= hi)) {
+                continue;
+            }
             const int b = CLAMP((int)((val - lo) * inv_range * num_bins), 0, num_bins - 1);
             const size_t d = aggregate ? 0 : k;
             bins[d * num_bins + b] += 1.0f;
@@ -781,6 +882,11 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
         const float scl = (float)(1.0 / (width * count[d]));
         for (int b = 0; b < num_bins; ++b) {
             bins[d * num_bins + b] *= scl;
+        }
+        if (smoothing > 0.0f) {
+            float* member = bins + (size_t)d * num_bins;
+            const double h = smoothing * kde_bandwidth(member, num_bins, lo, hi, count[d], periodic);
+            gaussian_smooth(member, num_bins, h / width, periodic);
         }
     }
     md_temp_end(temp);
@@ -810,6 +916,42 @@ static bool read_range(double out[2], const md_attribute_t* range) {
     return md_attribute_extract_f64(out, 2, range, md_attribute_slice_all(), md_unit_none()) == 2 && out[1] > out[0];
 }
 
+// ## Periodic values
+
+bool series_periodic_equal(const SeriesPeriodic& a, const SeriesPeriodic& b) {
+    const double tol = 1.0e-5 * MAX(series_periodic_length(a), series_periodic_length(b));
+    return fabs(a.beg - b.beg) <= tol && fabs(a.end - b.end) <= tol;
+}
+
+// The period and seam published beside the values at path, in their stored unit
+static bool read_periodic(SeriesPeriodic* out, const md_attributes_t* table, str_t path) {
+    *out = SeriesPeriodic{};
+    double range[2];
+    if (!table || !read_range(range, md_attributes_find_in(table, path, STR_LIT("period")))) return false;
+    double seam = range[0];
+    const md_attribute_t* s = md_attributes_find_in(table, path, STR_LIT("seam"));
+    if (s && s->data && md_attribute_type_is_numeric(s->format.type) && md_attribute_element_count(&s->format) == 1) {
+        md_attribute_extract_f64(&seam, 1, s, md_attribute_slice_all(), md_unit_none());
+    }
+    out->beg  = range[0];
+    out->end  = range[1];
+    out->seam = wrap_periodic(seam, range[0], range[1] - range[0]);
+    return true;
+}
+
+bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const SeriesKey& key, double scale) {
+    ASSERT(out);
+    const str_t path = str_from_cstr(key.path);
+    if (!(scale > 0.0) || !read_periodic(out, series_table(app, key.source, path), path)) {
+        *out = SeriesPeriodic{};
+        return false;
+    }
+    out->beg  *= scale;
+    out->end  *= scale;
+    out->seam *= scale;
+    return true;
+}
+
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
     const uint32_t num_frames = app->script.eval ? (uint32_t)md_script_eval_frame_count(app->script.eval) : (uint32_t)run_num_frames(app);
     if (num_frames == 0) return false;
@@ -828,7 +970,7 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
     return true;
 }
 
-bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period) {
+bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period, float smoothing) {
     ASSERT(out && app);
     *out = SeriesHistogramView{};
     fill_names(out, app, key);
@@ -890,10 +1032,20 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         if (!slot || md_array_size(slot->values) != md_attribute_element_count(&attr->format)) return false;
     }
 
+    // Periodic values are binned over their period, around which they are all counted (and smoothed)
+    SeriesPeriodic periodic = {};
+    if (temporal) read_periodic(&periodic, table, path);
+    const bool is_periodic = series_periodic_valid(periodic);
+    // A script distribution is shown as evaluated
+    if (!temporal) smoothing = 0.0f;
+    smoothing = MAX(smoothing, 0.0f);
+
     // ### Cached bins
     uint64_t hkey = md_hash64_str(path, (uint64_t)key.source * 31 + key.variant);
     hkey = md_hash64(&num_bins, sizeof(num_bins), hkey);
     hkey = md_hash64(&period, sizeof(period), hkey);
+    hkey = md_hash64(&smoothing, sizeof(smoothing), hkey);
+    hkey = md_hash64(&periodic, sizeof(periodic), hkey);
     // Of what is binned: the values and weights, and which frames count
     uint64_t version = slot ? slot->version : attr->version + (weight ? weight->version << 1 : 0);
     if (mask) version = md_bitset_hash64(*mask, version);
@@ -925,7 +1077,12 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         const float* values = slot ? slot->values : attribute_floats(app, table, attr);
         if (values) {
             double range[2] = {0, 0};
-            const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
+            bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
+            if (is_periodic) {
+                range[0] = periodic.beg;
+                range[1] = periodic.end;
+                has_range = true;
+            }
             if (temporal) {
                 if (!has_range) {
                     // The range the values cover, over the frames that count
@@ -939,7 +1096,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
                     range[0] = lo;
                     range[1] = hi;
                 }
-                bin_temporal(entry->bins, num_bins, dim, range[0], range[1], values, n, stride, mask);
+                bin_temporal(entry->bins, num_bins, dim, range[0], range[1], values, n, stride, mask, is_periodic, smoothing);
                 entry->valid = true;
             } else if (has_range) {
                 const float* w = slot ? slot->weights : weight ? attribute_floats(app, table, weight) : nullptr;
@@ -985,6 +1142,11 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     out->dim = entry->dim;
     out->x_min = entry->x_min * x_scl;
     out->x_max = entry->x_max * x_scl;
+    if (is_periodic && x_scl > 0.0) {
+        out->periodic.beg  = periodic.beg  * x_scl;
+        out->periodic.end  = periodic.end  * x_scl;
+        out->periodic.seam = periodic.seam * x_scl;
+    }
     out->y_scale = y_scl;
     out->y_min = entry->y_min * y_scl;
     out->y_max = entry->y_max * y_scl;
@@ -992,11 +1154,11 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
 }
 
 bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
-                                      const uint32_t* periods, int num_periods) {
+                                      const uint32_t* periods, int num_periods, float smoothing) {
     ASSERT(out && app);
     const bool over_periods = is_script(key.source) && (num_periods > 1 || (num_periods == 1 && periods[0] != 0));
     if (!over_periods) {
-        return series_resolve_histogram(out, app, key, num_bins);
+        return series_resolve_histogram(out, app, key, num_bins, 0, smoothing);
     }
 
     // A population is pooled: one curve per period, not one per member and period
@@ -1013,7 +1175,7 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
     bool any = false;
     int first = -1;
     for (int p = 0; p < num_periods; ++p) {
-        const bool ok = series_resolve_histogram(&views[p], app, k, num_bins, periods[p]);
+        const bool ok = series_resolve_histogram(&views[p], app, k, num_bins, periods[p], smoothing);
         any |= ok;
         if (ok && first < 0) first = p;
     }
@@ -1365,6 +1527,9 @@ void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, s
             viamd::write_flt (state, STR_LIT("MarkerSize"), s.marker_size);
             viamd::write_flt (state, STR_LIT("BarWidth"), s.bar_width);
             viamd::write_int (state, STR_LIT("NumBins"), s.num_bins);
+            if (s.smoothing > 0.0f) {
+                viamd::write_flt(state, STR_LIT("Smoothing"), s.smoothing);
+            }
             viamd::write_bool(state, STR_LIT("UseColormap"), s.use_colormap);
             viamd::write_int (state, STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, STR_LIT("ColormapAlpha"), s.colormap_alpha);
@@ -1430,6 +1595,9 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                 viamd::extract_flt(s.bar_width, arg);
             } else if (str_eq_cstr(ident, "NumBins") && viamd::extract_int(i, arg)) {
                 s.num_bins = CLAMP(i, 2, 4096);
+            } else if (str_eq_cstr(ident, "Smoothing")) {
+                viamd::extract_flt(s.smoothing, arg);
+                s.smoothing = CLAMP(s.smoothing, 0.0f, 16.0f);
             } else if (str_eq_cstr(ident, "UseColormap")) {
                 viamd::extract_bool(s.use_colormap, arg);
             } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_int(i, arg)) {

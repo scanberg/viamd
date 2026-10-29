@@ -178,6 +178,8 @@ struct PlotSeries {
     float           marker_size = 1.0f;
     float           bar_width = 1.0f;           // of a bin, for bars
     int             num_bins = 128;             // for a distribution
+    float           smoothing = 0.0f;           // for a distribution of values: the bandwidth of a kernel density estimate
+                                                // in Silverman's, 0 for none (series_resolve_histogram)
 
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
@@ -246,6 +248,31 @@ enum : uint32_t {
 // not, as a static string for a tooltip. Cheap enough to ask for every attribute in a table.
 uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const char** out_reason = nullptr);
 
+// ## Periodic values
+//
+// A series of periodic values, such as an angle about an axis: a value is the same as itself plus a whole period. A script
+// property says so (MD_SCRIPT_PROPERTY_FLAG_PERIODIC) by publishing "<path>/period" (beg, end) and "<path>/seam" beside its
+// values; anything else which does is periodic alike. A plot lays such values out on a circle cut open (plot_periodic.h).
+struct SeriesPeriodic {
+    double beg = 0, end = 0;    // the period its values are given in: [-180, 180[ of a dihedral. Not periodic unless end > beg
+    double seam = 0;            // where its values are best cut open, in [beg, end[: where they are least likely to be
+};
+
+static inline bool series_periodic_valid(const SeriesPeriodic& p) {
+    return p.end > p.beg;
+}
+
+static inline double series_periodic_length(const SeriesPeriodic& p) {
+    return p.end - p.beg;
+}
+
+// The same period, to within float: series in it are cut alike (plot_periodic.h)
+bool series_periodic_equal(const SeriesPeriodic& a, const SeriesPeriodic& b);
+
+// The period of the series at key, its values scaled by scale (stored unit -> display unit). False, and out not periodic,
+// when it is not periodic.
+bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const SeriesKey& key, double scale);
+
 // ## Over time
 
 // Resolved for the frame it was resolved in: what a plot reads.
@@ -258,6 +285,8 @@ struct SeriesTemporalView {
     int   dim = 1;                  // population members drawn (1 for the summaries)
     bool  band = false;             // drawn as an area between series_temporal_band's lo and hi
     float y_scale = 1.0f;           // stored unit -> display unit
+    SeriesPeriodic periodic = {};   // of periodic values, in the display unit. The bands of a periodic series (Sigma, Extent)
+                                    // are about their centre: the upper side may lie past periodic.end
 
     char  label[96] = "";                       // with the state appended (series_state_suffix)
     char  plot_id[SERIES_PATH_CAP + 104] = "";  // label###identity, what ImPlot is handed: the label may change
@@ -298,7 +327,9 @@ struct SeriesHistogramView {
     const float* bins = nullptr;    // dim * num_bins, member k's bins at k * num_bins, stored units
     int    num_bins = 0;
     int    dim = 1;
-    double x_min = 0, x_max = 0;    // in the display unit
+    double x_min = 0, x_max = 0;    // in the display unit. Of periodic values, the period they are given in: bin i is the
+                                    // same as bin i + num_bins, a period on (series_histogram_point_at)
+    SeriesPeriodic periodic = {};   // of periodic values, in the display unit
     double y_scale = 1.0;           // bins -> display unit
     double y_min = 0, y_max = 0;    // in the display unit
 
@@ -315,17 +346,20 @@ struct SeriesHistogramView {
     SeriesPeriodInfo periods[PLOT_MAX_PERIODS];
 };
 
+// How a histogram of values is smoothed: a kernel density estimate, Gaussian, of bandwidth smoothing times Silverman's
+// rule of thumb, wrapped around the period for periodic values. 0 for the histogram as binned.
+//
 // num_bins is what is asked for; a script distribution is evaluated at a resolution of its own and
 // gives at most that. False, with labels filled in, when there is nothing to bin.
 // period: a timeline period (see PlotSeries::periods), over whose frames it is binned, or 0 for the frames of the key.
 // A script distribution over a period is read from the evaluation's slot of it (SCRIPT_SLOT_PERIOD), which is asked for
 // here: nothing is evaluated for it unless it is not kept per frame, and then only when Evaluate is pressed.
-bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period = 0);
+bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period = 0, float smoothing = 0.0f);
 
 // Over several periods, one member each, in their order: all binned alike, so that they compare. A population is
 // pooled (the aggregate) over periods. Without periods, the same as series_resolve_histogram.
 bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
-                                      const uint32_t* periods, int num_periods);
+                                      const uint32_t* periods, int num_periods, float smoothing = 0.0f);
 
 // The frames of a period now, [beg, end[: of the period, or for 0 of the key's own period. False when it covers no
 // frames, or the period is gone.
@@ -342,6 +376,25 @@ static inline ImPlotPoint series_histogram_point(const SeriesHistogramView& v, i
 static inline double series_histogram_index_at(const SeriesHistogramView& v, double x) {
     const double w = series_histogram_bin_width(v);
     return w > 0.0 ? (x - v.x_min) / w - 0.5 : 0.0;
+}
+
+// The bin of an index which may lie outside [0, num_bins[: of periodic values, the bin a whole number of periods away
+// (bin -1 is the last, a period back); otherwise none, -1
+static inline int series_histogram_bin(const SeriesHistogramView& v, long long u) {
+    if (v.num_bins <= 0) return -1;
+    if (series_periodic_valid(v.periodic)) {
+        const long long m = u % v.num_bins;
+        return (int)(m < 0 ? m + v.num_bins : m);
+    }
+    return (0 <= u && u < v.num_bins) ? (int)u : -1;
+}
+
+// Bin u of member k, where u may lie outside [0, num_bins[ for periodic values: at its place a whole number of periods
+// away, so that the curve goes on around the circle
+static inline ImPlotPoint series_histogram_point_at(const SeriesHistogramView& v, int k, long long u) {
+    const double w = series_histogram_bin_width(v);
+    const int b = series_histogram_bin(v, u);
+    return ImPlotPoint(v.x_min + ((double)u + 0.5) * w, b >= 0 ? v.bins[(size_t)k * v.num_bins + b] * v.y_scale : 0.0);
 }
 
 // ## Volumes

@@ -1350,6 +1350,10 @@ struct ApplicationState {
     char  hovered_property_label[64] = "";
     int   hovered_property_pop_idx = -1;
 
+    // What was under the cursor when the context menu of the viewport opened, which its entries are about: the menu
+    // covers the cursor once it is open
+    PickingHit context_menu_hit = {};
+
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
@@ -1739,7 +1743,7 @@ struct ApplicationState {
         vec4_t text_color       = {1,1,1,1};
         vec4_t text_bg_color    = {0,0,0,0.5f};
 
-        uint64_t text_hash;
+        uint64_t text_hash = 0;     // Of the editor's text in the last frame: a change compiles it again (main.cpp)
 
         // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
         // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
@@ -2283,6 +2287,10 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
 // The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
 // come after them as they are drawn (formed is set for those)
 bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
+
+// Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights, and what clicking it
+// selects (the atoms of a bond, the residue of a cartoon segment, ...)
+void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const PickingHit& hit, SelectionGranularity granularity);
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.

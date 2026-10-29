@@ -71,6 +71,7 @@
 #include <viamd.h>
 #include <representation.h>
 #include <timeline_periods_ui.h>
+#include <plot_periodic.h>
 #include <script_reference.h>
 #include <script_suggestions.h>
 #include <viamd_event.h>
@@ -1054,6 +1055,7 @@ int main(int argc, char** argv) {
                     single_selection_sequence_clear(&state.selection.single_selection_sequence);
                 }
             } else if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
+                state.context_menu_hit = event.hit;
                 ImGui::OpenPopup("Context Popup");
             }
             
@@ -1085,7 +1087,7 @@ int main(int argc, char** argv) {
             state.view.target = reset_transform;
         }
 
-        draw_context_popup(&state, hit);
+        draw_context_popup(&state, state.context_menu_hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
         camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
@@ -1200,8 +1202,19 @@ int main(int argc, char** argv) {
         }
 
         {
+            // The script is compiled again whatever changed its text. Typing is reported by the editor (its Render,
+            // above in the frame, which asks for a compilation once typing pauses), but an edit through the editor's
+            // API is not: Render takes its change as its own state before the keyboard's, and reports only that.
+            // Such an edit is a line added from the context menu, an example inserted from the script reference, a
+            // file loaded, an undo from the Edit menu; or any edit while the Script Editor window is closed, and its
+            // Render not called at all. Those are whole edits, not typing under way: compiled in this frame.
             std::string text = state.editor.GetText();
-            state.script.text_hash = md_hash64(text.c_str(), text.length(), 0);
+            const uint64_t text_hash = md_hash64(text.c_str(), text.length(), 0);
+            if (text_hash != state.script.text_hash && !state.script.compile_ir) {
+                state.script.compile_ir = true;
+                state.script.time_since_last_change = 1.0e9;
+            }
+            state.script.text_hash = text_hash;
         }
 
         if (state.script.compile_ir) {
@@ -2950,6 +2963,49 @@ static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_a
 // The lines the Script menu offers (script_suggestions.h): the measurement of the atoms picked one by one, and the
 // selection. Every one of them is evaluated against the system before it is offered, which is not something to do
 // every frame the menu is open, so they are kept for as long as what they are of stays the same.
+// What the context menu of the viewport is about besides the selection, found as it opens (context_targets_update)
+static struct {
+    // What the New Representation entries are of: what was under the cursor (as a whole, and all of its name), and the
+    // selection
+    RepresentationTarget hovered;
+    RepresentationTarget all;
+    RepresentationTarget selection;
+
+    // What the Script menu is about while nothing is selected: what was under the cursor as it was highlighted (grown
+    // by the granularity), more than one atom, and the atoms of a bond under it
+    md_bitset_t hit_atoms = {};
+    int32_t hit_bond[2] = {-1, -1};
+} context_targets;
+
+static void context_targets_update(ApplicationState* state, const PickingHit& hit) {
+    representation_targets_from_hit(&context_targets.hovered, &context_targets.all, *state, hit);
+    representation_target_from_selection(&context_targets.selection, *state);
+    if (!md_bitset_empty(context_targets.hovered.atoms) && md_bitset_equal(context_targets.hovered.atoms, context_targets.selection.atoms)) {
+        representation_target_free(&context_targets.hovered);
+    }
+
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_bitset_free(&context_targets.hit_atoms, alloc);
+    context_targets.hit_bond[0] = context_targets.hit_bond[1] = -1;
+    const md_system_t& sys = state->mold.sys;
+    md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
+    picking_hit_mask_set(&mask, *state, hit, state->selection.granularity);
+    // A single atom is no subject of its own
+    if (md_bitmask_count(&mask) > 1) {
+        context_targets.hit_atoms = md_bitmask_extract(&mask, alloc);
+    }
+    md_bitmask_free(&mask);
+    if (hit.domain == PickingDomain_Bond) {
+        md_atom_pair_t pair;
+        md_bond_flags_t flags;
+        bool formed;
+        if (picked_bond(*state, hit.local_idx, &pair, &flags, &formed)) {
+            context_targets.hit_bond[0] = pair.idx[0];
+            context_targets.hit_bond[1] = pair.idx[1];
+        }
+    }
+}
+
 struct ScriptSuggestions {
     uint64_t key = 0;
     md_allocator_i* arena = nullptr;
@@ -2961,16 +3017,26 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
     static ScriptSuggestions cache;
 
     const md_system_t& sys = state->mold.sys;
-    const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
     const SingleSelectionSequence& seq = state->selection.single_selection_sequence;
 
+    // The selection, or while there is none what was right-clicked, as it was highlighted
+    md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+    const bool from_hit = md_bitset_empty(sel);
+    if (from_hit) sel = context_targets.hit_atoms;
+
     // The atoms of a measurement, in the order they were picked: the picks have to be what is selected, as the order
-    // is unknown for atoms selected otherwise. Two atoms need no order.
+    // is unknown for atoms selected otherwise. Two atoms need no order. Of what was right-clicked, the length of a bond.
     int32_t atoms[4];
     size_t num_atoms = 0;
     const size_t num_selected = md_bitset_count(sel);
     const size_t num_picked = single_selection_sequence_count(&seq);
-    if (2 <= num_selected && num_selected <= 4) {
+    if (from_hit) {
+        if (context_targets.hit_bond[0] >= 0) {
+            atoms[0] = context_targets.hit_bond[0];
+            atoms[1] = context_targets.hit_bond[1];
+            num_atoms = 2;
+        }
+    } else if (2 <= num_selected && num_selected <= 4) {
         bool picks = num_picked == num_selected;
         for (size_t i = 0; i < num_picked && picks; ++i) picks = md_bitset_test(sel, (uint32_t)seq.idx[i]);
         if (picks) {
@@ -3040,10 +3106,40 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     }
 }
 
+// A target, and the types it can be shown as in a menu: the suggested one first. Its atoms are highlighted while it is
+// hovered or open.
+static void draw_new_representation_menu(ApplicationState* state, const RepresentationTarget& target) {
+    if (md_bitset_empty(target.atoms)) return;
+    ImGui::PushID(&target);
+    const bool open = ImGui::BeginMenu(target.selection ? "Selected atoms" : target.label);
+    if (open || ImGui::IsItemHovered()) {
+        md_bitmask_assign(&state->selection.highlight_mask, target.atoms);
+    }
+    if (open) {
+        ImGui::TextDisabled("%llu atoms", (unsigned long long)md_bitset_count(target.atoms));
+        ImGui::Separator();
+        auto item = [&](RepresentationType type, bool suggested) {
+            if (ImGui::MenuItem(representation_type_str[(int)type], suggested ? "suggested" : nullptr)) {
+                create_representation_of_target(state, target, type);
+                ImGui::CloseCurrentPopup();
+            }
+        };
+        item(target.suggested_type, true);
+        ImGui::Separator();
+        const RepresentationType types[] = {
+            RepresentationType::SpaceFill, RepresentationType::Licorice, RepresentationType::BallAndStick,
+            RepresentationType::Ribbons, RepresentationType::Cartoon,
+        };
+        for (RepresentationType type : types) {
+            if (type != target.suggested_type && representation_target_can_show(*state, target, type)) item(type, false);
+        }
+        ImGui::EndMenu();
+    }
+    ImGui::PopID();
+}
+
 // # context_menu
 void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
-    // @Robin: Will hit ever be used here? (Possibly remove argument)
-    (void)hit;
     ASSERT(state);
 
     if (!state->mold.sys.atom.count) return;
@@ -3051,6 +3147,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
     const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
+        // What was under the cursor, found once, as the menu opens
+        if (ImGui::IsWindowAppearing()) {
+            context_targets_update(state, hit);
+        }
         if (num_atoms_selected == 2) {
             // A bond between the two, of a kind, or the removal of the one a user made
             int idx[2];
@@ -3184,7 +3284,8 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 ImGui::PopID();
             }
             if (!md_array_size(sug.measure) && !md_array_size(sug.select)) {
-                ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" : "Nothing is selected");
+                ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" :
+                                    md_bitset_empty(context_targets.hit_atoms) ? "Nothing is selected" : "No suggestions for what was right-clicked");
             }
             ImGui::EndMenu();
         }
@@ -3261,6 +3362,26 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             if (ImGui::IsItemHovered()) {
                 md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
             }
+        }
+
+        // A representation of what was under the cursor, or of the selection
+        const RepresentationTarget* targets[3] = { &context_targets.hovered, &context_targets.all, &context_targets.selection };
+        if (!md_bitset_empty(context_targets.selection.atoms) && !md_bitset_empty(context_targets.hovered.atoms)) {
+            // What was pointed at is part of the selection: the selection is what is meant first
+            md_temp_scope_t temp = md_temp_begin();
+            const md_bitset_t outside = md_bitset_andnot(context_targets.hovered.atoms, context_targets.selection.atoms, md_temp_allocator(temp));
+            if (md_bitset_empty(outside)) {
+                targets[0] = &context_targets.selection;
+                targets[1] = &context_targets.hovered;
+                targets[2] = &context_targets.all;
+            }
+            md_temp_end(temp);
+        }
+        bool any_target = false;
+        for (const RepresentationTarget* t : targets) any_target |= !md_bitset_empty(t->atoms);
+        if (any_target) {
+            ImGui::SeparatorText("New Representation");
+            for (const RepresentationTarget* t : targets) draw_new_representation_menu(state, *t);
         }
 
         ImGui::EndPopup();
@@ -4014,29 +4135,133 @@ static size_t script_property_population(const ApplicationState* data, const Ser
 
 // #timeline
 
-// What a getter is handed: the resolved series, and which member of its population
+// What a getter is handed: the resolved series, and which member of its population. Periodic values (len > 0) are placed a
+// whole number of periods away from where they are: into the window [ref, ref + len[, or, for near, as near ref as they come
+// (what is measured against the mouse).
 struct TemporalGetterPayload {
     const SeriesTemporalView* view;
     int k;
+    double ref = 0.0;
+    double len = 0.0;
+    bool near = false;
 };
+
+static inline double temporal_place(const TemporalGetterPayload* p, double y) {
+    if (p->len <= 0.0) return y;
+    return p->near ? periodic_near(y, p->ref, p->len) : periodic_wrap(y, p->ref, p->len);
+}
 
 static ImPlotPoint temporal_getter_line(int i, void* payload) {
     const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
-    return series_temporal_point(*p->view, i, p->k);
+    ImPlotPoint pt = series_temporal_point(*p->view, i, p->k);
+    pt.y = temporal_place(p, pt.y);
+    return pt;
 }
 
+// A band is placed by its centre, and keeps its width
 static ImPlotPoint temporal_getter_band_lo(int i, void* payload) {
     const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
     double lo, hi;
     series_temporal_band(*p->view, i, &lo, &hi);
-    return ImPlotPoint(p->view->x[i], lo);
+    const double c = 0.5 * (lo + hi);
+    return ImPlotPoint(p->view->x[i], lo + (temporal_place(p, c) - c));
 }
 
 static ImPlotPoint temporal_getter_band_hi(int i, void* payload) {
     const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
     double lo, hi;
     series_temporal_band(*p->view, i, &lo, &hi);
-    return ImPlotPoint(p->view->x[i], hi);
+    const double c = 0.5 * (lo + hi);
+    return ImPlotPoint(p->view->x[i], hi + (temporal_place(p, c) - c));
+}
+
+// Arrays of points moved by a whole number of periods (off), for drawing a run of a periodic band below and above itself
+struct PeriodicBandPayload {
+    const double* x;
+    const double* y;
+    double off;
+};
+
+static ImPlotPoint periodic_band_getter(int i, void* payload) {
+    const PeriodicBandPayload* p = (const PeriodicBandPayload*)payload;
+    return ImPlotPoint(p->x[i], p->y[i] + p->off);
+}
+
+// A periodic series over time, drawn into the window [base, base + len[ of its view (plot_periodic.h): as a polyline cut where it
+// crosses the edges of the window, as points in it, or as a band about its centre. copies is how many periods below and above
+// the band is drawn as well: on an axis of the period, where the window covers what is shown, 1; otherwise none, and the band
+// may stick out of the window.
+static void plot_periodic_temporal(const SeriesTemporalView& v, int k, PlotType plot_type, double base, double len, int copies) {
+    md_temp_scope_t temp = md_temp_begin();
+    const int n = v.num_samples;
+    if (v.band) {
+        double* x  = md_temp_alloc_array(temp, double, n);
+        double* lo = md_temp_alloc_array(temp, double, n);
+        double* hi = md_temp_alloc_array(temp, double, n);
+        for (int i = 0; i < n; ++i) {
+            x[i] = v.x[i];
+            series_temporal_band(v, i, &lo[i], &hi[i]);
+        }
+        double* rx  = md_temp_alloc_array(temp, double, 2 * n);
+        double* rlo = md_temp_alloc_array(temp, double, 2 * n);
+        double* rhi = md_temp_alloc_array(temp, double, 2 * n);
+        int* run_beg   = md_temp_alloc_array(temp, int, n);
+        int* run_count = md_temp_alloc_array(temp, int, n);
+        const int num_runs = periodic_band_runs(rx, rlo, rhi, run_beg, run_count, x, lo, hi, n, base, len, len * PERIODIC_MAX_STEP);
+        for (int r = 0; r < num_runs; ++r) {
+            if (run_count[r] < 1) continue;
+            for (int c = -copies; c <= copies; ++c) {
+                PeriodicBandPayload pl_lo = { rx + run_beg[r], rlo + run_beg[r], c * len };
+                PeriodicBandPayload pl_hi = { rx + run_beg[r], rhi + run_beg[r], c * len };
+                ImPlot::PlotShadedG(v.plot_id, periodic_band_getter, &pl_lo, periodic_band_getter, &pl_hi, run_count[r]);
+            }
+        }
+    } else if (plot_type == PlotType_Scatter) {
+        TemporalGetterPayload payload = { &v, k, base, len, false };
+        ImPlot::PlotScatterG(v.plot_id, temporal_getter_line, &payload, n);
+    } else {
+        const int cap = 4 * n + 1;
+        double* px = md_temp_alloc_array(temp, double, cap);
+        double* py = md_temp_alloc_array(temp, double, cap);
+        const int m = periodic_polyline(px, py, cap, v.x, v.y, n, v.stride, k, v.y_scale, base, len, len * PERIODIC_MAX_STEP);
+        ImPlot::PlotLine(v.plot_id, px, py, m);
+    }
+    md_temp_end(temp);
+}
+
+// Cuts the circle of view where the distributions in hist are least populated: the density of every member of every one of them
+// which is of the period of view, all counted alike, resampled to a common resolution
+static void periodic_cut_least_populated(PeriodicView* view, const SeriesHistogramView* hist, int count) {
+    const int nb = 360;
+    float density[nb] = {};
+    bool any = false;
+    for (int j = 0; j < count; ++j) {
+        const SeriesHistogramView& h = hist[j];
+        if (!h.bins || h.num_bins <= 0 || !series_periodic_valid(h.periodic)) continue;
+        if (!series_periodic_equal(h.periodic, view->period)) continue;
+        const int members = h.num_periods > 0 ? h.num_periods : h.dim;
+        for (int k = 0; k < members; ++k) {
+            if (h.num_periods > 0 && !h.periods[k].valid) continue;
+            for (int b = 0; b < nb; ++b) {
+                const int src = MIN((int)((b + 0.5) * h.num_bins / nb), h.num_bins - 1);
+                density[b] += h.bins[(size_t)k * h.num_bins + src];
+            }
+            any = true;
+        }
+    }
+    if (any) periodic_view_cut_least_populated(view, density, nb);
+}
+
+// The same for the series of a timeline subplot: their values over every frame
+static void timeline_cut_least_populated(ApplicationState* data, const PlotSubplot& sp, PeriodicView* view) {
+    SeriesHistogramView hist[PLOT_MAX_SERIES_PER_SUBPLOT];
+    int count = 0;
+    for (int j = 0; j < sp.count; ++j) {
+        SeriesKey key = sp.series[j].key;
+        key.variant = SeriesVariant_Values;
+        if (series_resolve_histogram(&hist[count], data, key, 128)) count += 1;
+    }
+    periodic_cut_least_populated(view, hist, count);
 }
 
 static void draw_timeline_properties_menu(ApplicationState* data) {
@@ -4154,7 +4379,8 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
             const ImPlotFlags plot_flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch;
+            // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
+            const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlot::InsetAxisFlags;
             const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_Opposite | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit;
 
             for (int i = 0; i < num_subplots; ++i) {
@@ -4167,17 +4393,31 @@ static void draw_timeline_window(ApplicationState* data) {
                     resolved[j] = series_resolve_temporal(&views[j], data, sp.series[j].key);
                 }
 
+                // Periodic values are drawn into the window of their view, where it is cut (plot_periodic.h). When every series
+                // here is of one period, the y axis is an axis of it: at most a period, turned by panning it, and linked to
+                // every other axis of the period, in the Distributions as well.
+                PeriodicView* pviews[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                PeriodicView* axis_view = nullptr;
+                {
+                    bool all_one = true;
+                    int num = 0;
+                    for (int j = 0; j < sp.count; ++j) {
+                        if (!resolved[j]) continue;
+                        num += 1;
+                        pviews[j] = periodic_view(views[j].periodic, views[j].unit_str);
+                        if (!pviews[j] || (axis_view && pviews[j] != axis_view)) all_one = false;
+                        if (!axis_view) axis_view = pviews[j];
+                    }
+                    if (!all_one || num == 0) axis_view = nullptr;
+                }
+
                 int remove_idx = -1;
 
                 if (ImPlot::BeginPlot("", ImVec2(), plot_flags)) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x_value, max_x_value);
 
-                    ImPlotAxisFlags axis_flags_x = axis_flags | ImPlotAxisFlags_NoLabel;
-                    if (i < num_subplots - 1) {
-                        // Only show label and ticklabels for the last plot, since they are all synced on x-axis
-                        axis_flags_x |= ImPlotAxisFlags_NoTickLabels;
-                    }
+                    const ImPlotAxisFlags axis_flags_x = axis_flags;
 
                     // When every series in the subplot is shown in the same unit, that unit labels the y axis
                     char y_unit_str[32] = "";
@@ -4196,8 +4436,18 @@ static void draw_timeline_window(ApplicationState* data) {
                         snprintf(y_label, sizeof(y_label), "(%s)", y_unit_str);
                     }
 
-                    ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
+                    ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
+                    if (axis_view) {
+                        // Not fitted to the values: they fill the period, wherever it is cut
+                        periodic_axis_setup(ImAxis_Y1, y_label, axis_view, axis_flags | ImPlotAxisFlags_Opposite);
+                    } else {
+                        ImPlot::SetupAxis(ImAxis_Y1, y_label, axis_flags_y);
+                    }
                     ImPlot::SetupFinish();
+
+                    if (axis_view && periodic_axis_popup(ImAxis_Y1, axis_view)) {
+                        timeline_cut_least_populated(data, sp, axis_view);
+                    }
 
                     // The periods shaded below the series, and shift-press marking a new one
                     timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.frame);
@@ -4247,7 +4497,8 @@ static void draw_timeline_window(ApplicationState* data) {
                                 if (dim > 1 && !s.population_mask.test(k)) {
                                     continue;
                                 }
-                                TemporalGetterPayload payload = { &v, k };
+                                // Periodic values: the place of each sample nearest the mouse, of all a period apart
+                                TemporalGetterPayload payload = { &v, k, mouse_pos.y, pviews[j] ? periodic_view_length(*pviews[j]) : 0.0, true };
                                 double d = DBL_MAX;
 
                                 if (v.band) {
@@ -4420,15 +4671,29 @@ static void draw_timeline_window(ApplicationState* data) {
                                     }
                                 }
 
-                                TemporalGetterPayload payload = { &v, k };
                                 if (v.band) {
                                     ImPlot::SetNextFillStyle(color, fill_alpha);
-                                    ImPlot::PlotShadedG(v.plot_id, temporal_getter_band_lo, &payload, temporal_getter_band_hi, &payload, v.num_samples);
                                 } else if (s.plot_type == PlotType_Scatter) {
                                     ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, color, marker_line_weight, marker_line_color);
-                                    ImPlot::PlotScatterG(v.plot_id, temporal_getter_line, &payload, v.num_samples);
                                 } else {
                                     ImPlot::SetNextLineStyle(color, weight);
+                                }
+
+                                if (pviews[j]) {
+                                    // On an axis of the period, into the window of its view, the band below and above it as
+                                    // well. Beside values of other kinds, on an axis which reads them as they are, into the
+                                    // period they are given in.
+                                    const double base = axis_view ? pviews[j]->min : pviews[j]->period.beg;
+                                    plot_periodic_temporal(v, k, s.plot_type, base, periodic_view_length(*pviews[j]), axis_view ? 1 : 0);
+                                    return;
+                                }
+
+                                TemporalGetterPayload payload = { &v, k };
+                                if (v.band) {
+                                    ImPlot::PlotShadedG(v.plot_id, temporal_getter_band_lo, &payload, temporal_getter_band_hi, &payload, v.num_samples);
+                                } else if (s.plot_type == PlotType_Scatter) {
+                                    ImPlot::PlotScatterG(v.plot_id, temporal_getter_line, &payload, v.num_samples);
+                                } else {
                                     ImPlot::PlotLineG(v.plot_id, temporal_getter_line, &payload, v.num_samples);
                                 }
                             };
@@ -4494,6 +4759,9 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
                     }
 
+                    // Over everything else. The x axis labelled only under the last plot: they all share it.
+                    ImPlot::DrawInsetAxes(i < num_subplots - 1 ? ImPlotInsetFlags_NoX : 0);
+
                     ImPlot::EndPlot();
                 }
 
@@ -4528,19 +4796,43 @@ static void draw_timeline_window(ApplicationState* data) {
 
 // #distribution_window
 
+// What a getter is handed: the histogram, which member of it, and from which bin. Point i is bin u0 + i, which for periodic
+// values may lie outside [0, num_bins[: the bin a whole number of periods away, at its place there (series_histogram_point_at).
 struct HistogramGetterPayload {
     const SeriesHistogramView* view;
     int k;
+    long long u0 = 0;
 };
 
 static ImPlotPoint histogram_getter(int i, void* payload) {
     const HistogramGetterPayload* p = (const HistogramGetterPayload*)payload;
-    return series_histogram_point(*p->view, i, p->k);
+    return series_histogram_point_at(*p->view, p->k, p->u0 + i);
 }
 
 static ImPlotPoint histogram_getter_zero(int i, void* payload) {
     const HistogramGetterPayload* p = (const HistogramGetterPayload*)payload;
-    return ImPlotPoint(series_histogram_point(*p->view, i, p->k).x, 0.0);
+    return ImPlotPoint(series_histogram_point_at(*p->view, p->k, p->u0 + i).x, 0.0);
+}
+
+// The bins of a histogram to draw, as the first (u0) and how many. All of them, unless the values are periodic: then those
+// over [x_min, x_max] and one beyond each end, so that a curve runs on to the edges of the plot; or, for x_max <= x_min, the
+// bins around the period from where it is cut at x_min, and one more, which closes a curve onto its beginning.
+static void histogram_draw_range(long long* u0, int* count, const SeriesHistogramView& v, double x_min, double x_max) {
+    const double w = series_histogram_bin_width(v);
+    if (!series_periodic_valid(v.periodic) || w <= 0.0) {
+        *u0 = 0;
+        *count = v.num_bins;
+        return;
+    }
+    if (x_max > x_min) {
+        const long long a = (long long)floor((x_min - v.x_min) / w - 0.5) - 1;
+        const long long b = (long long)ceil ((x_max - v.x_min) / w - 0.5) + 1;
+        *u0 = a;
+        *count = (int)MIN(b - a + 1, (long long)v.num_bins * 4);
+    } else {
+        *u0 = (long long)ceil((x_min - v.x_min) / w - 0.5);
+        *count = v.num_bins + 1;
+    }
 }
 
 // A polyline drawn dashed, carrying the dashes on across its corners and from one call to the next through phase
@@ -4565,8 +4857,8 @@ static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 
 
 // A histogram member over the plot as a preview, not a curve of the plot's own: drawn as the series is (a line, an area
 // or bars), with a dashed outline and, for an area or bars, a faint fill
-static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 color, const PlotSeries& s) {
-    if (v.num_bins <= 0) return;
+static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 color, const PlotSeries& s, long long u0, int count) {
+    if (v.num_bins <= 0 || count <= 0) return;
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
     const ImU32 line_col = ImGui::ColorConvertFloat4ToU32(color);
@@ -4580,11 +4872,11 @@ static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 c
         const bool joined = s.bar_width >= 0.999f;
         md_temp_scope_t temp = md_temp_begin();
         // Joined, the outline is one step along the tops of the bars; apart, each bar has its own
-        ImVec2* outline = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins * 2 + 2);
+        ImVec2* outline = md_temp_alloc_array(temp, ImVec2, (size_t)count * 2 + 2);
         int n = 0;
         dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
-        for (int i = 0; i < v.num_bins; ++i) {
-            const ImPlotPoint p = series_histogram_point(v, i, k);
+        for (int i = 0; i < count; ++i) {
+            const ImPlotPoint p = series_histogram_point_at(v, k, u0 + i);
             const ImVec2 a = ImPlot::PlotToPixels(p.x - half, 0.0);
             const ImVec2 b = ImPlot::PlotToPixels(p.x + half, p.y);
             dl->AddRectFilled(ImVec2(MIN(a.x, b.x), MIN(a.y, b.y)), ImVec2(MAX(a.x, b.x), MAX(a.y, b.y)), fill_col);
@@ -4605,21 +4897,21 @@ static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 c
         md_temp_end(temp);
     } else {
         md_temp_scope_t temp = md_temp_begin();
-        ImVec2* pts = md_temp_alloc_array(temp, ImVec2, (size_t)v.num_bins);
-        for (int i = 0; i < v.num_bins; ++i) {
-            pts[i] = ImPlot::PlotToPixels(series_histogram_point(v, i, k));
+        ImVec2* pts = md_temp_alloc_array(temp, ImVec2, (size_t)count);
+        for (int i = 0; i < count; ++i) {
+            pts[i] = ImPlot::PlotToPixels(series_histogram_point_at(v, k, u0 + i));
         }
         if (s.plot_type == PlotType_Area) {
             // Down to zero, one quad per stretch between two bins
             dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
-            for (int i = 1; i < v.num_bins; ++i) {
-                const ImVec2 base0 = ImPlot::PlotToPixels(series_histogram_point(v, i - 1, k).x, 0.0);
-                const ImVec2 base1 = ImPlot::PlotToPixels(series_histogram_point(v, i, k).x, 0.0);
+            for (int i = 1; i < count; ++i) {
+                const ImVec2 base0 = ImPlot::PlotToPixels(series_histogram_point_at(v, k, u0 + i - 1).x, 0.0);
+                const ImVec2 base1 = ImPlot::PlotToPixels(series_histogram_point_at(v, k, u0 + i).x, 0.0);
                 dl->AddQuadFilled(pts[i - 1], pts[i], base1, base0, fill_col);
             }
             dl->Flags = flags;
         }
-        dashed_polyline(dl, pts, v.num_bins, line_col, &phase);
+        dashed_polyline(dl, pts, count, line_col, &phase);
         md_temp_end(temp);
     }
     ImPlot::PopPlotClipRect();
@@ -4787,7 +5079,8 @@ static void draw_distribution_window(ApplicationState* data) {
             ImGui::EndMenuBar();
         }
 
-        const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
+        // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
+        const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight | ImPlot::InsetAxisFlags;
         const ImPlotAxisFlags axis_flags_x = axis_flags;
         const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
         const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
@@ -4807,7 +5100,25 @@ static void draw_distribution_window(ApplicationState* data) {
                             else s.periods[0] = 0;
                         }
                     }
-                    resolved[j] = series_resolve_histogram_periods(&views[j], data, s.key, s.num_bins, s.periods, s.num_periods);
+                    resolved[j] = series_resolve_histogram_periods(&views[j], data, s.key, s.num_bins, s.periods, s.num_periods, s.smoothing);
+                }
+
+                // Periodic values are drawn around their period from where their view cuts it (plot_periodic.h). When every
+                // series here is of one period, the x axis is an axis of it: at most a period, turned by panning it, and linked
+                // to every other axis of the period, in the Timelines as well.
+                PeriodicView* pviews[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                PeriodicView* axis_view = nullptr;
+                {
+                    bool all_one = true;
+                    int num = 0;
+                    for (int j = 0; j < sp.count; ++j) {
+                        if (!resolved[j] || views[j].num_bins <= 0) continue;
+                        num += 1;
+                        pviews[j] = periodic_view(views[j].periodic, views[j].x_unit_str);
+                        if (!pviews[j] || (axis_view && pviews[j] != axis_view)) all_one = false;
+                        if (!axis_view) axis_view = pviews[j];
+                    }
+                    if (!all_one || num == 0) axis_view = nullptr;
                 }
 
                 // More to show than before (a workspace loaded before anything was evaluated, an evaluation which
@@ -4825,7 +5136,9 @@ static void draw_distribution_window(ApplicationState* data) {
                 int remove_idx = -1;
 
                 if (fit_subplot[i]) {
-                    ImPlot::SetNextAxesToFit();
+                    // An axis of a period shows it as it is cut: only the densities are fitted
+                    if (axis_view) ImPlot::SetNextAxisToFit(ImAxis_Y1);
+                    else           ImPlot::SetNextAxesToFit();
                     fit_subplot[i] = false;
                 }
 
@@ -4846,8 +5159,31 @@ static void draw_distribution_window(ApplicationState* data) {
                         }
                     }
 
-                    ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
+                    if (axis_view) {
+                        periodic_axis_setup(ImAxis_X1, x_label, axis_view, axis_flags_x);
+                    } else {
+                        ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
+                    }
+                    ImPlot::SetupAxis(ImAxis_Y1, y_label, axis_flags_y);
                     ImPlot::SetupFinish();
+
+                    if (axis_view && periodic_axis_popup(ImAxis_X1, axis_view)) {
+                        periodic_cut_least_populated(axis_view, views, sp.count);
+                    }
+
+                    // Which bins each series draws: of periodic values, around the period from where it is cut, and on an
+                    // axis of the period, over what it shows
+                    const ImPlotRect limits = ImPlot::GetPlotLimits();
+                    long long draw_u0[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                    int draw_count[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                    auto draw_range = [&](long long* u0, int* count, const SeriesHistogramView& hv, const PeriodicView* pv) {
+                        if (axis_view)  histogram_draw_range(u0, count, hv, limits.X.Min, limits.X.Max);
+                        else if (pv)    histogram_draw_range(u0, count, hv, pv->period.beg, pv->period.beg);
+                        else            histogram_draw_range(u0, count, hv, 0.0, 0.0);
+                    };
+                    for (int j = 0; j < sp.count; ++j) {
+                        if (resolved[j]) draw_range(&draw_u0[j], &draw_count[j], views[j], pviews[j]);
+                    }
 
                     int  hovered_idx       = -1;
                     int  hovered_pop_idx   = -1;
@@ -4873,20 +5209,23 @@ static void draw_distribution_window(ApplicationState* data) {
                             ImPlotItem* item = ImPlot::GetItem(v.plot_id);
                             if (!item || !item->Show) continue;
 
-                            const int nb = v.num_bins;
-                            const double x = series_histogram_index_at(v, mouse_pos.x);
-                            const int xn = CLAMP((int)(x + 0.5), 0, nb - 1);
+                            // Among the points it draws: from bin draw_u0, which for periodic values may lie a period or more off
+                            const int nb = draw_count[j];
+                            if (nb <= 0) continue;
+                            const double x = (mouse_pos.x - v.x_min) / series_histogram_bin_width(v) - 0.5 - (double)draw_u0[j];
+                            const int xn = CLAMP((int)floor(x + 0.5), 0, nb - 1);
+                            const int xf = (int)floor(x);
                             const int xi[4] = {
-                                CLAMP((int)x - 1, 0, nb - 1),
-                                CLAMP((int)x,     0, nb - 1),
-                                CLAMP((int)x + 1, 0, nb - 1),
-                                CLAMP((int)x + 2, 0, nb - 1),
+                                CLAMP(xf - 1, 0, nb - 1),
+                                CLAMP(xf,     0, nb - 1),
+                                CLAMP(xf + 1, 0, nb - 1),
+                                CLAMP(xf + 2, 0, nb - 1),
                             };
 
                             const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             for (int k = 0; k < dim; ++k) {
                                 if (v.num_periods > 0 ? !v.periods[k].valid : (dim > 1 && !s.population_mask.test(k))) continue;
-                                HistogramGetterPayload payload = { &v, k };
+                                HistogramGetterPayload payload = { &v, k, draw_u0[j] };
                                 // Later entries lie on top: prefer them a little when two are equally near
                                 const double layer = j + k / (double)(PLOT_MAX_POPULATION - 1);
                                 const double layer_dist = ((sp.count - layer) / sp.count) * (max_rad * 0.1);
@@ -4934,10 +5273,14 @@ static void draw_distribution_window(ApplicationState* data) {
 
                                 if (d < min_dist) {
                                     min_dist = d;
-                                    const ImPlotPoint pt = histogram_getter(xn, &payload);
+                                    ImPlotPoint pt = histogram_getter(xn, &payload);
+                                    if (series_periodic_valid(v.periodic)) {
+                                        // As the values are given, wherever the period is cut
+                                        pt.x = periodic_wrap(pt.x, v.periodic.beg, series_periodic_length(v.periodic));
+                                    }
                                     hovered_idx = j;
                                     hovered_pop_idx = (dim > 1 || v.num_periods > 0) ? k : -1;
-                                    hovered_bin = xn;
+                                    hovered_bin = series_histogram_bin(v, draw_u0[j] + xn);
                                     if (v.num_periods > 0) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s, %s: %.4g at %.4g %s", v.label, v.periods[k].name, pt.y, pt.x, v.x_unit_str);
                                     } else if (dim > 1) {
@@ -5034,6 +5377,25 @@ static void draw_distribution_window(ApplicationState* data) {
                                 ImGui::TextDisabled("Evaluated at %d bins", v.num_bins);
                             }
 
+                            // Values binned, rather than a distribution as the script evaluated it: they may be smoothed
+                            const bool binned = s.key.source != SeriesSource_Script ||
+                                (md_script_ir_property_flags(data->script.eval_ir, series_script_ident(s.key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
+                            if (binned) {
+                                bool smooth = s.smoothing > 0.0f;
+                                if (ImGui::Checkbox("Smooth", &smooth)) {
+                                    s.smoothing = smooth ? 1.0f : 0.0f;
+                                }
+                                ImGui::SetItemTooltip("A kernel density estimate rather than the histogram: a Gaussian about every value, as\n"
+                                                      "wide as Silverman's rule of thumb makes it%s",
+                                                      series_periodic_valid(v.periodic) ? ", wrapped around the period" : "");
+                                if (smooth) {
+                                    ImGui::SameLine();
+                                    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+                                    ImGui::SliderFloat("Bandwidth", &s.smoothing, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+                                    ImGui::SetItemTooltip("Of Silverman's rule of thumb, which oversmooths what has several peaks:\nless than 1 to see them apart");
+                                }
+                            }
+
                             int popup_hovered_pop = -1;
                             plot_series_style_popup(data, s, resolved[j] && v.num_periods == 0 ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
@@ -5069,19 +5431,23 @@ static void draw_distribution_window(ApplicationState* data) {
                                     }
                                 }
 
-                                HistogramGetterPayload payload = { &v, k };
+                                HistogramGetterPayload payload = { &v, k, draw_u0[j] };
+                                // Around a period from where it is cut, bars without the one which closes a curve: it would
+                                // stand outside the period, beside the others
+                                const bool rotated = pviews[j] && !axis_view;
+                                const int count = draw_count[j] - (rotated && s.plot_type == PlotType_Bars ? 1 : 0);
                                 switch (s.plot_type) {
                                 case PlotType_Area:
                                     ImPlot::SetNextFillStyle(color, fill_alpha);
-                                    ImPlot::PlotShadedG(v.plot_id, histogram_getter_zero, &payload, histogram_getter, &payload, v.num_bins);
+                                    ImPlot::PlotShadedG(v.plot_id, histogram_getter_zero, &payload, histogram_getter, &payload, count);
                                     break;
                                 case PlotType_Bars:
                                     ImPlot::SetNextFillStyle(color, fill_alpha);
-                                    ImPlot::PlotBarsG(v.plot_id, histogram_getter, &payload, v.num_bins, series_histogram_bin_width(v) * s.bar_width);
+                                    ImPlot::PlotBarsG(v.plot_id, histogram_getter, &payload, count, series_histogram_bin_width(v) * s.bar_width);
                                     break;
                                 default:
                                     ImPlot::SetNextLineStyle(color, weight);
-                                    ImPlot::PlotLineG(v.plot_id, histogram_getter, &payload, v.num_bins);
+                                    ImPlot::PlotLineG(v.plot_id, histogram_getter, &payload, count);
                                     break;
                                 }
                             };
@@ -5100,9 +5466,13 @@ static void draw_distribution_window(ApplicationState* data) {
                         // shown over it already
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
-                            if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1) && pv.num_bins > 0 && pv.periods[0].valid) {
+                            if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1, s.smoothing) && pv.num_bins > 0 && pv.periods[0].valid) {
                                 const vec4_t rc = preview_range->color;
-                                plot_histogram_preview(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f), s);
+                                long long pu0 = 0;
+                                int pcount = 0;
+                                draw_range(&pu0, &pcount, pv, pviews[j]);
+                                if (pviews[j] && !axis_view && s.plot_type == PlotType_Bars) pcount -= 1;
+                                plot_histogram_preview(pv, 0, ImVec4(rc.x, rc.y, rc.z, 1.0f), s, pu0, pcount);
                             }
                         }
 
@@ -5166,6 +5536,9 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                         ImPlot::PopPlotClipRect();
                     }
+
+                    // Over everything else
+                    ImPlot::DrawInsetAxes();
 
                     ImPlot::EndPlot();
                 }

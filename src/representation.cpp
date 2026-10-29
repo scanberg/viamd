@@ -18,6 +18,7 @@
 
 #include <gfx/gl_utils.h>
 #include <iso_meshes.h>
+#include <script_suggestions.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -1081,6 +1082,522 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
     rep->open_properties = true;
     app->representation.show_window = true;
     return true;
+}
+
+// --- New representations from the context menu of the viewport ---
+
+namespace {
+
+// What a target is a whole of, at the atom it is found from
+enum class TargetUnit { Residue, Part, Chain, Molecule, Lipid };
+
+// "ALA 23": the name and number the file gives the residue
+void residue_label(char* buf, size_t cap, const md_system_t& sys, size_t res_idx) {
+    const str_t name = md_system_residue_name(&sys, res_idx);
+    snprintf(buf, cap, STR_FMT " %d", STR_ARG(name), (int)md_system_residue_seq_id(&sys, res_idx));
+}
+
+int64_t lipid_of_residue(const md_system_t& sys, size_t res_idx) {
+    const md_lipid_data_t& lipids = sys.lipid;
+    for (size_t i = 0; i < lipids.count; ++i) {
+        const int32_t* res = md_lipid_residues(&lipids, i);
+        const size_t n = md_lipid_residue_count(&lipids, i);
+        for (size_t k = 0; k < n; ++k) {
+            if ((size_t)res[k] == res_idx) return (int64_t)i;
+        }
+    }
+    return -1;
+}
+
+// The unit which holds the atom, by an id which tells it apart from the others of its kind, -1 for none: then the atom
+// falls back to a finer unit (target_unit_set does the same)
+int64_t target_unit_id(TargetUnit unit, size_t atom, const md_system_t& sys) {
+    const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
+    switch (unit) {
+    case TargetUnit::Residue:  return res;
+    case TargetUnit::Part:     return md_system_part_find_by_atom_idx(&sys, atom);
+    case TargetUnit::Chain: {
+        const md_chain_idx_t chain = res >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)res) : -1;
+        return chain >= 0 ? chain : -2 - (int64_t)md_system_part_find_by_atom_idx(&sys, atom);
+    }
+    case TargetUnit::Molecule: return md_system_molecule_find_by_atom_idx(&sys, atom);
+    case TargetUnit::Lipid:    return res >= 0 ? lipid_of_residue(sys, (size_t)res) : -1;
+    }
+    return -1;
+}
+
+void target_unit_set(md_bitmask_t* mask, TargetUnit unit, size_t atom, const md_system_t& sys) {
+    const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
+    switch (unit) {
+    case TargetUnit::Lipid: {
+        const int64_t lipid = res >= 0 ? lipid_of_residue(sys, (size_t)res) : -1;
+        if (lipid < 0) break;
+        const int32_t* lres = md_lipid_residues(&sys.lipid, (size_t)lipid);
+        for (size_t k = 0; k < md_lipid_residue_count(&sys.lipid, (size_t)lipid); ++k) {
+            const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)lres[k]);
+            if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
+        }
+        return;
+    }
+    case TargetUnit::Molecule: {
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atom);
+        if (mol < 0) break;
+        mask_set_molecule(mask, (size_t)mol, sys);
+        return;
+    }
+    case TargetUnit::Chain:
+        if (res < 0) break;
+        mask_set_chain_of_res(mask, (size_t)res, sys);
+        return;
+    case TargetUnit::Part: {
+        const md_part_idx_t part = md_system_part_find_by_atom_idx(&sys, atom);
+        if (part < 0) break;
+        const md_urange_t r = md_system_part_atom_range(&sys, (size_t)part);
+        if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
+        return;
+    }
+    case TargetUnit::Residue:
+        break;
+    }
+    // The residue, or the atom where it is in none
+    if (res >= 0) {
+        const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)res);
+        if (r.beg < r.end) {
+            md_bitmask_set_range(mask, r.beg, r.end);
+            return;
+        }
+    }
+    md_bitmask_set_bit(mask, (uint32_t)atom);
+}
+
+// What the menu calls the unit which holds the atom: "ALA 23", "chain A", "POPC 112", "SOL" (a molecule by its type)
+void target_unit_label(char* buf, size_t cap, TargetUnit unit, size_t atom, const md_system_t& sys) {
+    const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
+    switch (unit) {
+    case TargetUnit::Chain:
+    case TargetUnit::Part: {
+        const md_chain_idx_t chain = res >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)res) : -1;
+        const md_part_idx_t  part  = md_system_part_find_by_atom_idx(&sys, atom);
+        const md_part_kind_t kind  = part >= 0 ? md_system_part_kind(&sys, (size_t)part) : MD_PART_KIND_UNKNOWN;
+        // A strand by its chain, as the files call it; a ligand by its residue, as a single one is
+        if (chain >= 0 && (unit == TargetUnit::Chain || md_part_kind_is_polymer(kind))) {
+            const str_t id = md_system_chain_id(&sys, (size_t)chain);
+            snprintf(buf, cap, "chain " STR_FMT, STR_ARG(id));
+            return;
+        }
+        if (part >= 0 && md_part_kind_is_polymer(kind)) {
+            // As polymer(i) counts them
+            int num = 0;
+            for (size_t i = 0; i <= (size_t)part; ++i) num += md_part_kind_is_polymer(md_system_part_kind(&sys, i));
+            snprintf(buf, cap, "polymer %d", num);
+            return;
+        }
+        if (part >= 0) {
+            // A ligand or a glycan of several residues: by the first of them
+            const md_urange_t r = md_system_part_residue_range(&sys, (size_t)part);
+            if (r.end - r.beg > 1) {
+                char first[48];
+                residue_label(first, sizeof(first), sys, r.beg);
+                snprintf(buf, cap, "%s and %d more", first, (int)(r.end - r.beg - 1));
+                return;
+            }
+        }
+        break;
+    }
+    case TargetUnit::Molecule: {
+        const md_molecule_idx_t mol = md_system_molecule_find_by_atom_idx(&sys, atom);
+        const md_molecule_type_idx_t type = mol >= 0 ? md_system_molecule_type_idx(&sys, (size_t)mol) : -1;
+        const str_t name = type >= 0 ? md_system_molecule_type_name(&sys, (size_t)type) : str_t{};
+        if (!str_empty(name)) {
+            snprintf(buf, cap, STR_FMT, STR_ARG(name));
+            return;
+        }
+        if (res < 0 && mol >= 0) {
+            snprintf(buf, cap, "molecule %d", (int)mol + 1);
+            return;
+        }
+        break;
+    }
+    case TargetUnit::Lipid:
+    case TargetUnit::Residue:
+        break;
+    }
+    if (res >= 0) {
+        residue_label(buf, cap, sys, (size_t)res);
+    } else {
+        snprintf(buf, cap, "atom %d", (int)atom + 1);
+    }
+}
+
+const char* target_unit_plural(TargetUnit unit) {
+    switch (unit) {
+    case TargetUnit::Residue:  return "residues";
+    case TargetUnit::Part:     return "parts";
+    case TargetUnit::Chain:    return "chains";
+    case TargetUnit::Molecule: return "molecules";
+    case TargetUnit::Lipid:    return "lipids";
+    }
+    return "";
+}
+
+// The unit a hit on the atom is taken as, at Atom granularity: what one most likely means by pointing at it. A cartoon
+// is a strand, the atoms of a protein or nucleic acid a residue of it, a lipid the molecule (all of its residues), a
+// ligand or a glycan its part, unless it is a residue within a polymer (a modified one).
+TargetUnit target_unit_guess(size_t atom, bool cartoon, const md_system_t& sys) {
+    const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
+    const md_part_idx_t part = md_system_part_find_by_atom_idx(&sys, atom);
+    const md_part_kind_t part_kind = part >= 0 ? md_system_part_kind(&sys, (size_t)part) : MD_PART_KIND_UNKNOWN;
+    if (res < 0) {
+        // Nothing but the bonds to go by (an XYZ file): the molecule
+        return TargetUnit::Molecule;
+    }
+    switch (md_system_residue_kind(&sys, (size_t)res)) {
+    case MD_RESIDUE_KIND_LIPID:
+        return TargetUnit::Lipid;
+    case MD_RESIDUE_KIND_AMINO_ACID:
+    case MD_RESIDUE_KIND_NUCLEOTIDE:
+        return (cartoon && part >= 0 && md_part_kind_is_polymer(part_kind)) ? TargetUnit::Part : TargetUnit::Residue;
+    case MD_RESIDUE_KIND_WATER:
+    case MD_RESIDUE_KIND_ION:
+        return TargetUnit::Residue;
+    default:
+        if (cartoon && part >= 0 && md_part_kind_is_polymer(part_kind)) return TargetUnit::Part;
+        // A ligand or a glycan, a part of its own; a residue within a strand by itself
+        return (part >= 0 && !md_part_kind_is_polymer(part_kind) && part_kind != MD_PART_KIND_WATER) ? TargetUnit::Part : TargetUnit::Residue;
+    }
+}
+
+// All the residues which share the name of that of the atom, with the number of them. Of a residue no polymer holds.
+size_t target_same_name(md_bitmask_t* mask, size_t atom, const md_system_t& sys) {
+    const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
+    if (res < 0) return 0;
+    const md_residue_kind_t kind = md_system_residue_kind(&sys, (size_t)res);
+    if (kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE) return 0;
+    const md_part_idx_t part = md_system_part_find_by_atom_idx(&sys, atom);
+    if (part >= 0 && md_part_kind_is_polymer(md_system_part_kind(&sys, (size_t)part))) return 0;
+
+    const str_t name = md_system_residue_name(&sys, (size_t)res);
+    if (str_empty(name)) return 0;
+    size_t num = 0;
+    for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
+        if (!str_eq(md_system_residue_name(&sys, i), name)) continue;
+        const md_urange_t r = md_system_residue_atom_range(&sys, i);
+        if (r.beg < r.end) {
+            md_bitmask_set_range(mask, r.beg, r.end);
+            num += 1;
+        }
+    }
+    return num;
+}
+
+// What a target can be shown as, and what it is suggested to be shown as: by what it is, and not as something which
+// draws most of it already, which a new one of the same type would only coincide with
+void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
+    const md_system_t& sys = app.mold.sys;
+    const md_bitset_t atoms = t->atoms;
+    const size_t num_atoms = md_bitset_count(atoms);
+
+    // What the cartoon would draw of it: the residues of a protein backbone, and the points of the glyphs (lipids and
+    // nucleic acids)
+    size_t num_backbone = 0;
+    const md_protein_backbone_data_t& bb = sys.protein_backbone;
+    for (size_t i = 0; i < bb.segment.count; ++i) {
+        const md_atom_idx_t ca = bb.segment.atoms[i].ca;
+        num_backbone += ca >= 0 && md_bitset_test(atoms, (uint32_t)ca);
+    }
+    size_t num_glyphs = 0;
+    const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+    if (cartoon_glyphs_valid(glyphs)) {
+        for (uint32_t i = 0; i < glyphs.num_points; ++i) {
+            const int32_t a = glyphs.point_color_atom[i];
+            num_glyphs += a >= 0 && md_bitset_test(atoms, (uint32_t)a);
+        }
+    }
+    t->ribbons = num_backbone > 0 && representation_particle_type_valid(app, RepresentationType::Ribbons);
+    t->cartoon = (num_backbone > 0 || num_glyphs > 0) && representation_particle_type_valid(app, RepresentationType::Cartoon);
+
+    // Mostly of a polymer: the residues of a protein or a nucleic acid
+    size_t num_polymer_atoms = 0;
+    size_t num_amino_atoms = 0;
+    for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
+        const md_urange_t r = md_system_residue_atom_range(&sys, i);
+        if (r.beg >= r.end || !md_bitset_test_any_range(atoms, r.beg, r.end)) continue;
+        const md_residue_kind_t kind = md_system_residue_kind(&sys, i);
+        const size_t n = md_bitset_count_range(atoms, r.beg, r.end);
+        num_amino_atoms   += kind == MD_RESIDUE_KIND_AMINO_ACID ? n : 0;
+        num_polymer_atoms += (kind == MD_RESIDUE_KIND_AMINO_ACID || kind == MD_RESIDUE_KIND_NUCLEOTIDE) ? n : 0;
+    }
+
+    // By preference: a strand (or more) as a cartoon, a lipid as its glyph; the residues of a polymer, which a cartoon
+    // likely shows already, as sticks; a ligand as balls and sticks; something large (solvent, a membrane) as spheres
+    RepresentationType prefs[4];
+    size_t num_prefs = 0;
+    const bool lipids = num_glyphs > 0 && num_backbone == 0 && num_polymer_atoms == 0;
+    if (t->cartoon && (num_backbone >= 8 || lipids || (num_glyphs >= 8))) {
+        prefs[num_prefs++] = RepresentationType::Cartoon;
+        prefs[num_prefs++] = RepresentationType::Licorice;
+        prefs[num_prefs++] = RepresentationType::SpaceFill;
+        prefs[num_prefs++] = RepresentationType::BallAndStick;
+    } else if (num_atoms > 20000) {
+        prefs[num_prefs++] = RepresentationType::SpaceFill;
+        prefs[num_prefs++] = RepresentationType::Licorice;
+        prefs[num_prefs++] = RepresentationType::BallAndStick;
+    } else if (2 * num_polymer_atoms > num_atoms) {
+        prefs[num_prefs++] = RepresentationType::Licorice;
+        prefs[num_prefs++] = RepresentationType::BallAndStick;
+        prefs[num_prefs++] = RepresentationType::SpaceFill;
+    } else {
+        prefs[num_prefs++] = RepresentationType::BallAndStick;
+        prefs[num_prefs++] = RepresentationType::SpaceFill;
+        prefs[num_prefs++] = RepresentationType::Licorice;
+    }
+
+    // The types which draw most of it already
+    bool drawn[(int)RepresentationType::Count] = {};
+    md_temp_scope_t temp = md_temp_begin();
+    for (size_t i = 0; i < md_array_size(app.representation.reps); ++i) {
+        const Representation& rep = app.representation.reps[i];
+        if ((int)rep.type > (int)RepresentationType::Cartoon || !representation_shown(app, rep)) continue;
+        if (drawn[(int)rep.type]) continue;
+        const md_bitset_t both = md_bitset_and(rep.atom_mask, atoms, md_temp_allocator(temp));
+        drawn[(int)rep.type] = 2 * md_bitset_count(both) > num_atoms;
+    }
+    md_temp_end(temp);
+
+    // The first not drawn already, else the first that can be shown at all
+    t->suggested_type = RepresentationType::SpaceFill;
+    bool found = false;
+    for (int pass = 0; pass < 2 && !found; ++pass) {
+        for (size_t i = 0; i < num_prefs; ++i) {
+            if ((pass == 1 || !drawn[(int)prefs[i]]) && representation_target_can_show(app, *t, prefs[i])) {
+                t->suggested_type = prefs[i];
+                found = true;
+                break;
+            }
+        }
+    }
+    t->suggested_color = (t->suggested_type == RepresentationType::Cartoon)
+        ? (2 * num_amino_atoms > num_atoms ? ColorMapping::SecondaryStructure : ColorMapping::ResType)
+        : ColorMapping::Type;
+}
+
+// Done with the mask: its atoms the target's, a single atom none
+bool target_finish(RepresentationTarget* t, md_bitmask_t* mask, const ApplicationState& app) {
+    const bool ok = md_bitmask_count(mask) > 1;
+    if (ok) {
+        t->atoms = md_bitmask_extract(mask, md_get_heap_allocator());
+        target_suggest(t, app);
+    }
+    md_bitmask_free(mask);
+    return ok;
+}
+
+}  // namespace
+
+bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const ApplicationState& app, const PickingHit& hit) {
+    ASSERT(target);
+    representation_target_free(target);
+    if (all) representation_target_free(all);
+
+    const md_system_t& sys = app.mold.sys;
+    if (sys.atom.count == 0) return false;
+
+    // The atoms the hit stands for, and whether it is of a cartoon (a strand rather than a residue of it)
+    int32_t seeds[64];
+    size_t num_seeds = 0;
+    bool cartoon = false;
+    auto push = [&](int64_t atom) {
+        if (atom >= 0 && (size_t)atom < sys.atom.count && num_seeds < ARRAY_SIZE(seeds)) seeds[num_seeds++] = (int32_t)atom;
+    };
+    auto push_residue = [&](int64_t res) {
+        if (res >= 0 && (size_t)res < sys.residue.count) push(md_system_residue_atom_range(&sys, (size_t)res).beg);
+    };
+
+    if (hit.domain == PickingDomain_Atom) {
+        push(hit.local_idx);
+    } else if (hit.domain == PickingDomain_Bond) {
+        md_atom_pair_t pair;
+        md_bond_flags_t flags;
+        bool formed;
+        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+            push(pair.idx[0]);
+            push(pair.idx[1]);
+        }
+    } else if (hit.domain == PickingDomain_Ring) {
+        const int32_t* ring_atoms = nullptr;
+        size_t ring_count = 0;
+        md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
+        if (picked_ring(app, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
+            for (size_t i = 0; i < ring_count; ++i) push(ring_atoms[i]);
+        }
+    } else if (hit.domain == PickingDomain_BackboneSegment) {
+        const md_protein_backbone_data_t& bb = sys.protein_backbone;
+        if (hit.local_idx < bb.segment.count) {
+            cartoon = true;
+            const md_residue_idx_t res = bb.segment.res_idx ? bb.segment.res_idx[hit.local_idx] : -1;
+            if (res >= 0) push_residue(res);
+            else push(bb.segment.atoms[hit.local_idx].ca);
+        }
+    } else if (hit.domain == PickingDomain_CartoonGlyph) {
+        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+        const uint32_t point = cartoon_glyphs_picked_point(glyphs, hit.local_idx);
+        if (point < glyphs.num_points) {
+            cartoon = true;
+            const int32_t res = cartoon_glyphs_point_residue(glyphs, point);
+            if (res >= 0) push_residue(res);
+            else push(glyphs.point_color_atom[point]);
+        }
+    } else if (hit.domain == PickingDomain_ChainGap) {
+        cartoon = true;
+        push_residue(hit.local_idx);
+        push_residue((int64_t)hit.local_idx + 1);
+    }
+    if (num_seeds == 0) return false;
+
+    md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, md_get_heap_allocator());
+
+    const SelectionGranularity granularity = app.selection.granularity;
+    TargetUnit unit = TargetUnit::Residue;
+    if (granularity != SelectionGranularity::Atom) {
+        // What a click there selects, which the highlight showed
+        switch (granularity) {
+        case SelectionGranularity::Part:     unit = md_system_part_count(&sys) ? TargetUnit::Part : TargetUnit::Residue; break;
+        case SelectionGranularity::Chain:    unit = TargetUnit::Chain; break;
+        case SelectionGranularity::Molecule: unit = sys.molecule.count ? TargetUnit::Molecule : TargetUnit::Part; break;
+        default:                             unit = TargetUnit::Residue; break;
+        }
+        for (size_t i = 0; i < num_seeds; ++i) {
+            mask_set_atom_by_selection_granularity(&mask, (size_t)seeds[i], granularity, sys);
+        }
+    } else {
+        unit = target_unit_guess((size_t)seeds[0], cartoon, sys);
+        for (size_t i = 0; i < num_seeds; ++i) {
+            target_unit_set(&mask, unit, (size_t)seeds[i], sys);
+        }
+    }
+
+    // Its name: that of the unit, or how many of them there are (a bond between two residues)
+    int64_t ids[ARRAY_SIZE(seeds)];
+    size_t num_ids = 0;
+    for (size_t i = 0; i < num_seeds; ++i) {
+        const int64_t id = target_unit_id(unit, (size_t)seeds[i], sys);
+        bool found = false;
+        for (size_t k = 0; k < num_ids; ++k) found |= ids[k] == id;
+        if (!found) ids[num_ids++] = id;
+    }
+    if (num_ids > 1) {
+        snprintf(target->label, sizeof(target->label), "%d %s", (int)num_ids, target_unit_plural(unit));
+    } else {
+        target_unit_label(target->label, sizeof(target->label), unit, (size_t)seeds[0], sys);
+    }
+
+    // All of its name, where it is one of several (and the one alone, where it is a single atom: an ion)
+    RepresentationTarget same = {};
+    bool same_ok = false;
+    {
+        md_bitmask_t same_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, md_get_heap_allocator());
+        const size_t num = target_same_name(&same_mask, (size_t)seeds[0], sys);
+        const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)seeds[0]);
+        if (num > 1 && res >= 0) {
+            const str_t name = md_system_residue_name(&sys, (size_t)res);
+            snprintf(same.label, sizeof(same.label), "all " STR_FMT, STR_ARG(name));
+            same_ok = target_finish(&same, &same_mask, app);
+        } else {
+            md_bitmask_free(&same_mask);
+        }
+    }
+
+    bool ok = target_finish(target, &mask, app);
+    if (ok && same_ok && md_bitset_equal(target->atoms, same.atoms)) {
+        // The only one of its name: it is all of them
+        representation_target_free(&same);
+        same_ok = false;
+    }
+    if (!ok && same_ok) {
+        // A single atom, such as an ion: all of its name instead
+        *target = same;
+        same = {};
+        same_ok = false;
+        ok = true;
+    }
+    if (all && same_ok) {
+        *all = same;
+    } else {
+        representation_target_free(&same);
+    }
+    return ok;
+}
+
+bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app) {
+    ASSERT(target);
+    representation_target_free(target);
+    if (md_bitmask_count(&app.selection.selection_mask) < 2) return false;
+    target->atoms = md_bitmask_extract(&app.selection.selection_mask, md_get_heap_allocator());
+    snprintf(target->label, sizeof(target->label), "selection");
+    target->selection = true;
+    target_suggest(target, app);
+    return true;
+}
+
+void representation_target_free(RepresentationTarget* target) {
+    ASSERT(target);
+    md_bitset_free(&target->atoms, md_get_heap_allocator());
+    *target = RepresentationTarget{};
+}
+
+bool representation_target_can_show(const ApplicationState& app, const RepresentationTarget& target, RepresentationType type) {
+    switch (type) {
+    case RepresentationType::SpaceFill:
+    case RepresentationType::Licorice:
+    case RepresentationType::BallAndStick:
+        return representation_particle_type_valid(app, type);
+    case RepresentationType::Ribbons: return target.ribbons;
+    case RepresentationType::Cartoon: return target.cartoon;
+    default: return false;
+    }
+}
+
+Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type) {
+    ASSERT(app);
+    if (md_bitset_empty(target.atoms)) return nullptr;
+
+    // The most telling way of writing it which fits
+    md_temp_scope_t temp = md_temp_begin();
+    char filter[sizeof(AtomFilter::text)] = "";
+    const md_array(ScriptSuggestion) suggestions = script_suggest_selection(STR_LIT("x"), target.atoms, app->mold.sys, md_temp_allocator(temp));
+    for (size_t i = 0; i < md_array_size(suggestions); ++i) {
+        str_t expr = suggestions[i].text;
+        if (!str_begins_with(expr, STR_LIT("x = "))) continue;
+        expr = str_trim(str_substr(expr, 4));
+        if (str_ends_with(expr, STR_LIT(";"))) expr = str_trim(str_substr(expr, 0, expr.len - 1));
+        if (!str_empty(expr) && expr.len < sizeof(filter)) {
+            str_copy_to_char_buf(filter, sizeof(filter), expr);
+            break;
+        }
+    }
+    md_temp_end(temp);
+    if (filter[0] == '\0') {
+        VIAMD_LOG_INFO("'%s' is too scattered to write as the filter of a representation", target.label);
+        return nullptr;
+    }
+
+    ColorMapping color = ColorMapping::Type;
+    if (type == RepresentationType::Cartoon || type == RepresentationType::Ribbons) {
+        // As suggested where it was suggested a cartoon, else by the secondary structure of a protein
+        color = target.suggested_type == RepresentationType::Cartoon ? target.suggested_color
+              : (target.ribbons ? ColorMapping::SecondaryStructure : ColorMapping::ResType);
+    }
+    Representation* rep = create_representation(app, type, color, str_from_cstr(filter));
+    if (!rep) return nullptr;
+    // A selection by the expression, where that is short enough to read as a name
+    if (target.selection && strlen(filter) < 32) {
+        snprintf(rep->name, sizeof(rep->name), "%s", filter);
+    } else {
+        snprintf(rep->name, sizeof(rep->name), "%s", target.label);
+    }
+    // Opened, to be styled, when the window lists it
+    rep->open_properties = true;
+    return rep;
 }
 
 void flag_all_representations_as_dirty(ApplicationState* state) {

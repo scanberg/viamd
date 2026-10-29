@@ -19,6 +19,7 @@
 #include <color_utils.h>
 #include <display_units.h>
 #include <serialization_utils.h>
+#include <plot_periodic.h>
 
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
@@ -2109,6 +2110,7 @@ static void workspace_reset(ApplicationState* data) {
 
     plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
+    periodic_views_clear();
     data->timeline.num_subplots = 1;
     data->distributions.num_subplots = 1;
     data->timeline.periods = TimelinePeriods{};
@@ -2403,6 +2405,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
             }
         } else if (plot_layout_deserialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), data, data->timeline.subplots, &data->timeline.num_subplots)) {
         } else if (plot_layout_deserialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), data, data->distributions.subplots, &data->distributions.num_subplots)) {
+        } else if (periodic_views_deserialize(state)) {
         } else {
             const char* before = state.text.ptr;
             viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
@@ -2633,6 +2636,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
     plot_layout_serialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), app_state->distributions.subplots, app_state->distributions.num_subplots);
+    periodic_views_serialize(state);
 
     {
         // In frames: a time is in whatever unit it happens to be shown in
@@ -6441,6 +6445,72 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     transform->position = transform->position + cell_offset;
 }
 
+// Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights and clicking it selects
+void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const PickingHit& hit, SelectionGranularity granularity) {
+    ASSERT(mask);
+    if (hit.domain == PickingDomain_Atom) {
+        int32_t atom_idx = hit.local_idx;
+        if (atom_idx >= 0 && (size_t)atom_idx < app.mold.sys.atom.count) {
+            // Grow the hovered atom by the current granularity so hover feedback matches what a click would select
+            mask_set_atom_by_selection_granularity(mask, (size_t)atom_idx, granularity, app.mold.sys);
+        }
+    } else if (hit.domain == PickingDomain_Bond) {
+        md_atom_pair_t pair;
+        md_bond_flags_t flags;
+        bool formed;
+        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+            // Grow both bond atoms by the current granularity, same as for atom hits
+            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[0], granularity, app.mold.sys);
+            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[1], granularity, app.mold.sys);
+        }
+    } else if (hit.domain == PickingDomain_BackboneSegment) {
+        const md_protein_backbone_data_t& bb = app.mold.sys.protein_backbone;
+        const size_t seg_idx = hit.local_idx;
+        if (seg_idx < bb.segment.count && bb.segment.res_idx) {
+            const md_residue_idx_t res_idx = bb.segment.res_idx[seg_idx];
+            if (res_idx >= 0) {
+                // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
+                mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
+            } else {
+                // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
+                const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
+                const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
+                for (md_atom_idx_t atom : atoms) {
+                    if (atom >= 0) mask_set_atom_by_selection_granularity(mask, (size_t)atom, granularity, app.mold.sys);
+                }
+            }
+        }
+    } else if (hit.domain == PickingDomain_Ring) {
+        // The circle of an aromatic ring stands for the atoms of the ring
+        const int32_t* ring_atoms = nullptr;
+        size_t ring_count = 0;
+        md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
+        if (picked_ring(app, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
+            mask_set_ring_by_selection_granularity(mask, ring_atoms, ring_count, granularity, app.mold.sys);
+        }
+    } else if (hit.domain == PickingDomain_ChainGap) {
+        // The gap of a chain stands for the residues on either side of its break
+        const size_t res_idx = hit.local_idx;
+        if (res_idx + 1 < app.mold.sys.residue.count) {
+            mask_set_residue_by_selection_granularity(mask, res_idx,        granularity, app.mold.sys);
+            mask_set_residue_by_selection_granularity(mask, res_idx + 1, granularity, app.mold.sys);
+        }
+    } else if (hit.domain == PickingDomain_CartoonGlyph) {
+        // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
+        const uint32_t point_idx = cartoon_glyphs_picked_point(app.mold.cartoon_glyphs, hit.local_idx);
+        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+        const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
+        if (res_idx >= 0 && (size_t)res_idx < app.mold.sys.residue.count) {
+            mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
+        } else if (point_idx < glyphs.num_points) {
+            // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
+            for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {
+                mask_set_atom_by_selection_granularity(mask, (size_t)glyphs.point_atom[k], granularity, app.mold.sys);
+            }
+        }
+    }
+}
+
 void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_events) {
     for (size_t i = 0; i < num_events; ++i) {
         const viamd::Event& event = events[i];
@@ -6491,68 +6561,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 case InteractionSurfaceEventKind::Click:
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
                     md_bitmask_clear(&state->selection.highlight_mask);
-                    if (surf->hit.domain == PickingDomain_Atom) {
-                        int32_t atom_idx = surf->hit.local_idx;
-                        if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
-                            // Grow the hovered atom by the current granularity so hover feedback matches what a click would select
-                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)atom_idx, state->selection.granularity, state->mold.sys);
-                        }
-                    } else if (surf->hit.domain == PickingDomain_Bond) {
-                        md_atom_pair_t pair;
-                        md_bond_flags_t flags;
-                        bool formed;
-                        if (picked_bond(*state, surf->hit.local_idx, &pair, &flags, &formed)) {
-                            // Grow both bond atoms by the current granularity, same as for atom hits
-                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[0], state->selection.granularity, state->mold.sys);
-                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[1], state->selection.granularity, state->mold.sys);
-                        }
-                    } else if (surf->hit.domain == PickingDomain_BackboneSegment) {
-                        const md_protein_backbone_data_t& bb = state->mold.sys.protein_backbone;
-                        const size_t seg_idx = surf->hit.local_idx;
-                        if (seg_idx < bb.segment.count && bb.segment.res_idx) {
-                            const md_residue_idx_t res_idx = bb.segment.res_idx[seg_idx];
-                            if (res_idx >= 0) {
-                                // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
-                                mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, (size_t)res_idx, state->selection.granularity, state->mold.sys);
-                            } else {
-                                // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
-                                const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
-                                const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
-                                for (md_atom_idx_t atom : atoms) {
-                                    if (atom >= 0) mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)atom, state->selection.granularity, state->mold.sys);
-                                }
-                            }
-                        }
-                    } else if (surf->hit.domain == PickingDomain_Ring) {
-                        // The circle of an aromatic ring stands for the atoms of the ring
-                        const int32_t* ring_atoms = nullptr;
-                        size_t ring_count = 0;
-                        md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
-                        if (picked_ring(*state, surf->hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
-                            mask_set_ring_by_selection_granularity(&state->selection.highlight_mask, ring_atoms, ring_count, state->selection.granularity, state->mold.sys);
-                        }
-                    } else if (surf->hit.domain == PickingDomain_ChainGap) {
-                        // The gap of a chain stands for the residues on either side of its break
-                        const size_t res_idx = surf->hit.local_idx;
-                        if (res_idx + 1 < state->mold.sys.residue.count) {
-                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, res_idx,        state->selection.granularity, state->mold.sys);
-                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, res_idx + 1, state->selection.granularity, state->mold.sys);
-                        }
-                    } else if (surf->hit.domain == PickingDomain_CartoonGlyph) {
-                        // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
-                        const uint32_t point_idx = cartoon_glyphs_picked_point(state->mold.cartoon_glyphs, surf->hit.local_idx);
-                        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
-                        const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
-                        if (res_idx >= 0 && (size_t)res_idx < state->mold.sys.residue.count) {
-                            mask_set_residue_by_selection_granularity(&state->selection.highlight_mask, (size_t)res_idx, state->selection.granularity, state->mold.sys);
-                        } else if (point_idx < glyphs.num_points) {
-                            // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
-                            for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {
-                                mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)glyphs.point_atom[k], state->selection.granularity, state->mold.sys);
-                            }
-                        }
-                    }
-                    
+                    picking_hit_mask_set(&state->selection.highlight_mask, *state, surf->hit, state->selection.granularity);
+
                     // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
                     if (surf->kind == InteractionSurfaceEventKind::Click && surf->selection_mode != InteractionSelectionMode::None) {
                         // The single selection sequence records the order in which individual atoms were picked
