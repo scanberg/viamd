@@ -802,7 +802,7 @@ struct Shapespace : viamd::EventHandler {
             pts->opacity = 0.8f;
         }
         if (Layer* den = add_layer(LayerFrames_All, LayerStyle_Contours, -1, group)) {
-            den->color = ImVec4(1.0f, 0.62f, 0.20f, 1.0f);
+            den->color = ImVec4(1, 1, 1, 1);   // Lines that stand out on the points coloured by time
         }
     }
 

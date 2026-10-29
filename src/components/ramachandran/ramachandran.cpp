@@ -842,7 +842,7 @@ struct Ramachandran : viamd::EventHandler {
             selected_layer = cur->id;
         }
         if (all) {
-            all->color = {1.0f, 0.62f, 0.20f, 1.0f};
+            all->color = {1, 1, 1, 1};     // Lines that stand out on the reference's regions and the points
         }
     }
 
