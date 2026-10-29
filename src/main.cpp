@@ -1055,6 +1055,7 @@ int main(int argc, char** argv) {
                     single_selection_sequence_clear(&state.selection.single_selection_sequence);
                 }
             } else if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
+                state.context_menu_hit = event.hit;
                 ImGui::OpenPopup("Context Popup");
             }
             
@@ -1086,7 +1087,7 @@ int main(int argc, char** argv) {
             state.view.target = reset_transform;
         }
 
-        draw_context_popup(&state, hit);
+        draw_context_popup(&state, state.context_menu_hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
         camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
@@ -3052,10 +3053,48 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     }
 }
 
+// What the New Representation entries of the context menu are of, found as it opens: what was under the cursor (as
+// a whole, and all of its name), and the selection
+static struct {
+    RepresentationTarget hovered;
+    RepresentationTarget all;
+    RepresentationTarget selection;
+} context_targets;
+
+// A target, and the types it can be shown as in a menu: the suggested one first. Its atoms are highlighted while it is
+// hovered or open.
+static void draw_new_representation_menu(ApplicationState* state, const RepresentationTarget& target) {
+    if (md_bitset_empty(target.atoms)) return;
+    ImGui::PushID(&target);
+    const bool open = ImGui::BeginMenu(target.selection ? "Selected atoms" : target.label);
+    if (open || ImGui::IsItemHovered()) {
+        md_bitmask_assign(&state->selection.highlight_mask, target.atoms);
+    }
+    if (open) {
+        ImGui::TextDisabled("%llu atoms", (unsigned long long)md_bitset_count(target.atoms));
+        ImGui::Separator();
+        auto item = [&](RepresentationType type, bool suggested) {
+            if (ImGui::MenuItem(representation_type_str[(int)type], suggested ? "suggested" : nullptr)) {
+                create_representation_of_target(state, target, type);
+                ImGui::CloseCurrentPopup();
+            }
+        };
+        item(target.suggested_type, true);
+        ImGui::Separator();
+        const RepresentationType types[] = {
+            RepresentationType::SpaceFill, RepresentationType::Licorice, RepresentationType::BallAndStick,
+            RepresentationType::Ribbons, RepresentationType::Cartoon,
+        };
+        for (RepresentationType type : types) {
+            if (type != target.suggested_type && representation_target_can_show(*state, target, type)) item(type, false);
+        }
+        ImGui::EndMenu();
+    }
+    ImGui::PopID();
+}
+
 // # context_menu
 void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
-    // @Robin: Will hit ever be used here? (Possibly remove argument)
-    (void)hit;
     ASSERT(state);
 
     if (!state->mold.sys.atom.count) return;
@@ -3273,6 +3312,33 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             if (ImGui::IsItemHovered()) {
                 md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
             }
+        }
+
+        // A representation of what was under the cursor, or of the selection. Found once, as the menu opens.
+        if (ImGui::IsWindowAppearing()) {
+            representation_targets_from_hit(&context_targets.hovered, &context_targets.all, *state, hit);
+            representation_target_from_selection(&context_targets.selection, *state);
+            if (!md_bitset_empty(context_targets.hovered.atoms) && md_bitset_equal(context_targets.hovered.atoms, context_targets.selection.atoms)) {
+                representation_target_free(&context_targets.hovered);
+            }
+        }
+        const RepresentationTarget* targets[3] = { &context_targets.hovered, &context_targets.all, &context_targets.selection };
+        if (!md_bitset_empty(context_targets.selection.atoms) && !md_bitset_empty(context_targets.hovered.atoms)) {
+            // What was pointed at is part of the selection: the selection is what is meant first
+            md_temp_scope_t temp = md_temp_begin();
+            const md_bitset_t outside = md_bitset_andnot(context_targets.hovered.atoms, context_targets.selection.atoms, md_temp_allocator(temp));
+            if (md_bitset_empty(outside)) {
+                targets[0] = &context_targets.selection;
+                targets[1] = &context_targets.hovered;
+                targets[2] = &context_targets.all;
+            }
+            md_temp_end(temp);
+        }
+        bool any_target = false;
+        for (const RepresentationTarget* t : targets) any_target |= !md_bitset_empty(t->atoms);
+        if (any_target) {
+            ImGui::SeparatorText("New Representation");
+            for (const RepresentationTarget* t : targets) draw_new_representation_menu(state, *t);
         }
 
         ImGui::EndPopup();

@@ -44,6 +44,37 @@ bool representation_can_show_bond(const ApplicationState& app, const Representat
 // Whether it shows the bond between the two atoms, as of the last evaluation of its filter
 bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair);
 
+// --- New representations from the context menu of the viewport ---
+
+// Something a new representation can be made of: the selection, or what was under the cursor
+struct RepresentationTarget {
+    md_bitset_t atoms = {};             // representation_target_free releases them
+    char label[64] = "";                // What the menu and the new representation call it: "ALA 23", "chain A", "all POPC"
+    bool selection = false;             // the selection, which a new representation is named by its filter where that is short
+    // The types it can be shown as (representation_target_can_show), and the one suggested: by what it is, and not one
+    // which draws most of it already
+    bool cartoon = false;               // a backbone, the lipids or nucleic acids of the cartoon glyphs
+    bool ribbons = false;               // a protein backbone
+    RepresentationType suggested_type = RepresentationType::BallAndStick;
+    ColorMapping suggested_color = ColorMapping::Type;
+};
+
+// What was under the cursor, as a whole that a representation is made of. With the selection granularity coarser than
+// Atom, what a click there would select (the highlight shown). At Atom granularity, by what it is: a protein or nucleic
+// acid by its strand where its cartoon is hit and by its residue otherwise, a lipid by its molecule (all its residues),
+// a ligand or a glycan by its part, a water by its residue, and a single atom, such as an ion, by all the residues of
+// its name. 'all' (may be NULL) is set to all the residues of its name, where it is one of several that are no part of
+// a polymer (the lipids of a kind, the waters, a ligand bound to each of several chains). False when there is none:
+// nothing hit, or a single atom that nothing else shares the name of.
+bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const ApplicationState& app, const PickingHit& hit);
+// The selection, which takes more than one atom
+bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app);
+void representation_target_free(RepresentationTarget* target);
+bool representation_target_can_show(const ApplicationState& app, const RepresentationTarget& target, RepresentationType type);
+// A new representation of it, at the top level and opened in the window: its filter is the most telling expression that
+// picks exactly its atoms (script_suggest_selection). NULL when none fits in a filter.
+Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type);
+
 // --- Groups ---
 
 // Appended at the end of 'parent' (0 for the top level)

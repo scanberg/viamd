@@ -1350,6 +1350,10 @@ struct ApplicationState {
     char  hovered_property_label[64] = "";
     int   hovered_property_pop_idx = -1;
 
+    // What was under the cursor when the context menu of the viewport opened, which its entries are about: the menu
+    // covers the cursor once it is open
+    PickingHit context_menu_hit = {};
+
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
