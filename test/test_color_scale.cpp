@@ -80,3 +80,34 @@ UTEST(color_scale, signed_spans) {
     EXPECT_FALSE(color_scale_span_signed(color_scale_span( 1.0f, 16.0f)));
     EXPECT_FALSE(color_scale_span_signed(ColorScaleSpan{}));
 }
+
+UTEST(color_scale, scoped_robust_range_updates_and_manual_lock) {
+    ColorScale scale;
+    scale.symmetric = true;
+    ColorScaleSpan selected = color_scale_span(-0.04f, 0.05f);
+    selected.lo = -0.008f;
+    selected.hi = 0.003f;
+    color_scale_update_range(&scale, selected);
+    EXPECT_EQ(-0.008f, scale.range_beg);
+    EXPECT_EQ(0.008f, scale.range_end);
+    EXPECT_EQ(0.5f, color_scale_param(scale, 0.0f));
+    EXPECT_EQ(0.0f, color_scale_param(scale, selected.min));
+    EXPECT_EQ(1.0f, color_scale_param(scale, selected.max));
+
+    ColorScaleSpan next = color_scale_span(-0.002f, -0.0001f);
+    next.lo = -0.001f;
+    next.hi = -0.0002f;
+    color_scale_update_range(&scale, next);
+    EXPECT_EQ(-0.001f, scale.range_beg);
+    EXPECT_EQ(0.001f, scale.range_end);
+    EXPECT_EQ(0.5f, color_scale_param(scale, 0.0f));
+
+    scale.auto_range = false;
+    color_scale_update_range(&scale, selected);
+    EXPECT_EQ(-0.001f, scale.range_beg);
+    EXPECT_EQ(0.001f, scale.range_end);
+    scale.auto_range = true;
+    color_scale_update_range(&scale, selected);
+    EXPECT_EQ(-0.008f, scale.range_beg);
+    EXPECT_EQ(0.008f, scale.range_end);
+}

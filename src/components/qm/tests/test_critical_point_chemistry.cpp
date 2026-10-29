@@ -5,6 +5,8 @@
 #include <md_util.h>
 #include <core/md_unit.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <md_gto.h>
 
 #include <array>
 #include <cmath>
@@ -41,6 +43,113 @@ struct Fixture {
 
     auto labels() { return critical_point_distribution::chemical_labels(graph, sys, atoms); }
 };
+}
+
+UTEST(critical_point_chemistry, hierarchy_uses_chemistry_not_character_or_detail) {
+    Fixture f;
+    using namespace critical_point_distribution;
+    ChemicalLabel bond;
+    bond.kind = Kind::Bond;
+    bond.atom[0] = 0;
+    bond.atom[1] = 1;
+    bond.group = "C carbonyl - O";
+    auto path = environment_path(bond, f.sys);
+    ASSERT_EQ(path.size(), (size_t)2);
+    EXPECT_STREQ(path[0].c_str(), "Bonds");
+    EXPECT_STREQ(path[1].c_str(), "C-O");
+    std::swap(bond.atom[0], bond.atom[1]);
+    bond.group = "Different detailed name";
+    bond.finer = {"An even finer name"};
+    EXPECT_TRUE(environment_path(bond, f.sys) == path);
+    bond.kind = Kind::BondPath;
+    path = environment_path(bond, f.sys);
+    EXPECT_STREQ(path[0].c_str(), "Bond paths (connectivity unknown)");
+    EXPECT_STREQ(path[1].c_str(), "C~O");
+    bond.kind = Kind::Contact;
+    bond.interaction = "Other contact";
+    path = environment_path(bond, f.sys);
+    ASSERT_EQ(path.size(), (size_t)3);
+    EXPECT_STREQ(path[0].c_str(), "Contacts");
+    EXPECT_STREQ(path[1].c_str(), "Other contacts");
+    EXPECT_STREQ(path[2].c_str(), "C\xC2\xB7\xC2\xB7\xC2\xB7O");
+    bond.interaction = "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+    path = environment_path(bond, f.sys);
+    EXPECT_STREQ(path[1].c_str(), "\xCF\x80-stacking");
+}
+
+UTEST(critical_point_chemistry, hydrogen_bond_hierarchy_has_donor_and_acceptor) {
+    Fixture f;
+    using namespace critical_point_distribution;
+    uint32_t offsets[] = {0, 0, 1, 2};
+    md_atom_idx_t others[] = {2, 1};
+    md_bond_idx_t bonds[] = {0, 0};
+    f.sys.bond.conn.offset = offsets;
+    f.sys.bond.conn.offset_count = 4;
+    f.sys.bond.conn.atom_idx = others;
+    f.sys.bond.conn.bond_idx = bonds;
+    f.z[0] = 7;
+    ChemicalLabel label;
+    label.kind = Kind::Contact;
+    label.interaction = "Hydrogen bond";
+    label.atom[0] = 2;
+    label.atom[1] = 0;
+    const auto path = environment_path(label, f.sys);
+    ASSERT_EQ(path.size(), (size_t)3);
+    EXPECT_STREQ(path[0].c_str(), "Contacts");
+    EXPECT_STREQ(path[1].c_str(), "Hydrogen bonds");
+    EXPECT_STREQ(path[2].c_str(), "O-H\xC2\xB7\xC2\xB7\xC2\xB7N");
+    std::swap(label.atom[0], label.atom[1]);
+    EXPECT_TRUE(environment_path(label, f.sys) == path);
+    label.atom[0] = -1;
+    label.atom[1] = 100;
+    EXPECT_EQ(environment_path(label, f.sys).size(), (size_t)2);
+}
+
+UTEST(critical_point_chemistry, hierarchy_ring_and_unassigned_branches) {
+    Fixture f;
+    using namespace critical_point_distribution;
+    ChemicalLabel label;
+    label.kind = Kind::Ring;
+    label.group = "Aromatic 6-ring C6";
+    auto path = environment_path(label, f.sys);
+    EXPECT_STREQ(path[1].c_str(), "Aromatic rings");
+    label.group = "Closed by Hydrogen bond: 8-ring";
+    path = environment_path(label, f.sys);
+    EXPECT_STREQ(path[1].c_str(), "Contact-closed rings");
+    label.kind = Kind::Unassigned;
+    EXPECT_TRUE(environment_path(label, f.sys) == std::vector<std::string>{"Unassigned"});
+}
+
+UTEST(critical_point_chemistry, hierarchy_tree_preserves_all_descendants_and_repeated_leaves) {
+    using namespace critical_point_distribution;
+    const std::vector<std::string> paths[] = {
+        {"BCPs", "Bonds", "C-C", "C aromatic - C aromatic"},
+        {"BCPs", "Contacts", "Hydrogen bonds", "N-H...O", "H-bond environment"},
+        {"BCPs", "Bonds", "C-C", "C aromatic - C aromatic"},
+        {"RCPs", "Rings", "Aromatic rings", "Aromatic 6-ring C6"},
+        {"BCPs", "Contacts", "Hydrogen bonds", "O-H...O", "Another environment"},
+    };
+    const auto tree = environment_tree(paths);
+    ASSERT_EQ(tree[0].children.size(), (size_t)2);
+    EXPECT_EQ(tree[0].environments.size(), (size_t)5);
+    const auto& bcps = tree[tree[0].children[0]];
+    EXPECT_STREQ(bcps.name.c_str(), "BCPs");
+    EXPECT_TRUE(bcps.environments == (std::vector<uint32_t>{0, 1, 2, 4}));
+    ASSERT_EQ(bcps.children.size(), (size_t)2);
+    const auto& bonds = tree[bcps.children[0]];
+    EXPECT_TRUE(bonds.environments == (std::vector<uint32_t>{0, 2}));
+    const auto& cc = tree[bonds.children[0]];
+    ASSERT_EQ(cc.children.size(), (size_t)2);
+    const auto& a = tree[cc.children[0]];
+    const auto& b = tree[cc.children[1]];
+    EXPECT_STREQ(a.name.c_str(), b.name.c_str());
+    EXPECT_EQ(a.environment, 0);
+    EXPECT_EQ(b.environment, 2);
+    const auto& contacts = tree[bcps.children[1]];
+    const auto& hbonds = tree[contacts.children[0]];
+    EXPECT_TRUE(hbonds.environments == (std::vector<uint32_t>{1, 4}));
+    EXPECT_EQ(hbonds.children.size(), (size_t)2);
+    EXPECT_TRUE(environment_tree({})[0].children.empty());
 }
 
 UTEST(critical_point_chemistry, unique_atom_and_unknown_connectivity) {
@@ -562,4 +671,469 @@ UTEST(critical_point_peaks, refined_cuts_nest_and_part_cps) {
     ASSERT_EQ(same.size(), (size_t)3);
     EXPECT_EQ(same[1], 4.5);
     EXPECT_EQ(same[2], 5.5);
+}
+
+UTEST(critical_point_energy, densities_and_hydrogen_bonds) {
+    // A closed-shell contact: lap > 0, small G
+    const auto e = critical_point_distribution::energy_densities(0.02, 0.1);
+    EXPECT_NEAR(e.V, 0.025 - 0.04, 1e-15);
+    EXPECT_NEAR(e.H, 0.02 - 0.015, 1e-15);
+    EXPECT_NEAR(e.ratio, 0.75, 1e-12);
+    EXPECT_TRUE(std::isnan(critical_point_distribution::energy_densities(NAN, 0.1).H));
+    EXPECT_NEAR(critical_point_distribution::hydrogen_bond_energy(critical_point_distribution::HBondFormula::Emamian, 0.03, NAN), -5.9501, 1e-4);
+    EXPECT_NEAR(critical_point_distribution::hydrogen_bond_energy(critical_point_distribution::HBondFormula::Espinosa, NAN, -0.02), -6.275, 1e-3);
+    critical_point_distribution::ChemicalLabel hb;
+    hb.kind = critical_point_distribution::Kind::Contact;
+    hb.interaction = "Hydrogen bond";
+    EXPECT_TRUE(critical_point_distribution::hydrogen_bond_energy_applies(hb));
+    hb.interaction = "Other contact";
+    EXPECT_FALSE(critical_point_distribution::hydrogen_bond_energy_applies(hb));
+}
+
+UTEST(critical_point_energy, mayer_bond_orders) {
+    // H2 in an orthonormal minimal basis: sigma doubly occupied is a single bond; H2+ (one alpha electron) half of one
+    const std::vector<double> S = {1, 0, 0, 1};
+    const std::vector<double> P = {1, 1, 1, 1};
+    const std::vector<double> Pa = {0.5, 0.5, 0.5, 0.5}, Pb = {0, 0, 0, 0};
+    const std::vector<uint32_t> atom = {0, 1};
+    const std::vector<std::array<int, 2>> pairs = {{0, 1}, {1, 0}, {0, 2}};
+    const double* total[] = {P.data()};
+    const auto b = critical_point_distribution::mayer_bond_orders(S, total, 1.0, 2, atom, pairs);
+    EXPECT_NEAR(b[0], 1.0, 1e-12);
+    EXPECT_NEAR(b[1], 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(b[2]));
+    const double* spin[] = {Pa.data(), Pb.data()};
+    EXPECT_NEAR(critical_point_distribution::mayer_bond_orders(S, spin, 2.0, 2, atom, pairs)[0], 0.5, 1e-12);
+    // Non-orthogonal: the same sigma orbital with overlap s, c = 1 / sqrt(2 (1 + s)) each; still order 1
+    const double s = 0.6, c2 = 1.0 / (2.0 * (1.0 + s));
+    const std::vector<double> S2 = {1, s, s, 1};
+    const std::vector<double> P2 = {2 * c2, 2 * c2, 2 * c2, 2 * c2};
+    const double* total2[] = {P2.data()};
+    EXPECT_NEAR(critical_point_distribution::mayer_bond_orders(S2, total2, 1.0, 2, atom, pairs)[0], 1.0, 1e-12);
+}
+
+UTEST(critical_point_energy, approximate_interaction_energy) {
+    constexpr double kcal = 627.5094740631;
+    // Neutral atoms sharing a single bond 2 Bohr apart: -1/4 Hartree; like charges, no bond: repulsive
+    EXPECT_NEAR(critical_point_distribution::approximate_interaction_energy(0.0, 0.0, 1.0, 2.0), -0.25 * kcal, 1e-9);
+    EXPECT_NEAR(critical_point_distribution::approximate_interaction_energy(0.5, 0.5, 0.0, 1.0), 0.25 * kcal, 1e-9);
+    EXPECT_LT(critical_point_distribution::approximate_interaction_energy(0.4, -0.4, 0.05, 4.0), 0.0);
+    EXPECT_TRUE(std::isnan(critical_point_distribution::approximate_interaction_energy(NAN, 0.0, 1.0, 2.0)));
+    EXPECT_TRUE(std::isnan(critical_point_distribution::approximate_interaction_energy(0.0, 0.0, 1.0, 0.0)));
+
+    // Mulliken: the H2 sigma orbital with overlap s puts one electron on each atom
+    const double s = 0.6, c2 = 1.0 / (2.0 * (1.0 + s));
+    const std::vector<double> S = {1, s, s, 1};
+    const std::vector<double> P = {2 * c2, 2 * c2, 2 * c2, 2 * c2};
+    const std::vector<uint32_t> atom = {0, 1};
+    const double* total[] = {P.data()};
+    const auto N = critical_point_distribution::mulliken_populations(S, total, 2, atom, 3);
+    EXPECT_NEAR(N[0], 1.0, 1e-12);
+    EXPECT_NEAR(N[1], 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(N[2]));
+}
+
+UTEST(critical_point_energy, populations_trace_and_cancellation) {
+    using namespace critical_point_distribution;
+    const std::vector<double> S = {1, 0.3, 0.3, 1};
+    const std::vector<double> Pa = {0.7, 0.2, 0.2, 0.4}, Pb = {0.2, 0.1, 0.1, 0.8};
+    const double* spin[] = {Pa.data(), Pb.data()};
+    const std::vector<uint32_t> atoms = {0, 1};
+    const std::vector<std::array<int, 2>> pairs = {{0, 1}, {1, 0}};
+    const auto N = mulliken_populations(S, spin, 2, atoms, 2);
+    double trace = 0.0;
+    for (const double* P : spin) for (size_t i = 0; i < S.size(); ++i) trace += P[i] * S[i];
+    EXPECT_NEAR(trace, N[0] + N[1], 1e-14);
+    const auto cancelled = [] { return true; };
+    const auto missing = mulliken_populations(S, spin, 2, atoms, 2, cancelled);
+    for (double value : missing) EXPECT_TRUE(std::isnan(value));
+    const auto stopped = mayer_bond_orders(S, spin, 2.0, 2, atoms, pairs, cancelled);
+    for (double value : stopped) EXPECT_TRUE(std::isnan(value));
+    const auto ordinary = mayer_bond_orders(S, spin, 2.0, 2, atoms, pairs);
+    const auto resumed = mayer_bond_orders(S, spin, 2.0, 2, atoms, pairs, [] { return false; });
+    for (size_t i = 0; i < pairs.size(); ++i) EXPECT_EQ(ordinary[i], resumed[i]);
+    size_t calls = 0;
+    const auto interrupted = mulliken_populations(S, spin, 2, atoms, 2, [&] { return ++calls > 1; });
+    EXPECT_EQ(size_t(2), calls);
+    for (double value : interrupted) EXPECT_TRUE(std::isnan(value));
+}
+
+namespace {
+// A promolecular density of exponential atoms a exp(-b r), with its gradient and Hessian
+struct ExpAtoms {
+    std::vector<std::array<double, 3>> centre;
+    double a = 0.5, b = 1.8;
+    void eval(const double* x, double& rho, double g[3], double h[6]) const {
+        rho = 0.0;
+        for (int k = 0; k < 3; ++k) g[k] = 0.0;
+        for (int k = 0; k < 6; ++k) h[k] = 0.0;
+        for (const auto& c : centre) {
+            const double d[3] = {x[0] - c[0], x[1] - c[1], x[2] - c[2]};
+            const double r = std::max(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), 1e-12);
+            const double f = a * std::exp(-b * r);
+            rho += f;
+            const double u[3] = {d[0] / r, d[1] / r, d[2] / r};
+            for (int k = 0; k < 3; ++k) g[k] += -b * f * u[k];
+            static const int idx[6][2] = {{0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 2}};
+            for (int k = 0; k < 6; ++k) {
+                const int i = idx[k][0], j = idx[k][1];
+                h[k] += f * (b * b * u[i] * u[j] - b / r * ((i == j ? 1.0 : 0.0) - u[i] * u[j]));
+            }
+        }
+    }
+    critical_point_distribution::DensityEvaluator evaluator() const {
+        return [this](const double* xyz, size_t n, double* rho, double* g, double* h) {
+            for (size_t t = 0; t < n; ++t) eval(xyz + 3 * t, rho[t], g + 3 * t, h + 6 * t);
+            return true;
+        };
+    }
+    // The BCP near x0 (Newton on the gradient) as an NCI site
+    critical_point_distribution::NciSite site(std::array<double, 3> x) const {
+        for (int it = 0; it < 50; ++it) {
+            double rho, g[3], h[6];
+            eval(x.data(), rho, g, h);
+            const double m[3][3] = {{h[0], h[1], h[2]}, {h[1], h[3], h[4]}, {h[2], h[4], h[5]}};
+            const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                               m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+            double dx[3];
+            for (int c = 0; c < 3; ++c) {
+                double mc[3][3];
+                for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) mc[i][j] = j == c ? -g[i] : m[i][j];
+                dx[c] = (mc[0][0] * (mc[1][1] * mc[2][2] - mc[1][2] * mc[2][1]) - mc[0][1] * (mc[1][0] * mc[2][2] - mc[1][2] * mc[2][0]) +
+                         mc[0][2] * (mc[1][0] * mc[2][1] - mc[1][1] * mc[2][0])) / det;
+            }
+            for (int c = 0; c < 3; ++c) x[c] += dx[c];
+        }
+        critical_point_distribution::NciSite s = {};
+        double g[3], h[6];
+        eval(x.data(), s.rho, g, h);
+        for (int c = 0; c < 3; ++c) s.center[c] = x[c];
+        // Eigenvectors by inverse iteration on the known eigenvalues
+        const auto l = critical_point_distribution::symmetric_eigenvalues(h);
+        for (int k = 0; k < 3; ++k) {
+            double v[3] = {0.3 + k, 0.7, 1.1 - 0.4 * k};
+            for (int it = 0; it < 30; ++it) {
+                const double shift = l[k] + 1e-7;
+                const double m[3][3] = {{h[0] - shift, h[1], h[2]}, {h[1], h[3] - shift, h[4]}, {h[2], h[4], h[5] - shift}};
+                const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+                                   m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+                double w[3];
+                for (int c = 0; c < 3; ++c) {
+                    double mc[3][3];
+                    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) mc[i][j] = j == c ? v[i] : m[i][j];
+                    w[c] = (mc[0][0] * (mc[1][1] * mc[2][2] - mc[1][2] * mc[2][1]) - mc[0][1] * (mc[1][0] * mc[2][2] - mc[1][2] * mc[2][0]) +
+                            mc[0][2] * (mc[1][0] * mc[2][1] - mc[1][1] * mc[2][0])) / det;
+                }
+                const double nw = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+                for (int c = 0; c < 3; ++c) v[c] = w[c] / nw;
+            }
+            for (int c = 0; c < 3; ++c) s.axes[k][c] = v[c];
+        }
+        return s;
+    }
+};
+}
+
+UTEST(critical_point_energy, symmetric_eigenvalues_and_reduced_gradient) {
+    const double h[6] = {2.0, 1.0, 0.0, 2.0, 0.0, -1.0};   // eigenvalues -1, 1, 3
+    const auto l = critical_point_distribution::symmetric_eigenvalues(h);
+    EXPECT_NEAR(l[0], -1.0, 1e-12);
+    EXPECT_NEAR(l[1], 1.0, 1e-12);
+    EXPECT_NEAR(l[2], 3.0, 1e-12);
+    const double d[6] = {0.5, 0.0, 0.0, 0.5, 0.0, 0.5};
+    EXPECT_NEAR(critical_point_distribution::symmetric_eigenvalues(d)[1], 0.5, 1e-12);
+    const double g[3] = {0.0, 0.0, 0.0}, g1[3] = {0.3, 0.0, 0.4};
+    EXPECT_EQ(0.0, critical_point_distribution::reduced_density_gradient(0.01, g));
+    EXPECT_NEAR(critical_point_distribution::reduced_density_gradient(1.0, g1), 0.5 / (2.0 * std::cbrt(3.0 * 9.869604401089358)), 1e-12);
+}
+
+UTEST(critical_point_energy, nci_attractive_and_crowded_contacts) {
+    using critical_point_distribution::Character;
+    // Two atoms 6 Bohr apart: an isolated contact, attractive
+    ExpAtoms pair;
+    pair.centre = {{-3.0, 0.0, 0.0}, {3.0, 0.0, 0.0}};
+    const auto site = pair.site({0.0, 0.0, 0.0});
+    EXPECT_LT(site.rho, 0.05);
+    // The test density is dilute: the weak band, by default, with an attractive lean; without it, the sign of lambda2 decides
+    const auto weak = critical_point_distribution::nci_contacts(std::span(&site, 1), pair.evaluator());
+    EXPECT_TRUE(weak[0].character == Character::WeakAttractive);
+    EXPECT_LT(weak[0].share, critical_point_distribution::nci_weak_attractive_below);
+    critical_point_distribution::NciParams signed_params;
+    signed_params.rho_weak = 0.0;
+    const auto isolated = critical_point_distribution::nci_contacts(std::span(&site, 1), pair.evaluator(), signed_params);
+    ASSERT_EQ((size_t)1, isolated.size());
+    EXPECT_TRUE(isolated[0].character == Character::Attractive);
+    EXPECT_GT(isolated[0].samples, (size_t)10);
+    EXPECT_LT(isolated[0].share, 0.05);
+
+    // A third atom closing a crowded triangle: the ring CP's depletion reaches the contact's region
+    ExpAtoms triangle;
+    triangle.centre = {{-3.0, 0.0, 0.0}, {3.0, 0.0, 0.0}, {0.0, 4.5, 0.0}};   // ring CP about 1 Bohr from the BCP
+    const auto crowded = triangle.site({0.0, 0.13, 0.0});
+    EXPECT_NEAR(crowded.center[1], 0.13, 0.02);
+    const auto c = critical_point_distribution::nci_contacts(std::span(&crowded, 1), triangle.evaluator(), signed_params);
+    EXPECT_GT(c[0].share, isolated[0].share + 0.05);
+    EXPECT_TRUE(c[0].character != Character::Attractive);
+    EXPECT_NE(c[0].reason.find("repulsive"), std::string::npos);
+    const auto c_weak = critical_point_distribution::nci_contacts(std::span(&crowded, 1), triangle.evaluator());
+    EXPECT_GT(c_weak[0].share, weak[0].share);
+
+    // Dense: no region sampled, covalent when bonded, strong attractive when not; a failing evaluator leaves the rest
+    // undetermined
+    ExpAtoms close;
+    close.centre = {{-1.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+    critical_point_distribution::NciSite sites[3] = {close.site({0.0, 0.0, 0.0}), close.site({0.0, 0.0, 0.0}), site};
+    sites[0].bonded = true;
+    const auto all = critical_point_distribution::nci_contacts(sites, [](const double*, size_t, double*, double*, double*) { return false; });
+    EXPECT_TRUE(all[0].character == Character::Covalent);
+    EXPECT_TRUE(all[1].character == Character::StrongAttractive);
+    EXPECT_TRUE(all[2].character == Character::Undetermined);
+}
+
+UTEST(critical_point_energy, pauli_projected_region_weighting) {
+    using namespace critical_point_distribution;
+    // The projected surface is x = 0.1 (y^2 + z^2), not the initial disk x = 0.
+    const DensityEvaluator density = [](const double* xyz, size_t n, double* rho, double* g, double* h) {
+        for (size_t t = 0; t < n; ++t) {
+            const double x = xyz[3 * t], y = xyz[3 * t + 1], z = xyz[3 * t + 2];
+            const double q = x - 0.1 * (y * y + z * z);
+            rho[t] = 0.02 - 0.001 * (y * y + z * z) + 0.002 * q * q;
+            g[3 * t] = 0.004 * q;
+            g[3 * t + 1] = -0.002 * y - 0.0008 * y * q;
+            g[3 * t + 2] = -0.002 * z - 0.0008 * z * q;
+            h[6 * t] = 0.004;
+            h[6 * t + 1] = -0.0008 * y;
+            h[6 * t + 2] = -0.0008 * z;
+            h[6 * t + 3] = -0.002 - 0.0008 * q + 0.00016 * y * y;
+            h[6 * t + 4] = 0.00016 * y * z;
+            h[6 * t + 5] = -0.002 - 0.0008 * q + 0.00016 * z * z;
+        }
+        return true;
+    };
+    NciSite site = {{0, 0, 0}, {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}}, 0.02};
+    NciParams params;
+    params.radius = 0.6;
+    params.step = 0.2;
+    const auto baseline = nci_contacts(std::span(&site, 1), density, params);
+    size_t calls = 0, sampled = 0;
+    bool projected = true;
+    const PauliEvaluator pauli = [&](const double* xyz, size_t n, double* P, double* rho) {
+        ++calls;
+        sampled = n;
+        for (size_t t = 0; t < n; ++t) {
+            const double x = xyz[3 * t], y = xyz[3 * t + 1], z = xyz[3 * t + 2];
+            projected &= std::abs(x - 0.1 * (y * y + z * z)) < 1e-12;
+            rho[t] = 0.02 - 0.001 * (y * y + z * z);
+            P[t] = 0.003 + x * 0.01;
+        }
+        return true;
+    };
+    const auto result = nci_contacts(std::span(&site, 1), density, params, pauli);
+    ASSERT_EQ(size_t(1), result.size());
+    EXPECT_EQ(size_t(1), calls);
+    EXPECT_TRUE(projected);
+    EXPECT_EQ(result[0].samples, sampled);
+    EXPECT_EQ(result[0].samples, result[0].pauli.samples);
+    EXPECT_TRUE(result[0].pauli.reason.empty());
+    EXPECT_TRUE(result[0].character == baseline[0].character);
+    EXPECT_EQ(result[0].share, baseline[0].share);
+    EXPECT_STREQ(result[0].reason.c_str(), baseline[0].reason.c_str());
+    EXPECT_EQ(result[0].attractive, baseline[0].attractive);
+    EXPECT_TRUE(std::isnan(baseline[0].pauli.mean));
+    double weight = 0.0, sum = 0.0, alpha_sum = 0.0;
+    size_t count = 0;
+    const double tf = 0.3 * std::pow(3.0 * 9.869604401089358, 2.0 / 3.0);
+    const int half = std::max(1, (int)std::floor(params.radius / params.step));
+    for (int i = -half; i <= half; ++i) for (int j = -half; j <= half; ++j) {
+        const double r2 = (i * i + j * j) * params.step * params.step;
+        if (r2 > params.radius * params.radius * (1.0 + 1e-9)) continue;
+        const double rho = 0.02 - 0.001 * r2, P = 0.003 + 0.001 * r2;
+        weight += rho;
+        sum += rho * P;
+        alpha_sum += rho * P / (tf * std::pow(rho, 5.0 / 3.0));
+        ++count;
+    }
+    EXPECT_EQ(count, sampled);
+    EXPECT_NEAR(sum / weight, result[0].pauli.mean, 1e-14);
+    EXPECT_NEAR(alpha_sum / weight, result[0].pauli.alpha, 1e-14);
+    EXPECT_GT(result[0].pauli.mean, 0.003); // differs from the value at the CP
+
+    const auto failed = nci_contacts(std::span(&site, 1), density, params,
+        [](const double*, size_t, double*, double*) { return false; });
+    EXPECT_TRUE(std::isnan(failed[0].pauli.mean));
+    EXPECT_EQ(size_t(0), failed[0].pauli.samples);
+    EXPECT_FALSE(failed[0].pauli.reason.empty());
+    EXPECT_TRUE(failed[0].character == baseline[0].character);
+    const auto partial = nci_contacts(std::span(&site, 1), density, params,
+        [&](const double* xyz, size_t n, double* P, double* rho) {
+            pauli(xyz, n, P, rho);
+            P[0] = NAN;
+            return true;
+        });
+    EXPECT_EQ(sampled - 1, partial[0].pauli.samples);
+    EXPECT_TRUE(std::isnan(partial[0].pauli.mean));
+    EXPECT_TRUE(std::isnan(partial[0].pauli.alpha));
+    EXPECT_FALSE(partial[0].pauli.reason.empty());
+
+    const NciSite two_sites[2] = {site, site};
+    const auto separate = nci_contacts(two_sites, density, params,
+        [&](const double* xyz, size_t n, double* P, double* rho) {
+            pauli(xyz, n, P, rho);
+            P[0] = NAN; // incomplete first region must not invalidate the second one
+            return true;
+        });
+    EXPECT_EQ(result[0].samples - 1, separate[0].pauli.samples);
+    EXPECT_TRUE(std::isnan(separate[0].pauli.mean));
+    EXPECT_EQ(result[0].samples, separate[1].pauli.samples);
+    EXPECT_NEAR(result[0].pauli.mean, separate[1].pauli.mean, 1e-14);
+    EXPECT_NEAR(result[0].pauli.alpha, separate[1].pauli.alpha, 1e-14);
+    const auto roundoff = nci_contacts(std::span(&site, 1), density, params,
+        [&](const double* xyz, size_t n, double* P, double* rho) {
+            pauli(xyz, n, P, rho);
+            for (size_t t = 0; t < n; ++t) P[t] = -1e-16;
+            return true;
+        });
+    EXPECT_NEAR(-1e-16, roundoff[0].pauli.mean, 1e-30);
+    EXPECT_LT(roundoff[0].pauli.alpha, 0.0);
+    calls = 0;
+    const auto no_region = nci_contacts(std::span(&site, 1),
+        [&](const double* xyz, size_t n, double* rho, double* g, double* h) {
+            density(xyz, n, rho, g, h);
+            for (size_t t = 0; t < n; ++t) rho[t] = 0.1;
+            return true;
+        }, params, pauli);
+    EXPECT_EQ(size_t(0), calls);
+    EXPECT_EQ(size_t(0), no_region[0].samples);
+    EXPECT_TRUE(std::isnan(no_region[0].pauli.mean));
+    EXPECT_FALSE(no_region[0].pauli.reason.empty());
+
+    site.rho = 0.2;
+    calls = 0;
+    const auto dense = nci_contacts(std::span(&site, 1), density, params, pauli);
+    EXPECT_EQ(size_t(0), calls);
+    EXPECT_TRUE(std::isnan(dense[0].pauli.mean));
+    EXPECT_FALSE(dense[0].pauli.reason.empty());
+}
+
+UTEST(critical_point_energy, nci_projection_reuses_unchanged_and_drops_inactive_points) {
+    using namespace critical_point_distribution;
+    NciSite site = {{0, 0, 0}, {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}}, 0.02};
+    NciParams params;
+    params.radius = 0.6;
+    std::vector<size_t> batches;
+    const DensityEvaluator density = [&](const double* xyz, size_t n, double* rho, double* g, double* h) {
+        batches.push_back(n);
+        for (size_t t = 0; t < n; ++t) {
+            const double target = xyz[3 * t + 1] > 0.1 ? 2.0 : 0.2;
+            const double q = xyz[3 * t] - target;
+            rho[t] = 0.02 + 0.002 * q * q;
+            g[3 * t] = 0.004 * q;
+            g[3 * t + 1] = g[3 * t + 2] = 0.0;
+            std::fill_n(h + 6 * t, 6, 0.0);
+            h[6 * t] = 0.004;
+            h[6 * t + 3] = h[6 * t + 5] = -0.002;
+        }
+        return true;
+    };
+    size_t pauli_points = 0;
+    bool projected = true;
+    const auto out = nci_contacts(std::span(&site, 1), density, params,
+        [&](const double* xyz, size_t n, double* P, double* rho) {
+            pauli_points += n;
+            for (size_t t = 0; t < n; ++t) {
+                projected &= std::abs(xyz[3 * t] - 0.2) < 1e-14 && xyz[3 * t + 1] <= 0.1;
+                P[t] = 0.003;
+                rho[t] = 0.02;
+            }
+            return true;
+        });
+    ASSERT_EQ(size_t(2), batches.size());
+    EXPECT_LT(batches[1], batches[0]);
+    EXPECT_TRUE(projected);
+    EXPECT_GT(pauli_points, size_t(1));
+    EXPECT_EQ(batches[1], pauli_points);
+    EXPECT_EQ(pauli_points, out[0].samples);
+    EXPECT_EQ(pauli_points, out[0].pauli.samples);
+    EXPECT_NEAR(0.003, out[0].pauli.mean, 1e-14);
+}
+
+UTEST(critical_point_energy, nci_cancels_between_batches) {
+    using namespace critical_point_distribution;
+    ExpAtoms pair;
+    pair.centre = {{-3, 0, 0}, {3, 0, 0}};
+    const auto site = pair.site({0, 0, 0});
+    bool cancel = true;
+    size_t calls = 0, pauli_calls = 0;
+    const DensityEvaluator density = [&](const double* x, size_t n, double* rho, double* g, double* h) {
+        ++calls;
+        pair.evaluator()(x, n, rho, g, h);
+        cancel = true;
+        return true;
+    };
+    const PauliEvaluator pauli = [&](const double*, size_t, double*, double*) { ++pauli_calls; return true; };
+    auto out = nci_contacts(std::span(&site, 1), density, {}, pauli, [&] { return cancel; });
+    EXPECT_EQ(size_t(0), calls);
+    EXPECT_TRUE(out[0].character == Character::Undetermined);
+    EXPECT_TRUE(std::isnan(out[0].pauli.mean));
+    EXPECT_NE(out[0].reason.find("cancelled"), std::string::npos);
+    cancel = false;
+    out = nci_contacts(std::span(&site, 1), density, {}, pauli, [&] { return cancel; });
+    EXPECT_EQ(size_t(1), calls);
+    EXPECT_EQ(size_t(0), pauli_calls);
+    EXPECT_TRUE(out[0].character == Character::Undetermined);
+    EXPECT_TRUE(std::isnan(out[0].pauli.mean));
+    EXPECT_NE(out[0].pauli.reason.find("cancelled"), std::string::npos);
+}
+
+UTEST(critical_point_energy, pauli_gaussian_contact_regions) {
+    using namespace critical_point_distribution;
+    md_gto_shell_t shells[2] = {{0, 0, 1, 0}, {1, 1, 1, 0}};
+    float exponent[2] = {0.5f, 0.5f}, coeff[2] = {0.1f, 0.1f};
+    float atoms[6] = {-1.5f, 0, 0, 1.5f, 0, 0};
+    double D[4] = {1, 0, 0, 1};
+    md_gto_basis_t basis = {2, 2, shells, exponent, coeff};
+    md_topo_gto_desc_t desc = {};
+    desc.basis = &basis;
+    desc.atom_xyz = atoms;
+    desc.density_matrix = D;
+    desc.num_threads = 1;
+    const DensityEvaluator density = [&](const double* x, size_t n, double* rho, double* g, double* h) {
+        return md_topo_gto_density_derivatives(rho, g, h, x, n, &desc);
+    };
+    const PauliEvaluator pauli = [&](const double* x, size_t n, double* P, double* rho) {
+        return md_topo_gto_pauli_kinetic_energy_density(P, nullptr, rho, nullptr, x, n, &desc);
+    };
+    NciSite site = {{0, 0, 0}, {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}}, 0};
+    double g[3], h[6];
+    ASSERT_TRUE(density(site.center, 1, &site.rho, g, h));
+    NciParams params;
+    params.radius = 0.6;
+    params.step = 0.2;
+    // This is a numerical model, not an interacting wavefunction or a hydrogen-bond benchmark.
+    params.s_max = 2.0;
+    const auto independent = nci_contacts(std::span(&site, 1), density, params, pauli);
+    ASSERT_GT(independent[0].samples, size_t(1));
+    EXPECT_GT(independent[0].pauli.mean, 0.0);
+    EXPECT_GT(independent[0].pauli.alpha, 0.0);
+    EXPECT_EQ(independent[0].samples, independent[0].pauli.samples);
+    // Hold the sampled disk fixed: dilution lowers t_P but raises t_P / tau_TF.
+    NciParams fixed_region = params;
+    fixed_region.s_max = 1e6;
+    const auto full = nci_contacts(std::span(&site, 1), density, fixed_region, pauli);
+    D[0] = D[3] = 0.125;
+    ASSERT_TRUE(density(site.center, 1, &site.rho, g, h));
+    const auto dilute = nci_contacts(std::span(&site, 1), density, fixed_region, pauli);
+    ASSERT_GT(full[0].samples, size_t(1));
+    ASSERT_EQ(full[0].samples, dilute[0].samples);
+    EXPECT_EQ(dilute[0].samples, dilute[0].pauli.samples);
+    EXPECT_NEAR(0.125 * full[0].pauli.mean, dilute[0].pauli.mean, 1e-14);
+    EXPECT_NEAR(4.0 * full[0].pauli.alpha, dilute[0].pauli.alpha, 1e-10);
+    D[0] = D[3] = 1.0;
+    // A coherent single orbital has t_P = 0 everywhere, including away from the CP.
+    D[1] = D[2] = 1.0;
+    ASSERT_TRUE(density(site.center, 1, &site.rho, g, h));
+    const auto coherent = nci_contacts(std::span(&site, 1), density, params, pauli);
+    ASSERT_GT(coherent[0].samples, size_t(1));
+    EXPECT_NEAR(0.0, coherent[0].pauli.mean, 1e-15);
+    EXPECT_NEAR(0.0, coherent[0].pauli.alpha, 1e-12);
 }

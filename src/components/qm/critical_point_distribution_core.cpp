@@ -1,3 +1,4 @@
+#include <cstring>
 #include "critical_point_distribution_core.h"
 
 #include <core/md_log.h>
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <thread>
 #include <vector>
 
 namespace critical_point_distribution {
@@ -90,6 +92,83 @@ const char* kind_name(Kind kind) {
     case Kind::Unassigned: return "Unassigned";
     }
     return "Unassigned";
+}
+
+std::vector<std::string> environment_path(const ChemicalLabel& label, const md_system_t& system) {
+    std::vector<std::string> path;
+    switch (label.kind) {
+    case Kind::Atom: path = {"Atoms"}; break;
+    case Kind::Bond: path = {"Bonds"}; break;
+    case Kind::Contact: {
+        std::string family = label.interaction.empty() ? "Other contacts" : label.interaction;
+        if (family == "Hydrogen bond") family = "Hydrogen bonds";
+        else if (family == "Halogen bond") family = "Halogen bonds";
+        else if (family == "Other contact") family = "Other contacts";
+        else if (family == "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80") family = "\xCF\x80-stacking";
+        path = {"Contacts", family};
+        break;
+    }
+    case Kind::BondPath: path = {"Bond paths (connectivity unknown)"}; break;
+    case Kind::Ring:
+        path = {"Rings"};
+        if (label.group.starts_with("Aromatic ")) path.push_back("Aromatic rings");
+        else if (label.group.starts_with("Sugar ")) path.push_back("Sugar rings");
+        else if (label.group.starts_with("Aliphatic ")) path.push_back("Aliphatic rings");
+        else if (label.group.starts_with("Closed by ")) path.push_back("Contact-closed rings");
+        break;
+    case Kind::Cage: path = {"Cages"}; break;
+    case Kind::NonNuclear: path = {"Non-nuclear attractors"}; break;
+    case Kind::Unassigned: return {"Unassigned"};
+    }
+    const auto valid_atom = [&](int i) { return i >= 0 && (size_t)i < system.atom.count; };
+    if (label.kind == Kind::Atom && valid_atom(label.atom[0])) {
+        path.push_back(element(system, label.atom[0]));
+    } else if ((label.kind == Kind::Bond || label.kind == Kind::Contact || label.kind == Kind::BondPath) &&
+               valid_atom(label.atom[0]) && valid_atom(label.atom[1])) {
+        int a = label.atom[0], b = label.atom[1];
+        if (label.kind == Kind::Contact && label.interaction == "Hydrogen bond") {
+            if (md_atom_atomic_number(&system.atom, b) == 1) std::swap(a, b);
+            const int donor = md_atom_atomic_number(&system.atom, a) == 1 ? bonded_partner(system, a) : -1;
+            if (valid_atom(donor)) {
+                path.push_back(element(system, donor) + "-H\xC2\xB7\xC2\xB7\xC2\xB7" + element(system, b));
+                return path;
+            }
+        }
+        std::string ea = element(system, a), eb = element(system, b);
+        if (ea > eb) std::swap(ea, eb);
+        path.push_back(ea + (label.kind == Kind::Contact ? "\xC2\xB7\xC2\xB7\xC2\xB7" :
+                            label.kind == Kind::Bond ? "-" : "~") + eb);
+    }
+    return path;
+}
+
+std::vector<EnvironmentTreeNode> environment_tree(std::span<const std::vector<std::string>> paths) {
+    std::vector<EnvironmentTreeNode> nodes(1);
+    for (size_t e = 0; e < paths.size(); ++e) {
+        const auto& path = paths[e];
+        if (path.empty()) continue;
+        uint32_t parent = 0;
+        nodes[parent].environments.push_back((uint32_t)e);
+        for (size_t depth = 0; depth < path.size(); ++depth) {
+            const bool leaf = depth + 1 == path.size();
+            uint32_t child = (uint32_t)nodes.size();
+            if (!leaf) {
+                for (uint32_t c : nodes[parent].children) {
+                    if (nodes[c].environment < 0 && nodes[c].name == path[depth]) {
+                        child = c;
+                        break;
+                    }
+                }
+            }
+            if (child == nodes.size()) {
+                nodes.push_back({path[depth], {}, {}, leaf ? (int)e : -1});
+                nodes[parent].children.push_back(child);
+            }
+            nodes[child].environments.push_back((uint32_t)e);
+            parent = child;
+        }
+    }
+    return nodes;
 }
 
 std::string display_name(const ChemicalLabel& label) {
@@ -818,7 +897,7 @@ bool Filter::accepts(double density) const {
     return false;
 }
 
-Curve estimate(std::span<const double> density, std::span<const uint32_t> component, size_t component_count) {
+Curve estimate(std::span<const double> density, std::span<const uint32_t> component, size_t component_count, bool allow_log) {
     Curve curve;
     if (density.empty()) return curve;
     for (double value : density) {
@@ -850,7 +929,7 @@ Curve estimate(std::span<const double> density, std::span<const uint32_t> compon
         if (!component.empty()) member[i] = component[order[i]];
     }
     curve.components.assign(component.empty() ? 0 : component_count, {});
-    curve.logarithmic = values.front() > 0.0;
+    curve.logarithmic = allow_log && values.front() > 0.0;
     if (curve.logarithmic) {
         for (double& value : values) value = std::log10(value);
     }
@@ -974,6 +1053,354 @@ std::vector<double> refine_cuts(std::span<const double> overview, std::span<cons
         ++peaks_in_view;
     }
     return cuts;
+}
+
+EnergyDensities energy_densities(double G, double laplacian) {
+    EnergyDensities e;
+    if (!std::isfinite(G) || !std::isfinite(laplacian)) return e;
+    e.G = G;
+    e.V = 0.25 * laplacian - 2.0 * G;
+    e.H = e.G + e.V;
+    e.ratio = G > 0.0 ? std::abs(e.V) / G : NAN;
+    return e;
+}
+
+double hydrogen_bond_energy(HBondFormula formula, double rho, double V) {
+    constexpr double kcal_per_hartree = 627.5094740631;
+    switch (formula) {
+    case HBondFormula::Emamian:  return std::isfinite(rho) ? -223.08 * rho + 0.7423 : NAN;
+    case HBondFormula::Espinosa: return std::isfinite(V) ? 0.5 * V * kcal_per_hartree : NAN;
+    }
+    return NAN;
+}
+
+bool hydrogen_bond_energy_applies(const ChemicalLabel& label) {
+    return label.kind == Kind::Contact && label.interaction == "Hydrogen bond";
+}
+
+const char* character_name(Character character) {
+    switch (character) {
+    case Character::None:         return "";
+    case Character::Covalent:     return "Covalent";
+    case Character::StrongAttractive: return "Attractive (strong)";
+    case Character::Attractive:   return "Attractive";
+    case Character::Mixed:        return "Mixed";
+    case Character::Repulsive:    return "Repulsive";
+    case Character::WeakAttractive: return "Weak, attractive lean";
+    case Character::Weak:         return "Weak, no lean";
+    case Character::WeakRepulsive: return "Weak, repulsive lean";
+    case Character::Undetermined: return "Undetermined";
+    }
+    return "";
+}
+
+static constexpr double pi = 3.14159265358979323846;
+
+double reduced_density_gradient(double rho, const double grad[3]) {
+    if (!(rho > 0.0)) return NAN;
+    const double c = 2.0 * std::cbrt(3.0 * pi * pi);
+    return std::sqrt(grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]) / (c * std::pow(rho, 4.0 / 3.0));
+}
+
+std::array<double, 3> symmetric_eigenvalues(const double h[6]) {
+    const double a = h[0], b = h[3], c = h[5], d = h[1], e = h[4], f = h[2];
+    const double p1 = d * d + e * e + f * f;
+    std::array<double, 3> l;
+    const double q = (a + b + c) / 3.0;
+    const double p2 = (a - q) * (a - q) + (b - q) * (b - q) + (c - q) * (c - q) + 2.0 * p1;
+    if (p2 <= 1e-300) return {q, q, q};
+    const double p = std::sqrt(p2 / 6.0);
+    // B = (A - q I) / p; r = det(B) / 2
+    const double ba = (a - q) / p, bb = (b - q) / p, bc = (c - q) / p, bd = d / p, be = e / p, bf = f / p;
+    const double r = 0.5 * (ba * (bb * bc - be * be) - bd * (bd * bc - be * bf) + bf * (bd * be - bb * bf));
+    const double phi = std::acos(std::clamp(r, -1.0, 1.0)) / 3.0;
+    l[2] = q + 2.0 * p * std::cos(phi);
+    l[0] = q + 2.0 * p * std::cos(phi + 2.0 * pi / 3.0);
+    l[1] = 3.0 * q - l[0] - l[2];
+    std::sort(l.begin(), l.end());
+    return l;
+}
+
+std::vector<NciContact> nci_contacts(std::span<const NciSite> sites, const DensityEvaluator& evaluate, const NciParams& params,
+                                     const PauliEvaluator& evaluate_pauli, const std::function<bool()>& cancelled) {
+    std::vector<NciContact> result(sites.size());
+    if (evaluate_pauli) for (auto& r : result) r.pauli.reason = "No eligible NCI region for Pauli sampling.";
+    auto fail = [&](const char* why) {
+        for (auto& r : result) {
+            if (r.character == Character::None) {
+                r.character = Character::Undetermined;
+                r.reason = why;
+            }
+            if (evaluate_pauli) r.pauli = {NAN, NAN, 0, why};
+        }
+        return result;
+    };
+    if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+    const int half = std::max(1, (int)std::floor(params.radius / params.step));
+    const int side = 2 * half + 1;
+    // Per site the grid cells inside the disk; samples[k] is cell cell_of[k] of site site_of[k]
+    std::vector<int> cell_of;
+    std::vector<uint32_t> site_of;
+    std::vector<double> xyz;
+    std::vector<uint8_t> active;   // still a candidate (not projected out of reach)
+    std::vector<size_t> first(sites.size() + 1, 0);
+    char buf[512];
+    for (size_t k = 0; k < sites.size(); ++k) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        first[k] = cell_of.size();
+        const NciSite& site = sites[k];
+        if (!(site.rho <= params.rho_max)) {
+            if (site.bonded) {
+                snprintf(buf, sizeof(buf), "\xCF\x81 at the BCP, %.3g au, is above NCI's range (%.2g au), between bonded atoms: a covalent bond.",
+                         site.rho, params.rho_max);
+            } else {
+                snprintf(buf, sizeof(buf), "\xCF\x81 at the BCP, %.3g au, is above NCI's range (%.2g au), between atoms not bonded: a strong attractive "
+                         "contact, as a short, strong hydrogen bond.", site.rho, params.rho_max);
+            }
+            result[k].character = site.bonded ? Character::Covalent : Character::StrongAttractive;
+            result[k].reason = buf;
+            if (evaluate_pauli) result[k].pauli.reason = "BCP density is outside the sampled NCI range.";
+            continue;
+        }
+        for (int i = 0; i < side; ++i) {
+            for (int j = 0; j < side; ++j) {
+                const double u = (i - half) * params.step, v = (j - half) * params.step;
+                if (u * u + v * v > params.radius * params.radius * (1.0 + 1e-9)) continue;
+                cell_of.push_back(i * side + j);
+                site_of.push_back((uint32_t)k);
+                for (int a = 0; a < 3; ++a) xyz.push_back(site.center[a] + u * site.axes[0][a] + v * site.axes[1][a]);
+                active.push_back(1);
+            }
+        }
+    }
+    first[sites.size()] = cell_of.size();
+    const size_t n = cell_of.size();
+    if (n == 0) return result;
+    std::vector<double> rho(n), grad(3 * n), hess(6 * n);
+    std::vector<double> offset(n, 0.0);
+    std::vector<size_t> dirty;
+    std::vector<double> batch_xyz, batch_rho, batch_grad, batch_hess;
+    // Onto the density minimum along the bond path: Newton on grad rho . e3
+    for (int it = 0; it <= params.projections; ++it) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        if (it == 0) {
+            if (!evaluate(xyz.data(), n, rho.data(), grad.data(), hess.data())) return fail("The density could not be evaluated.");
+        } else if (!dirty.empty()) {
+            batch_xyz.resize(3 * dirty.size());
+            batch_rho.resize(dirty.size());
+            batch_grad.resize(3 * dirty.size());
+            batch_hess.resize(6 * dirty.size());
+            for (size_t j = 0; j < dirty.size(); ++j) std::copy_n(&xyz[3 * dirty[j]], 3, &batch_xyz[3 * j]);
+            if (!evaluate(batch_xyz.data(), dirty.size(), batch_rho.data(), batch_grad.data(), batch_hess.data()))
+                return fail("The density could not be evaluated.");
+            for (size_t j = 0; j < dirty.size(); ++j) {
+                const size_t t = dirty[j];
+                rho[t] = batch_rho[j];
+                std::copy_n(&batch_grad[3 * j], 3, &grad[3 * t]);
+                std::copy_n(&batch_hess[6 * j], 6, &hess[6 * t]);
+            }
+        }
+        if (it == params.projections) break;
+        dirty.clear();
+        for (size_t t = 0; t < n; ++t) {
+            if ((t & 255) == 0 && cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+            if (!active[t]) continue;
+            const double* e = sites[site_of[t]].axes[2];
+            const double* h = &hess[6 * t];
+            const double g = grad[3 * t] * e[0] + grad[3 * t + 1] * e[1] + grad[3 * t + 2] * e[2];
+            const double he[3] = {h[0] * e[0] + h[1] * e[1] + h[2] * e[2], h[1] * e[0] + h[3] * e[1] + h[4] * e[2], h[2] * e[0] + h[4] * e[1] + h[5] * e[2]};
+            const double curvature = e[0] * he[0] + e[1] * he[1] + e[2] * he[2];
+            if (!std::isfinite(g) || !(curvature > 0.0)) continue;
+            const double dt = -g / curvature;
+            offset[t] += dt;
+            if (std::abs(offset[t]) > params.max_offset) { active[t] = 0; continue; }
+            bool moved = false;
+            for (int a = 0; a < 3; ++a) {
+                const double previous = xyz[3 * t + a];
+                xyz[3 * t + a] += dt * e[a];
+                moved |= xyz[3 * t + a] != previous;
+            }
+            if (moved) dirty.push_back(t);
+        }
+    }
+    const double area = params.step * params.step;
+    std::vector<int> slot(side * side);
+    std::vector<int> stack;
+    std::vector<size_t> pauli_sample;
+    for (size_t k = 0; k < sites.size(); ++k) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        if (result[k].character != Character::None) continue;
+        std::fill(slot.begin(), slot.end(), -1);
+        for (size_t t = first[k]; t < first[k + 1]; ++t) slot[cell_of[t]] = (int)t;
+        auto inside = [&](int t) {
+            if (t < 0 || !active[t] || !(rho[t] > 0.0) || rho[t] > params.rho_max) return false;
+            return reduced_density_gradient(rho[t], &grad[3 * t]) <= params.s_max;
+        };
+        NciContact& out = result[k];
+        out.attractive = out.repulsive = out.weak = out.weak_repulsive = 0.0;
+        out.repulsive_peak = 0.0;
+        std::vector<uint8_t> seen(side * side, 0);
+        const int centre = half * side + half;
+        stack.clear();
+        if (inside(slot[centre])) { stack.push_back(centre); seen[centre] = 1; }
+        while (!stack.empty()) {
+            const int c = stack.back();
+            stack.pop_back();
+            const int t = slot[c];
+            if (evaluate_pauli) pauli_sample.push_back((size_t)t);
+            const double l2 = symmetric_eigenvalues(&hess[6 * t])[1];
+            (rho[t] < params.rho_weak ? out.weak : l2 < 0.0 ? out.attractive : out.repulsive) += rho[t] * area;
+            if (rho[t] < params.rho_weak && l2 >= 0.0) out.weak_repulsive += rho[t] * area;
+            if (l2 >= 0.0) out.repulsive_peak = std::max(out.repulsive_peak, rho[t]);
+            ++out.samples;
+            const int i = c / side, j = c % side;
+            const int nb[4][2] = {{i - 1, j}, {i + 1, j}, {i, j - 1}, {i, j + 1}};
+            for (const auto& q : nb) {
+                if (q[0] < 0 || q[0] >= side || q[1] < 0 || q[1] >= side) continue;
+                const int cq = q[0] * side + q[1];
+                if (seen[cq] || !inside(slot[cq])) continue;
+                seen[cq] = 1;
+                stack.push_back(cq);
+            }
+        }
+        const double strong = out.attractive + out.repulsive;
+        if (out.samples == 0 || !(strong + out.weak > 0.0)) {
+            out.character = Character::Undetermined;
+            out.reason = "No NCI region was found around the BCP.";
+            continue;
+        }
+        if (strong > 0.0) out.share = out.repulsive / strong;
+        const int pct = (int)std::lround(100.0 * out.weak / (strong + out.weak));
+        if (out.weak >= strong) {
+            out.share = out.weak_repulsive / out.weak;
+            out.character = out.share < nci_weak_attractive_below ? Character::WeakAttractive
+                          : out.share >= nci_weak_repulsive_from  ? Character::WeakRepulsive : Character::Weak;
+            snprintf(buf, sizeof(buf), "%d%% of its NCI region's density (%zu samples) is below %.2g au, where \xCE\xBB\xE2\x82\x82 \xE2\x89\x88 0: a weak contact, "
+                     "mostly dispersion, which the density does not capture. %.0f%% of that density is where \xCE\xBB\xE2\x82\x82 > 0%s.",
+                     pct, out.samples, params.rho_weak, 100.0 * out.share,
+                     out.character == Character::Weak ? ": no clear lean" : out.character == Character::WeakAttractive ? ": an attractive lean" : ": a repulsive lean");
+        } else {
+            out.character = out.share >= nci_repulsive_from ? Character::Repulsive : out.share >= nci_mixed_from ? Character::Mixed : Character::Attractive;
+            snprintf(buf, sizeof(buf), "%.0f%% of its NCI region's density at \xCF\x81 \xE2\x89\xA5 %.2g au is where \xCE\xBB\xE2\x82\x82 > 0 (repulsive)",
+                     100.0 * out.share, params.rho_weak);
+            size_t len = strlen(buf);
+            if (out.repulsive > 0.0) len += snprintf(buf + len, sizeof(buf) - len, ", up to \xCF\x81 = %.3f au", out.repulsive_peak);
+            snprintf(buf + len, sizeof(buf) - len, "; %d%% of the region's density (%zu samples) is weaker.", pct, out.samples);
+        }
+        out.reason = buf;
+    }
+    if (!pauli_sample.empty()) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        std::vector<double> points;
+        points.reserve(3 * pauli_sample.size());
+        for (size_t t : pauli_sample) points.insert(points.end(), &xyz[3 * t], &xyz[3 * t + 3]);
+        std::vector<double> P(pauli_sample.size(), NAN), density(pauli_sample.size(), NAN);
+        if (!evaluate_pauli(points.data(), pauli_sample.size(), P.data(), density.data())) {
+            for (auto& r : result) if (r.samples) r.pauli.reason = "Pauli evaluation failed or was cancelled.";
+            return result;
+        }
+        std::vector<double> weight(sites.size()), sum(sites.size()), alpha_sum(sites.size());
+        const double tf = 0.3 * std::pow(3.0 * pi * pi, 2.0 / 3.0);
+        for (size_t i = 0; i < pauli_sample.size(); ++i) {
+            if ((i & 255) == 0 && cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+            const size_t k = site_of[pauli_sample[i]];
+            const double rho_p = density[i];
+            if (!(rho_p > 0.0) || !std::isfinite(rho_p) || !std::isfinite(P[i])) continue;
+            const double alpha = P[i] / (tf * std::pow(rho_p, 5.0 / 3.0));
+            const double wp = rho_p * P[i], wa = rho_p * alpha;
+            if (!std::isfinite(alpha) || !std::isfinite(wp) || !std::isfinite(wa)) continue;
+            ++result[k].pauli.samples;
+            weight[k] += rho_p;
+            sum[k] += wp;
+            alpha_sum[k] += wa;
+        }
+        for (size_t k = 0; k < result.size(); ++k) {
+            auto& out = result[k];
+            if (!out.samples) continue;
+            if (out.pauli.samples != out.samples || !(weight[k] > 0.0) ||
+                !std::isfinite(weight[k]) || !std::isfinite(sum[k]) || !std::isfinite(alpha_sum[k])) {
+                out.pauli.reason = "Invalid Pauli samples; regional means are unavailable.";
+                continue;
+            }
+            out.pauli.mean = sum[k] / weight[k];
+            out.pauli.alpha = alpha_sum[k] / weight[k];
+            out.pauli.reason.clear();
+        }
+    }
+    return result;
+}
+
+std::vector<double> mulliken_populations(std::span<const double> S, std::span<const double* const> P, size_t num_ao,
+                                         std::span<const uint32_t> ao_atom, size_t num_atoms, const std::function<bool()>& cancelled) {
+    std::vector<double> result(num_atoms, NAN);
+    if (S.size() != num_ao * num_ao || ao_atom.size() != num_ao || P.empty()) return result;
+    std::vector<double> population(num_atoms, 0.0);
+    std::vector<bool> has(num_atoms, false);
+    for (size_t mu = 0; mu < num_ao; ++mu) {
+        if (cancelled && cancelled()) return result;
+        const uint32_t atom = ao_atom[mu];
+        if (atom >= num_atoms) continue;
+        double sum = 0.0;
+        for (const double* Ps : P) {
+            for (size_t k = 0; k < num_ao; ++k) sum += Ps[mu * num_ao + k] * S[k * num_ao + mu];
+        }
+        population[atom] += sum;
+        has[atom] = true;
+    }
+    for (size_t a = 0; a < num_atoms; ++a) if (has[a]) result[a] = population[a];
+    return result;
+}
+
+double approximate_interaction_energy(double qa, double qb, double bond_order, double distance_bohr) {
+    constexpr double kcal_per_hartree = 627.5094740631;
+    if (!std::isfinite(qa) || !std::isfinite(qb) || !std::isfinite(bond_order) || !(distance_bohr > 0.0)) return NAN;
+    return (qa * qb - 0.5 * bond_order) / distance_bohr * kcal_per_hartree;
+}
+
+std::vector<double> mayer_bond_orders(std::span<const double> S, std::span<const double* const> P, double w, size_t num_ao,
+                                      std::span<const uint32_t> ao_atom, std::span<const std::array<int, 2>> pairs,
+                                      const std::function<bool()>& cancelled) {
+    std::vector<double> result(pairs.size(), NAN);
+    if (S.size() != num_ao * num_ao || ao_atom.size() != num_ao || P.empty()) return result;
+    if (cancelled && cancelled()) return result;
+    std::map<int, std::vector<size_t>> aos;
+    for (size_t mu = 0; mu < num_ao; ++mu) aos[(int)ao_atom[mu]].push_back(mu);
+    auto dot = [&](const double* a, const double* b) {
+        double sum = 0.0;
+        for (size_t k = 0; k < num_ao; ++k) sum += a[k] * b[k];
+        return sum;
+    };
+    // (P S)_mu,nu = P row mu . S row nu, S being symmetric
+    auto bond_order = [&](size_t t) {
+        const auto ia = aos.find(pairs[t][0]), ib = aos.find(pairs[t][1]);
+        if (ia == aos.end() || ib == aos.end()) return;
+        double sum = 0.0;
+        for (const double* Ps : P) {
+            for (size_t mu : ia->second) {
+                if (cancelled && cancelled()) return;
+                for (size_t nu : ib->second) {
+                    sum += dot(Ps + mu * num_ao, S.data() + nu * num_ao) * dot(Ps + nu * num_ao, S.data() + mu * num_ao);
+                }
+            }
+        }
+        result[t] = w * sum;
+    };
+    const size_t threads = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency(), pairs.size()));
+    std::vector<std::thread> pool;
+    for (size_t k = 1; k < threads; ++k) {
+        pool.emplace_back([&, k] {
+            for (size_t t = k; t < pairs.size(); t += threads) {
+                if (cancelled && cancelled()) return;
+                bond_order(t);
+            }
+        });
+    }
+    for (size_t t = 0; t < pairs.size(); t += threads) {
+        if (cancelled && cancelled()) break;
+        bond_order(t);
+    }
+    for (auto& th : pool) th.join();
+    return result;
 }
 
 }

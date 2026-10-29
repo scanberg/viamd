@@ -2483,6 +2483,16 @@ struct TaskProgress {
     volatile int32_t* cancel   = nullptr;
 };
 
+namespace isomesh { struct Surface; }
+// Payload of EventType_ViamdMeshSurfaceRequest: surfaces[count++] while count < cap
+struct MeshSurfaceRequest {
+    const ApplicationState* state = nullptr;
+    isomesh::Surface* surfaces = nullptr;
+    size_t   cap   = 0;
+    size_t   count = 0;
+    uint64_t hash  = 0;   // of what the surfaces' look depends on beyond their meshes (a colour map's contents)
+};
+
 struct TaskProgressRequest {
     TaskProgress items[8];
     size_t       count = 0;

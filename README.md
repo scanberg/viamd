@@ -73,26 +73,28 @@ auto-fits; density-axis zoom persists until refitted or new search results arriv
 Dragging to pan does not select a bar or clear the selection.
 
 Each plot's curve is split into peaks at its valleys, the deepest first
-(persistence), into at most six. The environments table lists its rows in
-blocks, one per peak: a strip in the peak's colour and its number (1, 2, ...)
-runs down the block, and the rows are the chemical environments within that
-peak, with their count and share of it. Sorting applies within blocks. Clicking
-the strip selects the whole peak; clicking a row selects that environment.
+(persistence), into at most six, coloured in the plot. Zooming refines them: a
+zoomed plot draws the curve of the CPs in view at the view's resolution (the
+overview's curve stays as a faint line), and its peaks split at that curve's
+valleys, again into at most six in view, numbered after the overview's peak
+they lie in (2.1, 2.2) in shades of its colour. The viewport's Colour menu can
+colour the CPs by their peak.
 
-Zooming refines rather than filters. A zoomed plot draws the curve of the CPs
-in view at the view's resolution (the overview's curve stays as a faint line),
-and its peaks split at that curve's valleys, again into at most six in view.
-The overview's peaks are never merged, so each part lies within one of them and
-is numbered after it (2.1, 2.2) in shades of its colour. Peaks outside the
-view keep their overview split. Each peak's CPs are named at the finest level
-of detail that keeps it in at most four environments: the group ("C
-aromatic"), then with what the atoms are bonded to ("C aromatic [C2H]", "H (on
-N [C2H])"; a contact ring's size and composition), then with their residues
-where the system has them ("in PHE", "between GLY and SER"). The plot's shading,
-both tables and the viewport's environment colors and tags follow; environments
-selected in the table stay selected through the change, as their parts or as
-the whole they merge into. The details pane always shows the finest name. The
-CSV export includes each row's peak, its density interval and the share.
+The environments table is organised by chemistry, not by peaks: one row per
+Type, Kind, Chemical environment and, for BCPs, Character, in that order. A row
+never mixes characters, and the kind and environment are written once for the
+character rows that follow. The Detail menu sets how finely environments are
+named: the group ("C aromatic"), then what the atoms are bonded to ("C aromatic
+[C2H]", "H (on N [C2H])"; a contact ring's size and composition), then their
+residues where the system has them ("in PHE", "between GLY and SER"). Auto, the
+default, picks for each category and kind the finest level that gives at most
+six environments. The Distribution column draws each row's CPs as a small
+histogram along its plot's axis, following the plot's zoom, coloured by
+character (other CPs in their category's colour). Grey arrows mark CPs outside
+the view, so the peaks show up within each environment without splitting the
+rows. Share is the row's fraction of its category's listed CPs. Sorting applies
+within categories. The details pane always shows the finest name. The CSV
+export includes each row's character and share.
 
 Each category has an independent, optional density filter made of one or more
 inclusive ranges; a point passes if it lies in any of them (their union). The
@@ -106,28 +108,156 @@ whose density passes its filter appear in the viewport or take part in viewport
 picking, region selection, or view fitting; paths from excluded points are
 hidden too. Filtering does not recompute the search or change the topology export.
 
-The environments table lists, one flat row each, the chemical environments of
-the CPs of the shown categories that pass their filter, at the detail their
-plot's view gives them: Type, Kind, Chemical environment, count, density range,
-mean Laplacian and mean ellipticity.
+The Plot selector above the filters chooses what the plots show, their peaks
+group by and new filters select by: density, the energy density H = G + V, the
+ratio |V|/G, an empirical hydrogen-bond energy E(HB) (Emamian et al. 2019 by
+default, Espinosa et al. 1998 selectable; only for contacts classified as
+hydrogen bonds), the Mayer bond order, or an approximate interaction energy
+E(int) = qA qB / R - BO / (2R) from Mulliken charges and the bond order
+(kcal/mol, negative favourable; a crude stand-in for an IQA pair energy). The
+energy descriptors come from the analytic search only. G is computed at each CP
+from the density matrix, and V follows from the local virial theorem. The bond
+orders and charges need the overlap and density matrices. Filters are kept per
+variable, and a CP must pass each enabled one. CPs without a value of the
+plotted variable are left out of the Distribution column, whose tooltip counts
+them and gives the reason. Each BCP also gets a Character from a non-covalent
+interaction (NCI) analysis of the density, the same for every interaction. The
+region around the BCP, on the surface between its two atoms, where the reduced
+density gradient s ≤ 0.5 and ρ ≤ 0.05 au, is split by the sign of λ2. Negative
+λ2 means attractive (density accumulates), positive means repulsive (density
+depleted, steric crowding). Below 0.01 au, λ2 is near 0 and its sign means
+little (NCI's green band). A region mostly below that density is Weak: mostly
+dispersion, which the density does not capture, so it only gets a lean from the
+density-weighted repulsive share of that weak part: an attractive lean
+(< 35 %), a repulsive lean (≥ 65 %), or Weak, no lean, in between. Otherwise the
+density-weighted repulsive share of the denser part decides: Attractive
+(< 25 %), Mixed (25–50 %) or Repulsive (≥ 50 %). A BCP with ρ > 0.05 au is
+beyond NCI's range: Covalent between bonded atoms, Attractive (strong) between
+atoms that are not, such as a short, strong hydrogen bond.
+One with no region is Undetermined. The thresholds are conventions, and "NCI repulsive share" can be plotted and filtered. The
+BCPs line above the filters hides characters, and the viewport's Colour menu
+can colour BCPs by character.
+
+The analytic mdlib evaluator also provides the local Pauli kinetic energy
+density t_P = G - |grad rho|^2 / (8 rho) at arbitrary points, with G, rho and
+its gradient computed in one AO pass. At a critical point t_P equals G, so
+there is no duplicate CP column. This is a total-density local descriptor,
+not a fragment interaction energy or a repulsion classifier. It is not
+used by the NCI character rules or exposed as a surface. The analytic contact
+job samples it on the accepted, projected NCI region and retains density-weighted
+means of t_P and of t_P / tau_TF, where tau_TF = 3/10 (3 pi^2)^(2/3) rho^(5/3).
+These are local means over a projected disk, not a 3D integral or an interaction
+energy. All region samples must be valid; incomplete evaluation leaves the
+means unavailable with a reason. Dense contacts outside NCI's sampling range
+have no regional measurement. Nonpositive density
+(including screened vacuum) gives an undefined value (NaN); small negative
+roundoff values are not clamped.
+Neither mean has a universal clash threshold. In particular, normalization by
+tau_TF can amplify dilute regions: at fixed orbital shape, scaling the density
+by c scales t_P by c but t_P / tau_TF by c^(-2/3). Hydrogen-bond and crowded-contact
+values can overlap; a large normalized value alone does not establish repulsion.
+The Distribution variable selector exposes **Regional Pauli (experimental)**
+and **Regional Pauli / TF (experimental)**, with the usual per-variable filters
+and distribution/peak colouring. Both tables offer optional columns, hidden
+by default (right-click a table header to enable them), marked with an asterisk
+for experimental descriptors. Details show the regional values and sample
+count, or the reason they are unavailable. CSV exports include both values;
+the CP export also records valid samples and status. Environment and parent
+means give each CP with a valid regional measurement equal weight, rather than
+pooling the samples of regions of different sizes; their tooltips and exports
+give the valid CP count.
+Pauli remains automatic with the analytic contact analysis. Projection batches
+reuse unchanged point values and omit points already excluded by the projection;
+the kinetic evaluator shares the blocked density-matrix product used for density
+derivatives. The energy/contact job uses atomic cancellation through mdlib's
+cancellation callback, with additional checks between batches and during regional
+processing. Cancelled or stale job results are not published.
+Mulliken populations also supply the electron-count trace without another
+density/overlap matrix pass; population and bond-order work honour the same
+job cancellation.
+
+The NCI surface checkbox draws the NCI isosurface (Johnson et al., J. Am. Chem.
+Soc. 2010) in the viewport. It is the surface s = 0.5 where ρ is below the
+cutoff (0.05 au), coloured by sign(λ2)ρ: negative attractive, near-zero weak,
+positive repulsive. The default Jet palette maps these to blue, green
+and red, respectively. The density is sampled on a grid (Coarse 0.3, Medium 0.2 or Fine
+0.13 Bohr) and differentiated by finite differences, so a finer grid gives a
+smoother and more accurate surface. Scope offers Everywhere, Around shown
+(the visible BCPs, respecting filters), and Around selected (the default).
+Around selected uses selected CPs of any type, regardless of their visibility
+or filters; selecting a ring CP therefore shows its ring's surface. With
+nothing selected, no surface is drawn. The default radius is 2.7 Bohr. The radius, isovalue, cutoff, colour
+range and opacity can be adjusted. Progress and Cancel stay in the Critical
+Points window, without an NCI task overlay or routine completion notifications
+in the viewport. Timings remain in debug logs; errors are still reported. It is drawn as a
+mesh in both isosurface rendering modes. Everywhere does not need the
+critical point search; the other scopes use its results.
+The Colour scale section uses the same palette selector, automatic/manual
+range, symmetric range and optional viewport legend as the other surface
+fields. The default palette is Jet, with an automatic, zero-centred symmetric
+range and a visible legend. Auto uses the 1st to 99th percentile of values on
+the current scoped surface: selected regions, shown regions or Everywhere.
+It updates when a new scoped surface arrives, not with camera motion; outliers
+only saturate in colour. Manual keeps a fixed range for comparisons between
+selections. Changing the colour scale does not recompute the surface.
+
+The distributions pane also offers **NCI scatter**: reduced density gradient
+s against sign(λ2)ρ, using the same scope, density cutoff and colour scale as
+the NCI surface. It samples the density volume, not the surface vertices.
+Up to 50,000 grid samples with s ≤ 2 are retained by deterministic reservoir
+sampling, with the displayed and eligible counts shown above the plot.
+The horizontal reference line marks the surface isovalue; changing that
+isovalue leaves the scatter samples unchanged. This plot does not change the
+character thresholds or apply table filters (except through Around shown).
+With the CP search disabled, Everywhere still provides the plot below the
+NCI controls.
+
+The environments table is a collapsible chemistry hierarchy of the CPs of the
+shown categories that pass their filters. Type is the first column and
+Chemical environment the second; the tree starts at chemistry branches,
+without an extra Attractor/BCP/RCP/CCP dropdown. BCPs split into Bonds, Contacts and
+Bond paths with unknown connectivity. Bonds group by element pair (C-C, C-N,
+etc.); Contacts by interaction family (Hydrogen bonds, pi-stacking, etc.)
+and pair, with donor-H...acceptor groups for hydrogen bonds. Ring CPs group
+into aromatic, aliphatic, sugar or contact-closed rings when recognized.
+Detail still controls the environment names at the leaves. Every leaf repeats
+its environment name, even when separate characters share a name.
+Character remains a column, not a branch: neither density peaks nor the NCI
+character determine the chemistry hierarchy.
+Kind is omitted from this table because the branches already identify it;
+it remains in the individual CP list and CSV exports.
+
+Parent rows summarize all listed descendants, including collapsed ones:
+count, share of the CP category, a character-stacked distribution, density
+range and means of Laplacian, ellipticity and energy descriptors. Means use
+all descendants with a value, not averages of the child means. A parent
+with several characters says Multiple, not the NCI classification Mixed.
+Arrows expand/collapse without selecting. Collapse all, Expand all and
+Reveal selection control the tree.
 
 The critical point list below it shows the CPs of the environments chosen in
 the table above, else of the bars clicked, else every CP the environments table
 counts (List all returns to that), with the same first columns (Type, Kind,
 Chemical environment, index) and then density, Laplacian, ellipticity and
 position. Both tables sort by clicking a header, Shift-click further headers to
-sort by several columns; right-click a header to hide columns (Type and
+sort by several columns; the environments tree sorts siblings without
+separating their descendants. Right-click a header to hide columns (Type and
 Chemical environment always stay).
 
 The Export menu at the top writes two kinds of data. Topology (JSON or VTP) is
 every critical point and path, unfiltered and without chemical labels, for scripts
 and ParaView. Chemical analysis (CSV) is either table as listed and sorted, every
-column at full precision (hidden ones too); the environments add their CP indices,
+column at full precision (hidden ones too); the environments export all
+filtered leaves in tree order, including collapsed ones, with a hierarchy path
+and their CP indices (parent summaries are omitted to avoid double counting),
 the CP list each CP's label detail, and the CP index joins it to the topology
 export.
 
-Selection works at both levels. Click an environment to choose it, Shift-click to
-add or remove one: its CPs are listed below and become the selection. Click a
+Selection works at both levels. Click an environment or a parent category to
+select all its listed CPs, even in collapsed descendants. Ctrl-click or
+Shift-click adds the whole group, or removes it if it is fully selected.
+Hovering a parent highlights all its listed descendants. Its environments
+are listed below and its CPs become the selection. Click a
 bar to list and select its CPs, Shift-click to add. In the list, click a CP to
 select only it, Shift-click to add or remove it, Shift-right-click to remove it;
 the list itself stays. CPs picked in the viewport join the same selection, and a
