@@ -176,6 +176,7 @@ set(SRC_FILES
     src/color_scale.cpp
     src/color_utils.cpp
     src/density_map.cpp
+    src/layer_groups.cpp
     src/display_units.cpp
     src/surface_field.cpp
     src/event.cpp
