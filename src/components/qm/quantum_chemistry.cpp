@@ -962,12 +962,13 @@ struct QuantumChemistry : viamd::EventHandler {
         double rho, laplacian, ellipticity, xyz[3];
     };
 
-    // A distinct chemical environment: a category and a label, as the tables and the viewport show it
+    // A distinct chemical environment within a peak of its category's curve, as the tables and the viewport show it
     struct CriticalPointEnvironment {
         int type, order;
         critical_point_distribution::Kind kind;
-        std::string name;       // the label's group
-        vec4_t color;           // its layer's in the category's plot
+        std::string name;       // the label's group, at its peak's level of detail
+        int peak;               // into its category's Distribution::peaks
+        vec4_t color;           // its peak's
     };
 
     struct CriticalPoints {
@@ -1025,18 +1026,30 @@ struct QuantumChemistry : viamd::EventHandler {
         struct Distribution {
             std::vector<uint32_t> indices;
             critical_point_distribution::Curve curve;
-            std::vector<std::string> component_names;   // chemical environments, largest first; the curve's components
-            std::vector<uint32_t> component_of;         // per index, its component
             double view_min = 0.0, view_max = 0.0;      // the plot's density axis, as last drawn
-            // What of indices (sorted by density) the plot shows, [window_begin, window_end), and the level of detail
-            // its CPs are named at: the finest that keeps them in at most max_components environments
-            size_t window_begin = 0, window_end = 0;
-            int level = 0;
             bool fit = true;
+            // The curve's peaks: split at its valleys, the overview's deepest and the deepest within the plot's view
+            // (critical_point_distribution::peak_cuts), so zooming splits a peak into its parts
+            struct Peak {
+                double min, max;                        // its density interval, between two cuts
+                int top, sub, subs;                     // the overview's peak it is part of, and which of its subs parts
+                int level;                              // the detail its CPs are named at: at most max_peak_rows names
+                ImVec4 color;
+                std::string label;                      // "2", or "2.1" for a part of overview peak 2
+            };
+            std::vector<critical_point_distribution::Valley> valleys;
+            // Zoomed: the curve of the CPs in view, indices [window_begin, window_end), resolved at the view's scale and
+            // scaled to their share of all; it is drawn and cut in the view. Invalid when the view holds them all.
+            critical_point_distribution::Curve view_curve;
+            size_t window_begin = 0, window_end = 0;
+            std::vector<double> cuts;
+            std::vector<Peak> peaks;
+            std::vector<uint32_t> component_of;         // per index, its peak
         };
         Distribution distributions[MD_TOPO_NUM_TYPES];
         bool distributions_dirty = true;
-        std::vector<uint8_t> detail_of;         // per CP, the level of detail it is named at: its plot's if in its window, else 0
+        std::vector<uint8_t> detail_of;         // per CP, the level of detail it is named at: its peak's
+        std::vector<int> peak_of;               // per CP, its peak in its category's distribution
         // What the viewport shows of the selection: everything, only the selection, or its 3 Å vicinity
         enum Show : int { Show_All = 0, Show_Selected = 1, Show_Vicinity = 2 };
         int show = Show_Selected;
@@ -5503,18 +5516,6 @@ struct QuantumChemistry : viamd::EventHandler {
         for (uint32_t i : indices) md_bitmask_set_bit(&cp.highlight_mask, i);
     }
 
-    // The colour of an environment's layer in its category's plot: the key between the plots and the table
-    ImVec4 critical_point_environment_color(int type, const std::string& name) const {
-        const auto& distribution = critical_points.distributions[type];
-        if (distribution.curve.components.size() > 1 && !distribution.component_names.empty()) {
-            size_t k = 0;   // not among the named ones: pooled into the last, Other environments
-            while (k + 1 < distribution.component_names.size() && distribution.component_names[k] != name) ++k;
-            return ImPlot::GetColormapColor((int)k);
-        }
-        const vec4_t c = critical_point_style(type).color;
-        return ImVec4(c.x, c.y, c.z, 1.0f);
-    }
-
     static void environment_swatch(ImVec4 color) {
         const float h = ImGui::GetTextLineHeight();
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -5533,7 +5534,7 @@ struct QuantumChemistry : viamd::EventHandler {
         return cp.density_filter[type].accepts(critical_point_density(i));
     }
 
-    // The environment CP i is in: its label at the level of detail its plot's window gives it
+    // The environment CP i is in: its label at the level of detail its peak gives it
     std::string critical_point_environment_name(uint32_t i) const {
         const CriticalPoints& cp = critical_points;
         if (cp.chemical_labels.size() != cp.simp_graph.num_vertices) return "Unassigned";
@@ -5541,12 +5542,24 @@ struct QuantumChemistry : viamd::EventHandler {
         return critical_point_distribution::display_name(cp.chemical_labels[i], level);
     }
 
-    // The curves are split into at most this many chemical environments; the smallest are pooled
-    static constexpr size_t max_components = 6;
+    // At most this many peaks in a plot's view, and environments named in a peak
+    static constexpr size_t max_peaks = 6;
+    static constexpr size_t max_peak_rows = 4;
 
-    // Each frame: rebuilt when the graph or its labels change, refined when a plot's window takes in other CPs. The CPs a
-    // plot shows are named at the finest level of detail that keeps them in at most max_components environments, the
-    // others at the coarsest, and the curve's layers, the tables and the viewport follow.
+    // A peak's colour: the overview's peaks take the colormap's, their parts shades of it, darker to lighter
+    static ImVec4 critical_point_peak_color(int top, int sub, int subs) {
+        ImVec4 c = ImPlot::GetColormapColor(top);
+        if (subs > 1) {
+            const float t = -0.35f + 0.7f * (float)sub / (float)(subs - 1);
+            const float target = t < 0.0f ? 0.0f : 1.0f, w = fabsf(t);
+            c = ImVec4(c.x + (target - c.x) * w, c.y + (target - c.y) * w, c.z + (target - c.z) * w, 1.0f);
+        }
+        c.w = 1.0f;
+        return c;
+    }
+
+    // Each frame: the curves rebuilt when the graph or its labels change; their peaks when a plot's view takes in other
+    // valleys. Each peak's CPs are named at the finest detail that keeps it in at most max_peak_rows environments.
     void update_critical_point_distributions() {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
@@ -5555,86 +5568,96 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool rebuild = cp.distributions_dirty;
         if (rebuild) {
             for (auto& distribution : cp.distributions) {
-                distribution.indices.clear();
-                distribution.curve = {};
-                distribution.component_names.clear();
-                distribution.component_of.clear();
-                distribution.fit = true;
-                distribution.window_begin = distribution.window_end = 0;
-                distribution.level = 0;
+                distribution = {};
             }
             for (uint32_t i = 0; i < graph.num_vertices; ++i) {
                 cp.distributions[md_topo_vertex_type(&graph, i)].indices.push_back(i);
             }
+            std::vector<double> values;
             for (auto& distribution : cp.distributions) {
                 std::sort(distribution.indices.begin(), distribution.indices.end(), [&](uint32_t a, uint32_t b) { return density(a) < density(b); });
-                distribution.window_end = distribution.indices.size();
+                values.clear();
+                for (uint32_t i : distribution.indices) values.push_back(density(i));
+                distribution.curve = critical_point_distribution::estimate(values);
+                distribution.valleys = critical_point_distribution::valleys(distribution.curve);
             }
+            cp.peak_of.assign(graph.num_vertices, 0);
+            cp.detail_of.assign(graph.num_vertices, 0);
         }
 
-        bool refined = false;
+        bool changed = rebuild;
         for (int type : critical_point_type_order) {
             auto& distribution = cp.distributions[type];
             const auto& indices = distribution.indices;
-            size_t begin = 0, end = indices.size();
-            if (!rebuild && distribution.curve.valid && distribution.view_max > distribution.view_min) {
-                begin = std::lower_bound(indices.begin(), indices.end(), distribution.view_min, [&](uint32_t i, double v) { return density(i) < v; }) - indices.begin();
-                end   = std::upper_bound(indices.begin(), indices.end(), distribution.view_max, [&](double v, uint32_t i) { return v < density(i); }) - indices.begin();
-                end   = std::max(begin, end);
-            }
+            const bool view = !distribution.fit && distribution.view_max > distribution.view_min;
+            const size_t begin = view ? std::lower_bound(indices.begin(), indices.end(), distribution.view_min,
+                                                         [&](uint32_t i, double v) { return density(i) < v; }) - indices.begin() : 0;
+            const size_t end = view ? std::upper_bound(indices.begin(), indices.end(), distribution.view_max,
+                                                       [&](double v, uint32_t i) { return v < density(i); }) - indices.begin() : indices.size();
             if (!rebuild && begin == distribution.window_begin && end == distribution.window_end) continue;
-            const int level = labelled ? critical_point_distribution::auto_detail_level(cp.chemical_labels,
-                                             std::span<const uint32_t>(indices.data() + begin, end - begin), max_components) : 0;
-            refined |= level != distribution.level || (level > 0 && !rebuild);
             distribution.window_begin = begin;
-            distribution.window_end   = end;
-            distribution.level        = level;
-        }
-        if (!rebuild && !refined) return;
-
-        cp.detail_of.assign(graph.num_vertices, 0);
-        for (const auto& distribution : cp.distributions) {
-            for (size_t j = distribution.window_begin; j < distribution.window_end; ++j) cp.detail_of[distribution.indices[j]] = (uint8_t)distribution.level;
-        }
-
-        std::vector<double> values;
-        for (int type : critical_point_type_order) {
-            auto& distribution = cp.distributions[type];
-            // Ranked by their CPs in the window first, so the layers drawn are the ones in view
-            std::vector<std::string> name_of(distribution.indices.size());
-            std::vector<std::tuple<bool, size_t, std::string>> counts;   // (outside the window, -count, name)
-            std::map<std::string, std::pair<size_t, size_t>> tally;       // name -> (in the window, outside)
-            for (size_t j = 0; j < distribution.indices.size(); ++j) {
-                name_of[j] = critical_point_environment_name(distribution.indices[j]);
-                const bool inside = j >= distribution.window_begin && j < distribution.window_end;
-                auto& t = tally[name_of[j]];
-                (inside ? t.first : t.second)++;
+            distribution.window_end = end;
+            const std::vector<double> overview = critical_point_distribution::peak_cuts(distribution.valleys, 1.0, 0.0, max_peaks);
+            std::vector<double> cuts = overview;
+            distribution.view_curve = {};
+            if (end - begin >= 3 && end - begin < indices.size()) {
+                std::vector<double> all, window;
+                for (uint32_t i : indices) all.push_back(density(i));
+                window.assign(all.begin() + begin, all.begin() + end);
+                auto curve = critical_point_distribution::estimate(window);
+                if (curve.valid && curve.logarithmic == distribution.curve.logarithmic) {
+                    const double share = (double)window.size() / (double)all.size();
+                    for (double& p : curve.probability) p *= share;
+                    cuts = critical_point_distribution::refine_cuts(overview, critical_point_distribution::valleys(curve), all,
+                                                                    distribution.view_min, distribution.view_max, max_peaks);
+                    distribution.view_curve = curve;
+                }
             }
-            for (const auto& [name, t] : tally) counts.push_back({t.first == 0, ~(t.first ? t.first : t.second), name});
-            std::sort(counts.begin(), counts.end());
-            distribution.component_names.clear();
-            const bool pooled = counts.size() > max_components;
-            const size_t named = pooled ? max_components - 1 : counts.size();
-            for (size_t k = 0; k < named; ++k) distribution.component_names.push_back(std::get<2>(counts[k]));
-            if (pooled) distribution.component_names.push_back("Other environments");
-
-            values.clear();
-            distribution.component_of.clear();
-            for (size_t j = 0; j < distribution.indices.size(); ++j) {
-                values.push_back(density(distribution.indices[j]));
-                uint32_t k = 0;
-                while (k < named && distribution.component_names[k] != name_of[j]) ++k;
-                distribution.component_of.push_back(std::min<uint32_t>(k, (uint32_t)distribution.component_names.size() - 1));
+            if (!rebuild && cuts == distribution.cuts) continue;
+            changed = true;
+            distribution.cuts = std::move(cuts);
+            const auto& cuts_ = distribution.cuts;
+            distribution.peaks.clear();
+            for (size_t k = 0; k <= cuts_.size(); ++k) {
+                CriticalPoints::Distribution::Peak peak = {};
+                peak.min = k == 0 ? -HUGE_VAL : cuts_[k - 1];
+                peak.max = k == cuts_.size() ? HUGE_VAL : cuts_[k];
+                // The overview's peak holding it: the overview cuts below its upper end
+                peak.top = (int)(std::lower_bound(overview.begin(), overview.end(), peak.max) - overview.begin());
+                distribution.peaks.push_back(peak);
             }
-            const bool fit = distribution.fit;
-            distribution.curve = critical_point_distribution::estimate(values, distribution.component_of, distribution.component_names.size());
-            distribution.fit = fit;
+            for (size_t k = 0; k < distribution.peaks.size();) {
+                size_t end = k;
+                while (end < distribution.peaks.size() && distribution.peaks[end].top == distribution.peaks[k].top) ++end;
+                for (size_t j = k; j < end; ++j) {
+                    auto& peak = distribution.peaks[j];
+                    peak.sub = (int)(j - k);
+                    peak.subs = (int)(end - k);
+                    peak.color = critical_point_peak_color(peak.top, peak.sub, peak.subs);
+                    peak.label = std::to_string(peak.top + 1) + (peak.subs > 1 ? "." + std::to_string(peak.sub + 1) : "");
+                }
+                k = end;
+            }
+            distribution.component_of.assign(distribution.indices.size(), 0);
+            std::vector<std::vector<uint32_t>> members(distribution.peaks.size());
+            for (size_t j = 0; j < distribution.indices.size(); ++j) {
+                const uint32_t i = distribution.indices[j];
+                const uint32_t k = (uint32_t)(std::upper_bound(cuts_.begin(), cuts_.end(), density(i)) - cuts_.begin());
+                distribution.component_of[j] = k;
+                cp.peak_of[i] = (int)k;
+                members[k].push_back(i);
+            }
+            for (size_t k = 0; k < distribution.peaks.size(); ++k) {
+                auto& peak = distribution.peaks[k];
+                peak.level = labelled ? critical_point_distribution::auto_detail_level(cp.chemical_labels, members[k], max_peak_rows) : 0;
+                for (uint32_t i : members[k]) cp.detail_of[i] = (uint8_t)peak.level;
+            }
         }
+        if (!changed) return;
         build_critical_point_cache(!rebuild);
         cp.distributions_dirty = false;
     }
 
-    // The rows and environments the tables and the viewport read every frame
     // keep_selection: the environments selected stay so through a change of detail, as every new environment holding
     // a CP of one selected before (a refinement selects its parts, a coarsening the whole)
     void build_critical_point_cache(bool keep_selection = false) {
@@ -5666,12 +5689,14 @@ struct QuantumChemistry : viamd::EventHandler {
             const std::string display = critical_point_distribution::display_name(label, level);
             const int finer = std::min(level, (int)label.finer.size());
             const std::string& group = finer > 0 ? label.finer[finer - 1] : label.group;
-            const std::string key = std::to_string(type) + "|" + display;
+            const int peak = i < cp.peak_of.size() ? cp.peak_of[i] : 0;
+            const std::string key = std::to_string(type) + "|" + std::to_string(peak) + "|" + display;
             auto it = std::lower_bound(ids.begin(), ids.end(), key, [](const auto& a, const std::string& k) { return a.first < k; });
             if (it == ids.end() || it->first != key) {
-                const ImVec4 c = critical_point_environment_color(type, display);
+                const auto& peaks = cp.distributions[type].peaks;
+                const ImVec4 c = peak < (int)peaks.size() ? peaks[peak].color : critical_point_peak_color(0, 0, 1);
                 it = ids.insert(it, {key, (uint32_t)cp.environments.size()});
-                cp.environments.push_back({type, critical_point_type_rank(type), label.kind, group, vec4_set(c.x, c.y, c.z, 1.0f)});
+                cp.environments.push_back({type, critical_point_type_rank(type), label.kind, group, peak, vec4_set(c.x, c.y, c.z, 1.0f)});
             }
             cp.environment_of[i] = it->second;
         }
@@ -5792,31 +5817,63 @@ struct QuantumChemistry : viamd::EventHandler {
         const vec4_t c = style.color;
         const ImVec4 color(c.x, c.y, c.z, c.w);
         const int n = curve.sample_count;
-        const bool split = curve.components.size() > 1;
-        auto component_color = [&](size_t k) { return ImPlot::GetColormapColor((int)k); };
+        const auto& peaks = distribution.peaks;
+        const bool split = peaks.size() > 1;
         const bool bar_click = ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
                                ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] <
                                    ImGui::GetIO().MouseDragThreshold * ImGui::GetIO().MouseDragThreshold;
-        // The layers are keyed by the colour swatches of the table's environments, not by a legend
+        // Zoomed, the curve of the CPs in view at the view's resolution, over the overview's as a faint line
+        const bool zoomed = distribution.view_curve.valid;
+        const auto& shown = zoomed ? distribution.view_curve : curve;
+        if (zoomed) {
+            ImPlot::SetNextLineStyle(ImVec4(color.x, color.y, color.z, 0.35f), 1.0f);
+            ImPlot::PlotLine("##Overview", curve.density.data(), curve.probability.data(), n);
+        }
+        // Each peak's region of the curve in its colour, the key between the plot and the table's peak column
         if (split) {
-            double* lower = md_temp_alloc_array(temp, double, n);
-            double* upper = md_temp_alloc_array(temp, double, n);
-            for (int j = 0; j < n; ++j) lower[j] = 0.0;
-            for (size_t k = 0; k < curve.components.size(); ++k) {
-                for (int j = 0; j < n; ++j) upper[j] = lower[j] + curve.components[k][j];
+            double* xs = md_temp_alloc_array(temp, double, n + 2);
+            double* ys = md_temp_alloc_array(temp, double, n + 2);
+            auto at = [&](double x) {
+                const auto it = std::lower_bound(shown.density.begin(), shown.density.end(), x);
+                if (it == shown.density.begin()) return shown.probability.front();
+                if (it == shown.density.end()) return shown.probability.back();
+                const size_t j = it - shown.density.begin();
+                const double x0 = shown.density[j - 1], x1 = shown.density[j];
+                const double t = x1 > x0 ? (x - x0) / (x1 - x0) : 0.0;
+                return shown.probability[j - 1] + t * (shown.probability[j] - shown.probability[j - 1]);
+            };
+            for (size_t k = 0; k < peaks.size(); ++k) {
+                const double lo = MAX(peaks[k].min, shown.density.front()), hi = MIN(peaks[k].max, shown.density.back());
+                if (!(hi > lo)) continue;
+                int m = 0;
+                xs[m] = lo; ys[m++] = at(lo);
+                for (int j = 0; j < n; ++j) {
+                    if (shown.density[j] > lo && shown.density[j] < hi) { xs[m] = shown.density[j]; ys[m++] = shown.probability[j]; }
+                }
+                xs[m] = hi; ys[m++] = at(hi);
                 char id[24];
-                snprintf(id, sizeof(id), "##Layer %zu", k);
-                ImPlot::SetNextFillStyle(component_color(k), 0.55f);
-                ImPlot::PlotShaded(id, curve.density.data(), lower, upper, n);
-                for (int j = 0; j < n; ++j) lower[j] = upper[j];
+                snprintf(id, sizeof(id), "##Peak %zu", k);
+                ImPlot::SetNextFillStyle(peaks[k].color, 0.55f);
+                ImPlot::PlotShaded(id, xs, ys, m);
             }
             ImPlot::SetNextLineStyle(color, 2.0f);
-            ImPlot::PlotLine("##Total", curve.density.data(), curve.probability.data(), n);
+            ImPlot::PlotLine("##Total", shown.density.data(), shown.probability.data(), n);
+            // Each peak's label above its highest point
+            for (size_t k = 0; k < peaks.size(); ++k) {
+                double best_x = 0.0, best_y = -1.0;
+                for (int j = 0; j < n; ++j) {
+                    if (shown.density[j] >= peaks[k].min && shown.density[j] < peaks[k].max && shown.probability[j] > best_y) {
+                        best_x = shown.density[j];
+                        best_y = shown.probability[j];
+                    }
+                }
+                if (best_y > 0.0) ImPlot::PlotText(peaks[k].label.c_str(), best_x, best_y, ImVec2(0.0f, -0.6f * em));
+            }
         } else {
             ImPlot::SetNextFillStyle(color, 0.3f);
-            ImPlot::PlotShaded("##Distribution", curve.density.data(), curve.probability.data(), n);
+            ImPlot::PlotShaded("##Distribution", shown.density.data(), shown.probability.data(), n);
             ImPlot::SetNextLineStyle(color);
-            ImPlot::PlotLine("##Distribution", curve.density.data(), curve.probability.data(), n);
+            ImPlot::PlotLine("##Distribution", shown.density.data(), shown.probability.data(), n);
         }
 
         bool handle_active = false;
@@ -5922,7 +5979,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 passing += filter.accepts(density(indices[j]));
             }
             ImVec4 base = color;
-            if (split && group.component >= 0) base = component_color(group.component);
+            if (split && group.component >= 0 && group.component < (int)peaks.size()) base = peaks[group.component].color;
             const vec4_t accent = highlighted ? state.selection.color.highlight.outline : state.selection.color.selection.outline;
             const ImVec4 bar = highlighted || selected ? ImVec4(accent.x, accent.y, accent.z, 1.0f) : base;
             const float alpha = passing < group.end - group.begin || !cp.type_visible[type] ? 0.25f : 1.0f;
@@ -5969,7 +6026,7 @@ struct QuantumChemistry : viamd::EventHandler {
         return (a > b) - (a < b);
     }
 
-    enum CriticalPointColumn { CPColumn_Type, CPColumn_Kind, CPColumn_Environment, CPColumn_Count, CPColumn_Density,
+    enum CriticalPointColumn { CPColumn_Peak, CPColumn_Share, CPColumn_Type, CPColumn_Kind, CPColumn_Environment, CPColumn_Count, CPColumn_Density,
                                CPColumn_Laplacian, CPColumn_Ellipticity, CPColumn_X, CPColumn_Y, CPColumn_Z };
 
     // The first cell of a row: the type's swatch and a selectable spanning the row
@@ -6025,8 +6082,9 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
-    // The chemical environments of the CPs listed (critical_point_listed), one row each. Click selects an
-    // environment's CPs, Shift-click adds or removes it.
+    // The chemical environments of the CPs listed (critical_point_listed), in blocks by peak of their category's curve:
+    // the peak column is the block's colour strip. Click selects an environment's CPs, a peak cell all of its peak's;
+    // Shift-click adds or removes them.
     void draw_critical_point_environments(const ApplicationState& state) {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
@@ -6060,27 +6118,42 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (!std::isnan(row.ellipticity)) { e.ellipticity += row.ellipticity; ++e.n_eps; }
             }
         }
+        // Listed CPs per peak, for each environment's share of its peak
+        std::map<std::pair<int, int>, size_t> peak_count;
         for (Environment& e : environments) {
             e.laplacian = e.n_lap ? e.laplacian / e.n_lap : NAN;
             e.ellipticity = e.n_eps ? e.ellipticity / e.n_eps : NAN;
+            const CriticalPointEnvironment& env = cp.environments[e.id];
+            peak_count[{env.type, env.peak}] += e.members.size();
         }
+        auto share = [&](const Environment& e) {
+            const CriticalPointEnvironment& env = cp.environments[e.id];
+            return (double)e.members.size() / (double)std::max(peak_count[{env.type, env.peak}], (size_t)1);
+        };
+        auto peak_of = [&](const CriticalPointEnvironment& env) -> const CriticalPoints::Distribution::Peak* {
+            const auto& peaks = cp.distributions[env.type].peaks;
+            return env.peak >= 0 && env.peak < (int)peaks.size() ? &peaks[env.peak] : nullptr;
+        };
 
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Chemical environments");
         ImGui::SameLine();
         ImGui::TextDisabled("%zu, with %zu of %u CPs", environments.size(), listed, graph.num_vertices);
-        ImGui::SetItemTooltip("The CPs of the shown categories that pass their density filter and lie inside their\n"
-                              "plot's density view: zoom a plot to narrow the list.");
+        ImGui::SetItemTooltip("The CPs of the shown categories that pass their density filter, in blocks by peak of\n"
+                              "their plot's curve. Zoom a plot to split its peaks, and their environments in finer detail.");
 
         const bool f64 = graph.vertices_f64 != nullptr;
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                                       ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
-        if (!ImGui::BeginTable("##Chemical environments", 7, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+        if (!ImGui::BeginTable("##Chemical environments", 9, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
+        ImGui::TableSetupColumn("Peak", ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder |
+                                ImGuiTableColumnFlags_WidthFixed, 2.6f * ImGui::GetFontSize(), CPColumn_Peak);
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_NoHide, 0.7f, CPColumn_Type);
         ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
         ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
         ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_PreferSortDescending, 0.45f, CPColumn_Count);
+        ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_PreferSortDescending, 0.55f, CPColumn_Share);
         ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None, 1.2f, CPColumn_Density);
         ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
         ImGui::TableSetupColumn("\xCE\xB5 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
@@ -6092,6 +6165,9 @@ struct QuantumChemistry : viamd::EventHandler {
         std::stable_sort(environments.begin(), environments.end(), [&](const Environment& a, const Environment& b) {
             const CriticalPointEnvironment& ea = cp.environments[a.id];
             const CriticalPointEnvironment& eb = cp.environments[b.id];
+            // The blocks stay whole: by category, then peak; the sort applies within them
+            if (ea.order != eb.order) return ea.order < eb.order;
+            if (ea.peak != eb.peak) return ea.peak < eb.peak;
             for (int s = 0; s < spec_count; ++s) {
                 const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
                 int cmp = 0;
@@ -6100,6 +6176,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 case CPColumn_Kind:        cmp = (int)ea.kind - (int)eb.kind; break;
                 case CPColumn_Environment: cmp = ea.name.compare(eb.name); break;
                 case CPColumn_Count:       cmp = (a.members.size() > b.members.size()) - (a.members.size() < b.members.size()); break;
+                case CPColumn_Share:       cmp = compare_values(share(a), share(b)); break;
                 case CPColumn_Density:     cmp = compare_values(a.min, b.min); break;
                 case CPColumn_Laplacian:   cmp = compare_values(a.laplacian, b.laplacian); break;
                 case CPColumn_Ellipticity: cmp = compare_values(a.ellipticity, b.ellipticity); break;
@@ -6115,25 +6192,63 @@ struct QuantumChemistry : viamd::EventHandler {
         auto& chosen = cp.environment_selection;
         auto is_chosen = [&](uint32_t id) { return std::find(chosen.begin(), chosen.end(), id) != chosen.end(); };
         int clicked = -1, hovered = -1;
+        bool peak_hovered = false, peak_clicked = false;
+        auto same_peak = [&](size_t a, size_t b) {
+            const CriticalPointEnvironment& ea = cp.environments[environments[a].id];
+            const CriticalPointEnvironment& eb = cp.environments[environments[b].id];
+            return ea.type == eb.type && ea.peak == eb.peak;
+        };
         for (size_t k = 0; k < environments.size(); ++k) {
             const Environment& e = environments[k];
             const CriticalPointEnvironment& env = cp.environments[e.id];
+            const auto* peak = peak_of(env);
             const bool selected = is_chosen(e.id);
             bool highlighted = false;
             for (uint32_t i : e.members) highlighted |= md_bitmask_test_bit(&cp.highlight_mask, i);
             ImGui::PushID((int)k);
             ImGui::TableNextRow();
+            // The peak's strip down its block, labelled on its first row
             ImGui::TableNextColumn();
-            if (critical_point_row_selectable(env.type, selected, highlighted, highlight_bg)) clicked = (int)k;
-            if (ImGui::IsItemHovered()) hovered = (int)k;
+            const ImVec4 pc = ImVec4(env.color.x, env.color.y, env.color.z, 0.85f);
+            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(pc));
+            if (peak && (k == 0 || !same_peak(k - 1, k))) {
+                const float lum = 0.299f * pc.x + 0.587f * pc.y + 0.114f * pc.z;
+                ImGui::PushStyleColor(ImGuiCol_Text, lum > 0.55f ? IM_COL32(0, 0, 0, 255) : IM_COL32(255, 255, 255, 255));
+                ImGui::TextUnformatted(peak->label.c_str());
+                ImGui::PopStyleColor();
+            }
+            ImGui::TableNextColumn();
+            if (critical_point_row_selectable(env.type, selected, highlighted, highlight_bg)) {
+                clicked = (int)k;
+                peak_clicked = ImGui::TableGetHoveredColumn() == 0;
+            }
+            if (ImGui::IsItemHovered()) {
+                hovered = (int)k;
+                peak_hovered = ImGui::TableGetHoveredColumn() == 0;
+                if (peak_hovered && peak) {
+                    const size_t n_peak = peak_count[{env.type, env.peak}];
+                    if (std::isfinite(peak->min) && std::isfinite(peak->max)) {
+                        ImGui::SetTooltip("%s peak %s: \xCF\x81 %.4g \xE2\x80\x93 %.4g au, %zu CPs listed.\nClick selects the whole peak.",
+                                          critical_point_style(env.type).label, peak->label.c_str(), peak->min, peak->max, n_peak);
+                    } else if (std::isfinite(peak->max)) {
+                        ImGui::SetTooltip("%s peak %s: \xCF\x81 below %.4g au, %zu CPs listed.\nClick selects the whole peak.",
+                                          critical_point_style(env.type).label, peak->label.c_str(), peak->max, n_peak);
+                    } else if (std::isfinite(peak->min)) {
+                        ImGui::SetTooltip("%s peak %s: \xCF\x81 above %.4g au, %zu CPs listed.\nClick selects the whole peak.",
+                                          critical_point_style(env.type).label, peak->label.c_str(), peak->min, n_peak);
+                    } else {
+                        ImGui::SetTooltip("%s: a single peak, %zu CPs listed.\nClick selects them all.", critical_point_style(env.type).label, n_peak);
+                    }
+                }
+            }
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(critical_point_distribution::kind_name(env.kind));
             ImGui::TableNextColumn();
-            environment_swatch(ImVec4(env.color.x, env.color.y, env.color.z, 1.0f));
-            ImGui::SameLine(0.0f, 0.0f);
             ImGui::TextUnformatted(env.name.c_str());
             ImGui::TableNextColumn();
             ImGui::Text("%zu", e.members.size());
+            ImGui::TableNextColumn();
+            ImGui::Text("%.0f%%", 100.0 * share(e));
             ImGui::TableNextColumn();
             if (e.min == e.max) ImGui::Text("%.6g", e.min);
             else ImGui::Text("%.4g \xE2\x80\x93 %.4g", e.min, e.max);
@@ -6147,28 +6262,51 @@ struct QuantumChemistry : viamd::EventHandler {
         if (cp.export_environments != CPExport_None) {
             const auto request = (CriticalPointTableExport)cp.export_environments;
             cp.export_environments = CPExport_None;
-            CriticalPointTable table = {{"type", "kind", "chemical environment", "count", "rho min (au)", "rho max (au)",
+            CriticalPointTable table = {{"type", "peak", "peak rho min (au)", "peak rho max (au)", "kind", "chemical environment",
+                                         "count", "share of peak", "rho min (au)", "rho max (au)",
                                          "laplacian mean (au)", "ellipticity mean", "critical points"}};
             for (const Environment& e : environments) {
                 const CriticalPointEnvironment& env = cp.environments[e.id];
+                const auto* peak = peak_of(env);
                 std::string members;
                 for (uint32_t i : e.members) members += (members.empty() ? "" : " ") + std::to_string(i);
-                table.push_back({critical_point_style(env.type).label, critical_point_distribution::kind_name(env.kind), env.name,
-                                 std::to_string(e.members.size()), critical_point_number(e.min), critical_point_number(e.max),
+                auto bound = [](double v) { return std::isfinite(v) ? critical_point_number(v) : std::string(); };
+                table.push_back({critical_point_style(env.type).label, peak ? peak->label : std::string(),
+                                 peak ? bound(peak->min) : std::string(), peak ? bound(peak->max) : std::string(),
+                                 critical_point_distribution::kind_name(env.kind), env.name,
+                                 std::to_string(e.members.size()), critical_point_number(share(e)), critical_point_number(e.min), critical_point_number(e.max),
                                  critical_point_number(e.laplacian), critical_point_number(e.ellipticity), members});
             }
             critical_point_table_export(request, table, "chemical environments");
         }
-        if (hovered >= 0) highlight_critical_points(environments[hovered].members);
-        // Click: this environment; Shift-click: add or remove it. Its CPs become the selection and the list's.
+        // The rows a hover or click on row k means: its environment, or on the peak strip its whole block
+        auto targets = [&](size_t k, bool whole_peak) {
+            std::vector<size_t> rows;
+            for (size_t j = 0; j < environments.size(); ++j) {
+                if (j == k || (whole_peak && same_peak(j, k))) rows.push_back(j);
+            }
+            return rows;
+        };
+        if (hovered >= 0) {
+            std::vector<uint32_t> members;
+            for (size_t j : targets(hovered, peak_hovered)) {
+                members.insert(members.end(), environments[j].members.begin(), environments[j].members.end());
+            }
+            highlight_critical_points(members);
+        }
+        // Click: this environment (or peak); Shift-click: add or remove it. Its CPs become the selection and the list's.
         if (clicked >= 0) {
-            const uint32_t id = environments[clicked].id;
+            std::vector<uint32_t> ids;
+            for (size_t j : targets(clicked, peak_clicked)) ids.push_back(environments[j].id);
             if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                auto it = std::find(chosen.begin(), chosen.end(), id);
-                if (it == chosen.end()) chosen.push_back(id);
-                else chosen.erase(it);
+                const bool all = std::all_of(ids.begin(), ids.end(), is_chosen);
+                for (uint32_t id : ids) {
+                    auto it = std::find(chosen.begin(), chosen.end(), id);
+                    if (all && it != chosen.end()) chosen.erase(it);
+                    else if (!all && it == chosen.end()) chosen.push_back(id);
+                }
             } else {
-                chosen = {id};
+                chosen = ids;
             }
             cp.list_scope.clear();
             md_bitmask_clear(&cp.selection_mask);

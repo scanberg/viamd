@@ -891,4 +891,89 @@ Curve estimate(std::span<const double> density, std::span<const uint32_t> compon
     return curve;
 }
 
+
+std::vector<Valley> valleys(const Curve& curve, double min_persistence) {
+    std::vector<Valley> result;
+    if (!curve.valid) return result;
+    const auto& p = curve.probability;
+    const int n = (int)p.size();
+    double top = 0.0;
+    for (double v : p) top = std::max(top, v);
+    if (!(top > 0.0)) return result;
+    // Superlevel sets from the top down: a sample joining two peaks is a valley, and the lower peak dies there
+    std::vector<int> order(n);
+    for (int k = 0; k < n; ++k) order[k] = k;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return p[a] > p[b]; });
+    std::vector<int> parent(n, -1);
+    std::vector<double> peak(n, 0.0);
+    std::function<int(int)> root = [&](int k) { return parent[k] == k ? k : parent[k] = root(parent[k]); };
+    for (int k : order) {
+        parent[k] = k;
+        peak[k] = p[k];
+        int joined = -1;
+        for (int nb : {k - 1, k + 1}) {
+            if (nb < 0 || nb >= n || parent[nb] < 0) continue;
+            const int r = root(nb);
+            if (joined < 0) {
+                parent[k] = r;
+                joined = r;
+                continue;
+            }
+            const int a = root(k);
+            if (a == r) continue;
+            const int younger = peak[a] < peak[r] ? a : r, elder = younger == a ? r : a;
+            const double persistence = (peak[younger] - p[k]) / top;
+            if (persistence >= min_persistence) result.push_back({curve.density[k], persistence});
+            parent[younger] = elder;
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const Valley& a, const Valley& b) { return a.density < b.density; });
+    return result;
+}
+
+std::vector<double> peak_cuts(std::span<const Valley> valleys, double view_min, double view_max, size_t max_peaks) {
+    std::vector<double> cuts;
+    if (max_peaks < 2) return cuts;
+    auto deepest = [&](auto&& accept) {
+        std::vector<Valley> chosen;
+        for (const Valley& v : valleys) if (accept(v)) chosen.push_back(v);
+        std::stable_sort(chosen.begin(), chosen.end(), [](const Valley& a, const Valley& b) { return a.persistence > b.persistence; });
+        if (chosen.size() > max_peaks - 1) chosen.resize(max_peaks - 1);
+        return chosen;
+    };
+    // Outside the view only the overview's cuts
+    for (const Valley& v : deepest([](const Valley&) { return true; })) {
+        if (v.density < view_min || v.density > view_max) cuts.push_back(v.density);
+    }
+    for (const Valley& v : deepest([&](const Valley& v) { return v.density >= view_min && v.density <= view_max; })) cuts.push_back(v.density);
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    return cuts;
+}
+
+std::vector<double> refine_cuts(std::span<const double> overview, std::span<const Valley> view_valleys,
+                                std::span<const double> sorted_values, double view_min, double view_max, size_t max_peaks) {
+    std::vector<double> cuts(overview.begin(), overview.end());
+    std::sort(cuts.begin(), cuts.end());
+    auto in_view = [&](double d) { return d >= view_min && d <= view_max; };
+    size_t peaks_in_view = 1;
+    for (double c : cuts) peaks_in_view += in_view(c);
+    std::vector<Valley> candidates;
+    for (const Valley& v : view_valleys) if (in_view(v.density)) candidates.push_back(v);
+    std::stable_sort(candidates.begin(), candidates.end(), [](const Valley& a, const Valley& b) { return a.persistence > b.persistence; });
+    auto rank = [&](double d) { return std::upper_bound(sorted_values.begin(), sorted_values.end(), d) - sorted_values.begin(); };
+    for (const Valley& v : candidates) {
+        if (peaks_in_view >= max_peaks) break;
+        // Both sides must keep CPs: the values between the neighbouring cuts and this one
+        const auto it = std::lower_bound(cuts.begin(), cuts.end(), v.density);
+        const auto r = rank(v.density);
+        const auto below = it == cuts.begin() ? 0 : rank(*(it - 1));
+        const auto above = it == cuts.end() ? (std::ptrdiff_t)sorted_values.size() : rank(*it);
+        if (r == below || r == above) continue;
+        cuts.insert(it, v.density);
+        ++peaks_in_view;
+    }
+    return cuts;
+}
+
 }

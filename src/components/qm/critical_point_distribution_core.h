@@ -89,4 +89,24 @@ struct Curve {
 // component[i] in [0, component_count) assigns density[i] to a component of the returned curve.
 Curve estimate(std::span<const double> density, std::span<const uint32_t> component = {}, size_t component_count = 0);
 
+// A local minimum of a curve's total probability, where it splits into peaks. Its persistence is how far the
+// smaller of the two peaks it separates rises above it, as a fraction of the curve's maximum: a deep valley parts
+// two major peaks, a shallow one two parts of one. Valleys below the threshold are noise and not reported.
+struct Valley {
+    double density = 0.0;
+    double persistence = 0.0;
+};
+std::vector<Valley> valleys(const Curve& curve, double min_persistence = 0.02);
+
+// The densities at which a curve is cut into peaks, ascending. The overview is the max_peaks - 1 most persistent
+// valleys; within the view [view_min, view_max] the max_peaks - 1 most persistent valleys there. As the view
+// narrows, its cuts are the overview's and then ever shallower ones: each peak a part of one seen before.
+std::vector<double> peak_cuts(std::span<const Valley> valleys, double view_min, double view_max, size_t max_peaks);
+
+// A zoomed view's cuts: every overview cut, and within [view_min, view_max] the most persistent valleys of the curve
+// estimated on the view's CPs alone (view_valleys), until the view holds max_peaks peaks. sorted_values are all the
+// densities; a valley that parts no CPs from the cuts already made is the same gap and skipped.
+std::vector<double> refine_cuts(std::span<const double> overview, std::span<const Valley> view_valleys,
+                                std::span<const double> sorted_values, double view_min, double view_max, size_t max_peaks);
+
 }

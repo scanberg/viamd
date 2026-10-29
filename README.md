@@ -72,15 +72,27 @@ left-drag pan, and double-click to fit the density axis. The vertical axis
 auto-fits; density-axis zoom persists until refitted or new search results arrive.
 Dragging to pan does not select a bar or clear the selection.
 
-Zooming refines rather than filters. The CPs inside a plot's density view are
-named at the finest level of detail that keeps them in at most six
-environments: the group ("C aromatic"), then with what the atoms are bonded to
-("C aromatic [C2H]", "H (on N [C2H])"; a contact ring's size and composition),
-then with their residues where the system has them ("in PHE", "between GLY and
-SER"). The CPs outside the view keep their coarse names. The plot's layers, both
-tables and the viewport's environment colors and tags follow; environments
-selected in the table stay selected through the change, as their parts or as the
-whole they merge into. The details pane always shows the finest name.
+Each plot's curve is split into peaks at its valleys, the deepest first
+(persistence), into at most six. The environments table lists its rows in
+blocks, one per peak: a strip in the peak's colour and its number (1, 2, ...)
+runs down the block, and the rows are the chemical environments within that
+peak, with their count and share of it. Sorting applies within blocks. Clicking
+the strip selects the whole peak; clicking a row selects that environment.
+
+Zooming refines rather than filters. A zoomed plot draws the curve of the CPs
+in view at the view's resolution (the overview's curve stays as a faint line),
+and its peaks split at that curve's valleys, again into at most six in view.
+The overview's peaks are never merged, so each part lies within one of them and
+is numbered after it (2.1, 2.2) in shades of its colour. Peaks outside the
+view keep their overview split. Each peak's CPs are named at the finest level
+of detail that keeps it in at most four environments: the group ("C
+aromatic"), then with what the atoms are bonded to ("C aromatic [C2H]", "H (on
+N [C2H])"; a contact ring's size and composition), then with their residues
+where the system has them ("in PHE", "between GLY and SER"). The plot's shading,
+both tables and the viewport's environment colors and tags follow; environments
+selected in the table stay selected through the change, as their parts or as
+the whole they merge into. The details pane always shows the finest name. The
+CSV export includes each row's peak, its density interval and the share.
 
 Each category has an independent, optional density filter made of one or more
 inclusive ranges; a point passes if it lies in any of them (their union). The

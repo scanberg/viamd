@@ -6,6 +6,7 @@
 #include <core/md_unit.h>
 #include <core/md_allocator.h>
 
+#include <array>
 #include <cmath>
 #include <span>
 #include <string>
@@ -492,4 +493,73 @@ UTEST(critical_point_chemistry, finer_detail_levels) {
     { const std::string name8 = critical_point_distribution::display_name(labels[cc], 2); EXPECT_STREQ(name8.c_str(), "Bond: C [CH3] \xE2\x80\x93 C [CH] between ALA and GLY"); }
     // An atom in no residue gets no residue level
     { const std::string name9 = critical_point_distribution::display_name(labels[h1], 2); EXPECT_STREQ(name9.c_str(), "Atom: H (on C [CH3])"); }
+}
+
+namespace {
+// A curve sampled from a sum of Gaussians: (centre, height, width) each
+critical_point_distribution::Curve gaussian_curve(std::initializer_list<std::array<double, 3>> peaks) {
+    critical_point_distribution::Curve curve;
+    curve.valid = true;
+    const int n = critical_point_distribution::Curve::sample_count;
+    for (int j = 0; j < n; ++j) {
+        const double x = 10.0 * j / (n - 1);
+        double y = 0.0;
+        for (const auto& p : peaks) y += p[1] * std::exp(-0.5 * (x - p[0]) * (x - p[0]) / (p[2] * p[2]));
+        curve.density[j] = x;
+        curve.probability[j] = y;
+    }
+    return curve;
+}
+}
+
+UTEST(critical_point_peaks, two_peaks_one_valley) {
+    const auto curve = gaussian_curve({{2.0, 1.0, 0.4}, {7.0, 0.5, 0.4}});
+    const auto valleys = critical_point_distribution::valleys(curve);
+    ASSERT_EQ(valleys.size(), (size_t)1);
+    EXPECT_GT(valleys[0].density, 2.5);
+    EXPECT_LT(valleys[0].density, 6.5);
+    EXPECT_NEAR(valleys[0].persistence, 0.5, 0.01);
+}
+
+UTEST(critical_point_peaks, shallow_ripples_are_ignored) {
+    auto curve = gaussian_curve({{5.0, 1.0, 1.0}});
+    for (int j = 0; j < critical_point_distribution::Curve::sample_count; ++j) curve.probability[j] += 0.002 * ((j % 7) - 3);
+    EXPECT_EQ(critical_point_distribution::valleys(curve).size(), (size_t)0);
+}
+
+UTEST(critical_point_peaks, zoom_splits_within_the_overview) {
+    // Three major peaks; the middle one has two shallow parts
+    const auto curve = gaussian_curve({{1.5, 1.0, 0.3}, {4.6, 0.8, 0.3}, {5.4, 0.8, 0.3}, {8.5, 1.0, 0.3}});
+    const auto valleys = critical_point_distribution::valleys(curve);
+    ASSERT_EQ(valleys.size(), (size_t)3);
+    // Overview with at most 3 peaks: the two deep valleys
+    const auto overview = critical_point_distribution::peak_cuts(valleys, 1.0, 0.0, 3);
+    ASSERT_EQ(overview.size(), (size_t)2);
+    EXPECT_LT(overview[0], 4.0);
+    EXPECT_GT(overview[1], 6.0);
+    // Zoomed onto the middle peak: its shallow valley too, and the overview's cuts outside the view kept
+    const auto zoomed = critical_point_distribution::peak_cuts(valleys, 4.0, 6.0, 3);
+    ASSERT_EQ(zoomed.size(), (size_t)3);
+    EXPECT_EQ(zoomed[0], overview[0]);
+    EXPECT_NEAR(zoomed[1], 5.0, 0.1);
+    EXPECT_EQ(zoomed[2], overview[1]);
+    EXPECT_EQ(critical_point_distribution::peak_cuts(valleys, 1.0, 0.0, 1).size(), (size_t)0);
+}
+
+UTEST(critical_point_peaks, refined_cuts_nest_and_part_cps) {
+    const std::vector<double> overview = {3.0};
+    const std::vector<double> values = {1.0, 1.1, 4.0, 4.1, 5.0, 5.1, 6.0, 8.0};
+    // View [3.5, 7], at most 3 peaks in it: the two most persistent valleys there; 2.0 lies outside the view
+    const std::vector<critical_point_distribution::Valley> view = {{5.5, 0.5}, {4.5, 0.4}, {2.0, 0.9}, {4.55, 0.3}};
+    const auto cuts = critical_point_distribution::refine_cuts(overview, view, values, 3.5, 7.0, 3);
+    // The overview cut, outside the view, is kept
+    ASSERT_EQ(cuts.size(), (size_t)3);
+    EXPECT_EQ(cuts[0], 3.0);
+    EXPECT_EQ(cuts[1], 4.5);
+    EXPECT_EQ(cuts[2], 5.5);
+    // A valley in the same gap as one already cut is skipped
+    const auto same = critical_point_distribution::refine_cuts(overview, std::vector<critical_point_distribution::Valley>{{4.5, 0.5}, {4.6, 0.4}, {5.5, 0.3}}, values, 3.5, 7.0, 4);
+    ASSERT_EQ(same.size(), (size_t)3);
+    EXPECT_EQ(same[1], 4.5);
+    EXPECT_EQ(same[2], 5.5);
 }
