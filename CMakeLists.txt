@@ -175,6 +175,7 @@ set(SRC_FILES
     src/cartoon_glyphs.cpp
     src/color_scale.cpp
     src/color_utils.cpp
+    src/density_map.cpp
     src/display_units.cpp
     src/surface_field.cpp
     src/event.cpp
