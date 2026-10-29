@@ -37,10 +37,20 @@ struct ChemicalLabel {
     std::string detail;
     std::string interaction;   // a contact's class ("Hydrogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", ...); empty otherwise
     int atom[2] = {-1, -1};
+    // The group at increasing detail, each a refinement of the one before: the bonded neighbours of the atoms
+    // ("C aromatic [C2H]"), a contact ring's size and composition, then the residues ("in PHE"). May be empty.
+    std::vector<std::string> finer;
 };
+
+// Levels of detail of a group: 0 is ChemicalLabel::group, then its finer names
+inline constexpr int detail_levels = 3;
 
 // "Bond: C – O"; unassigned groups already name their topology ("Unassigned BCP")
 std::string display_name(const ChemicalLabel& label);
+// The same at a level of detail, the finest the label has up to it
+std::string display_name(const ChemicalLabel& label, int level);
+// The finest level of detail at which the members' labels fall into at most max_groups groups; 0 if none does
+int auto_detail_level(std::span<const ChemicalLabel> labels, std::span<const uint32_t> members, size_t max_groups);
 
 // ring_surfaces, by vertex, is optional: for a ring CP, the maxima its ring surface reaches
 // (md_topo_gto_ring_surface_maxima), empty when not traced. They decide between equally small cycles.

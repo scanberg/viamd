@@ -97,6 +97,94 @@ std::string display_name(const ChemicalLabel& label) {
     return std::string(kind_name(label.kind)) + ": " + label.group;
 }
 
+std::string display_name(const ChemicalLabel& label, int level) {
+    const int finer = std::min(level, (int)label.finer.size());
+    if (finer <= 0) return display_name(label);
+    const std::string& group = label.finer[finer - 1];
+    if (label.kind == Kind::Unassigned) return group;
+    return std::string(kind_name(label.kind)) + ": " + group;
+}
+
+int auto_detail_level(std::span<const ChemicalLabel> labels, std::span<const uint32_t> members, size_t max_groups) {
+    std::vector<std::string> names;
+    for (int level = detail_levels - 1; level > 0; --level) {
+        names.clear();
+        for (uint32_t i : members) {
+            if (i < labels.size()) names.push_back(display_name(labels[i], level));
+        }
+        std::sort(names.begin(), names.end());
+        if ((size_t)(std::unique(names.begin(), names.end()) - names.begin()) <= max_groups) return level;
+    }
+    return 0;
+}
+
+// The finest name a label has so far
+static const std::string& finest(const ChemicalLabel& label) { return label.finer.empty() ? label.group : label.finer.back(); }
+
+// Adds a finer name, unless it says nothing more than the last
+static void add_detail(ChemicalLabel& label, const std::string& name) {
+    if (!name.empty() && name != finest(label)) label.finer.push_back(name);
+}
+
+// The atoms bonded to atom i, as a formula ("C2H"); empty without connectivity
+static std::string neighbours(const md_system_t& sys, size_t i) {
+    if (!sys.bond.conn.offset || i + 1 >= sys.bond.conn.offset_count) return {};
+    std::vector<int32_t> atoms;
+    for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) atoms.push_back((int32_t)md_bond_iter_atom_index(&it));
+    return atoms.empty() ? std::string() : formula(sys, atoms.data(), atoms.size());
+}
+
+// The atom's environment with what it is bonded to: "C aromatic [C2H]"; a hydrogen by its parent: "H (on N [C2H])"
+static std::string atom_detail(const md_system_t& sys, size_t i) {
+    if (md_atom_atomic_number(&sys.atom, i) == 1) {
+        const int parent = bonded_partner(sys, i);
+        if (parent < 0) return environment(sys, i);
+        std::string p = environment(sys, parent);
+        const std::string implied = " (H-bearing)";
+        if (p.size() > implied.size() && p.compare(p.size() - implied.size(), implied.size(), implied) == 0) p.resize(p.size() - implied.size());
+        const std::string n = neighbours(sys, parent);
+        return "H (on " + p + (n.empty() ? "" : " [" + n + "]") + ")";
+    }
+    const std::string n = neighbours(sys, i);
+    return environment(sys, i) + (n.empty() ? "" : " [" + n + "]");
+}
+
+// The residues of the atoms by name: "in PHE", "between GLY and SER", "across DG\xC3\x974"; empty without residue names
+static std::string residue_context(const md_system_t& sys, std::span<const int> atoms) {
+    std::vector<md_residue_idx_t> residues;
+    for (int a : atoms) {
+        if (a < 0) return {};
+        const md_residue_idx_t r = md_system_residue_find_by_atom_idx(&sys, (size_t)a);
+        if (r < 0 || md_system_residue_name(&sys, r).len == 0) return {};
+        residues.push_back(r);
+    }
+    std::sort(residues.begin(), residues.end());
+    residues.erase(std::unique(residues.begin(), residues.end()), residues.end());
+    if (residues.empty()) return {};
+    std::vector<std::string> names;
+    for (md_residue_idx_t r : residues) {
+        const str_t name = md_system_residue_name(&sys, r);
+        names.push_back(std::string(name.ptr, name.len));
+    }
+    std::sort(names.begin(), names.end());
+    if (names.size() == 1) return "in " + names[0];
+    if (names.size() == 2) return "between " + names[0] + " and " + names[1];
+    std::string result = "across ";
+    for (size_t k = 0; k < names.size();) {
+        size_t n = 1;
+        while (k + n < names.size() && names[k + n] == names[k]) ++n;
+        result += (k ? ", " : "") + names[k] + (n > 1 ? "\xC3\x97" + std::to_string(n) : "");
+        k += n;
+    }
+    return result;
+}
+
+// Appends a residue context as the finest level
+static void add_residue_detail(ChemicalLabel& label, const md_system_t& sys, std::span<const int> atoms) {
+    const std::string context = residue_context(sys, atoms);
+    if (!context.empty()) add_detail(label, finest(label) + " " + context);
+}
+
 static double distance_squared(const Position& a, const Position& b) {
     double sum = 0.0;
     for (int k = 0; k < 3; ++k) sum += (a[k] - b[k]) * (a[k] - b[k]);
@@ -333,6 +421,7 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
             std::string list;
             for (size_t k = 0; k < md_ring_size(&system.ring, match); ++k) list += (k ? ", " : "") + std::to_string(atoms[k] + 1);
             label.detail = "Ring of atoms " + list + "; its centroid is the only one within 0.50 Angstrom.";
+            add_residue_detail(label, system, ring_atoms[i]);
             continue;
         }
         if (type != MD_TOPO_MAXIMUM) continue;
@@ -384,6 +473,9 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         label.atom[0] = match;
         label.group = environment(system, match);
         label.detail = "Atom " + std::to_string(match + 1) + " (" + label.group + "); unique nucleus within 0.30 Angstrom.";
+        add_detail(label, atom_detail(system, match));
+        const int self[1] = {match};
+        add_residue_detail(label, system, self);
     }
     std::vector<std::vector<uint32_t>> endpoints(graph.num_vertices);
     for (uint32_t e = 0; e < graph.num_edges; ++e) {
@@ -424,6 +516,16 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
             if (ma >= 0 && mb >= 0) cls += ma == mb ? " (intramolecular)" : " (intermolecular)";
             label.group = cls + ": " + label.group;
             label.detail += " " + why;
+        }
+        {
+            const char* sep = label.kind == Kind::Bond ? " \xE2\x80\x93 " : label.kind == Kind::Contact ? " \xC2\xB7\xC2\xB7\xC2\xB7 " : " ~ ";
+            const std::string coarse = ea + sep + eb;
+            const std::string prefix = label.group.substr(0, label.group.size() - coarse.size());
+            std::string da = atom_detail(system, a), db = atom_detail(system, b);
+            if (ea == eb && da > db) std::swap(da, db);
+            add_detail(label, prefix + da + sep + db);
+            const int ends_atoms[2] = {a, b};
+            add_residue_detail(label, system, ends_atoms);
         }
         if (graph.vertices_f64) {
             const double* ev = graph.vertices_f64[i].hessian_eigenvalues;
@@ -648,8 +750,11 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         if (contacts) label.detail += "; " + size + ", " + std::to_string(contacts) + (contacts == 1 ? " contact: " : " contacts: ") + closed_by + ".";
         else label.detail += ".";
         label.detail += surface_note[i];
+        if (contacts) add_detail(label, label.group + ", " + size + " " + atoms_formula);
+        add_residue_detail(label, system, best);
         if (coalescing != UINT32_MAX) {
             label.group += " (near-degenerate)";
+            for (auto& name : label.finer) name += " (near-degenerate)";
             snprintf(buf, sizeof(buf), " Its density is within 2%% of BCP %u on the ring: the pair is close to annihilating.", coalescing);
             label.detail += buf;
         }
@@ -691,6 +796,8 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         labels[i].kind = Kind::Cage;
         labels[i].group = std::string(contact_face ? "Contact cage" : "Bonded cage") + ", " + std::to_string(f.size()) + " faces";
         labels[i].detail = "Atoms " + formula(system, atoms.data(), atoms.size()) + "; faces: " + list + ".";
+        add_detail(labels[i], labels[i].group + " " + formula(system, atoms.data(), atoms.size()));
+        add_residue_detail(labels[i], system, atoms);
     }
     return labels;
 }

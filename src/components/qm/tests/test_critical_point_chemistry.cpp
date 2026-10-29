@@ -450,3 +450,46 @@ UTEST(critical_point_chemistry, ellipticity_of_negative_eigenvalues) {
     const double ev[3] = {-2.0, -1.0, 3.0};
     EXPECT_NEAR(critical_point_distribution::ellipticity(ev), 1.0, 1e-12);
 }
+
+UTEST(critical_point_chemistry, finer_detail_levels) {
+    // Methyl carbon a bonded to aromatic-free carbon b with three H; b bonded to a and one H
+    Scene s;
+    const int a = s.atom(6, {0.0, 0.0, 0.0});
+    const int b = s.atom(6, {1.5, 0.0, 0.0});
+    const int h1 = s.atom(1, {-0.6, 0.9, 0.0});
+    const int h2 = s.atom(1, {-0.6, -0.9, 0.0});
+    const int h3 = s.atom(1, {-0.6, 0.0, 0.9});
+    const int h4 = s.atom(1, {2.1, 0.9, 0.0});
+    s.bond(a, b);
+    s.bond(a, h1); s.bond(a, h2); s.bond(a, h3);
+    const uint32_t ch = s.bond(b, h4);
+    auto labels = s.labels();
+    { const std::string name1 = critical_point_distribution::display_name(labels[a], 1); EXPECT_STREQ(name1.c_str(), "Atom: C [CH3]"); }
+    { const std::string name2 = critical_point_distribution::display_name(labels[b], 1); EXPECT_STREQ(name2.c_str(), "Atom: C [CH]"); }
+    { const std::string name3 = critical_point_distribution::display_name(labels[b], 0); EXPECT_STREQ(name3.c_str(), "Atom: C"); }
+    { const std::string name4 = critical_point_distribution::display_name(labels[h1], 1); EXPECT_STREQ(name4.c_str(), "Atom: H (on C [CH3])"); }
+    { const std::string name5 = critical_point_distribution::display_name(labels[ch], 1); EXPECT_STREQ(name5.c_str(), "Bond: C [CH] \xE2\x80\x93 H (on C [CH])"); }
+    // No residues: no finer level than the neighbours
+    { const std::string name6 = critical_point_distribution::display_name(labels[a], 2); EXPECT_STREQ(name6.c_str(), "Atom: C [CH3]"); }
+
+    // The finest level keeping the carbons in at most the groups asked for
+    const uint32_t carbons[2] = {(uint32_t)a, (uint32_t)b};
+    EXPECT_EQ(critical_point_distribution::auto_detail_level(labels, carbons, 1), 0);
+    EXPECT_EQ(critical_point_distribution::auto_detail_level(labels, carbons, 2), 2);
+
+    // Residues: a and its hydrogens in ALA, b and h4 in GLY
+    md_label_t names[2] = {};
+    snprintf(names[0].buf, sizeof(names[0].buf), "ALA");
+    snprintf(names[1].buf, sizeof(names[1].buf), "GLY");
+    // Atoms are 0 a, 1 b, 2-4 h1-h3, 5 h4: residue ranges need contiguous atoms, so only a, b are placed: ALA [0,1), GLY [1,2)
+    uint32_t offsets[3] = {0, 1, 2};
+    s.sys.residue.count = 2;
+    s.sys.residue.name = names;
+    s.sys.residue.atom_offset = offsets;
+    labels = s.labels();
+    { const std::string name7 = critical_point_distribution::display_name(labels[a], 2); EXPECT_STREQ(name7.c_str(), "Atom: C [CH3] in ALA"); }
+    const uint32_t cc = 6 + 0;   // the first bond's BCP follows the six attractors
+    { const std::string name8 = critical_point_distribution::display_name(labels[cc], 2); EXPECT_STREQ(name8.c_str(), "Bond: C [CH3] \xE2\x80\x93 C [CH] between ALA and GLY"); }
+    // An atom in no residue gets no residue level
+    { const std::string name9 = critical_point_distribution::display_name(labels[h1], 2); EXPECT_STREQ(name9.c_str(), "Atom: H (on C [CH3])"); }
+}

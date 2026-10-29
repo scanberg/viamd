@@ -44,6 +44,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <tuple>
 #include <vector>
 #include <app/IconsFontAwesome6.h>
 
@@ -1026,10 +1028,15 @@ struct QuantumChemistry : viamd::EventHandler {
             std::vector<std::string> component_names;   // chemical environments, largest first; the curve's components
             std::vector<uint32_t> component_of;         // per index, its component
             double view_min = 0.0, view_max = 0.0;      // the plot's density axis, as last drawn
+            // What of indices (sorted by density) the plot shows, [window_begin, window_end), and the level of detail
+            // its CPs are named at: the finest that keeps them in at most max_components environments
+            size_t window_begin = 0, window_end = 0;
+            int level = 0;
             bool fit = true;
         };
         Distribution distributions[MD_TOPO_NUM_TYPES];
         bool distributions_dirty = true;
+        std::vector<uint8_t> detail_of;         // per CP, the level of detail it is named at: its plot's if in its window, else 0
         // What the viewport shows of the selection: everything, only the selection, or its 3 Å vicinity
         enum Show : int { Show_All = 0, Show_Selected = 1, Show_Vicinity = 2 };
         int show = Show_Selected;
@@ -5517,89 +5524,130 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::Dummy(ImVec2(0.85f * h, h));
     }
 
-    // Whether CP i is listed in the table and counted in the inspector's context: its category is shown, its
-    // density passes the category's filter and lies in the plot's density window
+    // Whether CP i is listed in the table and counted in the inspector's context: its category is shown and its
+    // density passes the category's filter. The plot's density window does not filter: it sets the detail.
     bool critical_point_listed(uint32_t i) const {
         const CriticalPoints& cp = critical_points;
         const int type = md_topo_vertex_type(&cp.simp_graph, i);
         if (!cp.type_visible[type]) return false;
-        const double rho = critical_point_density(i);
-        if (!cp.density_filter[type].accepts(rho)) return false;
-        const auto& distribution = cp.distributions[type];
-        const bool windowed = distribution.curve.valid && distribution.view_max > distribution.view_min;
-        return !windowed || (rho >= distribution.view_min && rho <= distribution.view_max);
+        return cp.density_filter[type].accepts(critical_point_density(i));
     }
 
+    // The environment CP i is in: its label at the level of detail its plot's window gives it
+    std::string critical_point_environment_name(uint32_t i) const {
+        const CriticalPoints& cp = critical_points;
+        if (cp.chemical_labels.size() != cp.simp_graph.num_vertices) return "Unassigned";
+        const int level = i < cp.detail_of.size() ? cp.detail_of[i] : 0;
+        return critical_point_distribution::display_name(cp.chemical_labels[i], level);
+    }
+
+    // The curves are split into at most this many chemical environments; the smallest are pooled
+    static constexpr size_t max_components = 6;
+
+    // Each frame: rebuilt when the graph or its labels change, refined when a plot's window takes in other CPs. The CPs a
+    // plot shows are named at the finest level of detail that keeps them in at most max_components environments, the
+    // others at the coarsest, and the curve's layers, the tables and the viewport follow.
     void update_critical_point_distributions() {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
         auto density = [this](uint32_t i) { return critical_point_density(i); };
         const bool labelled = cp.chemical_labels.size() == graph.num_vertices;
-        auto environment = [&](uint32_t i) -> std::string {
-            return labelled ? critical_point_distribution::display_name(cp.chemical_labels[i]) : std::string("Unassigned");
-        };
-        // The curves are split into at most this many chemical environments; the smallest are pooled
-        constexpr size_t max_components = 6;
-        if (cp.distributions_dirty) {
+        const bool rebuild = cp.distributions_dirty;
+        if (rebuild) {
             for (auto& distribution : cp.distributions) {
                 distribution.indices.clear();
                 distribution.curve = {};
                 distribution.component_names.clear();
                 distribution.component_of.clear();
                 distribution.fit = true;
+                distribution.window_begin = distribution.window_end = 0;
+                distribution.level = 0;
             }
             for (uint32_t i = 0; i < graph.num_vertices; ++i) {
                 cp.distributions[md_topo_vertex_type(&graph, i)].indices.push_back(i);
             }
-            std::vector<double> values;
-            for (int type : critical_point_type_order) {
-                auto& distribution = cp.distributions[type];
-                std::vector<std::pair<std::string, size_t>> counts;
-                for (uint32_t i : distribution.indices) {
-                    const std::string name = environment(i);
-                    auto it = std::find_if(counts.begin(), counts.end(), [&](const auto& c) { return c.first == name; });
-                    if (it == counts.end()) counts.push_back({name, 1});
-                    else it->second++;
-                }
-                std::sort(counts.begin(), counts.end(), [](const auto& a, const auto& b) {
-                    return a.second != b.second ? a.second > b.second : a.first < b.first;
-                });
-                const bool pooled = counts.size() > max_components;
-                const size_t named = pooled ? max_components - 1 : counts.size();
-                for (size_t k = 0; k < named; ++k) distribution.component_names.push_back(counts[k].first);
-                if (pooled) distribution.component_names.push_back("Other environments");
-                auto component = [&](uint32_t i) {
-                    const std::string name = environment(i);
-                    for (size_t k = 0; k < named; ++k) {
-                        if (distribution.component_names[k] == name) return (uint32_t)k;
-                    }
-                    return (uint32_t)(distribution.component_names.size() - 1);
-                };
-
-                values.clear();
-                distribution.component_of.clear();
-                for (uint32_t i : distribution.indices) {
-                    values.push_back(density(i));
-                    distribution.component_of.push_back(component(i));
-                }
-                distribution.curve = critical_point_distribution::estimate(values, distribution.component_of,
-                                                                           distribution.component_names.size());
-                if (distribution.curve.valid) {
-                    std::sort(distribution.indices.begin(), distribution.indices.end(), [&](uint32_t a, uint32_t b) {
-                        return density(a) < density(b);
-                    });
-                    for (size_t j = 0; j < distribution.indices.size(); ++j) distribution.component_of[j] = component(distribution.indices[j]);
-                }
+            for (auto& distribution : cp.distributions) {
+                std::sort(distribution.indices.begin(), distribution.indices.end(), [&](uint32_t a, uint32_t b) { return density(a) < density(b); });
+                distribution.window_end = distribution.indices.size();
             }
-            build_critical_point_cache();
-            cp.distributions_dirty = false;
         }
+
+        bool refined = false;
+        for (int type : critical_point_type_order) {
+            auto& distribution = cp.distributions[type];
+            const auto& indices = distribution.indices;
+            size_t begin = 0, end = indices.size();
+            if (!rebuild && distribution.curve.valid && distribution.view_max > distribution.view_min) {
+                begin = std::lower_bound(indices.begin(), indices.end(), distribution.view_min, [&](uint32_t i, double v) { return density(i) < v; }) - indices.begin();
+                end   = std::upper_bound(indices.begin(), indices.end(), distribution.view_max, [&](double v, uint32_t i) { return v < density(i); }) - indices.begin();
+                end   = std::max(begin, end);
+            }
+            if (!rebuild && begin == distribution.window_begin && end == distribution.window_end) continue;
+            const int level = labelled ? critical_point_distribution::auto_detail_level(cp.chemical_labels,
+                                             std::span<const uint32_t>(indices.data() + begin, end - begin), max_components) : 0;
+            refined |= level != distribution.level || (level > 0 && !rebuild);
+            distribution.window_begin = begin;
+            distribution.window_end   = end;
+            distribution.level        = level;
+        }
+        if (!rebuild && !refined) return;
+
+        cp.detail_of.assign(graph.num_vertices, 0);
+        for (const auto& distribution : cp.distributions) {
+            for (size_t j = distribution.window_begin; j < distribution.window_end; ++j) cp.detail_of[distribution.indices[j]] = (uint8_t)distribution.level;
+        }
+
+        std::vector<double> values;
+        for (int type : critical_point_type_order) {
+            auto& distribution = cp.distributions[type];
+            // Ranked by their CPs in the window first, so the layers drawn are the ones in view
+            std::vector<std::string> name_of(distribution.indices.size());
+            std::vector<std::tuple<bool, size_t, std::string>> counts;   // (outside the window, -count, name)
+            std::map<std::string, std::pair<size_t, size_t>> tally;       // name -> (in the window, outside)
+            for (size_t j = 0; j < distribution.indices.size(); ++j) {
+                name_of[j] = critical_point_environment_name(distribution.indices[j]);
+                const bool inside = j >= distribution.window_begin && j < distribution.window_end;
+                auto& t = tally[name_of[j]];
+                (inside ? t.first : t.second)++;
+            }
+            for (const auto& [name, t] : tally) counts.push_back({t.first == 0, ~(t.first ? t.first : t.second), name});
+            std::sort(counts.begin(), counts.end());
+            distribution.component_names.clear();
+            const bool pooled = counts.size() > max_components;
+            const size_t named = pooled ? max_components - 1 : counts.size();
+            for (size_t k = 0; k < named; ++k) distribution.component_names.push_back(std::get<2>(counts[k]));
+            if (pooled) distribution.component_names.push_back("Other environments");
+
+            values.clear();
+            distribution.component_of.clear();
+            for (size_t j = 0; j < distribution.indices.size(); ++j) {
+                values.push_back(density(distribution.indices[j]));
+                uint32_t k = 0;
+                while (k < named && distribution.component_names[k] != name_of[j]) ++k;
+                distribution.component_of.push_back(std::min<uint32_t>(k, (uint32_t)distribution.component_names.size() - 1));
+            }
+            const bool fit = distribution.fit;
+            distribution.curve = critical_point_distribution::estimate(values, distribution.component_of, distribution.component_names.size());
+            distribution.fit = fit;
+        }
+        build_critical_point_cache(!rebuild);
+        cp.distributions_dirty = false;
     }
 
     // The rows and environments the tables and the viewport read every frame
-    void build_critical_point_cache() {
+    // keep_selection: the environments selected stay so through a change of detail, as every new environment holding
+    // a CP of one selected before (a refinement selects its parts, a coarsening the whole)
+    void build_critical_point_cache(bool keep_selection = false) {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
+        std::vector<uint32_t> selected_cps;
+        if (keep_selection && cp.environment_of.size() == graph.num_vertices) {
+            for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                if (std::find(cp.environment_selection.begin(), cp.environment_selection.end(), cp.environment_of[i]) != cp.environment_selection.end()) {
+                    selected_cps.push_back(i);
+                }
+            }
+        }
         cp.rows.clear();
         cp.environment_of.clear();
         cp.environments.clear();
@@ -5614,15 +5662,24 @@ struct QuantumChemistry : viamd::EventHandler {
         for (uint32_t i = 0; i < graph.num_vertices; ++i) {
             const int type = md_topo_vertex_type(&graph, i);
             const auto& label = cp.chemical_labels[i];
-            const std::string display = critical_point_distribution::display_name(label);
+            const int level = i < cp.detail_of.size() ? cp.detail_of[i] : 0;
+            const std::string display = critical_point_distribution::display_name(label, level);
+            const int finer = std::min(level, (int)label.finer.size());
+            const std::string& group = finer > 0 ? label.finer[finer - 1] : label.group;
             const std::string key = std::to_string(type) + "|" + display;
             auto it = std::lower_bound(ids.begin(), ids.end(), key, [](const auto& a, const std::string& k) { return a.first < k; });
             if (it == ids.end() || it->first != key) {
                 const ImVec4 c = critical_point_environment_color(type, display);
                 it = ids.insert(it, {key, (uint32_t)cp.environments.size()});
-                cp.environments.push_back({type, critical_point_type_rank(type), label.kind, label.group, vec4_set(c.x, c.y, c.z, 1.0f)});
+                cp.environments.push_back({type, critical_point_type_rank(type), label.kind, group, vec4_set(c.x, c.y, c.z, 1.0f)});
             }
             cp.environment_of[i] = it->second;
+        }
+        for (uint32_t i : selected_cps) {
+            const uint32_t env = cp.environment_of[i];
+            if (std::find(cp.environment_selection.begin(), cp.environment_selection.end(), env) == cp.environment_selection.end()) {
+                cp.environment_selection.push_back(env);
+            }
         }
     }
 
@@ -6337,7 +6394,7 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::AlignTextToFramePadding();
         ImGui::Text("%s %d", style.label, i);
         ImGui::SameLine();
-        ImGui::TextUnformatted(critical_point_distribution::display_name(label).c_str());
+        ImGui::TextUnformatted(critical_point_distribution::display_name(label, critical_point_distribution::detail_levels - 1).c_str());
         if (ImGui::BeginTable("##Values", 2, ImGuiTableFlags_SizingFixedFit)) {
             auto key = [](const char* text) {
                 ImGui::TableNextRow();

@@ -56,7 +56,7 @@ is an adaptive nearest-neighbor Gaussian estimate in log10 density, normalized
 to unit area per decade, not a histogram or an electron density. Categories
 containing zero or negative densities use a linear axis and probability per
 density unit instead. Each curve is split into stacked colored layers, one per
-chemical environment (the five largest, the rest pooled as Other environments);
+chemical environment (the five largest in view, the rest pooled as Other environments);
 the layers sum exactly to the category's total curve, drawn as a line on top.
 There is no legend: the tables' environment swatches use the layer colors.
 
@@ -72,6 +72,16 @@ left-drag pan, and double-click to fit the density axis. The vertical axis
 auto-fits; density-axis zoom persists until refitted or new search results arrive.
 Dragging to pan does not select a bar or clear the selection.
 
+Zooming refines rather than filters. The CPs inside a plot's density view are
+named at the finest level of detail that keeps them in at most six
+environments: the group ("C aromatic"), then with what the atoms are bonded to
+("C aromatic [C2H]", "H (on N [C2H])"; a contact ring's size and composition),
+then with their residues where the system has them ("in PHE", "between GLY and
+SER"). The CPs outside the view keep their coarse names. The plot's layers, both
+tables and the viewport's environment colors and tags follow; environments
+selected in the table stay selected through the change, as their parts or as the
+whole they merge into. The details pane always shows the finest name.
+
 Each category has an independent, optional density filter made of one or more
 inclusive ranges; a point passes if it lies in any of them (their union). The
 filters are the chips above the plots: + Filter (or +) adds a range over the
@@ -85,16 +95,17 @@ picking, region selection, or view fitting; paths from excluded points are
 hidden too. Filtering does not recompute the search or change the topology export.
 
 The environments table lists, one flat row each, the chemical environments of
-the CPs of the shown categories that pass their filter and lie inside their
-plot's current density view, so zooming a plot narrows it: Type, Kind, Chemical
-environment, count, density range, mean Laplacian and mean ellipticity.
+the CPs of the shown categories that pass their filter, at the detail their
+plot's view gives them: Type, Kind, Chemical environment, count, density range,
+mean Laplacian and mean ellipticity.
 
 The critical point list below it shows the CPs of the environments chosen in
 the table above, else of the bars clicked, else every CP the environments table
 counts (List all returns to that), with the same first columns (Type, Kind,
 Chemical environment, index) and then density, Laplacian, ellipticity and
 position. Both tables sort by clicking a header, Shift-click further headers to
-sort by several columns; right-click a header to hide columns.
+sort by several columns; right-click a header to hide columns (Type and
+Chemical environment always stay).
 
 The Export menu at the top writes two kinds of data. Topology (JSON or VTP) is
 every critical point and path, unfiltered and without chemical labels, for scripts
