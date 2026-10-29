@@ -8,6 +8,8 @@
 #include <md_attributes.h>
 #include <md_gto.h>
 #include <md_gto_int.h>
+#include <md_gto_iso.h>
+#include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_common.h>
 #include <core/md_hash.h>
@@ -19,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -48,6 +51,8 @@ static inline bool is_finite_f64(double v) {
 
 md_unit_t surface_field_unit(SurfaceFieldKind kind) {
     switch (kind) {
+    case SurfaceFieldKind::AverageLocalIonizationEnergy:
+        return md_unit_hartree();
     case SurfaceFieldKind::EmbeddingPotential:
     case SurfaceFieldKind::ElectrostaticPotential:
     default:
@@ -337,6 +342,107 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
 }
 
 // ---------------------------------------------------------------------------
+// Average local ionization energy: the occupied orbitals, weighted two ways
+// ---------------------------------------------------------------------------
+// I(r) = sum n |e| |phi|^2 / sum n |phi|^2 over the occupied orbitals (md_qm_alie_orbitals): two densities of
+// the same orbitals, the electron density and the energy weighted one, as md_gto_iso fields. On the CPU they
+// are evaluated at the points (md_gto_iso_field_evaluate), on the GPU as the two fields of one set
+// (md_gto_iso_gpu_evaluate_launch), and the ratio taken on the host.
+//
+// Where the density is next to nothing the ratio is of two vanishing sums, and in a gaussian basis it does not
+// approach |e_HOMO| as it would with exact orbitals (the tails are the diffuse primitives'). There the value is
+// |e_HOMO|, the bound I(r) never goes below. A surface the field colours is an isodensity surface in practice,
+// rho ~1e-3, far above this.
+#define ALIE_RHO_FLOOR 1.0e-10
+
+struct AlieData {
+    md_gto_basis_t      basis = {};         // from the heap: the fields and the GPU set are made of it
+    float*              atom_xyz = nullptr; // bohr, packed, one per basis atom
+    size_t              num_atoms = 0;
+    md_gto_iso_field_t* rho = nullptr;      // sum n |phi|^2
+    md_gto_iso_field_t* num = nullptr;      // sum n |e| |phi|^2, hartree
+    size_t              num_orbitals = 0;
+    double              homo = 0.0;         // |e| of the least bound occupied orbital, hartree
+};
+
+static inline bool alie_available(const md_system_t& sys) {
+    return md_attributes_find(&sys.attributes, STR_LIT("basis/shell/atom_index")) != nullptr &&
+           md_attributes_find(&sys.attributes, STR_LIT("basis/primitive/exponent")) != nullptr &&
+           md_qm_alie_available(&sys);
+}
+
+static inline float alie_ratio(double num, double rho, double homo) {
+    return rho > ALIE_RHO_FLOOR ? (float)(num / rho) : (float)homo;
+}
+
+static void alie_destroy(AlieData* a) {
+    if (!a) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (a->rho) md_gto_iso_field_destroy(a->rho);
+    if (a->num) md_gto_iso_field_destroy(a->num);
+    md_gto_basis_free(&a->basis, heap);
+    free(a->atom_xyz);
+    delete a;
+}
+
+// The orbitals at the basis atoms' positions (desc.basis_atom_xyz), as two product fields
+static AlieData* build_alie(const SurfaceFieldDesc& desc) {
+    const md_system_t& sys = *desc.sys;
+    md_allocator_i* heap = md_get_heap_allocator();
+    AlieData* a = new AlieData();
+    if (!md_gto_basis_extract_attributes(&a->basis, &sys.attributes, heap)) {
+        MD_LOG_ERROR("Local ionization energy: the system publishes no usable basis");
+        alie_destroy(a);
+        return nullptr;
+    }
+    a->num_atoms = md_gto_basis_num_atoms(&a->basis);
+    if (!desc.basis_atom_xyz || desc.num_basis_atoms < a->num_atoms) {
+        MD_LOG_ERROR("Local ionization energy: the basis spans %zu atoms and %zu positions were given", a->num_atoms, desc.num_basis_atoms);
+        alie_destroy(a);
+        return nullptr;
+    }
+    a->atom_xyz = (float*)malloc(sizeof(float) * 3 * MAX(a->num_atoms, (size_t)1));
+    if (!a->atom_xyz) { alie_destroy(a); return nullptr; }
+    for (size_t i = 0; i < a->num_atoms; ++i) {
+        for (int c = 0; c < 3; ++c) a->atom_xyz[3 * i + c] = desc.basis_atom_xyz[i].elem[c];
+    }
+
+    double *rows = nullptr, *w = nullptr, *we = nullptr;
+    size_t num_ao = 0;
+    const size_t count = md_qm_alie_orbitals(&rows, &w, &we, &num_ao, &sys, heap);
+    if (!count || num_ao != md_gto_basis_num_ao(&a->basis)) {
+        MD_LOG_ERROR("Local ionization energy: no canonical occupied orbitals with energies over the %zu atomic orbitals of the basis", md_gto_basis_num_ao(&a->basis));
+        if (rows) md_free(heap, rows, sizeof(double) * count * num_ao);
+        if (w)    md_free(heap, w, sizeof(double) * count);
+        if (we)   md_free(heap, we, sizeof(double) * count);
+        alie_destroy(a);
+        return nullptr;
+    }
+    a->num_orbitals = count;
+    a->homo = DBL_MAX;
+    for (size_t k = 0; k < count; ++k) a->homo = MIN(a->homo, we[k] / w[k]);
+    a->rho = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, rows, nullptr, w,  count, heap);
+    a->num = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, rows, nullptr, we, count, heap);
+    md_free(heap, rows, sizeof(double) * count * num_ao);
+    md_free(heap, w, sizeof(double) * count);
+    md_free(heap, we, sizeof(double) * count);
+    if (!a->rho || !a->num) {
+        MD_LOG_ERROR("Local ionization energy: could not make the orbital fields");
+        alie_destroy(a);
+        return nullptr;
+    }
+    return a;
+}
+
+// I(r) at n <= 8 points, packed float3
+static void alie_evaluate(double* out, const float* xyz, size_t n, const AlieData* a) {
+    double r[8], q[8];
+    md_gto_iso_field_evaluate(a->rho, xyz, n, 0, r, nullptr);
+    md_gto_iso_field_evaluate(a->num, xyz, n, 0, q, nullptr);
+    for (size_t i = 0; i < n; ++i) out[i] = alie_ratio(q[i], r[i], a->homo);
+}
+
+// ---------------------------------------------------------------------------
 // Kinds
 // ---------------------------------------------------------------------------
 
@@ -346,6 +452,8 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
         return find_atom_charges(sys) != nullptr && has_environment(sys);
     case SurfaceFieldKind::ElectrostaticPotential:
         return esp_available(sys);
+    case SurfaceFieldKind::AverageLocalIonizationEnergy:
+        return alie_available(sys);
     default:
         return false;
     }
@@ -463,6 +571,32 @@ size_t surface_field_progress(SurfaceFieldProgress* out, size_t cap) {
 // attributes: a load waits for the pool, interrupt_async_tasks; the on demand density reader takes the
 // HDF5 lock). One build at a time per source: a request for another while one runs is kept, and
 // started when it ends, unless a newer request has replaced it.
+// What a field is evaluated from: a charge distribution (the potentials, md_gto_int), or the orbitals of the
+// ionization energy (md_gto_iso)
+struct FieldData {
+    md_gto_int_charges_t* charges = nullptr;
+    AlieData*             alie = nullptr;
+};
+
+static inline bool field_data_valid(const FieldData& d) { return d.charges || d.alie; }
+
+// What a point costs on the CPU, roughly, for the size of a pool task's grain
+static uint64_t field_data_work_per_point(const FieldData& d) {
+    if (d.charges) return md_gto_int_charges_work_per_point(d.charges);
+    if (d.alie)    return 2 * 64 * (uint64_t)d.alie->num_orbitals;     // two fields, ~64 AOs reaching a point
+    return 1;
+}
+
+// The field at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
+// interrupt is only looked at between the ranges it hands out, which can be a good part of the task.
+static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const FieldData& d, const std::atomic<bool>& cancel) {
+    for (uint32_t b = beg; b < end && !cancel.load(std::memory_order_relaxed); b += 8) {
+        const uint32_t e = MIN(b + 8, end);
+        if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, d.charges);
+        else if (d.alie) alie_evaluate(out + b, xyz + 3 * (size_t)b, e - b, d.alie);
+    }
+}
+
 struct FieldBuild {
     uint64_t           hash = 0;
     SurfaceFieldKind   kind = SurfaceFieldKind::EmbeddingPotential;
@@ -472,7 +606,7 @@ struct FieldBuild {
     vec3_t*            state_xyz = nullptr;
     size_t             num_state_atoms = 0;
     // made by the task
-    md_gto_int_charges_t* charges = nullptr;
+    FieldData          data;
     bool               ran = false;     // an interrupted pool task never runs its function
     bool               ok = false;
     double             seconds = 0.0;
@@ -485,9 +619,15 @@ static void charges_destroy(md_gto_int_charges_t* q) {
     md_free(heap, q, sizeof(md_gto_int_charges_t));
 }
 
+static void field_data_destroy(FieldData* d) {
+    charges_destroy(d->charges);
+    alie_destroy(d->alie);
+    *d = FieldData{};
+}
+
 static void build_destroy(FieldBuild* b) {
     if (!b) return;
-    charges_destroy(b->charges);
+    field_data_destroy(&b->data);
     free(b->basis_atom_xyz);
     free(b->state_xyz);
     delete b;
@@ -530,11 +670,13 @@ static void build_run(FieldBuild* b) {
     desc.num_basis_atoms = b->num_basis_atoms;
     desc.source_hash     = b->hash;
     md_allocator_i* heap = md_get_heap_allocator();
-    md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t));
-    if (q) {
+    if (b->kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
+        b->data.alie = build_alie(desc);
+        b->ok = b->data.alie != nullptr;
+    } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
         MEMSET(q, 0, sizeof(*q));
         if (build_charges(q, desc, heap)) {
-            b->charges = q;
+            b->data.charges = q;
             b->ok = true;
         } else {
             md_free(heap, q, sizeof(md_gto_int_charges_t));
@@ -544,9 +686,9 @@ static void build_run(FieldBuild* b) {
 }
 
 struct FieldSource {
-    uint64_t              hash = 0;          // what charges is of
-    md_gto_int_charges_t* charges = nullptr;
-    void*                 gpu = nullptr;     // md_gto_int_gpu_charges_t, made when first wanted
+    uint64_t              hash = 0;          // what data is of
+    FieldData             data;
+    void*                 gpu = nullptr;     // md_gto_int_gpu_charges_t or md_gto_iso_gpu_set_t, made when first wanted
     bool                  gpu_failed = false;
     uint64_t              failed_hash = 0;   // a source whose build failed: not tried again
     FieldBuild*           build = nullptr;   // under way
@@ -557,25 +699,27 @@ struct FieldSource {
 static void source_start(FieldSource* fs, FieldBuild* b) {
     fs->build = b;
     // and the worker's temp arenas given back after: the charges of a protein's density read its orbitals there
-    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field charges"), [b]() { build_run(b); md_temp_trim(); });
+    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field source"), [b]() { build_run(b); md_temp_trim(); });
     task_system::enqueue_task(fs->task);
 }
 
-// The charges, and their copy on the device. Whatever reads them on the device must have ended.
+// The data, and their copy on the device. Whatever reads them on the device must have ended.
 static void source_drop_charges(FieldSource* fs, md_gpu_stream_t stream) {
 #if MD_ENABLE_GPU
-    if (fs->gpu && stream) md_gto_int_gpu_charges_destroy(stream, (md_gto_int_gpu_charges_t)fs->gpu);
+    if (fs->gpu && stream) {
+        if (fs->data.charges) md_gto_int_gpu_charges_destroy(stream, (md_gto_int_gpu_charges_t)fs->gpu);
+        else                  md_gto_iso_gpu_set_destroy(stream, (md_gto_iso_gpu_set_t*)fs->gpu);     // before the fields it is of
+    }
 #else
     (void)stream;
 #endif
     fs->gpu = nullptr;
     fs->gpu_failed = false;
-    charges_destroy(fs->charges);
-    fs->charges = nullptr;
+    field_data_destroy(&fs->data);
     fs->hash = 0;
 }
 
-static bool source_ready(const FieldSource& fs, uint64_t hash)  { return fs.charges && fs.hash == hash; }
+static bool source_ready(const FieldSource& fs, uint64_t hash)  { return field_data_valid(fs.data) && fs.hash == hash; }
 static bool source_failed(const FieldSource& fs, uint64_t hash) { return hash != 0 && fs.failed_hash == hash; }
 static bool source_building(const FieldSource& fs)              { return fs.build != nullptr || fs.next != nullptr; }
 
@@ -614,13 +758,17 @@ static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream
         if (b->ran && b->hash == wanted) {
             if (b->ok) {
                 source_drop_charges(fs, stream);
-                fs->charges = b->charges;
-                fs->hash    = b->hash;
-                b->charges  = nullptr;
+                fs->data = b->data;
+                fs->hash = b->hash;
+                b->data  = FieldData{};
                 changed = true;
-                MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
-                             fs->charges->num_gaussians, fs->charges->num_points, (unsigned long long)md_gto_int_charges_work_per_point(fs->charges),
-                             b->seconds * 1.0e3);
+                if (const md_gto_int_charges_t* q = fs->data.charges) {
+                    MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
+                                 q->num_gaussians, q->num_points, (unsigned long long)md_gto_int_charges_work_per_point(q), b->seconds * 1.0e3);
+                } else if (const AlieData* a = fs->data.alie) {
+                    MD_LOG_DEBUG("Surface field '%s': %zu occupied orbitals over %zu atomic orbitals, |e_HOMO| %.4f Eh, made in %.1f ms on a worker thread", what,
+                                 a->num_orbitals, md_gto_basis_num_ao(&a->basis), a->homo, b->seconds * 1.0e3);
+                }
             } else {
                 fs->failed_hash = b->hash;
                 MD_LOG_ERROR("Surface field: the system has nothing to make '%s' of", what);
@@ -654,13 +802,51 @@ static void source_free(FieldSource* fs, md_gpu_stream_t stream) {
 #if MD_ENABLE_GPU
 // The charges on the device; NULL where md_gto_int cannot evaluate them there (point multipoles)
 static md_gto_int_gpu_charges_t source_gpu(FieldSource* fs, md_gpu_stream_t stream) {
-    if (!fs->charges || !stream) return nullptr;
-    if (fs->charges->point_dipole || fs->charges->point_quadrupole) return nullptr;
+    if (!fs->data.charges || !stream) return nullptr;
+    if (fs->data.charges->point_dipole || fs->data.charges->point_quadrupole) return nullptr;
     if (!fs->gpu && !fs->gpu_failed) {
-        fs->gpu = md_gto_int_gpu_charges_create(stream, fs->charges);
+        fs->gpu = md_gto_int_gpu_charges_create(stream, fs->data.charges);
         fs->gpu_failed = fs->gpu == nullptr;
     }
     return (md_gto_int_gpu_charges_t)fs->gpu;
+}
+
+// The ionization energy's two fields on the device, as one set: field 0 the density, field 1 the energy
+// weighted density
+static md_gto_iso_gpu_set_t* source_alie_gpu(FieldSource* fs, md_gpu_stream_t stream) {
+    const AlieData* a = fs->data.alie;
+    if (!a || !stream) return nullptr;
+    if (!fs->gpu && !fs->gpu_failed) {
+        const md_gto_iso_field_t* fields[2] = { a->rho, a->num };
+        fs->gpu = md_gto_iso_gpu_set_create(stream, &a->basis, a->atom_xyz, 0, fields, 2, md_get_heap_allocator());
+        fs->gpu_failed = fs->gpu == nullptr;
+    }
+    return (md_gto_iso_gpu_set_t*)fs->gpu;
+}
+
+// The ionization energy at count points on the device (xyz, stride bytes apart, 0 packed) into out: rho at
+// [0, count), the energy weighted density at [count, 2 count), then the count of failures (uint32). False when
+// nothing was issued.
+static bool alie_gpu_launch(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, md_gpu_addr_t xyz, uint32_t stride, size_t count, md_gpu_addr_t out) {
+    if (!set || !xyz || !out || count == 0 || count > UINT32_MAX) return false;
+    md_gto_iso_gpu_eval_desc_t ed = {};
+    ed.xyz        = xyz;
+    ed.xyz_stride = stride;
+    ed.num_xyz    = (uint32_t)count;
+    ed.num_fields = 2;
+    ed.fields[0]  = 0;
+    ed.fields[1]  = 1;
+    ed.out_value  = out;
+    ed.out_failed = out + sizeof(float) * 2 * count;
+    return md_gto_iso_gpu_evaluate_launch(stream, set, &ed);
+}
+
+// What alie_gpu_launch wrote, read back: I(r) at point i into out[i], NaN where the GPU could not make it
+static void alie_gpu_ratio(float* out, const void* rb, size_t count, double homo) {
+    const float* v = (const float*)rb;
+    const uint32_t failed = *(const uint32_t*)(v + 2 * count);
+    if (failed) MD_LOG_INFO("Local ionization energy: %u values could not be made on the GPU (too many shells reach their points)", failed);
+    for (size_t i = 0; i < count; ++i) out[i] = alie_ratio(v[count + i], v[i], homo);
 }
 #endif
 
@@ -697,19 +883,24 @@ struct SurfaceFieldWork {
     float*    cpu_xyz = nullptr;
     double*   cpu_out = nullptr;
     size_t    cpu_count = 0;
-    const md_gto_int_charges_t* cpu_charges = nullptr;
+    FieldData cpu_data;             // what the task evaluates (borrowed from the source)
+#if MD_ENABLE_GPU
+    // the ionization energy on the GPU: the voxels of cpu_index at cpu_xyz, evaluated as points (no texture)
+    bool          alie_points = false;
+    md_gpu_mem_t  pts_gpu = {};
+    md_gpu_mem_t  out_gpu = {};
+#endif
 };
 
-// The potential at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
-// interrupt is only looked at between the ranges it hands out, which can be a good part of the task.
-static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const md_gto_int_charges_t* q, const std::atomic<bool>& cancel) {
-    for (uint32_t b = beg; b < end && !cancel.load(std::memory_order_relaxed); b += 8) {
-        const uint32_t e = MIN(b + 8, end);
-        md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, q);
-    }
-}
-
 static void work_cpu_free(SurfaceFieldWork* w) {
+#if MD_ENABLE_GPU
+    // stream ordered: after whatever reads or writes them
+    if (w->pts_gpu.gpu) md_gpu_free(w->stream, w->pts_gpu.gpu);
+    if (w->out_gpu.gpu) md_gpu_free(w->stream, w->out_gpu.gpu);
+    w->pts_gpu = {};
+    w->out_gpu = {};
+    w->alie_points = false;
+#endif
     free(w->cpu_index);
     free(w->cpu_xyz);
     free(w->cpu_out);
@@ -983,9 +1174,8 @@ static void count_left(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
 // Evaluation
 // ---------------------------------------------------------------------------
 
-// The voxels wanted that hold no value yet, on the CPU's worker threads: a pool task over copies of
-// their positions
-static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+// The positions of the voxels wanted that hold no value yet: cpu_index, cpu_xyz (bohr), cpu_count
+static bool collect_wanted(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     const size_t n = w->num_left;
     w->cpu_index = (uint32_t*)malloc(sizeof(uint32_t) * n);
     w->cpu_xyz   = (float*)malloc(sizeof(float) * 3 * n);
@@ -1007,14 +1197,22 @@ static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         }
         w->cpu_index[m++] = (uint32_t)idx;
     }
-    w->cpu_count   = m;
-    w->cpu_charges = w->source.charges;
+    w->cpu_count = m;
+    return true;
+}
+
+// The voxels wanted that hold no value yet, on the CPU's worker threads: a pool task over copies of
+// their positions
+static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    if (!collect_wanted(vol, w)) return false;
+    const uint32_t m = (uint32_t)w->cpu_count;
+    w->cpu_data = w->source.data;
     // A point of a QM density's potential is ~0.1-1 ms of work, of a few point charges microseconds
-    const uint64_t work = md_gto_int_charges_work_per_point(w->cpu_charges);
+    const uint64_t work = field_data_work_per_point(w->cpu_data);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_cancel = false;
-    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field"), (uint32_t)m, [w](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_charges, w->cpu_cancel);
+    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field"), m, [w](uint32_t beg, uint32_t end, uint32_t) {
+        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_data, w->cpu_cancel);
     }, grain);
     task_system::enqueue_task(w->cpu_task);
     w->stage = SurfaceFieldWork::Cpu;
@@ -1027,7 +1225,35 @@ static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
 // (they are right, and the band moves with the isovalues); without one the whole grid is. False when
 // the device cannot serve it - point multipoles (which md_gto_int evaluates on the CPU only), no
 // texture, no job - and the CPU takes over then.
+// The ionization energy of the voxels wanted that hold no value yet, as points on the device
+// (md_gto_iso_gpu_evaluate_launch): only the band, no texture, both sums read back and divided on the host
+static bool start_gpu_alie(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    md_gpu_stream_t stream = w->stream;
+    md_gto_iso_gpu_set_t* set = source_alie_gpu(&w->source, stream);
+    if (!set || !collect_wanted(vol, w)) return false;
+    const size_t m = w->cpu_count;
+    const size_t out_bytes = sizeof(float) * 2 * m + 16;
+    w->pts_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * MAX(m, (size_t)1));
+    w->out_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, out_bytes);
+    w->rb      = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, out_bytes);
+    bool ok = m > 0 && w->pts_gpu.gpu && w->out_gpu.gpu && w->rb.cpu;
+    ok = ok && md_gpu_upload(stream, w->pts_gpu.gpu, w->cpu_xyz, sizeof(float) * 3 * m);
+    ok = ok && alie_gpu_launch(stream, set, w->pts_gpu.gpu, 0, m, w->out_gpu.gpu);
+    ok = ok && md_gpu_copy(stream, w->rb.gpu, w->out_gpu.gpu, out_bytes);
+    if (!ok) {
+        if (w->rb.gpu) md_gpu_free(stream, w->rb.gpu);
+        w->rb = {};
+        work_cpu_free(w);
+        return false;
+    }
+    w->rb_sync = md_gpu_stream_record(stream);
+    w->alie_points = true;
+    w->stage = SurfaceFieldWork::Readback;
+    return true;
+}
+
 static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
+    if (w->source.data.alie) return start_gpu_alie(vol, w);
     md_gpu_stream_t stream = w->stream;
     md_gto_int_gpu_charges_t gq = source_gpu(&w->source, stream);
     if (!gq) return false;
@@ -1058,7 +1284,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     uint8_t* mask = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
     if (!mask) return false;
     for (size_t i = 0; i < vol->num_voxels; ++i) mask[i] = (w->want[i] && !bit_get(vol->done, i)) ? 1 : 0;
-    if (w->source.charges->num_nodes > 0) {
+    if (w->source.data.charges->num_nodes > 0) {
         const int bx = (nx + 3) / 4, by = (ny + 3) / 4, bz = (nz + 3) / 4;
         uint8_t* brick = (uint8_t*)md_temp_alloc(temp, (size_t)bx * by * bz);
         if (!brick) return false;
@@ -1184,7 +1410,30 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
     }
     case SurfaceFieldWork::Readback:
         if (!md_gpu_sync_is_complete(w->rb_sync)) break;
-        merge(vol, w, (const float*)w->rb.cpu, true);
+        if (w->alie_points) {
+            // the points' values, to their voxels
+            const size_t m = w->cpu_count;
+            float* v = (float*)malloc(sizeof(float) * MAX(m, (size_t)1));
+            if (v) {
+                alie_gpu_ratio(v, w->rb.cpu, m, w->source.data.alie ? w->source.data.alie->homo : 0.0);
+                size_t n = 0;
+                for (size_t i = 0; i < m; ++i) {
+                    const uint32_t idx = w->cpu_index[i];
+                    vol->values[idx] = v[i];
+                    if (!bit_get(vol->done, idx)) {
+                        bit_set(vol->done, idx);
+                        n += 1;
+                    }
+                }
+                vol->num_evaluated += n;
+                vol->complete = vol->num_evaluated == vol->num_voxels;
+                vol->on_gpu = true;
+                free(v);
+            }
+            work_cpu_free(w);
+        } else {
+            merge(vol, w, (const float*)w->rb.cpu, true);
+        }
         md_gpu_free(w->stream, w->rb.gpu);
         w->rb = {};
         w->stage = SurfaceFieldWork::Idle;
@@ -1391,6 +1640,7 @@ struct SurfaceFieldPointsWork {
     md_gpu_mem_t rb = {};
     md_gpu_sync_t rb_sync = {};
     md_gto_int_gpu_job_t* job = nullptr;
+    bool         alie = false;          // gpu_out and rb hold both sums of the ionization energy
 #endif
     task_system::ID cpu_task = task_system::INVALID_ID;
     std::atomic<bool> cpu_cancel{false};
@@ -1412,6 +1662,7 @@ static void points_cancel(SurfaceFieldPointsWork* w) {
     w->rb = {};
     w->gpu_out = {};
     w->gpu_xyz = {};
+    w->alie = false;
 #endif
     if (w->cpu_task) {
         w->cpu_cancel = true;
@@ -1430,12 +1681,12 @@ static bool points_start_cpu(SurfaceFieldPointsWork* w) {
     if (!w->xyz) return false;
     w->cpu_out = (double*)malloc(sizeof(double) * w->count);
     if (!w->cpu_out) return false;
-    const md_gto_int_charges_t* q = w->source.charges;
-    const uint64_t work = md_gto_int_charges_work_per_point(q);
+    const FieldData d = w->source.data;
+    const uint64_t work = field_data_work_per_point(d);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_cancel = false;
-    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, q](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->xyz, beg, end, q, w->cpu_cancel);
+    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, d](uint32_t beg, uint32_t end, uint32_t) {
+        evaluate_points_range(w->cpu_out, w->xyz, beg, end, d, w->cpu_cancel);
     }, grain);
     task_system::enqueue_task(w->cpu_task);
     w->stage = SurfaceFieldPointsWork::Cpu;
@@ -1445,8 +1696,10 @@ static bool points_start_cpu(SurfaceFieldPointsWork* w) {
 
 #if MD_ENABLE_GPU
 static bool points_start_gpu(SurfaceFieldPointsWork* w) {
-    md_gto_int_gpu_charges_t gq = source_gpu(&w->source, w->stream);
-    if (!gq) return false;
+    const bool alie = w->source.data.alie != nullptr;
+    md_gto_int_gpu_charges_t gq  = alie ? nullptr : source_gpu(&w->source, w->stream);
+    md_gto_iso_gpu_set_t*    set = alie ? source_alie_gpu(&w->source, w->stream) : nullptr;
+    if (!gq && !set) return false;
     md_gpu_addr_t xyz = w->gpu_xyz.gpu;
     uint32_t stride = w->gpu_stride;
     if (!xyz) {
@@ -1460,6 +1713,26 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
         md_gpu_upload_end(w->stream);
         xyz = w->gpu_xyz.gpu;
         stride = 0;
+    }
+    if (alie) {
+        // where the points are, no job: issued at once, then read back with the count of failures
+        const size_t out_bytes = sizeof(float) * 2 * w->count + 16;
+        if (w->gpu_out.gpu) md_gpu_free(w->stream, w->gpu_out.gpu);
+        w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, out_bytes);
+        w->rb      = md_gpu_malloc(w->stream, MD_GPU_MEM_HOST_READ, out_bytes);
+        bool ok = w->gpu_out.gpu && w->rb.cpu;
+        ok = ok && alie_gpu_launch(w->stream, set, xyz, stride, w->count, w->gpu_out.gpu);
+        ok = ok && md_gpu_copy(w->stream, w->rb.gpu, w->gpu_out.gpu, out_bytes);
+        if (!ok) {
+            if (w->rb.gpu) md_gpu_free(w->stream, w->rb.gpu);
+            w->rb = {};
+            return false;
+        }
+        w->rb_sync = md_gpu_stream_record(w->stream);
+        w->alie = true;
+        w->stage = SurfaceFieldPointsWork::Readback;
+        w->on_gpu = true;
+        return true;
     }
     if (!w->gpu_out.gpu) w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, sizeof(float) * w->count);
     if (!w->gpu_out.gpu) return false;
@@ -1576,7 +1849,10 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
     case SurfaceFieldPointsWork::Readback:
         if (!md_gpu_sync_is_complete(w->rb_sync)) break;
         w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
-        if (w->values) MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
+        if (w->values) {
+            if (w->alie) alie_gpu_ratio(w->values, w->rb.cpu, w->count, w->source.data.alie ? w->source.data.alie->homo : 0.0);
+            else         MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
+        }
         md_gpu_free(w->stream, w->rb.gpu);
         w->rb = {};
         w->stage = w->values ? SurfaceFieldPointsWork::Done : SurfaceFieldPointsWork::Failed;

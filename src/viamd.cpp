@@ -4104,7 +4104,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.num_iso     = iso.count;
     desc.source_hash = source_hash;
     desc.band_hash   = band_hash;
-    if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+    if (surface_field_uses_basis(es.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
     }

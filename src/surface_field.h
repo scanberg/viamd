@@ -20,7 +20,8 @@ struct SurfaceFieldPointsWork;
 // representation draws. A surface field colours the one by the other, and keeps three things apart
 // that used to be one:
 //
-//   what      the field, evaluated by mdlib (md_gto_int for potentials)
+//   what      the field, evaluated by mdlib (md_gto_int for potentials, md_gto_iso for what is made of
+//             orbitals)
 //   where     a world space volume of field values over the box of the volume the surfaces are drawn
 //             from, sampled by the same normalised texture coordinates. On the CPU it is evaluated
 //             ONLY in the narrow band of voxels a surface can sample: the voxels around the cells an
@@ -31,8 +32,8 @@ struct SurfaceFieldPointsWork;
 //   how       a colour map and a range, applied per pixel when the surface is shaded - changing
 //             either costs nothing, and the values interpolate as values rather than as colours
 //
-// NOTHING HERE BLOCKS. Making the field's charge distribution (reading a QM density and building
-// md_gto_int's distribution of it: seconds on a protein) runs on a worker thread, the evaluation on
+// NOTHING HERE BLOCKS. Making what the field is evaluated from (reading a QM density and building
+// md_gto_int's distribution of it: seconds on a protein; the ionization energy's orbitals) runs on a worker thread, the evaluation on
 // the GPU as an md_gto_int job advanced a little each frame, and its readback is waited for by
 // looking. An update works out what is wanted and starts it; surface_field_poll, once a frame while
 // surface_field_busy, takes what has finished. Until new values arrive a surface keeps the ones it
@@ -65,12 +66,22 @@ enum class SurfaceFieldKind {
     // the atomic numbers - too much charge by the core electrons of an effective core potential the
     // file leaves unstated, which is checked for and reported.
     ElectrostaticPotential,
+
+    // The average local ionization energy of the QM region (Sjoberg, Murray, Brinck and Politzer 1990),
+    // I(r) = sum_k n_k |e_k| |phi_k(r)|^2 / sum_k n_k |phi_k(r)|^2 over its occupied orbitals: the energy
+    // with which the electrons at r are held, on average. Mapped onto an isodensity surface, its lowest
+    // values are where the least tightly held electrons are - the sites an electrophile or a radical
+    // attacks - and it is never below |e_HOMO|. Hartree. Made of the canonical orbitals, their occupations
+    // and their energies (md_qm_alie_orbitals); not for natural orbitals, and not for a file without
+    // orbital energies. Kohn-Sham orbital energies give lower values than Hartree-Fock ones, as usual.
+    AverageLocalIonizationEnergy,
     Count
 };
 
 inline const char* surface_field_kind_str[(int)SurfaceFieldKind::Count] = {
     "Embedding Potential",
     "Electrostatic Potential",
+    "Local Ionization Energy",
 };
 
 // How a field is mapped to colour starts out as fits a potential: a range centred on zero, following
@@ -83,6 +94,16 @@ static inline ColorScale surface_field_default_scale() {
     scale.symmetric  = true;
     scale.auto_range = true;
     return scale;
+}
+
+// What a scale should be for a kind of field, when the kind is chosen: a potential's range centred on zero;
+// the ionization energy's from its lowest values on the surface (red: the least tightly held electrons) to
+// its highest (blue), which a range about zero would squeeze into its upper half. The colour map stays the
+// user's.
+static inline void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind kind) {
+    if (!scale) return;
+    scale->symmetric  = kind != SurfaceFieldKind::AverageLocalIonizationEnergy;
+    scale->auto_range = true;
 }
 
 struct SurfaceFieldVolume {
@@ -124,7 +145,7 @@ struct SurfaceFieldDesc {
     const md_system_t*       sys = nullptr;
     const md_system_state_t* state = nullptr;           // the environment's sites (embedding potential)
     const vec3_t*            basis_atom_xyz = nullptr;  // bohr, one per basis atom: the QM nuclei and where
-    size_t                   num_basis_atoms = 0;       // the basis sits (electrostatic potential)
+    size_t                   num_basis_atoms = 0;       // the basis sits (surface_field_uses_basis)
 
     // The surfaces: the isosurfaces at iso_values of `density`, sampled on `grid` (bohr, x fastest,
     // voxel centres at (i + 0.5) * spacing)
@@ -139,14 +160,21 @@ struct SurfaceFieldDesc {
     uint64_t                 source_hash = 0;
     uint64_t                 band_hash = 0;
 
-    // Optional: evaluate on the device, where md_gto_int can evaluate the distribution there (point
-    // charges, the QM density), else on the CPU's worker threads. The stream must outlive the volume.
+    // Optional: evaluate on the device, where mdlib can evaluate the field there (point charges and the QM
+    // density by md_gto_int, the orbitals by md_gto_iso), else on the CPU's worker threads. The stream must
+    // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
 };
 
 md_unit_t surface_field_unit(SurfaceFieldKind kind);
 
-// Whether the system has what the field is made from. Cheap: the attributes are looked up, not read.
+// Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
+static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
+    return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy;
+}
+
+// Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the
+// ionization energy the orbitals' occupations read (whether they are canonical).
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
 
 // What the Embedding Potential of a dataset is made of: how many of the environment's sites carry
@@ -168,7 +196,7 @@ SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& 
 SurfaceFieldKind surface_field_first_available(const md_system_t& sys);
 
 // The grid a field is sampled on, given the grid of the volume its surfaces are drawn from: that
-// grid, or for the electrostatic potential the same box at about 0.4 bohr (never finer than the
+// grid (the ionization energy: a point of it costs little), or for the electrostatic potential the same box at about 0.4 bohr (never finer than the
 // density's). Trilinear interpolation from 0.4 bohr is within 0.3-0.4% of the potential's spread
 // over an isodensity surface (amide, 26 atom mol.h5), under one step of a 256 entry colour map,
 // and the coarser grid is a fraction of the evaluation: for mol.h5 its band is ~3 times smaller than
@@ -226,7 +254,8 @@ struct SurfaceFieldPoints {
 
 // The points, bohr. The GPU path reads gpu_xyz when there is one (points already on the device, say where
 // an extraction left them: no upload), else uploads xyz; the CPU path reads xyz. Either alone will do,
-// xyz is what lets the CPU take over from a GPU that cannot evaluate the field.
+// xyz is what lets the CPU take over from a GPU that cannot evaluate the field. On the GPU the ionization
+// energy is evaluated where the points are (md_gto_iso_gpu_evaluate_launch), the potentials by md_gto_int.
 struct SurfaceFieldPointSet {
     const float*  xyz = nullptr;        // host, packed float3
     md_gpu_addr_t gpu_xyz = 0;          // device, float xyz at gpu_xyz + i * gpu_stride

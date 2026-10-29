@@ -2354,6 +2354,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                 // A field this dataset can make, if the one the representation names is not
                 if (c == SurfaceColoring::Field && !surface_field_available(es.field_kind, sys)) {
                     es.field_kind = surface_field_first_available(sys);
+                    surface_field_scale_for_kind(&es.field_map, es.field_kind);
                 }
                 update_rep = true;
             }
@@ -2361,6 +2362,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             if (!enabled && c == SurfaceColoring::Field) {
                 ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
                                       "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
+                                      "the local ionization energy a basis and canonical orbitals with their occupations and energies,\n"
                                       "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
         }
@@ -2394,6 +2396,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             const SurfaceFieldKind kind = (SurfaceFieldKind)k;
             ImGui::BeginDisabled(!surface_field_available(kind, sys));
             if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
+                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, kind);
                 es.field_kind = kind;
                 update_rep = true;
             }
@@ -2431,6 +2434,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
                               "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
                               "An embedding's environment is not part of it.");
+    } else if (es.field_kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
+        ImGui::SetItemTooltip("The average local ionization energy of the QM region on the surface: the orbital energies of its\n"
+                              "occupied orbitals, weighted by how much each contributes to the electron density there,\n"
+                              "sum n |e| |phi|^2 / sum n |phi|^2. Lowest (red) where the least tightly held electrons are - the\n"
+                              "sites an electrophile or a radical attacks - and never below the HOMO's |e|. Meant for an\n"
+                              "isodensity surface (0.001-0.002 au). Kohn-Sham orbital energies give lower values than Hartree-Fock.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
