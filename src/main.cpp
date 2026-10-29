@@ -2963,6 +2963,49 @@ static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_a
 // The lines the Script menu offers (script_suggestions.h): the measurement of the atoms picked one by one, and the
 // selection. Every one of them is evaluated against the system before it is offered, which is not something to do
 // every frame the menu is open, so they are kept for as long as what they are of stays the same.
+// What the context menu of the viewport is about besides the selection, found as it opens (context_targets_update)
+static struct {
+    // What the New Representation entries are of: what was under the cursor (as a whole, and all of its name), and the
+    // selection
+    RepresentationTarget hovered;
+    RepresentationTarget all;
+    RepresentationTarget selection;
+
+    // What the Script menu is about while nothing is selected: what was under the cursor as it was highlighted (grown
+    // by the granularity), more than one atom, and the atoms of a bond under it
+    md_bitset_t hit_atoms = {};
+    int32_t hit_bond[2] = {-1, -1};
+} context_targets;
+
+static void context_targets_update(ApplicationState* state, const PickingHit& hit) {
+    representation_targets_from_hit(&context_targets.hovered, &context_targets.all, *state, hit);
+    representation_target_from_selection(&context_targets.selection, *state);
+    if (!md_bitset_empty(context_targets.hovered.atoms) && md_bitset_equal(context_targets.hovered.atoms, context_targets.selection.atoms)) {
+        representation_target_free(&context_targets.hovered);
+    }
+
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_bitset_free(&context_targets.hit_atoms, alloc);
+    context_targets.hit_bond[0] = context_targets.hit_bond[1] = -1;
+    const md_system_t& sys = state->mold.sys;
+    md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
+    picking_hit_mask_set(&mask, *state, hit, state->selection.granularity);
+    // A single atom is no subject of its own
+    if (md_bitmask_count(&mask) > 1) {
+        context_targets.hit_atoms = md_bitmask_extract(&mask, alloc);
+    }
+    md_bitmask_free(&mask);
+    if (hit.domain == PickingDomain_Bond) {
+        md_atom_pair_t pair;
+        md_bond_flags_t flags;
+        bool formed;
+        if (picked_bond(*state, hit.local_idx, &pair, &flags, &formed)) {
+            context_targets.hit_bond[0] = pair.idx[0];
+            context_targets.hit_bond[1] = pair.idx[1];
+        }
+    }
+}
+
 struct ScriptSuggestions {
     uint64_t key = 0;
     md_allocator_i* arena = nullptr;
@@ -2974,16 +3017,26 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
     static ScriptSuggestions cache;
 
     const md_system_t& sys = state->mold.sys;
-    const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
     const SingleSelectionSequence& seq = state->selection.single_selection_sequence;
 
+    // The selection, or while there is none what was right-clicked, as it was highlighted
+    md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+    const bool from_hit = md_bitset_empty(sel);
+    if (from_hit) sel = context_targets.hit_atoms;
+
     // The atoms of a measurement, in the order they were picked: the picks have to be what is selected, as the order
-    // is unknown for atoms selected otherwise. Two atoms need no order.
+    // is unknown for atoms selected otherwise. Two atoms need no order. Of what was right-clicked, the length of a bond.
     int32_t atoms[4];
     size_t num_atoms = 0;
     const size_t num_selected = md_bitset_count(sel);
     const size_t num_picked = single_selection_sequence_count(&seq);
-    if (2 <= num_selected && num_selected <= 4) {
+    if (from_hit) {
+        if (context_targets.hit_bond[0] >= 0) {
+            atoms[0] = context_targets.hit_bond[0];
+            atoms[1] = context_targets.hit_bond[1];
+            num_atoms = 2;
+        }
+    } else if (2 <= num_selected && num_selected <= 4) {
         bool picks = num_picked == num_selected;
         for (size_t i = 0; i < num_picked && picks; ++i) picks = md_bitset_test(sel, (uint32_t)seq.idx[i]);
         if (picks) {
@@ -3053,14 +3106,6 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     }
 }
 
-// What the New Representation entries of the context menu are of, found as it opens: what was under the cursor (as
-// a whole, and all of its name), and the selection
-static struct {
-    RepresentationTarget hovered;
-    RepresentationTarget all;
-    RepresentationTarget selection;
-} context_targets;
-
 // A target, and the types it can be shown as in a menu: the suggested one first. Its atoms are highlighted while it is
 // hovered or open.
 static void draw_new_representation_menu(ApplicationState* state, const RepresentationTarget& target) {
@@ -3102,6 +3147,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
     const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
+        // What was under the cursor, found once, as the menu opens
+        if (ImGui::IsWindowAppearing()) {
+            context_targets_update(state, hit);
+        }
         if (num_atoms_selected == 2) {
             // A bond between the two, of a kind, or the removal of the one a user made
             int idx[2];
@@ -3235,7 +3284,8 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 ImGui::PopID();
             }
             if (!md_array_size(sug.measure) && !md_array_size(sug.select)) {
-                ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" : "Nothing is selected");
+                ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" :
+                                    md_bitset_empty(context_targets.hit_atoms) ? "Nothing is selected" : "No suggestions for what was right-clicked");
             }
             ImGui::EndMenu();
         }
@@ -3314,14 +3364,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             }
         }
 
-        // A representation of what was under the cursor, or of the selection. Found once, as the menu opens.
-        if (ImGui::IsWindowAppearing()) {
-            representation_targets_from_hit(&context_targets.hovered, &context_targets.all, *state, hit);
-            representation_target_from_selection(&context_targets.selection, *state);
-            if (!md_bitset_empty(context_targets.hovered.atoms) && md_bitset_equal(context_targets.hovered.atoms, context_targets.selection.atoms)) {
-                representation_target_free(&context_targets.hovered);
-            }
-        }
+        // A representation of what was under the cursor, or of the selection
         const RepresentationTarget* targets[3] = { &context_targets.hovered, &context_targets.all, &context_targets.selection };
         if (!md_bitset_empty(context_targets.selection.atoms) && !md_bitset_empty(context_targets.hovered.atoms)) {
             // What was pointed at is part of the selection: the selection is what is meant first

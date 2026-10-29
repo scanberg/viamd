@@ -71,7 +71,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
 bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app);
 void representation_target_free(RepresentationTarget* target);
 bool representation_target_can_show(const ApplicationState& app, const RepresentationTarget& target, RepresentationType type);
-// A new representation of it, at the top level and opened in the window: its filter is the most telling expression that
+// A new representation of it, at the top level, its properties open the next time the window lists it: its filter is the most telling expression that
 // picks exactly its atoms (script_suggest_selection). NULL when none fits in a filter.
 Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type);
 

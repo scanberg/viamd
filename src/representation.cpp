@@ -1595,8 +1595,8 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
     } else {
         snprintf(rep->name, sizeof(rep->name), "%s", target.label);
     }
+    // Opened, to be styled, when the window lists it
     rep->open_properties = true;
-    app->representation.show_window = true;
     return rep;
 }
 

@@ -2288,6 +2288,10 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
 // come after them as they are drawn (formed is set for those)
 bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
 
+// Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights, and what clicking it
+// selects (the atoms of a bond, the residue of a cartoon segment, ...)
+void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const PickingHit& hit, SelectionGranularity granularity);
+
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
 str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
