@@ -45,6 +45,7 @@
 #include <filter_input.h>
 #include <property_grid.h>
 #include <density_map.h>
+#include <layer_groups.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -184,10 +185,12 @@ static const char* point_coloring_names[PointColoring_Count] = { "Layer color", 
 
 struct Layer {
     uint32_t id = 0;
+    RepresentationNode node = {};   // Where it is in the list: the group it is in (layer_groups.h). node.id is id.
     char     name[64] = "";
     bool     visible = true;
 
-    AtomFilter  filter = {};        // The structures: a set of atoms each. Empty: all atoms, as one.
+    AtomFilter  filter = {};        // The structures: a set of atoms each, within its group's subset. Empty: the
+                                    // group's structures, or without a group all atoms, as one.
     bool        use_mass = true;    // Weighted by mass
     LayerFrames frames = LayerFrames_All;
     uint32_t    period = 0;
@@ -267,10 +270,22 @@ struct Shapespace : viamd::EventHandler {
     ApplicationState* app = nullptr;
     bool show_window = false;
 
+    // In the order of the list (apply_tree): what is listed first is drawn on top
     Layer layers[MAX_LAYERS];
     int   num_layers = 0;
     uint32_t next_layer_id = 1;
-    uint32_t selected_layer = 0;
+    uint32_t selected_layer = 0;    // By id: the one the inspector shows, or
+    uint32_t selected_group = 0;    // the group it shows
+
+    LayerGroup groups[LAYER_MAX_GROUPS];
+    int   num_groups = 0;
+    uint32_t next_group_id = 1;
+    bool  tree_dirty = false;       // The layers are to be put in the order of the list again
+    static constexpr uint32_t LIST_ID = 2;  // What its rows are dragged as (LayerNodeRef)
+    // The groups read from a workspace, by the ids the file has for them
+    int      num_read_groups = 0;
+    int      read_group_file_id[LAYER_MAX_GROUPS] = {};
+    uint32_t read_group_id[LAYER_MAX_GROUPS] = {};
 
     std::vector<EvaluationRef> evaluations;
     std::vector<EvaluationRef> retired;     // Cancelled, freed once their tasks have stopped
@@ -370,6 +385,7 @@ struct Shapespace : viamd::EventHandler {
                 legacy = {};
                 read_layers = false;
                 layers_declared = false;
+                num_read_groups = 0;
                 show_sidebar = true;
                 show_grid = true;
                 break;
@@ -380,6 +396,8 @@ struct Shapespace : viamd::EventHandler {
                     deserialize_settings(state);
                 } else if (str_eq(section, STR_LIT("ShapeSpaceLayer"))) {
                     deserialize_layer(state);
+                } else if (str_eq(section, STR_LIT("ShapeSpaceGroup"))) {
+                    deserialize_group(state);
                 }
                 break;
             }
@@ -449,17 +467,99 @@ struct Shapespace : viamd::EventHandler {
         return layer_palette[best];
     }
 
-    Layer* add_layer(LayerFrames frames, LayerStyle style, int at = -1) {
+    const Layer* find_layer(uint32_t id) const {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return &layers[i];
+        }
+        return nullptr;
+    }
+
+    // ### The list: layers and groups
+
+    size_t tree_nodes(RepresentationNode* out[MAX_LAYERS + LAYER_MAX_GROUPS]) {
+        size_t n = 0;
+        for (int i = 0; i < num_layers; ++i) out[n++] = &layers[i].node;
+        for (int i = 0; i < num_groups; ++i) out[n++] = &groups[i].node;
+        return n;
+    }
+
+    // The tree made canonical, and the layers put in its order (moved: what points at them is no longer valid)
+    void apply_tree() {
+        RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+        representation_tree_normalize(nodes, tree_nodes(nodes));
+        // Depth first, the orders are the positions in the list: a handful, sorted in place
+        bool moved = false;
+        for (int i = 1; i < num_layers; ++i) {
+            for (int j = i; j > 0 && layers[j - 1].node.order > layers[j].node.order; --j) {
+                Layer tmp;
+                move_into(tmp, layers[j]);
+                move_into(layers[j], layers[j - 1]);
+                move_into(layers[j - 1], tmp);
+                moved = true;
+            }
+        }
+        if (moved) density_map_canvas_invalidate(&canvas);
+        tree_dirty = false;
+    }
+
+    // The tree canonical again after a node was added or changed, the layers put in order later (apply_tree)
+    void tree_changed() {
+        RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+        representation_tree_normalize(nodes, tree_nodes(nodes));
+        tree_dirty = true;
+    }
+
+    LayerGroup* find_group(uint32_t id) {
+        for (int i = 0; i < num_groups; ++i) {
+            if (groups[i].node.id == id) return &groups[i];
+        }
+        return nullptr;
+    }
+
+    const LayerGroup* find_group(uint32_t id) const {
+        for (int i = 0; i < num_groups; ++i) {
+            if (groups[i].node.id == id) return &groups[i];
+        }
+        return nullptr;
+    }
+
+    // The group a layer is in, NULL at the top level
+    const LayerGroup* layer_group(const Layer& l) const { return l.node.parent ? find_group(l.node.parent) : nullptr; }
+
+    // Its own eye, and its group's
+    bool layer_shown(const Layer& l) const {
+        if (!l.visible) return false;
+        const LayerGroup* g = layer_group(l);
+        return !g || g->visible;
+    }
+
+    // The group of what is selected, where what is added goes
+    uint32_t current_group() const {
+        if (selected_group) return selected_group;
+        if (const Layer* l = find_layer(selected_layer)) return l->node.parent;
+        return 0;
+    }
+
+    // Adds a layer: first in the group 'parent' (or at the top) for 'at' 0, last for -1. NULL when there is no room.
+    // In place in the list once the tree is applied (apply_tree).
+    Layer* add_layer(LayerFrames frames, LayerStyle style, int at = -1, uint32_t parent = 0) {
         if (num_layers >= MAX_LAYERS) return nullptr;
-        at = (at < 0 || at > num_layers) ? num_layers : at;
-        for (int i = num_layers; i > at; --i) move_into(layers[i], layers[i - 1]);
-        num_layers += 1;
-        Layer& l = layers[at];
+        Layer& l = layers[num_layers++];
+        l.eval.reset();
         new (&l) Layer();
         l.id = next_layer_id++;
+        l.node.id = l.id;
+        l.node.parent = parent;
+        if (at < 0) {
+            l.node.order = LAYER_TREE_LAST;
+        } else {
+            RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+            l.node.order = layer_tree_first_order(nodes, tree_nodes(nodes), parent);
+        }
         l.frames = frames;
         l.style = style;
         l.color = next_layer_color();
+        tree_changed();
         return &l;
     }
 
@@ -491,17 +591,17 @@ struct Shapespace : viamd::EventHandler {
         layers[num_layers].eval.reset();
         new (&layers[num_layers]) Layer();
         if (selected_layer == id) selected_layer = num_layers > 0 ? layers[MIN(idx, num_layers - 1)].id : 0;
+        tree_changed();
         density_map_canvas_invalidate(&canvas);
     }
 
-    void duplicate_layer(uint32_t id) {
-        const int idx = layer_index(id);
-        if (idx < 0 || num_layers >= MAX_LAYERS) return;
-        Layer* l = add_layer(layers[idx].frames, layers[idx].style, idx);
-        if (!l) return;
-        const Layer& src = layers[idx + 1];
-        const uint32_t new_id = l->id;
-        // What is set, not what is derived (found again)
+    // A copy of what is set, not what is derived (found again), at 'order' in the group 'parent'
+    Layer* copy_layer(uint32_t src_id, uint32_t parent, int32_t order) {
+        const int idx = layer_index(src_id);
+        if (idx < 0 || num_layers >= MAX_LAYERS) return nullptr;
+        Layer* l = add_layer(layers[idx].frames, layers[idx].style, -1, parent);
+        if (!l) return nullptr;
+        const Layer& src = layers[idx];
         STATIC_ASSERT(sizeof(l->name) == sizeof(src.name), "");
         MEMCPY(l->name, src.name, sizeof(l->name));
         l->visible = src.visible;
@@ -522,21 +622,19 @@ struct Shapespace : viamd::EventHandler {
         l->log_scale = src.log_scale;
         l->point_coloring = src.point_coloring;
         l->point_size = src.point_size;
-        l->id = new_id;
-        selected_layer = new_id;
+        l->node.order = order;
+        tree_changed();
+        return l;
     }
 
-    void move_layer(int from, int to) {
-        if (from < 0 || from >= num_layers || to < 0 || to >= num_layers || from == to) return;
-        Layer tmp;
-        move_into(tmp, layers[from]);
-        if (from < to) {
-            for (int i = from; i < to; ++i) move_into(layers[i], layers[i + 1]);
-        } else {
-            for (int i = from; i > to; --i) move_into(layers[i], layers[i - 1]);
+    // Just above it, in its group
+    void duplicate_layer(uint32_t id) {
+        const Layer* src = find_layer(id);
+        if (!src) return;
+        if (Layer* l = copy_layer(id, src->node.parent, src->node.order - 1)) {
+            selected_layer = l->id;
+            selected_group = 0;
         }
-        move_into(layers[to], tmp);
-        density_map_canvas_invalidate(&canvas);
     }
 
     void clear_layers() {
@@ -545,25 +643,162 @@ struct Shapespace : viamd::EventHandler {
             new (&layers[i]) Layer();
         }
         num_layers = 0;
+        for (int i = 0; i < num_groups; ++i) {
+            layer_group_free(&groups[i]);
+            groups[i] = LayerGroup{};
+        }
+        num_groups = 0;
         selected_layer = 0;
+        selected_group = 0;
+        tree_dirty = false;
         density_map_canvas_invalidate(&canvas);
     }
 
-    // The shape of the frame shown, its trajectory as points coloured by time, and the density over it
+    // ### Groups
+
+    // A group at 'order' of the top level, NULL when there is no room
+    LayerGroup* add_group(int32_t order) {
+        if (num_groups >= LAYER_MAX_GROUPS) return nullptr;
+        LayerGroup& g = groups[num_groups++];
+        g = LayerGroup{};
+        g.node = {next_group_id++, 0, order, true};
+        tree_changed();
+        return &g;
+    }
+
+    // A group of the layer, where it was, with the layer's structures as its subset: the layers added to it show them
+    void group_layer(uint32_t id) {
+        Layer* l = find_layer(id);
+        if (!l || l->node.parent != 0) return;
+        LayerGroup* g = add_group(l->node.order - 1);
+        if (!g) return;
+        MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
+        l->filter.text[0] = '\0';
+        l->structs_key = 0;
+        l->node.parent = g->node.id;
+        l->node.order = LAYER_TREE_LAST;
+        tree_changed();
+        selected_group = g->node.id;
+        selected_layer = 0;
+    }
+
+    // In a group now: a filter that is the group's own says nothing more (and within it would give its structures
+    // again, or fewer), so it goes
+    void entered_group(Layer& l) {
+        l.structs_key = 0;
+        const LayerGroup* g = layer_group(l);
+        if (g && !g->follow_selection && g->filter.text[0] && strcmp(g->filter.text, l.filter.text) == 0) l.filter.text[0] = '\0';
+    }
+
+    // Into the group (0: out of any), last in it, with its filter as it is: what it shows is then within the group's
+    void move_layer_to_group(uint32_t id, uint32_t group_id) {
+        Layer* l = find_layer(id);
+        if (!l || l->node.parent == group_id) return;
+        l->node.parent = group_id;
+        l->node.order = LAYER_TREE_LAST;
+        entered_group(*l);
+        tree_changed();
+    }
+
+    void move_node(LayerNodeRef src, LayerNodeRef target, RepresentationDrop drop) {
+        RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+        const size_t n = tree_nodes(nodes);
+        const int si = representation_tree_find(nodes, n, src.group, src.id);
+        const int ti = representation_tree_find(nodes, n, target.group, target.id);
+        if (si < 0 || ti < 0) return;
+        if (layer_tree_move(nodes, n, (size_t)si, ti, drop)) {
+            if (!src.group) {
+                if (Layer* l = find_layer(src.id)) entered_group(*l);
+            }
+            tree_dirty = true;
+        }
+    }
+
+    // With what is in it: removed, or (ungroup) taken out to where the group was, each with a filter that keeps what it
+    // shows. A copy: just below it, with copies of what is in it.
+    void group_action(uint32_t id, LayerGroupAction action) {
+        LayerGroup* g = find_group(id);
+        if (!g || action == LayerGroupAction_None) return;
+        if (action == LayerGroupAction_Duplicate) {
+            char name[sizeof(g->name)];
+            char filter[sizeof(g->filter.text)];
+            MEMCPY(name, g->name, sizeof(name));
+            MEMCPY(filter, g->filter.text, sizeof(filter));
+            const bool visible = g->visible, open = g->open, follow = g->follow_selection;
+            LayerGroup* copy = add_group(g->node.order + 1);
+            if (!copy) return;
+            MEMCPY(copy->name, name, sizeof(name));
+            MEMCPY(copy->filter.text, filter, sizeof(filter));
+            copy->visible = visible;
+            copy->open = open;
+            copy->follow_selection = follow;
+            const uint32_t copy_id = copy->node.id;
+            uint32_t ids[MAX_LAYERS];
+            int32_t orders[MAX_LAYERS];
+            int n = 0;
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].node.parent == id) {
+                    ids[n] = layers[i].id;
+                    orders[n] = layers[i].node.order;
+                    ++n;
+                }
+            }
+            for (int k = 0; k < n; ++k) copy_layer(ids[k], copy_id, orders[k]);
+            selected_group = copy_id;
+            selected_layer = 0;
+            return;
+        }
+        if (action == LayerGroupAction_Remove) {
+            for (int i = num_layers - 1; i >= 0; --i) {
+                if (layers[i].node.parent == id) remove_layer(layers[i].id);
+            }
+            g = find_group(id);
+        } else if (action == LayerGroupAction_Ungroup) {
+            const int32_t at = g->node.order + 1;   // Where the group was, in the order they were in it
+            for (int i = 0; i < num_layers; ++i) {
+                Layer& l = layers[i];
+                if (l.node.parent != id) continue;
+                // A group following the selection has no filter to keep: what the layer shows changes
+                layer_group_compose_filter(l.filter.text, sizeof(l.filter.text), *g);
+                l.node.parent = 0;
+                l.node.order = at;
+                l.structs_key = 0;
+            }
+        }
+        if (!g) return;
+        const int gi = (int)(g - groups);
+        layer_group_free(g);
+        for (int i = gi; i + 1 < num_groups; ++i) groups[i] = groups[i + 1];
+        num_groups -= 1;
+        groups[num_groups] = LayerGroup{};
+        if (selected_group == id) selected_group = 0;
+        tree_changed();
+    }
+
+    // The residues of the protein in a group, as an example of one: their shapes in the frame shown, and the density
+    // of them over the trajectory. What is added to the group is of the same residues, and its subset is where to
+    // narrow them all at once. Below it the shape of the whole system in the frame shown, which a system without a
+    // protein has too.
     void create_default_layers() {
         clear_layers();
-        if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points)) {
-            cur->color = ImVec4(1, 1, 1, 1);
-            cur->point_size = 7.0f;
+        uint32_t group = 0;
+        if (LayerGroup* g = add_group(LAYER_TREE_LAST)) {
+            snprintf(g->name, sizeof(g->name), "Residues");
+            snprintf(g->filter.text, sizeof(g->filter.text), "residue(protein())");
+            group = g->node.id;
+        }
+        if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points, -1, group)) {
+            cur->point_coloring = PointColoring_Structure;
+            cur->point_size = 6.0f;
             selected_layer = cur->id;
         }
-        if (Layer* pts = add_layer(LayerFrames_All, LayerStyle_Points)) {
-            pts->point_coloring = PointColoring_Time;
-            pts->point_size = 3.0f;
-            pts->opacity = 0.8f;
-        }
-        if (Layer* den = add_layer(LayerFrames_All, LayerStyle_Contours)) {
+        if (Layer* den = add_layer(LayerFrames_All, LayerStyle_Contours, -1, group)) {
             den->color = ImVec4(1.0f, 0.62f, 0.20f, 1.0f);
+        }
+        if (Layer* sys = add_layer(LayerFrames_Current, LayerStyle_Points)) {
+            snprintf(sys->name, sizeof(sys->name), "Whole system");
+            sys->color = ImVec4(1, 1, 1, 1);
+            sys->point_size = 8.0f;
         }
     }
 
@@ -620,8 +855,11 @@ struct Shapespace : viamd::EventHandler {
     // The structures of the layer: found again when what they are found from changes
     void update_structures(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
+        const LayerGroup* g = layer_group(l);
+        const bool in_context = g && layer_group_has_context(*g);
         uint64_t key = md_hash64_combine(system_generation, md_hash64(l.filter.text, strlen(l.filter.text), app->script.ir_fingerprint));
         key = md_hash64_combine(key, app->mold.sys.topology_version);
+        if (in_context) key = md_hash64_combine(key, g->hash);
         // What depends on the coordinates follows the frame shown as points of it, but is taken once for frames that
         // are many (all of them would have to be evaluated again at every frame)
         if (l.filter.text[0] && l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
@@ -636,11 +874,18 @@ struct Shapespace : viamd::EventHandler {
 
         const size_t num_atoms = app->mold.sys.atom.count;
         if (num_atoms == 0) return;
-        if (l.filter.text[0] == '\0') {
+        if (in_context && !g->valid) {
+            // Nothing within a group whose subset does not evaluate
+        } else if (l.filter.text[0] == '\0' && in_context) {
+            // The group's structures
+            for (size_t i = 0; i < md_array_size(g->sets); ++i) md_array_push(l.structures, md_bitset_copy(g->sets[i], heap), heap);
+            l.structs_valid = md_array_size(l.structures) > 0;
+        } else if (l.filter.text[0] == '\0') {
             md_array_push(l.structures, md_bitset_range(0, (uint32_t)num_atoms), heap);
             l.structs_valid = true;
         } else {
-            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, filter_context(app), heap) && md_array_size(l.structures) > 0;
+            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, layer_group_filter_context(app, in_context ? g : nullptr), heap) &&
+                              md_array_size(l.structures) > 0;
         }
         uint64_t h = 0x5A9E;
         for (size_t i = 0; i < md_array_size(l.structures); ++i) h = md_bitset_hash64(l.structures[i], h + i);
@@ -793,10 +1038,24 @@ struct Shapespace : viamd::EventHandler {
 
     void update() {
         if (!app || !show_window) return;
+        if (tree_dirty) apply_tree();
+
+        // The groups' subsets, before what is within them. One that depends on the coordinates follows the frame only
+        // when every layer in it is of the frame shown: what is over frames could not follow it.
+        for (int gi = 0; gi < num_groups; ++gi) {
+            LayerGroup& g = groups[gi];
+            bool follow_frame = true;
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].node.parent == g.node.id && layers[i].frames != LayerFrames_Current) follow_frame = false;
+            }
+            const uint64_t generation = md_hash64_combine(system_generation, follow_frame ? state_generation : 0);
+            layer_group_update(&g, app, generation, follow_frame, true);
+        }
+
         for (int i = 0; i < num_layers; ++i) {
             Layer& l = layers[i];
             update_structures(l);
-            if (!l.visible) continue;
+            if (!layer_shown(l)) continue;
             if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
                 update_current(l);
             }
@@ -849,9 +1108,30 @@ struct Shapespace : viamd::EventHandler {
         viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, STR_LIT("ShowGrid"), show_grid);
         viamd::write_int(state, STR_LIT("Layers"), num_layers);
-        for (int i = 0; i < num_layers; ++i) {
-            const Layer& l = layers[i];
+        // In the order of the list: a group, then what is in it
+        RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+        const size_t n = tree_nodes(nodes);
+        int top[MAX_LAYERS + LAYER_MAX_GROUPS];
+        const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+        for (size_t k = 0; k < nt; ++k) {
+            if (top[k] < num_layers) {
+                serialize_layer(state, layers[top[k]]);
+                continue;
+            }
+            const LayerGroup& g = groups[top[k] - num_layers];
+            layer_group_serialize(state, STR_LIT("ShapeSpaceGroup"), g);
+            int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, n, g.node.id);
+            for (size_t c = 0; c < nk; ++c) {
+                if (kids[c] < num_layers) serialize_layer(state, layers[kids[c]]);
+            }
+        }
+    }
+
+    void serialize_layer(viamd::serialization_state_t& state, const Layer& l) {
+        {
             viamd::write_section_header(state, STR_LIT("ShapeSpaceLayer"));
+            if (l.node.parent) viamd::write_int(state, STR_LIT("Group"), (int64_t)l.node.parent);
             if (l.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(l.name));
             viamd::write_bool(state, STR_LIT("Visible"), l.visible);
             if (l.filter.text[0]) viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(l.filter.text));
@@ -904,6 +1184,29 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
+    // As the list is read: each last of where it goes
+    void deserialize_group(viamd::deserialization_state_t& state) {
+        if (!read_layers) {
+            clear_layers();
+            read_layers = true;
+        }
+        str_t ident, arg;
+        LayerGroup* g = add_group(LAYER_TREE_LAST);
+        if (!g) {
+            while (viamd::next_entry(ident, arg, state)) {}
+            return;
+        }
+        int file_id = 0;
+        while (viamd::next_entry(ident, arg, state)) {
+            layer_group_deserialize_entry(g, ident, arg, &file_id);
+        }
+        if (num_read_groups < LAYER_MAX_GROUPS) {
+            read_group_file_id[num_read_groups] = file_id;
+            read_group_id[num_read_groups] = g->node.id;
+            num_read_groups += 1;
+        }
+    }
+
     void deserialize_layer(viamd::deserialization_state_t& state) {
         if (!read_layers) {
             clear_layers();
@@ -919,6 +1222,16 @@ struct Shapespace : viamd::EventHandler {
             str_t s = {};
             if (str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(l->name, sizeof(l->name), arg);
+            } else if (str_eq_cstr(ident, "Group")) {
+                int file_id = 0;
+                if (viamd::extract_int(file_id, arg)) {
+                    for (int k = 0; k < num_read_groups; ++k) {
+                        if (read_group_file_id[k] == file_id) {
+                            l->node.parent = read_group_id[k];
+                            tree_changed();     // Last in it
+                        }
+                    }
+                }
             } else if (str_eq_cstr(ident, "Visible")) {
                 viamd::extract_bool(l->visible, arg);
             } else if (str_eq_cstr(ident, "Filter")) {
@@ -1027,7 +1340,9 @@ struct Shapespace : viamd::EventHandler {
 
     void layer_stats(char* buf, size_t cap, const Layer& l) const {
         if (!l.structs_valid) {
-            snprintf(buf, cap, "%s", l.filter.result.error[0] ? l.filter.result.error : "no structures");
+            const LayerGroup* g = layer_group(l);
+            if (g && layer_group_has_context(*g) && !g->valid) snprintf(buf, cap, "the group's subset does not evaluate");
+            else snprintf(buf, cap, "%s", l.filter.text[0] && l.filter.result.error[0] ? l.filter.result.error : "no structures");
             return;
         }
         const size_t n = md_array_size(l.structures);
@@ -1074,7 +1389,7 @@ struct Shapespace : viamd::EventHandler {
         int num_draws = 0;
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || l.style == LayerStyle_Points || l.opacity <= 0.0f) continue;
+            if (!layer_shown(l) || l.style == LayerStyle_Points || l.opacity <= 0.0f) continue;
             if (layer_draw(&draws[num_draws], l)) ++num_draws;
         }
         int w = 0, h = 0;
@@ -1204,7 +1519,7 @@ struct Shapespace : viamd::EventHandler {
         bool has_source[MAX_LAYERS] = {};
         for (int i = 0; i < num_layers; ++i) {
             layers[i].point_count = 0;
-            if (layers[i].visible) has_source[i] = point_source(&sources[i], layers[i]);
+            if (layer_shown(layers[i])) has_source[i] = point_source(&sources[i], layers[i]);
         }
 
         // What the pointer is on: the nearest point within reach, of the layer on top
@@ -1378,24 +1693,33 @@ struct Shapespace : viamd::EventHandler {
         ImPlot::PopPlotClipRect();
     }
 
-    Layer* add_period_layer(uint32_t period_id) {
+    // A layer over a period, in the group of what is selected (or in 'group' when given)
+    Layer* add_period_layer(uint32_t period_id, uint32_t group = UINT32_MAX) {
         const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, period_id);
         if (!p) return nullptr;
-        // Of the structures of the layer selected
+        Layer* l = add_like(LayerFrames_Period, LayerStyle_Contours, group == UINT32_MAX ? current_group() : group);
+        if (!l) return nullptr;
+        l->period = period_id;
+        l->color = ImVec4(p->color.x, p->color.y, p->color.z, 1.0f);
+        return l;
+    }
+
+    // A layer first in the group 'group', selected. In a group it shows the group's structures; at the top level it
+    // is of the structures of the layer selected, if any. The weighting is that of the layer selected either way.
+    Layer* add_like(LayerFrames frames, LayerStyle style, uint32_t group) {
         const Layer* like = find_layer(selected_layer);
         char filter[sizeof(AtomFilter::text)] = "";
         bool use_mass = true;
         if (like) {
-            MEMCPY(filter, like->filter.text, sizeof(filter));
+            if (group == 0 && like->node.parent == 0) MEMCPY(filter, like->filter.text, sizeof(filter));
             use_mass = like->use_mass;
         }
-        Layer* l = add_layer(LayerFrames_Period, LayerStyle_Contours, 0);
+        Layer* l = add_layer(frames, style, 0, group);
         if (!l) return nullptr;
-        l->period = period_id;
-        l->color = ImVec4(p->color.x, p->color.y, p->color.z, 1.0f);
         MEMCPY(l->filter.text, filter, sizeof(filter));
         l->use_mass = use_mass;
         selected_layer = l->id;
+        selected_group = 0;
         return l;
     }
 
@@ -1569,34 +1893,71 @@ struct Shapespace : viamd::EventHandler {
         ImGui::PopStyleVar();
     }
 
-    void draw_layer_row(int idx, int* drag_from, int* drag_to, uint32_t* remove_id, uint32_t* duplicate_id) {
-        Layer& l = layers[idx];
+    // What the rows asked for, done once the list is drawn
+    struct SidebarActions {
+        uint32_t remove = 0;
+        uint32_t duplicate = 0;
+        uint32_t group = 0;             // A new group of this layer
+        uint32_t to_group_layer = 0;    // This layer into to_group (0: out of any)
+        uint32_t to_group = 0;
+        uint32_t group_id = 0;
+        LayerGroupAction group_action = LayerGroupAction_None;
+        bool     move = false;
+        LayerNodeRef move_src, move_target;
+        RepresentationDrop move_drop = RepresentationDrop_Before;
+        uint32_t period = 0;            // A layer over it in period_group
+        uint32_t period_group = 0;
+    };
+
+    void draw_layer_row(Layer& l, float indent, RepresentationNode* const nodes[], size_t num_nodes, SidebarActions* act) {
+        ImGui::PushID("layer");
         ImGui::PushID((int)l.id);
         const float line_h = ImGui::GetTextLineHeight();
         const float row_h = line_h * 2.0f + 8.0f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
         const ImVec2 row_min = ImGui::GetCursorScreenPos();
         const float row_w = ImGui::GetContentRegionAvail().x;
+        const ImRect row_rect(row_min, ImVec2(row_min.x + row_w, row_min.y + row_h));
+
+        char label[128], stats[128];
+        layer_label(label, sizeof(label), l);
+        layer_stats(stats, sizeof(stats), l);
 
         ImGui::SetNextItemAllowOverlap();
-        if (ImGui::Selectable("##row", selected_layer == l.id, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h))) {
+        if (ImGui::Selectable("##row", selected_layer == l.id && !selected_group, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h))) {
             selected_layer = l.id;
+            selected_group = 0;
         }
         const bool row_hovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemActive() && !ImGui::IsItemHovered()) {
-            const float dy = ImGui::GetMouseDragDelta(0).y;
-            if (fabsf(dy) > row_h * 0.6f) {
-                *drag_from = idx;
-                *drag_to = idx + (dy < 0 ? -1 : 1);
-                ImGui::ResetMouseDragDelta();
-            }
-        }
+        layer_tree_drag_source({LIST_ID, l.id, false}, label);
         if (ImGui::BeginPopupContextItem("##menu")) {
             selected_layer = l.id;
-            if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, num_layers < MAX_LAYERS)) *duplicate_id = l.id;
-            if (ImGui::MenuItem("Move up", nullptr, false, idx > 0)) { *drag_from = idx; *drag_to = idx - 1; }
-            if (ImGui::MenuItem("Move down", nullptr, false, idx + 1 < num_layers)) { *drag_from = idx; *drag_to = idx + 1; }
+            selected_group = 0;
+            if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, num_layers < MAX_LAYERS)) act->duplicate = l.id;
+            if (l.node.parent == 0) {
+                if (ImGui::MenuItem(ICON_FA_FOLDER " Group", nullptr, false, num_groups < LAYER_MAX_GROUPS)) act->group = l.id;
+                ImGui::SetItemTooltip("A new group of it, with its structures as the group's: the layers added to the group show them");
+            }
+            if (ImGui::BeginMenu("Move to", num_groups > 0)) {
+                if (l.node.parent != 0 && ImGui::MenuItem("Out of the group")) {
+                    act->to_group_layer = l.id;
+                    act->to_group = 0;
+                }
+                for (int gi = 0; gi < num_groups; ++gi) {
+                    if (groups[gi].node.id == l.node.parent) continue;
+                    char gl[96];
+                    layer_group_label(gl, sizeof(gl), groups[gi]);
+                    ImGui::PushID(gi);
+                    if (ImGui::MenuItem(gl)) {
+                        act->to_group_layer = l.id;
+                        act->to_group = groups[gi].node.id;
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
-            if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) *remove_id = l.id;
+            if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) act->remove = l.id;
             ImGui::EndPopup();
         }
         if (ImGui::BeginDragDropTarget()) {
@@ -1604,8 +1965,17 @@ struct Shapespace : viamd::EventHandler {
                 l.frames = LayerFrames_Period;
                 l.period = *(const uint32_t*)payload->Data;
                 selected_layer = l.id;
+                selected_group = 0;
             }
             ImGui::EndDragDropTarget();
+        }
+        LayerNodeRef src;
+        RepresentationDrop drop;
+        if (layer_tree_drop_target(row_rect, row_min.x, {LIST_ID, l.id, false}, false, nodes, num_nodes, &src, &drop)) {
+            act->move = true;
+            act->move_src = src;
+            act->move_target = {LIST_ID, l.id, false};
+            act->move_drop = drop;
         }
         if (row_hovered && l.frames == LayerFrames_Period) timeline_periods_highlight(l.period);
         // Hovering a layer lights its structures up
@@ -1631,14 +2001,14 @@ struct Shapespace : viamd::EventHandler {
         const bool by_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time;
         density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, l.colormap, l.visible ? 1.0f : 0.35f);
 
-        char label[128], stats[128];
-        layer_label(label, sizeof(label), l);
-        layer_stats(stats, sizeof(stats), l);
         const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
         const ImVec4 clip = ImVec4(text_min.x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), text_min, ImGui::GetColorU32(l.visible ? ImGuiCol_Text : ImGuiCol_TextDisabled), label, nullptr, 0.0f, &clip);
+        // On the selection's colour the disabled one is too faint to read
+        const bool selected = selected_layer == l.id && !selected_group;
+        const ImU32 dim_col = selected ? ImGui::GetColorU32(ImGuiCol_Text, 0.7f) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(text_min.x, text_min.y + line_h + 1),
-                    !l.structs_valid ? IM_COL32(255, 110, 110, 255) : ImGui::GetColorU32(ImGuiCol_TextDisabled), stats, nullptr, 0.0f, &clip);
+                    !l.structs_valid ? IM_COL32(255, 110, 110, 255) : dim_col, stats, nullptr, 0.0f, &clip);
         // Working on it: its evaluation or its density
         if (l.job || (l.eval && !l.eval->complete())) {
             const float t = (float)ImGui::GetTime();
@@ -1647,45 +2017,112 @@ struct Shapespace : viamd::EventHandler {
             dl->PathStroke(ImGui::GetColorU32(ImGuiCol_TextDisabled), 0, 1.5f);
         }
 
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + row_h + 2));
+        ImGui::SetCursorScreenPos(ImVec2(row_min.x - indent, row_min.y + row_h + 2));
         ImGui::Dummy(ImVec2(0, 0));
+        ImGui::PopID();
         ImGui::PopID();
     }
 
+    void draw_group(LayerGroup& g, RepresentationNode* const nodes[], size_t num_nodes, SidebarActions* act) {
+        int num_in = 0;
+        for (int i = 0; i < num_layers; ++i) num_in += layers[i].node.parent == g.node.id ? 1 : 0;
+        const bool context = layer_group_has_context(g);
+        const bool invalid = context && !g.valid;
+        char summary[64];
+        if (invalid) {
+            snprintf(summary, sizeof(summary), "does not evaluate");
+        } else if (context) {
+            const size_t ns = md_array_size(g.sets);
+            snprintf(summary, sizeof(summary), "%zu structure%s", ns, ns == 1 ? "" : "s");
+        } else {
+            snprintf(summary, sizeof(summary), "%d layer%s", num_in, num_in == 1 ? "" : "s");
+        }
+
+        const LayerGroupRow row = layer_group_row(g, LIST_ID, selected_group == g.node.id, summary, invalid);
+        if (row.clicked) {
+            selected_group = g.node.id;
+            selected_layer = 0;
+        }
+        if (row.action != LayerGroupAction_None) {
+            act->group_id = g.node.id;
+            act->group_action = row.action;
+        }
+        // Its structures lit up
+        if (row.hovered && context && g.valid) {
+            highlights_now = true;
+            md_bitmask_clear(&app->selection.highlight_mask);
+            md_bitmask_or(&app->selection.highlight_mask, g.atoms);
+        }
+
+        ImGui::PushID("group_drop");
+        ImGui::PushID((int)g.node.id);
+        LayerNodeRef src;
+        RepresentationDrop drop;
+        if (layer_tree_drop_target(row.rect, row.x0, {LIST_ID, g.node.id, true}, g.open, nodes, num_nodes, &src, &drop)) {
+            act->move = true;
+            act->move_src = src;
+            act->move_target = {LIST_ID, g.node.id, true};
+            act->move_drop = drop;
+        }
+        // A period from the timeline: a layer over it, in the group
+        if (ImGui::BeginDragDropTargetCustom(row.rect, ImGui::GetID("##period"))) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
+                act->period = *(const uint32_t*)payload->Data;
+                act->period_group = g.node.id;
+            }
+            ImGui::EndDragDropTarget();
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+
+        if (!g.open) return;
+        // What is within a hidden group is dimmed: hidden too, whatever its own eye says
+        if (!g.visible) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+        int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
+        const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, num_nodes, g.node.id);
+        for (size_t k = 0; k < nk; ++k) {
+            if (kids[k] < num_layers) draw_layer_row(layers[kids[k]], ImGui::GetStyle().IndentSpacing, nodes, num_nodes, act);
+        }
+        if (nk == 0) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetStyle().IndentSpacing);
+            ImGui::TextDisabled("Empty: drag layers here, or add with +");
+        }
+        if (!g.visible) ImGui::PopStyleVar();
+    }
+
+    // What is added goes first in the group of what is selected: a layer there shows the group's structures
     void draw_add_menu() {
-        // Of the structures of the layer selected
-        const Layer* like = find_layer(selected_layer);
-        auto add = [&](LayerFrames frames, LayerStyle style) -> Layer* {
-            char filter[sizeof(AtomFilter::text)] = "";
-            bool use_mass = true;
-            if (like) {
-                MEMCPY(filter, like->filter.text, sizeof(filter));
-                use_mass = like->use_mass;
-            }
-            Layer* l = add_layer(frames, style, 0);
-            if (l) {
-                MEMCPY(l->filter.text, filter, sizeof(filter));
-                l->use_mass = use_mass;
-                selected_layer = l->id;
-            }
-            return l;
-        };
+        const uint32_t group = current_group();
+        if (const LayerGroup* g = find_group(group)) {
+            char gl[96];
+            layer_group_label(gl, sizeof(gl), *g);
+            ImGui::TextDisabled("In %s", gl);
+        }
         const bool room = num_layers < MAX_LAYERS;
         if (ImGui::MenuItem("Current frame", nullptr, false, room)) {
-            if (Layer* l = add(LayerFrames_Current, LayerStyle_Points)) l->point_size = 7.0f;
+            if (Layer* l = add_like(LayerFrames_Current, LayerStyle_Points, group)) l->point_size = 7.0f;
         }
-        if (ImGui::MenuItem("All frames", nullptr, false, room)) add(LayerFrames_All, LayerStyle_Contours);
+        if (ImGui::MenuItem("All frames", nullptr, false, room)) add_like(LayerFrames_All, LayerStyle_Contours, group);
         const TimelinePeriods& ps = app->timeline.periods;
         if (ImGui::BeginMenu("Period", ps.count > 0 && room)) {
             for (int i = 0; i < ps.count; ++i) {
                 char label[TIMELINE_PERIOD_NAME_CAP + 16];
                 snprintf(label, sizeof(label), "%s###p%u", ps.items[i].name, ps.items[i].id);
-                if (ImGui::MenuItem(label)) add_period_layer(ps.items[i].id);
+                if (ImGui::MenuItem(label)) add_period_layer(ps.items[i].id, group);
                 if (ImGui::IsItemHovered()) timeline_periods_highlight(ps.items[i].id);
             }
             ImGui::EndMenu();
         }
         if (ps.count == 0) ImGui::SetItemTooltip("Mark periods in the timeline (shift-drag) to show the shapes over them");
+        ImGui::Separator();
+        if (ImGui::MenuItem(ICON_FA_FOLDER " Group", nullptr, false, num_groups < LAYER_MAX_GROUPS)) {
+            RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+            if (LayerGroup* ng = add_group(layer_tree_first_order(nodes, tree_nodes(nodes), 0))) {
+                selected_group = ng->node.id;
+                selected_layer = 0;
+            }
+        }
+        ImGui::SetItemTooltip("A group of layers that show the same structures: its subset, which the layers in it are within");
     }
 
     void draw_inspector(Layer& l) {
@@ -1707,7 +2144,17 @@ struct Shapespace : viamd::EventHandler {
         {
             const bool invalid = !l.structs_valid && l.filter.text[0];
             if (invalid) ImGui::PushInvalid();
-            filter_input("##filter", &l.filter, filter_context(app), 0, nullptr, "all atoms, as one");
+            const LayerGroup* g = layer_group(l);
+            const bool in_context = g && layer_group_has_context(*g) && g->valid;
+            char none[96];
+            if (in_context) {
+                char gl[64];
+                layer_group_label(gl, sizeof(gl), *g);
+                snprintf(none, sizeof(none), "the group's (%s)", gl);
+            } else {
+                snprintf(none, sizeof(none), "all atoms, as one");
+            }
+            filter_input("##filter", &l.filter, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, none);
             if (invalid) ImGui::PopInvalid();
             if (ImGui::IsItemHovered() && l.structs_valid) {
                 highlights_now = true;
@@ -1818,31 +2265,54 @@ struct Shapespace : viamd::EventHandler {
         ImGui::SameLine();
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
         if (ImGui::Button(ICON_FA_PLUS "##add", ImVec2(ImGui::GetFrameHeight(), 0))) ImGui::OpenPopup("##add_menu");
-        ImGui::SetItemTooltip("Add a layer, of the structures of the one selected");
+        ImGui::SetItemTooltip("Add a layer, in the group of what is selected, or a group");
         if (ImGui::BeginPopup("##add_menu")) {
             draw_add_menu();
             ImGui::EndPopup();
         }
 
-        int drag_from = -1, drag_to = -1;
-        uint32_t remove_id = 0, duplicate_id = 0;
-        for (int i = 0; i < num_layers; ++i) draw_layer_row(i, &drag_from, &drag_to, &remove_id, &duplicate_id);
-        if (num_layers == 0) ImGui::TextDisabled("No layers: add one with +");
+        // The list: what is at the top level, and in the groups open what is in them
+        SidebarActions act;
+        {
+            RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t n = tree_nodes(nodes);
+            int top[MAX_LAYERS + LAYER_MAX_GROUPS];
+            const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+            for (size_t k = 0; k < nt; ++k) {
+                if (top[k] < num_layers) draw_layer_row(layers[top[k]], 0.0f, nodes, n, &act);
+                else                     draw_group(groups[top[k] - num_layers], nodes, n, &act);
+            }
+        }
+        if (num_layers == 0 && num_groups == 0) ImGui::TextDisabled("No layers: add one with +");
 
-        if (drag_from >= 0) move_layer(drag_from, CLAMP(drag_to, 0, num_layers - 1));
-        if (duplicate_id) duplicate_layer(duplicate_id);
-        if (remove_id) remove_layer(remove_id);
+        if (act.move) move_node(act.move_src, act.move_target, act.move_drop);
+        if (act.duplicate) duplicate_layer(act.duplicate);
+        if (act.group) group_layer(act.group);
+        if (act.to_group_layer) move_layer_to_group(act.to_group_layer, act.to_group);
+        if (act.period) add_period_layer(act.period, act.period_group);
+        if (act.group_action != LayerGroupAction_None) group_action(act.group_id, act.group_action);
+        if (act.remove) remove_layer(act.remove);
 
-        if (Layer* l = find_layer(selected_layer)) {
+        if (LayerGroup* g = find_group(selected_group)) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            prop::begin("shapespace");
+            layer_group_inspector(*g, app, "structures");
+            prop::end();
+        } else if (Layer* l = find_layer(selected_layer)) {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
             draw_inspector(*l);
         }
 
-        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) && selected_layer) {
-            remove_layer(selected_layer);
+        // Delete takes the selected layer away, or the selected group with what is in it
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+            if (selected_group) group_action(selected_group, LayerGroupAction_Remove);
+            else if (selected_layer) remove_layer(selected_layer);
         }
+        if (tree_dirty) apply_tree();
     }
 
     void draw() {
