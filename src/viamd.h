@@ -1739,7 +1739,7 @@ struct ApplicationState {
         vec4_t text_color       = {1,1,1,1};
         vec4_t text_bg_color    = {0,0,0,0.5f};
 
-        uint64_t text_hash;
+        uint64_t text_hash = 0;     // Of the editor's text in the last frame: a change compiles it again (main.cpp)
 
         // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
         // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is

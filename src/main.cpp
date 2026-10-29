@@ -1201,8 +1201,19 @@ int main(int argc, char** argv) {
         }
 
         {
+            // The script is compiled again whatever changed its text. Typing is reported by the editor (its Render,
+            // above in the frame, which asks for a compilation once typing pauses), but an edit through the editor's
+            // API is not: Render takes its change as its own state before the keyboard's, and reports only that.
+            // Such an edit is a line added from the context menu, an example inserted from the script reference, a
+            // file loaded, an undo from the Edit menu; or any edit while the Script Editor window is closed, and its
+            // Render not called at all. Those are whole edits, not typing under way: compiled in this frame.
             std::string text = state.editor.GetText();
-            state.script.text_hash = md_hash64(text.c_str(), text.length(), 0);
+            const uint64_t text_hash = md_hash64(text.c_str(), text.length(), 0);
+            if (text_hash != state.script.text_hash && !state.script.compile_ir) {
+                state.script.compile_ir = true;
+                state.script.time_since_last_change = 1.0e9;
+            }
+            state.script.text_hash = text_hash;
         }
 
         if (state.script.compile_ir) {
