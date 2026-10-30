@@ -922,7 +922,9 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
 static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const IsoFieldSpec& spec) {
-    if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build)) {
+    if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
+        // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
+        (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
         md_temp_scope_t temp = md_temp_begin();
         const IsoFieldGeometry g = current_geometry(temp, state);
         IsoBuild* b = build_new(IsoBuild::Field, field_key, g.sys, g.atom_xyz, g.num_atoms);

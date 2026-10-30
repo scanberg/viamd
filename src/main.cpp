@@ -3621,6 +3621,10 @@ static void draw_async_task_window(ApplicationState* data) {
     double dmat_seconds = 0.0;
     const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
     any_task_label_visible |= dmat_preparing;
+    // the natural transition orbitals of an excited state, read on a worker thread (es_nto_ready)
+    double nto_seconds = 0.0;
+    const bool nto_warming = es_nto_warming(data, &nto_seconds) && nto_seconds > 0.25;
+    any_task_label_visible |= nto_warming;
     // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
     SurfaceFieldProgress field_progress[8];
     const size_t num_field = surface_field_progress(field_progress, ARRAY_SIZE(field_progress));
@@ -3673,6 +3677,9 @@ static void draw_async_task_window(ApplicationState* data) {
         }
         if (dmat_preparing) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
+        }
+        if (nto_warming) {
+            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Natural transition orbitals: computing");
         }
         for (size_t i = 0; i < num_field; i++) {
             const SurfaceFieldProgress& p = field_progress[i];

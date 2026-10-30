@@ -2724,8 +2724,13 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // tail of the ragged lambda axis stops it.
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
-                    const int num_lambdas = (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
-                                                                (size_t)es.excited_state_idx, LAMBDA_CUTOFF);
+                    const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
+                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
+                                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
+                    if (!nto_ready) {
+                        prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
+                        ImGui::TextDisabled("computing...");
+                    }
                     if (num_lambdas > 0) {
                         es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
 

@@ -3,6 +3,7 @@
 #include <md_dssp.h>
 #include <md_qm.h>
 
+#include <atomic>
 #include <stdarg.h>
 
 #include <md_filter.h>
@@ -1666,11 +1667,16 @@ void init_system_data(ApplicationState* data) {
 
     init_all_representations(data);
     data->script.compile_ir = true;
+
+    // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
+    // shown: the state a representation of them starts at
+    es_nto_ready(data, 0);
 }
 
 void free_system_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
+    es_nto_warm_free(data);     // its tasks were waited for above
 
     // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
     // second handle to it: MEMSET over md_system_t clears sys.alloc along with everything else, so
@@ -3289,6 +3295,84 @@ size_t es_excited_state_count(const md_system_t& sys) {
     return attr->format.shape[0];
 }
 
+// The states' NTOs read once on a worker thread: what es_nto_ready keeps. A state's status is written by its task
+// and read by the frame. A task reads the system, so it ends before the system goes: free_system_data waits for
+// every pool task (interrupt_async_tasks) before this is freed. The task is unlabelled - a labelled one could be
+// cancelled from the async info panel before it ran, leaving its state under way for good - and es_nto_warming
+// is what the panel shows instead.
+struct NtoWarm {
+    enum : uint8_t { NotBegun = 0, UnderWay = 1, Done = 2 };
+    size_t count = 0;
+    std::atomic<uint8_t>* status = nullptr;
+    std::atomic<int64_t>  under_way = 0;
+    md_tick_t t0 = 0;   // when the oldest still under way began, read only while under_way > 0
+};
+
+bool es_nto_ready(ApplicationState* state, size_t state_idx) {
+    ASSERT(state);
+    const md_system_t& sys = state->mold.sys;
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+    const size_t count = es_excited_state_count(sys);
+    if (!attr || attr->data || state_idx >= count) {
+        return true;
+    }
+    NtoWarm* w = (NtoWarm*)state->mold.nto_warm;
+    if (!w) {
+        w = new NtoWarm();
+        w->count = count;
+        w->status = new std::atomic<uint8_t>[count];
+        for (size_t i = 0; i < count; ++i) w->status[i].store(NtoWarm::NotBegun);
+        state->mold.nto_warm = w;
+    }
+    if (state_idx >= w->count) {
+        return true;
+    }
+    const uint8_t status = w->status[state_idx].load(std::memory_order_acquire);
+    if (status == NtoWarm::Done) {
+        return true;
+    }
+    if (status == NtoWarm::NotBegun) {
+        w->status[state_idx].store(NtoWarm::UnderWay, std::memory_order_relaxed);
+        if (w->under_way.fetch_add(1) == 0) w->t0 = md_tick_now();
+        const md_system_t* sys_ptr = &state->mold.sys;
+        const uint32_t idx = (uint32_t)state_idx;
+        task_system::ID task = task_system::create_pool_task(STR_LIT("##Natural transition orbitals"), [w, sys_ptr, idx]() {
+            // the weights: the reader computes the state's orbitals with them, and keeps all three
+            const md_attribute_t* a = md_attributes_find(&sys_ptr->attributes, es_path::nto_lambda);
+            if (a) {
+                const md_attribute_slice_t slice = md_attribute_slice_1(idx);
+                const size_t n = md_attribute_slice_count(a, slice);
+                md_temp_scope_t temp = md_temp_begin();
+                double* values = (double*)md_temp_alloc(temp, sizeof(double) * (n ? n : 1));
+                if (values) md_attribute_extract_f64(values, n, a, slice, md_unit_none());
+                md_temp_end(temp);
+            }
+            // done whether or not it could be read: where it is read next, it fails as loudly as it would have
+            w->status[idx].store(NtoWarm::Done, std::memory_order_release);
+            w->under_way.fetch_sub(1);
+            md_temp_trim();
+        });
+        task_system::enqueue_task(task);
+    }
+    return false;
+}
+
+bool es_nto_warming(const ApplicationState* state, double* seconds) {
+    const NtoWarm* w = state ? (const NtoWarm*)state->mold.nto_warm : nullptr;
+    const bool warming = w && w->under_way.load() > 0;
+    if (seconds) *seconds = warming ? md_tick_to_seconds(md_tick_now() - w->t0) : 0.0;
+    return warming;
+}
+
+void es_nto_warm_free(ApplicationState* state) {
+    ASSERT(state);
+    NtoWarm* w = (NtoWarm*)state->mold.nto_warm;
+    if (!w) return;
+    delete[] w->status;
+    delete w;
+    state->mold.nto_warm = nullptr;
+}
+
 size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff) {
     if (!out_values || cap == 0) {
         return 0;
@@ -4676,6 +4760,10 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             }
         }
 #endif
+        // a natural transition orbital whose state is being read on a worker thread
+        if (ready && needs_volume && es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+            ready = es_nto_ready(state, (size_t)es.excited_state_idx);
+        }
         if (ready) {
             es.vol_hash = vol_hash;
             if (needs_volume) {
