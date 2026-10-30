@@ -75,6 +75,17 @@ enum class SurfaceFieldKind {
     // and their energies (md_qm_alie_orbitals); not for natural orbitals, and not for a file without
     // orbital energies. Kohn-Sham orbital energies give lower values than Hartree-Fock ones, as usual.
     AverageLocalIonizationEnergy,
+
+    // The local electron attachment energy of the QM region (Brinck, Carlqvist and Stenlid 2016),
+    // E(r) = sum_{i >= LUMO, e_i < 0} e_i rho_i(r) / rho(r): the bound virtual orbitals - only they bind an
+    // added electron - weighted by their energies, against the ground state density; the counterpart of the
+    // ionization energy for nucleophiles. Never positive; its lowest values on an isodensity surface are where
+    // a nucleophile attacks (nucleophilic aromatic substitution, Michael additions) or a halogen bond forms (a
+    // halogen's sigma hole). Hartree. Made of the canonical orbitals and their energies
+    // (md_qm_attachment_orbitals); offered only where some virtual orbital is bound - Hartree-Fock virtuals,
+    // nearly always positive, give 0 everywhere. Defined for hybrid DFT (the paper: B3LYP/6-31+G(d,p)) and read
+    // on the 0.004 au isodensity surface; strongly method and basis dependent.
+    LocalElectronAttachmentEnergy,
     Count
 };
 
@@ -175,11 +186,12 @@ struct SurfaceFieldDesc {
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
-    return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy;
+    return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy ||
+           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy;
 }
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the
-// ionization energy the orbitals' occupations read (whether they are canonical).
+// ionization and attachment energies the orbitals' occupations (and energies) read.
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
 
 // What the Embedding Potential of a dataset is made of: how many of the environment's sites carry

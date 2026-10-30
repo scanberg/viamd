@@ -2364,6 +2364,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                 ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
                                       "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
                                       "the local ionization energy a basis and canonical orbitals with their occupations and energies,\n"
+                                      "the local electron attachment energy the same and at least one virtual orbital below zero,\n"
                                       "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
         }
@@ -2441,6 +2442,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "sum n |e| |phi|^2 / sum n |phi|^2. Lowest (red) where the least tightly held electrons are - the\n"
                               "sites an electrophile or a radical attacks - and never below the HOMO's |e|. Meant for an\n"
                               "isodensity surface (0.001-0.002 au). Kohn-Sham orbital energies give lower values than Hartree-Fock.");
+    } else if (es.field_kind == SurfaceFieldKind::LocalElectronAttachmentEnergy) {
+        ImGui::SetItemTooltip("The local electron attachment energy of the QM region on the surface: the energies of its virtual\n"
+                              "orbitals below zero, the ones that bind an added electron, weighted by their densities against the\n"
+                              "electron density. Never positive; lowest where a nucleophile attacks or a halogen bond forms (the\n"
+                              "sigma hole). Defined for hybrid DFT orbitals and read on the 0.004 au isodensity surface; it depends\n"
+                              "strongly on the method and basis, and is 0 everywhere with Hartree-Fock virtuals.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
