@@ -37,3 +37,5 @@ ring()                                  || particles(rings)
 ring(kind="aromatic")                   || particles(rings(kind='aromatic'))
 ring(size=5)                            || particles(rings(size=5))
 molecule(2)                             || molecules[1]
+smiles("c1ccccc1")                      || particles(smiles('c1ccccc1'))
+smiles("C(=O)O")                        || particles(smiles('C(=O)O'))
