@@ -2592,6 +2592,9 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 ImGui::SameLine();
+                // VIAL has no bond changes per frame yet: its bonds() are the system's
+                const bool v2 = data->script.language == script::Language::V2;
+                ImGui::BeginDisabled(v2);
                 if (ImGui::SmallButton("Copy to Script")) {
                     // The same as a script value, to count or plot: formed(d), broken(d), bond(d)
                     char args[512] = "";
@@ -2616,8 +2619,13 @@ static void draw_main_menu(ApplicationState* data) {
                     snprintf(line, sizeof(line), STR_FMT " = bond_delta(%s);", STR_ARG(ident), args);
                     script_editor::append_line(data->editor, str_from_cstr(line));
                 }
-                ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
-                                      "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");
+                ImGui::EndDisabled();
+                if (v2) {
+                    ImGui::SetItemTooltip("VIAL does not track bond changes yet: its bonds() are the bonds of the system");
+                } else {
+                    ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
+                                          "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");
+                }
 
                 if (ImGui::TreeNode("Advanced##track-bonds")) {
                     float tolerance = tracking.tolerance;
@@ -5733,6 +5741,7 @@ static void draw_debug_window(ApplicationState* data) {
 // focus stays where it is, so lookups from the script editor keep its caret.
 static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus) {
     ASSERT(state);
+    script_reference::set_language(state->script.language);     // the reference of what the script is written in
     if (str_empty(topic)) {
         script_reference::focus_search();
         take_focus = true;
@@ -5745,6 +5754,7 @@ static void open_script_reference(ApplicationState* state, str_t topic, bool tak
 
 static void draw_script_reference_window(ApplicationState* state) {
     ASSERT(state);
+    script_reference::set_language(state->script.language);
     const script_reference::Action action = script_reference::draw_window(&state->show_script_reference_window);
     if (!str_empty(action.insert_code)) {
         // Examples go in as whole lines at the cursor of the script editor

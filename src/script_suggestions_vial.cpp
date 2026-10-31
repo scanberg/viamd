@@ -316,6 +316,11 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
             if (g.ctx == 0 && (g.mask != f.mask || f.ctx != 0)) minimal = false;
             else if (g.ctx == f.ctx && g.mask != f.mask) minimal = false;
         }
+        // The element where the name does as well says less: name='O' rather than element='O' too
+        if (minimal && (f.mask & (1u << Key_Element)) && !(f.mask & (1u << Key_Name))) {
+            const uint32_t by_name = (f.mask & ~(1u << Key_Element)) | (1u << Key_Name);
+            for (size_t j = 0; j < md_array_size(fits) && minimal; ++j) minimal = !(fits[j].mask == by_name && fits[j].ctx == f.ctx);
+        }
         if (!minimal) continue;
         if (f.ctx) { sb += contexts[f.ctx].name; sb += " and "; }
         sb += "particles(";
