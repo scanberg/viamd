@@ -598,7 +598,7 @@ struct ElectronicStructureRepresentation {
     // SurfaceColoring::Field: the field, how it maps to colour, and its values on the grid of
     // density_vol - evaluated only around the isosurfaces this representation draws
     SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
-    ColorScale          field_map  = surface_field_default_scale();
+    ColorScale          field_map  = surface_field_default_scale(SurfaceFieldKind::EmbeddingPotential);
     ColorScaleIsolines  field_isolines = {};    // lines on the surfaces where the field takes given values
     SurfaceFieldVolume  field_vol  = {};
 
@@ -1315,6 +1315,9 @@ struct ApplicationState {
                                                         // alone: the image of the scene depends on them only through the
                                                         // visible and the selected atoms (representation.visibility_mask_hash,
                                                         // render.selection_hash), not through the highlighted
+        // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
+        // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
+        void*               nto_warm = nullptr;
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -2611,6 +2614,18 @@ size_t es_excited_state_count(const md_system_t& sys);
 // lambda axis is zero padded, so the cutoff ends the run in exactly the place the pairs do.
 // Returns how many were written.
 size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff);
+
+// Whether one excited state's NTOs can be read without waiting. A reader may compute them the first time they
+// are read (VeloxChem's, from the response vectors: a tenth of a second for a few hundred occupied orbitals,
+// seconds for a thousand) and keep them after, so what the frame reads - the weights, the volume, the flow
+// diagram - asks this first: false while they are being read on a worker thread, which this begins when they
+// have not been. What waits on it keeps showing what it had. True when there is nothing to wait for (resident
+// or absent).
+bool es_nto_ready(ApplicationState* state, size_t state_idx);
+// Whether any are being read on a worker thread, and for how long the oldest has been (the async info panel)
+bool es_nto_warming(const ApplicationState* state, double* seconds);
+// What es_nto_ready keeps, freed: with the system, after its pool tasks have ended
+void es_nto_warm_free(ApplicationState* state);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow

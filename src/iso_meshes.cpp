@@ -922,7 +922,9 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
 static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const IsoFieldSpec& spec) {
-    if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build)) {
+    if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
+        // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
+        (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
         md_temp_scope_t temp = md_temp_begin();
         const IsoFieldGeometry g = current_geometry(temp, state);
         IsoBuild* b = build_new(IsoBuild::Field, field_key, g.sys, g.atom_xyz, g.num_atoms);
@@ -1036,7 +1038,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
-            if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
+            if (surface_field_uses_basis(es.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
 #if MD_ENABLE_GPU
@@ -1062,7 +1064,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_str[(int)es.field_kind], nv,
+                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
                 isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);

@@ -10825,7 +10825,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 // tail of the ragged lambda axis stops it.
                 const double LAMBDA_CUTOFF = 1.0e-3;
                 double lambdas[4] = {0};
-                size_t lambda_count = es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF);
+                const bool nto_ready = es_nto_ready(&state, (size_t)export_state.nto.idx);
+                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
+                if (!nto_ready) ImGui::TextDisabled("Lambda Idx: computing...");
                 if (lambda_count > 0) {
                     if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
                         export_state.nto.lambda_idx = (int)lambda_count - 1;
@@ -13319,7 +13321,9 @@ struct QuantumChemistry : viamd::EventHandler {
             const size_t dim = nto.transition_matrix_dim;
             hash = md_hash64(nto.transition_matrix, sizeof(float) * dim * (dim + 2), hash);
         }
-        if (hash != flow.data_hash) {
+        // the NTO diagram not until the state's NTOs have been read (on a worker thread): the last one stays
+        const bool nto_pending = flow.mode == FLOW_MODE_NTO && rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
+        if (hash != flow.data_hash && !nto_pending) {
             flow.data_hash = hash;
 
             // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and

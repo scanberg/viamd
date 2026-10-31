@@ -2353,7 +2353,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                 es.coloring = c;
                 // A field this dataset can make, if the one the representation names is not
                 if (c == SurfaceColoring::Field && !surface_field_available(es.field_kind, sys)) {
-                    es.field_kind = surface_field_first_available(sys);
+                    const SurfaceFieldKind first = surface_field_first_available(sys);
+                    surface_field_scale_for_kind(&es.field_map, es.field_kind, first);
+                    es.field_kind = first;
                 }
                 update_rep = true;
             }
@@ -2361,6 +2363,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             if (!enabled && c == SurfaceColoring::Field) {
                 ImGui::SetItemTooltip("Nothing in this dataset to make a field from:\n"
                                       "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
+                                      "the local ionization energy a basis and canonical orbitals with their occupations and energies,\n"
+                                      "the local electron attachment energy the same and at least one virtual orbital below zero,\n"
                                       "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
         }
@@ -2389,11 +2393,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
     prop::row("field", status);
-    if (ImGui::BeginCombo("##field", surface_field_kind_str[(int)es.field_kind])) {
+    if (ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
         for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
             const SurfaceFieldKind kind = (SurfaceFieldKind)k;
             ImGui::BeginDisabled(!surface_field_available(kind, sys));
-            if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
+            if (ImGui::Selectable(surface_field_kind_info(kind).label, es.field_kind == kind)) {
+                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
                 es.field_kind = kind;
                 update_rep = true;
             }
@@ -2431,15 +2436,27 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
                               "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
                               "An embedding's environment is not part of it.");
+    } else if (es.field_kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
+        ImGui::SetItemTooltip("The average local ionization energy of the QM region on the surface: the orbital energies of its\n"
+                              "occupied orbitals, weighted by how much each contributes to the electron density there,\n"
+                              "sum n |e| |phi|^2 / sum n |phi|^2. Lowest (red) where the least tightly held electrons are - the\n"
+                              "sites an electrophile or a radical attacks - and never below the HOMO's |e|. Meant for an\n"
+                              "isodensity surface (0.001-0.002 au). Kohn-Sham orbital energies give lower values than Hartree-Fock.");
+    } else if (es.field_kind == SurfaceFieldKind::LocalElectronAttachmentEnergy) {
+        ImGui::SetItemTooltip("The local electron attachment energy of the QM region on the surface: the energies of its virtual\n"
+                              "orbitals below zero, the ones that bind an added electron, weighted by their densities against the\n"
+                              "electron density. Never positive; lowest where a nucleophile attacks or a halogen bond forms (the\n"
+                              "sigma hole). Defined for hybrid DFT orbitals and read on the 0.004 au isodensity surface; it depends\n"
+                              "strongly on the method and basis, and is 0 everywhere with Hartree-Fock virtuals.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
     // nothing re-evaluated: it is not an update of the representation
     // With mesh rendering the field is evaluated at the vertices of the meshes, not on a volume
     color_scale_draw_controls(&es.field_map, mesh_mode ? electronic_structure_mesh_field_span(es) : surface_field_span(vol),
-                              surface_field_unit(es.field_kind), "on surface", "its 1st to 99th percentile on the surface");
+                              surface_field_kind_info(es.field_kind).unit, "on surface", "its 1st to 99th percentile on the surface");
     // Drawn as the surface is shaded, like the colours: nothing to re-evaluate
-    color_scale_draw_isoline_controls(&es.field_isolines, es.field_map, surface_field_unit(es.field_kind));
+    color_scale_draw_isoline_controls(&es.field_isolines, es.field_map, surface_field_kind_info(es.field_kind).unit);
 
     return update_rep;
 }
@@ -2707,8 +2724,13 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // tail of the ragged lambda axis stops it.
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
-                    const int num_lambdas = (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
-                                                                (size_t)es.excited_state_idx, LAMBDA_CUTOFF);
+                    const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
+                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
+                                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
+                    if (!nto_ready) {
+                        prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
+                        ImGui::TextDisabled("computing...");
+                    }
                     if (num_lambdas > 0) {
                         es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
 
@@ -3812,7 +3834,7 @@ void draw_representation_legends(ApplicationState& state) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
             const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
             if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
-                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)rep.node.id, slot++, &es.field_isolines);
+                color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
         }
