@@ -3014,6 +3014,10 @@ void assembly_subsets_free(ApplicationState* app);
 // when it starts. So while neither runs, an IR which neither field points at is used by nothing, and
 // script_ir_collect frees it. Main thread, once per frame. A new task which uses an IR joins the check there.
 script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc);
+
+// Sets the workspace's script language: the editor's highlighting and completion follow, the script is compiled
+// again, and every filter is evaluated again in it. The text is kept as it is.
+void script_set_language(ApplicationState* state, script::Language lang);
 void script_ir_collect(ApplicationState* state);
 
 // Script visualization

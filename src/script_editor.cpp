@@ -28,7 +28,7 @@ const TextEditor::Language* language(script::Language script_lang) {
     TextEditor::Language& lang = langs[idx];
     if (!initialized[idx]) {
         initialized[idx] = true;
-        lang.name = "mdscript";
+        lang.name = script_lang == script::Language::V2 ? "VIAL" : "mdscript";
         lang.caseSensitive = true;
         lang.singleLineComment = "#";
         lang.hasSingleQuotedStrings = true;

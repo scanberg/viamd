@@ -1265,7 +1265,7 @@ int main(int argc, char** argv) {
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
                     // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections});
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, str_from_cstr(state.mold.run)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -5773,6 +5773,16 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 if (ImGui::MenuItem("Export")) {
                     state->show_property_export_window = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Language")) {
+                // The script and every filter of the workspace are in one language; the text is kept as it is
+                if (ImGui::MenuItem("mdscript (v1)", nullptr, state->script.language == script::Language::V1)) {
+                    script_set_language(state, script::Language::V1);
+                }
+                if (ImGui::MenuItem("VIAL (v2)", nullptr, state->script.language == script::Language::V2)) {
+                    script_set_language(state, script::Language::V2);
                 }
                 ImGui::EndMenu();
             }

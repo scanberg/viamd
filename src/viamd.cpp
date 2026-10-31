@@ -14,6 +14,7 @@
 
 #include <viamd.h>
 #include <representation.h>
+#include <script_editor.h>
 #include <viamd_event.h>
 #include <event.h>
 #include <loader.h>
@@ -2370,13 +2371,19 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 }
             }
         } else if (str_eq(section, STR_LIT("Script"))) {
+            // A workspace without the key is v1, as every workspace was before v2
+            script::Language lang = script::Language::V1;
             while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Text"))) {
+                if (str_eq(ident, STR_LIT("Language"))) {
+                    str_t str;
+                    if (viamd::extract_str(str, arg) && str_eq(str, STR_LIT("VIAL"))) lang = script::Language::V2;
+                } else if (str_eq(ident, STR_LIT("Text"))) {
                     str_t str;
                     viamd::extract_str(str, arg);
                     data->editor.SetText(std::string(str.ptr, str.len));
                 }
             }
+            script_set_language(data, lang);
         } else if (str_eq(section, STR_LIT("Selection"))) {
             str_t label = {};
             md_bitset_t mask = {};
@@ -2720,6 +2727,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     {
         std::string text = app_state->editor.GetText();
         viamd::write_section_header(state, STR_LIT("Script"));
+        // Written for v2 alone, so a v1 workspace is as it was
+        if (app_state->script.language == script::Language::V2) viamd::write_str(state, STR_LIT("Language"), STR_LIT("VIAL"));
         viamd::write_str(state, STR_LIT("Text"), str_t{text.c_str(), text.size()});
     }
 
@@ -6768,6 +6777,17 @@ script::Program* script_ir_create(ApplicationState* state, str_t src, const scri
     script::Program* ir = script::compile(state->script.language, src, desc, state->allocator.persistent);
     md_array_push(state->script.all_irs, ir, state->allocator.persistent);
     return ir;
+}
+
+void script_set_language(ApplicationState* state, script::Language lang) {
+    ASSERT(state);
+    if (state->script.language == lang) return;
+    state->script.language = lang;
+    state->editor.SetLanguage(script_editor::language(lang));
+    script_editor::enable_autocomplete(state->editor, lang, &state->mold.sys);
+    state->script.compile_ir = true;
+    state->script.time_since_last_change = 1.0e9;     // now, not after the pause that follows an edit
+    flag_all_representations_as_dirty(state);
 }
 
 void script_ir_collect(ApplicationState* state) {
