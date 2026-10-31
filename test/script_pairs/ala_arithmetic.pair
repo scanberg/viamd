@@ -1,0 +1,6 @@
+# Arithmetic on a measurement
+# data: 1ALA-560ns.pdb
+=== v1
+s = distance(1, 30) * 2.0 - 1.0;
+=== vial
+s = distance(particles[0], particles[29]) * 2.0 - 1.0

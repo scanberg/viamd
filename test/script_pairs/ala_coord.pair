@@ -1,0 +1,6 @@
+# A coordinate per frame: v1's atom(1) is VIAL's particles[0]
+# data: 1ALA-560ns.pdb
+=== v1
+z = coord_z(atom(1));
+=== vial
+z = particles[0].z

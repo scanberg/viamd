@@ -1,0 +1,7 @@
+# Residues near the first one: v1 counts by unit, VIAL counts the units a selector gives
+# data: 1ALA-560ns.pdb
+=== v1
+n = count(within(6.0, residue(1)), "residue");
+=== vial
+r0 = residues[0]
+n = len(residues(within(6.0, of=r0) and not r0))

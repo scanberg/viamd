@@ -1,0 +1,6 @@
+# Atoms in a slab of z per frame: v1's within_z is VIAL's mask on a set
+# data: catalyst.gro catalyst.xtc
+=== v1
+ns = count(within_z(20:25));
+=== vial
+ns = count(particles[particles.z in 20.0..25.0])

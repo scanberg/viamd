@@ -1,0 +1,6 @@
+# The closest approach of two residues: v1's distance_min is VIAL's between='closest'
+# data: 1ALA-560ns.pdb
+=== v1
+dm = distance_min(residue(1), residue(15));
+=== vial
+dm = distance(residues[0], residues[14], between='closest')

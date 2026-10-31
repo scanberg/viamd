@@ -1,0 +1,7 @@
+# The anatomy of lipids: v1's head() and tail() are VIAL's heads and tails, as units
+# data: dppc64.pdb
+lipid()                                 || lipid
+head()                                  || particles(heads)
+tail()                                  || particles(tails)
+head() or tail()                        || particles(heads) or particles(tails)
+residue(1) and tail()                   || residues[0] and particles(tails)

@@ -1,0 +1,7 @@
+# Nucleic acids: the base, the nucleoside and the backbone of DNA
+# data: nucl-dna.gro
+nucleic()                               || nucleic
+nucleobase()                            || nucleobase
+nucleoside()                            || nucleoside
+backbone() and nucleic()                || backbone and nucleic
+nucleobase() and resname("DA*")         || nucleobase and particles(resname='DA*')

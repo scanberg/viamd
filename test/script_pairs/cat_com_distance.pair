@@ -1,0 +1,6 @@
+# Between the centres of mass of the catalyst and the nanotube per frame
+# data: catalyst.gro catalyst.xtc
+=== v1
+d = distance(com(resname("R2M")), com(resname("CNT")));
+=== vial
+d = distance(particles(resname='R2M').com, particles(resname='CNT').com)

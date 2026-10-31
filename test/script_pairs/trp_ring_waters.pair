@@ -1,0 +1,7 @@
+# Waters near the aromatic rings of tryptophan per frame, counted by residue
+# data: tryptophan-md.gro tryptophan-md.trr
+=== v1
+nw = count(within(3.5, ring(kind="aromatic") in resname("TRP")) and water(), "residue");
+=== vial
+aro = particles(rings(kind='aromatic', scope=particles(resname='TRP')))
+nw = len(residues(within(3.5, of=aro) and water))

@@ -1,0 +1,7 @@
+# Every atom of one residue against every atom of another per frame: v1's distance_pair is VIAL's distance over a new
+# axis, flattened to v1's layout (b varying fastest)
+# data: 1ALA-560ns.pdb
+=== v1
+dp = distance_pair(residue(1), residue(2));
+=== vial
+dp = flatten(distance(residues[0].xyz[:, None], residues[1].xyz))
