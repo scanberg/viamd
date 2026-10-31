@@ -364,7 +364,7 @@ UTEST(script_v2, filters) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const script::Language V2 = script::Language::V2;
-    script::Program* p = compile_v2("ca = particles(name='CA')\n", alloc);
+    script::Program* p = compile_v2("ca = particles(name='CA')\nres = residues()\n", alloc);
     script::FilterCtx ctx;
     ctx.sys = &peptide()->sys;
     ctx.state = &peptide()->state;
@@ -389,6 +389,14 @@ UTEST(script_v2, filters) {
     r = script::filter_sets(V2, &sets, STR_LIT("residues()"), ctx, alloc);
     ASSERT_TRUE(r.success);
     EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(sets));
+    // An array the program publishes, by name: all its sets, or one
+    sets = nullptr;
+    r = script::filter_sets(V2, &sets, STR_LIT("res"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(sets));
+    r = script::filter(V2, &atoms, STR_LIT("res[1]"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_EQ((uint64_t)md_system_residue_atom_count(&peptide()->sys, 1), md_bitset_count(atoms));
 
     // Bonds: the pairs bonds() gives, or the bonds among atoms; the same for one residue
     md_array(md_atom_pair_t) b1 = nullptr;
