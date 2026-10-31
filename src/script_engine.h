@@ -3,8 +3,8 @@
 // The script, behind one interface. viamd compiles, evaluates, plots, draws, completes and filters through these
 // functions and their types alone; no other file names md_script_* or md_filter*. A program knows its language, and
 // every function that takes one does what that language does: v1 is mdlib's md_script and md_filter
-// (script_engine_v1.cpp), v2 is VIAL (to come, script_engine_v2.cpp). A workspace's language picks which one compile
-// and the filters use.
+// (script_engine_v1.cpp), v2 is VIAL (script_engine_v2.cpp), and script_engine.cpp calls the one of the handle's or
+// the call's language. A workspace's language picks which one compile and the filters use.
 //
 // The types here are viamd's own, not either language's: what the call sites read is the same whichever language
 // stands behind them. Ranges are byte offsets into the source. Strings are views into what the program, the
@@ -65,6 +65,7 @@ struct CompileDesc {
     const md_system_t* sys = nullptr;
     const NamedSet*    sets = nullptr;
     size_t             num_sets = 0;
+    str_t              run = {};        // v2: the run it is evaluated over, which attr() reads and frames are counted in
 };
 
 // What compiling said about a range of the source. context: atoms the message is about, or NULL.
@@ -135,8 +136,18 @@ int   ref_dim(const Program* prog, Ref ref);        // its outer extent, -1 when
 
 struct Eval;
 
+// v2 spreads frames over threads itself: through this, which calls fn(arg, i) for every i in [0, count) and returns when
+// every call has returned. viamd passes its task pool.
+typedef void (*ParallelFor)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
+
 struct EvalDesc {
-    size_t num_frames = 0;
+    size_t             num_frames = 0;
+    // v2: the system and run it evaluates over, and its threads
+    const md_system_t* sys = nullptr;
+    str_t              run = {};
+    size_t             num_threads = 0;
+    ParallelFor        parallel_for = nullptr;
+    void*              parallel_user = nullptr;
 };
 
 // prev may be NULL; it is not changed and may be freed after. prog must outlive the evaluation.
@@ -154,6 +165,13 @@ md_bitset_t eval_pending_frames(Eval* eval, md_allocator_i* alloc);
 
 // Evaluates frames of the run. Safe from several threads at once on one evaluation, also with overlapping frames.
 bool eval_frames(Eval* eval, const Program* prog, const md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames);
+
+// Whether one call of eval_frames evaluates every pending frame, whichever frames it is given, spreading them over the
+// threads of EvalDesc itself (v2): call it once, from one task. Otherwise (v1) the pending frames are split among calls.
+bool eval_whole(const Eval* eval);
+
+// How far an evaluation is, 0 to 1, while eval_frames runs; 1 when it has nothing pending
+float eval_progress(const Eval* eval);
 
 // Stops an evaluation between frames; it stays stopped until reset
 void eval_interrupt(Eval* eval);
@@ -245,6 +263,9 @@ struct DrawCtx {
     const Program*           prog = nullptr;
     const md_system_t*       sys = nullptr;
     const md_system_state_t* state = nullptr;
+    // v2: an evaluation of prog, for values over the trajectory, and the run, whose frame state->frame is
+    const Eval*              eval = nullptr;
+    str_t                    run = {};
 };
 
 void drawing_init(Drawing* d, md_allocator_i* alloc);
@@ -302,6 +323,7 @@ struct FilterCtx {
     const md_system_state_t* state = nullptr;   // NULL for the system's reference state
     const Program*           prog = nullptr;    // a program whose names it may use; may be NULL
     const md_bitset_t*       atoms = nullptr;   // the atoms it is evaluated within; NULL for the whole system
+    str_t                    run = {};          // v2: the run attr() reads
 };
 
 struct FilterResult {
