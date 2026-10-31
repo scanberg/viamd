@@ -198,3 +198,102 @@ UTEST(script_v2, editor) {
     EXPECT_TRUE(tried);
     md_arena_allocator_destroy(alloc);
 }
+
+namespace {
+// The frames one after another: enough to show that what the evaluation spreads over threads is all done
+void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    for (size_t i = 0; i < count; ++i) fn(arg, i);
+}
+
+script::EvalDesc eval_desc() {
+    script::EvalDesc d;
+    d.num_frames = peptide()->num_frames;
+    d.sys = &peptide()->sys;
+    d.run = STR_LIT("run");
+    d.num_threads = 3;
+    d.parallel_for = serial_for;
+    return d;
+}
+}  // namespace
+
+UTEST(script_v2, evaluate) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const size_t nf = peptide()->num_frames;
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "d  = distance(ca[0], ca[1])\n"
+        "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n";
+    script::Program* p = compile_v2(src, alloc);
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    EXPECT_TRUE(script::eval_whole(e));
+    EXPECT_EQ(script::fingerprint(p), script::eval_fingerprint(e));
+    EXPECT_EQ(nf, script::eval_num_frames(e));
+    md_bitset_t pending = script::eval_pending_frames(e, alloc);
+    EXPECT_EQ(nf, (size_t)md_bitset_count(pending));
+    md_bitset_free(&pending, alloc);
+
+    // One call does every frame, whichever frames it is given
+    EXPECT_TRUE(script::eval_frames(e, p, &peptide()->sys, STR_LIT("run"), nullptr, 0));
+    EXPECT_EQ(1.0f, script::eval_progress(e));
+    pending = script::eval_pending_frames(e, alloc);
+    EXPECT_EQ(0u, (size_t)md_bitset_count(pending));
+    md_bitset_free(&pending, alloc);
+    const md_attributes_t* attrs = script::attributes(e);
+    ASSERT_TRUE(attrs != nullptr);
+    const md_attribute_t* ad = md_attributes_find(attrs, STR_LIT("script/d"));
+    ASSERT_TRUE(ad != nullptr);
+    EXPECT_EQ(nf, (size_t)ad->format.shape[0]);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/h/range")) != nullptr);
+    md_bitset_t held = script::eval_output_frames(e, STR_LIT("d"), alloc);
+    EXPECT_EQ(nf, (size_t)md_bitset_count(held));
+    md_bitset_free(&held, alloc);
+
+    // A period: the histogram over its frames, from the values kept per frame
+    const md_bitset_t first_half = md_bitset_range(0, (uint32_t)(nf / 2));
+    ASSERT_TRUE(script::aggregate_request(e, 7, STR_LIT("h"), &first_half));
+    EXPECT_FALSE(script::aggregate_request(e, 7, STR_LIT("d"), &first_half));     // not a distribution
+    script::AggregateInfo info;
+    ASSERT_TRUE(script::aggregate_info(&info, e, 7, STR_LIT("h")));
+    EXPECT_EQ(10u, info.num_values);
+    EXPECT_EQ((uint32_t)(nf / 2), info.num_frames);
+    float values[10], weights[10];
+    ASSERT_TRUE(script::aggregate_read(&info, values, weights, 10, e, 7, STR_LIT("h")));
+    double total = 0;
+    size_t within = 0;
+    for (int i = 0; i < 10; ++i) total += values[i];
+    for (size_t f = 0; f < nf / 2; ++f) {
+        const float v = ((const float*)ad->data)[f];
+        within += v >= 0.0f && v < 20.0f;
+    }
+    EXPECT_EQ((double)within, total);
+    const uint64_t v0 = info.version;
+    const md_bitset_t all = md_bitset_range(0, (uint32_t)nf);
+    ASSERT_TRUE(script::aggregate_request(e, 7, STR_LIT("h"), &all));
+    ASSERT_TRUE(script::aggregate_info(&info, e, 7, STR_LIT("h")));
+    EXPECT_NE(v0, info.version);
+    script::aggregate_release(e, 7, STR_LIT("h"));
+    EXPECT_FALSE(script::aggregate_info(&info, e, 7, STR_LIT("h")));
+
+    // An edit: renamed, d is taken over and nothing is pending; its values are there at once
+    script::Program* q = compile_v2("ca = particles(name='CA')\ndist = distance(ca[0], ca[1])\nh = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\n", alloc);
+    script::Plan plans[4];
+    md_bitset_t would = md_bitset_empty_set();
+    ASSERT_TRUE(script::plan(plans, 4, &would, e, q, nf, alloc));
+    EXPECT_EQ((int)script::Status::Held, (int)plans[0].status);
+    EXPECT_TRUE(str_eq(STR_LIT("d"), plans[0].from));
+    EXPECT_EQ(0u, (size_t)md_bitset_count(would));
+    script::Eval* e2 = script::eval_create(e, q, eval_desc(), alloc);
+    ASSERT_TRUE(e2 != nullptr);
+    pending = script::eval_pending_frames(e2, alloc);
+    EXPECT_EQ(0u, (size_t)md_bitset_count(pending));
+    md_bitset_free(&pending, alloc);
+    const md_attribute_t* a2 = md_attributes_find(script::attributes(e2), STR_LIT("script/dist"));
+    ASSERT_TRUE(a2 != nullptr);
+    EXPECT_EQ(0, memcmp(ad->data, a2->data, nf * sizeof(float)));
+    script::eval_free(e2);
+    script::eval_free(e);
+    script::program_free(q);
+    script::program_free(p);
+}

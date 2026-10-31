@@ -654,6 +654,18 @@ static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, Sel
     modify_field(&state->selection.selection_mask, atom_mask, op);
 }
 
+// What an evaluation spreads frames over (script::EvalDesc::parallel_for): viamd's pool. Called from a pool task, which
+// works on the range while it waits for it.
+static void pool_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    (void)user;
+    if (count == 0) return;
+    const task_system::ID id = task_system::create_pool_task(STR_LIT("##Evaluate frames"), (uint32_t)count, [fn, arg](uint32_t beg, uint32_t end, uint32_t) {
+        for (uint32_t i = beg; i < end; ++i) fn(arg, i);
+    });
+    task_system::enqueue_task(id);
+    task_system::task_wait_for(id);
+}
+
 int main(int argc, char** argv) {
 #if DEBUG
     persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
@@ -1325,7 +1337,8 @@ int main(int argc, char** argv) {
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const script::EvalDesc desc = { .num_frames = num_frames };
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.mold.run),
+                                                        .num_threads = task_system::pool_num_threads(), .parallel_for = pool_parallel_for };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
 
@@ -1373,10 +1386,17 @@ int main(int argc, char** argv) {
                             const script::Program* ir = state.script.eval_ir;
                             script::Eval* eval = state.script.eval;
                             const uint32_t* frames = state.script.eval_frames;
-                            state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                (void)thread_num;
-                                script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
-                            });
+                            if (script::eval_whole(eval)) {
+                                // v2: one call evaluates every pending frame, spreading them over the pool itself
+                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), [&state, ir, eval]() {
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), nullptr, 0);
+                                });
+                            } else {
+                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
+                                    (void)thread_num;
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
+                                });
+                            }
 
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_tick_now();
@@ -3650,6 +3670,8 @@ static void draw_async_task_window(ApplicationState* data) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
+            // One task over every frame (v2): the evaluation says how far it is
+            if (id == data->tasks.evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
