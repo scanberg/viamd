@@ -224,7 +224,8 @@ UTEST(script_v2, evaluate) {
     const char* src =
         "ca = particles(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
-        "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n";
+        "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
+        "dc = distance(ca[0], ca.xyz)\n";
     script::Program* p = compile_v2(src, alloc);
     script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
     ASSERT_TRUE(e != nullptr);
@@ -247,6 +248,17 @@ UTEST(script_v2, evaluate) {
     ASSERT_TRUE(ad != nullptr);
     EXPECT_EQ(nf, (size_t)ad->format.shape[0]);
     EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/h/range")) != nullptr);
+    // A population: its summary per frame, which the Timelines' bands read, and the names of its members
+    const md_attribute_t* mean = md_attributes_find(attrs, STR_LIT("script/dc/mean"));
+    ASSERT_TRUE(mean != nullptr);
+    EXPECT_EQ(nf, (size_t)mean->format.shape[0]);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/dc/variance")) != nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/dc/extent")) != nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/d/mean")) == nullptr);
+    const md_attribute_t* labels = md_attributes_find(attrs, STR_LIT("script/dc/labels"));
+    ASSERT_TRUE(labels != nullptr);
+    EXPECT_TRUE(str_eq(md_attribute_str(attrs, labels, 1), STR_LIT("CA/ALA2")));
+    ad = md_attributes_find(attrs, STR_LIT("script/d"));       // the table grew: pointers into it move
     md_bitset_t held = script::eval_output_frames(e, STR_LIT("d"), alloc);
     EXPECT_EQ(nf, (size_t)md_bitset_count(held));
     md_bitset_free(&held, alloc);
