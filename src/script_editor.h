@@ -17,7 +17,7 @@
 
 #include <core/md_str.h>
 #include <core/md_bitset.h>
-#include <md_script.h>
+#include <script_engine.h>
 
 #include <string>
 #include <string_view>
@@ -33,8 +33,8 @@ struct md_attributes_t;
 
 namespace script_editor {
 
-// Syntax colouring for mdscript
-const TextEditor::Language* language();
+// Syntax colouring for the script in lang
+const TextEditor::Language* language(script::Language lang);
 
 // The palette of the previous editor version, which the fork does not provide (it has dark and light)
 const TextEditor::Palette& retro_blue_palette();
@@ -56,10 +56,10 @@ void insert_lines_at_cursor(TextEditor& editor, str_t code);
 bool has_focus_after_render();
 
 // The expression that reads an attribute of the system (attributes: the table attr is in) in the script: attr("<path>"),
-// with the path in the form that completion offers it (md_script_attr_path), "edr/potential" rather than
+// with the path in the form that completion offers it (script::attr_path), "edr/potential" rather than
 // "run/a/edr/potential" where that names it alone. Writes a terminated string of at most cap - 1 characters. False, with
 // buf empty, if attr() cannot read the attribute or the expression does not fit.
-bool attr_expression(char* buf, size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr);
+bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attributes_t* attributes, const md_attribute_t* attr);
 
 // Accepts the payload being dragged over the editor as text: it goes where a left click at the mouse would put the
 // cursor. Call between ImGui::BeginDragDropTarget() and EndDragDropTarget(), right after TextEditor::Render() so that
@@ -68,7 +68,7 @@ bool attr_expression(char* buf, size_t cap, const md_attributes_t* attributes, c
 // (undone as one) with the cursor after it, and the editor takes the focus: true on that frame. Not in read-only mode.
 bool accept_drop(TextEditor& editor, const char* payload_type, str_t text);
 
-// Turns on autocompletion for mdscript. What can be written at the cursor comes from mdlib (md_script_complete):
+// Turns on autocompletion for the script in lang. What can be written at the cursor comes from script::complete:
 // variables, procedures, constants and keywords, the parameters of the procedure being called, and the values that
 // selectors take, such as the residue names of the system in resname("|") or the attribute paths in attr("|").
 // Suggestions are ranked by how well they match what has been typed: the characters typed have to appear in order in
@@ -77,16 +77,16 @@ bool accept_drop(TextEditor& editor, const char* payload_type, str_t text);
 // selected one, Escape closes the list.
 // sys is where the values come from, it is read when suggestions are made and may be NULL. The editor keeps a
 // reference to itself in its configuration, so neither it nor sys may move while autocomplete is on.
-void enable_autocomplete(TextEditor& editor, const md_system_t* sys);
+void enable_autocomplete(TextEditor& editor, script::Language lang, const md_system_t* sys);
 
-// How completions (md_script_complete, md_filter_complete) are matched against what has been typed of them and ranked,
+// How completions (script::complete, script::filter_complete) are matched against what has been typed of them and ranked,
 // here and in the inputs of filters (filter_input.h). Whether the label of item matches typed, and how well: the
 // characters typed have to appear in it in order (ignoring case), the first one starting it or one of its parts.
-bool completion_match(std::string_view typed, const md_script_completion_t& item, int* score);
+bool completion_match(std::string_view typed, const script::Completion& item, int* score);
 // Whether a goes before b, both matching typed with those scores: what has the type expected at the cursor (fits)
 // first, then an exact match, the better match, by kind (values, parameters, variables, procedures, constants,
 // keywords), the shorter (the one needing the least typing to tell apart) and by name.
-bool completion_before(const md_script_completion_t& a, int a_score, const md_script_completion_t& b, int b_score, std::string_view typed);
+bool completion_before(const script::Completion& a, int a_score, const script::Completion& b, int b_score, std::string_view typed);
 
 enum MarkerType {
     MarkerType_Error,
@@ -100,7 +100,7 @@ struct Marker {
     TextEditor::DocPos beg, end;            // [beg, end)
     str_t text;                             // tooltip, zero terminated
     const md_bitset_t* atoms;             // errors and warnings: the atoms the message is about (a copy), may be NULL
-    md_script_vis_ref_t vis_ref;            // visualization tokens: resolves in the script IR the markers came from
+    script::Ref vis_ref;                    // visualization tokens: resolves in the script IR the markers came from
 };
 
 struct Markers {
@@ -122,8 +122,8 @@ void markers_clear(Markers* markers);
 void markers_set_source(Markers* markers, str_t source);
 
 // Adds a marker for the byte range [beg, end) of the source. text and atoms are copied.
-void markers_add(Markers* markers, MarkerType type, int prio, md_script_range_marker_t range, str_t text,
-                 const md_bitset_t* atoms = nullptr, md_script_vis_ref_t vis_ref = {});
+void markers_add(Markers* markers, MarkerType type, int prio, script::Range range, str_t text,
+                 const md_bitset_t* atoms = nullptr, script::Ref vis_ref = {});
 
 // Call after TextEditor::Render(). Finds the marker under the mouse and updates the squiggles.
 // editor_hovered: whether the editor itself is hovered (ImGui::IsItemHovered() right after Render()).

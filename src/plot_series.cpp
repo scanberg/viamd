@@ -5,7 +5,6 @@
 #include <serialization_utils.h>
 
 #include <md_system.h>
-#include <md_script.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitset.h>
@@ -111,8 +110,8 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
     if (source == SeriesSource_System) {
         return &app->mold.sys.attributes;
     }
-    const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
-    return eval ? md_script_eval_attributes(eval) : nullptr;
+    const script::Eval* eval = is_script(source) ? app->script.eval : nullptr;
+    return eval ? script::attributes(eval) : nullptr;
 }
 
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path) {
@@ -127,9 +126,9 @@ static bool key_period_frames(uint32_t* beg, uint32_t* end, const ApplicationSta
 
 bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, md_allocator_i* alloc) {
     ASSERT(out);
-    const md_script_eval_t* eval = is_script(key.source) ? app->script.eval : nullptr;
+    const script::Eval* eval = is_script(key.source) ? app->script.eval : nullptr;
     if (!eval) return false;
-    md_bitset_t held = md_script_eval_property_frames(eval, series_script_ident(key), alloc);
+    md_bitset_t held = script::eval_output_frames(eval, series_script_ident(key), alloc);
     if (key.period != 0) {
         uint32_t beg, end;
         held = md_bitset_and(held, key_period_frames(&beg, &end, app, key) ? md_bitset_range(beg, end) : md_bitset_empty_set(), alloc);
@@ -153,15 +152,15 @@ str_t series_script_ident(const SeriesKey& key) {
 
 SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
     SeriesState st;
-    const md_script_eval_t* eval = is_script(key.source) ? app->script.eval : nullptr;
+    const script::Eval* eval = is_script(key.source) ? app->script.eval : nullptr;
     if (!eval) return st;
     const str_t ident = series_script_ident(key);
 
     // Against the script in the editor, when it compiles and is not the one evaluated: computed from the same thing,
-    // or not (md_script_ir_property_fingerprint). A property neither has is nothing to speak of: nothing is shown.
-    const md_script_ir_t* ir = md_script_ir_valid(app->script.ir) ? app->script.ir : app->script.eval_ir;
-    const uint64_t evaluated = md_script_eval_property_fingerprint(eval, ident);
-    const uint64_t now = ir ? md_script_ir_property_fingerprint(ir, ident) : evaluated;
+    // or not (script::output_fingerprint). A property neither has is nothing to speak of: nothing is shown.
+    const script::Program* ir = script::valid(app->script.ir) ? app->script.ir : app->script.eval_ir;
+    const uint64_t evaluated = script::eval_output_fingerprint(eval, ident);
+    const uint64_t now = ir ? script::output_fingerprint(ir, ident) : evaluated;
     if (!evaluated && !now) return st;
     if (evaluated && !now) {
         st.status = SeriesStatus_Removed;
@@ -176,12 +175,12 @@ SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
     uint32_t beg = 0, end = 0;
     const bool over_period = key.period != 0;
     st.num_wanted = key_period_frames(&beg, &end, app, key) ? end - beg : 0;
-    const uint32_t kinds = (uint32_t)md_script_ir_property_flags(app->script.eval_ir, ident);
-    if (over_period && (kinds & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME))) {
+    const uint32_t kinds = (uint32_t)script::output_flags(app->script.eval_ir, ident);
+    if (over_period && (kinds & (script::OUTPUT_DISTRIBUTION | script::OUTPUT_VOLUME))) {
         // Its slot over the period's frames. What it has yet to do is the frames it wants and does not hold, and those
         // it holds and does not want: of what it holds, (wanted + held - pending) / 2 are wanted.
-        md_script_eval_slot_info_t info;
-        if (md_script_eval_slot_info(&info, eval, SCRIPT_SLOT_PERIOD(key.period), ident)) {
+        script::AggregateInfo info;
+        if (script::aggregate_info(&info, eval, SCRIPT_SLOT_PERIOD(key.period), ident)) {
             const uint32_t both = (st.num_wanted + info.num_frames - MIN(info.num_pending, st.num_wanted + info.num_frames)) / 2;
             st.num_frames = MIN(both, st.num_wanted);
             st.num_extra  = info.num_frames - MIN(both, info.num_frames);
@@ -189,7 +188,7 @@ SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
         }
         return st;
     }
-    md_bitset_t held = md_script_eval_property_frames(eval, ident, app->allocator.frame);
+    md_bitset_t held = script::eval_output_frames(eval, ident, app->allocator.frame);
     if (over_period) {
         held = md_bitset_and(held, st.num_wanted ? md_bitset_range(beg, end) : md_bitset_empty_set(), app->allocator.frame);
     }
@@ -263,9 +262,9 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
     if (is_script(key.source)) {
         // The property's place in the script, the same in every view of it
         const str_t ident = series_script_ident(key);
-        const md_script_ir_t* ir = app->script.eval_ir;
-        const size_t num = ir ? md_script_ir_property_count(ir) : 0;
-        const str_t* names = ir ? md_script_ir_property_names(ir) : nullptr;
+        const script::Program* ir = app->script.eval_ir;
+        const size_t num = ir ? script::num_outputs(ir) : 0;
+        const str_t* names = ir ? script::output_names(ir) : nullptr;
         for (size_t i = 0; i < num; ++i) {
             if (str_eq(names[i], ident)) { idx = i; break; }
         }
@@ -315,9 +314,9 @@ static bool attribute_temporal(const md_attribute_t* attr) {
     return attribute_numeric_resident(attr) && (attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
 }
 
-static md_script_property_flags_t script_property_kind(const ApplicationState* app, const SeriesKey& key) {
-    const md_script_ir_t* ir = app->script.eval_ir;
-    return (ir && is_script(key.source)) ? md_script_ir_property_flags(ir, series_script_ident(key)) : MD_SCRIPT_PROPERTY_FLAG_NONE;
+static uint32_t script_property_kind(const ApplicationState* app, const SeriesKey& key) {
+    const script::Program* ir = app->script.eval_ir;
+    return (ir && is_script(key.source)) ? script::output_flags(ir, series_script_ident(key)) : (uint32_t)script::OUTPUT_NONE;
 }
 
 // Labels and script identity, which a view has whether or not the series resolves
@@ -332,7 +331,7 @@ static void fill_names(View* out, const ApplicationState* app, const SeriesKey& 
     if (is_script(key.source)) {
         const str_t ident = series_script_ident(key);
         str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
-        out->vis_ref = md_script_ir_property_vis_ref(app->script.eval_ir, ident);
+        out->vis_ref = script::output_ref(app->script.eval_ir, ident);
     }
 }
 
@@ -366,12 +365,12 @@ struct HistogramEntry {
 };
 
 // What the slot of a distribution or volume holds, copied out of it whenever it holds something new
-// (md_script_eval_slot_extract): over a period (SCRIPT_SLOT_PERIOD)
+// (script::aggregate_read): over a period (SCRIPT_SLOT_PERIOD)
 struct SlotEntry {
     uint64_t        key = 0;
     char            ident[64] = "";
     uint64_t        version = 0;
-    md_script_eval_slot_info_t info = {};
+    script::AggregateInfo info = {};
     md_array(float) values = nullptr;
     md_array(float) weights = nullptr;
     int             last_used = 0;
@@ -434,9 +433,9 @@ static const float* attribute_floats(ApplicationState* app, const md_attributes_
 // distribution or a volume. The values stay put until the slot is next read. A period's slot is asked for by what shows
 // it (series_period_slot), and let go when nothing has read it for a while (series_cache_gc).
 static const SlotEntry* series_slot(ApplicationState* app, uint64_t key, str_t ident) {
-    const md_script_eval_t* eval = app->script.eval;
-    md_script_eval_slot_info_t info;
-    if (!eval || str_empty(ident) || !md_script_eval_slot_info(&info, eval, key, ident)) return nullptr;
+    const script::Eval* eval = app->script.eval;
+    script::AggregateInfo info;
+    if (!eval || str_empty(ident) || !script::aggregate_info(&info, eval, key, ident)) return nullptr;
 
     SlotEntry* entry = nullptr;
     for (size_t i = 0; i < md_array_size(slot_cache); ++i) {
@@ -456,7 +455,7 @@ static const SlotEntry* series_slot(ApplicationState* app, uint64_t key, str_t i
     if (entry->version != info.version || md_array_size(entry->values) != info.num_values) {
         md_array_resize(entry->values,  info.num_values, app->allocator.persistent);
         md_array_resize(entry->weights, info.num_values, app->allocator.persistent);
-        if (!md_script_eval_slot_extract(&entry->info, entry->values, entry->weights, info.num_values, eval, key, ident)) {
+        if (!script::aggregate_read(&entry->info, entry->values, entry->weights, info.num_values, eval, key, ident)) {
             entry->version = 0;
             return nullptr;
         }
@@ -469,7 +468,7 @@ static const SlotEntry* series_slot(ApplicationState* app, uint64_t key, str_t i
 // takes its slot along, and the slot keeps what it has in common with its new frames
 static const SlotEntry* series_period_slot(ApplicationState* app, str_t ident, uint32_t period, uint32_t beg, uint32_t end) {
     const md_bitset_t frames = md_bitset_range(beg, end);
-    if (!app->script.eval || !md_script_eval_slot_request(app->script.eval, SCRIPT_SLOT_PERIOD(period), ident, &frames)) return nullptr;
+    if (!app->script.eval || !script::aggregate_request(app->script.eval, SCRIPT_SLOT_PERIOD(period), ident, &frames)) return nullptr;
     return series_slot(app, SCRIPT_SLOT_PERIOD(period), ident);
 }
 
@@ -496,7 +495,7 @@ void series_cache_gc(ApplicationState* app) {
         if (frame - slot_cache[i].last_used > 600) {
             if (app->script.eval) {
                 // Nothing shows it any more
-                md_script_eval_slot_release(app->script.eval, slot_cache[i].key, str_from_cstr(slot_cache[i].ident));
+                script::aggregate_release(app->script.eval, slot_cache[i].key, str_from_cstr(slot_cache[i].ident));
             }
             md_array_free(slot_cache[i].values,  app->allocator.persistent);
             md_array_free(slot_cache[i].weights, app->allocator.persistent);
@@ -579,7 +578,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         return views;
     }
 
-    if (is_script(key.source) && (script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) && attribute_numeric_resident(attr)) {
+    if (is_script(key.source) && (script_property_kind(app, key) & script::OUTPUT_DISTRIBUTION) && attribute_numeric_resident(attr)) {
         if (attr->format.rank != 1) {
             *reason = "An array of distributions, [n][bins]: not plotted yet";
             return 0;
@@ -953,7 +952,7 @@ bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const Ser
 }
 
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
-    const uint32_t num_frames = app->script.eval ? (uint32_t)md_script_eval_frame_count(app->script.eval) : (uint32_t)run_num_frames(app);
+    const uint32_t num_frames = app->script.eval ? (uint32_t)script::eval_num_frames(app->script.eval) : (uint32_t)run_num_frames(app);
     if (num_frames == 0) return false;
     // The key's own: every frame, or its period's
     if (period == 0) period = key.period;
@@ -991,7 +990,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     if (!attribute_numeric_resident(attr)) return false;
 
     const bool temporal     = attribute_temporal(attr);
-    const bool distribution = !temporal && (script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION);
+    const bool distribution = !temporal && (script_property_kind(app, key) & script::OUTPUT_DISTRIBUTION);
     if (!temporal && !distribution) return false;
 
     const md_attribute_t* weight = distribution ? md_attributes_find_in(table, path, STR_LIT("weight")) : nullptr;
@@ -1193,9 +1192,9 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
     const SeriesHistogramView& ref = views[first >= 0 ? first : 0];
     float* bins = any ? (float*)md_alloc(app->allocator.frame, (size_t)ref.num_bins * num_periods * sizeof(float)) : nullptr;
     double y_min = DBL_MAX, y_max = -DBL_MAX;
-    const md_script_eval_t* eval = app->script.eval;
+    const script::Eval* eval = app->script.eval;
     const str_t ident = series_script_ident(key);
-    const bool distribution = script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
+    const bool distribution = script_property_kind(app, key) & script::OUTPUT_DISTRIBUTION;
     for (int p = 0; p < num_periods; ++p) {
         SeriesPeriodInfo& info = out->periods[p];
         info = SeriesPeriodInfo{};
@@ -1228,14 +1227,14 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
         if (eval && series_period_frames(&beg, &end, app, key, period)) {
             info.num_wanted = end - beg;
             if (distribution && period != 0) {
-                md_script_eval_slot_info_t si;
-                if (md_script_eval_slot_info(&si, eval, SCRIPT_SLOT_PERIOD(period), ident)) {
+                script::AggregateInfo si;
+                if (script::aggregate_info(&si, eval, SCRIPT_SLOT_PERIOD(period), ident)) {
                     // Of what it holds, what it wants (see series_state)
                     const uint32_t both = (info.num_wanted + si.num_frames - MIN(si.num_pending, info.num_wanted + si.num_frames)) / 2;
                     info.num_frames = MIN(both, info.num_wanted);
                 }
             } else {
-                const md_bitset_t held = md_script_eval_property_frames(eval, ident, app->allocator.frame);
+                const md_bitset_t held = script::eval_output_frames(eval, ident, app->allocator.frame);
                 info.num_frames = (uint32_t)md_bitset_count(md_bitset_and(held, md_bitset_range(beg, end), app->allocator.frame));
             }
         }
@@ -1275,7 +1274,7 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     if (!is_script(key.source)) return false;
     const str_t ident = series_script_ident(key);
     str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
-    out->vis_ref = md_script_ir_property_vis_ref(app->script.eval_ir, ident);
+    out->vis_ref = script::output_ref(app->script.eval_ir, ident);
     out->state = series_state(app, key);
 
     const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
@@ -1314,14 +1313,14 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
 // ## Script properties
 
 size_t series_script_property_count(const ApplicationState* app) {
-    return app->script.eval_ir ? md_script_ir_property_count(app->script.eval_ir) : 0;
+    return app->script.eval_ir ? script::num_outputs(app->script.eval_ir) : 0;
 }
 
 bool series_script_property(SeriesKey* out, const ApplicationState* app, SeriesSource source, size_t index, uint32_t kind_flags) {
-    const md_script_ir_t* ir = app->script.eval_ir;
-    if (!ir || !is_script(source) || index >= md_script_ir_property_count(ir)) return false;
-    const str_t name = md_script_ir_property_names(ir)[index];
-    if (!(md_script_ir_property_flags(ir, name) & kind_flags)) return false;
+    const script::Program* ir = app->script.eval_ir;
+    if (!ir || !is_script(source) || index >= script::num_outputs(ir)) return false;
+    const str_t name = script::output_names(ir)[index];
+    if (!(script::output_flags(ir, name) & kind_flags)) return false;
 
     char path[SERIES_PATH_CAP];
     const int len = snprintf(path, sizeof(path), STR_FMT STR_FMT, STR_ARG(script_prefix), STR_ARG(name));

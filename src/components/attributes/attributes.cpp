@@ -95,7 +95,7 @@ static bool script_aggregate_path(const ApplicationState& state, str_t path) {
     str_t ident = str_substr(path, prefix.len);
     size_t loc;
     if (str_find_char(&loc, ident, '/')) ident = str_substr(ident, 0, loc);
-    return md_script_ir_property_flags(state.script.eval_ir, ident) & (MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION | MD_SCRIPT_PROPERTY_FLAG_VOLUME);
+    return script::output_flags(state.script.eval_ir, ident) & (script::OUTPUT_DISTRIBUTION | script::OUTPUT_VOLUME);
 }
 
 // Every whitespace separated word of the filter occurs in the path, the label or the source
@@ -281,7 +281,7 @@ struct Attributes : viamd::EventHandler {
 
                     // How the script reads it, if it does: an attribute of the system the script is compiled against
                     char expr[sizeof(path_buf) + 16];
-                    const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), row.table, row.attr);
+                    const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
 
                     if ((row.views || scriptable) && ImGui::BeginDragDropSource()) {
                         if (row.views) {

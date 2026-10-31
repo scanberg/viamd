@@ -14,7 +14,7 @@ struct md_allocator_i;
 // variable, and the distance, angle or dihedral of atoms picked one by one.
 //
 // A line is only offered when it does what it says. The expression of a selection is evaluated against the system
-// (md_filter) and has to pick exactly the selected atoms. A measurement has to take the picked atoms and no others:
+// (script::filter) and has to pick exactly the selected atoms. A measurement has to take the picked atoms and no others:
 // each of its arguments is evaluated in the context the line puts it in and has to pick its atom alone, and the line
 // has to compile. Whatever does not hold is dropped, so a form which does not fit the system - chain() of a molecule
 // which is not a chain, resid() where the sequence numbers repeat, an atom name that is not unique - never reaches

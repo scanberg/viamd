@@ -20,11 +20,14 @@ namespace script_editor {
 // Language and palette
 ////////////////////////////////////////////////////////////////////////////////
 
-const TextEditor::Language* language() {
-    static TextEditor::Language lang;
-    static bool initialized = false;
-    if (!initialized) {
-        initialized = true;
+const TextEditor::Language* language(script::Language script_lang) {
+    // One for each script language, made the first time it is asked for
+    static TextEditor::Language langs[3];
+    static bool initialized[3] = {};
+    const size_t idx = (size_t)script_lang < 3 ? (size_t)script_lang : 0;
+    TextEditor::Language& lang = langs[idx];
+    if (!initialized[idx]) {
+        initialized[idx] = true;
         lang.name = "mdscript";
         lang.caseSensitive = true;
         lang.singleLineComment = "#";
@@ -32,14 +35,14 @@ const TextEditor::Language* language() {
         lang.hasDoubleQuotedStrings = true;
         lang.stringEscape = '\\';
 
-        // Keywords and built-in names come from mdlib, so the colouring follows the language
-        const str_t* keywords = md_script_keywords();
-        for (size_t i = 0; i < md_script_num_keywords(); ++i) {
+        // Keywords and built-in names come from the script, so the colouring follows the language
+        const str_t* keywords = script::keywords(script_lang);
+        for (size_t i = 0; i < script::num_keywords(script_lang); ++i) {
             lang.keywords.emplace(keywords[i].ptr, keywords[i].len);
         }
-        const size_t num_identifiers = md_script_builtin_identifiers(nullptr, 0);
+        const size_t num_identifiers = script::builtin_names(script_lang, nullptr, 0);
         std::vector<str_t> identifiers(num_identifiers);
-        md_script_builtin_identifiers(identifiers.data(), identifiers.size());
+        script::builtin_names(script_lang, identifiers.data(), identifiers.size());
         for (str_t id : identifiers) {
             lang.identifiers.emplace(id.ptr, id.len);
         }
@@ -145,10 +148,10 @@ bool has_focus_after_render() {
 // Dropping text in
 ////////////////////////////////////////////////////////////////////////////////
 
-bool attr_expression(char* buf, size_t cap, const md_attributes_t* attributes, const md_attribute_t* attr) {
+bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attributes_t* attributes, const md_attribute_t* attr) {
     ASSERT(buf && cap > 0);
     buf[0] = '\0';
-    const str_t path = md_script_attr_path(attributes, attr);
+    const str_t path = script::attr_path(lang, attributes, attr);
     if (str_empty(path)) return false;
     // Nothing in it that the script's lexer ends (or gives up on) a string at
     for (size_t i = 0; i < path.len; ++i) {
@@ -264,22 +267,22 @@ static bool fuzzy_match(std::string_view pat, std::string_view word, int* out_sc
 }
 
 // The order among equally good matches
-static int kind_order(md_script_completion_kind_t kind) {
+static int kind_order(script::CompletionKind kind) {
     switch (kind) {
-    case MD_SCRIPT_COMPLETION_VALUE:     return 0;
-    case MD_SCRIPT_COMPLETION_PARAMETER: return 1;
-    case MD_SCRIPT_COMPLETION_VARIABLE:  return 2;
-    case MD_SCRIPT_COMPLETION_PROCEDURE: return 3;
-    case MD_SCRIPT_COMPLETION_CONSTANT:  return 4;
-    default:                             return 5;
+    case script::CompletionKind::Value:     return 0;
+    case script::CompletionKind::Parameter: return 1;
+    case script::CompletionKind::Variable:  return 2;
+    case script::CompletionKind::Procedure: return 3;
+    case script::CompletionKind::Constant:  return 4;
+    default:                                return 5;
     }
 }
 
-bool completion_match(std::string_view typed, const md_script_completion_t& item, int* score) {
+bool completion_match(std::string_view typed, const script::Completion& item, int* score) {
     return fuzzy_match(typed, std::string_view(item.label.ptr, item.label.len), score);
 }
 
-bool completion_before(const md_script_completion_t& a, int a_score, const md_script_completion_t& b, int b_score, std::string_view typed) {
+bool completion_before(const script::Completion& a, int a_score, const script::Completion& b, int b_score, std::string_view typed) {
     const std::string_view a_label(a.label.ptr, a.label.len), b_label(b.label.ptr, b.label.len);
     if (a.fits != b.fits) return a.fits;
     const bool a_exact = a_label == typed, b_exact = b_label == typed;
@@ -291,9 +294,9 @@ bool completion_before(const md_script_completion_t& a, int a_score, const md_sc
     return a_label < b_label;
 }
 
-// What can be written at the cursor comes from mdlib (md_script_complete), which knows the language and the system.
+// What can be written at the cursor comes from the script (script::complete), which knows the language and the system.
 // What matches what has been typed, and in which order, is decided here.
-static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor::AutoCompleteState& state) {
+static void suggest(const TextEditor& editor, script::Language lang, const md_system_t* sys, TextEditor::AutoCompleteState& state) {
     const size_t MAX_SUGGESTIONS = 100;
     state.suggestions.clear();
 
@@ -302,7 +305,7 @@ static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor
     const int cursor = (int)byte_offset(state.searchTermEnd);
 
     md_temp_scope_t temp = md_temp_begin();
-    const md_script_completions_t completions = md_script_complete({src.data(), src.size()}, cursor, sys, md_temp_allocator(temp));
+    const script::Completions completions = script::complete(lang, {src.data(), src.size()}, cursor, sys, md_temp_allocator(temp));
 
     // mdlib says which bytes a completion replaces: an identifier, or the contents of a string, such as an attribute
     // path. The editor replaces the word the cursor is in, which can be less (the 'potential' of 'edr/potential'), so
@@ -321,13 +324,13 @@ static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor
     const std::string_view typed(completions.prefix.ptr, completions.prefix.len);
 
     struct Match {
-        const md_script_completion_t* item;
+        const script::Completion* item;
         std::string_view insert;    // what replaces the word
         int score;
     };
     std::vector<Match> matches;
     for (size_t i = 0; word_in_range && i < completions.count; ++i) {
-        const md_script_completion_t& item = completions.items[i];
+        const script::Completion& item = completions.items[i];
         const std::string_view text(item.text.ptr, item.text.len);
         if (text.size() < lead.size() + tail.size() || text.substr(0, lead.size()) != lead || text.substr(text.size() - tail.size()) != tail) continue;
         int score;
@@ -351,11 +354,11 @@ static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor
     md_temp_end(temp);
 }
 
-void enable_autocomplete(TextEditor& editor, const md_system_t* sys) {
+void enable_autocomplete(TextEditor& editor, script::Language lang, const md_system_t* sys) {
     TextEditor::AutoCompleteConfig config;
     // Strings are for mdlib to judge: it offers the names a selector such as resname() takes, and nothing elsewhere
     config.triggerInStrings = true;
-    config.callback = [ed = &editor, sys](TextEditor::AutoCompleteState& state) { suggest(*ed, sys, state); };
+    config.callback = [ed = &editor, lang, sys](TextEditor::AutoCompleteState& state) { suggest(*ed, lang, sys, state); };
     editor.SetAutoCompleteConfig(&config);
 }
 
@@ -413,8 +416,8 @@ static TextEditor::DocPos doc_pos(const Markers* m, int offset) {
     return TextEditor::DocPos(lo, index);
 }
 
-void markers_add(Markers* m, MarkerType type, int prio, md_script_range_marker_t range, str_t text,
-                 const md_bitset_t* atoms, md_script_vis_ref_t vis_ref) {
+void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str_t text,
+                 const md_bitset_t* atoms, script::Ref vis_ref) {
     ASSERT(m);
     ASSERT(m->arena && "markers_set_source() must be called before markers are added");
     Marker marker = {};

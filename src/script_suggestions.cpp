@@ -1,8 +1,7 @@
 #include "script_suggestions.h"
 
 #include <md_system.h>
-#include <md_filter.h>
-#include <md_script.h>
+#include <script_engine.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -1122,13 +1121,14 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
 }
 
 // ### VALIDATION ###
+// The lines are written in v1 (mdscript), and so are validated as v1, whatever the workspace's language
 
 // The sets the expression gives, as a script would have them: one per residue of residue(1:3)
 static bool filter_sets(md_array(md_bitset_t)* sets, str_t expr, const md_system_t& sys, md_allocator_i* temp) {
-    md_filter_context_t ctx = {};
+    script::FilterCtx ctx = {};
     ctx.sys = &sys;
     *sets = 0;
-    return md_filter_sets(sets, expr, &ctx, temp).success;
+    return script::filter_sets(script::Language::V1, sets, expr, ctx, temp).success;
 }
 
 // The expression picks the atoms of sel and no others, in as many sets as it gives (num_sets)
@@ -1145,10 +1145,9 @@ static bool picks_exactly(str_t expr, md_bitset_t sel, const md_system_t& sys, m
 }
 
 static bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
-    md_script_ir_t* ir = md_script_ir_create(temp);
-    md_script_ir_compile_from_source(ir, src, &sys, nullptr);
-    const bool ok = md_script_ir_valid(ir) && md_script_ir_num_errors(ir) == 0;
-    md_script_ir_free(ir);
+    script::Program* ir = script::compile(script::Language::V1, src, script::CompileDesc{&sys}, temp);
+    const bool ok = script::valid(ir) && script::num_errors(ir) == 0;
+    script::program_free(ir);
     return ok;
 }
 

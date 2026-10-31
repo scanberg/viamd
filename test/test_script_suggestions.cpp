@@ -9,8 +9,7 @@
 #include <md_mmcif.h>
 #include <md_xyz.h>
 #include <md_tpr.h>
-#include <md_filter.h>
-#include <md_script.h>
+#include <script_engine.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
 
@@ -50,10 +49,10 @@ void unload(Loaded* l) {
 }
 
 md_bitset_t select(const Loaded& l, const char* expr) {
-    md_filter_context_t ctx = {};
+    script::FilterCtx ctx = {};
     ctx.sys = &l.sys;
     md_bitset_t sel = {};
-    if (!md_filter(&sel, str_from_cstr(expr), &ctx, l.alloc).success) return {};
+    if (!script::filter(script::Language::V1, &sel, str_from_cstr(expr), ctx, l.alloc).success) return {};
     return sel;
 }
 
@@ -64,11 +63,10 @@ int32_t atom(const Loaded& l, const char* expr) {
 }
 
 bool compiles(const Loaded& l, str_t src) {
-    md_script_ir_t* ir = md_script_ir_create(l.alloc);
-    md_script_ir_compile_from_source(ir, src, &l.sys, nullptr);
-    const bool ok = md_script_ir_valid(ir);
-    if (!ok) md_script_ir_write_diagnostics(md_writer_stdout(), ir);
-    md_script_ir_free(ir);
+    script::Program* ir = script::compile(script::Language::V1, src, script::CompileDesc{&l.sys}, l.alloc);
+    const bool ok = script::valid(ir);
+    if (!ok) script::write_diagnostics(md_writer_stdout(), ir);
+    script::program_free(ir);
     return ok;
 }
 
@@ -118,10 +116,10 @@ bool all_pick(const Loaded& l, md_bitset_t sel, const md_array(ScriptSuggestion)
     for (size_t i = 0; i < md_array_size(s); ++i) {
         const str_t expr = rhs(s[i].text, ident);
         md_bitset_t got = {};
-        md_filter_context_t ctx = {};
+        script::FilterCtx ctx = {};
         ctx.sys = &l.sys;
         const bool ok = !str_empty(expr) && printable(s[i].text) && compiles(l, s[i].text) &&
-            md_filter(&got, expr, &ctx, l.alloc).success && md_bitset_equal(got, sel);
+            script::filter(script::Language::V1, &got, expr, ctx, l.alloc).success && md_bitset_equal(got, sel);
         if (!ok) {
             printf("  does not pick the selection: " STR_FMT "\n", STR_ARG(s[i].text));
             return false;

@@ -2,7 +2,6 @@
 
 #include <representation.h>
 
-#include <md_filter.h>
 #include <md_util.h>
 
 #include <core/md_log.h>
@@ -163,8 +162,8 @@ bool representation_is_dynamic(const ApplicationState& app, const Representation
     return rep.filter.result.is_dynamic || representation_context(app, rep.node.parent).dynamic;
 }
 
-md_filter_context_t representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx) {
-    md_filter_context_t fctx = filter_context(&app);
+script::FilterCtx representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx) {
+    script::FilterCtx fctx = filter_context(&app);
     fctx.atoms = ctx.atoms;
     return fctx;
 }
@@ -590,7 +589,7 @@ static void update_group(ApplicationState* state, size_t idx, size_t depth) {
             g->filter.result.is_dynamic = ctx.dynamic;
             snprintf(g->filter.result.error, sizeof(g->filter.result.error), "The filter of the group '%s' it is in is not valid", ctx.group ? ctx.group->name : "");
         } else {
-            filter_evaluate(&g->filter, &g->atom_mask, representation_filter_context(*state, ctx), state->allocator.persistent);
+            filter_evaluate(&g->filter, &g->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
             g->filter.result.is_dynamic |= ctx.dynamic;
         }
     }
@@ -852,7 +851,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             const RepresentationContext ctx = representation_context(*state, rep->node.parent);
             if (ctx.valid && rep->type == RepresentationType::Bonds) {
                 // The bonds, and the atoms at their ends: those are what is coloured, and shown
-                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, representation_filter_context(*state, ctx), state->allocator.persistent);
+                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
                 md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
                 for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
                     md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
@@ -862,7 +861,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 rep->atom_mask = md_bitmask_extract(&ends, state->allocator.persistent);
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else if (ctx.valid) {
-                filter_evaluate(&rep->filter, &rep->atom_mask, representation_filter_context(*state, ctx), state->allocator.persistent);
+                filter_evaluate(&rep->filter, &rep->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
                 // What it picks follows the frame if the context it picks within does
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else {
@@ -3390,9 +3389,9 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         // Completed within the context it is evaluated in: what is not there would not match. Either takes atoms or
         // bonds, the one as the other: the atoms of bonds, the bonds among atoms.
         const RepresentationContext ctx = representation_context(*state, rep.node.parent);
-        const md_filter_context_t fctx = representation_filter_context(*state, ctx);
+        const script::FilterCtx fctx = representation_filter_context(*state, ctx);
         prop::row("filter");
-        if (filter_input("##filter", &rep.filter, fctx, 0, nullptr, bonds ? "all bonds (or bonds, or atoms: the bonds among them)" : "all (or atoms, or bonds: their atoms)")) {
+        if (filter_input("##filter", &rep.filter, state->script.language, fctx, 0, nullptr, bonds ? "all bonds (or bonds, or atoms: the bonds among them)" : "all (or atoms, or bonds: their atoms)")) {
             rep.filt_is_dirty = true;
             update_rep = true;
         }
@@ -3620,7 +3619,7 @@ static void draw_group_filter(ApplicationState* state, RepresentationGroup& grou
     prop::row("context");
 
     const RepresentationContext outer = representation_context(*state, group.node.parent);
-    const bool edited = filter_input("##context", &group.filter, representation_filter_context(*state, outer), 0, nullptr, "none: what is within sees the whole system");
+    const bool edited = filter_input("##context", &group.filter, state->script.language, representation_filter_context(*state, outer), 0, nullptr, "none: what is within sees the whole system");
 
     // An error is filter_input's to say
     const bool has_filter = group_has_filter(group);

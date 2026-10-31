@@ -319,7 +319,7 @@ struct DensityVolume : viamd::EventHandler {
 
         // Within each structure what the filter picks, the structure its context. The first that fails says why.
         const bool all = filter_is_all(rep.filter.text);
-        md_filter_result_t failure = {};
+        script::FilterResult failure = {};
         bool failed = false;
         bool dynamic = false;
         md_bitset_t picked_all = md_bitset_empty_set();
@@ -327,10 +327,10 @@ struct DensityVolume : viamd::EventHandler {
         for (size_t i = 0; i < made; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
-                md_filter_context_t ctx = filter_context(state);
+                script::FilterCtx ctx = filter_context(state);
                 ctx.atoms = &structures[i];
                 md_bitset_t out = md_bitset_empty_set();
-                filter_evaluate(&rep.filter, &out, ctx, frame);
+                filter_evaluate(&rep.filter, &out, state->script.language, ctx, frame);
                 dynamic |= rep.filter.result.is_dynamic;
                 if (rep.filter.result.success) {
                     picked = out;
@@ -373,7 +373,7 @@ struct DensityVolume : viamd::EventHandler {
         } else if (made == 0) {
             // No structure to evaluate it within: whether it is valid at all, within the whole system
             md_bitset_t out = md_bitset_empty_set();
-            filter_evaluate(&rep.filter, &out, filter_context(state), frame);
+            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state), frame);
         } else if (failed) {
             rep.filter.result = failure;
             rep.filter.result.is_dynamic = dynamic;
@@ -699,7 +699,7 @@ struct DensityVolume : viamd::EventHandler {
         volume_state = resolved ? vol_view.state : SeriesState{};
         volume_count = resolved ? vol_view.count : 0;
         str_copy_to_char_buf(volume_label, sizeof(volume_label), str_from_cstr(vol_view.label));
-        const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
+        const script::Ref vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
         static SeriesKey s_volume_key = {};
@@ -717,8 +717,8 @@ struct DensityVolume : viamd::EventHandler {
         show_density_volume = selected;
 
         static uint64_t s_script_fingerprint = 0;
-        if (s_script_fingerprint != md_script_ir_fingerprint(state->script.eval_ir)) {
-            s_script_fingerprint = md_script_ir_fingerprint(state->script.eval_ir);
+        if (s_script_fingerprint != script::fingerprint(state->script.eval_ir)) {
+            s_script_fingerprint = script::fingerprint(state->script.eval_ir);
             dirty_vol = true;
             dirty_rep = true;
         }
@@ -746,20 +746,20 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_rep) {
-            if (vol_data && !md_script_vis_ref_empty(vis_ref)) {
+            if (vol_data && !script::ref_empty(vis_ref)) {
                 dirty_rep = false;
                 bool result = false;
-                md_script_vis_t vis = {};
+                script::Drawing vis = {};
 
-                if (md_script_ir_valid(state->script.eval_ir)) {
-                    md_script_vis_init(&vis, state->allocator.frame);
-                    md_script_vis_ctx_t ctx = {
-                        .ir = state->script.eval_ir,
+                if (script::valid(state->script.eval_ir)) {
+                    script::drawing_init(&vis, state->allocator.frame);
+                    script::DrawCtx ctx = {
+                        .prog = state->script.eval_ir,
                         .sys = &state->mold.sys,
                         .state = &state->mold.state
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
-                    result = md_script_vis_eval_ref(&vis, vis_ref, (int)vol_view.member, &ctx, MD_SCRIPT_VISUALIZE_SDF);
+                    result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
                 }
 
                 if (result) {
@@ -806,7 +806,7 @@ struct DensityVolume : viamd::EventHandler {
     void draw_volume_choices(ApplicationState* state) {
         int candidate_count = 0;
         auto list = [&](uint32_t period) {
-            series_for_each_script_property(state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& over_all) {
+            series_for_each_script_property(state, SeriesSource_Script, script::OUTPUT_VOLUME, [&](const SeriesKey& over_all) {
                 SeriesKey key = over_all;
                 key.period = period;
                 char label[96];
@@ -825,7 +825,7 @@ struct DensityVolume : viamd::EventHandler {
                 }
                 if (ImGui::IsItemHovered()) {
                     const str_t ident = series_script_ident(key);
-                    script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                    script_visualize_ref(state, script::output_ref(state->script.eval_ir, ident), -1, script::DRAW_DEFAULT);
                     script_set_hovered_property(state, ident);
                 }
                 ImGui::PopID();
@@ -855,7 +855,7 @@ struct DensityVolume : viamd::EventHandler {
         }
         if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
             // Whose volume it is: the reference structures of that one
-            script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), (int)volume_member, MD_SCRIPT_VISUALIZE_DEFAULT);
+            script_visualize_ref(state, script::output_ref(state->script.eval_ir, ident), (int)volume_member, script::DRAW_DEFAULT);
             script_set_hovered_property(state, ident);
         }
     }
@@ -1055,11 +1055,11 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             // Completed within the first structure, as each is evaluated within its own
-            md_filter_context_t ctx = filter_context(state);
+            script::FilterCtx ctx = filter_context(state);
             if (md_array_size(structures) > 0) ctx.atoms = &structures[0];
             prop::row("filter", "Evaluated within each reference structure: all is the structure, residue(1) its first residue.\n"
                                 "'out' reaches outside of it, as in a script: within(5, out resname(\"LIG\")).");
-            if (filter_input("##filter", &rep.filter, ctx, 0, nullptr, "all: the whole structure")) {
+            if (filter_input("##filter", &rep.filter, state->script.language, ctx, 0, nullptr, "all: the whole structure")) {
                 r.dirty = true;
             }
 

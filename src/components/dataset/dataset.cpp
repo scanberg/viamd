@@ -2058,7 +2058,7 @@ struct Dataset : viamd::EventHandler {
 
                 // How the script reads it, as dropping it into the Script Editor writes it
                 char expr[SERIES_PATH_CAP + 16];
-                script_editor::attr_expression(expr, sizeof(expr), table, attr);
+                script_editor::attr_expression(expr, sizeof(expr), data.script.language, table, attr);
 
                 bool in_subplot[PLOT_MAX_SUBPLOTS] = {};
                 bool in_any = false;

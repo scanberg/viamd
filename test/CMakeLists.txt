@@ -19,6 +19,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/gfx/camera_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/cartoon_glyphs.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/color_utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v1.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
 )

@@ -1030,7 +1030,7 @@ struct Ramachandran : viamd::EventHandler {
                 atoms = l.atoms;
             }
         } else if (evaluate) {
-            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, layer_group_filter_context(app, in_context ? g : nullptr), heap);
+            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), heap);
             atoms = l.atoms;
         } else if (in_context) {
             atoms = g->atoms;
@@ -2589,7 +2589,7 @@ struct Ramachandran : viamd::EventHandler {
                 } else {
                     snprintf(none, sizeof(none), "all residues");
                 }
-                if (filter_input("##filter", &l.filter, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
+                if (filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
                     l.segs_key = 0;
                 }
                 if (invalid) ImGui::PopInvalid();
