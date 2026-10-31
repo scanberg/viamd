@@ -297,3 +297,126 @@ UTEST(script_v2, evaluate) {
     script::program_free(q);
     script::program_free(p);
 }
+
+UTEST(script_v2, drawing) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const char* src =
+        "ca = particles(name='CA')\n"
+        "d  = distance(ca[0], ca[1])\n"
+        "a  = angle(ca[0], ca[1], ca[2])\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    script::DrawCtx ctx;
+    ctx.prog = p;
+    ctx.sys = &peptide()->sys;
+    ctx.state = &peptide()->state;
+    ctx.run = STR_LIT("run");
+    auto mark_of = [&](const char* text) {
+        const size_t n = script::num_marks(p);
+        const script::Mark* m = script::marks(p);
+        const int beg = (int)(strstr(src, text) - src), end = beg + (int)strlen(text);
+        for (size_t i = 0; i < n; ++i) if (m[i].range.beg == beg && m[i].range.end == end) return m[i].ref;
+        return script::Ref{};
+    };
+
+    // A distance: a line between the two, labelled with the value
+    script::Drawing dr;
+    script::drawing_init(&dr, alloc);
+    const script::Ref rd = mark_of("distance(ca[0], ca[1])");
+    ASSERT_TRUE(script::ref_valid(p, rd));
+    ASSERT_TRUE(script::draw_ref(&dr, rd, -1, ctx, script::DRAW_DEFAULT));
+    EXPECT_EQ(2u, md_array_size(dr.lines));
+    ASSERT_EQ(1u, md_array_size(dr.text));
+    EXPECT_FALSE(md_unit_is_none(dr.text[0].unit));
+    char buf[128];
+    EXPECT_GT(script::value_text(buf, sizeof(buf), rd, -1, ctx), 0u);
+    EXPECT_NEAR(dr.text[0].value, atof(buf), 1e-3);
+    // Geometry alone: no text
+    script::drawing_clear(&dr);
+    ASSERT_TRUE(script::draw_ref(&dr, rd, -1, ctx, script::DRAW_GEOMETRY));
+    EXPECT_EQ(0u, md_array_size(dr.text));
+    EXPECT_EQ(2u, md_array_size(dr.lines));
+
+    // An angle: a filled arc at the vertex
+    script::drawing_clear(&dr);
+    ASSERT_TRUE(script::draw_ref(&dr, mark_of("angle(ca[0], ca[1], ca[2])"), -1, ctx, script::DRAW_DEFAULT));
+    EXPECT_GT(md_array_size(dr.triangles), 0u);
+    EXPECT_GT(md_array_size(dr.lines), 2u);
+
+    // A selection: its atoms; an expression of the language: what it picks
+    script::drawing_clear(&dr);
+    ASSERT_TRUE(script::draw_ref(&dr, mark_of("particles(name='CA')"), -1, ctx, script::DRAW_ATOMS));
+    ASSERT_EQ(1u, md_array_size(dr.groups));
+    const uint64_t nca = md_bitset_count(dr.atom_mask);
+    EXPECT_GT(nca, 2u);
+    script::drawing_clear(&dr);
+    ASSERT_TRUE(script::draw_text(&dr, STR_LIT("residues()"), ctx, script::DRAW_DEFAULT));
+    EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(dr.groups));
+    script::drawing_clear(&dr);
+    EXPECT_FALSE(script::draw_ref(&dr, script::Ref{1, 1}, -1, ctx, script::DRAW_DEFAULT));   // another compilation's
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(script_v2, filters) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    const script::Language V2 = script::Language::V2;
+    script::Program* p = compile_v2("ca = particles(name='CA')\n", alloc);
+    script::FilterCtx ctx;
+    ctx.sys = &peptide()->sys;
+    ctx.state = &peptide()->state;
+    ctx.prog = p;
+    ctx.run = STR_LIT("run");
+
+    md_bitset_t atoms = md_bitset_empty_set();
+    script::FilterResult r = script::filter(V2, &atoms, STR_LIT("protein"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_FALSE(r.is_dynamic);
+    EXPECT_EQ((uint64_t)peptide()->sys.atom.count, md_bitset_count(atoms));
+    // The program's selection, and the language's set algebra
+    r = script::filter(V2, &atoms, STR_LIT("ca"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    const uint64_t nca = md_bitset_count(atoms);
+    EXPECT_GT(nca, 2u);
+    r = script::filter(V2, &atoms, STR_LIT("protein and not ca"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_EQ((uint64_t)peptide()->sys.atom.count - nca, md_bitset_count(atoms));
+
+    md_array(md_bitset_t) sets = nullptr;
+    r = script::filter_sets(V2, &sets, STR_LIT("residues()"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(sets));
+
+    // Bonds: the pairs bonds() gives, or the bonds among atoms; the same for one residue
+    md_array(md_atom_pair_t) b1 = nullptr;
+    md_array(md_atom_pair_t) b2 = nullptr;
+    ASSERT_TRUE(script::filter_bonds(V2, &b1, STR_LIT("bonds(residues()[0])"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b2, STR_LIT("residues()[0]"), ctx, alloc).success);
+    EXPECT_GT(md_array_size(b1), 0u);
+    EXPECT_EQ(md_array_size(b1), md_array_size(b2));
+
+    // Dynamic, within a scope, and an error with its range in the expression
+    r = script::filter(V2, &atoms, STR_LIT("within(3.0, of=ca)"), ctx, alloc);
+    ASSERT_TRUE(r.success);
+    EXPECT_TRUE(r.is_dynamic);
+    md_bitset_t scope = md_bitset_empty_set();
+    ASSERT_TRUE(script::filter(V2, &scope, STR_LIT("residues()[0]"), ctx, alloc).success);
+    script::FilterCtx sc = ctx;
+    sc.atoms = &scope;
+    ASSERT_TRUE(script::filter(V2, &atoms, STR_LIT("protein"), sc, alloc).success);
+    EXPECT_EQ(md_bitset_count(scope), md_bitset_count(atoms));
+    r = script::filter(V2, &atoms, STR_LIT("particles(nme='CA')"), ctx, alloc);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ('E', r.error[0]);
+    EXPECT_GE(r.error_range.beg, 0);
+    EXPECT_LE(r.error_range.end, 19);
+
+    script::Completions c = script::filter_complete(V2, STR_LIT("particles(res"), 13, ctx, alloc);
+    bool found = false;
+    for (size_t i = 0; i < c.count; ++i) found |= str_eq(c.items[i].label, STR_LIT("resname"));
+    EXPECT_TRUE(found);
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}

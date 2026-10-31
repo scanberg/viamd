@@ -9,6 +9,9 @@
 #include <core/md_bitset.h>
 #include <core/md_common.h>
 #include <core/md_writer.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
+#include <md_system.h>
 
 #include <md_attributes.h>
 
@@ -16,6 +19,7 @@
 #include <vector>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 namespace script {
 
@@ -84,11 +88,6 @@ static const md_vial_output_t* output_of(const Program* p, str_t name) {
     return nullptr;
 }
 
-static FilterResult not_yet() {
-    FilterResult r;
-    snprintf(r.error, sizeof(r.error), "not yet in VIAL");
-    return r;
-}
 
 Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc) {
     Program* p = (Program*)md_alloc(alloc, sizeof(Program));
@@ -524,19 +523,178 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
     return true;
 }
 
-bool draw_ref(Drawing* out,  Ref ref,  int subidx,  const DrawCtx& ctx,  uint32_t flags) {
-    (void)out; (void)ref; (void)subidx; (void)ctx; (void)flags;
-    return false;
+// ### DRAWING ###
+// VIAL's primitives as viamd's vertices: white, so viamd's own colours for each kind show, as the reference has it
+
+static const uint32_t WHITE = 0xFFFFFFFFu;
+
+static inline vec3_t v3(const float p[3]) { return vec3_t{p[0], p[1], p[2]}; }
+static inline Vertex vtx(vec3_t p) { Vertex v; v.pos = p; v.color = WHITE; v.normal = vec3_t{0, 0, 1}; v.picking_idx = 0xFFFFFFFFu; return v; }
+
+static void line(Drawing* d, vec3_t a, vec3_t b) {
+    md_array_push(d->lines, vtx(a), d->alloc);
+    md_array_push(d->lines, vtx(b), d->alloc);
 }
 
-bool draw_text(Drawing* out,  str_t expr,  const DrawCtx& ctx,  uint32_t flags) {
-    (void)out; (void)expr; (void)ctx; (void)flags;
-    return false;
+// Two unit vectors at right angles to n and to each other
+static void basis_of(vec3_t n, vec3_t* u, vec3_t* w) {
+    n = vec3_normalize(n);
+    const vec3_t t = fabsf(n.x) < 0.9f ? vec3_t{1, 0, 0} : vec3_t{0, 1, 0};
+    *u = vec3_normalize(vec3_cross(n, t));
+    *w = vec3_cross(n, *u);
 }
 
-size_t value_text(char* buf,  size_t cap,  Ref ref,  int subidx,  const DrawCtx& ctx) {
-    (void)buf; (void)cap; (void)ref; (void)subidx; (void)ctx;
-    return 0;
+static void circle(Drawing* d, vec3_t c, vec3_t u, vec3_t w, float r, bool fill) {
+    const int N = 32;
+    vec3_t prev = vec3_add(c, vec3_mul1(u, r));
+    for (int i = 1; i <= N; ++i) {
+        const float a = 6.2831853f * (float)i / (float)N;
+        const vec3_t p = vec3_add(c, vec3_add(vec3_mul1(u, r * cosf(a)), vec3_mul1(w, r * sinf(a))));
+        line(d, prev, p);
+        if (fill) {
+            md_array_push(d->triangles, vtx(c), d->alloc);
+            md_array_push(d->triangles, vtx(prev), d->alloc);
+            md_array_push(d->triangles, vtx(p), d->alloc);
+        }
+        prev = p;
+    }
+}
+
+static void prim(Drawing* d, const md_vial_prim_t& p) {
+    const vec3_t a = v3(p.p[0]), b = v3(p.p[1]);
+    switch (p.kind) {
+    case MD_VIAL_PRIM_MARKER:
+        md_array_push(d->points, vtx(a), d->alloc);
+        break;
+    case MD_VIAL_PRIM_LINE:
+        line(d, a, b);
+        break;
+    case MD_VIAL_PRIM_ARROW: {
+        line(d, a, b);
+        const vec3_t dir = vec3_sub(b, a);
+        const float len = vec3_length(dir);
+        if (len <= 0.0f) break;
+        vec3_t u, w;
+        basis_of(dir, &u, &w);
+        const float h = MIN(0.25f * len, 1.0f);
+        const vec3_t back = vec3_sub(b, vec3_mul1(vec3_normalize(dir), h));
+        line(d, b, vec3_add(back, vec3_mul1(u, 0.4f * h)));
+        line(d, b, vec3_sub(back, vec3_mul1(u, 0.4f * h)));
+        line(d, b, vec3_add(back, vec3_mul1(w, 0.4f * h)));
+        line(d, b, vec3_sub(back, vec3_mul1(w, 0.4f * h)));
+        break;
+    }
+    case MD_VIAL_PRIM_SPHERE:
+        // Three great circles
+        circle(d, a, vec3_t{1, 0, 0}, vec3_t{0, 1, 0}, p.r, false);
+        circle(d, a, vec3_t{0, 1, 0}, vec3_t{0, 0, 1}, p.r, false);
+        circle(d, a, vec3_t{0, 0, 1}, vec3_t{1, 0, 0}, p.r, false);
+        break;
+    case MD_VIAL_PRIM_ARC: {
+        // The angle at a from b to c: a filled sector, at a third of the shorter arm
+        const vec3_t c = v3(p.p[2]);
+        const vec3_t x = vec3_sub(b, a), y = vec3_sub(c, a);
+        const float lx = vec3_length(x), ly = vec3_length(y);
+        if (lx <= 0.0f || ly <= 0.0f) break;
+        const float r = 0.33f * MIN(lx, ly);
+        const vec3_t ux = vec3_div1(x, lx), uy = vec3_div1(y, ly);
+        const float ang = acosf(CLAMP(vec3_dot(ux, uy), -1.0f, 1.0f));
+        vec3_t perp = vec3_sub(uy, vec3_mul1(ux, vec3_dot(ux, uy)));
+        const float lp = vec3_length(perp);
+        if (lp <= 1e-6f) break;
+        perp = vec3_div1(perp, lp);
+        const int N = MAX(4, (int)(ang * 16.0f));
+        vec3_t prev = vec3_add(a, vec3_mul1(ux, r));
+        line(d, a, prev);
+        for (int i = 1; i <= N; ++i) {
+            const float t = ang * (float)i / (float)N;
+            const vec3_t q = vec3_add(a, vec3_add(vec3_mul1(ux, r * cosf(t)), vec3_mul1(perp, r * sinf(t))));
+            line(d, prev, q);
+            md_array_push(d->triangles, vtx(a), d->alloc);
+            md_array_push(d->triangles, vtx(prev), d->alloc);
+            md_array_push(d->triangles, vtx(q), d->alloc);
+            prev = q;
+        }
+        line(d, a, prev);
+        break;
+    }
+    case MD_VIAL_PRIM_DISK: {
+        vec3_t u, w;
+        basis_of(b, &u, &w);
+        circle(d, a, u, w, p.r, true);
+        break;
+    }
+    }
+}
+
+static md_vial_draw_desc_t draw_desc(const DrawCtx& ctx, int subidx) {
+    md_vial_draw_desc_t d = {};
+    d.prog = vp(ctx.prog);
+    d.sys = ctx.sys;
+    d.run = ctx.run;
+    d.state = ctx.state;
+    d.frame = ctx.state ? (int64_t)floor(ctx.state->frame) : 0;
+    d.eval = ve(ctx.eval);
+    d.element = subidx;
+    return d;
+}
+
+static void group(Drawing* out, const uint32_t* atoms, size_t n) {
+    md_bitset_t g = md_bitset_from_indices(atoms, n, out->alloc);
+    md_bitset_t mask = md_bitset_or(out->atom_mask, g, out->alloc);
+    md_bitset_free(&out->atom_mask, out->alloc);
+    out->atom_mask = mask;
+    md_array_push(out->groups, g, out->alloc);
+}
+
+bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags) {
+    if (!out || !v2::ref_valid(ctx.prog, ref) || !ctx.sys) return false;
+    const bool all = flags == DRAW_DEFAULT;
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
+    md_vial_drawing_t dr;
+    const bool ok = md_vial_draw(&dr, &d, ref.node, temp);
+    if (ok) {
+        if (all || (flags & DRAW_GEOMETRY)) for (size_t i = 0; i < dr.num_prims; ++i) prim(out, dr.prims[i]);
+        if (all || (flags & DRAW_ATOMS)) for (size_t i = 0; i < dr.num_groups; ++i) group(out, dr.atoms + dr.groups[i].beg, dr.groups[i].end - dr.groups[i].beg);
+        if (all || (flags & DRAW_TEXT)) {
+            for (size_t i = 0; i < dr.num_labels; ++i) {
+                Text t;
+                t.pos = v3(dr.labels[i].pos);
+                t.str = str_copy(dr.labels[i].text, out->alloc);
+                t.value = dr.labels[i].value;
+                t.unit = dr.labels[i].unit;
+                md_array_push(out->text, t, out->alloc);
+            }
+        }
+    }
+    md_arena_allocator_destroy(temp);
+    return ok;
+}
+
+bool draw_text(Drawing* out, str_t expr, const DrawCtx& ctx, uint32_t flags) {
+    // What an expression picks, as a filter of the program's language picks it
+    if (!out || !ctx.sys || (flags != DRAW_DEFAULT && !(flags & DRAW_ATOMS))) return false;
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_vial_filter_desc_t fd = {};
+    fd.sys = ctx.sys;
+    fd.state = ctx.state;
+    fd.run = ctx.run;
+    fd.prog = vp(ctx.prog);
+    if (const ProgramV2* x = pv(ctx.prog)) { fd.sets = x->sets; fd.num_sets = md_array_size(x->sets); }
+    md_vial_filter_t f;
+    const bool ok = md_vial_filter(&f, expr, &fd, temp);
+    for (size_t i = 0; ok && i < f.num_sets; ++i) group(out, f.atoms + f.offsets[i], f.offsets[i + 1] - f.offsets[i]);
+    md_arena_allocator_destroy(temp);
+    return ok;
+}
+
+size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx) {
+    if (!buf || !cap) return 0;
+    buf[0] = 0;
+    if (!v2::ref_valid(ctx.prog, ref) || !ctx.sys) return 0;
+    const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
+    return md_vial_value_text(buf, cap, &d, ref.node);
 }
 
 // The language's lists, made once
@@ -614,24 +772,124 @@ str_t attr_path(Language, const md_attributes_t* table, const md_attribute_t* at
 
 bool name_valid(Language, str_t name) { return md_vial_name_valid(name); }
 
-FilterResult filter(Language lang,  md_bitset_t* dst,  str_t expr,  const FilterCtx& ctx,  md_allocator_i* alloc) {
-    (void)lang; (void)dst; (void)expr; (void)ctx; (void)alloc;
-    return not_yet();
+// ### FILTERS ###
+// An expression compiled alone, with the stored selections and the program's published selections as names
+
+struct Filtered {
+    md_allocator_i*  temp;
+    md_vial_filter_t f;
+    FilterResult     r;
+};
+
+static void run_filter(Filtered* out, str_t expr, const FilterCtx& ctx) {
+    out->temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_vial_filter_desc_t d = {};
+    d.sys = ctx.sys;
+    d.state = ctx.state;
+    d.run = ctx.run;
+    d.prog = vp(ctx.prog);
+    if (const ProgramV2* x = pv(ctx.prog)) { d.sets = x->sets; d.num_sets = md_array_size(x->sets); }
+    if (ctx.atoms) {
+        const size_t n = md_bitset_count(*ctx.atoms);
+        uint32_t* scope = (uint32_t*)md_alloc(out->temp, (n ? n : 1) * sizeof(uint32_t));
+        size_t k = 0;
+        md_bitset_iter_t it = md_bitset_iter(*ctx.atoms);
+        while (k < n && md_bitset_iter_next(&it)) scope[k++] = (uint32_t)it.idx;
+        d.scope = scope;
+        d.num_scope = k;
+    }
+    out->r = FilterResult{};
+    if (!ctx.sys) {
+        snprintf(out->r.error, sizeof(out->r.error), "no system");
+        return;
+    }
+    if (md_vial_filter(&out->f, expr, &d, out->temp)) {
+        out->r.success = true;
+        out->r.is_dynamic = out->f.dynamic;
+    } else {
+        const md_vial_diagnostic_t& e = out->f.error;
+        out->r.error_range = range_of(e.span);
+        snprintf(out->r.error, sizeof(out->r.error), "%.5s: %.*s", e.code, (int)e.message.len, e.message.ptr);
+    }
 }
 
-FilterResult filter_sets(Language lang,  md_array(md_bitset_t)* dst,  str_t expr,  const FilterCtx& ctx,  md_allocator_i* alloc) {
-    (void)lang; (void)dst; (void)expr; (void)ctx; (void)alloc;
-    return not_yet();
+static void filter_done(Filtered* f) { md_arena_allocator_destroy(f->temp); }
+
+FilterResult filter(Language, md_bitset_t* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    // Every particle it picks: the union of its sets
+    Filtered f;
+    run_filter(&f, expr, ctx);
+    if (f.r.success && dst) {
+        const size_t n = f.f.offsets[f.f.num_sets];
+        md_bitset_t b = md_bitset_from_indices(f.f.atoms, n, alloc);
+        md_bitset_free(dst, alloc);
+        *dst = b;
+    }
+    const FilterResult r = f.r;
+    filter_done(&f);
+    return r;
 }
 
-FilterResult filter_bonds(Language lang,  md_array(md_atom_pair_t)* dst,  str_t expr,  const FilterCtx& ctx,  md_allocator_i* alloc) {
-    (void)lang; (void)dst; (void)expr; (void)ctx; (void)alloc;
-    return not_yet();
+FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    // Each set it picks: one, or an array of them
+    Filtered f;
+    run_filter(&f, expr, ctx);
+    if (f.r.success && dst) {
+        for (size_t i = 0; i < md_array_size(*dst); ++i) md_bitset_free(&(*dst)[i], alloc);
+        md_array_shrink(*dst, 0);
+        for (size_t i = 0; i < f.f.num_sets; ++i) {
+            md_array_push(*dst, md_bitset_from_indices(f.f.atoms + f.f.offsets[i], f.f.offsets[i + 1] - f.f.offsets[i], alloc), alloc);
+        }
+    }
+    const FilterResult r = f.r;
+    filter_done(&f);
+    return r;
 }
 
-Completions filter_complete(Language lang,  str_t expr,  int cursor,  const FilterCtx& ctx,  md_allocator_i* alloc) {
-    (void)lang; (void)expr; (void)cursor; (void)ctx; (void)alloc;
-    return Completions{};
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    // bonds(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
+    Filtered f;
+    run_filter(&f, expr, ctx);
+    if (f.r.success && dst) {
+        md_array_shrink(*dst, 0);
+        const md_vial_filter_t& v = f.f;
+        bool pairs = v.ndim == 2 && v.dims[1] == 2;
+        for (size_t i = 0; pairs && i < v.num_sets; ++i) pairs = v.offsets[i + 1] - v.offsets[i] == 1;
+        if (pairs) {
+            for (size_t i = 0; i + 1 < v.num_sets; i += 2) {
+                md_atom_pair_t p = {};
+                p.idx[0] = (md_atom_idx_t)v.atoms[v.offsets[i]];
+                p.idx[1] = (md_atom_idx_t)v.atoms[v.offsets[i + 1]];
+                md_array_push(*dst, p, alloc);
+            }
+        } else {
+            const md_system_t* sys = ctx.sys;
+            const size_t na = sys->atom.count;
+            uint8_t* in = (uint8_t*)md_alloc(f.temp, na ? na : 1);
+            memset(in, 0, na);
+            for (uint32_t k = 0; k < v.offsets[v.num_sets]; ++k) if (v.atoms[k] < na) in[v.atoms[k]] = 1;
+            const size_t total = sys->bond.count + sys->bond.noncovalent_count;
+            for (size_t i = 0; i < total; ++i) {
+                const md_atom_pair_t p = sys->bond.pairs[i];
+                if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) md_array_push(*dst, p, alloc);
+            }
+        }
+    }
+    const FilterResult r = f.r;
+    filter_done(&f);
+    return r;
+}
+
+Completions filter_complete(Language, str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
+    if (!ctx.sys || cursor < 0 || (size_t)cursor > expr.len) return Completions{};
+    md_vial_filter_desc_t d = {};
+    d.sys = ctx.sys;
+    d.state = ctx.state;
+    d.run = ctx.run;
+    d.prog = vp(ctx.prog);
+    if (const ProgramV2* x = pv(ctx.prog)) { d.sets = x->sets; d.num_sets = md_array_size(x->sets); }
+    md_vial_completions_t c;
+    return md_vial_filter_complete(&c, expr, (uint32_t)cursor, &d, alloc) ? completions_of(c, alloc) : Completions{};
 }
 
 }  // namespace v2
