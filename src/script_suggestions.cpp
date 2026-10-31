@@ -1121,7 +1121,7 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
 }
 
 // ### VALIDATION ###
-// The lines are written in v1 (mdscript), and so are validated as v1, whatever the workspace's language
+// The lines here are written in v1 (mdscript), and so are validated as v1; VIAL's are script_suggestions_vial.cpp's
 
 // The sets the expression gives, as a script would have them: one per residue of residue(1:3)
 static bool filter_sets(md_array(md_bitset_t)* sets, str_t expr, const md_system_t& sys, md_allocator_i* temp) {
@@ -1207,7 +1207,12 @@ static void push_suggestion(md_array(ScriptSuggestion)* out, str_t text, str_t h
 
 // ### SELECTION ###
 
-md_array(ScriptSuggestion) script_suggest_selection(str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
+// VIAL's, in script_suggestions_vial.cpp
+md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc);
+md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc);
+
+md_array(ScriptSuggestion) script_suggest_selection(script::Language lang, str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
+    if (lang == script::Language::V2) return script_suggest_selection_vial(ident, sel, sys, alloc);
     md_array(ScriptSuggestion) out = 0;
     if (md_bitset_empty(sel) || sys.atom.count == 0 || str_empty(ident)) return out;
 
@@ -1327,7 +1332,8 @@ static bool args_pick_atoms(const str_t* args, const int32_t* atoms, size_t coun
     return true;
 }
 
-md_array(ScriptSuggestion) script_suggest_measurement(str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc) {
+md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc) {
+    if (lang == script::Language::V2) return script_suggest_measurement_vial(ident, atoms, count, sys, alloc);
     md_array(ScriptSuggestion) out = 0;
     if (count < 2 || count > 4 || str_empty(ident)) return out;
     for (size_t i = 0; i < count; ++i) {

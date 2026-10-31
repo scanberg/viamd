@@ -1,7 +1,7 @@
 // The script interface (script_engine.h) for v1: mdlib's md_script and md_filter, call for call. What v1 hands out is
 // converted to the interface's types where they are viamd's own, and passed through where only the name differs.
 
-#include "script_engine.h"
+#include "script_engine_impl.h"
 
 #include <md_script.h>
 #include <md_filter.h>
@@ -12,20 +12,7 @@
 #include <string.h>
 
 namespace script {
-
-struct Program {
-    Language                lang;
-    md_allocator_i*         alloc;
-    md_script_ir_t*         v1;
-    md_array(Diagnostic)    errs;
-    md_array(Diagnostic)    warns;
-    md_array(Mark)          marks;
-};
-
-struct Eval {
-    md_allocator_i*   alloc;
-    md_script_eval_t* v1;
-};
+namespace v1 {
 
 static inline Range range_of(md_script_range_marker_t r) { return Range{r.beg, r.end}; }
 static inline Ref ref_of(md_script_vis_ref_t r) { return Ref{r.ir_id, r.node_idx}; }
@@ -105,6 +92,8 @@ Eval* eval_create(const Eval* prev, const Program* prog, const EvalDesc& desc, m
     md_script_eval_t* v = md_script_eval_create_from(prev ? prev->v1 : nullptr, v1_ir(prog), &d, alloc);
     if (!v) return nullptr;
     Eval* e = (Eval*)md_alloc(alloc, sizeof(Eval));
+    memset(e, 0, sizeof(*e));
+    e->lang = Language::V1;
     e->alloc = alloc;
     e->v1 = v;
     return e;
@@ -131,6 +120,21 @@ md_bitset_t eval_pending_frames(Eval* e, md_allocator_i* alloc) {
 
 bool eval_frames(Eval* e, const Program* prog, const md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames) {
     return e && md_script_eval_frames(e->v1, v1_ir(prog), sys, run, frames, num_frames);
+}
+
+bool eval_whole(const Eval*) { return false; }
+
+// v1 logs what fails while evaluating; it keeps no diagnostics of it
+EvalErrors eval_errors(const Eval*) { return EvalErrors{}; }
+
+float eval_progress(const Eval* e) {
+    const size_t n = e ? md_script_eval_frame_count(e->v1) : 0;
+    if (!n) return 1.0f;
+    md_allocator_i* temp = md_get_heap_allocator();
+    md_bitset_t pending = md_script_eval_pending_frames(e->v1, temp);
+    const size_t left = md_bitset_count(pending);
+    md_bitset_free(&pending, temp);
+    return 1.0f - (float)left / (float)n;
 }
 
 void eval_interrupt(Eval* e) { if (e) md_script_eval_interrupt(e->v1); }
@@ -214,7 +218,7 @@ void drawing_clear(Drawing* d) {
     for (size_t i = 0; i < md_array_size(d->groups); ++i) md_bitset_free(&d->groups[i], alloc);
     md_array_free(d->groups, alloc);
     md_bitset_free(&d->atom_mask, alloc);
-    drawing_init(d, alloc);
+    v1::drawing_init(d, alloc);
 }
 
 static md_bitset_t copy_set(const md_bitset_t& s, md_allocator_i* alloc) {
@@ -356,4 +360,5 @@ Completions filter_complete(Language, str_t expr, int cursor, const FilterCtx& c
     return completions_of(md_filter_complete(expr, cursor, &c, alloc), alloc);
 }
 
+}  // namespace v1
 }  // namespace script

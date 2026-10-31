@@ -1563,7 +1563,7 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
     // The most telling way of writing it which fits
     md_temp_scope_t temp = md_temp_begin();
     char filter[sizeof(AtomFilter::text)] = "";
-    const md_array(ScriptSuggestion) suggestions = script_suggest_selection(STR_LIT("x"), target.atoms, app->mold.sys, md_temp_allocator(temp));
+    const md_array(ScriptSuggestion) suggestions = script_suggest_selection(app->script.language, STR_LIT("x"), target.atoms, app->mold.sys, md_temp_allocator(temp));
     for (size_t i = 0; i < md_array_size(suggestions); ++i) {
         str_t expr = suggestions[i].text;
         if (!str_begins_with(expr, STR_LIT("x = "))) continue;

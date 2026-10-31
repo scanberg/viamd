@@ -654,6 +654,18 @@ static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, Sel
     modify_field(&state->selection.selection_mask, atom_mask, op);
 }
 
+// What an evaluation spreads frames over (script::EvalDesc::parallel_for): viamd's pool. Called from a pool task, which
+// works on the range while it waits for it.
+static void pool_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
+    (void)user;
+    if (count == 0) return;
+    const task_system::ID id = task_system::create_pool_task(STR_LIT("##Evaluate frames"), (uint32_t)count, [fn, arg](uint32_t beg, uint32_t end, uint32_t) {
+        for (uint32_t i = beg; i < end; ++i) fn(arg, i);
+    });
+    task_system::enqueue_task(id);
+    task_system::task_wait_for(id);
+}
+
 int main(int argc, char** argv) {
 #if DEBUG
     persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
@@ -1265,7 +1277,7 @@ int main(int argc, char** argv) {
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
                     // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections});
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, str_from_cstr(state.mold.run)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -1291,6 +1303,9 @@ int main(int argc, char** argv) {
                             const script::Mark& tok = vis_tokens[i];
                             script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.ref);
                         }
+                        // What evaluating finds to fail is added after these (below), and replaced as it changes
+                        state.script.num_compile_markers = script_editor::markers_count(markers);
+                        state.script.eval_errors_version = 0;
 
                         if (script::valid(state.script.ir)) {
                             uint64_t ir_figerprint = script::fingerprint(state.script.ir);
@@ -1325,7 +1340,8 @@ int main(int argc, char** argv) {
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const script::EvalDesc desc = { .num_frames = num_frames };
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.mold.run),
+                                                        .num_threads = task_system::pool_num_threads(), .parallel_for = pool_parallel_for };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
 
@@ -1373,10 +1389,17 @@ int main(int argc, char** argv) {
                             const script::Program* ir = state.script.eval_ir;
                             script::Eval* eval = state.script.eval;
                             const uint32_t* frames = state.script.eval_frames;
-                            state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                (void)thread_num;
-                                script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
-                            });
+                            if (script::eval_whole(eval)) {
+                                // v2: one call evaluates every pending frame, spreading them over the pool itself
+                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), [&state, ir, eval]() {
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), nullptr, 0);
+                                });
+                            } else {
+                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
+                                    (void)thread_num;
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
+                                });
+                            }
 
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_tick_now();
@@ -1390,6 +1413,22 @@ int main(int argc, char** argv) {
                             task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
+                }
+            }
+        }
+
+        // What the evaluation found to fail, marked in the source it was compiled from: the editor's while the
+        // evaluation is of the program last compiled
+        if (!state.script.compile_ir && state.script.eval && state.script.ir && state.script.eval_ir == state.script.ir) {
+            const script::EvalErrors er = script::eval_errors(state.script.eval);
+            if (er.version && er.version != state.script.eval_errors_version) {
+                state.script.eval_errors_version = er.version;
+                script_editor::markers_truncate(&state.editor_markers, state.script.num_compile_markers);
+                for (size_t i = 0; i < er.count; ++i) {
+                    script_editor::markers_add(&state.editor_markers, script_editor::MarkerType_Error, INT32_MAX, er.items[i].range, er.items[i].text, er.items[i].context);
+                }
+                for (size_t i = 0; i < er.num_warnings; ++i) {
+                    script_editor::markers_add(&state.editor_markers, script_editor::MarkerType_Warning, INT32_MAX - 1, er.warnings[i].range, er.warnings[i].text, er.warnings[i].context);
                 }
             }
         }
@@ -3049,6 +3088,8 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
     key = md_hash64(atoms, num_atoms * sizeof(int32_t), key);
     const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.part.count};
     key = md_hash64(counts, sizeof(counts), key);
+    const uint32_t lang = (uint32_t)state->script.language;     // the lines are written in it
+    key = md_hash64(&lang, sizeof(lang), key);
     // The names the lines assign to are the first ones the script does not have
     key = md_hash64_combine(key, script::fingerprint(state->script.ir));
 
@@ -3062,11 +3103,11 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
         if (num_atoms) {
             static const str_t base[5] = {{}, {}, STR_INIT("dist"), STR_INIT("ang"), STR_INIT("dih")};
             const str_t ident = create_unique_identifier(state->script.ir, base[num_atoms], cache.arena);
-            cache.measure = script_suggest_measurement(ident, atoms, num_atoms, sys, cache.arena);
+            cache.measure = script_suggest_measurement(state->script.language, ident, atoms, num_atoms, sys, cache.arena);
         }
         if (num_selected) {
             const str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), cache.arena);
-            cache.select = script_suggest_selection(ident, sel, sys, cache.arena);
+            cache.select = script_suggest_selection(state->script.language, ident, sel, sys, cache.arena);
         }
     }
     return cache;
@@ -3240,7 +3281,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             // suggestions of the script. Written when it is asked for, it can take long for a large selection.
             auto selection_scope = [state]() -> str_t {
                 const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
-                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(STR_LIT("x"), sel, state->mold.sys, frame_alloc);
+                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(state->script.language, STR_LIT("x"), sel, state->mold.sys, frame_alloc);
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
                     str_t expr = suggestions[i].text;
                     if (!str_begins_with(expr, STR_LIT("x = "))) continue;
@@ -3650,6 +3691,8 @@ static void draw_async_task_window(ApplicationState* data) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
+            // One task over every frame (v2): the evaluation says how far it is
+            if (id == data->tasks.evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
@@ -5773,6 +5816,16 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 if (ImGui::MenuItem("Export")) {
                     state->show_property_export_window = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Language")) {
+                // The script and every filter of the workspace are in one language; the text is kept as it is
+                if (ImGui::MenuItem("mdscript (v1)", nullptr, state->script.language == script::Language::V1)) {
+                    script_set_language(state, script::Language::V1);
+                }
+                if (ImGui::MenuItem("VIAL (v2)", nullptr, state->script.language == script::Language::V2)) {
+                    script_set_language(state, script::Language::V2);
                 }
                 ImGui::EndMenu();
             }

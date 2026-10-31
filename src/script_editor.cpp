@@ -28,7 +28,7 @@ const TextEditor::Language* language(script::Language script_lang) {
     TextEditor::Language& lang = langs[idx];
     if (!initialized[idx]) {
         initialized[idx] = true;
-        lang.name = "mdscript";
+        lang.name = script_lang == script::Language::V2 ? "VIAL" : "mdscript";
         lang.caseSensitive = true;
         lang.singleLineComment = "#";
         lang.hasSingleQuotedStrings = true;
@@ -391,7 +391,8 @@ void markers_set_source(Markers* m, str_t source) {
     ASSERT(m);
     markers_clear(m);
     if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
-    m->source = source;
+    // Kept: markers are also added after the compilation, as the evaluation finds what fails
+    m->source = str_copy(source, m->arena);
     md_array_push(m->line_offsets, 0u, m->arena);
     for (size_t i = 0; i < source.len; ++i) {
         if (source.ptr[i] == '\n') md_array_push(m->line_offsets, (uint32_t)(i + 1), m->arena);
@@ -414,6 +415,15 @@ static TextEditor::DocPos doc_pos(const Markers* m, int offset) {
         if (((unsigned char)m->source.ptr[i] & 0xC0) != 0x80) ++index;  // count UTF-8 lead bytes
     }
     return TextEditor::DocPos(lo, index);
+}
+
+size_t markers_count(const Markers* m) { return m ? md_array_size(m->list) : 0; }
+
+void markers_truncate(Markers* m, size_t count) {
+    if (!m || count >= md_array_size(m->list)) return;
+    md_array_shrink(m->list, count);
+    m->hovered = -1;
+    m->dirty = true;
 }
 
 void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str_t text,

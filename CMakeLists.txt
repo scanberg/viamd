@@ -195,9 +195,13 @@ set(SRC_FILES
     src/representation_tree.cpp
     src/script_editor.cpp
     src/script_engine.h
+    src/script_engine_impl.h
+    src/script_engine.cpp
     src/script_engine_v1.cpp
+    src/script_engine_v2.cpp
     src/script_reference.cpp
     src/script_suggestions.cpp
+    src/script_suggestions_vial.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
     src/timeline_periods.cpp
