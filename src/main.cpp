@@ -1303,6 +1303,9 @@ int main(int argc, char** argv) {
                             const script::Mark& tok = vis_tokens[i];
                             script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.ref);
                         }
+                        // What evaluating finds to fail is added after these (below), and replaced as it changes
+                        state.script.num_compile_markers = script_editor::markers_count(markers);
+                        state.script.eval_errors_version = 0;
 
                         if (script::valid(state.script.ir)) {
                             uint64_t ir_figerprint = script::fingerprint(state.script.ir);
@@ -1410,6 +1413,22 @@ int main(int argc, char** argv) {
                             task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
+                }
+            }
+        }
+
+        // What the evaluation found to fail, marked in the source it was compiled from: the editor's while the
+        // evaluation is of the program last compiled
+        if (!state.script.compile_ir && state.script.eval && state.script.ir && state.script.eval_ir == state.script.ir) {
+            const script::EvalErrors er = script::eval_errors(state.script.eval);
+            if (er.version && er.version != state.script.eval_errors_version) {
+                state.script.eval_errors_version = er.version;
+                script_editor::markers_truncate(&state.editor_markers, state.script.num_compile_markers);
+                for (size_t i = 0; i < er.count; ++i) {
+                    script_editor::markers_add(&state.editor_markers, script_editor::MarkerType_Error, INT32_MAX, er.items[i].range, er.items[i].text, er.items[i].context);
+                }
+                for (size_t i = 0; i < er.num_warnings; ++i) {
+                    script_editor::markers_add(&state.editor_markers, script_editor::MarkerType_Warning, INT32_MAX - 1, er.warnings[i].range, er.warnings[i].text, er.warnings[i].context);
                 }
             }
         }

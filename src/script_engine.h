@@ -173,6 +173,18 @@ bool eval_whole(const Eval* eval);
 // How far an evaluation is, 0 to 1, while eval_frames runs; 1 when it has nothing pending
 float eval_progress(const Eval* eval);
 
+// What evaluating found (v2's R diagnostics), each once, its range in the program's source: errors, where a value
+// failed, and warnings, where a value is missing in some frames (as a position outside a length that changes per
+// frame). version changes whenever they do, and is 0 while eval_frames runs, when they are not to be read.
+struct EvalErrors {
+    const Diagnostic* items = nullptr;
+    size_t            count = 0;
+    const Diagnostic* warnings = nullptr;
+    size_t            num_warnings = 0;
+    uint64_t          version = 0;
+};
+EvalErrors eval_errors(const Eval* eval);
+
 // Stops an evaluation between frames; it stays stopped until reset
 void eval_interrupt(Eval* eval);
 void eval_reset_interrupt(Eval* eval);

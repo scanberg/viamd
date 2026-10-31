@@ -55,6 +55,9 @@ struct EvalV2 {
     volatile uint64_t   running;    // eval_frames is running
     volatile uint64_t   runs;       // runs finished
     md_array(AggSlot)   slots;
+    md_array(Diagnostic) errs;      // what failed in the last run, written before running is cleared
+    md_array(Diagnostic) warns;     // and where values are missing
+    uint64_t            errs_version;
 };
 
 namespace v2 {
@@ -314,6 +317,11 @@ void eval_free(Eval* e) {
         md_array_free(x->slots[i].values, alloc);
     }
     md_array_free(x->slots, alloc);
+    for (int w = 0; w < 2; ++w) {
+        md_array(Diagnostic)& list = w ? x->warns : x->errs;
+        for (size_t i = 0; i < md_array_size(list); ++i) if (list[i].text.ptr) md_free(alloc, (void*)list[i].text.ptr, list[i].text.len + 1);
+        md_array_free(list, alloc);
+    }
     md_free(alloc, x, sizeof(EvalV2));
     md_free(alloc, e, sizeof(Eval));
 }
@@ -375,6 +383,24 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
     uint64_t idle = 0;
     if (!__atomic_compare_exchange_n(&x->running, &idle, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return true;
     const bool ok = md_vial_eval_run(x->eval);
+    // What failed, for the editor, copied while nothing reads it (eval_errors reads none while this runs)
+    for (int w = 0; w < 2; ++w) {
+        md_array(Diagnostic)& list = w ? x->warns : x->errs;
+        for (size_t i = 0; i < md_array_size(list); ++i) if (list[i].text.ptr) md_free(e->alloc, (void*)list[i].text.ptr, list[i].text.len + 1);
+        md_array_shrink(list, 0);
+    }
+    const md_vial_diagnostic_t* dg;
+    const size_t nd = md_vial_eval_diagnostics(x->eval, &dg);
+    for (size_t i = 0; i < nd; ++i) {
+        char buf[512];
+        const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, e->alloc), nullptr};
+        // R0101 and R0102 leave a value missing and fail nothing (the reference's "a value can be missing")
+        const bool missing = !strncmp(dg[i].code, "R0101", 5) || !strncmp(dg[i].code, "R0102", 5);
+        if (missing) md_array_push(x->warns, d, e->alloc);
+        else md_array_push(x->errs, d, e->alloc);
+    }
+    x->errs_version = next_version();
     __atomic_add_fetch(&x->runs, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&x->running, 0, __ATOMIC_RELEASE);
     return ok;
@@ -387,6 +413,18 @@ float eval_progress(const Eval* e) {
     if (!x) return 1.0f;
     if (__atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return (float)md_vial_eval_progress(x->eval);
     return __atomic_load_n(&x->runs, __ATOMIC_ACQUIRE) ? 1.0f : 0.0f;
+}
+
+EvalErrors eval_errors(const Eval* e) {
+    EvalV2* x = ev(e);
+    EvalErrors r;
+    if (!x || __atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return r;
+    r.items = x->errs;
+    r.count = md_array_size(x->errs);
+    r.warnings = x->warns;
+    r.num_warnings = md_array_size(x->warns);
+    r.version = x->errs_version;
+    return r;
 }
 
 void eval_interrupt(Eval* e) { if (ve(e)) md_vial_eval_interrupt(ve(e)); }

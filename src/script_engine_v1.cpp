@@ -124,6 +124,9 @@ bool eval_frames(Eval* e, const Program* prog, const md_system_t* sys, str_t run
 
 bool eval_whole(const Eval*) { return false; }
 
+// v1 logs what fails while evaluating; it keeps no diagnostics of it
+EvalErrors eval_errors(const Eval*) { return EvalErrors{}; }
+
 float eval_progress(const Eval* e) {
     const size_t n = e ? md_script_eval_frame_count(e->v1) : 0;
     if (!n) return 1.0f;

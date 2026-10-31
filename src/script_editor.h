@@ -116,10 +116,15 @@ struct Markers {
 // Removes all markers. Their squiggles disappear the next time markers_update() runs.
 void markers_clear(Markers* markers);
 
-// Clears the markers and sets the source text that the byte ranges of the next markers_add() calls refer to. This is
-// the text that was compiled, i.e. what TextEditor::GetText() returned. It is only read by markers_add(), so it has to
-// stay alive until the markers have been added.
+// Clears the markers and sets the source text that the byte ranges of markers_add() calls refer to: the text that was
+// compiled, i.e. what TextEditor::GetText() returned. A copy is kept, so markers can be added after it is gone, as the
+// evaluation finds what fails.
 void markers_set_source(Markers* markers, str_t source);
+
+// The number of markers, and the markers past the first count dropped: those added after a point, such as the
+// evaluation's, replaced when it finds something else
+size_t markers_count(const Markers* markers);
+void   markers_truncate(Markers* markers, size_t count);
 
 // Adds a marker for the byte range [beg, end) of the source. text and atoms are copied.
 void markers_add(Markers* markers, MarkerType type, int prio, script::Range range, str_t text,

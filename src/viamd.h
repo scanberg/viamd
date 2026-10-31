@@ -1779,6 +1779,8 @@ struct ApplicationState {
         bool eval_init = false;
         bool evaluate = false;     // a new evaluation, to be started
         double time_since_last_change = 0.0;
+        size_t   num_compile_markers = 0;   // the editor's markers from compiling; the evaluation's come after them
+        uint64_t eval_errors_version = 0;   // of the evaluation's errors marked (script::eval_errors)
         uint64_t ir_fingerprint = 0;
     } script;
 

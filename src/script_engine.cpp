@@ -112,6 +112,9 @@ bool eval_whole(const Eval* eval) {
 float eval_progress(const Eval* eval) {
     return lang_of(eval) == Language::V2 ? v2::eval_progress(eval) : v1::eval_progress(eval);
 }
+EvalErrors eval_errors(const Eval* eval) {
+    return lang_of(eval) == Language::V2 ? v2::eval_errors(eval) : v1::eval_errors(eval);
+}
 void eval_interrupt(Eval* eval) {
     if (lang_of(eval) == Language::V2) v2::eval_interrupt(eval);
     else v1::eval_interrupt(eval);

@@ -8,6 +8,7 @@
 #include <md_attributes.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_bitset.h>
+#include <core/md_writer.h>
 
 #include <string.h>
 
@@ -419,4 +420,29 @@ UTEST(script_v2, filters) {
     EXPECT_TRUE(found);
     script::program_free(p);
     md_arena_allocator_destroy(alloc);
+}
+
+UTEST(script_v2, runtime_errors) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_get_heap_allocator();
+    // A position past the CA particles from some frame on: compiles, and is missing there (R0101), a warning
+    const char* src = "ca = particles(name='CA')\nx = distance(ca[0], ca[frame()])\nd = distance(ca[0], ca[1])\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    EXPECT_EQ(0u, script::eval_errors(e).num_warnings);
+    EXPECT_TRUE(script::eval_frames(e, p, &peptide()->sys, STR_LIT("run"), nullptr, 0));
+    const script::EvalErrors er = script::eval_errors(e);
+    EXPECT_NE(0u, er.version);
+    EXPECT_EQ(0u, er.count);
+    ASSERT_EQ(1u, er.num_warnings);
+    EXPECT_EQ(0, strncmp(er.warnings[0].text.ptr, "R0101", 5));
+    // About the position, within the call it is in
+    const int at = (int)(strstr(src, "ca[frame()]") - src);
+    EXPECT_GE(er.warnings[0].range.beg, at);
+    EXPECT_LE(er.warnings[0].range.end, at + 11);
+    EXPECT_TRUE(md_attributes_find(script::attributes(e), STR_LIT("script/d")) != nullptr);
+    script::eval_free(e);
+    script::program_free(p);
 }
