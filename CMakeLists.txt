@@ -201,6 +201,7 @@ set(SRC_FILES
     src/script_engine_v2.cpp
     src/script_reference.cpp
     src/script_suggestions.cpp
+    src/script_suggestions_vial.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
     src/timeline_periods.cpp

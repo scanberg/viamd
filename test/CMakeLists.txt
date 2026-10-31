@@ -23,6 +23,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v1.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v2.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions_vial.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
 )
 

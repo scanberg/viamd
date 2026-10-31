@@ -3088,6 +3088,8 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
     key = md_hash64(atoms, num_atoms * sizeof(int32_t), key);
     const uint64_t counts[3] = {sys.atom.count, sys.residue.count, sys.part.count};
     key = md_hash64(counts, sizeof(counts), key);
+    const uint32_t lang = (uint32_t)state->script.language;     // the lines are written in it
+    key = md_hash64(&lang, sizeof(lang), key);
     // The names the lines assign to are the first ones the script does not have
     key = md_hash64_combine(key, script::fingerprint(state->script.ir));
 
@@ -3101,11 +3103,11 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
         if (num_atoms) {
             static const str_t base[5] = {{}, {}, STR_INIT("dist"), STR_INIT("ang"), STR_INIT("dih")};
             const str_t ident = create_unique_identifier(state->script.ir, base[num_atoms], cache.arena);
-            cache.measure = script_suggest_measurement(ident, atoms, num_atoms, sys, cache.arena);
+            cache.measure = script_suggest_measurement(state->script.language, ident, atoms, num_atoms, sys, cache.arena);
         }
         if (num_selected) {
             const str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), cache.arena);
-            cache.select = script_suggest_selection(ident, sel, sys, cache.arena);
+            cache.select = script_suggest_selection(state->script.language, ident, sel, sys, cache.arena);
         }
     }
     return cache;
@@ -3279,7 +3281,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             // suggestions of the script. Written when it is asked for, it can take long for a large selection.
             auto selection_scope = [state]() -> str_t {
                 const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
-                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(STR_LIT("x"), sel, state->mold.sys, frame_alloc);
+                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(state->script.language, STR_LIT("x"), sel, state->mold.sys, frame_alloc);
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
                     str_t expr = suggestions[i].text;
                     if (!str_begins_with(expr, STR_LIT("x = "))) continue;
