@@ -1733,7 +1733,7 @@ void create_default_representations(ApplicationState* state) {
         int num_shown = 0;
         if (protein_trace)   shown[num_shown++] = "protein";
         if (nucleic_cartoon) shown[num_shown++] = "nucleic";
-        if (lipid_cartoon)   shown[num_shown++] = "head or tail";
+        if (lipid_cartoon)   shown[num_shown++] = state->script.language == script::Language::V2 ? "lipid" : "head or tail";
         if (water_present)   shown[num_shown++] = "water";
         char rest[64] = "";
         if (num_shown == 1 && !strchr(shown[0], ' ')) {
@@ -1795,7 +1795,11 @@ void create_default_representations(ApplicationState* state) {
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion or head or tail)") : STR_LIT("not (protein or nucleic or water or ion)"));
+        // VIAL has no head and tail yet: there the lipids whose anatomy is not known are not shown as ligands
+        const bool v2 = state->script.language == script::Language::V2;
+        const str_t filter = !lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion)")
+                           : v2 ? STR_LIT("not (protein or nucleic or water or ion or lipid)") : STR_LIT("not (protein or nucleic or water or ion or head or tail)");
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, filter);
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {

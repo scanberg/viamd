@@ -57,10 +57,10 @@ struct DensityVolumeRep {
     bool     built_cartoon = false;               // With the glyphs of a Cartoon
 };
 
-// An empty filter, or 'all', picks all of a structure: nothing to evaluate
+// An empty filter, or 'all' (v1's) or 'particles' (VIAL's), picks all of a structure: nothing to evaluate
 static bool filter_is_all(const char* text) {
     str_t s = str_trim(str_from_cstr(text));
-    return str_empty(s) || str_eq(s, STR_LIT("all"));
+    return str_empty(s) || str_eq(s, STR_LIT("all")) || str_eq(s, STR_LIT("particles"));
 }
 
 struct DensityVolume : viamd::EventHandler {

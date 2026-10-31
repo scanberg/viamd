@@ -787,7 +787,9 @@ struct Shapespace : viamd::EventHandler {
         uint32_t group = 0;
         if (LayerGroup* g = add_group(LAYER_TREE_LAST)) {
             snprintf(g->name, sizeof(g->name), "System");
-            snprintf(g->filter.text, sizeof(g->filter.text), "all");
+            // Everything, as one structure, in the language of the workspace
+            const bool v2 = app && app->script.language == script::Language::V2;
+            snprintf(g->filter.text, sizeof(g->filter.text), "%s", v2 ? "particles" : "all");
             group = g->node.id;
         }
         if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points, -1, group)) {
