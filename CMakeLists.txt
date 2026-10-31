@@ -194,6 +194,8 @@ set(SRC_FILES
     src/representation.cpp
     src/representation_tree.cpp
     src/script_editor.cpp
+    src/script_engine.h
+    src/script_engine_v1.cpp
     src/script_reference.cpp
     src/script_suggestions.cpp
     src/serialization_utils.cpp

@@ -9,7 +9,7 @@
 //
 //   shown    A representation is shown when it is enabled and so is every group around it.
 //   context  A group's filter, when it has one, is the context of everything within it: their filters are
-//            evaluated within the atoms the group picks (md_filter_context_t::atoms), and so is the filter of a
+//            evaluated within the atoms the group picks (script::FilterCtx::atoms), and so is the filter of a
 //            group within it. The context of a representation is that of the innermost group around it that
 //            has a filter; without one it is the whole system. A filter is completed within its context too.
 
@@ -104,7 +104,7 @@ struct RepresentationContext {
 };
 RepresentationContext representation_context(const ApplicationState& app, uint32_t parent);
 // What a filter in that context is evaluated and completed against: the application's (filter_context), within its atoms
-md_filter_context_t representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx);
+script::FilterCtx representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx);
 
 // Moves a representation (group false) or a group, with everything within it, to where 'drop' puts it
 // relative to the target - a representation or a group by id, or the top level (target_id 0, which takes only

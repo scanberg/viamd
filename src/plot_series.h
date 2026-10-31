@@ -20,7 +20,7 @@
 
 #include <core/md_str.h>
 #include <core/md_unit.h>
-#include <md_script.h>
+#include <script_engine.h>
 
 // The rest of the application uses ImGui's vector operators, which have to be asked for before
 // imgui.h is first included; this header may be that first include
@@ -251,7 +251,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
 // ## Periodic values
 //
 // A series of periodic values, such as an angle about an axis: a value is the same as itself plus a whole period. A script
-// property says so (MD_SCRIPT_PROPERTY_FLAG_PERIODIC) by publishing "<path>/period" (beg, end) and "<path>/seam" beside its
+// property says so (script::OUTPUT_PERIODIC) by publishing "<path>/period" (beg, end) and "<path>/seam" beside its
 // values; anything else which does is periodic alike. A plot lays such values out on a circle cut open (plot_periodic.h).
 struct SeriesPeriodic {
     double beg = 0, end = 0;    // the period its values are given in: [-180, 180[ of a dihedral. Not periodic unless end > beg
@@ -292,7 +292,7 @@ struct SeriesTemporalView {
     char  plot_id[SERIES_PATH_CAP + 104] = "";  // label###identity, what ImPlot is handed: the label may change
     char  unit_str[32] = "";                    // the display unit of the values
     char  script_ident[64] = "";                // a script property's identifier, empty otherwise
-    md_script_vis_ref_t vis_ref = {};
+    script::Ref vis_ref = {};
     SeriesState state = {};
 };
 
@@ -338,7 +338,7 @@ struct SeriesHistogramView {
     char  x_unit_str[32] = "";
     char  y_unit_str[32] = "";
     char  script_ident[64] = "";
-    md_script_vis_ref_t vis_ref = {};
+    script::Ref vis_ref = {};
     SeriesState state = {};
 
     // Over periods: member k is period k. 0 when the members are those of a population.
@@ -401,7 +401,7 @@ static inline ImPlotPoint series_histogram_point_at(const SeriesHistogramView& v
 
 // A script property evaluated as a volume, for the density volume and the export: one volume, published {x, y, z}, or an
 // array of them ('sdf(...) in residue(1:n)'), published {n, x, y, z}. Of an array, one member is viewed at a time, its
-// reference structures visualized with subidx member (md_script_vis_eval_ref), as the script editor names it: v[member + 1].
+// reference structures visualized with subidx member (script::draw_ref), as the script editor names it: v[member + 1].
 struct SeriesVolumeView {
     const float* data = nullptr;    // dim[0] * dim[1] * dim[2] values of the member, as the script publishes them. Valid this frame.
     uint32_t dim[3] = {};
@@ -410,7 +410,7 @@ struct SeriesVolumeView {
     uint64_t version = 0;           // of the data of the property: changes whenever it does, not with the member
     char  label[64] = "";           // "v", "v[2]" of an array, "v[2] (Production)"
     char  script_ident[64] = "";
-    md_script_vis_ref_t vis_ref = {};
+    script::Ref vis_ref = {};
     SeriesState state = {};
 };
 // member is clamped to the volumes there are (out->member is the one resolved)
@@ -422,7 +422,7 @@ uint32_t series_volume_count(const ApplicationState* app, const SeriesKey& key);
 // ## Listing script properties
 
 // Calls fn(key) for each property of the compiled script whose kind matches any of the flags
-// (MD_SCRIPT_PROPERTY_FLAG_*) and that the source's evaluation has published, in script order. Over every frame: a
+// (script::OUTPUT_*) and that the source's evaluation has published, in script order. Over every frame: a
 // period is set on the key by whoever wants one.
 template <typename Fn>
 void series_for_each_script_property(const ApplicationState* app, SeriesSource source, uint32_t kind_flags, Fn fn);

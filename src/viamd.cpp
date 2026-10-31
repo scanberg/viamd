@@ -6,7 +6,7 @@
 #include <atomic>
 #include <stdarg.h>
 
-#include <md_filter.h>
+#include <script_engine.h>
 
 #include <core/md_log.h>
 #include <core/md_writer.h>
@@ -960,7 +960,7 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state) {
     task_system::pool_interrupt_running_tasks();
 
-    if (state->script.eval) md_script_eval_interrupt(state->script.eval);
+    if (state->script.eval) script::eval_interrupt(state->script.eval);
 
     task_system::pool_wait_for_completion();
 }
@@ -1286,10 +1286,10 @@ void free_trajectory_data(ApplicationState* state) {
     series_cache_free(state);
 
     // The evaluation is of this run. Another run may have as many frames, and taking over from an evaluation of
-    // this one (md_script_eval_create_from) would carry its values over to the other: the next one starts afresh.
+    // this one (script::eval_create) would carry its values over to the other: the next one starts afresh.
     // The tasks which use it were stopped by the caller.
     if (state->script.eval) {
-        md_script_eval_free(state->script.eval);
+        script::eval_free(state->script.eval);
         state->script.eval = nullptr;
     }
 
@@ -1721,7 +1721,7 @@ void free_system_data(ApplicationState* data) {
     data->script.eval_ir = nullptr;
     script_ir_collect(data);
     if (data->script.eval) {
-        md_script_eval_free(data->script.eval);
+        script::eval_free(data->script.eval);
         data->script.eval = nullptr;
     }
 
@@ -1790,7 +1790,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             // below and they would start over anyway; the rest are left to FINISH rather than
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
-            if (state->script.eval) md_script_eval_interrupt(state->script.eval);
+            if (state->script.eval) script::eval_interrupt(state->script.eval);
             task_system::pool_wait_for_completion();
 
             const size_t num_atoms = state->mold.sys.atom.count;
@@ -5395,7 +5395,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    filter_evaluate(&query.filter, &query.mask, filter_context(state), state->allocator.persistent);
+    filter_evaluate(&query.filter, &query.mask, state->script.language, filter_context(state), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }
@@ -5675,7 +5675,7 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
 
 void system_bonds_edit_begin(ApplicationState* app) {
     ASSERT(app);
-    if (app->script.eval) md_script_eval_interrupt(app->script.eval);
+    if (app->script.eval) script::eval_interrupt(app->script.eval);
     task_system::pool_wait_for_completion();
 }
 
@@ -5690,7 +5690,7 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_util_system_infer_rings(&sys);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-    // The properties of a script are of the topology they were evaluated with (md_script_ir_compile), and the bond sets
+    // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
     // it holds are indices of the bonds there were. Compiled in this frame, before the representations which name them
     // are evaluated, rather than once the delay for typing has passed.
     app->script.compile_ir = true;
@@ -5786,7 +5786,7 @@ void bond_tracking_update(ApplicationState* app) {
     }
     if (bt.scope_dirty) {
         if (has_scope) {
-            filter_evaluate(&bt.scope, &bt.scope_mask, filter_context(app), app->allocator.persistent);
+            filter_evaluate(&bt.scope, &bt.scope_mask, app->script.language, filter_context(app), app->allocator.persistent);
         } else {
             md_bitset_free(&bt.scope_mask, app->allocator.persistent);
             bt.scope.result = {};
@@ -6763,9 +6763,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
     }
 }
 
-md_script_ir_t* script_ir_create(ApplicationState* state) {
+script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc) {
     ASSERT(state);
-    md_script_ir_t* ir = md_script_ir_create(state->allocator.persistent);
+    script::Program* ir = script::compile(state->script.language, src, desc, state->allocator.persistent);
     md_array_push(state->script.all_irs, ir, state->allocator.persistent);
     return ir;
 }
@@ -6779,9 +6779,9 @@ void script_ir_collect(ApplicationState* state) {
     }
 
     for (size_t i = 0; i < md_array_size(state->script.all_irs);) {
-        md_script_ir_t* ir = state->script.all_irs[i];
+        script::Program* ir = state->script.all_irs[i];
         if (ir != state->script.ir && ir != state->script.eval_ir) {
-            md_script_ir_free(ir);
+            script::program_free(ir);
             md_array_swap_back_and_pop(state->script.all_irs, i);
         } else {
             ++i;
@@ -6789,14 +6789,14 @@ void script_ir_collect(ApplicationState* state) {
     }
 }
 
-const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref) {
+const script::Program* script_ir_of(const ApplicationState* state, script::Ref ref) {
     ASSERT(state);
-    if (md_script_vis_ref_valid(state->script.ir, ref))      return state->script.ir;
-    if (md_script_vis_ref_valid(state->script.eval_ir, ref)) return state->script.eval_ir;
+    if (script::ref_valid(state->script.ir, ref))      return state->script.ir;
+    if (script::ref_valid(state->script.eval_ir, ref)) return state->script.eval_ir;
     return nullptr;
 }
 
-void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags) {
+void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, uint32_t flags) {
     ASSERT(state);
     // Resolved in the IR which made it: an editor token and a plotted property may come from different ones
     if (!script_ir_of(state, ref)) {
@@ -6810,7 +6810,7 @@ void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int 
     t.flags  = flags;
 }
 
-void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
+void script_visualize_str(ApplicationState* state, str_t str, uint32_t flags) {
     ASSERT(state);
     if (str_empty(str)) {
         return;
@@ -6830,11 +6830,11 @@ struct ScriptVisJob {
     uint64_t state_key = 0;         // where the atoms were
     md_allocator_i* arena = nullptr;
     ScriptVisTarget target = {};    // str in the arena
-    const md_script_ir_t* ir = nullptr;
+    const script::Program* ir = nullptr;
     const md_system_t* sys = nullptr;
     md_system_state_t state = {};
-    md_script_vis_t vis = {};
-    str_t value_text = {};          // Ref: what the value is where the atoms were (md_script_vis_value_text), in the arena
+    script::Drawing vis = {};
+    str_t value_text = {};          // Ref: what the value is where the atoms were (script::value_text), in the arena
     bool ok = false;
 };
 
@@ -6846,19 +6846,19 @@ static void vis_job_free(ScriptVisJob* job) {
 }
 
 // The IR a target is resolved in: the one which made the reference, or the script being edited for an expression
-static const md_script_ir_t* vis_target_ir(const ApplicationState* state, const ScriptVisTarget& t) {
+static const script::Program* vis_target_ir(const ApplicationState* state, const ScriptVisTarget& t) {
     return t.kind == ScriptVisTarget::Ref ? script_ir_of(state, t.ref) : state->script.ir;
 }
 
 static uint64_t vis_target_key(const ApplicationState* state, const ScriptVisTarget& t) {
-    const md_script_ir_t* ir = vis_target_ir(state, t);
+    const script::Program* ir = vis_target_ir(state, t);
     const uintptr_t ir_ptr = (uintptr_t)ir;
-    const uint64_t fingerprint = md_script_ir_fingerprint(ir);
+    const uint64_t fingerprint = script::fingerprint(ir);
     uint64_t h = md_hash64(&t.kind, sizeof(t.kind), 0);
     h = md_hash64(&t.subidx, sizeof(t.subidx), h);
     h = md_hash64(&t.flags, sizeof(t.flags), h);
-    h = md_hash64(&t.ref.ir_id, sizeof(t.ref.ir_id), h);
-    h = md_hash64(&t.ref.node_idx, sizeof(t.ref.node_idx), h);
+    h = md_hash64(&t.ref.program, sizeof(t.ref.program), h);
+    h = md_hash64(&t.ref.node, sizeof(t.ref.node), h);
     if (t.kind == ScriptVisTarget::Str) {
         h = md_hash64(t.str.ptr, t.str.len, h);
     }
@@ -6884,7 +6884,7 @@ static uint64_t vis_state_key(const md_system_state_t& st) {
 
 static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t state_key) {
     const ScriptVisTarget& t = state->script.vis_target;
-    const md_script_ir_t* ir = vis_target_ir(state, t);
+    const script::Program* ir = vis_target_ir(state, t);
     if (t.kind == ScriptVisTarget::Ref && !ir) {
         return;
     }
@@ -6899,21 +6899,21 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->sys = &state->mold.sys;
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
-    md_script_vis_init(&job->vis, job->arena);
+    script::drawing_init(&job->vis, job->arena);
 
     const task_system::ID task = task_system::create_pool_task(STR_LIT("##Visualize script"), [job]() {
-        md_script_vis_ctx_t ctx = {
-            .ir    = job->ir,
+        script::DrawCtx ctx = {
+            .prog  = job->ir,
             .sys   = job->sys,
             .state = &job->state,
         };
         const ScriptVisTarget& tgt = job->target;
         job->ok = (tgt.kind == ScriptVisTarget::Ref)
-            ? md_script_vis_eval_ref(&job->vis, tgt.ref, tgt.subidx, &ctx, tgt.flags)
-            : md_script_vis_eval_string(&job->vis, tgt.str, &ctx, tgt.flags);
+            ? script::draw_ref(&job->vis, tgt.ref, tgt.subidx, ctx, tgt.flags)
+            : script::draw_text(&job->vis, tgt.str, ctx, tgt.flags);
         if (job->ok && tgt.kind == ScriptVisTarget::Ref) {
             char buf[2048];
-            const size_t len = md_script_vis_value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, &ctx);
+            const size_t len = script::value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, ctx);
             if (len) {
                 job->value_text = str_copy({buf, len}, job->arena);
             }

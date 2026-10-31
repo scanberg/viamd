@@ -9,7 +9,7 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
-#include <md_script.h>
+#include <script_engine.h>
 #include <md_gl.h>
 #include <md_util.h>
 #include <md_chem.h>
@@ -225,7 +225,7 @@ enum class RepresentationType {
     ElectronicStructure,
     DipoleMoment,
     SimulationBox,
-    Bonds,              // The bonds its filter picks (md_filter_bonds), as sticks or dashed, without the atoms
+    Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
     Count
 };
 
@@ -1110,7 +1110,7 @@ struct PickingReadbackRequest {
 };
 
 // The key of the script evaluation's slot of a distribution or a volume over a timeline period, by its id
-// (md_script_eval_slot_request): asked for by what is shown over the period (series_resolve_histogram,
+// (script::aggregate_request): asked for by what is shown over the period (series_resolve_histogram,
 // series_resolve_volume)
 #define SCRIPT_SLOT_PERIOD(id) (((uint64_t)1 << 32) | (uint64_t)(id))
 
@@ -1118,10 +1118,10 @@ struct PickingReadbackRequest {
 struct ScriptVisTarget {
     enum Kind : uint8_t { None = 0, Ref, Str };
     Kind kind = None;
-    md_script_vis_ref_t ref = {};       // Ref
+    script::Ref ref = {};               // Ref
     str_t str = {};                     // Str: an expression, copied into the frame allocator
     int subidx = -1;
-    md_script_vis_flags_t flags = 0;
+    uint32_t flags = 0;                 // script::DRAW_*
 };
 
 // A visualization computed off the main thread (viamd.cpp)
@@ -1748,18 +1748,21 @@ struct ApplicationState {
 
         uint64_t text_hash = 0;     // Of the editor's text in the last frame: a change compiles it again (main.cpp)
 
+        // The workspace's language: what the editor's text is compiled as, and what the filters are written in
+        script::Language language = script::Language::V1;
+
         // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
         // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
         // never freed while either points at it (see script_ir_collect).
-        md_script_ir_t*   ir = nullptr;
-        md_script_ir_t*   eval_ir = nullptr;
+        script::Program*  ir = nullptr;
+        script::Program*  eval_ir = nullptr;
 
         // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
-        md_array(md_script_ir_t*) all_irs = nullptr;
+        md_array(script::Program*) all_irs = nullptr;
 
         // One evaluation: every property over every frame, and the distributions and volumes shown over timeline
         // periods in slots over their frames (SCRIPT_SLOT_PERIOD)
-        md_script_eval_t* eval = nullptr;
+        script::Eval*     eval = nullptr;
         md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
         // The visualization: the target is set anew every frame, the job computes it off the main thread, and
         // what is shown is the last result while it is still for the target (see script_vis_update)
@@ -1767,7 +1770,7 @@ struct ApplicationState {
         ScriptVisJob* vis_running = nullptr;
         ScriptVisJob* vis_result = nullptr;
         task_system::ID vis_task = task_system::INVALID_ID;
-        const md_script_vis_t* vis_shown = nullptr;
+        const script::Drawing* vis_shown = nullptr;
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
@@ -2329,8 +2332,8 @@ void workspace_register_window(const char* name, bool* show);
 
 // Selections
 // What filters are evaluated and completed against: the system as it is shown, and the names of the script in the editor
-static inline md_filter_context_t filter_context(const ApplicationState* app) {
-    return md_filter_context_t{&app->mold.sys, &app->mold.state, app->script.ir};
+static inline script::FilterCtx filter_context(const ApplicationState* app) {
+    return script::FilterCtx{&app->mold.sys, &app->mold.state, app->script.ir};
 }
 
 // The selection keeps its own copy of atom_mask
@@ -3006,29 +3009,29 @@ void assembly_subsets_update(ApplicationState* app);
 void assembly_subsets_free(ApplicationState* app);
 
 // Script IR lifetime
-// Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the
+// Every IR is made by script_ir_create, compiling src in the workspace's language, and nothing frees one directly. Off the main thread an IR is used by the
 // evaluation task and the visualization task only, and each takes the current one (script.eval_ir, script.ir)
 // when it starts. So while neither runs, an IR which neither field points at is used by nothing, and
 // script_ir_collect frees it. Main thread, once per frame. A new task which uses an IR joins the check there.
-md_script_ir_t* script_ir_create(ApplicationState* state);
+script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc);
 void script_ir_collect(ApplicationState* state);
 
 // Script visualization
 // The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being
 // evaluated (whose properties the plots show). NULL if neither, e.g. once it has been recompiled.
-const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref);
+const script::Program* script_ir_of(const ApplicationState* state, script::Ref ref);
 // What is visualized is set anew every frame by whatever is hovered, and the last one set in a frame is what
 // is shown. It is computed on a worker thread, never stalling the frame, and shown once ready: from then on for
 // as long as it is still what is set. When the atoms move it is computed again, while the previous result
 // stays on screen.
 //
 // Sets ref, visualized in the IR which made it. Nothing if it no longer resolves.
-void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags = 0);
+void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, uint32_t flags = 0);
 // What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
 // beside the type. Empty while it is computed, and for a visualization of an expression.
 str_t script_vis_value_text(ApplicationState* state);
 // Sets an expression, compiled against the script being edited (its identifiers)
-void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
+void script_visualize_str(ApplicationState* state, str_t str, uint32_t flags = 0);
 // Clears what is set. Start of every frame, before anything sets one.
 void script_vis_begin_frame(ApplicationState* state);
 // Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
