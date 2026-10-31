@@ -7878,6 +7878,9 @@ static float isoline_px_per_point(const ApplicationState* state) {
     return h > 0.0f ? (float)state->gbuffer.height / h : 1.0f;
 }
 
+static size_t component_mesh_surfaces(ApplicationState* state, isomesh::Surface* out, size_t cap, uint64_t* hash);
+static bool render_mesh_surfaces(ApplicationState* state, const isomesh::Surface* surfaces, size_t num_surfaces, uint64_t scene_hash, bool clear);
+
 // The isosurfaces of every electronic structure representation as meshes, in one composite
 static bool draw_representations_transparent_mesh(ApplicationState* state) {
     static constexpr size_t MAX_SURFACES = 256;
@@ -7920,14 +7923,27 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         
         num_surfaces += n;
     }
+    num_surfaces += component_mesh_surfaces(state, surfaces + num_surfaces, MAX_SURFACES - num_surfaces, &scene_hash);
+    return render_mesh_surfaces(state, surfaces, num_surfaces, scene_hash, true);
+}
 
+// The meshes of the components (EventType_ViamdMeshSurfaceRequest), into out; what else they depend on into hash
+static size_t component_mesh_surfaces(ApplicationState* state, isomesh::Surface* out, size_t cap, uint64_t* hash) {
+    MeshSurfaceRequest req = {.state = state, .surfaces = out, .cap = cap};
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdMeshSurfaceRequest, viamd::EventPayloadType_MeshSurfaceRequest, &req);
+    if (req.count) *hash = md_hash64(&req.hash, sizeof(req.hash), *hash);
+    return MIN(req.count, cap);
+}
+
+// The surfaces in one composite (iso_mesh_target) over the transparency target, cleared first when clear
+static bool render_mesh_surfaces(ApplicationState* state, const isomesh::Surface* surfaces, size_t num_surfaces, uint64_t scene_hash, bool clear) {
     const isomesh::RenderDesc desc = {
         .render_target = {
             .depth = state->gbuffer.tex.depth,
             .color = state->gbuffer.tex.transparency_hdr,
             .width = state->gbuffer.width,
             .height = state->gbuffer.height,
-            .clear_color = true,
+            .clear_color = clear,
         },
         .matrix = {
             .view = state->view.param.matrix.curr.view,
@@ -7958,16 +7974,16 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
 static bool draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
-    if (state->mold.sys.atom.count == 0) return false;
+    iso_mesh_converged = true;
+    if (state->mold.sys.atom.count == 0) {
+        isomesh::target_free(&iso_mesh_target);
+        return false;
+    }
 
     const size_t num_representations = md_array_size(state->representation.reps);
-    if (num_representations == 0) return false;
-
-    iso_mesh_converged = true;
     if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
         return draw_representations_transparent_mesh(state);
     }
-    isomesh::target_free(&iso_mesh_target);
 
     bool written = false;
 
@@ -8045,7 +8061,16 @@ static bool draw_representations_transparent(ApplicationState* state) {
 #endif
         }
     }
-    return written;
+
+    // The components' meshes, over the raycast surfaces
+    isomesh::Surface surfaces[64];
+    uint64_t scene_hash = opaque_scene_hash(state);
+    const size_t num_surfaces = component_mesh_surfaces(state, surfaces, ARRAY_SIZE(surfaces), &scene_hash);
+    if (num_surfaces == 0) {
+        isomesh::target_free(&iso_mesh_target);
+        return written;
+    }
+    return render_mesh_surfaces(state, surfaces, num_surfaces, scene_hash, !written) || written;
 }
 
 static void draw_representations_marks(ApplicationState* data) {

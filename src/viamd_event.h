@@ -61,6 +61,11 @@ enum : EventType {
 	// Every frame, for the task overlay (draw_async_task_window in main.cpp): a handler with long work under way that the
 	// task system does not show adds a line to the request (payload TaskProgressRequest)
 	EventType_ViamdTaskProgressRequest				= HASH_STR_LIT("VIAMD Task Progress Request"),
+
+	// Every frame the main view is drawn, before its transparent pass: a handler with triangle meshes of its own to show
+	// (isomesh_utils.h) adds them to the request (payload MeshSurfaceRequest), composited with the representations'
+	// isosurfaces, in either rendering mode, and folds what else they depend on into its hash
+	EventType_ViamdMeshSurfaceRequest				= HASH_STR_LIT("VIAMD Mesh Surface Request"),
 };
 
 enum : EventPayloadType {
@@ -77,6 +82,7 @@ enum : EventPayloadType {
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
 	EventPayloadType_TaskProgressRequest		= HASH_STR_LIT("Payload Task Progress Request"),
+	EventPayloadType_MeshSurfaceRequest			= HASH_STR_LIT("Payload Mesh Surface Request"),
 };
 
 }
