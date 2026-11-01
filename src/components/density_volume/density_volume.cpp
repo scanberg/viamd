@@ -113,6 +113,10 @@ struct DensityVolume : viamd::EventHandler {
 
     vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
     float resolution_scale = 2.0f;
+    // v2's volumes are absolute densities: shown divided by the bulk density, where the script gives one, they read
+    // as how many times bulk, 1 being bulk
+    bool relative_to_bulk = false;
+    double volume_bulk = NAN;
 
     vec4_t clip_volume_color = {1,0,0,1};
     vec4_t bounding_box_color = {0,0,0,1};
@@ -484,6 +488,7 @@ struct DensityVolume : viamd::EventHandler {
         clip_volume_color = {1,0,0,1};
         bounding_box_color = {0,0,0,1};
         show_bounding_box = true;
+        relative_to_bulk = false;
         show_reference_structures = true;
         show_reference_ensemble = false;
         show_coordinate_system_widget = true;
@@ -532,6 +537,7 @@ struct DensityVolume : viamd::EventHandler {
         viamd::write_vec4(state, STR_LIT("ClipVolumeColor"), clip_volume_color);
         viamd::write_vec4(state, STR_LIT("BoundingBoxColor"), bounding_box_color);
         viamd::write_bool(state, STR_LIT("ShowBoundingBox"), show_bounding_box);
+        viamd::write_bool(state, STR_LIT("RelativeToBulk"), relative_to_bulk);
         viamd::write_bool(state, STR_LIT("ShowReferenceStructures"), show_reference_structures);
         viamd::write_bool(state, STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
         viamd::write_flt (state, STR_LIT("EnsembleFade"), ensemble_fade);
@@ -605,6 +611,8 @@ struct DensityVolume : viamd::EventHandler {
                 viamd::extract_vec4(bounding_box_color, arg);
             } else if (str_eq_cstr(ident, "ShowBoundingBox")) {
                 viamd::extract_bool(show_bounding_box, arg);
+            } else if (str_eq_cstr(ident, "RelativeToBulk")) {
+                viamd::extract_bool(relative_to_bulk, arg);
             } else if (str_eq_cstr(ident, "ShowReferenceStructures")) {
                 viamd::extract_bool(show_reference_structures, arg);
             } else if (str_eq_cstr(ident, "ShowReferenceEnsemble")) {
@@ -753,17 +761,52 @@ struct DensityVolume : viamd::EventHandler {
 
                 if (script::valid(state->script.eval_ir)) {
                     script::drawing_init(&vis, state->allocator.frame);
+                    // The run: v2 places an sdf's structures by fitting them onto its reference, frame 0 of the run
                     script::DrawCtx ctx = {
                         .prog = state->script.eval_ir,
                         .sys = &state->mold.sys,
-                        .state = &state->mold.state
+                        .state = &state->mold.state,
+                        .eval = state->script.eval,
+                        .run = str_from_cstr(state->mold.run),
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
                     result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
                 }
 
+                // Where the voxels are, as the script published it (v2), whether or not it has structures to draw
+                {
+                    if (vol_view.placed) {
+                        // Where the voxels are, as the script published it: the texture's u runs along the data's
+                        // innermost axis, w along its outermost
+                        const vec3_t a0 = vec3_mul1(vol_view.basis[2], (float)vol_dim[2]);
+                        const vec3_t a1 = vec3_mul1(vol_view.basis[1], (float)vol_dim[1]);
+                        const vec3_t a2 = vec3_mul1(vol_view.basis[0], (float)vol_dim[0]);
+                        model_mat = mat4_ident();
+                        model_mat.col[0] = vec4_from_vec3(a0, 0.0f);
+                        model_mat.col[1] = vec4_from_vec3(a1, 0.0f);
+                        model_mat.col[2] = vec4_from_vec3(a2, 0.0f);
+                        model_mat.col[3] = vec4_from_vec3(vol_view.origin, 1.0f);
+                        voxel_spacing = vec3_t{vec3_length(vol_view.basis[2]), vec3_length(vol_view.basis[1]), vec3_length(vol_view.basis[0])};
+                        vec3_t lo = vol_view.origin, hi = vol_view.origin;
+                        for (int c = 1; c < 8; ++c) {
+                            vec3_t p = vol_view.origin;
+                            if (c & 1) p = vec3_add(p, a0);
+                            if (c & 2) p = vec3_add(p, a1);
+                            if (c & 4) p = vec3_add(p, a2);
+                            lo = vec3_min(lo, p);
+                            hi = vec3_max(hi, p);
+                        }
+                        default_view = compute_optimal_view((lo + hi) * 0.5f, (hi - lo) * 0.5f);
+                        if (view_pending) {
+                            view_pending = false;
+                            target = default_view;
+                            camera = default_view;
+                        }
+                    }
+                }
                 if (result) {
-                    if (vis.sdf.extent) {
+                    if (!vol_view.placed && vis.sdf.extent) {
+                        // v1: a cube of half extent extent
                         const float s = vis.sdf.extent;
                         vec3_t min_aabb = vec3_set1(-s);
                         vec3_t max_aabb = vec3_set1( s);
@@ -786,15 +829,25 @@ struct DensityVolume : viamd::EventHandler {
 
         update_reps(state, frame_changed);
 
+        volume_bulk = resolved ? vol_view.bulk : NAN;
         if (dirty_vol) {
             if (vol_data) {
                 dirty_vol = false;
-                if (!volume_texture.id) {
-                    int dim[3] = { (int)vol_dim[0], (int)vol_dim[1], (int)vol_dim[2] };
+                // Its innermost axis is the texture's width; v2's volumes differ in size, so the texture follows
+                int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
+                if (!volume_texture.id || MEMCMP(volume_texture.dim, dim, sizeof(dim)) != 0) {
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
-                gl::set_texture_3D_data(volume_texture.id, 0, vol_data, GL_R32F);
+                const float* data = vol_data;
+                if (relative_to_bulk && volume_bulk > 0.0) {
+                    const size_t n = (size_t)dim[0] * dim[1] * dim[2];
+                    float* scaled = (float*)md_alloc(temp_arena, n * sizeof(float));
+                    const float s = (float)(1.0 / volume_bulk);
+                    for (size_t i = 0; i < n; ++i) scaled[i] = vol_data[i] * s;
+                    data = scaled;
+                }
+                gl::set_texture_3D_data(volume_texture.id, 0, data, GL_R32F);
                 volume::notify_data_changed(volume_texture.id);
             }
         }
@@ -874,6 +927,10 @@ struct DensityVolume : viamd::EventHandler {
         if (volume_count > 1) {
             prop::row("volume", "Of the array of volumes, the one shown");
             draw_member_slider(state, -FLT_MIN);
+        }
+        if (volume_bulk > 0.0) {
+            prop::row("relative to bulk", "The density divided by the same particles' density over the unit cell: 1 is bulk, 2 twice it");
+            if (ImGui::Checkbox("##relative_to_bulk", &relative_to_bulk)) dirty_vol = true;
         }
         if (volume_key.path[0] != '\0' && volume_state.status != SeriesStatus_Current) {
             char tip[256];

@@ -31,6 +31,7 @@
 #include <implot.h>
 
 #include <bitset>
+#include <math.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -412,6 +413,14 @@ struct SeriesVolumeView {
     char  script_ident[64] = "";
     script::Ref vis_ref = {};
     SeriesState state = {};
+    // Where its voxels are, in the volume's own frame, when the script says (v2: script/<name>/origin and /basis): the
+    // corner of the first voxel, and one step along each axis of the data, outermost first. Without it (v1) a volume is
+    // a cube of half extent Drawing::sdf.extent, its data x fastest.
+    bool  placed = false;
+    vec3_t origin = {};
+    vec3_t basis[3] = {};
+    // The density of what it maps over the unit cell, in its unit (v2: script/<name>/bulk); NaN when not known
+    double bulk = NAN;
 };
 // member is clamped to the volumes there are (out->member is the one resolved)
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key, uint32_t member = 0);

@@ -1307,6 +1307,23 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
         out->version = attr->version;
     }
     out->data = values + out->member * member_values;
+
+    // Where its voxels are, and its bulk density, published beside it
+    char path[SERIES_PATH_CAP + 16];
+    double o[3], b[9], bulk;
+    snprintf(path, sizeof(path), "%s/origin", key.path);
+    const md_attribute_t* ao = md_attributes_find(table, str_from_cstr(path));
+    snprintf(path, sizeof(path), "%s/basis", key.path);
+    const md_attribute_t* ab = md_attributes_find(table, str_from_cstr(path));
+    if (ao && ab && md_attribute_extract_f64(o, 3, ao, md_attribute_slice_all(), ao->unit) == 3 &&
+        md_attribute_extract_f64(b, 9, ab, md_attribute_slice_all(), ab->unit) == 9) {
+        out->placed = true;
+        out->origin = vec3_t{(float)o[0], (float)o[1], (float)o[2]};
+        for (int a = 0; a < 3; ++a) out->basis[a] = vec3_t{(float)b[3 * a], (float)b[3 * a + 1], (float)b[3 * a + 2]};
+    }
+    snprintf(path, sizeof(path), "%s/bulk", key.path);
+    const md_attribute_t* ak = md_attributes_find(table, str_from_cstr(path));
+    if (ak && md_attribute_extract_f64(&bulk, 1, ak, md_attribute_slice_all(), ak->unit) == 1) out->bulk = bulk;
     return true;
 }
 

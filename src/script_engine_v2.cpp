@@ -11,6 +11,7 @@
 #include <core/md_writer.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_vec_math.h>
+#include <core/md_os.h>
 #include <md_system.h>
 
 #include <md_attributes.h>
@@ -35,8 +36,24 @@ struct ProgramV2 {
     md_array(uint32_t)          output_idx; // into md_vial_outputs, by outputs
 };
 
+// A volume over chosen frames, made on a thread of its own: nothing of a volume is kept per frame, so its frames are
+// read again (md_vial_eval_aggregate), which takes as long as evaluating them did, and the UI does not wait for it
+struct VolumeJob {
+    md_vial_eval_t*     eval;
+    char                name[64];
+    md_bitset_t         frames;     // what it was asked for, heap
+    uint8_t*            mask;       // the same, a byte per frame
+    size_t              num_frames;
+    float*              values;
+    size_t              num_values;
+    uint64_t            runs;       // the runs it was made after
+    bool                ok;
+    volatile uint64_t   done;
+    md_thread_t*        thread;
+};
+
 // An aggregate asked for over chosen frames (a plot period): recomputed from the kept per-frame values whenever its
-// frames change or a run finishes
+// frames change or a run finishes; a volume's, by a job
 struct AggSlot {
     uint64_t        key;
     char            name[64];
@@ -44,6 +61,8 @@ struct AggSlot {
     uint64_t        version;
     uint64_t        seen_runs;  // the runs it was computed after
     bool            computed;
+    bool            volume;
+    VolumeJob*      job;        // a volume being made, or NULL
     md_array(float) values;
 };
 
@@ -231,6 +250,8 @@ uint32_t output_flags(const Program* p, str_t name) {
     if (o->flags & MD_VIAL_OUTPUT_TEMPORAL)     f |= OUTPUT_TEMPORAL;
     if (o->flags & MD_VIAL_OUTPUT_DISTRIBUTION) f |= OUTPUT_DISTRIBUTION;
     if (o->flags & MD_VIAL_OUTPUT_PERIODIC)     f |= OUTPUT_PERIODIC;
+    if (o->flags & MD_VIAL_OUTPUT_VOLUME)       f |= OUTPUT_VOLUME;
+    if (o->flags & MD_VIAL_OUTPUT_SDF)          f |= OUTPUT_SDF;
     return f;
 }
 
@@ -307,10 +328,34 @@ Eval* eval_create(const Eval* prev, const Program* prog, const EvalDesc& desc, m
     return e;
 }
 
+static void job_free(VolumeJob* j) {
+    if (!j) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (j->thread) md_thread_join(j->thread);
+    md_bitset_free(&j->frames, heap);
+    if (j->mask) md_free(heap, j->mask, j->num_frames ? j->num_frames : 1);
+    if (j->values) md_free(heap, j->values, j->num_values * sizeof(float));
+    md_free(heap, j, sizeof(VolumeJob));
+}
+
+// The volumes being made, stopped and waited for: before the evaluation they read goes, or runs again
+static void jobs_end(EvalV2* x) {
+    bool any = false;
+    for (size_t i = 0; i < md_array_size(x->slots); ++i) any = any || x->slots[i].job;
+    if (!any) return;
+    md_vial_eval_interrupt(x->eval);
+    for (size_t i = 0; i < md_array_size(x->slots); ++i) {
+        job_free(x->slots[i].job);
+        x->slots[i].job = nullptr;
+    }
+    md_vial_eval_reset_interrupt(x->eval);
+}
+
 void eval_free(Eval* e) {
     EvalV2* x = ev(e);
     if (!x) return;
     md_allocator_i* alloc = e->alloc;
+    jobs_end(x);
     md_vial_eval_free(x->eval);
     for (size_t i = 0; i < md_array_size(x->slots); ++i) {
         md_bitset_free(&x->slots[i].frames, alloc);
@@ -382,6 +427,7 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
     if (!x) return false;
     uint64_t idle = 0;
     if (!__atomic_compare_exchange_n(&x->running, &idle, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return true;
+    jobs_end(x);
     const bool ok = md_vial_eval_run(x->eval);
     // What failed, for the editor, copied while nothing reads it (eval_errors reads none while this runs)
     for (int w = 0; w < 2; ++w) {
@@ -470,11 +516,14 @@ static AggSlot* find_slot(EvalV2* x, uint64_t key, str_t name) {
 
 bool aggregate_request(Eval* e, uint64_t key, str_t name, const md_bitset_t* frames) {
     EvalV2* x = ev(e);
-    if (!x || !frames || name.len >= sizeof(AggSlot::name) || !(v2::output_flags(x->prog, name) & OUTPUT_DISTRIBUTION)) return false;
+    if (!x || !frames || name.len >= sizeof(AggSlot::name)) return false;
+    const uint32_t kinds = v2::output_flags(x->prog, name);
+    if (!(kinds & (OUTPUT_DISTRIBUTION | OUTPUT_VOLUME))) return false;
     AggSlot* s = find_slot(x, key, name);
     if (!s) {
         AggSlot n = {};
         n.key = key;
+        n.volume = (kinds & OUTPUT_VOLUME) != 0;
         memcpy(n.name, name.ptr, name.len);
         n.frames = md_bitset_empty_set();
         md_array_push(x->slots, n, e->alloc);
@@ -496,6 +545,11 @@ void aggregate_release(Eval* e, uint64_t key, str_t name) {
     for (size_t i = 0; i < md_array_size(x->slots); ++i) {
         AggSlot* s = &x->slots[i];
         if (s->key != key || !str_eq(str_from_cstr(s->name), name)) continue;
+        if (s->job) {
+            // Its frames are read to the end, there being no stopping one job alone
+            job_free(s->job);
+            s->job = nullptr;
+        }
         md_bitset_free(&s->frames, e->alloc);
         md_array_free(s->values, e->alloc);
         md_array_swap_back_and_pop(x->slots, i);
@@ -503,11 +557,59 @@ void aggregate_release(Eval* e, uint64_t key, str_t name) {
     }
 }
 
+static void job_main(void* data) {
+    VolumeJob* j = (VolumeJob*)data;
+    j->ok = md_vial_eval_aggregate(j->eval, str_from_cstr(j->name), j->mask, j->values, j->num_values) == j->num_values;
+    __atomic_store_n(&j->done, 1, __ATOMIC_RELEASE);
+}
+
+// A volume's slot: what a job made, once it is done, and a job started for what the slot wants and does not hold
+static bool volume_update(EvalV2* x, AggSlot* s, uint64_t runs, md_allocator_i* alloc) {
+    if (s->job) {
+        VolumeJob* j = s->job;
+        if (!__atomic_load_n(&j->done, __ATOMIC_ACQUIRE)) return s->computed;
+        // Done: taken when it is what the slot wants still
+        if (j->ok && j->runs == runs && md_bitset_equal(j->frames, s->frames)) {
+            md_array_resize(s->values, j->num_values, alloc);
+            memcpy(s->values, j->values, j->num_values * sizeof(float));
+            s->computed = true;
+            s->seen_runs = runs;
+            s->version = next_version();
+        }
+        job_free(j);
+        s->job = nullptr;
+        if (s->computed && s->seen_runs == runs) return true;
+    }
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (!x->num_frames) return s->computed;
+    VolumeJob* j = (VolumeJob*)md_alloc(heap, sizeof(VolumeJob));
+    memset(j, 0, sizeof(*j));
+    j->eval = x->eval;
+    memcpy(j->name, s->name, sizeof(j->name));
+    j->frames = md_bitset_copy(s->frames, heap);
+    j->num_frames = x->num_frames;
+    j->mask = (uint8_t*)md_alloc(heap, x->num_frames);
+    memset(j->mask, 0, x->num_frames);
+    md_bitset_iter_t it = md_bitset_iter(s->frames);
+    while (md_bitset_iter_next(&it)) if (it.idx < x->num_frames) j->mask[it.idx] = 1;
+    // Its size, known without reading a frame
+    const size_t nv = md_vial_eval_aggregate(x->eval, str_from_cstr(s->name), j->mask, nullptr, 0);
+    if (!nv) { job_free(j); return s->computed; }
+    j->num_values = nv;
+    j->values = (float*)md_alloc(heap, nv * sizeof(float));
+    j->runs = runs;
+    j->thread = md_thread_create(job_main, j);
+    if (!j->thread) { job_free(j); return s->computed; }
+    s->job = j;
+    return s->computed;
+}
+
 // The slot computed for what the evaluation holds now: over its frames, once the run has finished
 static bool slot_update(EvalV2* x, AggSlot* s, md_allocator_i* alloc) {
     const uint64_t runs = __atomic_load_n(&x->runs, __ATOMIC_ACQUIRE);
     if (__atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return s->computed;
     if (s->computed && s->seen_runs == runs) return true;
+    if (s->volume) return volume_update(x, s, runs, alloc);
     // Kept per frame, so recomputed over the period's frames: nothing is evaluated again
     uint8_t* mask = (uint8_t*)md_alloc(md_get_heap_allocator(), x->num_frames ? x->num_frames : 1);
     memset(mask, 0, x->num_frames);
@@ -695,6 +797,17 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
     if (ok) {
         if (all || (flags & DRAW_GEOMETRY)) for (size_t i = 0; i < dr.num_prims; ++i) prim(out, dr.prims[i]);
         if (all || (flags & DRAW_ATOMS)) for (size_t i = 0; i < dr.num_groups; ++i) group(out, dr.atoms + dr.groups[i].beg, dr.groups[i].end - dr.groups[i].beg);
+        if (all || (flags & DRAW_SDF)) {
+            // An sdf's structures, each with the matrix from the run's frame to the volume's; where the volume's voxels
+            // are is published beside it, script/<name>/origin and /basis
+            for (size_t i = 0; i < dr.num_poses; ++i) {
+                const md_vial_pose_t& ps = dr.poses[i];
+                mat4_t M;
+                memcpy(M.elem, ps.m, sizeof(M.elem));
+                md_array_push(out->sdf.matrices, M, out->alloc);
+                md_array_push(out->sdf.structures, md_bitset_from_indices(dr.atoms + ps.beg, ps.end - ps.beg, out->alloc), out->alloc);
+            }
+        }
         if (all || (flags & DRAW_TEXT)) {
             for (size_t i = 0; i < dr.num_labels; ++i) {
                 Text t;

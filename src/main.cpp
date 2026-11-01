@@ -6229,6 +6229,8 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             .prog = data.script.eval_ir,
             .sys = &data.mold.sys,
             .state = &data.mold.state,
+            .eval = data.script.eval,
+            .run = str_from_cstr(data.mold.run),
         };
         // The structures of the volume exported: of an array, those of its member
         result = script::draw_ref(&vis, vis_ref, (int)volume.member, ctx, script::DRAW_ATOMS | script::DRAW_SDF);
@@ -6245,7 +6247,36 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
         md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
         md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
 
-        if (md_array_size(vis.sdf.structures) > 0) {
+        if (volume.placed) {
+            // v2: its voxels where the script placed them, its data x outermost and z innermost, as the cube format
+            // reads it; the first structure of an sdf in the volume's frame, a density in the run's frame has none
+            const double to_bohr = 1.0 / 0.529177210903;
+            const int vol_dim[3] = {(int)volume.dim[0], (int)volume.dim[1], (int)volume.dim[2]};
+            const md_bitset_t* bf = md_array_size(vis.sdf.structures) > 0 ? &vis.sdf.structures[0] : nullptr;
+            const int num_atoms = bf ? (int)md_bitset_count(*bf) : 0;
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, volume.origin.x * to_bohr, volume.origin.y * to_bohr, volume.origin.z * to_bohr);
+            for (int a = 0; a < 3; ++a) {
+                const vec3_t b = volume.basis[a];
+                md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[a], b.x * to_bohr, b.y * to_bohr, b.z * to_bohr);
+            }
+            if (bf) {
+                const float scl = (float)to_bohr;
+                const mat4_t M = mat4_mul(mat4_scale(scl, scl, scl), vis.sdf.matrices[0]);
+                md_bitset_iter_t it = md_bitset_iter(*bf);
+                while (md_bitset_iter_next(&it)) {
+                    const size_t i = it.idx;
+                    const vec3_t coord = mat4_mul_vec3(M, md_state_coord(&state, i), 1.0f);
+                    const int anum = md_atom_atomic_number(&sys.atom, i);
+                    md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, (float)anum, coord.x, coord.y, coord.z);
+                }
+            }
+            const size_t n = (size_t)vol_dim[0] * vol_dim[1] * vol_dim[2];
+            for (size_t i = 0; i < n; ++i) {
+                md_file_printf(file, " %12.6E", volume_values[i]);
+                const size_t k = i % (size_t)vol_dim[2];   // six to a line, each row of z on lines of its own
+                if ((k + 1) % 6 == 0 || k + 1 == (size_t)vol_dim[2]) md_file_printf(file, "\n");
+            }
+        } else if (md_array_size(vis.sdf.structures) > 0) {
             const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
 
             // transformation matrix from world to volume

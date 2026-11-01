@@ -18,7 +18,8 @@ The acceptance gate of VIAL (script v2) against v1, run by `test/test_script_pai
 v1's procedures without a VIAL equivalent, so without pairs:
 
 - Bond changes per frame: `bond_delta`, `formed`, `broken` (declared in VIAL, not evaluated).
-- Volumes and distributions over space: `sdf`, `density`, `density_x/y/z`, `rdf` (phase 5 and after).
+- Distributions over space: `rdf`; and `density_x/y/z`, which VIAL writes as a histogram of a coordinate over the
+  frames.
 - Contacts: `contacts`, `contact_count`, `degree`, `porosity`, `pool`.
 - Ring geometry: `plane`, `normal`, `radius`, `deviation`, `pucker`, `amplitude`, `phase`, `theta`, `pseudorotation`;
   and a SMILES pattern along a ring in `rings`.
@@ -27,3 +28,8 @@ v1's procedures without a VIAL equivalent, so without pairs:
 
 What v1 cannot publish has no pair either: a value of more than one dimension per frame, such as `coord` of several
 atoms, is not a v1 property.
+
+Volumes have no pairs here: v1's `sdf` counts each particle into one voxel of a fixed 128³ grid and sums over the
+structures, VIAL's spreads it over eight and gives a density per structure, so the grids hold different numbers by
+design. mdlib's `vial_compare.sdf_agrees_with_v1` checks what they hold alike: the particles per structure in the box
+and where they are.

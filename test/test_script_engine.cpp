@@ -10,7 +10,10 @@
 #include <core/md_bitset.h>
 #include <core/md_writer.h>
 
+#include <core/md_os.h>
+
 #include <string.h>
+#include <vector>
 
 /* The script interface under v2 (VIAL), as viamd calls it: what a program says when compiled, its outputs as plots
  * see them, the marks of the editor and the references they draw by. On the alanine peptide, its models published as
@@ -485,4 +488,71 @@ UTEST(script_v2, program_users) {
     EXPECT_EQ(0u, script::program_users(nullptr));
     script::program_free(p);
     md_arena_allocator_destroy(alloc);
+}
+
+// Volumes: sdf and density, published with what places them; over a period made again on a thread of their own, the
+// UI asking until it is done; an sdf's structures drawn with the poses that place the volume on them
+UTEST(script_v2, volumes) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const size_t nf = peptide()->num_frames;
+    const char* src =
+        "s = sdf(residues[1:5], particles(name='O'), 6.0)\n"
+        "d = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    EXPECT_EQ((uint32_t)(script::OUTPUT_VOLUME | script::OUTPUT_SDF), script::output_flags(p, STR_LIT("s")));
+    EXPECT_EQ((uint32_t)script::OUTPUT_VOLUME, script::output_flags(p, STR_LIT("d")));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    ASSERT_TRUE(script::eval_frames(e, p, &peptide()->sys, STR_LIT("run"), nullptr, 0));
+    const md_attributes_t* attrs = script::attributes(e);
+    const md_attribute_t* as = md_attributes_find(attrs, STR_LIT("script/s"));
+    ASSERT_TRUE(as != nullptr);
+    ASSERT_EQ(3u, as->format.rank);
+    EXPECT_EQ(48u, as->format.shape[0]);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/s/origin")) != nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/s/basis")) != nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, STR_LIT("script/d/bulk")) != nullptr);
+    const size_t nv = 48 * 48 * 48;
+    std::vector<float> full((const float*)as->data, (const float*)as->data + nv);
+
+    // Over every frame, by a job: pending until it is done, then the volume published
+    const md_bitset_t all = md_bitset_range(0, (uint32_t)nf);
+    ASSERT_TRUE(script::aggregate_request(e, 9, STR_LIT("s"), &all));
+    script::AggregateInfo info;
+    for (int i = 0; i < 2000; ++i) {
+        ASSERT_TRUE(script::aggregate_info(&info, e, 9, STR_LIT("s")));
+        if (!info.num_pending) break;
+        md_thread_sleep(5);
+    }
+    ASSERT_EQ(0u, info.num_pending);
+    ASSERT_EQ(nv, info.num_values);
+    std::vector<float> got(nv), w(nv);
+    ASSERT_TRUE(script::aggregate_read(&info, got.data(), w.data(), nv, e, 9, STR_LIT("s")));
+    EXPECT_EQ(0, memcmp(full.data(), got.data(), nv * sizeof(float)));
+    // Another period while one is made: asked again, and the evaluation freed with a job on its way
+    const md_bitset_t half = md_bitset_range(0, (uint32_t)(nf / 2));
+    ASSERT_TRUE(script::aggregate_request(e, 9, STR_LIT("s"), &half));
+    ASSERT_TRUE(script::aggregate_info(&info, e, 9, STR_LIT("s")));
+    EXPECT_GT(info.num_pending, 0u);
+
+    // Drawn: its four structures, each with its pose
+    script::DrawCtx ctx;
+    ctx.prog = p;
+    ctx.sys = &peptide()->sys;
+    ctx.state = &peptide()->state;
+    ctx.run = STR_LIT("run");
+    ctx.eval = e;
+    script::Drawing dr;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    script::drawing_init(&dr, arena);
+    ASSERT_TRUE(script::draw_ref(&dr, script::output_ref(p, STR_LIT("s")), 0, ctx, script::DRAW_SDF));
+    EXPECT_EQ(4u, md_array_size(dr.sdf.matrices));
+    ASSERT_EQ(4u, md_array_size(dr.sdf.structures));
+    EXPECT_EQ(10u, (unsigned)md_bitset_count(dr.sdf.structures[0]));
+    md_arena_allocator_destroy(arena);
+
+    script::eval_free(e);
+    script::program_free(p);
 }

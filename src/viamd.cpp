@@ -6849,6 +6849,7 @@ struct ScriptVisJob {
     ScriptVisTarget target = {};    // str in the arena
     const script::Program* ir = nullptr;
     const md_system_t* sys = nullptr;
+    str_t run = {};                 // the run v2 reads frames of (at(), an sdf's reference), in the arena
     md_system_state_t state = {};
     script::Drawing vis = {};
     str_t value_text = {};          // Ref: what the value is where the atoms were (script::value_text), in the arena
@@ -6916,6 +6917,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->ir = ir;
     script::program_retain(ir);
     job->sys = &state->mold.sys;
+    job->run = str_copy(str_from_cstr(state->mold.run), job->arena);
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
     script::drawing_init(&job->vis, job->arena);
@@ -6925,6 +6927,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
             .prog  = job->ir,
             .sys   = job->sys,
             .state = &job->state,
+            .run   = job->run,
         };
         const ScriptVisTarget& tgt = job->target;
         job->ok = (tgt.kind == ScriptVisTarget::Ref)
