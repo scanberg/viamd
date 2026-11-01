@@ -96,9 +96,6 @@ NciFamilySettings nci_family_default_settings(nci_surface::Family family);
 NciUniformSettings nci_uniform_default_settings();
 ColorScale nci_default_scale();
 
-// How a layer's samples are coloured in the scatter plot
-enum class NciPointColouring : uint8_t { Scale, Interaction, Layer, Region, Count };
-const char* nci_point_colouring_name(NciPointColouring colouring);
 
 // The area of a layer in the scatter plot: none, its outline's inside filled, or its sample density
 enum class NciScatterArea : uint8_t { None, Filled, Heatmap, Count };
@@ -111,12 +108,14 @@ struct NciScatterLayer {
     bool points = true;
     bool lines = true;
     NciScatterArea area = NciScatterArea::None;
-    NciPointColouring colouring = NciPointColouring::Scale;
 };
 
-// An interaction in the scatter plot, toggled in the legend: its points, isolines and expected region in every layer
+// An interaction in the scatter plot, the same in every layer: its isolines and area in its colour; visible toggles them
+// and its expected region. Not its points: they are the layer's, as in the viewport.
 struct NciTypeStyle {
     bool visible = true;
+    bool lines = true;
+    NciScatterArea area = NciScatterArea::None;
 };
 
 struct NciState {

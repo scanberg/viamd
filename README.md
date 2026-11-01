@@ -203,9 +203,7 @@ row shows its CP types with their CP counts (for example "Hydrogen bonds 2,
 others (one at a time); clicking the shown row again hides it. The eye only
 shows or hides the layer in the scatter plot, any number of them. A new CP selection shows the Preview; clearing
 it returns to the Full system unless a saved layer is shown. Saved layers can be
-renamed, reordered and recoloured (the chip colours their scatter outline). With
-the Full system shown, **Split in type** saves each of its interactions as its
-own layer (Hydrogen bonds, π-stacking, Rings, …), so they can be drawn apart.
+renamed, reordered and recoloured (the chip colours their scatter outline).
 
 The surface is the chosen isovalue of the reduced density gradient s where ρ is
 below the cutoff, coloured by sign(λ2)ρ: negative attractive, near-zero weak,
@@ -293,12 +291,16 @@ densities from other wave functions may shift them. Each layer row also reports
 the share of its samples (below each region's s) inside their interaction's
 expected region, by interaction in its tooltip.
 
-Each layer whose eye is on is drawn with **Points** and **Isolines**, an area (**Filled**, the inside of its outlines, or **Heatmap**,
-the density of its samples) and a colouring: colour scale, interaction, layer
-colour, or Region, where samples outside their expected region stand out in
-red; a filled area takes the interaction colours with Interaction, the layer
-colour otherwise. These are set for the selected layer below the list, or for
-any layer by right-clicking its bar in the legend. The legend lists the
+Each layer whose eye is on is drawn with **Points** and **Isolines** and an
+area (**Filled**, the inside of its outlines in the layer colour, or
+**Heatmap**, the density of its samples). Points always take the colour scale of
+their surface in the viewport, so a colour means the same density in both; layers
+and interactions are told apart by their isolines and areas. These are set for
+the selected layer below the list, or for any layer by right-clicking its bar in
+the legend. Right-clicking an interaction's square sets its isolines (on by
+default) and area, in its colour and the same in every layer, or those of **All
+interactions** at once. Interactions never hide points: the points are the
+layer's, as in the viewport. The legend lists the
 expected regions and every layer (thick bars), then on a second line the
 interactions (squares). Clicking a swatch shows or hides it: a layer (as its
 eye), the expected regions, or an interaction's isolines, filled area and

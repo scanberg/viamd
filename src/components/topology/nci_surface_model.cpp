@@ -316,16 +316,6 @@ const char* nci_scatter_area_name(NciScatterArea area) {
     }
 }
 
-const char* nci_point_colouring_name(NciPointColouring colouring) {
-    switch (colouring) {
-    case NciPointColouring::Scale: return "Colour scale";
-    case NciPointColouring::Interaction: return "Interaction";
-    case NciPointColouring::Layer: return "Layer colour";
-    case NciPointColouring::Region: return "Region";
-    default: return "";
-    }
-}
-
 ImVec4 nci_type_colour(nci_surface::Family family) {
     using nci_surface::Family;
     switch (family) {
