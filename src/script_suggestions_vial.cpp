@@ -14,6 +14,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
+#include <core/md_intrinsics.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -292,7 +293,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     md_array(Found) fits = 0;
     md_bitmask_t picked = md_bitmask_create(0, (uint32_t)sys.atom.count, c.temp);
     for (uint32_t mask = 1; mask < (1u << Key_Count); ++mask) {
-        bool usable = __builtin_popcount(mask) <= 3;
+        bool usable = popcnt32(mask) <= 3;
         for (int k = 0; k < Key_Count && usable; ++k) if (mask & (1u << k)) usable = kv[k].usable;
         if (!usable) continue;
         for (size_t ci = 0; ci < md_array_size(contexts); ++ci) {

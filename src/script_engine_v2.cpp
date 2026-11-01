@@ -1,5 +1,6 @@
 // The script interface (script_engine.h) for v2: VIAL, mdlib's md_vial.
 
+#include <atomic>
 #include "script_engine_impl.h"
 
 #include <md_vial.h>
@@ -48,7 +49,7 @@ struct VolumeJob {
     size_t              num_values;
     uint64_t            runs;       // the runs it was made after
     bool                ok;
-    volatile uint64_t   done;
+    uint64_t            done;       // atomic (atomic_ref)
     md_thread_t*        thread;
 };
 
@@ -71,8 +72,8 @@ struct EvalV2 {
     const Program*      prog;
     uint64_t            fingerprint;
     size_t              num_frames;
-    volatile uint64_t   running;    // eval_frames is running
-    volatile uint64_t   runs;       // runs finished
+    uint64_t            running;    // eval_frames is running; atomic (atomic_ref), as runs
+    uint64_t            runs;       // runs finished
     md_array(AggSlot)   slots;
     md_array(Diagnostic) errs;      // what failed in the last run, written before running is cleared
     md_array(Diagnostic) warns;     // and where values are missing
@@ -83,9 +84,14 @@ namespace v2 {
 
 
 
+// The fields shared with a thread are plain integers in structs that are md_alloc'ed and zeroed, reached atomically
+// through std::atomic_ref: portable, where the compiler builtins are GCC's and Clang's alone
+static inline uint64_t load_acquire(uint64_t& v) { return std::atomic_ref<uint64_t>(v).load(std::memory_order_acquire); }
+static inline void store_release(uint64_t& v, uint64_t x) { std::atomic_ref<uint64_t>(v).store(x, std::memory_order_release); }
+
 static uint64_t next_version() {
-    static volatile uint64_t counter = 0;
-    return __atomic_add_fetch(&counter, 1, __ATOMIC_RELAXED);
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 static inline ProgramV2* pv(const Program* p) { return p && p->lang == Language::V2 ? p->v2 : nullptr; }
@@ -94,8 +100,8 @@ static inline md_vial_eval_t* ve(const Eval* e) { EvalV2* x = ev(e); return x ? 
 static inline const md_vial_program_t* vp(const Program* p) { const ProgramV2* x = pv(p); return x ? x->prog : nullptr; }
 
 static uint64_t next_program_id() {
-    static volatile uint64_t counter = 0;
-    return __atomic_add_fetch(&counter, 1, __ATOMIC_RELAXED) | (1ull << 62);  // apart from v1's ids
+    static std::atomic<uint64_t> counter{0};
+    return (counter.fetch_add(1, std::memory_order_relaxed) + 1) | (1ull << 62);  // apart from v1's ids
 }
 
 static inline Range range_of(md_vial_span_t s) { return Range{(int)s.beg, (int)s.end}; }
@@ -426,7 +432,7 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
     EvalV2* x = ev(e);
     if (!x) return false;
     uint64_t idle = 0;
-    if (!__atomic_compare_exchange_n(&x->running, &idle, 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return true;
+    if (!std::atomic_ref<uint64_t>(x->running).compare_exchange_strong(idle, 1, std::memory_order_acq_rel, std::memory_order_acquire)) return true;
     jobs_end(x);
     const bool ok = md_vial_eval_run(x->eval);
     // What failed, for the editor, copied while nothing reads it (eval_errors reads none while this runs)
@@ -447,8 +453,8 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
         else md_array_push(x->errs, d, e->alloc);
     }
     x->errs_version = next_version();
-    __atomic_add_fetch(&x->runs, 1, __ATOMIC_RELEASE);
-    __atomic_store_n(&x->running, 0, __ATOMIC_RELEASE);
+    std::atomic_ref<uint64_t>(x->runs).fetch_add(1, std::memory_order_release);
+    store_release(x->running, 0);
     return ok;
 }
 
@@ -457,14 +463,14 @@ bool eval_whole(const Eval* e) { return ev(e) != nullptr; }
 float eval_progress(const Eval* e) {
     EvalV2* x = ev(e);
     if (!x) return 1.0f;
-    if (__atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return (float)md_vial_eval_progress(x->eval);
-    return __atomic_load_n(&x->runs, __ATOMIC_ACQUIRE) ? 1.0f : 0.0f;
+    if (load_acquire(x->running)) return (float)md_vial_eval_progress(x->eval);
+    return load_acquire(x->runs) ? 1.0f : 0.0f;
 }
 
 EvalErrors eval_errors(const Eval* e) {
     EvalV2* x = ev(e);
     EvalErrors r;
-    if (!x || __atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return r;
+    if (!x || load_acquire(x->running)) return r;
     r.items = x->errs;
     r.count = md_array_size(x->errs);
     r.warnings = x->warns;
@@ -560,14 +566,14 @@ void aggregate_release(Eval* e, uint64_t key, str_t name) {
 static void job_main(void* data) {
     VolumeJob* j = (VolumeJob*)data;
     j->ok = md_vial_eval_aggregate(j->eval, str_from_cstr(j->name), j->mask, j->values, j->num_values) == j->num_values;
-    __atomic_store_n(&j->done, 1, __ATOMIC_RELEASE);
+    store_release(j->done, 1);
 }
 
 // A volume's slot: what a job made, once it is done, and a job started for what the slot wants and does not hold
 static bool volume_update(EvalV2* x, AggSlot* s, uint64_t runs, md_allocator_i* alloc) {
     if (s->job) {
         VolumeJob* j = s->job;
-        if (!__atomic_load_n(&j->done, __ATOMIC_ACQUIRE)) return s->computed;
+        if (!load_acquire(j->done)) return s->computed;
         // Done: taken when it is what the slot wants still
         if (j->ok && j->runs == runs && md_bitset_equal(j->frames, s->frames)) {
             md_array_resize(s->values, j->num_values, alloc);
@@ -606,8 +612,8 @@ static bool volume_update(EvalV2* x, AggSlot* s, uint64_t runs, md_allocator_i* 
 
 // The slot computed for what the evaluation holds now: over its frames, once the run has finished
 static bool slot_update(EvalV2* x, AggSlot* s, md_allocator_i* alloc) {
-    const uint64_t runs = __atomic_load_n(&x->runs, __ATOMIC_ACQUIRE);
-    if (__atomic_load_n(&x->running, __ATOMIC_ACQUIRE)) return s->computed;
+    const uint64_t runs = load_acquire(x->runs);
+    if (load_acquire(x->running)) return s->computed;
     if (s->computed && s->seen_runs == runs) return true;
     if (s->volume) return volume_update(x, s, runs, alloc);
     // Kept per frame, so recomputed over the period's frames: nothing is evaluated again
