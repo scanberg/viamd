@@ -16,6 +16,7 @@ struct EvalV2;
 
 struct Program {
     Language                lang;
+    volatile uint64_t       users;      // program_retain / program_release
     md_allocator_i*         alloc;
     md_array(Diagnostic)    errs;
     md_array(Diagnostic)    warns;

@@ -2,6 +2,8 @@
 
 #include "script_engine_impl.h"
 
+#include <core/md_intrinsics.h>
+
 namespace script {
 
 static inline Language lang_of(const Program* p) { return p ? p->lang : Language::V1; }
@@ -13,6 +15,16 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
 void program_free(Program* prog) {
     if (lang_of(prog) == Language::V2) v2::program_free(prog);
     else v1::program_free(prog);
+}
+// The count is the seam's, the same for both languages
+void program_retain(const Program* prog) {
+    if (prog) md_atomic_fetch_add64(&const_cast<Program*>(prog)->users, 1);
+}
+void program_release(const Program* prog) {
+    if (prog) md_atomic_fetch_add64(&const_cast<Program*>(prog)->users, UINT64_MAX);    // minus one
+}
+uint64_t program_users(const Program* prog) {
+    return prog ? md_atomic_load64(&prog->users) : 0;
 }
 Language language(const Program* prog) {
     return lang_of(prog) == Language::V2 ? v2::language(prog) : v1::language(prog);

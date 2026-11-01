@@ -1384,9 +1384,10 @@ int main(int argc, char** argv) {
                                 state.script.eval_frames[n++] = (uint32_t)it.idx;
                             }
 
-                            // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
-                            // not freed until it has finished. Nor are the frames touched.
+                            // The IR is taken now and held until the task has finished: eval_ir may be replaced while
+                            // it runs. Nor are the frames touched.
                             const script::Program* ir = state.script.eval_ir;
+                            script::program_retain(ir);
                             script::Eval* eval = state.script.eval;
                             const uint32_t* frames = state.script.eval_frames;
                             if (script::eval_whole(eval)) {
@@ -1401,6 +1402,11 @@ int main(int argc, char** argv) {
                                 });
                             }
 
+                            // Once every part of it has finished
+                            task_system::ID release = task_system::create_pool_task(STR_LIT("##Release script IR"), [ir]() {
+                                script::program_release(ir);
+                            });
+                            task_system::set_task_dependency(release, state.tasks.evaluate);
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_tick_now();
                             task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval"), [t0 = time, n]() {

@@ -466,3 +466,23 @@ UTEST(script_v2, runtime_errors) {
     script::eval_free(e);
     script::program_free(p);
 }
+
+// Who uses a program off its owner's thread: counted, from any thread, and nothing freed by the count
+UTEST(script_v2, program_users) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    script::Program* p = compile_v2("ca = particles(name='CA')\n", alloc);
+    EXPECT_EQ(0u, script::program_users(p));
+    script::program_retain(p);
+    script::program_retain(p);
+    EXPECT_EQ(2u, script::program_users(p));
+    script::program_release(p);
+    EXPECT_EQ(1u, script::program_users(p));
+    script::program_release(p);
+    EXPECT_EQ(0u, script::program_users(p));
+    EXPECT_TRUE(script::valid(p));
+    script::program_retain(nullptr);
+    EXPECT_EQ(0u, script::program_users(nullptr));
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}

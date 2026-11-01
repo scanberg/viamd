@@ -87,6 +87,13 @@ struct Mark {
 Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc);
 void     program_free(Program* prog);
 
+// Who is using a program off the thread that owns it: a task that reads it retains it before it starts and releases it
+// when it is done, from any thread, and the owner frees it only once nobody is (program_users() is 0). The count
+// does not free anything itself.
+void     program_retain(const Program* prog);
+void     program_release(const Program* prog);
+uint64_t program_users(const Program* prog);
+
 Language language(const Program* prog);
 bool     valid(const Program* prog);            // compiled without errors; false for NULL
 uint64_t fingerprint(const Program* prog);      // changes when what it computes does

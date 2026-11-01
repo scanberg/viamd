@@ -6793,14 +6793,11 @@ void script_set_language(ApplicationState* state, script::Language lang) {
 void script_ir_collect(ApplicationState* state) {
     ASSERT(state);
 
-    // A running task may be on an IR the fields have since moved on from
-    if (task_system::task_is_running(state->tasks.evaluate) || task_system::task_is_running(state->script.vis_task)) {
-        return;
-    }
-
+    // Freed once neither field points at it and no task holds it: a long evaluation keeps the IR it runs on, not every
+    // IR compiled while it runs
     for (size_t i = 0; i < md_array_size(state->script.all_irs);) {
         script::Program* ir = state->script.all_irs[i];
-        if (ir != state->script.ir && ir != state->script.eval_ir) {
+        if (ir != state->script.ir && ir != state->script.eval_ir && script::program_users(ir) == 0) {
             script::program_free(ir);
             md_array_swap_back_and_pop(state->script.all_irs, i);
         } else {
@@ -6843,7 +6840,7 @@ void script_visualize_str(ApplicationState* state, str_t str, uint32_t flags) {
 }
 
 // A visualization computed off the main thread. Everything it reads is its own or outlives it: a copy of the
-// atoms' state, the IR (not freed while the task runs, see script_ir_collect), the system (which stays until the
+// atoms' state, the IR (retained until the job is freed, see script_ir_collect), the system (which stays until the
 // pool has finished, see interrupt_async_tasks). Everything it makes is in its arena.
 struct ScriptVisJob {
     uint64_t key = 0;               // what it is of: the target, and the IR the target is resolved in
@@ -6860,6 +6857,7 @@ struct ScriptVisJob {
 
 static void vis_job_free(ScriptVisJob* job) {
     if (job) {
+        script::program_release(job->ir);     // held from dispatch: its result is keyed by it
         md_arena_allocator_destroy(job->arena);
         delete job;
     }
@@ -6916,6 +6914,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->target = t;
     job->target.str = str_copy(t.str, job->arena);
     job->ir = ir;
+    script::program_retain(ir);
     job->sys = &state->mold.sys;
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);

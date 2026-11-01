@@ -1757,7 +1757,7 @@ struct ApplicationState {
         script::Program*  ir = nullptr;
         script::Program*  eval_ir = nullptr;
 
-        // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
+        // Every IR made (script_ir_create), freed by script_ir_collect once nothing uses it (no field, no task)
         md_array(script::Program*) all_irs = nullptr;
 
         // One evaluation: every property over every frame, and the distributions and volumes shown over timeline
@@ -3011,10 +3011,11 @@ void assembly_subsets_update(ApplicationState* app);
 void assembly_subsets_free(ApplicationState* app);
 
 // Script IR lifetime
-// Every IR is made by script_ir_create, compiling src in the workspace's language, and nothing frees one directly. Off the main thread an IR is used by the
-// evaluation task and the visualization task only, and each takes the current one (script.eval_ir, script.ir)
-// when it starts. So while neither runs, an IR which neither field points at is used by nothing, and
-// script_ir_collect frees it. Main thread, once per frame. A new task which uses an IR joins the check there.
+// Every IR is made by script_ir_create, compiling src in the workspace's language, and nothing frees one directly. A
+// task that reads an IR off the main thread retains it when it is made (script::program_retain, on the main thread)
+// and releases it when it is done (from any thread): the evaluation task the IR it evaluates, the visualization job
+// the IR it draws until the job is freed. script_ir_collect frees an IR that neither field (script.ir,
+// script.eval_ir) points at and no task holds. Main thread, once per frame.
 script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc);
 
 // Sets the workspace's script language: the editor's highlighting and completion follow, the script is compiled
