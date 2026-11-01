@@ -6215,7 +6215,9 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
 	defer { md_temp_end(temp); };
 
     const md_system_t& sys = data.mold.sys;
+    // Frame 0, with room for its coordinates: an extract fills what has storage and allocates none
     md_system_state_t state = { .alloc = temp.arena };
+    md_system_state_init(&state, sys.atom.count);
     if (!extract_frame(&data, 0, &state)) {
         return false;
     }
@@ -6225,10 +6227,12 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
     script::drawing_init(&vis, temp.arena);
         
     if (script::valid(data.script.eval_ir)) {
+        // At frame 0, whose coordinates are written: the structure's pose and its atoms of one frame. (v1 places its
+        // reference by the frame shown, as it always has.)
         script::DrawCtx ctx = {
             .prog = data.script.eval_ir,
             .sys = &data.mold.sys,
-            .state = &data.mold.state,
+            .state = volume.placed ? &state : &data.mold.state,
             .eval = data.script.eval,
             .run = str_from_cstr(data.mold.run),
         };
@@ -6243,8 +6247,12 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             return false;
         }
 
-        // Two comment lines
-        md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
+        // Two comment lines; the first says the bulk density when the script gives one, which comparing reads
+        if (volume.placed && volume.bulk > 0.0) {
+            md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR, BULK %.9g\n", volume.bulk);
+        } else {
+            md_file_printf(file, "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR\n");
+        }
         md_file_printf(file, "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n");
 
         if (volume.placed) {
@@ -6254,7 +6262,10 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             const int vol_dim[3] = {(int)volume.dim[0], (int)volume.dim[1], (int)volume.dim[2]};
             const md_bitset_t* bf = md_array_size(vis.sdf.structures) > 0 ? &vis.sdf.structures[0] : nullptr;
             const int num_atoms = bf ? (int)md_bitset_count(*bf) : 0;
-            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, volume.origin.x * to_bohr, volume.origin.y * to_bohr, volume.origin.z * to_bohr);
+            // A cube's origin is its first point, the centre of voxel [0][0][0]; the script's is that voxel's corner
+            vec3_t first = volume.origin;
+            for (int a = 0; a < 3; ++a) first = vec3_add(first, vec3_mul1(volume.basis[a], 0.5f));
+            md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, first.x * to_bohr, first.y * to_bohr, first.z * to_bohr);
             for (int a = 0; a < 3; ++a) {
                 const vec3_t b = volume.basis[a];
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[a], b.x * to_bohr, b.y * to_bohr, b.z * to_bohr);
