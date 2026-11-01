@@ -35,13 +35,16 @@
 #endif
 
 #include <serialization_utils.h>
+#include <layer_groups.h>
 
 #include <imgui_widgets.h>
 #include <imgui_internal.h>
 
 #include "flow_draw.h"
-#include "critical_point_distribution_core.h"
-#include "nci_surface_core.h"
+#include "../topology/critical_point_distribution_core.h"
+#include "../topology/nci_panel_layout.h"
+#include "../topology/nci_surface_model.h"
+#include "../topology/nci_surface_render.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -1086,48 +1089,36 @@ static void gto_energy_job_destroy(GtoEnergyJob* job) {
     delete job;
 }
 
-// One NCI surface extraction (nci_surface::extract) on the task pool, over density samples it shares with the
-// component, which keeps them for the next extraction while only the isovalue or the cutoff change
-struct NciSurfaceJob {
-    std::shared_ptr<const std::vector<float>> rho;
-    nci_surface::Grid   grid   = {};
-    nci_surface::Params params = {};
-    std::vector<double> near;                   // xyz per point, Bohr (params.near_xyz)
-    nci_surface::Mesh   mesh;
-    nci_surface::Scatter scatter;
+static bool qm_density_sample(void* user_data, const nci_surface::Grid& samples, std::vector<float>* rho) {
+    if (!user_data || !rho) return false;
+    rho->clear();
+    ApplicationState& state = *(ApplicationState*)user_data;
 
-    uint64_t          key      = 0;
-    md_tick_t         start    = 0;
-    bool              ok       = false;
-    std::atomic<int32_t> cancel = 0;
-    std::atomic<float> progress = 0.0f;
-    std::atomic<bool> done     = false;
-    task_system::ID   task     = task_system::INVALID_ID;
-};
+    md_grid_t grid = {};
+    grid.orientation = mat3_ident();
+    size_t count = 1;
+    for (int a = 0; a < 3; ++a) {
+        if (samples.dim[a] <= 0 || !(samples.spacing[a] > 0.0) ||
+            !std::isfinite(samples.origin[a]) || !std::isfinite(samples.spacing[a])) return false;
+        grid.dim[a] = samples.dim[a];
+        grid.spacing.elem[a] = (float)samples.spacing[a];
+        grid.origin.elem[a] = (float)(samples.origin[a] - 0.5 * samples.spacing[a]);
+        count *= (size_t)samples.dim[a];
+    }
 
-static NciSurfaceJob* nci_surface_job_start(std::shared_ptr<const std::vector<float>> rho, const nci_surface::Grid& grid,
-                                            const nci_surface::Params& params, std::vector<double> near, uint64_t key) {
-    NciSurfaceJob* job = new NciSurfaceJob();
-    job->rho    = std::move(rho);
-    job->grid   = grid;
-    job->near   = std::move(near);
-    job->params = params;
-    job->params.near_xyz = job->near;
-    job->key    = key;
-    job->start  = md_tick_now();
-    job->task = task_system::create_pool_task(STR_LIT("##NCI surface"), [job]() {
-        job->ok = nci_surface::extract(&job->mesh, job->rho->data(), job->grid, job->params, &job->cancel, &job->progress, &job->scatter);
-        job->done.store(true, std::memory_order_release);
-    });
-    task_system::enqueue_task(job->task);
-    return job;
-}
-
-static void nci_surface_job_destroy(NciSurfaceJob* job) {
-    if (!job) return;
-    job->cancel = 1;
-    task_system::task_wait_for(job->task);
-    delete job;
+    uint32_t tex = 0;
+    const bool texture_ok = gl::init_texture_3D(&tex, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F);
+    const bool density_ok = texture_ok &&
+        density_evaluate(&state, tex, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET);
+    if (density_ok) {
+        gpu_volume_jobs_drain(&state);
+        rho->resize(count);
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, rho->data());
+        glBindTexture(GL_TEXTURE_3D, 0);
+    }
+    gl::free_texture(&tex);
+    return density_ok;
 }
 
 // Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
@@ -1272,7 +1263,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
-        bool enabled = false;
+        bool enabled = true;
+        bool chemical_analysis_enabled = true;
 
         // How they are found. Analytic searches the GTO density itself and proves what it reports
         // (md_topo_compute_extremum_graph_gto); Volume samples the density onto a grid first and can
@@ -1331,6 +1323,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // How they are drawn (draw_critical_points)
         float point_scale = 1.0f;       // the markers' size, times critical_point_styles' radii
         bool  show_paths  = true;       // the bond paths and RCP attractor paths (the graph's edges)
+        bool  show_markers = true;      // Display only; does not change table membership or NCI anchors
         bool  type_visible[MD_TOPO_NUM_TYPES] = {true, true, true, true, true};
         // Per variable and category: a CP passes each enabled one; one with no value of the variable passes none
         critical_point_distribution::Filter filters[CPVar_Count][MD_TOPO_NUM_TYPES];
@@ -1357,6 +1350,8 @@ struct QuantumChemistry : viamd::EventHandler {
             // Zoomed: the curve of the CPs in view, indices [window_begin, window_end), resolved at the view's scale and
             // scaled to their share of all; it is drawn and cut in the view. Invalid when the view holds them all.
             critical_point_distribution::Curve view_curve;
+            critical_point_distribution::Curve selection_curve;
+            uint64_t selection_curve_key = 0;
             size_t window_begin = 0, window_end = 0;
             std::vector<double> cuts;
             std::vector<Peak> peaks;
@@ -1400,45 +1395,9 @@ struct QuantumChemistry : viamd::EventHandler {
         md_bitmask_t highlight_mask = {};
     } critical_points;
 
-    // The NCI surface (Johnson et al., JACS 2010; nci_surface_core.h): the isosurface of the reduced density gradient
-    // where the density is low, coloured by sign(lambda2) rho, drawn as a mesh in the viewport
-    // (EventType_ViamdMeshSurfaceRequest)
-    struct NciSurface {
-        bool  shown   = false;
-        float s_iso   = 0.5f;
-        float rho_max = 0.05f;      // au
-        ColorScale scale = {.colormap = ImPlotColormap_Jet, .range_beg = -0.04f, .range_end = 0.04f,
-                            .symmetric = true, .auto_range = true, .show_legend = true};
-        ColorScaleSpan span = {};
-        nci_surface::Scatter scatter;
-        bool show_scatter = false;
-        float opacity = 1.0f;
-        enum Resolution : int { Res_Coarse, Res_Medium, Res_Fine, Res_Count };
-        int   resolution = Res_Medium;
-        enum Scope : int { Scope_Everywhere, Scope_ShownBcps, Scope_Selected };
-        int   scope = Scope_Selected;
-        float near_radius = 2.7f;   // Bohr, around shown BCPs or selected CPs
-        bool  editing = false;      // a slider is held: nothing is computed until it is let go
-
-        // The density samples, shared with the job extracting from them, and what they were sampled over
-        std::shared_ptr<const std::vector<float>> rho;
-        nci_surface::Grid grid = {};
-        uint64_t rho_key = 0;
-        double   rho_seconds = 0.0;
-        bool     rho_failed = false;
-
-        NciSurfaceJob* job = nullptr;
-        uint64_t want_key = 0;      // what the shown mesh should be computed from
-        uint64_t have_key = 0;      // what it was computed from (or failed or was cancelled at)
-        double   seconds = 0.0;     // of the extraction
-        size_t   triangles = 0;
-        bool     cancelled = false;
-        uint64_t generation = 1;    // bumped with the system
-
-        isomesh::Mesh mesh = {};
-        uint32_t colormap = 0;      // 256 x 1, RGBA8
-        int uploaded_colormap = -1;
-    } nci;
+    topology::NciState nci_state;
+    float cp_distribution_height = 0.0f;
+    float cp_points_height = 0.0f;
 
     bool critical_point_visible(size_t i) const {
         const auto& cp = critical_points;
@@ -1453,9 +1412,11 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     bool critical_point_passes_filters(uint32_t i, int type) const {
-        if (!critical_points.character_shown[critical_point_character(i)]) return false;
+        const CriticalPoints& cp = critical_points;
+        if (cp.chemical_analysis_enabled && !cp.character_shown[critical_point_character(i)]) return false;
         for (int var = 0; var < CPVar_Count; ++var) {
-            const auto& filter = critical_points.filters[var][type];
+            if (!cp.chemical_analysis_enabled && var != CPVar_Density) continue;
+            const auto& filter = cp.filters[var][type];
             if (filter.enabled && !filter.accepts(critical_point_value(i, var))) return false;
         }
         return true;
@@ -1949,8 +1910,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 critical_points.ring_job = nullptr;
                 gto_energy_job_destroy(critical_points.energy_job);
                 critical_points.energy_job = nullptr;
-                nci_surface_free();
-                gl::free_texture(&nci.colormap);
+                topology::nci_state_free(nci_state);
                 md_arena_allocator_destroy(arena);
                 md_bitmask_free(&critical_points.selection_mask);
                 md_bitmask_free(&critical_points.highlight_mask);
@@ -1979,16 +1939,12 @@ struct QuantumChemistry : viamd::EventHandler {
                     update_nto_derived_data(state.mold.sys);
 
                     update_critical_points(state);
-                    update_nci_surface(state);
+                    update_nci_surfaces(state);
 
                     draw_orb_window(state);
                     draw_summary_window(state);
                     draw_critical_points_window(state);
-                    if (nci.shown && nci.want_key != 0 && nci.triangles > 0 && nci.scale.show_legend) {
-                        color_scale_draw_legend(nci.scale, md_unit_pow(md_unit_bohr_radius(), -3),
-                                                "sign(\xCE\xBB\xE2\x82\x82)\xCF\x81", "NCI surface",
-                                                -0x4E4349, (int)md_array_size(state.representation.reps));
-                    }
+                    topology::draw_nci_legends(nci_state, (int)md_array_size(state.representation.reps));
                     draw_critical_point_labels(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
@@ -2022,7 +1978,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
                 defer { md_temp_end(temp); };
 
-                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+                if (critical_points.enabled && critical_points.show_markers && critical_points.simp_graph.num_vertices > 0) {
                     draw_critical_points(state, temp);
                 }
 
@@ -2035,13 +1991,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // by hovering and clicking them
                 ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
                 RenderKey* rk = (RenderKey*)e.payload;
-                if (nci.shown) {
-                    const float look[3] = {nci.scale.range_beg, nci.scale.range_end, nci.opacity};
-                    rk->key = md_hash64(look, sizeof(look), rk->key);
-                    rk->key = md_hash64(&nci.scale.colormap, sizeof(nci.scale.colormap), rk->key);
-                    rk->key = md_hash64(&nci.mesh.version, sizeof(nci.mesh.version), rk->key);
-                    rk->key = md_hash64(&nci.want_key, sizeof(nci.want_key), rk->key);
-                }
+                topology::nci_hash_render_state(nci_state, *rk);
+                rk->key = md_hash64(&critical_points.show_markers, sizeof(critical_points.show_markers), rk->key);
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
                     const md_topo_extremum_graph_t& g = critical_points.simp_graph;
                     const uint64_t counts[2] = {(uint64_t)g.num_vertices, (uint64_t)g.num_edges};
@@ -2091,7 +2042,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ASSERT(e.payload);
                 InteractionSurfaceEvent* event = (InteractionSurfaceEvent*)e.payload;
                 if (event->surface_id == interaction_surface_main) {
-                    if (critical_points.enabled && arena) {
+                    if (critical_points.enabled && critical_points.show_markers && arena) {
                         switch (event->kind) {
                         case InteractionSurfaceEventKind::Hover: [[fallthrough]];
                         case InteractionSurfaceEventKind::Click: {
@@ -2297,7 +2248,7 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdPickingRangeReserve: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
                 PickingSpace* space = (PickingSpace*)e.payload;
-                if (critical_points.enabled) {
+                if (critical_points.enabled && critical_points.show_markers) {
                     size_t num_cp = md_topo_num_critical_points(&critical_points.simp_graph);
                     picking_range_reserve(&critical_points.picking_range, space, PickingDomain_CriticalPoints, num_cp);
                 }
@@ -2317,20 +2268,7 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdMeshSurfaceRequest: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_MeshSurfaceRequest);
                 MeshSurfaceRequest* req = (MeshSurfaceRequest*)e.payload;
-                const NciSurface& n = nci;
-                if (n.shown && n.want_key != 0 && n.triangles > 0 && n.mesh.index_count > 0 && req->count < req->cap) {
-                    isomesh::Surface& surf = req->surfaces[req->count++];
-                    surf = {};
-                    surf.mesh = &n.mesh;
-                    surf.index_count = n.mesh.index_count;
-                    surf.model = iso_meshes_model_matrix();
-                    surf.color = vec4_set(1.0f, 1.0f, 1.0f, n.opacity);
-                    surf.coloring = isomesh::Coloring_VertexField;
-                    surf.field_colormap = nci_surface_colormap();
-                    surf.field_range_beg = n.scale.range_beg;
-                    surf.field_range_end = n.scale.range_end;
-                    req->hash = md_hash64(&n.scale.colormap, sizeof(n.scale.colormap), req->hash);
-                }
+                topology::nci_append_mesh_surfaces(nci_state, *req);
                 break;
             }
             case viamd::EventType_ViamdViewFit: {
@@ -2491,7 +2429,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
         // The environments are those of the graph drawn only once the window has labelled it
         const bool by_peak = critical_points.color_mode == CriticalPoints::Color_Peak && critical_points.peak_of.size() == num_cp;
-        const bool by_character = critical_points.color_mode == CriticalPoints::Color_Character;
+        const bool by_character = critical_points.chemical_analysis_enabled &&
+                                  critical_points.color_mode == CriticalPoints::Color_Character;
 
         // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
         immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
@@ -2538,7 +2477,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_critical_point_labels(const ApplicationState& state) {
         const CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& g = cp.simp_graph;
-        if (!cp.enabled || !cp.show_labels || g.num_vertices == 0 || cp.environment_of.size() != g.num_vertices) return;
+        if (!cp.enabled || !cp.show_markers || !cp.show_labels || g.num_vertices == 0 || cp.environment_of.size() != g.num_vertices) return;
         constexpr size_t max_labels = 200;   // past this, text only hides the scene
         ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImDrawList* dl = ImGui::GetBackgroundDrawList(viewport);
@@ -2584,8 +2523,8 @@ struct QuantumChemistry : viamd::EventHandler {
         critical_points.ring_surfaces.clear();
         gto_energy_job_destroy(critical_points.energy_job);
         critical_points.energy_job = nullptr;
-        nci_surface_free();
-        nci.generation++;
+        topology::nci_state_free(nci_state);
+        nci_state.primary.generation++;
         critical_points.kinetic.clear();
         critical_points.bond_order.clear();
         critical_points.electrons = NAN;
@@ -2617,12 +2556,14 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool  cp_show_window = critical_points.show_window;
         const float cp_point_scale = critical_points.point_scale;
         const bool  cp_show_paths  = critical_points.show_paths;
+        const bool  cp_show_markers = critical_points.show_markers;
         critical_points = {};
         critical_points.selection_mask = cp_selection;
         critical_points.highlight_mask = cp_highlight;
         critical_points.show_window    = cp_show_window;
         critical_points.point_scale    = cp_point_scale;
         critical_points.show_paths     = cp_show_paths;
+        critical_points.show_markers   = cp_show_markers;
         md_bitmask_clear(&critical_points.selection_mask);
         md_bitmask_clear(&critical_points.highlight_mask);
         critical_points.raw_graph.alloc = arena;
@@ -5639,222 +5580,41 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // Collects the energy descriptors, kept if the graph is still the one they were computed for
-    static constexpr const char* nci_resolution_str[] = { "Coarse", "Medium", "Fine" };
-    static constexpr double nci_resolution_spacing[] = { 0.3, 0.2, 0.13 };   // Bohr
-    static constexpr double nci_margin = 2.5;                                 // Bohr, around the atoms
-    static constexpr size_t nci_max_samples = 32u << 20;
-
-    void nci_surface_free() {
-        NciSurface& n = nci;
-        nci_surface_job_destroy(n.job);
-        n.job = nullptr;
-        n.rho.reset();
-        n.rho_key = n.want_key = n.have_key = 0;
-        n.triangles = 0;
-        n.span = {};
-        n.scatter = {};
-        n.cancelled = n.rho_failed = false;
-        isomesh::mesh_free(&n.mesh);
-    }
-
-    // What the surface is computed from, once a frame while it is shown: the density sampled on a grid over the
-    // atoms (or over the shown BCPs) on the main thread, kept while the grid stays the same; the surface extracted
-    // from the samples on the task pool. Results land here too (nci_surface_poll).
-    void update_nci_surface(ApplicationState& state) {
-        NciSurface& n = nci;
-        nci_surface_poll();
-        if (!n.shown) {
-            nci_surface_job_destroy(n.job);
-            n.job = nullptr;
-            n.want_key = 0;
-            return;
-        }
-        if (n.editing) return;
-
-        // The points the surface is kept near, with their box
-        std::vector<double> near;
-        if (n.scope != NciSurface::Scope_Everywhere) {
-            const auto& g = critical_points.simp_graph;
-            if (critical_points.enabled) {
-                const auto append = [&](size_t i) {
-                    if (g.vertices_f64) {
-                        const auto& v = g.vertices_f64[i];
-                        near.insert(near.end(), {v.x, v.y, v.z});
-                    } else {
-                        const auto& v = g.vertices[i];
-                        near.insert(near.end(), {(double)v.x, (double)v.y, (double)v.z});
-                    }
-                };
-                if (n.scope == NciSurface::Scope_Selected) {
-                    md_bitset_iter_t it = md_bitmask_iter(&critical_points.selection_mask);
-                    while (md_bitset_iter_next(&it)) {
-                        if (it.idx < g.num_vertices) append(it.idx);
-                    }
-                } else {
-                    critical_point_focus_sync();
-                    for (size_t i = 0; i < g.num_vertices; ++i) {
-                        if (md_topo_vertex_type(&g, i) == MD_TOPO_SPLIT_SADDLE && critical_point_visible(i)) append(i);
-                    }
-                }
-            }
-        }
-
-        // calculate_bounds pads the atoms' box by 6 Bohr, more than the low gradient regions between them need
-        const double pad = 6.0 - nci_margin;
-        double lo[3], hi[3];
-        for (int a = 0; a < 3; ++a) {
-            lo[a] = aabb.min_ext.elem[a] + pad;
-            hi[a] = aabb.max_ext.elem[a] - pad;
-        }
-        if (n.scope != NciSurface::Scope_Everywhere) {
-            if (near.empty()) {
-                nci_surface_job_destroy(n.job);
-                n.job = nullptr;
-                n.want_key = 0;
-                return;
-            }
-            double nlo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, nhi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
-            for (size_t p = 0; p < near.size(); p += 3) {
-                for (int a = 0; a < 3; ++a) {
-                    nlo[a] = MIN(nlo[a], near[p + a]);
-                    nhi[a] = MAX(nhi[a], near[p + a]);
-                }
-            }
-            for (int a = 0; a < 3; ++a) {
-                lo[a] = MAX(lo[a], nlo[a] - n.near_radius - 1.0);
-                hi[a] = MIN(hi[a], nhi[a] + n.near_radius + 1.0);
-            }
-        }
-        if (!(hi[0] > lo[0] && hi[1] > lo[1] && hi[2] > lo[2])) {
-            n.want_key = 0;
-            return;
-        }
-
-        // The grid: the resolution's spacing, coarser where it would take more samples than the cap; a multiple of 8
-        // samples along each axis, as the evaluation's workgroups are
-        double h = nci_resolution_spacing[CLAMP(n.resolution, 0, (int)NciSurface::Res_Count - 1)];
-        int dim[3];
-        for (int pass = 0; pass < 2; ++pass) {
-            size_t total = 1;
-            for (int a = 0; a < 3; ++a) {
-                dim[a] = MAX(8, (int)ALIGN_TO((int)std::ceil((hi[a] - lo[a]) / h), 8));
-                total *= (size_t)dim[a];
-            }
-            if (total <= nci_max_samples) break;
-            h *= std::cbrt((double)total / (double)nci_max_samples) * 1.01;
-        }
-        md_grid_t grid = {};
-        grid.orientation = mat3_ident();
-        grid.origin = vec3_set((float)lo[0], (float)lo[1], (float)lo[2]);
-        for (int a = 0; a < 3; ++a) {
-            grid.dim[a] = dim[a];
-            grid.spacing.elem[a] = (float)((hi[a] - lo[a]) / dim[a]);
-        }
-
-        uint64_t rho_key = md_hash64(&grid, sizeof(grid), n.generation);
-        if (rho_key != n.rho_key) {
-            nci_surface_job_destroy(n.job);   // its samples are about to be replaced
-            n.job = nullptr;
-            n.rho_key = rho_key;
-            n.rho.reset();
-            n.rho_failed = false;
-            const md_tick_t t0 = md_tick_now();
-            uint32_t tex = 0;
-            const size_t count = (size_t)dim[0] * dim[1] * dim[2];
-            if (gl::init_texture_3D(&tex, dim[0], dim[1], dim[2], GL_R32F) &&
-                density_evaluate(&state, tex, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
-                gpu_volume_jobs_drain(&state);
-                auto rho = std::make_shared<std::vector<float>>(count);
-                glBindTexture(GL_TEXTURE_3D, tex);
-                glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, rho->data());
-                glBindTexture(GL_TEXTURE_3D, 0);
-                n.rho = std::move(rho);
-                // The samples are at the voxels' centres
-                for (int a = 0; a < 3; ++a) {
-                    n.grid.dim[a] = dim[a];
-                    n.grid.spacing[a] = grid.spacing.elem[a];
-                    n.grid.origin[a] = grid.origin.elem[a] + 0.5 * grid.spacing.elem[a];
-                }
+    void update_nci_surfaces(ApplicationState& state) {
+        const CriticalPoints& cp = critical_points;
+        const auto& graph = cp.simp_graph;
+        topology::NciPreviewInput preview;
+        preview.selection_key = md_bitset_hash64(md_bitmask_view(&cp.selection_mask), nci_state.primary.generation);
+        preview.enabled = cp.enabled;
+        preview.has_selection = cp.enabled && !md_bitmask_empty(&cp.selection_mask);
+        preview.critical_points.reserve(cp.enabled ? graph.num_vertices : 0);
+        for (size_t i = 0; cp.enabled && i < graph.num_vertices; ++i) {
+            topology::NciCriticalPoint point;
+            const bool labelled = i < cp.chemical_labels.size();
+            point.family = labelled ? nci_surface::family_of(cp.chemical_labels[i]) : nci_surface::Family::Unassigned;
+            point.parameter_family = labelled ? nci_surface::parameter_family_of(cp.chemical_labels[i]) : nci_surface::Family::Unassigned;
+            if (graph.vertices_f64) {
+                const auto& v = graph.vertices_f64[i];
+                point.position = {v.x, v.y, v.z};
             } else {
-                MD_LOG_ERROR("NCI surface: the density could not be evaluated");
-                n.rho_failed = true;
+                const auto& v = graph.vertices[i];
+                point.position = {v.x, v.y, v.z};
             }
-            gl::free_texture(&tex);
-            n.rho_seconds = md_tick_to_seconds(md_tick_now() - t0);
-            if (n.rho) {
-                MD_LOG_DEBUG("NCI surface: density sampled on %d x %d x %d (%.3f Bohr) in %.2f s", dim[0], dim[1], dim[2], h, n.rho_seconds);
+            point.selected = md_bitmask_test_bit(&cp.selection_mask, i);
+            if (labelled) {
+                point.environment = critical_point_distribution::environment_path(cp.chemical_labels[i], state.mold.sys);
+                point.environment.push_back(critical_point_distribution::display_name(cp.chemical_labels[i]));
             }
-        }
-        if (!n.rho) {
-            n.want_key = 0;
-            return;
+            preview.critical_points.push_back(std::move(point));
         }
 
-        nci_surface::Params params;
-        params.s_iso = n.s_iso;
-        params.rho_max = n.rho_max;
-        params.near_radius = n.near_radius;
-        uint64_t key = md_hash64(&params.s_iso, sizeof(params.s_iso), rho_key);
-        key = md_hash64(&params.rho_max, sizeof(params.rho_max), key);
-        key = md_hash64(&n.scope, sizeof(n.scope), key);
-        if (!near.empty()) {
-            key = md_hash64(&params.near_radius, sizeof(params.near_radius), key);
-            key = md_hash64(near.data(), near.size() * sizeof(double), key);
+        topology::NciSurfaceRuntimeInput runtime;
+        runtime.density_provider = {&state, qm_density_sample};
+        for (int a = 0; a < 3; ++a) {
+            runtime.bounds_min[a] = aabb.min_ext.elem[a];
+            runtime.bounds_max[a] = aabb.max_ext.elem[a];
         }
-        key |= 1;   // never 0, which is nothing wanted
-        n.want_key = key;
-        if (key == n.have_key || (n.job && n.job->key == key)) return;
-        nci_surface_job_destroy(n.job);
-        n.job = nci_surface_job_start(n.rho, n.grid, params, std::move(near), key);
-    }
-
-    void nci_surface_poll() {
-        NciSurface& n = nci;
-        NciSurfaceJob* job = n.job;
-        if (!job || !job->done.load(std::memory_order_acquire)) return;
-        n.job = nullptr;
-        if (job->key == n.want_key) {
-            n.have_key = job->key;
-            n.seconds = md_tick_to_seconds(md_tick_now() - job->start);
-            n.cancelled = !job->ok;
-            n.scatter = job->ok ? std::move(job->scatter) : nci_surface::Scatter{};
-            const nci_surface::Mesh& m = job->mesh;
-            const uint32_t nv = (uint32_t)m.value.size();
-            const uint32_t ni = (uint32_t)m.index.size();
-            if (job->ok && nv > 0 && ni > 0 &&
-                isomesh::mesh_upload(&n.mesh, m.position.data(), m.normal.data(), 3, nv, m.index.data(), ni) &&
-                isomesh::mesh_upload_values(&n.mesh, m.value.data(), nullptr, nv)) {
-                n.triangles = ni / 3;
-                n.span = surface_field_span_of(m.value.data(), m.value.size());
-                color_scale_update_range(&n.scale, n.span);
-            } else {
-                isomesh::mesh_free(&n.mesh);
-                n.triangles = 0;
-                n.span = {};
-            }
-            if (job->ok) {
-                MD_LOG_DEBUG("NCI surface: %zu triangles in %.2f s", n.triangles, n.seconds);
-            }
-        }
-        nci_surface_job_destroy(job);
-    }
-
-    uint32_t nci_surface_colormap() {
-        NciSurface& n = nci;
-        if (n.colormap && n.uploaded_colormap == n.scale.colormap) return n.colormap;
-        uint32_t pixels[256];
-        for (int i = 0; i < 256; ++i) {
-            ImVec4 color = ImPlot::SampleColormap((float)i / 255.0f, n.scale.colormap);
-            color.w = 1.0f;
-            pixels[i] = ImGui::ColorConvertFloat4ToU32(color);
-        }
-        if ((!n.colormap && !gl::init_texture_2D(&n.colormap, 256, 1, GL_RGBA8)) ||
-            !gl::set_texture_2D_data(n.colormap, 0, pixels, GL_RGBA8)) {
-            MD_LOG_ERROR("NCI surface: could not upload the colour map");
-            return 0;
-        }
-        n.uploaded_colormap = n.scale.colormap;
-        return n.colormap;
+        topology::nci_update_surfaces(nci_state, runtime, preview, nci_state.enabled, cp.show_window);
     }
 
     void critical_points_poll_energies() {
@@ -6037,6 +5797,32 @@ struct QuantumChemistry : viamd::EventHandler {
     // not the window is open, as the viewport's colours and tags read them
     void update_critical_point_analysis(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
+        if (!cp.chemical_analysis_enabled) {
+            const bool had_analysis = !cp.chemical_labels.empty() || !cp.ring_surfaces.empty() ||
+                                      !cp.kinetic.empty() || !cp.bond_order.empty() || !cp.interaction.empty() ||
+                                      !cp.pair_charge.empty() || !cp.characters.empty() || !cp.environments.empty() ||
+                                      cp.ring_job || cp.energy_job;
+            gto_ring_surface_job_destroy(cp.ring_job);
+            cp.ring_job = nullptr;
+            cp.ring_generation = ~cp.graph_generation;
+            cp.ring_surfaces.clear();
+            gto_energy_job_destroy(cp.energy_job);
+            cp.energy_job = nullptr;
+            cp.energy_generation = ~cp.graph_generation;
+            cp.chemical_labels.clear();
+            cp.kinetic.clear();
+            cp.bond_order.clear();
+            cp.electrons = NAN;
+            cp.interaction.clear();
+            cp.pair_charge.clear();
+            cp.characters.clear();
+            if (had_analysis) {
+                cp.distributions_dirty = true;
+                cp.values_dirty = true;
+            }
+            if (cp.distributions_dirty || cp.values_dirty) update_critical_point_distributions();
+            return;
+        }
         if (!cp.distributions_dirty) {
             if (cp.values_dirty) update_critical_point_distributions();
             return;
@@ -6194,10 +5980,11 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_critical_points_window(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
         cp.rho_min_editing = false;
+        topology::nci_end_panel_frame(nci_state);
         if (!cp.show_window) {
             return;
         }
-        ImGui::SetNextWindowSize({ 640, 600 }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize({ 1100, 850 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Critical Points", &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             draw_critical_points_window_contents(state);
         }
@@ -6681,7 +6468,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (distribution.fit) ImPlot::SetNextAxesToFit();
         if (!ImPlot::BeginPlot(style.plural, ImVec2(-1, -1), ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame | ImPlotFlags_NoLegend)) return;
         distribution.fit = false;
-        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight | ImPlotAxisFlags_NoLabel;
         char x_label[64], y_label[64];
         if (cp.variable == CPVar_Density) {
             snprintf(x_label, sizeof(x_label), "%s", curve.logarithmic ? "Density (au, log scale)" : "Density (au)");
@@ -6769,6 +6556,34 @@ struct QuantumChemistry : viamd::EventHandler {
             ImPlot::PlotShaded("##Distribution", shown.density.data(), shown.probability.data(), n);
             ImPlot::SetNextLineStyle(color);
             ImPlot::PlotLine("##Distribution", shown.density.data(), shown.probability.data(), n);
+        }
+
+        std::vector<double> selection_values;
+        std::vector<uint32_t> selection_components;
+        selection_values.reserve(finite);
+        selection_components.reserve(finite);
+        bool any_selected = false;
+        uint64_t selection_key = md_bitset_hash64(md_bitmask_view(&cp.selection_mask), (uint64_t)cp.variable);
+        for (size_t i = 0; i < finite; ++i) {
+            const bool selected = md_bitmask_test_bit(&cp.selection_mask, indices[i]);
+            selection_values.push_back(density(indices[i]));
+            selection_components.push_back(selected ? 1u : 0u);
+            any_selected |= selected;
+        }
+        if (any_selected) {
+            selection_key = md_hash64(selection_values.data(), selection_values.size() * sizeof(double), selection_key);
+            if (selection_key != distribution.selection_curve_key || !distribution.selection_curve.valid) {
+                distribution.selection_curve = critical_point_distribution::estimate(selection_values, selection_components, 2,
+                                                                                      curve.logarithmic);
+                distribution.selection_curve_key = selection_key;
+            }
+            const auto& selected = distribution.selection_curve;
+            if (selected.valid && selected.components.size() == 2) {
+                const vec4_t sc = state.selection.color.selection.outline;
+                ImPlot::SetNextLineStyle(ImVec4(sc.x, sc.y, sc.z, sc.w), 3.0f);
+                ImPlot::PlotLine("##Selected CP contribution", selected.density.data(), selected.components[1].data(),
+                                 selected.sample_count);
+            }
         }
 
         bool handle_active = false;
@@ -7074,9 +6889,10 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool expand_all = ImGui::SmallButton("Expand all");
         ImGui::SameLine();
         const bool reveal_selection = ImGui::SmallButton("Reveal selection");
+        ImGui::SameLine();
+        const bool compact_columns = ImGui::SmallButton("Compact columns");
 
-        const bool f64 = graph.vertices_f64 != nullptr;
-        const ImGuiTableColumnFlags energy_flags = cp.kinetic.empty() ? ImGuiTableColumnFlags_DefaultHide : ImGuiTableColumnFlags_None;
+        const ImGuiTableColumnFlags energy_flags = ImGuiTableColumnFlags_DefaultHide;
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                                       ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
@@ -7085,11 +6901,11 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide | ImGuiTableColumnFlags_IndentEnable, 3.8f, CPColumn_Environment);
         ImGui::TableSetupColumn("Character", ImGuiTableColumnFlags_None, 0.9f, CPColumn_Character);
         ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_PreferSortDescending, 0.45f, CPColumn_Count);
-        ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_PreferSortDescending, 0.55f, CPColumn_Share);
-        ImGui::TableSetupColumn("Distribution", ImGuiTableColumnFlags_NoSort, 1.6f, CPColumn_Distribution);
+        ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_DefaultHide, 0.55f, CPColumn_Share);
+        ImGui::TableSetupColumn("Distribution", ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_DefaultHide, 1.6f, CPColumn_Distribution);
         ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None, 1.2f, CPColumn_Density);
-        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
-        ImGui::TableSetupColumn("\xCE\xB5 mean", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
+        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81 mean", ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
+        ImGui::TableSetupColumn("\xCE\xB5 mean", ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
         ImGui::TableSetupColumn("H mean", energy_flags, 0.7f, CPColumn_H);
         ImGui::TableSetupColumn("|V|/G mean", energy_flags, 0.7f, CPColumn_Ratio);
         ImGui::TableSetupColumn("E(HB) mean", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_HBond);
@@ -7097,6 +6913,9 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::TableSetupColumn("E(int) mean", energy_flags, 0.7f, CPColumn_Interaction);
         ImGui::TableSetupColumn("tP region mean*", ImGuiTableColumnFlags_DefaultHide, 0.9f, CPColumn_Pauli);
         ImGui::TableSetupColumn("tP/TF region mean*", ImGuiTableColumnFlags_DefaultHide, 0.9f, CPColumn_PauliAlpha);
+        if (compact_columns) {
+            for (int c = 0; c < 16; ++c) ImGui::TableSetColumnEnabled(c, c <= 3 || c == 6);
+        }
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -7462,24 +7281,25 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
         ImGui::SameLine();
+        const bool compact_columns = ImGui::SmallButton("Compact columns");
+        ImGui::SameLine();
         if (!chosen.empty()) ImGui::TextDisabled("%zu of %zu environment%s, %zu selected", rows.size(), chosen.size(), chosen.size() == 1 ? "" : "s", selected_count);
         else if (scoped) ImGui::TextDisabled("%zu of the bars clicked, %zu selected", rows.size(), selected_count);
         else ImGui::TextDisabled("%zu listed, %zu selected; choose environments or bars to narrow", rows.size(), selected_count);
 
-        const bool f64 = graph.vertices_f64 != nullptr;
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
                                       ImGuiTableFlags_SortMulti | ImGuiTableFlags_SizingStretchProp;
-        const ImGuiTableColumnFlags energy_flags = cp.kinetic.empty() ? ImGuiTableColumnFlags_DefaultHide : ImGuiTableColumnFlags_None;
+        const ImGuiTableColumnFlags energy_flags = ImGuiTableColumnFlags_DefaultHide;
         if (!ImGui::BeginTable("##Critical points", 20, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_NoHide, 0.7f, CPColumn_Type);
-        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Kind);
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_Kind);
         ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
-        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_None, 0.5f, CPColumn_Count);
+        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_DefaultHide, 0.5f, CPColumn_Count);
         ImGui::TableSetupColumn("Character", ImGuiTableColumnFlags_None, 0.8f, CPColumn_Character);
         ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 0.9f, CPColumn_Density);
-        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
-        ImGui::TableSetupColumn("\xCE\xB5", f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
+        ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81", ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
+        ImGui::TableSetupColumn("\xCE\xB5", ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
         ImGui::TableSetupColumn("G", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_G);
         ImGui::TableSetupColumn("V", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_V);
         ImGui::TableSetupColumn("H", energy_flags, 0.7f, CPColumn_H);
@@ -7489,9 +7309,12 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::TableSetupColumn("E(int)", energy_flags, 0.6f, CPColumn_Interaction);
         ImGui::TableSetupColumn("tP region*", ImGuiTableColumnFlags_DefaultHide, 0.9f, CPColumn_Pauli);
         ImGui::TableSetupColumn("tP/TF region*", ImGuiTableColumnFlags_DefaultHide, 0.9f, CPColumn_PauliAlpha);
-        ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_X);
-        ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Y);
-        ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None, 0.7f, CPColumn_Z);
+        ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_X);
+        ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_Y);
+        ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_Z);
+        if (compact_columns) {
+            for (int c = 0; c < 20; ++c) ImGui::TableSetColumnEnabled(c, c == 0 || c == 2 || c == 4 || c == 5);
+        }
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -7772,170 +7595,6 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::TextWrapped("%s", label.detail.c_str());
     }
 
-    // The NCI surface's line of the Critical Points window, and its settings' while it is shown
-    void draw_nci_surface_controls() {
-        NciSurface& n = nci;
-        const float em = ImGui::GetFontSize();
-        ImGui::Checkbox("NCI surface", &n.shown);
-        ImGui::SetItemTooltip("The non-covalent interaction surface (Johnson et al., J. Am. Chem. Soc. 2010): where the reduced\n"
-                              "density gradient s = |\xE2\x88\x87\xCF\x81| / (2 (3\xCF\x80\xC2\xB2)^(1/3) \xCF\x81^(4/3)) falls to the isovalue in a region of low\n"
-                              "density (\xCF\x81 below the cutoff), coloured by sign(\xCE\xBB\xE2\x82\x82)\xCF\x81, \xCE\xBB\xE2\x82\x82 the second eigenvalue of the density's\n"
-                              "Hessian: negative attractive, near-zero weak, positive repulsive (steric crowding, ring centres).\n"
-                              "Colours follow the selected palette (Jet by default). The density is sampled on a grid and differentiated by finite\n"
-                              "differences, so a finer grid gives a smoother, more accurate surface, and takes longer.");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(5.5f * em);
-        ImGui::Combo("##NCI resolution", &n.resolution, nci_resolution_str, (int)ARRAY_SIZE(nci_resolution_str));
-        ImGui::SetItemTooltip("The spacing of the grid the density is sampled on: Coarse 0.3, Medium 0.2, Fine 0.13 Bohr,\n"
-                              "made coarser where that would take more than %zu M samples", nci_max_samples >> 20);
-        ImGui::SameLine();
-        static const char* scope_str[] = { "Everywhere", "Around shown", "Around selected" };
-        ImGui::SetNextItemWidth(10.0f * em);
-        ImGui::Combo("##NCI scope", &n.scope, scope_str, (int)ARRAY_SIZE(scope_str));
-        ImGui::SetItemTooltip("Everywhere: over all the atoms. Around shown: only within %.1f Bohr of the BCPs shown\n"
-                              "in the viewport (with the categories, characters, filters and selection above), on a grid\n"
-                              "only over them. Around selected (default): around the selected CPs of any type, including\n"
-                              "ring CPs, regardless of visibility or filters. With no selection, no surface is drawn.", n.near_radius);
-        if (n.job) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("Computing... %.0f %%", 100.0f * n.job->progress.load(std::memory_order_relaxed));
-            ImGui::SameLine();
-            ImGui::BeginDisabled(n.job->cancel.load(std::memory_order_relaxed) != 0);
-            if (ImGui::SmallButton("Cancel##NCI surface")) {
-                n.job->cancel.store(1, std::memory_order_relaxed);
-            }
-            ImGui::EndDisabled();
-        } else if (!n.shown) {
-        } else if (n.rho_failed) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("The density could not be evaluated");
-        } else if (n.scope != NciSurface::Scope_Everywhere && n.want_key == 0) {
-            ImGui::SameLine();
-            if (!critical_points.enabled) {
-                ImGui::TextDisabled("Tick Enabled to search for critical points");
-            } else {
-                ImGui::TextDisabled(n.scope == NciSurface::Scope_Selected ? "Select critical points" : "No BCPs shown");
-            }
-        } else if (n.cancelled && n.have_key == n.want_key) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("Cancelled");
-        } else if (n.have_key != 0 && n.have_key == n.want_key) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%zu triangles, %d x %d x %d samples (%.1f + %.1f s)", n.triangles, n.grid.dim[0], n.grid.dim[1], n.grid.dim[2],
-                                n.rho_seconds, n.seconds);
-            ImGui::SetItemTooltip("Triangles of the surface; samples of the density; seconds to sample the density and to extract the surface");
-        }
-        if (!n.shown) return;
-
-        bool editing = false;
-        ImGui::SetNextItemWidth(6.0f * em);
-        ImGui::SliderFloat("##NCI s", &n.s_iso, 0.1f, 1.5f, "s = %.2f");
-        editing |= ImGui::IsItemActive();
-        ImGui::SetItemTooltip("The isovalue of the reduced density gradient: 0.5 is the usual choice; higher, larger surfaces");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(7.0f * em);
-        ImGui::SliderFloat("##NCI cutoff", &n.rho_max, 0.005f, 0.2f, "\xCF\x81 < %.3f", ImGuiSliderFlags_Logarithmic);
-        editing |= ImGui::IsItemActive();
-        ImGui::SetItemTooltip("The density cutoff (au): the surface is left out where the density is above it, which removes\n"
-                              "the low gradient regions of the covalent bonds and the atoms. NCIPLOT's default is 0.05.");
-        if (n.scope != NciSurface::Scope_Everywhere) {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(6.0f * em);
-            ImGui::SliderFloat("##NCI radius", &n.near_radius, 1.0f, 6.0f, "r = %.1f Bohr");
-            editing |= ImGui::IsItemActive();
-            ImGui::SetItemTooltip("How far from the shown BCPs or selected CPs the surface is kept");
-        }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(5.0f * em);
-        ImGui::SliderFloat("##NCI opacity", &n.opacity, 0.05f, 1.0f, "Opacity %.2f");
-        n.editing = editing;
-        ImGui::PushID("NCI surface");
-        prop::begin("NCI surface");
-        if (prop::section("Colour scale", false)) {
-            color_scale_draw_controls(&n.scale, n.span, md_unit_pow(md_unit_bohr_radius(), -3),
-                                      "on scoped NCI surface",
-                                      "the 1st to 99th percentile of sign(lambda2) rho at the scoped surface vertices.\n"
-                                      "Auto follows the current scope/selection; symmetric keeps zero at the palette centre.\n"
-                                      "Outliers saturate in colour only. Use Manual for fixed-scale comparisons.");
-            prop::hint("Negative: attractive; near zero: weak; positive: repulsive.");
-            prop::section_end();
-        }
-        prop::end();
-        ImGui::PopID();
-    }
-
-    void draw_nci_scatter() {
-        const auto& n = nci;
-        ImGui::TextDisabled("Density-grid samples: s vs sign(lambda2) rho");
-        ImGui::SetItemTooltip("The classic NCI plot, sampled inside the current NCI scope with the same density cutoff.\n"
-                              "At most %zu volume samples with s <= %.1f are retained by deterministic reservoir sampling.\n"
-                              "These are not surface vertices (which would all have s near the isovalue).\n"
-                              "Negative signed density: attractive; near zero: weak; positive: repulsive.\n"
-                              "The horizontal line marks the surface isovalue. Character criteria stay fixed.",
-                              nci_surface::scatter_max_points, nci_surface::scatter_s_max);
-        if (!n.shown) {
-            ImGui::TextWrapped("Enable NCI surface to sample the density for this plot.");
-            return;
-        }
-        if (n.rho_failed) {
-            ImGui::TextWrapped("The density could not be evaluated; see the log.");
-            return;
-        }
-        if (n.want_key == 0) {
-            ImGui::TextWrapped(n.scope == NciSurface::Scope_Selected ? "Select critical points, or choose Everywhere." :
-                              "No density samples in this scope.");
-            return;
-        }
-        if (n.job || n.have_key != n.want_key) {
-            ImGui::TextDisabled("Computing NCI samples...");
-            return;
-        }
-        if (n.cancelled) {
-            ImGui::TextDisabled("NCI computation cancelled.");
-            return;
-        }
-        const auto& scatter = n.scatter;
-        ImGui::TextDisabled("%zu / %zu eligible grid samples", scatter.s.size(), scatter.eligible_count);
-        if (scatter.s.empty()) {
-            ImGui::TextWrapped("No samples with s <= 2 below the density cutoff in this scope.");
-            return;
-        }
-        ImGui::SetItemTooltip("A capped volume sample, not a population or interaction-energy measure.");
-        if (ImPlot::BeginPlot("##NCI scatter", ImVec2(-1, -1), ImPlotFlags_NoLegend)) {
-            ImPlot::SetupAxes("sign(\xCE\xBB\xE2\x82\x82)\xCF\x81 [bohr^-3]", "s");
-            ImPlot::SetupAxisLimits(ImAxis_X1, -n.rho_max, n.rho_max, ImPlotCond_Once);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, nci_surface::scatter_s_max, ImPlotCond_Once);
-            std::array<std::vector<uint32_t>, 64> bins;
-            for (size_t i = 0; i < scatter.s.size(); ++i) {
-                const int bin = MIN(63, (int)(64.0f * color_scale_param(n.scale, scatter.signed_rho[i])));
-                bins[bin].push_back((uint32_t)i);
-            }
-            struct Points {
-                const nci_surface::Scatter* scatter;
-                const std::vector<uint32_t>* indices;
-            };
-            const auto getter = [](int i, void* data) {
-                const auto& p = *(const Points*)data;
-                const uint32_t idx = (*p.indices)[i];
-                return ImPlotPoint(p.scatter->signed_rho[idx], p.scatter->s[idx]);
-            };
-            for (size_t b = 0; b < bins.size(); ++b) {
-                if (bins[b].empty()) continue;
-                Points points = {&scatter, &bins[b]};
-                ImVec4 color = ImPlot::SampleColormap(((float)b + 0.5f) / (float)bins.size(), n.scale.colormap);
-                color.w = 0.65f;
-                ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 1.5f, color, 0.0f, color);
-                char label[32];
-                snprintf(label, sizeof(label), "##NCI bin %zu", b);
-                ImPlot::PlotScatterG(label, getter, &points, (int)bins[b].size());
-            }
-            ImPlot::SetNextLineStyle(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), 1.0f);
-            const double iso = n.s_iso;
-            ImPlot::PlotInfLines("s isovalue", &iso, 1, ImPlotInfLinesFlags_Horizontal);
-            ImPlot::EndPlot();
-        }
-    }
-
     void draw_critical_points_window_contents(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
         const float em = ImGui::GetFontSize();
@@ -7944,6 +7603,44 @@ struct QuantumChemistry : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
+        if (cp.enabled && graph.num_vertices > 0) {
+            critical_point_focus_sync();
+            update_critical_point_distributions();
+        }
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) md_bitmask_clear(&cp.highlight_mask);
+
+        const float avail = MAX(1.0f, ImGui::GetContentRegionAvail().y);
+        const ImGuiTableFlags pane_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV;
+        if (ImGui::BeginTable("##CP NCI split", 2, pane_flags, ImVec2(0, avail))) {
+            ImGui::TableSetupColumn("##CP", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableSetupColumn("##NCI", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableNextRow();
+
+            ImGui::TableSetColumnIndex(1);
+            if (ImGui::BeginChild("##NCI column", ImVec2(0, avail), false,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                topology::draw_nci_panel(nci_state, cp.enabled);
+            }
+            ImGui::EndChild();
+
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::BeginChild("##CP column", ImVec2(0, avail), false,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        ImGui::Checkbox("Enabled", &cp.enabled);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
+            cp.distributions_dirty = true;
+            cp.values_dirty = true;
+        }
+        ImGui::SetItemTooltip("Classify CPs by chemical environment and compute chemistry-dependent descriptors. "
+                              "The CP search and NCI surfaces remain available when this is off.");
+        ImGui::SameLine();
+        if (ImGui::Button("CP settings / export...")) ImGui::OpenPopup("##CP settings");
+        ImGui::SameLine();
+        ImGui::Checkbox("Show CPs", &cp.show_markers);
+        ImGui::SetItemTooltip("Hide markers, paths and labels without changing the CP selection, tables or NCI surfaces.");
+
+        if (ImGui::BeginPopup("##CP settings")) {
         // --- what is searched, and how
         ImGui::Checkbox("Enabled", &cp.enabled);
         ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
@@ -8029,18 +7726,6 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        draw_nci_surface_controls();
-
-        if (!cp.enabled) {
-            ImGui::TextDisabled("Not searched: tick Enabled to search the density for its critical points");
-            if (nci.shown) draw_nci_scatter();
-            return;
-        }
-        // --- where the search is
-        if (cp.method == CriticalPoints::Method_Analytic) {
-            draw_critical_points_gto_status();
-        }
-
         // --- the categories: shown in the viewport or not, with their counts; and what is shown of the selection
         uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
         md_topo_count_vertex_types(vertex_count, &graph);
@@ -8060,13 +7745,8 @@ struct QuantumChemistry : viamd::EventHandler {
         {
             static const char* show_str[] = { "All CPs", "Selected CPs", "Selected + 3 \xC3\x85" };
             const float w = 9.5f * em;
-            const ImGuiStyle& st = ImGui::GetStyle();
-            const float box = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x;
             const float colour_w = 7.5f * em;
-            const float toggles = box + colour_w + ImGui::CalcTextSize("Colour").x + st.ItemInnerSpacing.x + ImGui::CalcTextSize("Labels").x + 2.0f * 1.2f * em;
-            const float avail = ImGui::GetContentRegionAvail().x;
-            const float label = ImGui::CalcTextSize("Show").x + st.ItemInnerSpacing.x;
-            if (avail > toggles + w + label) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - toggles - w - label);
+            ImGui::NewLine();
             static const char* colour_str[] = { "Category", "Peak", "Character" };
             ImGui::SetNextItemWidth(colour_w);
             ImGui::Combo("Colour", &cp.color_mode, colour_str, (int)ARRAY_SIZE(colour_str));
@@ -8083,40 +7763,24 @@ struct QuantumChemistry : viamd::EventHandler {
                                   "only the selected CPs, or every CP with those beyond 3.0 \xC3\x85 of the selection dimmed.\n"
                                   "With nothing selected every CP is shown.");
         }
-
-        if (graph.num_vertices == 0) {
-            ImGui::TextDisabled("No critical points");
-            if (nci.shown) draw_nci_scatter();
-            return;
+        ImGui::EndPopup();
         }
-        critical_point_focus_sync();
-        update_critical_point_distributions();
-        // Whatever is hovered in the window highlights; nothing hovered, nothing highlighted
-        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) md_bitmask_clear(&cp.highlight_mask);
 
-        // --- top: the environments and the distributions; bottom: the CPs and the details of one
+        if (cp.enabled && cp.method == CriticalPoints::Method_Analytic) draw_critical_points_gto_status();
+
         const float em_split = ImGui::GetFontSize();
-        const float avail = ImGui::GetContentRegionAvail().y;
         const float splitter = 0.5f * em_split;
-        if (cp.top_height <= 0.0f) cp.top_height = 0.55f * avail;
-        cp.top_height = CLAMP(cp.top_height, 14.0f * em_split, MAX(14.0f * em_split, avail - 8.0f * em_split));
-        const ImGuiTableFlags pane_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV;
-        if (ImGui::BeginTable("##Critical point top", 2, pane_flags, ImVec2(0, cp.top_height))) {
-            ImGui::TableSetupColumn("##Environments", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-            ImGui::TableSetupColumn("##Distributions", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-            ImGui::TableNextColumn();
-            if (ImGui::BeginChild("##Environments pane", ImVec2(0, cp.top_height))) {
-                draw_critical_point_environments(state);
-            }
-            ImGui::EndChild();
-            ImGui::TableNextColumn();
-            if (ImGui::BeginChild("##Distributions pane", ImVec2(0, cp.top_height))) {
-                if (ImGui::RadioButton("Distributions", !nci.show_scatter)) nci.show_scatter = false;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("NCI scatter", nci.show_scatter)) nci.show_scatter = true;
-                if (nci.show_scatter) {
-                    draw_nci_scatter();
-                } else {
+        const float spacing = ImGui::GetStyle().ItemSpacing.y;
+                const float height = MAX(1.0f, ImGui::GetContentRegionAvail().y);
+                const float panel_height = MAX(1.0f, height - 2.0f * splitter - 4.0f * spacing);
+                if (cp_distribution_height <= 0.0f) cp_distribution_height = 0.4f * panel_height;
+                cp_distribution_height = CLAMP(cp_distribution_height, 0.2f * panel_height, 0.6f * panel_height);
+                const float lower_height = MAX(1.0f, panel_height - cp_distribution_height);
+                if (cp.top_height <= 0.0f) cp.top_height = 0.5f * lower_height;
+                cp.top_height = CLAMP(cp.top_height, 0.25f * lower_height, 0.75f * lower_height);
+                if (ImGui::BeginChild("##Distribution plots", ImVec2(0, cp_distribution_height), false, ImGuiWindowFlags_NoScrollbar)) {
+                    if (ImGui::SmallButton("Distribution settings / filters...")) ImGui::OpenPopup("##Distribution settings");
+                    if (ImGui::BeginPopup("##Distribution settings")) {
                     ImGui::AlignTextToFramePadding();
                     ImGui::TextUnformatted("Plot");
                     ImGui::SameLine();
@@ -8147,18 +7811,21 @@ struct QuantumChemistry : viamd::EventHandler {
                                               "complexes. Espinosa, Molins and Lecomte (Chem. Phys. Lett. 1998): V/2, known to overestimate\n"
                                               "strong and charged hydrogen bonds.");
                     }
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextUnformatted("BCPs");
-                    ImGui::SetItemTooltip("%s", critical_point_character_tooltip());
-                    using critical_point_distribution::Character;
-                    for (Character c : {Character::Covalent, Character::StrongAttractive, Character::Attractive, Character::Mixed, Character::Repulsive,
-                                        Character::WeakAttractive, Character::Weak, Character::WeakRepulsive, Character::Undetermined}) {
-                        ImGui::SameLine();
-                        environment_swatch(critical_point_character_color((int)c));
-                        ImGui::SameLine(0.0f, 0.0f);
-                        ImGui::Checkbox(critical_point_distribution::character_name(c), &cp.character_shown[(int)c]);
-                        ImGui::SetItemTooltip("Show and list the BCPs whose interaction is %s.\n\n%s",
-                                              critical_point_distribution::character_name(c), critical_point_character_tooltip());
+                    if (ImGui::SmallButton("BCP character filters...")) ImGui::OpenPopup("##Character filters");
+                    if (ImGui::BeginPopup("##Character filters")) {
+                        ImGui::BeginDisabled(!cp.chemical_analysis_enabled);
+                        using critical_point_distribution::Character;
+                        for (Character c : {Character::Covalent, Character::StrongAttractive, Character::Attractive, Character::Mixed, Character::Repulsive,
+                                            Character::WeakAttractive, Character::Weak, Character::WeakRepulsive, Character::Undetermined}) {
+                            environment_swatch(critical_point_character_color((int)c));
+                            ImGui::SameLine(0.0f, 0.0f);
+                            ImGui::Checkbox(critical_point_distribution::character_name(c), &cp.character_shown[(int)c]);
+                            ImGui::SetItemTooltip("Show and list the BCPs whose interaction is %s.\n\n%s",
+                                                  critical_point_distribution::character_name(c), critical_point_character_tooltip());
+                        }
+                        ImGui::EndDisabled();
+                        if (!cp.chemical_analysis_enabled) ImGui::TextDisabled("Enable chemical analysis to use CP character filters.");
+                        ImGui::EndPopup();
                     }
                     if (ImGui::BeginTable("##Density filters", 2, ImGuiTableFlags_SizingStretchSame)) {
                         for (int type : critical_point_type_order) {
@@ -8167,45 +7834,57 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
                         ImGui::EndTable();
                     }
-                    if (ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(ImGui::GetContentRegionAvail().y, 10.0f * em_split)))) {
+                    ImGui::EndPopup();
+                    }
+                    if (cp.enabled && graph.num_vertices > 0 &&
+                        ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
                         for (int type : critical_point_type_order) {
                             draw_critical_point_distribution_plot(state, temp, type);
                         }
                         ImPlot::EndSubplots();
                     }
+                    if (!cp.enabled || graph.num_vertices == 0) ImGui::TextWrapped("Distributions appear when critical points are available.");
                 }
+                ImGui::EndChild();
+                ImGui::InvisibleButton("##CP distribution splitter", ImVec2(-1, splitter));
+                if (ImGui::IsItemActive()) cp_distribution_height += ImGui::GetIO().MouseDelta.y;
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (ImGui::BeginChild("##Environments pane", ImVec2(0, cp.top_height))) {
+                    if (!cp.enabled) ImGui::TextWrapped("Enable the CP search to list critical points.");
+                    else if (graph.num_vertices == 0) ImGui::TextUnformatted("No critical points");
+                    else if (!cp.chemical_analysis_enabled) ImGui::TextWrapped("Chemical analysis is disabled. Enable it to classify CPs and show chemical environments.");
+                    else draw_critical_point_environments(state);
+                }
+                ImGui::EndChild();
+                ImGui::InvisibleButton("##CP environment splitter", ImVec2(-1, splitter));
+                if (ImGui::IsItemActive()) cp.top_height += ImGui::GetIO().MouseDelta.y;
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (ImGui::BeginChild("##CP point details", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
+                    const float detail_height = MAX(1.0f, ImGui::GetContentRegionAvail().y - splitter - 2.0f * spacing);
+                    if (cp_points_height <= 0.0f) cp_points_height = 0.5f * detail_height;
+                    cp_points_height = CLAMP(cp_points_height, 0.25f * detail_height, 0.75f * detail_height);
+                    if (ImGui::BeginChild("##Points pane", ImVec2(0, cp_points_height)) &&
+                        cp.enabled && graph.num_vertices > 0) {
+                        if (cp.chemical_analysis_enabled) draw_critical_point_list(state);
+                        else ImGui::TextWrapped("The chemistry-grouped CP list is unavailable while chemical analysis is disabled.");
+                    }
+                    ImGui::EndChild();
+                    ImGui::InvisibleButton("##CP point details splitter", ImVec2(-1, splitter));
+                    if (ImGui::IsItemActive()) cp_points_height += ImGui::GetIO().MouseDelta.y;
+                    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                    if (ImGui::BeginChild("##Details pane", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y))) &&
+                        cp.enabled && graph.num_vertices > 0) {
+                        if (cp.chemical_analysis_enabled) draw_critical_point_details();
+                        else ImGui::TextWrapped("Chemical labels and chemistry-dependent details are disabled.");
+                    }
+                    ImGui::EndChild();
+                }
+                ImGui::EndChild();
             }
             ImGui::EndChild();
             ImGui::EndTable();
         }
 
-        // Drag to share the height between the top and the bottom
-        ImGui::InvisibleButton("##Splitter", ImVec2(-1, splitter));
-        if (ImGui::IsItemActive()) cp.top_height += ImGui::GetIO().MouseDelta.y;
-        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-        {
-            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-            const float y = 0.5f * (a.y + b.y);
-            ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x, y), ImVec2(b.x, y),
-                ImGui::GetColorU32(ImGui::IsItemActive() || ImGui::IsItemHovered() ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), 2.0f);
-        }
-
-        const float bottom_height = MAX(ImGui::GetContentRegionAvail().y - 2.0f * ImGui::GetStyle().CellPadding.y, 6.0f * em_split);
-        if (ImGui::BeginTable("##Critical point bottom", 2, pane_flags, ImVec2(0, bottom_height))) {
-            ImGui::TableSetupColumn("##Points", ImGuiTableColumnFlags_WidthStretch, 0.65f);
-            ImGui::TableSetupColumn("##Details", ImGuiTableColumnFlags_WidthStretch, 0.35f);
-            ImGui::TableNextColumn();
-            if (ImGui::BeginChild("##Points pane", ImVec2(0, bottom_height))) {
-                draw_critical_point_list(state);
-            }
-            ImGui::EndChild();
-            ImGui::TableNextColumn();
-            if (ImGui::BeginChild("##Details pane", ImVec2(0, bottom_height))) {
-                draw_critical_point_details();
-            }
-            ImGui::EndChild();
-            ImGui::EndTable();
-        }
         // A table that was not drawn this frame does not keep a request for later
         cp.export_environments = cp.export_points = CPExport_None;
     }

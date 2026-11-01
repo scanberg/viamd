@@ -1,5 +1,6 @@
 #pragma once
 
+// UI-independent critical-point chemistry and distribution analysis.
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -37,7 +38,9 @@ struct ChemicalLabel {
     Kind kind = Kind::Unassigned;
     std::string group;
     std::string detail;
-    std::string interaction;   // a contact's class ("Hydrogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", ...); empty otherwise
+    // A contact's class ("Hydrogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", ...); for a ring or cage closed by contacts, the
+    // class of its most specific closing contact; empty otherwise
+    std::string interaction;
     int atom[2] = {-1, -1};
     // The group at increasing detail, each a refinement of the one before: the bonded neighbours of the atoms
     // ("C aromatic [C2H]"), a contact ring's size and composition, then the residues ("in PHE"). May be empty.

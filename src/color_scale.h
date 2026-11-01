@@ -53,6 +53,25 @@ static inline ColorScaleSpan color_scale_span(float min, float max) {
     return span;
 }
 
+// Conservative union of robust spans: no member's percentile range is narrowed by pooling.
+static inline void color_scale_include_span(ColorScaleSpan* out, const ColorScaleSpan& span) {
+    if (!span.valid) return;
+    if (!out->valid) { *out = span; return; }
+    out->min = fminf(out->min, span.min);
+    out->max = fmaxf(out->max, span.max);
+    out->lo = fminf(out->lo, span.lo);
+    out->hi = fmaxf(out->hi, span.hi);
+}
+
+// Include a constituent range while retaining the union's palette and legend settings.
+static inline void color_scale_include_symmetric_range(ColorScale* out, const ColorScale& scale) {
+    const float r = fmaxf(fmaxf(fabsf(out->range_beg), fabsf(out->range_end)),
+                         fmaxf(fabsf(scale.range_beg), fabsf(scale.range_end)));
+    out->symmetric = true;
+    out->range_beg = -r;
+    out->range_end = r;
+}
+
 // Whether a span straddles zero: the values of a charge or a potential, which read best on a
 // symmetric range and a diverging colour map
 static inline bool color_scale_span_signed(const ColorScaleSpan& span) {
@@ -117,16 +136,18 @@ uint32_t color_scale_color_u32(const ColorScale& scale, float value);
 // The controls, as rows of a property grid (property_grid.h): colour map, legend, the range and whether it follows
 // the values, symmetric, and what the values span. 'unit' is the values' own. 'span_label' says what the span is
 // of ("on surface"), 'span_tooltip' how it was measured. Returns true when the scale changed.
-bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip);
+// symmetric_only locks zero to the midpoint and exposes only a positive range magnitude.
+bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip, bool symmetric_only = false, bool show_legend_control = true);
 
 // The legend: the colour map over its range with values, headed by 'label' and the unit, in a window
 // without decoration over the view. Like the coordinate widget it takes no input unless Alt is held,
 // and can then be moved and resized; where it was is kept in the .ini under 'id'. 'owner' names it in
 // its title bar, which shows while Alt is held. 'slot' is its place among the legends drawn, which
 // decides where it starts out.
+// bottom_corner anchors the legend to the viewport's bottom-right corner instead of a movable saved position.
 //
 // With 'lines' the scale also shows and edits isolines: it takes the mouse while the cursor is over the colour
 // bar and its values (and passes it to the view everywhere else, as without them). The value under the cursor is
 // the transient line; a click adds a line there and dragging moves it, a line's marker is dragged to move it,
 // and a right click edits or removes the line at the cursor.
-void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines = nullptr);
+void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines = nullptr, bool bottom_corner = false);

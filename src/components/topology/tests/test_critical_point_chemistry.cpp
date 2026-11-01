@@ -1,5 +1,5 @@
 #include "utest.h"
-#include <qm/critical_point_distribution_core.h>
+#include <topology/critical_point_distribution_core.h>
 #include <md_system.h>
 #include <md_topo.h>
 #include <md_util.h>
@@ -412,6 +412,8 @@ UTEST(critical_point_chemistry, ring_cp_inside_a_contact_closed_cycle) {
     EXPECT_TRUE(labels[rcp].kind == Kind::Ring);
     std::string group = labels[rcp].group;
     EXPECT_STREQ(group.c_str(), "Closed by Other contact");
+    // The ring belongs to its closing interaction, for its NCI parameters
+    EXPECT_STREQ(labels[rcp].interaction.c_str(), "Other contact");
 
     // A ring CP with the density of the ring's contact is flagged
     s.vertices[rcp].value = 0.0495f;

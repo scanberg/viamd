@@ -406,9 +406,16 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
     }
 }
 
-bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip) {
+bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip, bool symmetric_only, bool show_legend_control) {
     ASSERT(scale);
     bool changed = false;
+    if (symmetric_only && !scale->symmetric) {
+        const float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
+        scale->symmetric = true;
+        scale->range_beg = -r;
+        scale->range_end = r;
+        changed = true;
+    }
 
     ImGui::PushID("color_scale");
 
@@ -429,8 +436,10 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         ImGui::EndPopup();
     }
 
-    prop::row("legend", "The colour map with its range and unit, in the view. Hold Alt to move or resize it.");
-    changed |= ImGui::Checkbox("##legend", &scale->show_legend);
+    if (show_legend_control) {
+        prop::row("legend", "The colour map with its range and unit, in the view. Hold Alt to move or resize it.");
+        changed |= ImGui::Checkbox("##legend", &scale->show_legend);
+    }
 
     // Shown in the display unit, kept in the values' own
     char unit_str[32] = "";
@@ -465,6 +474,7 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         if (!(limit > 0.0f)) limit = 1.0f;
         float r_disp = r * fscl;
         if (ImGui::SliderFloat("##range", &r_disp, 0.0f, limit * fscl, fmt)) {
+            if (symmetric_only) r_disp = MAX(fabsf(r_disp), fscl * 1e-12f);
             scale->range_beg = -r_disp / fscl;
             scale->range_end =  r_disp / fscl;
             scale->auto_range = false;
@@ -490,8 +500,10 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         }
     }
 
-    prop::row("symmetric", "A range centred on zero");
-    mode_changed |= ImGui::Checkbox("##symmetric", &scale->symmetric);
+    if (!symmetric_only) {
+        prop::row("symmetric", "A range centred on zero");
+        mode_changed |= ImGui::Checkbox("##symmetric", &scale->symmetric);
+    }
     if (mode_changed) {
         if (scale->symmetric && !scale->auto_range) {
             const float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
@@ -515,7 +527,7 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
     return changed;
 }
 
-void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines) {
+void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines, bool bottom_corner) {
     if (lines) lines->hover = false;
     if (scale.range_end == scale.range_beg) return;
 
@@ -534,14 +546,18 @@ void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char
     const float top = 60.0f, gap = 10.0f;
     const int per_column = MAX(1, (int)((viewport->WorkSize.y - top) / (height + gap)));
     const int column = MAX(slot, 0) / per_column, row = MAX(slot, 0) % per_column;
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - (float)(column + 1) * (width + 20.0f),
+    if (bottom_corner) {
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 10.0f,
+                                     viewport->WorkPos.y + viewport->WorkSize.y - 10.0f),
+                               ImGuiCond_Always, ImVec2(1, 1));
+    } else ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - (float)(column + 1) * (width + 20.0f),
                                    viewport->WorkPos.y + top + (float)row * (height + gap)), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_FirstUseEver);
     // Never narrower than its heading: the size is the user's and kept in the .ini, and what it heads
     // changes - another attribute, another unit - without the user having resized anything
     ImGui::SetNextWindowSizeConstraints(ImVec2(MAX(width, 80.0f), 120), ImVec2(MAX(width, 1000.0f), 2000));
 
-    const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
+    const bool editable = !bottom_corner && ImGui::IsKeyDown(ImGuiMod_Alt);
     // With isolines the scale takes the mouse where the cursor is over it (as it was drawn the frame before) and
     // while a line is dragged; everywhere else the mouse goes through to the view, as without them
     const bool interactive = lines && !editable && (lines->drag >= 0 || legend_hit_get(id).Contains(ImGui::GetIO().MousePos));

@@ -425,6 +425,16 @@ static bool bond_path_cycles(const std::vector<std::vector<PathEdge>>& adjacency
     return true;
 }
 
+// The closing contacts of a ring, most specific first: a contact ring or cage is grouped by, and belongs to the
+// interaction of, the first of them
+static const char* const closing_priority[] = {"Hydrogen bond", "Halogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+                                               "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+                                               "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "Other contact"};
+static size_t closing_rank(const std::string& cls) {
+    for (size_t k = 0; k < sizeof(closing_priority) / sizeof(closing_priority[0]); ++k) if (cls == closing_priority[k]) return k;
+    return sizeof(closing_priority) / sizeof(closing_priority[0]);
+}
+
 static const char tied_ring_detail[] = "Equally small bond-path cycles of about the same area enclose it: ";
 
 bool ring_surface_may_decide(const ChemicalLabel& label) {
@@ -803,20 +813,14 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
             if (e.bcp != UINT32_MAX && std::abs(density(e.bcp) - density(i)) <= 0.02 * std::abs(density(e.bcp))) coalescing = e.bcp;
         }
         // The ring is grouped by the most specific of its closing contacts; all of them are in its detail
-        static const char* priority[] = {"Hydrogen bond", "Halogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
-                                         "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
-                                         "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "Other contact"};
-        auto rank = [](const std::string& cls) {
-            for (size_t k = 0; k < sizeof(priority) / sizeof(priority[0]); ++k) if (cls == priority[k]) return k;
-            return sizeof(priority) / sizeof(priority[0]);
-        };
-        std::sort(classes.begin(), classes.end(), [&](const auto& a, const auto& b) { return rank(a) < rank(b); });
+        std::sort(classes.begin(), classes.end(), [](const auto& a, const auto& b) { return closing_rank(a) < closing_rank(b); });
         std::string closed_by;
         for (const auto& cls : classes) closed_by += (closed_by.empty() ? "" : ", ") + cls;
         const std::string size = std::to_string(best.size()) + "-ring";
         const std::string atoms_formula = formula(system, best.data(), best.size());
         auto& label = labels[i];
         label.kind = Kind::Ring;
+        if (contacts && !classes.empty()) label.interaction = classes.front();
         // Contact rings are named by what closes them; their sizes and compositions vary too much to group by
         label.group = contacts ? "Closed by " + classes.front()
                     : unknown ? "Bond-path " + size + " " + atoms_formula
@@ -871,8 +875,14 @@ std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph
         std::sort(atoms.begin(), atoms.end());
         atoms.erase(std::unique(atoms.begin(), atoms.end()), atoms.end());
         bool contact_face = false;
-        for (uint32_t r : f) contact_face |= labels[r].group.rfind("Closed by ", 0) == 0;
+        std::string interaction;
+        for (uint32_t r : f) {
+            contact_face |= labels[r].group.rfind("Closed by ", 0) == 0;
+            const std::string& cls = labels[r].interaction;
+            if (!cls.empty() && (interaction.empty() || closing_rank(cls) < closing_rank(interaction))) interaction = cls;
+        }
         labels[i].kind = Kind::Cage;
+        labels[i].interaction = interaction;
         labels[i].group = std::string(contact_face ? "Contact cage" : "Bonded cage") + ", " + std::to_string(f.size()) + " faces";
         labels[i].detail = "Atoms " + formula(system, atoms.data(), atoms.size()) + "; faces: " + list + ".";
         add_detail(labels[i], labels[i].group + " " + formula(system, atoms.data(), atoms.size()));

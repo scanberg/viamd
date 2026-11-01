@@ -43,16 +43,34 @@ Documentation about VIAMD is available on the github [wiki](https://github.com/s
 A series of videos is available on [youtube](https://youtube.com/playlist?list=PLNx9MpJY8ffr9CeK7WefdOnuGRw_E5rSj&si=VatBHEwiL7jWyhPK).
 
 ### Critical-point density distributions
-Below the search controls and the category line, the Critical Points window has
-two rows of two panes: the chemical environments beside the density
-distributions, and below them the list of critical points beside the details of
-one. Drag the bar between the rows to share the height, and the pane borders to
-share the width.
+The critical-point search is enabled by default; uncheck Enabled to stop it.
+The Critical Points window has independent CP and NCI columns. The CP column
+contains the density distributions, chemical-environment table, point list and
+selected-point details. Chemical analysis and NCI can each be disabled
+independently. The NCI scatter plot and its layer panel share the Critical Points
+window; the layer list and selected-layer inspector are below the plot.
+Disabling NCI stops its computations and hides surfaces without deleting saved
+layers or changing their settings. CP settings/export and distribution filters
+open from compact buttons. Scatter hover details show the source layer/family,
+signed density, s and click hints. Drag the splitters and column borders to
+resize the panels. Extra table columns are
+hidden by default and can be enabled through the header context menu. Existing
+saved column layouts are preserved; Compact columns applies the new concise
+layout to an existing table.
+
+Chemical analysis can be switched off independently of the CP search and NCI.
+This stops chemical-environment classification and chemistry-dependent
+descriptors; NCI continues using CP positions and selection, grouping
+unclassified anchors as **Unassigned**. The chemical-environment table,
+chemistry-grouped CP list and chemical details are unavailable until analysis
+is re-enabled. Chemistry-dependent filters and BCP character filters are
+ignored while it is off; density filters remain active.
 
 The distributions cover attractors, bond critical points, ring critical points,
 and cage critical points. Each panel uses the category's marker color and an
-independent logarithmic electron-density axis (au, e bohr^-3). The filled curve
-is an adaptive nearest-neighbor Gaussian estimate in log10 density, normalized
+independent logarithmic electron-density axis (au, e bohr^-3). Repeated axis titles
+are hidden to save space; numeric ticks remain because each category has its own
+scale. The filled curve is an adaptive nearest-neighbor Gaussian estimate in log10 density, normalized
 to unit area per decade, not a histogram or an electron density. Categories
 containing zero or negative densities use a linear axis and probability per
 density unit instead. Each curve is split into stacked colored layers, one per
@@ -176,41 +194,134 @@ Mulliken populations also supply the electron-count trace without another
 density/overlap matrix pass; population and bond-order work honour the same
 job cancellation.
 
-The NCI surface checkbox draws the NCI isosurface (Johnson et al., J. Am. Chem.
-Soc. 2010) in the viewport. It is the surface s = 0.5 where ρ is below the
-cutoff (0.05 au), coloured by sign(λ2)ρ: negative attractive, near-zero weak,
-positive repulsive. The default Jet palette maps these to blue, green
-and red, respectively. The density is sampled on a grid (Coarse 0.3, Medium 0.2 or Fine
-0.13 Bohr) and differentiated by finite differences, so a finer grid gives a
-smoother and more accurate surface. Scope offers Everywhere, Around shown
-(the visible BCPs, respecting filters), and Around selected (the default).
-Around selected uses selected CPs of any type, regardless of their visibility
-or filters; selecting a ring CP therefore shows its ring's surface. With
-nothing selected, no surface is drawn. The default radius is 2.7 Bohr. The radius, isovalue, cutoff, colour
-range and opacity can be adjusted. Progress and Cancel stay in the Critical
-Points window, without an NCI task overlay or routine completion notifications
-in the viewport. Timings remain in debug logs; errors are still reported. It is drawn as a
-mesh in both isosurface rendering modes. Everywhere does not need the
-critical point search; the other scopes use its results.
-The Colour scale section uses the same palette selector, automatic/manual
-range, symmetric range and optional viewport legend as the other surface
-fields. The default palette is Jet, with an automatic, zero-centred symmetric
-range and a visible legend. Auto uses the 1st to 99th percentile of values on
-the current scoped surface: selected regions, shown regions or Everywhere.
-It updates when a new scoped surface arrives, not with camera motion; outliers
-only saturate in colour. Manual keeps a fixed range for comparisons between
-selections. Changing the colour scale does not recompute the surface.
+NCI follows VIAMD's layer controls: its compact list and inspector sit below the
+interactive scatter plot. **Full system** and **Preview** are listed first;
+saved layers follow below a separator line. Selecting any number of CPs updates
+the Preview, and **+** saves it as one layer, whatever CP types it holds. Each
+row shows its CP types with their CP counts (for example "Hydrogen bonds 2,
+π-stacking 1"). Clicking a row shows that layer in the viewport and hides the
+others (one at a time); clicking the shown row again hides it. The eye only
+shows or hides the layer in the scatter plot, any number of them. A new CP selection shows the Preview; clearing
+it returns to the Full system unless a saved layer is shown. Saved layers can be
+renamed, reordered and recoloured (the chip colours their scatter outline). With
+the Full system shown, **Split in type** saves each of its interactions as its
+own layer (Hydrogen bonds, π-stacking, Rings, …), so they can be drawn apart.
 
-The distributions pane also offers **NCI scatter**: reduced density gradient
-s against sign(λ2)ρ, using the same scope, density cutoff and colour scale as
-the NCI surface. It samples the density volume, not the surface vertices.
-Up to 50,000 grid samples with s ≤ 2 are retained by deterministic reservoir
-sampling, with the displayed and eligible counts shown above the plot.
-The horizontal reference line marks the surface isovalue; changing that
-isovalue leaves the scatter samples unchanged. This plot does not change the
-character thresholds or apply table filters (except through Around shown).
-With the CP search disabled, Everywhere still provides the plot below the
-NCI controls.
+The surface is the chosen isovalue of the reduced density gradient s where ρ is
+below the cutoff, coloured by sign(λ2)ρ: negative attractive, near-zero weak,
+positive repulsive. The default Jet palette maps these to blue, green and red.
+Density is sampled on a grid (Coarse 0.3, Medium 0.2 or Fine 0.13 Bohr) and
+differentiated by finite differences. A finer grid is smoother and more accurate,
+but takes longer. Connected regions keep six-connected low-s components seeded
+near anchor CPs; an optional radius cap limits their extent. This segmentation
+depends on grid resolution and thresholds and is not a unique physical
+partition. Regions without an anchor are excluded.
+
+One general mode applies to every NCI layer, the Full system included:
+
+* **Uniform** uses one isovalue s and density cutoff for every CP type. It is
+  the physically consistent mode.
+* **CP-adaptive** extracts type-scoped regions around their anchor CPs, each
+  with its type's isovalue and cutoff. It brings out weak interactions such as
+  π-stacking, but is illustrative: the surfaces of different types are not
+  mutually consistent, and the regions are not a uniquely defined spatial
+  partition. Layers that mix CP types, such as the Full system, are tagged
+  "illustrative" with a ⚠ in this mode; hover either for the reason.
+
+In both modes the extent around the anchor CPs is the radius of each CP type.
+All settings are applied automatically and tuned in one place, the **NCI
+settings** (gear button): the mode, the Uniform isovalue and cutoff, resolution,
+connected regions, opacity and the colour scale, then a compact per-type table
+with the radius (and, in CP-adaptive mode, the type's s and cutoff).
+
+The settings table lists the CP types. Bond, bond-path and attractor CPs
+anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
+the same interaction region automatically share parameters. For example, a ring
+closed by π···π uses the π-stacking parameters, so one region is cut at one
+threshold. Calibrated type defaults are:
+
+| Family | Baseline | s | rho cutoff (au) | Radius cap (Bohr) |
+|--------|----------|---|-----------------|------------------|
+| Hydrogen bonds | AT-AT | 1.0 | 0.07 | 1.7 |
+| Rings | Biphenyl, AT-AT | 1.0 | 0.05 | 2.0 |
+| Pi-stacking | Anthracene dimer, AT-AT | 0.85 | 0.07 | 3.7 |
+| Cages | As rings | 1.0 | 0.05 | 2.0 |
+| Halogen bonds | Provisional, uncalibrated | 0.9 | 0.07 | 2.2 |
+
+Other contacts and unassigned CPs use generic s=0.5, ρ<0.05, r=2.7 settings
+until they are calibrated. The Uniform defaults are s=0.7, ρ<0.07 and a
+colour range of ±0.03 (validated on AT-AT). All defaults are
+defined together in `src/components/topology/nci_surface_core.cpp`. Type
+regions are visualization choices; they do not assign a unique physical extent
+to an interaction.
+
+One colour scale applies to every NCI surface: one palette (Jet by default) and
+one range, symmetric around zero with zero at the palette midpoint, and one
+legend in the viewport. Auto follows the span of the shown layer; a manual range
+fixes it for comparisons. Outliers saturate in colour; changing the colour
+scale does not recompute geometry.
+
+Selecting a CP or chemical environment also outlines its contribution to the CP
+density distribution in the selection colour. This is the selected subset's
+share of the category's original density estimate, not a separately normalized
+distribution.
+
+The **NCI scatter** plots reduced density gradient s against sign(λ2)ρ. A
+full-system context cloud is computed while NCI is enabled and the Critical
+Points window is open, even with the CP search disabled. The shown layer's
+samples are plotted per interaction (a ring closed by π···π counts as
+π-stacking), and hovering a point identifies it. The legend is a centred row of
+chips under the plot. Click a point or an interaction's name to make it the
+active one for the guides: the isovalue and colour-range lines.
+Dragging the isovalue line edits the Uniform isovalue, or in CP-adaptive mode
+the active interaction's isovalue; the line is in the layer's colour in Uniform
+mode and in the interaction's colour in CP-adaptive mode. The shown layer has a
+thin outline per interaction and, in its chip colour, a thick outline around
+all of them, one histogram bin outside so the two never overlap. Each interaction always has the same colour (hydrogen bonds blue,
+π-stacking red, rings green, halogen bonds purple, other contacts orange, cages
+brown); layer colours are chosen apart from those. Outlines indicate the
+10%-of-peak level of a smoothed sample histogram, not a physical region
+boundary.
+
+The scatter follows the Ramachandran plot's layout. The **Full system** is the
+CP reference: like any layer, it can stay drawn under the shown layer. A pinned
+**Expected regions** row above the layers shows, in the plot, where each
+interaction's spike is expected: a box of sign(λ2)ρ below an s, in the
+interaction's colour. These are provisional boxes from the calibration systems
+(AT-AT, biphenyl, anthracene dimer), to be replaced by a reference map;
+densities from other wave functions may shift them. Each layer row also reports
+the share of its samples (below each region's s) inside their interaction's
+expected region, by interaction in its tooltip.
+
+Each layer whose eye is on is drawn with **Points** and **Isolines**, an area (**Filled**, the inside of its outlines, or **Heatmap**,
+the density of its samples) and a colouring: colour scale, interaction, layer
+colour, or Region, where samples outside their expected region stand out in
+red; a filled area takes the interaction colours with Interaction, the layer
+colour otherwise. These are set for the selected layer below the list, or for
+any layer by right-clicking its bar in the legend. The legend lists the
+expected regions and every layer (thick bars), then on a second line the
+interactions (squares). Clicking a swatch shows or hides it: a layer (as its
+eye), the expected regions, or an interaction's isolines, filled area and
+expected region in every layer. Clicking an interaction's name, or one of its
+points, makes it the active one for the guides; clicking the active one again
+hides them. Layers not shown in the viewport are drawn from their last
+computation, under the shown one. **All samples** in the legend toggles the context cloud. **Guides** also toggles the isovalue and
+colour-range lines; on the right, ⤢ fits the view and the gear sets the line
+widths and the point size.
+
+Saved NCI layers last for the current loaded geometry; they are cleared when
+the dataset is reset and are not saved to disk. The NCI settings are kept for
+the session. **Show CPs in
+viewport** hides markers, paths and labels without changing selection, tables or
+NCI layer membership.
+
+Up to 50,000 volume samples with s ≤ 2 are retained per extraction by
+deterministic reservoir sampling, not a population or interaction-energy measure.
+Radius-only samples are independent of the surface isovalue. Connected-scope
+samples cover the selected low-s components and their one-voxel halo, so they
+follow changes in the isovalue. Spatially distinct layer samples may overlap in
+the plot. These display controls do not change the CP character-classification
+thresholds.
 
 The environments table is a collapsible chemistry hierarchy of the CPs of the
 shown categories that pass their filters. Type is the first column and

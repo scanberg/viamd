@@ -1,5 +1,5 @@
 #include "utest.h"
-#include <qm/critical_point_distribution_core.h>
+#include <topology/critical_point_distribution_core.h>
 
 #include <algorithm>
 #include <cmath>
@@ -92,6 +92,27 @@ UTEST(critical_point_distribution, components_sum_to_total) {
     EXPECT_LT(low, high * 1.0e-3);
     const uint32_t bad[] = {0, 1, 0, 1, 0, 2};
     EXPECT_FALSE(estimate(values, bad, 2).valid);
+}
+
+UTEST(critical_point_distribution, selected_contribution_preserves_original_normalization) {
+    using critical_point_distribution::estimate;
+    const double values[] = {0.001, 0.002, 0.003, 0.004};
+    const uint32_t selected[] = {0, 1, 0, 0};
+    const auto contribution = estimate(values, selected, 2);
+    const auto total = estimate(values);
+    ASSERT_TRUE(contribution.valid);
+    ASSERT_EQ(contribution.components.size(), size_t(2));
+    double area = 0;
+    for (int j = 0; j < contribution.sample_count; ++j) {
+        EXPECT_EQ(contribution.density[j], total.density[j]);
+        EXPECT_NEAR(contribution.probability[j], total.probability[j], 1e-12);
+        EXPECT_LE(contribution.components[1][j], total.probability[j] + 1e-12);
+        if (j > 0) {
+            const double dx = std::log10(contribution.density[j]) - std::log10(contribution.density[j - 1]);
+            area += 0.5 * dx * (contribution.components[1][j] + contribution.components[1][j - 1]);
+        }
+    }
+    EXPECT_NEAR(area, 0.25, 0.01);
 }
 
 UTEST(critical_point_distribution, empty) {
