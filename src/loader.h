@@ -103,7 +103,8 @@ namespace loader {
     // A topology without coordinates is loaded (load above) with the coordinates its LoaderState names. These are the
     // pieces of that, for the application which puts the two together in whatever order they come.
     //
-    // The atom count of a topology or a coordinate file, as its header says; 0 when the format does not say up front.
+    // The atom count of a topology, a coordinate file or a trajectory (DCD, XTC, TRR, Amber NetCDF), as its header says;
+    // 0 when the format does not say up front.
     size_t atom_count(str_t filepath, const LoaderState& state);
 
     // The coordinates for the atoms of sys from filepath: a restart, NAMD binary coordinates, a structure file of as

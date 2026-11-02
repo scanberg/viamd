@@ -332,7 +332,8 @@ UTEST(viamd_file_list, a_topology_keeps_the_file_of_its_coordinates) {
     List one;
     one.record(top, FileRole_System);
     one.record(file(at("viamd_test_md.nc").c_str(), LoaderType_AMBER_NETCDF), FileRole_Trajectory);
-    Written w(at("viamd_test.via").c_str(), alloc);
+    const std::string workspace = at("viamd_test.via");    // Written keeps the pointer: the string has to outlive it
+    Written w(workspace.c_str(), alloc);
     file_list_serialize(w.s, &one.list, 0, 0);
     const str_t text = w.text();
     EXPECT_TRUE(contains(text, "[Input]\nSystem=0\nPath=./viamd_test_sys.prmtop\nCoordinates=./viamd_test_md.nc\n"));

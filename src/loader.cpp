@@ -419,6 +419,9 @@ size_t atom_count(str_t filepath, const LoaderState& state) {
         return n ? n : md_amber_rst7_file_atom_count(filepath);
     }
     case LoaderType_NAMD_COOR:     return md_namdbin_file_atom_count(filepath);
+    case LoaderType_DCD:           return md_dcd_file_atom_count(filepath);
+    case LoaderType_XTC:           return md_xtc_file_atom_count(filepath);
+    case LoaderType_TRR:           return md_trr_file_atom_count(filepath);
     default:                       return 0;
     }
 }

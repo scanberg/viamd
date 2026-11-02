@@ -342,3 +342,12 @@ UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
     md_arena_allocator_destroy(arena);
     remove("viamd_test_water.prmtop"); remove("viamd_test_water.rst7"); remove("viamd_test_water.pdb"); remove("viamd_test_water.lammpstrj");
 }
+
+UTEST(viamd_loader, trajectories_say_how_many_atoms_they_hold) {
+    /* What lets a trajectory loaded before its topology wait for it rather than fail against a system of other atoms */
+    loader::LoaderState s = {};
+    loader::init(&s, STR_LIT(VIAMD_TEST_DATA_DIR "/catalyst.xtc"));
+    EXPECT_EQ(1336u, loader::atom_count(STR_LIT(VIAMD_TEST_DATA_DIR "/catalyst.xtc"), s));
+    loader::init(&s, STR_LIT(VIAMD_TEST_DATA_DIR "/tryptophan-md.trr"));
+    EXPECT_EQ(6495u, loader::atom_count(STR_LIT(VIAMD_TEST_DATA_DIR "/tryptophan-md.trr"), s));
+}

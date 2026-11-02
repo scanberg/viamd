@@ -1728,16 +1728,6 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-// The entry a loaded file takes in files.list
-static FileEntry file_entry(str_t path, const loader::LoaderState& load_state) {
-    FileEntry e = {};
-    str_copy_to_char_buf(e.path, sizeof(e.path), path);
-    e.type = load_state.type;
-    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
-    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
-    str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), str_from_cstr(load_state.coordinates));
-    return e;
-}
 
 // Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
 // False when the file holds no frames to make a run of, which is not an error for a structure file.
@@ -1753,164 +1743,28 @@ static bool open_run(ApplicationState* state, str_t path, const loader::LoaderSt
     if (num_frames == 0) {
         return false;
     }
-    file_list_record(&state->files.list, file_entry(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    file_list_record(&state->files.list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(state->files.list.runs)->frame_count = num_frames;
     return true;
 }
 
-// ## A topology and its coordinates, in either order
+// ## A topology and its coordinates, in either order (load_order.h): what loading is, for it
 
-static bool pending_has(const FileEntry& e) { return e.path[0] != '\0'; }
-
-// The loader state of an entry, as it was loaded
-static loader::LoaderState entry_loader_state(const FileEntry& e) {
-    loader::LoaderState ls = {};
-    if (e.explicit_type) {
-        ls.type  = e.type;
-        ls.flags = loader::type_flags(e.type) | LoaderFlag_ExplicitType;
-    } else {
-        loader::init(&ls, str_from_cstr(e.path), nullptr);
-    }
-    if (e.arg[0] != '\0') ls.arg = e.arg;
-    return ls;
+static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
+    return load_data((ApplicationState*)user, path, ls, role, opens_own_run);
 }
-
-// The system from a topology and the file its coordinates come from. When that is a trajectory, it opens as the run.
-// Files whose headers say they are of different atom counts are refused before anything is freed.
-static LoadResult build_from_topology(ApplicationState* state, const FileEntry& topology, const FileEntry& coordinates) {
-    loader::LoaderState ls = entry_loader_state(topology);
-    {
-        const size_t a = loader::atom_count(str_from_cstr(topology.path), ls);
-        const size_t b = loader::atom_count(str_from_cstr(coordinates.path), entry_loader_state(coordinates));
-        if (a && b && a != b) {
-            VIAMD_LOG_ERROR("'%s' has %zu atoms and '%s' %zu: they are not of the same system", topology.path, a, coordinates.path, b);
-            return LoadResult_Failed;
-        }
-    }
-    ls.coordinates = coordinates.path;
-    const LoadResult result = load_data(state, str_from_cstr(topology.path), ls, FileRole_System, false);
-    if (result != LoadResult_System) return result;
-
-    const loader::LoaderState cs = entry_loader_state(coordinates);
-    if ((cs.flags & LoaderFlag_Trajectory) && !(cs.flags & LoaderFlag_System)) {
-        load_data(state, str_from_cstr(coordinates.path), cs, FileRole_Trajectory);
-    }
-    return result;
-}
-
-// After a system is built: what waited for it. A trajectory of its atoms opens as its run; the rest is dropped, as
-// it was for a system that is no longer there.
-static void pending_resolve(ApplicationState* state) {
-    auto& pending = state->files.pending;
-    const FileEntry trajectory = pending.trajectory;
-    pending = {};
-    if (pending_has(trajectory) && run_num_frames(state) == 0) {
-        const loader::LoaderState ts = entry_loader_state(trajectory);
-        load_data(state, str_from_cstr(trajectory.path), ts, FileRole_Trajectory);
-    }
-}
-
-static void pending_wait(ApplicationState* state, FileEntry* slot, str_t path, const loader::LoaderState& load_state, const char* what) {
-    *slot = file_entry(path, load_state);
-    const size_t n = loader::atom_count(path, load_state);
-    char count[64] = "";
-    if (n) snprintf(count, sizeof(count), " of %zu atoms", n);
-    VIAMD_LOG_INFO("'" STR_FMT "'%s is waiting for %s", STR_ARG(path), count, what);
-}
+static size_t ops_system_atoms(void* user) { return ((ApplicationState*)user)->mold.sys.atom.count; }
+static size_t ops_run_frames(void* user) { return run_num_frames((ApplicationState*)user); }
+static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->files.list; }
 
 LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
-    // On its own the role follows from the loader flags, and a structure file opens its own frames as the run:
-    // a multi model PDB or an XYZ trajectory is a system and a run in one file
-    const FileRole role = file_role(load_state.flags);
-    auto& pending = state->files.pending;
-    const size_t num_atoms = state->mold.sys.atom.count;
-
-    // A topology without coordinates
-    if ((load_state.flags & LoaderFlag_NeedsCoordinates) && !(load_state.coordinates && load_state.coordinates[0])) {
-        const size_t n = loader::atom_count(filepath, load_state);
-        if (n && n == num_atoms && !(load_state.flags & LoaderFlag_Supplemental)) {
-            // A system of as many atoms is loaded (a PDB file of the simulation): the topology fills it in
-            loader::LoaderState ls = load_state;
-            ls.flags |= LoaderFlag_Supplemental;
-            return load_data(state, filepath, ls, FileRole_Supplement);
-        }
-        if (load_state.flags & LoaderFlag_Supplemental) {
-            return load_data(state, filepath, load_state, FileRole_Supplement);
-        }
-        const FileEntry topology = file_entry(filepath, load_state);
-        // Its coordinates may be waiting: those of a restart first, else the first frame of a trajectory
-        for (FileEntry* coords : { &pending.coordinates, &pending.trajectory }) {
-            if (!pending_has(*coords)) continue;
-            const LoadResult result = build_from_topology(state, topology, *coords);
-            if (result == LoadResult_System) {
-                if (coords == &pending.trajectory) pending.trajectory = {};
-                pending_resolve(state);
-                return result;
-            }
-        }
-        pending_wait(state, &pending.topology, filepath, load_state, "its coordinates: load a restart, a structure file or a trajectory of its atoms");
-        return LoadResult_Pending;
-    }
-
-    // Coordinates without atoms
-    if (load_state.flags & LoaderFlag_Coordinates) {
-        const FileEntry coords = file_entry(filepath, load_state);
-        if (pending_has(pending.topology)) {
-            const LoadResult result = build_from_topology(state, pending.topology, coords);
-            if (result == LoadResult_System) pending_resolve(state);
-            return result;
-        }
-        // New coordinates for a system built from a topology: built again with them, its run opened again
-        const FileEntry* system = file_list_system_file(&state->files.list);
-        if (system && system->coordinates[0] != '\0' && num_atoms) {
-            const FileEntry topology = *system;
-            FileEntry run = {};
-            for (size_t i = 0; i < file_list_count(&state->files.list); ++i) {
-                if (file_list_role(&state->files.list, i) == FileRole_Trajectory) run = state->files.list.entries[i];
-            }
-            const LoadResult result = build_from_topology(state, topology, coords);
-            if (result == LoadResult_System && pending_has(run)) {
-                load_data(state, str_from_cstr(run.path), entry_loader_state(run), FileRole_Trajectory);
-            }
-            return result;
-        }
-        pending_wait(state, &pending.coordinates, filepath, load_state, "a topology of its atoms (prmtop, psf)");
-        return LoadResult_Pending;
-    }
-
-    // A trajectory for a waiting topology, or before anything it could be the run of
-    if (role == FileRole_Trajectory) {
-        const FileEntry trajectory = file_entry(filepath, load_state);
-        if (pending_has(pending.topology)) {
-            const LoadResult result = build_from_topology(state, pending.topology, trajectory);
-            if (result == LoadResult_System) pending_resolve(state);
-            if (result != LoadResult_Failed) return result;
-        }
-        // Not of the loaded system's atoms, as far as its header tells
-        const size_t n = loader::atom_count(filepath, load_state);
-        if (num_atoms == 0 || (n && n != num_atoms)) {
-            pending_wait(state, &pending.trajectory, filepath, load_state, "a topology or a structure file of its atoms");
-            return LoadResult_Pending;
-        }
-    }
-
-    const LoadResult result = load_data(state, filepath, load_state, role, role == FileRole_System);
-    if (result == LoadResult_System) {
-        // A structure file of the waiting topology's atoms: the topology fills it in, as when it comes second
-        if (pending_has(pending.topology)) {
-            const FileEntry topology = pending.topology;
-            pending.topology = {};
-            loader::LoaderState ts = entry_loader_state(topology);
-            if (loader::atom_count(str_from_cstr(topology.path), ts) == state->mold.sys.atom.count) {
-                ts.flags |= LoaderFlag_Supplemental;
-                load_data(state, str_from_cstr(topology.path), ts, FileRole_Supplement);
-            } else {
-                VIAMD_LOG_INFO("'%s' does not have the atoms of the loaded system and no longer waits", topology.path);
-            }
-        }
-        pending_resolve(state);
-    }
-    return result;
+    LoadOps ops = {};
+    ops.user = state;
+    ops.load = ops_load;
+    ops.system_atoms = ops_system_atoms;
+    ops.run_frames = ops_run_frames;
+    ops.files = ops_files;
+    return load_in_order(&state->files.pending, ops, filepath, load_state);
 }
 
 LoadResult load_data(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
@@ -1953,7 +1807,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                     VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
@@ -1971,7 +1825,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         } else if (role == FileRole_System && (load_state.flags & LoaderFlag_NeedsCoordinates) && !(load_state.coordinates && load_state.coordinates[0])) {
-            state->files.pending.topology = file_entry(path_to_file, load_state);
+            state->files.pending.topology = file_entry_from(path_to_file, load_state);
             VIAMD_LOG_INFO("'" STR_FMT "' is a topology without coordinates; it waits for a restart, a structure file or a trajectory of its atoms", STR_ARG(path_to_file));
             return LoadResult_Pending;
         } else if (role == FileRole_System) {
@@ -1991,7 +1845,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+            file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
             state->files.list.atom_count = state->mold.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from

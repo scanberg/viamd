@@ -16,6 +16,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/representation_tree.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/file_list.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/load_order.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/gfx/camera_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/cartoon_glyphs.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/color_utils.cpp

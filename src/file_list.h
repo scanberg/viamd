@@ -82,6 +82,9 @@ static inline const FileEntry* file_list_get(const FileList* list, size_t i)    
 void file_list_free (FileList* list, struct md_allocator_i* alloc);
 void file_list_clear(FileList* list);
 
+// The entry a file loaded with load_state takes
+FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state);
+
 // The role of entry i, from its place: first of the system, later in the system, first of its run, later in it
 FileRole file_list_role(const FileList* list, size_t i);
 

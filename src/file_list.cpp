@@ -12,6 +12,16 @@ FileRole file_role(LoaderFlags flags) {
     return FileRole_None;
 }
 
+FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state) {
+    FileEntry e = {};
+    str_copy_to_char_buf(e.path, sizeof(e.path), path);
+    e.type = load_state.type;
+    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
+    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
+    str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), str_from_cstr(load_state.coordinates));
+    return e;
+}
+
 void file_list_free(FileList* list, md_allocator_i* alloc) {
     ASSERT(list);
     md_array_free(list->entries, alloc);
