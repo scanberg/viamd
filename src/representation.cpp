@@ -3613,10 +3613,14 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
     ImGui::PopID();
 }
 
-// The filter of a group, the first line within it, a row of the same grid as the properties of the representations.
+// The filter of a group, the first line within it. A grid of its own, not the one of the properties of the
+// representations: that column follows the widest label drawn, so opening a representation within the group
+// would move the group's context along with it. Its own, per group, keeps it where it is whatever is open.
 // Completed within the context the group is in, as it is evaluated.
 static void draw_group_filter(ApplicationState* state, RepresentationGroup& group) {
-    prop::begin("representation");
+    char grid[32];
+    snprintf(grid, sizeof(grid), "group_context_%u", group.node.id);
+    prop::begin(grid);
     prop::row("context");
 
     const RepresentationContext outer = representation_context(*state, group.node.parent);
