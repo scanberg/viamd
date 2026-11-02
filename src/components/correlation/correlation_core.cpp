@@ -121,4 +121,76 @@ size_t corr_lag_match(uint32_t* ia, uint32_t* ib, const uint32_t* frames, size_t
     return count;
 }
 
+bool corr_circular_linear_parts(double* r_cos, double* r_sin, const double* a, const double* x, size_t n) {
+    if (n < 3) return false;
+    std::vector<double> c(n), s(n);
+    for (size_t i = 0; i < n; ++i) {
+        c[i] = cos(a[i]);
+        s[i] = sin(a[i]);
+    }
+    return corr_pearson(r_cos, c.data(), x, n) && corr_pearson(r_sin, s.data(), x, n);
+}
+
+double corr_interp(const float* v, size_t stride, int n, double scale, double fi, int k, double period) {
+    if (n <= 0) return NAN;
+    int i0 = (int)floor(fi);
+    i0 = i0 < 0 ? 0 : i0 > n - 1 ? n - 1 : i0;
+    const int i1 = i0 + 1 < n ? i0 + 1 : n - 1;
+    const double t = fi - (double)i0;
+    const double a = (double)v[(size_t)i0 * stride + k] * scale;
+    if (t <= 0.0 || i1 == i0) return a;
+    double d = (double)v[(size_t)i1 * stride + k] * scale - a;
+    if (period > 0.0) d -= period * floor(d / period + 0.5);
+    return a + d * (t > 1.0 ? 1.0 : t);
+}
+
+double corr_lag1(const double* v, const uint32_t* group, size_t n, size_t num_groups) {
+    if (n < 3 || num_groups == 0) return 0.0;
+    std::vector<double> mean(num_groups, 0.0);
+    std::vector<uint64_t> count(num_groups, 0);
+    for (size_t i = 0; i < n; ++i) {
+        if (group[i] >= num_groups) continue;
+        mean[group[i]] += v[i];
+        count[group[i]] += 1;
+    }
+    for (size_t g = 0; g < num_groups; ++g) {
+        if (count[g]) mean[g] /= (double)count[g];
+    }
+    // The previous deviation of each sequence, NaN before its first
+    std::vector<double> prev(num_groups, NAN);
+    double num = 0, den = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t g = group[i];
+        if (g >= num_groups) continue;
+        const double d = v[i] - mean[g];
+        den += d * d;
+        if (!isnan(prev[g])) num += d * prev[g];
+        prev[g] = d;
+    }
+    if (!(den > 0.0)) return 0.0;
+    const double r = num / den;
+    return r < -1.0 ? -1.0 : r > 1.0 ? 1.0 : r;
+}
+
+double corr_effective_n(double n, double ax, double ay) {
+    if (!(n > 2.0)) return n;
+    const double p = ax * ay;
+    // Of (anti)correlated sequences that are all but constant: as little as is meaningful
+    if (!(p < 1.0)) return 2.0;
+    double e = n * (1.0 - p) / (1.0 + p);
+    if (e > n) e = n;
+    if (e < 2.0) e = 2.0;
+    return e;
+}
+
+bool corr_fisher_interval(double* lo, double* hi, double r, double n_eff, double z) {
+    if (!(n_eff > 3.0) || !(r >= -1.0 && r <= 1.0)) return false;
+    const double c = 1.0 - 1e-12;
+    const double fz = atanh(r < -c ? -c : r > c ? c : r);
+    const double se = 1.0 / sqrt(n_eff - 3.0);
+    *lo = tanh(fz - z * se);
+    *hi = tanh(fz + z * se);
+    return true;
+}
+
 }  // namespace correlation

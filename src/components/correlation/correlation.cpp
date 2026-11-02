@@ -16,7 +16,11 @@
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
 // Their Pearson correlation, and the least squares line through them, are found pair by pair, and their Spearman rank
 // correlation (of an evenly spaced subsample past a million). The correlation of a periodic series (an angle) is the
-// circular one: Jammalamadaka-SenGupta's against another angle, Mardia's (unsigned) against a linear value. Along an axis
+// circular one: Jammalamadaka-SenGupta's against another angle, Mardia's against a linear value (unsigned, so with
+// Pearson's against the cosine and the sine of the angle, signed). Successive frames being alike, the samples are worth
+// fewer independent ones: their effective number (Bretherton et al. 1999, from the lag-1 autocorrelations of X and Y over
+// the times, members not counted apart) gives the 95 % interval of Pearson's r, and what is not told from no correlation
+// is dimmed. The pairing and these statistics are in correlation_core (tested on their own). Along an axis
 // whose series, in every layer shown, are periodic of one period, the axis is periodic: it pans around the circle, cut
 // where the user likes (its menu), as the other plots of such values are (plot_periodic.h). Otherwise periodic values
 // are cut at their seam. Distributions (script properties over the frames) are correlated with each other bin by bin,
@@ -172,6 +176,16 @@ struct PairStats {
     int    circular = 0;            // Axes of periodic values: then rc in place of Pearson's
     bool   rc_valid = false;        // One: Mardia's circular-linear (0..1). Two: Jammalamadaka-SenGupta's circular (-1..1)
     double rc = 0;
+    bool   parts_valid = false;     // Circular-linear: Pearson's of the linear value against the cosine and the sine
+    double r_cos = 0, r_sin = 0;
+    // What the samples are worth, successive ones being alike: the times (not the members, which move together) by the
+    // lag-1 autocorrelations of X and Y (Bretherton). And the 95 % interval of Pearson's r it gives.
+    double ax = 0, ay = 0;
+    double n_eff = 0;
+    bool   ci_valid = false;
+    double ci_lo = 0, ci_hi = 0;
+    // Whether the correlation is told from none: its interval excludes 0. True when there is none to tell.
+    bool   significant() const { return !ci_valid || ci_lo > 0.0 || ci_hi < 0.0; }
 
     bool   has_r()     const { return n >= 3 && sxx > 0.0 && syy > 0.0; }
     double r()         const { return has_r() ? sxy / sqrt(sxx * syy) : 0.0; }
@@ -272,22 +286,11 @@ struct Layer {
     bool     lag_skipped = false;   // Some members were left out, to keep within LAG_BUDGET
 };
 
-// The shape of a layer's axes
-enum LayerShape : int {
-    LayerShape_Empty = 0,       // An axis without series
-    LayerShape_Mismatch,        // Several against a different number of several
-    LayerShape_Valid,
-};
-
-static LayerShape layer_shape(const Layer& l) {
-    if (l.num_x == 0 || l.num_y == 0) return LayerShape_Empty;
-    if (l.num_x > 1 && l.num_y > 1 && l.num_x != l.num_y) return LayerShape_Mismatch;
-    return LayerShape_Valid;
-}
-
-static inline int layer_num_pairs(const Layer& l) { return layer_shape(l) == LayerShape_Valid ? MAX(l.num_x, l.num_y) : 0; }
-static inline int pair_x(const Layer& l, int p) { return l.num_x == 1 ? 0 : p; }
-static inline int pair_y(const Layer& l, int p) { return l.num_y == 1 ? 0 : p; }
+// How a layer's axes pair up (correlation_core.h)
+static inline CorrShape layer_shape(const Layer& l) { return corr_shape(l.num_x, l.num_y); }
+static inline int layer_num_pairs(const Layer& l) { return corr_num_pairs(l.num_x, l.num_y); }
+static inline int pair_x(const Layer& l, int p) { return corr_pair_slot(l.num_x, p); }
+static inline int pair_y(const Layer& l, int p) { return corr_pair_slot(l.num_y, p); }
 
 // ## Series keys in the workspace: "source;variant;path"
 
@@ -323,15 +326,8 @@ static bool key_from_str(SeriesKey* out, str_t s) {
 // The value of member k of a series at fractional sample index fi, in its display unit. Of periodic values, the short way
 // around the circle between the samples, and possibly outside the period they are given in (cut_periodic).
 static inline double sample_at(const SeriesTemporalView& v, double fi, int k) {
-    const int n = v.num_samples;
-    const int i0 = CLAMP((int)floor(fi), 0, n - 1);
-    const int i1 = MIN(i0 + 1, n - 1);
-    const double t = fi - (double)i0;
-    const double a = (double)v.y[(size_t)i0 * v.stride + k] * v.y_scale;
-    double b = (double)v.y[(size_t)i1 * v.stride + k] * v.y_scale;
-    if (t == 0.0) return a;
-    if (series_periodic_valid(v.periodic)) b = periodic_near(b, a, series_periodic_length(v.periodic));
-    return a + (b - a) * t;
+    const double period = series_periodic_valid(v.periodic) ? series_periodic_length(v.periodic) : 0.0;
+    return corr_interp(v.y, (size_t)v.stride, v.num_samples, v.y_scale, fi, k, period);
 }
 
 // A periodic value laid out where the circle is cut: at the seam of its series, where its values are least likely to be
@@ -1080,12 +1076,12 @@ struct Correlation : viamd::EventHandler {
         l.point_stride = 1;
         for (int p = 0; p < MAX_PAIRS; ++p) l.pairs[p] = PairStats{};
 
-        const LayerShape shape = layer_shape(l);
-        if (shape == LayerShape_Empty) {
+        const CorrShape shape = layer_shape(l);
+        if (shape == CorrShape_Empty) {
             l.data_error = "drop series on the X and Y axes";
             return;
         }
-        if (shape == LayerShape_Mismatch) {
+        if (shape == CorrShape_Mismatch) {
             l.data_error = "pair as many X as Y, or one against several";
             return;
         }
@@ -1132,8 +1128,9 @@ struct Correlation : viamd::EventHandler {
             if (X.num_samples <= 0 || Y.num_samples <= 0) continue;
             const int dx = l.x_info[xi].dim;
             const int dy = l.y_info[yi].dim;
-            const int members = dx == 1 ? dy : dy == 1 ? dx : MIN(dx, dy);
-            if (dx > 1 && dy > 1 && dx != dy) l.members_truncated = true;
+            bool truncated = false;
+            const int members = corr_members(dx, dy, &truncated);
+            l.members_truncated |= truncated;
             l.pairs[p].members = members;
 
             md_bitset_t mask_x = {}, mask_y = {};
@@ -1166,7 +1163,7 @@ struct Correlation : viamd::EventHandler {
                 const double fy = series_temporal_index_at(Y, t_cur);
                 if (!x_held(fx) || !y_held(fy)) continue;
                 for (int m = 0; m < members; ++m) {
-                    push(sample_at(X, fx, dx == 1 ? 0 : m), sample_at(Y, fy, dy == 1 ? 0 : m), t_cur, frame_cur, m);
+                    push(sample_at(X, fx, corr_member_slot(dx, m)), sample_at(Y, fy, corr_member_slot(dy, m)), t_cur, frame_cur, m);
                 }
                 continue;
             }
@@ -1183,8 +1180,8 @@ struct Correlation : viamd::EventHandler {
                 if (!y_held(fy)) continue;
                 const uint32_t frame = x_on_frames ? (uint32_t)i : nearest_frame(app, t);
                 for (int m = 0; m < members; ++m) {
-                    const double x = (double)X.y[(size_t)i * X.stride + (dx == 1 ? 0 : m)] * X.y_scale;
-                    push(x, sample_at(Y, fy, dy == 1 ? 0 : m), t, frame, m);
+                    const double x = (double)X.y[(size_t)i * X.stride + (corr_member_slot(dx, m))] * X.y_scale;
+                    push(x, sample_at(Y, fy, corr_member_slot(dy, m)), t, frame, m);
                 }
             }
         }
@@ -1221,14 +1218,15 @@ struct Correlation : viamd::EventHandler {
             if (!(hi > lo)) continue;
             const int dx = l.x_info[xi].dim;
             const int dy = l.y_info[yi].dim;
-            const int members = dx == 1 ? dy : dy == 1 ? dx : MIN(dx, dy);
-            if (dx > 1 && dy > 1 && dx != dy) l.members_truncated = true;
+            bool truncated = false;
+            const int members = corr_members(dx, dy, &truncated);
+            l.members_truncated |= truncated;
             l.pairs[p].members = members;
             const int n = MAX(X.num_bins, Y.num_bins);
             for (int j = 0; j < n; ++j) {
                 const double at = lo + (j + 0.5) * (hi - lo) / n;
                 for (int m = 0; m < members; ++m) {
-                    push_sample(l, p, bin_value_at(X, at, dx == 1 ? 0 : m), bin_value_at(Y, at, dy == 1 ? 0 : m), at, NO_FRAME, m);
+                    push_sample(l, p, bin_value_at(X, at, corr_member_slot(dx, m)), bin_value_at(Y, at, corr_member_slot(dy, m)), at, NO_FRAME, m);
                 }
             }
         }
@@ -1276,7 +1274,8 @@ struct Correlation : viamd::EventHandler {
         l.point_stride = (uint32_t)MAX((size_t)1, (n + MAX_POINTS - 1) / MAX_POINTS);
     }
 
-    // Spearman's correlation of a pair, of at most MAX_RANKED of its samples; of periodic values, the circular one
+    // Spearman's correlation of a pair, of at most MAX_RANKED of its samples; of periodic values, the circular one. And
+    // what its samples are worth, and the interval of Pearson's r.
     static void pair_statistics(Layer& l, int p) {
         PairStats& s = l.pairs[p];
         const size_t count = s.end - s.beg;
@@ -1287,25 +1286,44 @@ struct Correlation : viamd::EventHandler {
         const bool cy = series_periodic_valid(py);
         s.circular = (int)cx + (int)cy;
 
+        // The members are sequences of their own, interleaved in the order of their samples
+        const int members = MAX(1, s.members);
+        std::vector<double> x(count), y(count);
+        std::vector<uint32_t> group(count);
+        for (size_t i = 0; i < count; ++i) {
+            x[i] = to_corr_value(l.sx[s.beg + i], px);
+            y[i] = to_corr_value(l.sy[s.beg + i], py);
+            group[i] = l.smember[s.beg + i];
+        }
+        // Of an angle, how alike successive ones are along the circle: by its cosine and sine, the larger
+        auto lag1 = [&](const std::vector<double>& v, bool circ) {
+            if (!circ) return corr_lag1(v.data(), group.data(), count, (size_t)members);
+            std::vector<double> c(count), sn(count);
+            for (size_t i = 0; i < count; ++i) { c[i] = cos(v[i]); sn[i] = sin(v[i]); }
+            return MAX(corr_lag1(c.data(), group.data(), count, (size_t)members), corr_lag1(sn.data(), group.data(), count, (size_t)members));
+        };
+        s.ax = lag1(x, cx);
+        s.ay = lag1(y, cy);
+        s.n_eff = corr_effective_n((double)count / members, s.ax, s.ay);
+        if (!s.circular && s.has_r()) s.ci_valid = corr_fisher_interval(&s.ci_lo, &s.ci_hi, s.r(), s.n_eff, 1.959964);
+
         if (!s.circular) {
             const size_t step = MAX((size_t)1, (count + MAX_RANKED - 1) / MAX_RANKED);
             const size_t m = (count + step - 1) / step;
-            std::vector<double> x(m), y(m);
+            std::vector<double> xr(m), yr(m);
             for (size_t i = 0; i < m; ++i) {
-                x[i] = l.sx[s.beg + i * step];
-                y[i] = l.sy[s.beg + i * step];
+                xr[i] = x[i * step];
+                yr[i] = y[i * step];
             }
-            s.rho_valid = corr_spearman(&s.rho, x.data(), y.data(), m);
+            s.rho_valid = corr_spearman(&s.rho, xr.data(), yr.data(), m);
             s.rho_n = m;
             return;
         }
 
-        std::vector<double> x(count), y(count);
-        for (size_t i = 0; i < count; ++i) {
-            x[i] = to_corr_value(l.sx[s.beg + i], px);
-            y[i] = to_corr_value(l.sy[s.beg + i], py);
-        }
-        s.rc_valid = corr_of(&s.rc, corr_kind(cx, cy), x.data(), y.data(), count);
+        const CorrKind kind = corr_kind(cx, cy);
+        s.rc_valid = corr_of(&s.rc, kind, x.data(), y.data(), count);
+        if (kind == CorrKind_CircularX) s.parts_valid = corr_circular_linear_parts(&s.r_cos, &s.r_sin, x.data(), y.data(), count);
+        if (kind == CorrKind_CircularY) s.parts_valid = corr_circular_linear_parts(&s.r_cos, &s.r_sin, y.data(), x.data(), count);
     }
 
     // Has a correlation against the lag: samples at frames, of more than one
@@ -1821,16 +1839,18 @@ struct Correlation : viamd::EventHandler {
     }
 
     // A pair's correlation as text: Pearson's and Spearman's, or of periodic values the circular one
+    // Of the circular-linear, its signed parts too. Marked when the correlation is not told from none.
     static void stats_text(char* buf, size_t cap, const PairStats& s) {
         if (s.circular) {
-            if (s.has_corr()) snprintf(buf, cap, "circular r = %.3f", s.corr());
-            else snprintf(buf, cap, "circular r = -");
+            if (!s.has_corr()) snprintf(buf, cap, "circular r = -");
+            else if (s.parts_valid) snprintf(buf, cap, "circular r = %.3f (cos %+.2f, sin %+.2f)", s.corr(), s.r_cos, s.r_sin);
+            else snprintf(buf, cap, "circular r = %.3f", s.corr());
             return;
         }
         char r[24] = "r = -", rho[24] = "";
         if (s.has_r()) snprintf(r, sizeof(r), "r = %.3f", s.r());
         if (s.rho_valid) snprintf(rho, sizeof(rho), " \xc2\xb7 \xcf\x81 = %.3f", s.rho);
-        snprintf(buf, cap, "%s%s", r, rho);
+        snprintf(buf, cap, "%s%s%s", r, rho, s.significant() ? "" : "  (n.s.)");
     }
 
     // What the series of the hovered point show in the viewport: the script's visualization of Y, else of X
@@ -2072,7 +2092,7 @@ struct Correlation : viamd::EventHandler {
             char name[160];
             pair_label(name, sizeof(name), l, p);
             const PairStats& s = l.pairs[p];
-            char st[64];
+            char st[96];
             stats_text(st, sizeof(st), s);
             snprintf(lines[p], sizeof(lines[p]), "%s   %s", name, st);
             w = MAX(w, ImGui::CalcTextSize(lines[p]).x);
@@ -2085,7 +2105,8 @@ struct Correlation : viamd::EventHandler {
             const float y = p0.y + pad + p * (lh + 2);
             const ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
             dl->AddRectFilled(ImVec2(p0.x + pad, y + lh * 0.2f), ImVec2(p0.x + pad + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(c), 2.0f);
-            dl->AddText(ImVec2(p0.x + pad * 2 + lh * 0.6f, y), IM_COL32(255, 255, 255, 230), lines[p]);
+            // Dim, of what is not told from no correlation
+            dl->AddText(ImVec2(p0.x + pad * 2 + lh * 0.6f, y), l.pairs[p].significant() ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120), lines[p]);
         }
         ImPlot::PopPlotClipRect();
     }
@@ -2339,7 +2360,7 @@ struct Correlation : viamd::EventHandler {
         const size_t n = md_array_size(l.sx);
         const char* what = l.binned ? "bins" : "samples";
         if (l.num_pairs == 1) {
-            char st[64];
+            char st[96];
             stats_text(st, sizeof(st), l.pairs[0]);
             snprintf(buf, cap, "%s \xc2\xb7 %zu %s", st, n, what);
         } else {
@@ -2349,21 +2370,24 @@ struct Correlation : viamd::EventHandler {
 
     // The pairs of a layer, with their statistics
     void draw_pair_table(const Layer& l) const {
-        if (!ImGui::BeginTable("##pairs", 5, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) return;
+        constexpr int COLS = 6;
+        if (!ImGui::BeginTable("##pairs", COLS, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) return;
         ImGui::TableSetupColumn("pair", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("n");
         ImGui::TableSetupColumn("r");
+        ImGui::TableSetupColumn("95 %");
         ImGui::TableSetupColumn("\xcf\x81");
         ImGui::TableSetupColumn("slope");
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        static const char* tips[5] = {
+        static const char* tips[COLS] = {
             nullptr,
             "Samples: frames (times members), or places along the bins of distributions",
-            "Pearson's correlation. Of periodic values (angles), the circular one: Jammalamadaka-SenGupta's of two (-1..1), Mardia's of one against a linear value (0..1, no sign)",
+            "Pearson's correlation. Of periodic values (angles), the circular one: Jammalamadaka-SenGupta's of two (-1..1), Mardia's of one against a linear value (0..1, no sign; hover for the signed parts)",
+            "The 95 % confidence interval of Pearson's r, by Fisher's z over the effective number of samples: successive frames are alike, and members move together, so they are worth fewer independent ones (Bretherton et al. 1999). Dimmed when it includes 0",
             "Spearman's rank correlation: how monotonic, whatever the shape",
             "Of the least squares line, Y on X",
         };
-        for (int c = 0; c < 5; ++c) {
+        for (int c = 0; c < COLS; ++c) {
             ImGui::TableSetColumnIndex(c);
             ImGui::TableHeader(ImGui::TableGetColumnName(c));
             if (tips[c]) ImGui::SetItemTooltip("%s", tips[c]);
@@ -2384,10 +2408,22 @@ struct Correlation : viamd::EventHandler {
             }
             ImGui::TableNextColumn();
             ImGui::Text("%llu", (unsigned long long)s.n);
+            if (s.n_eff > 0.0) {
+                ImGui::SetItemTooltip("Worth about %.0f independent samples\nlag-1 autocorrelation of X %.2f, of Y %.2f", s.n_eff, s.ax, s.ay);
+            }
             ImGui::TableNextColumn();
-            if (s.has_corr()) ImGui::Text("%.3f", s.corr());
-            else ImGui::TextDisabled("-");
-            if (s.circular) ImGui::SetItemTooltip(s.circular == 2 ? "Circular (both periodic)" : "Circular-linear: how much the one predicts the other, no sign");
+            if (!s.has_corr()) ImGui::TextDisabled("-");
+            else if (s.significant()) ImGui::Text("%.3f", s.corr());
+            else ImGui::TextDisabled("%.3f", s.corr());
+            if (s.circular == 2) ImGui::SetItemTooltip("Circular (both periodic)");
+            else if (s.circular == 1 && s.parts_valid) {
+                ImGui::SetItemTooltip("Circular-linear: how much the one predicts the other, no sign\nAgainst the cosine of the angle %+.3f, the sine %+.3f", s.r_cos, s.r_sin);
+            } else if (s.circular == 1) ImGui::SetItemTooltip("Circular-linear: how much the one predicts the other, no sign");
+            ImGui::TableNextColumn();
+            if (s.ci_valid) {
+                if (s.significant()) ImGui::Text("%.2f..%.2f", s.ci_lo, s.ci_hi);
+                else ImGui::TextDisabled("%.2f..%.2f", s.ci_lo, s.ci_hi);
+            } else ImGui::TextDisabled("-");
             ImGui::TableNextColumn();
             if (s.rho_valid) ImGui::Text("%.3f", s.rho);
             else ImGui::TextDisabled("-");
@@ -2652,7 +2688,7 @@ struct Correlation : viamd::EventHandler {
         draw_series_list(l, 1);
         prop::row("");
         if (ImGui::Button(ICON_FA_RIGHT_LEFT " Swap X and Y")) swap_axes(l);
-        if (layer_shape(l) == LayerShape_Mismatch) {
+        if (layer_shape(l) == CorrShape_Mismatch) {
             prop::hint("One series on an axis against several on the other, or as many on both (paired in order)");
         }
         if (l.members_truncated) {

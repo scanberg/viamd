@@ -187,3 +187,119 @@ UTEST(correlation, lagged_series) {
     EXPECT_LT(fabs(at(0)), 0.3);
     EXPECT_LT(fabs(at(-3)), 0.3);
 }
+
+UTEST(correlation, pairing_shapes) {
+    EXPECT_EQ(CorrShape_Empty, corr_shape(0, 3));
+    EXPECT_EQ(CorrShape_Empty, corr_shape(2, 0));
+    EXPECT_EQ(CorrShape_Mismatch, corr_shape(2, 3));
+    EXPECT_EQ(CorrShape_Valid, corr_shape(1, 4));
+    EXPECT_EQ(CorrShape_Valid, corr_shape(3, 3));
+    EXPECT_EQ(0, corr_num_pairs(2, 3));
+    EXPECT_EQ(4, corr_num_pairs(1, 4));
+    EXPECT_EQ(4, corr_num_pairs(4, 1));
+    EXPECT_EQ(3, corr_num_pairs(3, 3));
+    // 1 x n: the one X in every pair, the p'th Y
+    EXPECT_EQ(0, corr_pair_slot(1, 2));
+    EXPECT_EQ(2, corr_pair_slot(4, 2));
+}
+
+UTEST(correlation, pairing_members) {
+    bool truncated = true;
+    EXPECT_EQ(1, corr_members(1, 1, &truncated));
+    EXPECT_FALSE(truncated);
+    // A single value against a population: against each member
+    EXPECT_EQ(5, corr_members(1, 5, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(5, corr_members(5, 1, &truncated));
+    // Two populations: member by member, up to the fewer
+    EXPECT_EQ(3, corr_members(3, 7, &truncated));
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(4, corr_members(4, 4, &truncated));
+    EXPECT_FALSE(truncated);
+    EXPECT_EQ(0, corr_member_slot(1, 3));
+    EXPECT_EQ(3, corr_member_slot(5, 3));
+}
+
+UTEST(correlation, interp_linear) {
+    // Two members per sample
+    const float v[] = {0, 10, 2, 20, 4, 30};
+    EXPECT_NEAR(1.0, corr_interp(v, 2, 3, 1.0, 0.5, 0, 0.0), 1e-9);
+    EXPECT_NEAR(25.0, corr_interp(v, 2, 3, 1.0, 1.5, 1, 0.0), 1e-9);
+    EXPECT_NEAR(4.0, corr_interp(v, 2, 3, 2.0, 1.0, 0, 0.0), 1e-9);
+    // Clamped to the ends
+    EXPECT_NEAR(0.0, corr_interp(v, 2, 3, 1.0, -1.0, 0, 0.0), 1e-9);
+    EXPECT_NEAR(30.0, corr_interp(v, 2, 3, 1.0, 9.0, 1, 0.0), 1e-9);
+}
+
+UTEST(correlation, interp_periodic) {
+    // 170 to -170 degrees: the short way, through 180
+    const float v[] = {170, -170};
+    EXPECT_NEAR(180.0, corr_interp(v, 1, 2, 1.0, 0.5, 0, 360.0), 1e-9);
+    EXPECT_NEAR(175.0, corr_interp(v, 1, 2, 1.0, 0.25, 0, 360.0), 1e-9);
+    // Not periodic: through 0
+    EXPECT_NEAR(0.0, corr_interp(v, 1, 2, 1.0, 0.5, 0, 0.0), 1e-9);
+}
+
+UTEST(correlation, lag1_autocorrelation) {
+    // Alternating: -1-ish; a slow ramp: close to 1
+    std::vector<double> alt(100), ramp(100);
+    std::vector<uint32_t> g(100, 0);
+    for (int i = 0; i < 100; ++i) {
+        alt[i] = (i & 1) ? 1.0 : -1.0;
+        ramp[i] = (double)i;
+    }
+    EXPECT_LT(corr_lag1(alt.data(), g.data(), 100, 1), -0.95);
+    EXPECT_GT(corr_lag1(ramp.data(), g.data(), 100, 1), 0.95);
+    // Two ramps interleaved, each its own sequence: still alike from one to the next
+    std::vector<double> two(100);
+    for (int i = 0; i < 100; ++i) {
+        g[i] = (uint32_t)(i & 1);
+        two[i] = (i & 1) ? 1000.0 - i : (double)i;
+    }
+    EXPECT_GT(corr_lag1(two.data(), g.data(), 100, 2), 0.9);
+    // Taken as one sequence, they alternate
+    std::vector<uint32_t> g0(100, 0);
+    EXPECT_LT(corr_lag1(two.data(), g0.data(), 100, 1), 0.0);
+}
+
+UTEST(correlation, effective_n) {
+    EXPECT_NEAR(1000.0, corr_effective_n(1000.0, 0.0, 0.9), 1e-9);
+    // (1 - 0.81) / (1 + 0.81)
+    EXPECT_NEAR(1000.0 * 0.19 / 1.81, corr_effective_n(1000.0, 0.9, 0.9), 1e-6);
+    // Never more than there are, nor fewer than 2
+    EXPECT_NEAR(100.0, corr_effective_n(100.0, -0.5, 0.5), 1e-9);
+    EXPECT_NEAR(2.0, corr_effective_n(100.0, 1.0, 1.0), 1e-9);
+}
+
+UTEST(correlation, fisher_interval) {
+    double lo = 0, hi = 0;
+    ASSERT_TRUE(corr_fisher_interval(&lo, &hi, 0.5, 103.0, 1.959964));
+    // atanh(0.5) = 0.549306, se = 0.1
+    EXPECT_NEAR(tanh(0.549306 - 0.1959964), lo, 1e-5);
+    EXPECT_NEAR(tanh(0.549306 + 0.1959964), hi, 1e-5);
+    EXPECT_LT(lo, 0.5);
+    EXPECT_GT(hi, 0.5);
+    // Few samples: wide, around 0
+    ASSERT_TRUE(corr_fisher_interval(&lo, &hi, 0.3, 8.0, 1.959964));
+    EXPECT_LT(lo, 0.0);
+    EXPECT_FALSE(corr_fisher_interval(&lo, &hi, 0.3, 3.0, 1.959964));
+    // Perfect: finite
+    ASSERT_TRUE(corr_fisher_interval(&lo, &hi, 1.0, 50.0, 1.959964));
+    EXPECT_TRUE(isfinite(lo) && isfinite(hi));
+}
+
+UTEST(correlation, circular_linear_parts_signed) {
+    // x = -cos(a): against the cosine -1, Mardia's 1 without a sign
+    const int n = 72;
+    std::vector<double> a(n), x(n);
+    for (int i = 0; i < n; ++i) {
+        a[i] = 2.0 * M_PI * i / n;
+        x[i] = -cos(a[i]);
+    }
+    double rc = 0, rs = 0, R = 0;
+    ASSERT_TRUE(corr_circular_linear_parts(&rc, &rs, a.data(), x.data(), n));
+    EXPECT_NEAR(-1.0, rc, 1e-9);
+    EXPECT_NEAR(0.0, rs, 1e-9);
+    ASSERT_TRUE(corr_circular_linear(&R, a.data(), x.data(), n));
+    EXPECT_NEAR(1.0, R, 1e-9);
+}
