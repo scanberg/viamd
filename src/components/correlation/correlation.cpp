@@ -35,12 +35,16 @@
 //                          inspector): it is added to the selected layer
 //   hover                  says what the point under the pointer is, and shows it in the viewport
 //   click                  on a point over time, goes to its frame
-//   double-click           fits the view
+//   shift-drag / -click    selects the atoms the series of the points boxed are of (script properties), as the
+//                          Ramachandran plot selects residues; with the right button deselects; a right click on nothing
+//                          clears the selection
+//   double-click           fits the view (of the layers of the units of the axes; along a periodic axis, a whole turn)
 //   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
 //                          layer, its frames
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_array.h>
@@ -422,6 +426,22 @@ struct Correlation : viamd::EventHandler {
     bool  owns_highlight = false;
     bool  highlights_now = false;
 
+    // Box selection, as Ramachandran's: of the atoms the series of the points boxed are of
+    struct {
+        bool active = false;
+        SelectionOperator op = SelectionOperator::Or;
+        ImPlotPoint p0, p1;
+        int    click_layer = -1;    // The point pressed on, which a click (a box of no size) takes
+        size_t click_idx = 0;
+    } box;
+
+    // The atoms of a script property (or of a member of it), by what it is in which compilation: found once
+    struct AtomsEntry {
+        uint64_t key;
+        md_bitset_t atoms;
+    };
+    md_array(AtomsEntry) atoms_cache = nullptr;
+
     DensityMapCanvas canvas = {};
 
     bool read_layers = false;       // While a workspace is read: whether it had any
@@ -479,6 +499,8 @@ struct Correlation : viamd::EventHandler {
                     layers[i].data_key = 0;
                 }
                 system_generation += 1;
+                clear_atoms_cache();
+                box.active = false;
                 density_map_canvas_invalidate(&canvas);
                 break;
             case viamd::EventType_ViamdFrameTick:
@@ -497,8 +519,16 @@ struct Correlation : viamd::EventHandler {
     void shutdown() {
         cancel_all_jobs(true);
         clear_layers();
+        clear_atoms_cache();
+        md_array_free(atoms_cache, md_get_heap_allocator());
+        atoms_cache = nullptr;
         density_map_canvas_free(&canvas);
         density_map_shutdown();
+    }
+
+    void clear_atoms_cache() {
+        for (size_t i = 0; i < md_array_size(atoms_cache); ++i) md_bitset_free(&atoms_cache[i].atoms, md_get_heap_allocator());
+        md_array_shrink(atoms_cache, 0);
     }
 
     // ## Layers
@@ -1449,6 +1479,13 @@ struct Correlation : viamd::EventHandler {
             fk = md_hash64(l.ys, sizeof(SeriesKey) * l.num_y, fk ^ ((uint64_t)l.num_y << 8));
             fk = md_hash64_combine(fk, l.data_valid);
         }
+        // and when the units of the axes do (the layers fitted to are those of them)
+        if (const Layer* al = axes_layer()) {
+            for (int a = 0; a < 2; ++a) {
+                const char* u = layer_unit(*al, a);
+                fk = md_hash64(u, strlen(u), fk ^ (uint64_t)(a + 1));
+            }
+        }
         if (fk != fit_key) {
             fit_key = fk;
             fit_view = true;
@@ -1846,6 +1883,63 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
+    // The atoms a script property is of, of its member m where it has several (as the viewport shows them): of what it is
+    // in the compilation which made it, found once. None for a series not of the script.
+    md_bitset_t property_atoms(const SlotInfo& info, int m) {
+        if (!info.ok || !info.script_ident[0]) return md_bitset_empty_set();
+        const md_script_ir_t* ir = script_ir_of(app, info.vis_ref);
+        if (!ir) return md_bitset_empty_set();
+        const int sub = info.dim > 1 ? m : -1;
+        uint64_t key = md_hash64_combine(system_generation, md_script_ir_fingerprint(ir));
+        key = md_hash64(&info.vis_ref.ir_id, sizeof(info.vis_ref.ir_id), key);
+        key = md_hash64(&info.vis_ref.node_idx, sizeof(info.vis_ref.node_idx), key);
+        key = md_hash64(&sub, sizeof(sub), key);
+        for (size_t i = 0; i < md_array_size(atoms_cache); ++i) {
+            if (atoms_cache[i].key == key) return atoms_cache[i].atoms;
+        }
+        // Of compilations long gone: forgotten
+        if (md_array_size(atoms_cache) >= 4096) clear_atoms_cache();
+
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        md_script_vis_t vis = {};
+        md_script_vis_init(&vis, arena);
+        const md_script_vis_ctx_t ctx = { .ir = ir, .sys = &app->mold.sys, .state = &app->mold.state };
+        AtomsEntry e = { key, md_bitset_empty_set() };
+        if (md_script_vis_eval_ref(&vis, info.vis_ref, sub, &ctx, MD_SCRIPT_VISUALIZE_ATOMS)) {
+            e.atoms = md_bitset_copy(vis.atom_mask, md_get_heap_allocator());
+        }
+        md_script_vis_free(&vis);
+        md_arena_allocator_destroy(arena);
+        md_array_push(atoms_cache, e, md_get_heap_allocator());
+        return e.atoms;
+    }
+
+    // The atoms of a sample of pair p, member m: of its X and its Y
+    void add_member_atoms(md_bitmask_t* mask, const Layer& l, int p, int m) {
+        md_bitmask_or(mask, property_atoms(l.x_info[pair_x(l, p)], m));
+        md_bitmask_or(mask, property_atoms(l.y_info[pair_y(l, p)], m));
+    }
+
+    // Whether every atom of a sample of pair p, member m is in mask (and it has any)
+    bool member_atoms_in(const md_bitmask_t* mask, const Layer& l, int p, int m) {
+        bool any = false;
+        const md_bitset_t sets[2] = { property_atoms(l.x_info[pair_x(l, p)], m), property_atoms(l.y_info[pair_y(l, p)], m) };
+        for (const md_bitset_t& s : sets) {
+            md_bitset_iter_t it = md_bitset_iter(s);
+            while (md_bitset_iter_next(&it)) {
+                if (!md_bitmask_test_bit(mask, it.idx)) return false;
+                any = true;
+            }
+        }
+        return any;
+    }
+
+    // Where the members of pair p of a layer start, among those of all its pairs: off[num_pairs] of them in all
+    static void member_offsets(const Layer& l, size_t* off) {
+        off[0] = 0;
+        for (int p = 0; p < l.num_pairs; ++p) off[p + 1] = off[p] + (size_t)MAX(l.pairs[p].members, 1);
+    }
+
     // Where a point is on the plot: along a periodic axis, on the turn of the circle the axis shows
     ImVec2 point_px(double x, double y) const {
         if (const PeriodicView* v = axis_view[0]) x = periodic_wrap(x, v->min, periodic_view_length(*v));
@@ -1878,8 +1972,10 @@ struct Correlation : viamd::EventHandler {
     // The points of the visible layers: hovered, then drawn; with the lines fitted through them
     void draw_points(bool hovered) {
         const ImVec2 mouse = ImGui::GetMousePos();
+        md_bitmask_t* selection_mask = &app->selection.selection_mask;
+        md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
         Hover hover;
-        if (hovered) {
+        if (hovered && !box.active) {
             float best = FLT_MAX;
             // The layer on top has it, where it has a point at all
             for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
@@ -1899,6 +1995,40 @@ struct Correlation : viamd::EventHandler {
                     }
                 }
             }
+        }
+
+        // The highlight while a box is drawn: the atoms of what it covers, or of the point pressed on for a click
+        bool box_is_click = false;
+        if (box.active) {
+            const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+            box_is_click = fabsf(a.x - mouse.x) < 3.0f && fabsf(a.y - mouse.y) < 3.0f;
+            md_bitmask_clear(highlight_mask);
+            highlights_now = true;
+            if (box_is_click) {
+                if (box.click_layer >= 0 && box.click_layer < num_layers && box.click_idx < md_array_size(layers[box.click_layer].sx)) {
+                    const Layer& l = layers[box.click_layer];
+                    add_member_atoms(highlight_mask, l, l.spair[box.click_idx], l.smember[box.click_idx]);
+                }
+            } else {
+                const ImRect r(ImMin(a, mouse), ImMax(a, mouse));
+                std::vector<uint8_t> seen;
+                for (int i = 0; i < num_layers; ++i) {
+                    const Layer& l = layers[i];
+                    if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+                    size_t off[MAX_PAIRS + 1];
+                    member_offsets(l, off);
+                    seen.assign(off[l.num_pairs], 0);
+                    const size_t n = md_array_size(l.sx);
+                    for (size_t k = 0; k < n; k += l.point_stride) {
+                        const int p = l.spair[k];
+                        const size_t s = off[p] + MIN((size_t)l.smember[k], off[p + 1] - off[p] - 1);
+                        if (seen[s] || !r.Contains(point_px(l.sx[k], l.sy[k]))) continue;
+                        seen[s] = 1;
+                        add_member_atoms(highlight_mask, l, p, l.smember[k]);
+                    }
+                }
+            }
+            grow_mask_by_selection_granularity(highlight_mask, app->selection.granularity, app->mold.sys);
         }
 
         const uint32_t frame_cur = (uint32_t)MAX(0.0, app->animation.frame + 0.5);
@@ -1931,6 +2061,34 @@ struct Correlation : viamd::EventHandler {
                 density_map_mark(dl, point_px(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220));
             }
         }
+        // Rings around the points whose atoms are selected or highlighted, of every layer
+        const bool any_selected = !md_bitmask_empty(selection_mask);
+        const bool any_highlighted = !md_bitmask_empty(highlight_mask);
+        if (any_selected || any_highlighted) {
+            const ImU32 sel_col = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.selection.outline));
+            const ImU32 hl_col = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.highlight.outline));
+            std::vector<uint8_t> state;     // Of each member: 1 selected, 2 highlighted, 4 known
+            for (int i = num_layers - 1; i >= 0; --i) {
+                const Layer& l = layers[i];
+                if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+                size_t off[MAX_PAIRS + 1];
+                member_offsets(l, off);
+                state.assign(off[l.num_pairs], 0);
+                const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
+                const size_t n = md_array_size(l.sx);
+                for (size_t k = 0; k < n; k += l.point_stride) {
+                    const int p = l.spair[k];
+                    const int m = l.smember[k];
+                    uint8_t& st = state[off[p] + MIN((size_t)m, off[p + 1] - off[p] - 1)];
+                    if (!st) {
+                        st = 4;
+                        if (any_highlighted && member_atoms_in(highlight_mask, l, p, m)) st |= 2;
+                        else if (any_selected && member_atoms_in(selection_mask, l, p, m)) st |= 1;
+                    }
+                    if (st & 3) density_map_mark(dl, point_px(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, (st & 2) ? hl_col : sel_col);
+                }
+            }
+        }
         if (hover.layer >= 0) {
             const Layer& l = layers[hover.layer];
             const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
@@ -1960,9 +2118,42 @@ struct Correlation : viamd::EventHandler {
             draw_tooltip(hover);
             visualize(hover);
             // A click (not a pan) on a point: its frame
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
+            if (!ImGui::GetIO().KeyShift && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
                 layers[hover.layer].sframe[hover.idx] != NO_FRAME) {
                 app->animation.frame = (double)layers[hover.layer].sframe[hover.idx];
+            }
+        }
+
+        // Selecting, as in the Ramachandran plot: shift-drag a box, shift-click a point; the right button takes away; a right
+        // click on nothing clears
+        const ImPlotPoint pm = ImPlot::GetPlotMousePos();
+        if (!box.active && hovered && ImGui::GetIO().KeyShift && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+            box.active = true;
+            box.op = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ? SelectionOperator::Or : SelectionOperator::AndNot;
+            box.p0 = box.p1 = pm;
+            box.click_layer = hover.layer;
+            box.click_idx = hover.idx;
+        }
+        if (box.active) {
+            box.p1 = pm;
+            const vec4_t sel = app->selection.color.selection.outline;
+            if (!box_is_click) {
+                const vec4_t c = box.op == SelectionOperator::Or ? sel : vec4_t{1.0f, 0.4f, 0.4f, 0.9f};
+                const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+                ImPlot::PushPlotClipRect();
+                dl->AddRectFilled(ImMin(a, mouse), ImMax(a, mouse), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.12f)));
+                dl->AddRect(ImMin(a, mouse), ImMax(a, mouse), ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
+                ImPlot::PopPlotClipRect();
+            }
+            const ImGuiMouseButton button = box.op == SelectionOperator::Or ? ImGuiMouseButton_Left : ImGuiMouseButton_Right;
+            if (ImGui::IsMouseReleased(button) || !ImGui::IsMouseDown(button)) {
+                if (!box_is_click || box.click_layer >= 0) {
+                    modify_field(selection_mask, md_bitmask_view(highlight_mask), box.op);
+                } else if (box.op == SelectionOperator::AndNot) {
+                    md_bitmask_clear(selection_mask);
+                }
+                box.active = false;
+                box.click_layer = -1;
             }
         }
     }
@@ -1977,21 +2168,43 @@ struct Correlation : viamd::EventHandler {
         return sel;
     }
 
-    // The view around the samples of the layers shown
+    // The unit of the values along axis a of a layer: of its first series
+    static const char* layer_unit(const Layer& l, int a) {
+        const int n = a == 0 ? l.num_x : l.num_y;
+        const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
+        return n > 0 ? info[0].unit : "";
+    }
+
+    // Whether the values of a layer are of the units the axes are of (those of the axes' layer)
+    bool layer_fits_axes(const Layer& l, const Layer* al) const {
+        if (!al) return true;
+        return strcmp(layer_unit(l, 0), layer_unit(*al, 0)) == 0 && strcmp(layer_unit(l, 1), layer_unit(*al, 1)) == 0;
+    }
+
+    // The view around the samples of the layers shown, of the units of the axes (others would squeeze them): of all
+    // layers shown where none of those has samples. Along a periodic axis, a whole turn of the circle, where it is cut.
     void fit_to_layers() {
+        for (int a = 0; a < 2; ++a) {
+            if (PeriodicView* v = axis_view[a]) v->max = v->min + periodic_view_length(*v);
+        }
+        const Layer* al = axes_layer();
         bool any = false;
         double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-        for (int i = 0; i < num_layers; ++i) {
-            const Layer& l = layers[i];
-            if (!l.visible || !l.data_valid) continue;
-            if (!any) {
-                x0 = l.x_min; x1 = l.x_max; y0 = l.y_min; y1 = l.y_max;
-                any = true;
-            } else {
-                x0 = MIN(x0, (double)l.x_min); x1 = MAX(x1, (double)l.x_max);
-                y0 = MIN(y0, (double)l.y_min); y1 = MAX(y1, (double)l.y_max);
+        for (int pass = 0; pass < 2 && !any; ++pass) {
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!l.visible || !l.data_valid) continue;
+                if (pass == 0 && !layer_fits_axes(l, al)) continue;
+                if (!any) {
+                    x0 = l.x_min; x1 = l.x_max; y0 = l.y_min; y1 = l.y_max;
+                    any = true;
+                } else {
+                    x0 = MIN(x0, (double)l.x_min); x1 = MAX(x1, (double)l.x_max);
+                    y0 = MIN(y0, (double)l.y_min); y1 = MAX(y1, (double)l.y_max);
+                }
             }
         }
+        // Fitted once there are samples
         if (!any) return;
         auto pad = [](double* lo, double* hi) {
             double r = *hi - *lo;
@@ -2001,7 +2214,6 @@ struct Correlation : viamd::EventHandler {
         };
         pad(&x0, &x1);
         pad(&y0, &y1);
-        // A periodic axis shows a turn of the circle, wherever it is cut: there is nothing to fit
         if (!axis_view[0]) viewrect.X = ImPlotRange(x0, x1);
         if (!axis_view[1]) viewrect.Y = ImPlotRange(y0, y1);
         fit_view = false;
@@ -2092,10 +2304,15 @@ struct Correlation : viamd::EventHandler {
         if (fit_view) fit_to_layers();
 
         constexpr ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+        // Shift is for selecting: the plot does not pan or zoom meanwhile
+        ImPlotInputMap& input = ImPlot::GetInputMap();
+        const ImPlotInputMap saved_input = input;
+        input.OverrideMod = ImGuiMod_Shift;
         // Opaque, whatever the windows are: what is behind the window is not to show through the data
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         if (!ImPlot::BeginPlot("##correlation", ImVec2(-1, -1), flags)) {
             ImPlot::PopStyleColor();
+            input = saved_input;
             return;
         }
         const Layer* al = axes_layer();
@@ -2170,6 +2387,7 @@ struct Correlation : viamd::EventHandler {
 
         ImPlot::EndPlot();
         ImPlot::PopStyleColor();
+        input = saved_input;
     }
 
     // Of the selected layer's series, first in the list
@@ -2341,6 +2559,7 @@ struct Correlation : viamd::EventHandler {
             ImGui::TextDisabled("or onto the lists of the selected layer.");
             ImGui::TextDisabled("Drop a period from the timeline on the plot to add a layer over it.");
             ImGui::TextDisabled("Click a point to go to its frame.");
+            ImGui::TextDisabled("Shift-drag to select the atoms of the points, with the right button to deselect them.");
             ImGui::EndPopup();
         }
         ImGui::PopStyleVar();
