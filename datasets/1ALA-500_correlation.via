@@ -103,6 +103,15 @@ Frames=all
 Style=points
 PointColoring=pair
 
+[CorrelationLayer]
+Name=Residue RMSD vs size, by residue
+Visible=0
+X=script;values;script/end_to_end
+Y=script;values;script/res_rmsd
+Frames=all
+Style=contours
+SplitPairs=1
+
 [Windows]
 Correlation=1
 Ramachandran=1

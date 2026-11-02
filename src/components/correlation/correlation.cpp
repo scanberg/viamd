@@ -9,8 +9,9 @@
 // against the other side's single value. A layer is over some of the frames: the current one, all of them, or those of
 // a timeline period; and drawn as points, as contours of their density (at levels of the fraction of the samples they
 // enclose), or as a heat map of it. The contours of a layer of several pairs may be split by pair: one density per pair,
-// of its own samples, in the colour of its series (four pairs to a job, one in each channel of the density map). The
-// layers are drawn bottom up, the first one on top.
+// of its own samples, in the colour of its series (four pairs to a job, one in each channel of the density map); those of
+// a single pair of a population (1 x n), by member, likewise, with its statistics, legend and fit line. The layers are
+// drawn bottom up, the first one on top.
 //
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
@@ -202,13 +203,16 @@ struct PairStats {
 };
 
 // The density of some of the samples of a layer, on the GPU, over its domain, and what it is of: of all of them in
-// channel 0, or split by pair, pair DENSITY_MAP_CHANNELS g + c in channel c of part g
+// channel 0, or split by group (pair, or member of a single pair of a population), group DENSITY_MAP_CHANNELS g + c in
+// channel c of part g
 struct DensityPart {
     DensityMapSlot slot;
-    bool split = false;             // Of the result: by pair
+    bool split = false;             // Of the result: by group
 };
 
-constexpr int MAX_PARTS = (MAX_PAIRS + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS;
+constexpr int MAX_GROUPS = 32;      // Members a pair of a population is split into, at most
+constexpr int MAX_PARTS = (MAX_GROUPS + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS;
+static_assert(MAX_GROUPS >= MAX_PAIRS, "the pairs are groups too");
 
 struct Layer {
     uint32_t id = 0;                // Unique while it lives, never 0
@@ -280,7 +284,21 @@ struct Layer {
     int      lag_max = 0;
     uint64_t lag_key = 0;
     bool     lag_skipped = false;   // Some members were left out, to keep within LAG_BUDGET
+
+    // A single pair of a population (against a value or another): its members apart, as pairs are (layer_by_member).
+    // The samples of member m are member_order[member_off[m], member_off[m + 1]), in the order of their frames.
+    std::vector<uint32_t>  member_order;
+    std::vector<uint32_t>  member_off;
+    std::vector<PairStats> member_stats;
 };
+
+// What the contours split into, the legend lists and the fit lines are of: the pairs, or of a single pair of a population
+// of at most MAX_GROUPS members, its members
+static inline bool layer_by_member(const Layer& l) {
+    return l.num_pairs == 1 && l.pairs[0].members > 1 && l.member_stats.size() == (size_t)l.pairs[0].members;
+}
+static inline int layer_num_groups(const Layer& l) { return layer_by_member(l) ? l.pairs[0].members : l.num_pairs; }
+static inline const PairStats& group_stats(const Layer& l, int g) { return layer_by_member(l) ? l.member_stats[g] : l.pairs[g]; }
 
 // How a layer's axes pair up (correlation_core.h)
 static inline CorrShape layer_shape(const Layer& l) { return corr_shape(l.num_x, l.num_y); }
@@ -846,13 +864,13 @@ struct Correlation : viamd::EventHandler {
         return false;
     }
 
-    // Its contours one density per pair, in the pair's colour
+    // Its contours one density per pair (or member, layer_by_member), in its colour
     static bool layer_splits(const Layer& l) {
-        return l.split_pairs && l.style == LayerStyle_Contours && l.num_pairs > 1;
+        return l.split_pairs && l.style == LayerStyle_Contours && layer_num_groups(l) > 1;
     }
 
     static int layer_num_parts(const Layer& l) {
-        return layer_splits(l) ? (l.num_pairs + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS : 1;
+        return layer_splits(l) ? (layer_num_groups(l) + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS : 1;
     }
 
     void cancel_all_jobs(bool wait) {
@@ -899,7 +917,24 @@ struct Correlation : viamd::EventHandler {
         };
         std::shared_ptr<Input> in = std::make_shared<Input>();
         const size_t count = md_array_size(l.sx);
-        if (split) {
+        if (split && layer_by_member(l)) {
+            // The members of the part's, each its samples
+            const int m0 = g * DENSITY_MAP_CHANNELS;
+            const int m1 = MIN(m0 + DENSITY_MAP_CHANNELS, layer_num_groups(l));
+            const size_t n = l.member_off[m1] - l.member_off[m0];
+            in->x.reserve(n);
+            in->y.reserve(n);
+            in->c.reserve(n);
+            for (int m = m0; m < m1; ++m) {
+                for (uint32_t i = l.member_off[m]; i < l.member_off[m + 1]; ++i) {
+                    const uint32_t k = l.member_order[i];
+                    if (k >= count) continue;
+                    in->x.push_back(l.sx[k]);
+                    in->y.push_back(l.sy[k]);
+                    in->c.push_back((uint8_t)(m - m0));
+                }
+            }
+        } else if (split) {
             // The samples of a pair are together (gather): its range, for each of the part's
             const int p0 = g * DENSITY_MAP_CHANNELS;
             const int p1 = MIN(p0 + DENSITY_MAP_CHANNELS, l.num_pairs);
@@ -1082,6 +1117,9 @@ struct Correlation : viamd::EventHandler {
         l.binned = false;
         l.point_stride = 1;
         for (int p = 0; p < MAX_PAIRS; ++p) l.pairs[p] = PairStats{};
+        l.member_order.clear();
+        l.member_off.clear();
+        l.member_stats.clear();
 
         const CorrShape shape = layer_shape(l);
         if (shape == CorrShape_Empty) {
@@ -1272,6 +1310,31 @@ struct Correlation : viamd::EventHandler {
         }
         for (int p = 0; p < l.num_pairs; ++p) pair_statistics(l, p);
 
+        // A single pair of a population: its members apart, each in the order of its frames
+        if (l.num_pairs == 1 && l.pairs[0].members > 1 && l.pairs[0].members <= MAX_GROUPS) {
+            const PairStats& s0 = l.pairs[0];
+            const int members = s0.members;
+            l.member_off.assign((size_t)members + 1, 0);
+            for (size_t k = s0.beg; k < s0.end; ++k) {
+                if (l.smember[k] < members) l.member_off[l.smember[k] + 1] += 1;
+            }
+            for (int m = 0; m < members; ++m) l.member_off[m + 1] += l.member_off[m];
+            l.member_order.assign(l.member_off[members], 0);
+            std::vector<uint32_t> fill(l.member_off.begin(), l.member_off.end() - 1);
+            for (size_t k = s0.beg; k < s0.end; ++k) {
+                if (l.smember[k] < members) l.member_order[fill[l.smember[k]]++] = (uint32_t)k;
+            }
+            l.member_stats.assign((size_t)members, PairStats{});
+            for (int m = 0; m < members; ++m) {
+                PairStats& s = l.member_stats[m];
+                s.members = 1;
+                const uint32_t* idx = l.member_order.data() + l.member_off[m];
+                const size_t count = l.member_off[m + 1] - l.member_off[m];
+                for (size_t i = 0; i < count; ++i) s.add(l.sx[idx[i]], l.sy[idx[i]]);
+                sample_statistics(l, &s, 0, idx, count);
+            }
+        }
+
         uint64_t h = md_hash64(l.sx, md_array_bytes(l.sx), n);
         h = md_hash64(l.sy, md_array_bytes(l.sy), h);
         h = md_hash64(l.sframe, md_array_bytes(l.sframe), h);
@@ -1284,9 +1347,14 @@ struct Correlation : viamd::EventHandler {
     // Spearman's correlation of a pair, of at most MAX_RANKED of its samples; of periodic values, the circular one. And
     // what its samples are worth, and the interval of Pearson's r.
     static void pair_statistics(Layer& l, int p) {
-        PairStats& s = l.pairs[p];
-        const size_t count = s.end - s.beg;
+        sample_statistics(l, &l.pairs[p], p, nullptr, l.pairs[p].end - l.pairs[p].beg);
+    }
+
+    // The same of samples of pair p into s: those of its range, or those indexed by idx (of one member, s.members 1)
+    static void sample_statistics(const Layer& l, PairStats* sp, int p, const uint32_t* idx, size_t count) {
+        PairStats& s = *sp;
         if (count < 3) return;
+        auto at = [&](size_t i) { return idx ? (size_t)idx[i] : s.beg + i; };
         const SeriesPeriodic& px = l.x_info[pair_x(l, p)].periodic;
         const SeriesPeriodic& py = l.y_info[pair_y(l, p)].periodic;
         const bool cx = series_periodic_valid(px);
@@ -1298,9 +1366,9 @@ struct Correlation : viamd::EventHandler {
         std::vector<double> x(count), y(count);
         std::vector<uint32_t> group(count);
         for (size_t i = 0; i < count; ++i) {
-            x[i] = to_corr_value(l.sx[s.beg + i], px);
-            y[i] = to_corr_value(l.sy[s.beg + i], py);
-            group[i] = l.smember[s.beg + i];
+            x[i] = to_corr_value(l.sx[at(i)], px);
+            y[i] = to_corr_value(l.sy[at(i)], py);
+            group[i] = members > 1 ? l.smember[at(i)] : 0;
         }
         // Of an angle, how alike successive ones are along the circle: by its cosine and sine, the larger
         auto lag1 = [&](const std::vector<double>& v, bool circ) {
@@ -1746,6 +1814,24 @@ struct Correlation : viamd::EventHandler {
         return vec_cast(l.color);
     }
 
+    // The colour of group g (layer_num_groups): of its pair or member, the layer's of a single one
+    ImVec4 group_color(const Layer& l, int g) const {
+        if (layer_by_member(l)) return pair_color(l, 0, g);
+        return l.num_pairs > 1 ? pair_color(l, g, 0) : vec_cast(l.color);
+    }
+
+    // Group g as it is called: its pair, or what its member is
+    void group_label(char* buf, size_t cap, const Layer& l, int g) const {
+        if (!layer_by_member(l)) {
+            pair_label(buf, cap, l, g);
+            return;
+        }
+        const SeriesKey& key = l.y_info[0].dim > 1 ? l.ys[0] : l.xs[0];
+        const str_t member = series_member_label(app, key, g);
+        if (!str_empty(member)) snprintf(buf, cap, "member %d \xc2\xb7 " STR_FMT, g + 1, STR_ARG(member));
+        else snprintf(buf, cap, "member %d", g + 1);
+    }
+
     ImVec4 point_color(const Layer& l, size_t idx) const {
         switch (l.point_coloring) {
         case PointColoring_Pair:
@@ -1771,9 +1857,9 @@ struct Correlation : viamd::EventHandler {
             const DensityMapResult& r = part.slot.result;
             for (int c = 0; c < (part.split ? DENSITY_MAP_CHANNELS : 1); ++c) {
                 const int p = g * DENSITY_MAP_CHANNELS + c;
-                if (part.split && p >= l.num_pairs) break;
+                if (part.split && p >= layer_num_groups(l)) break;
                 if (r.samples[c] == 0 || r.max[c] <= 0.0f) continue;
-                ImVec4 color = part.split ? pair_color(l, p, 0) : vec_cast(l.color);
+                ImVec4 color = part.split ? group_color(l, p) : vec_cast(l.color);
                 color.w = 1.0f;
                 DensityMapDraw* d = &out[n++];
                 density_map_draw_init(d);
@@ -1801,7 +1887,7 @@ struct Correlation : viamd::EventHandler {
 
     // The densities of the layers, composited (density_map_composite): 0 when there are none
     uint32_t render_canvas() {
-        draw_buf.resize((size_t)MAX_LAYERS * MAX_PAIRS);
+        draw_buf.resize((size_t)MAX_LAYERS * MAX_GROUPS);
         DensityMapDraw* draws = draw_buf.data();
         int num_draws = 0;
         // Bottom up: the first layer is on top
@@ -2096,17 +2182,19 @@ struct Correlation : viamd::EventHandler {
         }
         density_map_marks_end(dl);
 
-        // The least squares line of each pair, over the range of its X
+        // The least squares line of each pair (or member), over the range of its X: in its colour where it has one
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
             if (!l.visible || !l.data_valid || !l.show_fit) continue;
-            for (int p = 0; p < l.num_pairs; ++p) {
-                const PairStats& s = l.pairs[p];
+            const int ng = layer_num_groups(l);
+            const bool own = ng > 1 && (layer_draws_points(l) ? l.point_coloring == PointColoring_Pair : layer_splits(l));
+            for (int g = 0; g < ng; ++g) {
+                const PairStats& s = group_stats(l, g);
                 if (!s.has_fit()) continue;
                 const double a = s.intercept(), b = s.slope();
                 const ImVec2 p0 = ImPlot::PlotToPixels(s.x_min, a + b * s.x_min);
                 const ImVec2 p1 = ImPlot::PlotToPixels(s.x_max, a + b * s.x_max);
-                ImVec4 c = l.point_coloring == PointColoring_Pair && l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+                ImVec4 c = own ? group_color(l, g) : vec_cast(l.color);
                 c.w *= MAX(l.opacity, 0.5f);
                 dl->AddLine(p0, p1, IM_COL32(0, 0, 0, 160), 3.5f);
                 dl->AddLine(p0, p1, ImGui::ColorConvertFloat4ToU32(c), 1.75f);
@@ -2269,33 +2357,50 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // The pairs of the layer the axes are of, with their correlations, in the corner
+    // The pairs of the layer the axes are of, with their correlations, in the corner: of a population, all of its members
+    // then each
     void draw_legend(const Layer& l, ImVec2 pos) {
         if (!l.data_valid || l.num_pairs == 0) return;
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         const float lh = ImGui::GetTextLineHeight();
         const float pad = 6.0f;
-        char lines[MAX_PAIRS][192];
-        float w = 0.0f;
-        for (int p = 0; p < l.num_pairs; ++p) {
-            char name[160];
-            pair_label(name, sizeof(name), l, p);
-            const PairStats& s = l.pairs[p];
+        constexpr int MAX_LINES = MAX_GROUPS + 1;
+        char lines[MAX_LINES][192];
+        const PairStats* stats[MAX_LINES];
+        ImVec4 colors[MAX_LINES];
+        int n = 0;
+        auto add = [&](const char* name, const PairStats& s, ImVec4 c) {
             char st[96];
             stats_text(st, sizeof(st), s);
-            snprintf(lines[p], sizeof(lines[p]), "%s   %s", name, st);
-            w = MAX(w, ImGui::CalcTextSize(lines[p]).x);
+            snprintf(lines[n], sizeof(lines[n]), "%s   %s", name, st);
+            stats[n] = &s;
+            colors[n] = c;
+            n += 1;
+        };
+        const bool by_member = layer_by_member(l);
+        if (by_member) {
+            char name[160];
+            pair_label(name, sizeof(name), l, 0);
+            add(name, l.pairs[0], vec_cast(l.color));
         }
+        for (int g = 0; g < layer_num_groups(l) && n < MAX_LINES; ++g) {
+            char name[160];
+            group_label(name, sizeof(name), l, g);
+            add(name, group_stats(l, g), group_color(l, g));
+        }
+        float w = 0.0f;
+        for (int i = 0; i < n; ++i) w = MAX(w, ImGui::CalcTextSize(lines[i]).x);
         const ImVec2 p0 = ImVec2(pos.x + 8, pos.y + 8);
-        const ImVec2 p1 = ImVec2(p0.x + w + lh + pad * 3, p0.y + l.num_pairs * (lh + 2) + pad * 2 - 2);
+        const ImVec2 p1 = ImVec2(p0.x + w + lh + pad * 3, p0.y + n * (lh + 2) + pad * 2 - 2);
         ImPlot::PushPlotClipRect();
         dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 140), 4.0f);
-        for (int p = 0; p < l.num_pairs; ++p) {
-            const float y = p0.y + pad + p * (lh + 2);
-            const ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
-            dl->AddRectFilled(ImVec2(p0.x + pad, y + lh * 0.2f), ImVec2(p0.x + pad + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(c), 2.0f);
+        for (int i = 0; i < n; ++i) {
+            const float y = p0.y + pad + i * (lh + 2);
+            // The members indented under all of them
+            const float x = p0.x + pad + (by_member && i > 0 ? lh * 0.6f : 0.0f);
+            dl->AddRectFilled(ImVec2(x, y + lh * 0.2f), ImVec2(x + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(colors[i]), 2.0f);
             // Dim, of what is not told from no correlation
-            dl->AddText(ImVec2(p0.x + pad * 2 + lh * 0.6f, y), l.pairs[p].significant() ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120), lines[p]);
+            dl->AddText(ImVec2(x + pad + lh * 0.6f, y), stats[i]->significant() ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120), lines[i]);
         }
         ImPlot::PopPlotClipRect();
     }
@@ -2606,16 +2711,14 @@ struct Correlation : viamd::EventHandler {
             ImGui::TableHeader(ImGui::TableGetColumnName(c));
             if (tips[c]) ImGui::SetItemTooltip("%s", tips[c]);
         }
-        for (int p = 0; p < l.num_pairs; ++p) {
-            const PairStats& s = l.pairs[p];
-            char name[192];
-            pair_label(name, sizeof(name), l, p);
+        auto row = [&](const PairStats& s, const char* name, ImVec4 c, bool indent) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            const ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+            if (indent) ImGui::Indent();
             ImGui::ColorButton("##c", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(ImGui::GetTextLineHeight() * 0.7f, ImGui::GetTextLineHeight() * 0.7f));
             ImGui::SameLine();
             ImGui::TextUnformatted(name);
+            if (indent) ImGui::Unindent();
             if (s.members > 1) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(%d)", s.members);
@@ -2645,6 +2748,21 @@ struct Correlation : viamd::EventHandler {
             ImGui::TableNextColumn();
             if (s.has_fit()) ImGui::Text("%.4g", s.slope());
             else ImGui::TextDisabled("-");
+        };
+        for (int p = 0; p < l.num_pairs; ++p) {
+            char name[192];
+            pair_label(name, sizeof(name), l, p);
+            row(l.pairs[p], name, l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color), false);
+        }
+        // Of a population, each of its members under all of them
+        if (layer_by_member(l)) {
+            for (int g = 0; g < layer_num_groups(l); ++g) {
+                char name[192];
+                group_label(name, sizeof(name), l, g);
+                ImGui::PushID(g);
+                row(group_stats(l, g), name, group_color(l, g), true);
+                ImGui::PopID();
+            }
         }
         ImGui::EndTable();
     }
@@ -2968,6 +3086,12 @@ struct Correlation : viamd::EventHandler {
             if (l.num_pairs > 1) {
                 prop::row("split", "One density per pair, each of its own samples, in the colour of its series: rather than one of them all, in the layer's");
                 ImGui::Checkbox("by pair", &l.split_pairs);
+            } else if (layer_by_member(l)) {
+                prop::row("split", "One density per member of the population, each of its own samples, in its colour: rather than one of them all, in the layer's");
+                ImGui::Checkbox("by member", &l.split_pairs);
+            } else if (l.num_pairs == 1 && l.pairs[0].members > MAX_GROUPS) {
+                prop::row("split");
+                ImGui::TextDisabled("%d members: too many to split (%d at most)", l.pairs[0].members, MAX_GROUPS);
             }
             if (l.lines) {
                 prop::row("line width");
