@@ -56,7 +56,7 @@ UTEST(display_units, velocity_derived) {
     choose(Quantity_Time, "ns");
     { const std::string got_ = shown("Å/ps", &f); EXPECT_STREQ("nm/ns", got_.c_str()); }
     EXPECT_NEAR(100.0, f, 1e-9);
-    { const std::string got_ = shown("Å^2/ps", &f); EXPECT_STREQ("nm²/ns", got_.c_str()); }
+    { const std::string got_ = shown("Å^3/ps", &f); EXPECT_STREQ("nm³/ns", got_.c_str()); }   // no quantity of its own
     { const std::string got_ = shown("count/Å^3"); EXPECT_STREQ("count/nm³", got_.c_str()); }
     reset();
 }
