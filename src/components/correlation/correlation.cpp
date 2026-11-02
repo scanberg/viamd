@@ -12,13 +12,18 @@
 //
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
-// Their Pearson correlation, and the least squares line through them, are found pair by pair. Their density is
+// Their Pearson correlation, and the least squares line through them, are found pair by pair, and their Spearman rank
+// correlation (of an evenly spaced subsample past a million). A periodic series (an angle) is cut at its seam, and its
+// correlation is the circular one: Jammalamadaka-SenGupta's against another angle, Mardia's (unsigned) against a linear
+// value. Distributions (script properties over the frames) are correlated with each other bin by bin, over their common
+// range, of the layer's frames. Their density is
 // estimated off the main thread (density_map.h), over a bounded domain of their own extent, smoothed with a gaussian of
 // a fraction of it.
 //
-//   drag a series          onto an axis of the plot (or a list of the inspector): it is added to the selected layer
+//   drag a series          from the timeline or the distributions onto an axis of the plot (or a list of the
+//                          inspector): it is added to the selected layer
 //   hover                  says what the point under the pointer is, and shows it in the viewport
-//   click                  on a point, goes to its frame
+//   click                  on a point over time, goes to its frame
 //   double-click           fits the view
 //   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
 //                          layer, its frames
@@ -42,12 +47,14 @@
 #include <density_map.h>
 #include <layer_groups.h>
 #include <plot_series.h>
+#include <plot_periodic_core.h>
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <imgui_internal.h>
 #include <implot_internal.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -64,6 +71,9 @@ constexpr int MAX_AXIS_SERIES   = 16;       // On each axis of a layer
 constexpr int MAX_PAIRS         = MAX_AXIS_SERIES;
 constexpr int MAX_LEVELS        = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS     = 100000;   // Of a layer of points: samples are skipped beyond
+constexpr size_t MAX_RANKED     = 1000000;  // Of a pair, ranked for its Spearman correlation: samples are skipped beyond
+constexpr int    NUM_BINS       = 256;      // Asked of a distribution: it may give fewer
+constexpr uint32_t NO_FRAME     = UINT32_MAX;   // Of a sample of a distribution: a bin, not a frame
 
 // Colours for new layers, the least used first
 static const vec4_t layer_palette[] = {
@@ -108,9 +118,12 @@ static const char* point_coloring_names[PointColoring_Count] = { "Layer color", 
 // What a series on an axis of a layer resolved to, the last time its samples were gathered
 struct SlotInfo {
     bool  ok = false;
+    bool  binned = false;           // A distribution as evaluated: its bins are its samples
     int   dim = 1;
+    SeriesPeriodic periodic = {};   // Of periodic values, in the display unit
     char  label[96] = "";
     char  unit[32] = "";
+    char  bin_unit[32] = "";        // Of the bins of a distribution
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
     ImVec4 color = {1, 1, 1, 1};
@@ -140,9 +153,21 @@ struct PairStats {
         syy += dy * (y - my);
         sxy += dx * (y - my);
     }
+    // Found once the samples are in (pair_statistics)
+    size_t beg = 0, end = 0;        // Its samples, in the layer's arrays
+    bool   rho_valid = false;       // Spearman's, of the ranks
+    double rho = 0;
+    uint64_t rho_n = 0;             // The samples ranked: at most MAX_RANKED
+    int    circular = 0;            // Axes of periodic values: then rc in place of Pearson's
+    bool   rc_valid = false;        // One: Mardia's circular-linear (0..1). Two: Jammalamadaka-SenGupta's circular (-1..1)
+    double rc = 0;
+
     bool   has_r()     const { return n >= 3 && sxx > 0.0 && syy > 0.0; }
     double r()         const { return has_r() ? sxy / sqrt(sxx * syy) : 0.0; }
-    bool   has_fit()   const { return n >= 2 && sxx > 0.0; }
+    bool   has_corr()  const { return circular ? rc_valid : has_r(); }
+    double corr()      const { return circular ? rc : r(); }
+    // No line through values around a circle
+    bool   has_fit()   const { return n >= 2 && sxx > 0.0 && !circular; }
     double slope()     const { return has_fit() ? sxy / sxx : 0.0; }
     double intercept() const { return my - slope() * mx; }
 };
@@ -202,6 +227,7 @@ struct Layer {
     float    x_min = 0, x_max = 0, y_min = 0, y_max = 0;
     float    t_min = 0, t_max = 0;
     bool     members_truncated = false;     // Populations of different sizes paired: the fewer members of the two
+    bool     binned = false;                // Of distributions: bin by bin, the samples have no frame (NO_FRAME)
 
     // The density, on the GPU, over its domain, and what it is of
     uint32_t tex = 0;
@@ -265,15 +291,85 @@ static bool key_from_str(SeriesKey* out, str_t s) {
     return true;
 }
 
-// The value of member k of a series at fractional sample index fi, in its display unit
+// The value of member k of a series at fractional sample index fi, in its display unit. Of periodic values, the short way
+// around the circle between the samples, and possibly outside the period they are given in (cut_periodic).
 static inline double sample_at(const SeriesTemporalView& v, double fi, int k) {
     const int n = v.num_samples;
     const int i0 = CLAMP((int)floor(fi), 0, n - 1);
     const int i1 = MIN(i0 + 1, n - 1);
     const double t = fi - (double)i0;
-    const double a = v.y[(size_t)i0 * v.stride + k];
-    const double b = v.y[(size_t)i1 * v.stride + k];
+    const double a = (double)v.y[(size_t)i0 * v.stride + k] * v.y_scale;
+    double b = (double)v.y[(size_t)i1 * v.stride + k] * v.y_scale;
+    if (t == 0.0) return a;
+    if (series_periodic_valid(v.periodic)) b = periodic_near(b, a, series_periodic_length(v.periodic));
+    return a + (b - a) * t;
+}
+
+// A periodic value laid out where the circle is cut: at the seam of its series, where its values are least likely to be
+static inline double cut_periodic(double x, const SeriesPeriodic& p) {
+    return series_periodic_valid(p) ? periodic_wrap(x, p.seam, series_periodic_length(p)) : x;
+}
+
+// The value of member k of a distribution at x, in its display unit: between the centres of its bins
+static inline double bin_value_at(const SeriesHistogramView& v, double x, int k) {
+    const double fi = series_histogram_index_at(v, x);
+    const int n = v.num_bins;
+    const int i0 = CLAMP((int)floor(fi), 0, n - 1);
+    const int i1 = CLAMP(i0 + 1, 0, n - 1);
+    const double t = CLAMP(fi - (double)i0, 0.0, 1.0);
+    const double a = v.bins[(size_t)k * n + i0];
+    const double b = v.bins[(size_t)k * n + i1];
     return (a + (b - a) * t) * v.y_scale;
+}
+
+// A key as it is plotted here: the values of a population pooled over its members are its values (each member is a
+// sample anyway), and the frames are the layer's (the period of a key goes to its layer, see drop_series)
+static SeriesKey plotted_key(const SeriesKey& k) {
+    SeriesKey out = k;
+    if (out.variant == SeriesVariant_Aggregate) out.variant = SeriesVariant_Values;
+    out.period = 0;
+    return out;
+}
+
+// Whether key is of a script distribution, evaluated as such (not a property over time binned)
+static bool is_script_distribution(const ApplicationState* app, const SeriesKey& k) {
+    if (k.source != SeriesSource_Script || !app->script.eval_ir) return false;
+    const md_script_property_flags_t f = md_script_ir_property_flags(app->script.eval_ir, series_script_ident(k));
+    return (f & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) && !(f & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
+}
+
+// The ranks of v[0..n[, ties given the mean of theirs, from 1
+static void rank(double* out, const double* v, size_t n, std::vector<uint32_t>& idx) {
+    idx.resize(n);
+    for (size_t i = 0; i < n; ++i) idx[i] = (uint32_t)i;
+    std::sort(idx.begin(), idx.end(), [v](uint32_t a, uint32_t b) { return v[a] < v[b]; });
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i + 1;
+        while (j < n && v[idx[j]] == v[idx[i]]) ++j;
+        const double r = 0.5 * (double)(i + j + 1);   // The mean of the ranks i + 1 .. j
+        for (size_t k = i; k < j; ++k) out[idx[k]] = r;
+        i = j;
+    }
+}
+
+// Pearson's of a[0..n[ against b[0..n[, false when either does not vary
+static bool pearson(double* r, const double* a, const double* b, size_t n) {
+    if (n < 3) return false;
+    double ma = 0, mb = 0;
+    for (size_t i = 0; i < n; ++i) { ma += a[i]; mb += b[i]; }
+    ma /= (double)n;
+    mb /= (double)n;
+    double saa = 0, sbb = 0, sab = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const double da = a[i] - ma, db = b[i] - mb;
+        saa += da * da;
+        sbb += db * db;
+        sab += da * db;
+    }
+    if (!(saa > 0.0) || !(sbb > 0.0)) return false;
+    *r = sab / sqrt(saa * sbb);
+    return true;
 }
 
 // The time of a fractional frame, along the timeline
@@ -648,7 +744,8 @@ struct Correlation : viamd::EventHandler {
         fit_view = true;
     }
 
-    // A series dropped on an axis of the plot: to the selected layer, or a new one when there is none
+    // A series dropped on an axis of the plot: to the selected layer, or a new one when there is none. Taken over a period,
+    // it brings the period to a layer that has no series yet and is over every frame.
     void drop_series(int axis, const SeriesKey& key) {
         Layer* l = find_layer(selected_layer);
         if (!l) {
@@ -656,20 +753,46 @@ struct Correlation : viamd::EventHandler {
             if (!l) return;
             selected_layer = l->id;
         }
-        add_series(*l, axis, key);
+        drop_series_on(*l, axis, key);
     }
 
-    // A series can be plotted here when it can be on the timeline, and is not a band of two values
-    bool series_droppable(const SeriesKey& key, const char** reason) const {
-        if (key.variant == SeriesVariant_Extent || key.variant == SeriesVariant_Aggregate) {
-            *reason = "Its range or distribution: drop its values or mean instead";
+    void drop_series_on(Layer& l, int axis, const SeriesKey& key) {
+        if (key.period != 0 && l.num_x + l.num_y == 0 && l.frames == LayerFrames_All && timeline_periods_find(&app->timeline.periods, key.period)) {
+            l.frames = LayerFrames_Period;
+            l.period = key.period;
+        }
+        add_series(l, axis, plotted_key(key));
+    }
+
+    // A series can be plotted here when it can be over time, or is a script distribution (correlated bin by bin with
+    // another), and is not a range of values
+    bool series_droppable(const SeriesKey& dropped, const char** reason) const {
+        *reason = nullptr;
+        if (dropped.variant == SeriesVariant_Extent) {
+            *reason = "Its range: drop its values or mean instead";
             return false;
         }
+        const SeriesKey key = plotted_key(dropped);
+        if (is_script_distribution(app, key)) return true;
         if (!(series_views(app, key, reason) & SeriesView_Timeline)) {
-            if (!*reason) *reason = "Not over time";
+            if (!*reason) *reason = "Not over time, and not a distribution";
             return false;
         }
         return true;
+    }
+
+    // A payload of a series, from the timeline or the distributions
+    static const SeriesDragPayload* series_payload(const ImGuiPayload* p) {
+        if (!p || p->DataSize != (int)sizeof(SeriesDragPayload)) return nullptr;
+        if (!p->IsDataType(TIMELINE_SERIES_DND) && !p->IsDataType(DISTRIBUTION_SERIES_DND)) return nullptr;
+        return (const SeriesDragPayload*)p->Data;
+    }
+
+    // Accepts a series of either kind on the drop target open: the payload once it is delivered
+    static const SeriesDragPayload* accept_series(ImGuiDragDropFlags flags = 0) {
+        const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, flags);
+        if (!p) p = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND, flags);
+        return series_payload(p);
     }
 
     // ## Jobs
@@ -781,14 +904,17 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // Drawn as a density: over frames, of a trajectory
+    // Drawn as a density: over frames, of a trajectory; or the bins of distributions
     bool layer_draws_density(const Layer& l) const {
-        if (l.style == LayerStyle_Points || l.frames == LayerFrames_Current) return false;
+        if (l.style == LayerStyle_Points) return false;
+        if (l.binned) return true;
+        if (l.frames == LayerFrames_Current) return false;
         return run_num_frames(app) >= 2;
     }
 
     // Drawn as points: those of the frame shown are, whatever the style (a density of one point per pair says nothing)
     bool layer_draws_points(const Layer& l) const {
+        if (l.binned) return l.style == LayerStyle_Points;
         return l.style == LayerStyle_Points || l.frames == LayerFrames_Current || run_num_frames(app) < 2;
     }
 
@@ -799,25 +925,44 @@ struct Correlation : viamd::EventHandler {
         return a ? a->version : 0;
     }
 
-    // What a series on an axis is, and what of it its samples depend on
-    uint64_t resolve_slot(SeriesTemporalView* v, SlotInfo* info, const SeriesKey& k) {
+    // What a series on an axis is, and what of it its samples depend on: over time into v, or a distribution (over the
+    // layer's period, 0 for every frame) into hv
+    uint64_t resolve_slot(SeriesTemporalView* v, SeriesHistogramView* hv, SlotInfo* info, const SeriesKey& key, uint32_t period) {
         *info = SlotInfo{};
-        // A band's centre (Sigma: its mean) is its value here; a range or a distribution has none
-        info->ok = series_resolve_temporal(v, app, k) && k.variant != SeriesVariant_Extent && k.variant != SeriesVariant_Aggregate &&
-                   v->x && v->y && v->stride >= 1;
-        info->dim = MAX(1, v->dim);
-        snprintf(info->label, sizeof(info->label), "%s", v->label);
-        snprintf(info->unit, sizeof(info->unit), "%s", v->unit_str);
-        snprintf(info->script_ident, sizeof(info->script_ident), "%s", v->script_ident);
-        info->vis_ref = v->vis_ref;
-        info->color = series_default_color(app, k);
-
+        const SeriesKey k = plotted_key(key);
         uint64_t h = md_hash64(&k.source, sizeof(k.source), 0);
         h = md_hash64(&k.variant, sizeof(k.variant), h);
         h = md_hash64(k.path, strlen(k.path), h);
         h = md_hash64_combine(h, series_version(app, k));
         const SeriesState st = series_state(app, k);
         h = md_hash64_combine(h, ((uint64_t)st.num_frames << 8) | st.status);
+        info->color = series_default_color(app, k);
+
+        if (is_script_distribution(app, k)) {
+            info->binned = true;
+            info->ok = series_resolve_histogram(hv, app, k, NUM_BINS, period) && hv->bins && hv->num_bins >= 2 && hv->x_max > hv->x_min;
+            info->dim = MAX(1, hv->dim);
+            snprintf(info->label, sizeof(info->label), "%s", hv->label);
+            snprintf(info->unit, sizeof(info->unit), "%s", hv->y_unit_str);
+            snprintf(info->bin_unit, sizeof(info->bin_unit), "%s", hv->x_unit_str);
+            snprintf(info->script_ident, sizeof(info->script_ident), "%s", hv->script_ident);
+            info->vis_ref = hv->vis_ref;
+            const uintptr_t ptr = (uintptr_t)hv->bins;
+            h = md_hash64(&ptr, sizeof(ptr), h);
+            const double dims[6] = { (double)hv->num_bins, (double)hv->dim, hv->x_min, hv->x_max, hv->y_scale, (double)info->ok };
+            h = md_hash64(dims, sizeof(dims), h);
+            h = md_hash64(&period, sizeof(period), h);
+            return h;
+        }
+
+        // A band's centre (Sigma: its mean) is its value here; a range has none
+        info->ok = series_resolve_temporal(v, app, k) && k.variant != SeriesVariant_Extent && v->x && v->y && v->stride >= 1;
+        info->dim = MAX(1, v->dim);
+        info->periodic = v->periodic;
+        snprintf(info->label, sizeof(info->label), "%s", v->label);
+        snprintf(info->unit, sizeof(info->unit), "%s", v->unit_str);
+        snprintf(info->script_ident, sizeof(info->script_ident), "%s", v->script_ident);
+        info->vis_ref = v->vis_ref;
         const uintptr_t ptrs[2] = { (uintptr_t)v->x, (uintptr_t)v->y };
         h = md_hash64(ptrs, sizeof(ptrs), h);
         const int64_t dims[3] = { v->num_samples, v->stride, info->ok };
@@ -830,10 +975,13 @@ struct Correlation : viamd::EventHandler {
     void gather(Layer& l) {
         static SeriesTemporalView vx[MAX_AXIS_SERIES];
         static SeriesTemporalView vy[MAX_AXIS_SERIES];
+        static SeriesHistogramView hx[MAX_AXIS_SERIES];
+        static SeriesHistogramView hy[MAX_AXIS_SERIES];
 
+        const uint32_t dist_period = l.frames == LayerFrames_Period ? l.period : 0;
         uint64_t key = md_hash64_combine(system_generation, app->timeline.units_version);
-        for (int i = 0; i < l.num_x; ++i) key = md_hash64_combine(key, resolve_slot(&vx[i], &l.x_info[i], l.xs[i]) ^ 0x1111);
-        for (int i = 0; i < l.num_y; ++i) key = md_hash64_combine(key, resolve_slot(&vy[i], &l.y_info[i], l.ys[i]) ^ 0x2222);
+        for (int i = 0; i < l.num_x; ++i) key = md_hash64_combine(key, resolve_slot(&vx[i], &hx[i], &l.x_info[i], l.xs[i], dist_period) ^ 0x1111);
+        for (int i = 0; i < l.num_y; ++i) key = md_hash64_combine(key, resolve_slot(&vy[i], &hy[i], &l.y_info[i], l.ys[i], dist_period) ^ 0x2222);
         const int num_frames = (int)run_num_frames(app);
         uint32_t beg = 0, end = 0;
         const bool has_range = layer_frame_range(l, &beg, &end);
@@ -844,7 +992,6 @@ struct Correlation : viamd::EventHandler {
         if (key == l.data_key) return;
         l.data_key = key;
 
-        md_allocator_i* heap = md_get_heap_allocator();
         md_array_shrink(l.sx, 0);
         md_array_shrink(l.sy, 0);
         md_array_shrink(l.st, 0);
@@ -855,6 +1002,7 @@ struct Correlation : viamd::EventHandler {
         l.data_hash = 0;
         l.num_pairs = 0;
         l.members_truncated = false;
+        l.binned = false;
         l.point_stride = 1;
         for (int p = 0; p < MAX_PAIRS; ++p) l.pairs[p] = PairStats{};
 
@@ -867,11 +1015,24 @@ struct Correlation : viamd::EventHandler {
             l.data_error = "pair as many X as Y, or one against several";
             return;
         }
-        if (!has_range || num_frames <= 0) {
+        int num_binned = 0;
+        for (int i = 0; i < l.num_x; ++i) num_binned += l.x_info[i].binned;
+        for (int i = 0; i < l.num_y; ++i) num_binned += l.y_info[i].binned;
+        if (num_binned > 0 && num_binned < l.num_x + l.num_y) {
+            l.data_error = "a distribution pairs only with distributions";
+            return;
+        }
+        l.binned = num_binned > 0;
+        if (!l.binned && (!has_range || num_frames <= 0)) {
             l.data_error = l.frames == LayerFrames_Period ? "the period is missing" : "no frames";
             return;
         }
         l.num_pairs = layer_num_pairs(l);
+        if (l.binned) {
+            gather_binned(l, hx, hy);
+            finish_gather(l, nullptr);
+            return;
+        }
 
         const float* run_x = app->timeline.x_values;
         const bool bounded = l.frames == LayerFrames_Period;
@@ -922,14 +1083,7 @@ struct Correlation : viamd::EventHandler {
                 return md_bitset_test(mask_x, i0) && (fx == (double)i0 || md_bitset_test(mask_x, i1));
             };
             auto push = [&](double x, double y, double t, uint32_t frame, int m) {
-                if (!isfinite(x) || !isfinite(y)) return;
-                md_array_push(l.sx, (float)x, heap);
-                md_array_push(l.sy, (float)y, heap);
-                md_array_push(l.st, (float)t, heap);
-                md_array_push(l.sframe, frame, heap);
-                md_array_push(l.spair, (uint16_t)p, heap);
-                md_array_push(l.smember, (uint16_t)m, heap);
-                l.pairs[p].add(x, y);
+                push_sample(l, p, x, y, t, frame, m);
             };
 
             if (current) {
@@ -961,9 +1115,59 @@ struct Correlation : viamd::EventHandler {
             }
         }
 
+        finish_gather(l, any_resolved ? "no samples over its frames" : "the series are not available");
+    }
+
+    // A sample of pair p, its periodic values laid out where their circle is cut
+    static void push_sample(Layer& l, int p, double x, double y, double t, uint32_t frame, int m) {
+        if (!isfinite(x) || !isfinite(y)) return;
+        x = cut_periodic(x, l.x_info[pair_x(l, p)].periodic);
+        y = cut_periodic(y, l.y_info[pair_y(l, p)].periodic);
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_array_push(l.sx, (float)x, heap);
+        md_array_push(l.sy, (float)y, heap);
+        md_array_push(l.st, (float)t, heap);
+        md_array_push(l.sframe, frame, heap);
+        md_array_push(l.spair, (uint16_t)p, heap);
+        md_array_push(l.smember, (uint16_t)m, heap);
+        l.pairs[p].add(x, y);
+    }
+
+    // Distributions, bin by bin over the range they share: each pair at as many places as the finer of the two has bins,
+    // its values there interpolated between the centres of the bins. What a sample is at is its place (in st).
+    void gather_binned(Layer& l, const SeriesHistogramView* hx, const SeriesHistogramView* hy) {
+        for (int p = 0; p < l.num_pairs; ++p) {
+            const int xi = pair_x(l, p);
+            const int yi = pair_y(l, p);
+            if (!l.x_info[xi].ok || !l.y_info[yi].ok) continue;
+            const SeriesHistogramView& X = hx[xi];
+            const SeriesHistogramView& Y = hy[yi];
+            const double lo = MAX(X.x_min, Y.x_min);
+            const double hi = MIN(X.x_max, Y.x_max);
+            if (!(hi > lo)) continue;
+            const int dx = l.x_info[xi].dim;
+            const int dy = l.y_info[yi].dim;
+            const int members = dx == 1 ? dy : dy == 1 ? dx : MIN(dx, dy);
+            if (dx > 1 && dy > 1 && dx != dy) l.members_truncated = true;
+            l.pairs[p].members = members;
+            const int n = MAX(X.num_bins, Y.num_bins);
+            for (int j = 0; j < n; ++j) {
+                const double at = lo + (j + 0.5) * (hi - lo) / n;
+                for (int m = 0; m < members; ++m) {
+                    push_sample(l, p, bin_value_at(X, at, dx == 1 ? 0 : m), bin_value_at(Y, at, dy == 1 ? 0 : m), at, NO_FRAME, m);
+                }
+            }
+        }
+        bool any = false;
+        for (int p = 0; p < l.num_pairs; ++p) any |= l.x_info[pair_x(l, p)].ok && l.y_info[pair_y(l, p)].ok;
+        l.data_error = any ? "the distributions share no range of values" : "the distributions are not available";
+    }
+
+    // Once the samples are in: their extent, their statistics, and how many of them are drawn
+    void finish_gather(Layer& l, const char* empty_error) {
         const size_t n = md_array_size(l.sx);
         if (n == 0) {
-            l.data_error = any_resolved ? "no samples over its frames" : "the series are not available";
+            if (!l.binned) l.data_error = empty_error;
             return;
         }
         l.x_min = l.x_max = l.sx[0];
@@ -977,12 +1181,106 @@ struct Correlation : viamd::EventHandler {
             l.t_min = MIN(l.t_min, l.st[i]);
             l.t_max = MAX(l.t_max, l.st[i]);
         }
+        // The samples of a pair are together, in the order of the pairs
+        for (int p = 0; p < l.num_pairs; ++p) l.pairs[p].beg = l.pairs[p].end = 0;
+        for (size_t i = 0; i < n;) {
+            const int p = l.spair[i];
+            size_t j = i;
+            while (j < n && l.spair[j] == p) ++j;
+            l.pairs[p].beg = i;
+            l.pairs[p].end = j;
+            i = j;
+        }
+        for (int p = 0; p < l.num_pairs; ++p) pair_statistics(l, p);
+
         uint64_t h = md_hash64(l.sx, md_array_bytes(l.sx), n);
         h = md_hash64(l.sy, md_array_bytes(l.sy), h);
         l.data_hash = h | 1;
         l.data_valid = true;
         l.data_error = "";
         l.point_stride = (uint32_t)MAX((size_t)1, (n + MAX_POINTS - 1) / MAX_POINTS);
+    }
+
+    // Spearman's correlation of a pair, of at most MAX_RANKED of its samples; of periodic values, the circular one
+    static void pair_statistics(Layer& l, int p) {
+        PairStats& s = l.pairs[p];
+        const size_t count = s.end - s.beg;
+        if (count < 3) return;
+        const SeriesPeriodic& px = l.x_info[pair_x(l, p)].periodic;
+        const SeriesPeriodic& py = l.y_info[pair_y(l, p)].periodic;
+        const bool cx = series_periodic_valid(px);
+        const bool cy = series_periodic_valid(py);
+        s.circular = (int)cx + (int)cy;
+
+        if (!s.circular) {
+            const size_t step = MAX((size_t)1, (count + MAX_RANKED - 1) / MAX_RANKED);
+            const size_t m = (count + step - 1) / step;
+            std::vector<double> x(m), y(m), rx(m), ry(m);
+            std::vector<uint32_t> idx;
+            for (size_t i = 0; i < m; ++i) {
+                x[i] = l.sx[s.beg + i * step];
+                y[i] = l.sy[s.beg + i * step];
+            }
+            rank(rx.data(), x.data(), m, idx);
+            rank(ry.data(), y.data(), m, idx);
+            s.rho_valid = pearson(&s.rho, rx.data(), ry.data(), m);
+            s.rho_n = m;
+            return;
+        }
+
+        // In radians from the start of the period
+        auto angle = [](double v, const SeriesPeriodic& per) { return 2.0 * M_PI * (v - per.beg) / series_periodic_length(per); };
+        const double inv_n = 1.0 / (double)count;
+        if (s.circular == 2) {
+            // Jammalamadaka and SenGupta (1988): about the circular means
+            double sa = 0, ca = 0, sb = 0, cb = 0;
+            for (size_t i = s.beg; i < s.end; ++i) {
+                const double a = angle(l.sx[i], px), b = angle(l.sy[i], py);
+                sa += sin(a); ca += cos(a);
+                sb += sin(b); cb += cos(b);
+            }
+            const double ma = atan2(sa, ca), mb = atan2(sb, cb);
+            double num = 0, da2 = 0, db2 = 0;
+            for (size_t i = s.beg; i < s.end; ++i) {
+                const double da = sin(angle(l.sx[i], px) - ma);
+                const double db = sin(angle(l.sy[i], py) - mb);
+                num += da * db;
+                da2 += da * da;
+                db2 += db * db;
+            }
+            if (da2 > 0.0 && db2 > 0.0) {
+                s.rc = num / sqrt(da2 * db2);
+                s.rc_valid = true;
+            }
+            return;
+        }
+
+        // Mardia (1976), circular against linear: of the linear values with the cosine and the sine of the angles
+        const float* lin = cx ? l.sy : l.sx;
+        const float* cir = cx ? l.sx : l.sy;
+        const SeriesPeriodic& per = cx ? px : py;
+        double mx = 0, mc = 0, ms = 0;
+        for (size_t i = s.beg; i < s.end; ++i) {
+            const double a = angle(cir[i], per);
+            mx += lin[i]; mc += cos(a); ms += sin(a);
+        }
+        mx *= inv_n; mc *= inv_n; ms *= inv_n;
+        double sxx = 0, scc = 0, sss = 0, sxc = 0, sxs = 0, scs = 0;
+        for (size_t i = s.beg; i < s.end; ++i) {
+            const double a = angle(cir[i], per);
+            const double dx = lin[i] - mx, dc = cos(a) - mc, ds = sin(a) - ms;
+            sxx += dx * dx; scc += dc * dc; sss += ds * ds;
+            sxc += dx * dc; sxs += dx * ds; scs += dc * ds;
+        }
+        if (!(sxx > 0.0) || !(scc > 0.0) || !(sss > 0.0)) return;
+        const double rxc = sxc / sqrt(sxx * scc);
+        const double rxs = sxs / sqrt(sxx * sss);
+        const double rcs = scs / sqrt(scc * sss);
+        const double den = 1.0 - rcs * rcs;
+        if (!(den > 1e-12)) return;
+        const double r2 = (rxc * rxc + rxs * rxs - 2.0 * rxc * rxs * rcs) / den;
+        s.rc = sqrt(CLAMP(r2, 0.0, 1.0));
+        s.rc_valid = true;
     }
 
     void update() {
@@ -1316,11 +1614,27 @@ struct Correlation : viamd::EventHandler {
             if (!str_empty(member)) ImGui::TextDisabled("member %d \xc2\xb7 " STR_FMT, m + 1, STR_ARG(member));
             else ImGui::TextDisabled("member %d", m + 1);
         }
-        ImGui::TextDisabled("frame %u \xc2\xb7 t = %.4g", l.sframe[h.idx], l.st[h.idx]);
+        const bool binned = l.sframe[h.idx] == NO_FRAME;
+        if (binned) ImGui::TextDisabled("at %.4g %s", l.st[h.idx], l.x_info[xi].bin_unit);
+        else ImGui::TextDisabled("frame %u \xc2\xb7 t = %.4g", l.sframe[h.idx], l.st[h.idx]);
         char label[128];
         layer_label(label, sizeof(label), l);
-        ImGui::TextDisabled("%s \xc2\xb7 click to go to the frame", label);
+        if (binned) ImGui::TextDisabled("%s", label);
+        else ImGui::TextDisabled("%s \xc2\xb7 click to go to the frame", label);
         ImGui::EndTooltip();
+    }
+
+    // A pair's correlation as text: Pearson's and Spearman's, or of periodic values the circular one
+    static void stats_text(char* buf, size_t cap, const PairStats& s) {
+        if (s.circular) {
+            if (s.has_corr()) snprintf(buf, cap, "circular r = %.3f", s.corr());
+            else snprintf(buf, cap, "circular r = -");
+            return;
+        }
+        char r[24] = "r = -", rho[24] = "";
+        if (s.has_r()) snprintf(r, sizeof(r), "r = %.3f", s.r());
+        if (s.rho_valid) snprintf(rho, sizeof(rho), " \xc2\xb7 \xcf\x81 = %.3f", s.rho);
+        snprintf(buf, cap, "%s%s", r, rho);
     }
 
     // What the series of the hovered point show in the viewport: the script's visualization of Y, else of X
@@ -1424,7 +1738,8 @@ struct Correlation : viamd::EventHandler {
             draw_tooltip(hover);
             visualize(hover);
             // A click (not a pan) on a point: its frame
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f) {
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
+                layers[hover.layer].sframe[hover.idx] != NO_FRAME) {
                 app->animation.frame = (double)layers[hover.layer].sframe[hover.idx];
             }
         }
@@ -1471,8 +1786,8 @@ struct Correlation : viamd::EventHandler {
     // While a series is dragged: the strips along the axes it is dropped on (and the axes themselves)
     void draw_series_drop_targets(ImVec2 pos, ImVec2 size) {
         const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-        if (!payload || !payload->IsDataType(TIMELINE_SERIES_DND)) return;
-        const SeriesDragPayload* sp = (const SeriesDragPayload*)payload->Data;
+        const SeriesDragPayload* sp = series_payload(payload);
+        if (!sp) return;
         const char* reason = nullptr;
         const bool ok = series_droppable(sp->key, &reason);
 
@@ -1503,14 +1818,14 @@ struct Correlation : viamd::EventHandler {
             ImGui::PushID(a);
             bool open = ImGui::BeginDragDropTargetCustom(rects[a], ImGui::GetID("##series_band"));
             if (open) {
-                if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
-                    if (ok) drop_series(a, ((const SeriesDragPayload*)p->Data)->key);
+                if (const SeriesDragPayload* dp = accept_series()) {
+                    if (ok) drop_series(a, dp->key);
                 }
                 ImGui::EndDragDropTarget();
             }
             if (ImPlot::BeginDragDropTargetAxis(axes[a])) {
-                if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
-                    if (ok) drop_series(a, ((const SeriesDragPayload*)p->Data)->key);
+                if (const SeriesDragPayload* dp = accept_series()) {
+                    if (ok) drop_series(a, dp->key);
                 }
                 ImPlot::EndDragDropTarget();
             }
@@ -1530,8 +1845,9 @@ struct Correlation : viamd::EventHandler {
             char name[160];
             pair_label(name, sizeof(name), l, p);
             const PairStats& s = l.pairs[p];
-            if (s.has_r()) snprintf(lines[p], sizeof(lines[p]), "%s   r = %.3f", name, s.r());
-            else snprintf(lines[p], sizeof(lines[p]), "%s   r = -", name);
+            char st[64];
+            stats_text(st, sizeof(st), s);
+            snprintf(lines[p], sizeof(lines[p]), "%s   %s", name, st);
             w = MAX(w, ImGui::CalcTextSize(lines[p]).x);
         }
         const ImVec2 p0 = ImVec2(pos.x + 8, pos.y + 8);
@@ -1659,23 +1975,37 @@ struct Correlation : viamd::EventHandler {
             return;
         }
         const size_t n = md_array_size(l.sx);
-        if (l.num_pairs == 1 && l.pairs[0].has_r()) {
-            snprintf(buf, cap, "r = %.3f \xc2\xb7 %zu samples", l.pairs[0].r(), n);
-        } else if (l.num_pairs == 1) {
-            snprintf(buf, cap, "%zu samples", n);
+        const char* what = l.binned ? "bins" : "samples";
+        if (l.num_pairs == 1) {
+            char st[64];
+            stats_text(st, sizeof(st), l.pairs[0]);
+            snprintf(buf, cap, "%s \xc2\xb7 %zu %s", st, n, what);
         } else {
-            snprintf(buf, cap, "%d pairs \xc2\xb7 %zu samples", l.num_pairs, n);
+            snprintf(buf, cap, "%d pairs \xc2\xb7 %zu %s", l.num_pairs, n, what);
         }
     }
 
     // The pairs of a layer, with their statistics
     void draw_pair_table(const Layer& l) const {
-        if (!ImGui::BeginTable("##pairs", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) return;
+        if (!ImGui::BeginTable("##pairs", 5, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) return;
         ImGui::TableSetupColumn("pair", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("n");
         ImGui::TableSetupColumn("r");
+        ImGui::TableSetupColumn("\xcf\x81");
         ImGui::TableSetupColumn("slope");
-        ImGui::TableHeadersRow();
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        static const char* tips[5] = {
+            nullptr,
+            "Samples: frames (times members), or places along the bins of distributions",
+            "Pearson's correlation. Of periodic values (angles), the circular one: Jammalamadaka-SenGupta's of two (-1..1), Mardia's of one against a linear value (0..1, no sign)",
+            "Spearman's rank correlation: how monotonic, whatever the shape",
+            "Of the least squares line, Y on X",
+        };
+        for (int c = 0; c < 5; ++c) {
+            ImGui::TableSetColumnIndex(c);
+            ImGui::TableHeader(ImGui::TableGetColumnName(c));
+            if (tips[c]) ImGui::SetItemTooltip("%s", tips[c]);
+        }
         for (int p = 0; p < l.num_pairs; ++p) {
             const PairStats& s = l.pairs[p];
             char name[192];
@@ -1693,8 +2023,13 @@ struct Correlation : viamd::EventHandler {
             ImGui::TableNextColumn();
             ImGui::Text("%llu", (unsigned long long)s.n);
             ImGui::TableNextColumn();
-            if (s.has_r()) ImGui::Text("%.3f", s.r());
+            if (s.has_corr()) ImGui::Text("%.3f", s.corr());
             else ImGui::TextDisabled("-");
+            if (s.circular) ImGui::SetItemTooltip(s.circular == 2 ? "Circular (both periodic)" : "Circular-linear: how much the one predicts the other, no sign");
+            ImGui::TableNextColumn();
+            if (s.rho_valid) ImGui::Text("%.3f", s.rho);
+            else ImGui::TextDisabled("-");
+            if (s.rho_valid && s.rho_n < s.n) ImGui::SetItemTooltip("Of %llu samples, evenly spaced", (unsigned long long)s.rho_n);
             ImGui::TableNextColumn();
             if (s.has_fit()) ImGui::Text("%.4g", s.slope());
             else ImGui::TextDisabled("-");
@@ -1917,12 +2252,14 @@ struct Correlation : viamd::EventHandler {
         const ImRect r(p0, ImVec2(p0.x + w, MAX(p0.y + h, ImGui::GetItemRectMax().y)));
         ImGui::GetWindowDrawList()->AddRect(r.Min, r.Max, ImGui::GetColorU32(ImGuiCol_Border), 3.0f);
         if (ImGui::BeginDragDropTargetCustom(r, ImGui::GetID("##drop"))) {
-            if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
-                const SeriesKey key = ((const SeriesDragPayload*)p->Data)->key;
+            const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, ImGuiDragDropFlags_AcceptBeforeDelivery);
+            if (!p) p = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND, ImGuiDragDropFlags_AcceptBeforeDelivery);
+            if (const SeriesDragPayload* sp = series_payload(p)) {
+                const SeriesKey key = sp->key;
                 const char* reason = nullptr;
                 const bool ok = series_droppable(key, &reason);
                 if (!ok && reason) ImGui::SetTooltip("%s", reason);
-                if (p->IsDelivery() && ok) add_series(l, axis, key);
+                if (p->IsDelivery() && ok) drop_series_on(l, axis, key);
             }
             ImGui::EndDragDropTarget();
         }
@@ -1956,6 +2293,14 @@ struct Correlation : viamd::EventHandler {
         }
         if (l.members_truncated) {
             prop::hint("Populations of different sizes: paired up to the smaller");
+        }
+        if (l.binned) {
+            prop::hint("Distributions: correlated bin by bin over their common range, of the frames below");
+        } else {
+            bool periodic = false;
+            for (int i = 0; i < l.num_x; ++i) periodic |= series_periodic_valid(l.x_info[i].periodic);
+            for (int i = 0; i < l.num_y; ++i) periodic |= series_periodic_valid(l.y_info[i].periodic);
+            if (periodic) prop::hint("Periodic values are cut at their seam; their correlation is the circular one");
         }
 
         prop::row("frames");
