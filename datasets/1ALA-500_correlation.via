@@ -1,0 +1,110 @@
+
+[Workspace]
+Version=2
+
+[System]
+Id=0
+AtomCount=153
+
+[Run]
+Id=0
+System=0
+FrameCount=500
+
+[Input]
+System=0
+Path=./1ALA-500.pdb
+
+[Input]
+Run=0
+Path=./1ALA-500.pdb
+
+[Script]
+Text="""# Polyalanine (15 ALA, 500 frames): an extended chain that collapses and starts to fold near frame 350.
+# Residue r (2..15): N = 10r-7, CA = 10r-5, C = 10r+1, O = 10r+2
+
+# Size
+end_to_end = distance(5, 145);              # CA 1 - CA 15
+res_rmsd   = rmsd(residue(2:14));           # one per residue: a population
+
+# Backbone dihedrals of residues 4, 8 and 12
+phi4  = dihedral(31, 33, 35, 41);
+psi4  = dihedral(33, 35, 41, 43);
+phi8  = dihedral(71, 73, 75, 81);
+psi8  = dihedral(73, 75, 81, 83);
+phi12 = dihedral(111, 113, 115, 121);
+psi12 = dihedral(113, 115, 121, 123);
+
+# Helical H-bonds O(i) - N(i+4): short when formed
+hb_3_7  = distance(32, 63);
+hb_6_10 = distance(62, 93);
+hb_9_13 = distance(92, 123);
+"""
+
+[Correlation]
+ShowLayers=1
+ShowLegend=1
+ShowLag=1
+MaxLag=50
+LagHeight=0.3
+Layers=5
+
+[CorrelationLayer]
+Name=Collapse vs H-bonds
+Visible=1
+X=script;values;script/end_to_end
+Y=script;values;script/hb_3_7
+Y=script;values;script/hb_6_10
+Y=script;values;script/hb_9_13
+Frames=all
+Style=contours
+Fill=1
+Lines=1
+SplitPairs=1
+ShowFit=0
+
+[CorrelationLayer]
+Name=Phi/psi of residue 8
+Visible=0
+X=script;values;script/phi8
+Y=script;values;script/psi8
+Frames=all
+Style=points
+PointColoring=time
+
+[CorrelationLayer]
+Name=Phi/psi along the chain
+Visible=0
+X=script;values;script/phi4
+X=script;values;script/phi8
+X=script;values;script/phi12
+Y=script;values;script/psi4
+Y=script;values;script/psi8
+Y=script;values;script/psi12
+Frames=all
+Style=contours
+SplitPairs=1
+
+[CorrelationLayer]
+Name=Phi 8 vs size
+Visible=0
+X=script;values;script/end_to_end
+Y=script;values;script/phi8
+Frames=all
+Style=points
+PointColoring=time
+
+[CorrelationLayer]
+Name=Residue RMSD vs size
+Visible=0
+X=script;values;script/end_to_end
+Y=script;values;script/res_rmsd
+Frames=all
+Style=points
+PointColoring=pair
+
+[Windows]
+Correlation=1
+Ramachandran=1
+Timelines=1
+ScriptEditor=1
