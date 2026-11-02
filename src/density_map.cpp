@@ -402,6 +402,67 @@ void density_map_texture_free(uint32_t* tex) {
     }
 }
 
+// ## Slots
+
+void density_map_slot_launch(DensityMapSlot* slot, str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks,
+                             DensityMapSource source, uint64_t hash, DensityMapSlotFind find, DensityMapSlotAccepted accepted) {
+    ASSERT(slot && !slot->job);
+    const uint64_t serial = ++slot->job_serial;
+    auto done = [find = std::move(find), accepted = std::move(accepted), serial, hash, domain](const DensityMapResult* result, const float* grid) {
+        DensityMapSlot* s = find();
+        if (!s || !s->job || s->job_serial != serial || s->want_hash != hash) return;
+        s->job = nullptr;
+        if (!result) {
+            // Interrupted: tried again
+            s->want_hash = 0;
+            return;
+        }
+        const bool wx = density_map_wraps_x(domain);
+        const bool wy = density_map_wraps_y(domain);
+        const uint8_t wrap = (uint8_t)((wx ? 1 : 0) | (wy ? 2 : 0));
+        if (s->tex && s->tex_wrap != wrap) density_map_texture_free(&s->tex);
+        if (!s->tex) s->tex = density_map_texture_create(wx, wy);
+        s->tex_wrap = wrap;
+        density_map_texture_upload(s->tex, grid);
+        s->result = *result;
+        s->domain = domain;
+        s->has_result = true;
+        s->shown_hash = hash;
+        if (accepted) accepted(s);
+    };
+    slot->want_hash = hash;
+    slot->job_started = ImGui::GetTime();
+    slot->job = density_map_launch(label, domain, sigma, num_chunks, std::move(source), std::move(done));
+}
+
+void density_map_slot_cancel(DensityMapSlot* slot, bool wait) {
+    if (!slot->job) return;
+    // Its callback still comes, and finds the job not its own
+    density_map_cancel(slot->job, wait);
+    slot->job = nullptr;
+    slot->want_hash = 0;
+}
+
+void density_map_slot_forget(DensityMapSlot* slot) {
+    density_map_slot_cancel(slot, true);
+    slot->has_result = false;
+    slot->shown_hash = 0;
+    slot->want_hash = 0;
+}
+
+void density_map_slot_free(DensityMapSlot* slot) {
+    density_map_slot_cancel(slot, true);
+    density_map_texture_free(&slot->tex);
+    const uint64_t serial = slot->job_serial;
+    *slot = DensityMapSlot{};
+    // Callbacks of jobs cancelled before are still not its
+    slot->job_serial = serial;
+}
+
+bool density_map_slot_slow(const DensityMapSlot& slot, double delay) {
+    return slot.job && ImGui::GetTime() - slot.job_started > delay;
+}
+
 static constexpr str_t v_fs_triangle_src = STR_LIT(R"(
 #version 150 core
 
@@ -931,4 +992,34 @@ void density_map_swatch(ImDrawList* dl, ImVec2 mn, ImVec2 mx, DensityMapSwatch k
     default:
         break;
     }
+}
+
+void density_map_spinner(ImDrawList* dl, ImVec2 c, ImU32 col, float radius) {
+    const float t = (float)ImGui::GetTime();
+    dl->PathArcTo(c, radius, t * 6.0f, t * 6.0f + 4.0f, 10);
+    dl->PathStroke(col, 0, 1.5f);
+}
+
+void density_map_plot_status(const char* note, bool busy) {
+    if (!(note && note[0]) && !busy) return;
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    const ImVec2 pos = ImPlot::GetPlotPos();
+    const ImVec2 size = ImPlot::GetPlotSize();
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const float pad = 6.0f;
+    const float lh = ImGui::GetTextLineHeight();
+    float x = pos.x + size.x - pad;
+    const float y = pos.y + size.y - pad - lh;
+    ImPlot::PushPlotClipRect();
+    if (busy) {
+        density_map_spinner(dl, ImVec2(x - 5.0f, y + lh * 0.5f), col);
+        x -= 10.0f + pad;
+    }
+    if (note && note[0]) {
+        const ImVec2 ts = ImGui::CalcTextSize(note);
+        const ImVec2 p = ImVec2(x - ts.x, y);
+        dl->AddRectFilled(ImVec2(p.x - 3, p.y - 1), ImVec2(p.x + ts.x + 3, p.y + ts.y + 1), ImGui::GetColorU32(ImGuiCol_WindowBg, 0.7f), 3.0f);
+        dl->AddText(p, col, note);
+    }
+    ImPlot::PopPlotClipRect();
 }

@@ -200,16 +200,8 @@ struct PairStats {
 // The density of some of the samples of a layer, on the GPU, over its domain, and what it is of: of all of them in
 // channel 0, or split by pair, pair DENSITY_MAP_CHANNELS g + c in channel c of part g
 struct DensityPart {
-    uint32_t tex = 0;
-    DensityMapResult result = {};
-    DensityMapDomain domain = {};
-    bool     has_result = false;
-    bool     split = false;         // Of the result: by pair
-    uint64_t shown_hash = 0;        // Of the inputs of the density in tex
-    uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none
-    uint8_t  tex_wrap = 0;          // Along which axes tex wraps around: 1 x, 2 y
-    DensityMapJob* job = nullptr;   // Under way
-    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+    DensityMapSlot slot;
+    bool split = false;             // Of the result: by pair
 };
 
 constexpr int MAX_PARTS = (MAX_PAIRS + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS;
@@ -483,11 +475,7 @@ struct Correlation : viamd::EventHandler {
                 // What the samples were of is gone: nothing of it is shown again
                 cancel_all_jobs(true);
                 for (int i = 0; i < num_layers; ++i) {
-                    for (DensityPart& part : layers[i].parts) {
-                        part.has_result = false;
-                        part.shown_hash = 0;
-                        part.want_hash = 0;
-                    }
+                    for (DensityPart& part : layers[i].parts) density_map_slot_forget(&part.slot);
                     layers[i].data_key = 0;
                 }
                 system_generation += 1;
@@ -621,10 +609,7 @@ struct Correlation : viamd::EventHandler {
     void free_derived(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
         cancel_job(l, true);
-        for (DensityPart& part : l.parts) {
-            if (part.tex) density_map_texture_free(&part.tex);
-            part.tex = 0;
-        }
+        for (DensityPart& part : l.parts) density_map_slot_free(&part.slot);
         md_array_free(l.sx, heap);
         md_array_free(l.sy, heap);
         md_array_free(l.st, heap);
@@ -814,18 +799,19 @@ struct Correlation : viamd::EventHandler {
     // ## Jobs
 
     void cancel_job(Layer& l, bool wait) {
-        for (DensityPart& part : l.parts) {
-            if (!part.job) continue;
-            // Its callback still comes, and finds the layer gone or the job not its own
-            density_map_cancel(part.job, wait);
-            part.job = nullptr;
-            part.want_hash = 0;
-        }
+        for (DensityPart& part : l.parts) density_map_slot_cancel(&part.slot, wait);
     }
 
     static bool layer_busy(const Layer& l) {
         for (const DensityPart& part : l.parts) {
-            if (part.job) return true;
+            if (part.slot.job) return true;
+        }
+        return false;
+    }
+
+    static bool layer_slow(const Layer& l) {
+        for (const DensityPart& part : l.parts) {
+            if (density_map_slot_slow(part.slot)) return true;
         }
         return false;
     }
@@ -876,7 +862,7 @@ struct Correlation : viamd::EventHandler {
     // The density of part g of the layer: of all its samples in channel 0, or split, of its pairs in theirs
     void launch_job(Layer& l, int g, bool split, uint64_t hash) {
         DensityPart& part = l.parts[g];
-        ASSERT(!part.job);
+        ASSERT(!part.slot.job);
         struct Input {
             std::vector<float> x, y;
             std::vector<uint8_t> c;     // The channel of each sample, all 0 when empty
@@ -884,12 +870,20 @@ struct Correlation : viamd::EventHandler {
         std::shared_ptr<Input> in = std::make_shared<Input>();
         const size_t count = md_array_size(l.sx);
         if (split) {
-            for (size_t i = 0; i < count; ++i) {
-                const int p = l.spair[i];
-                if (p / DENSITY_MAP_CHANNELS != g) continue;
-                in->x.push_back(l.sx[i]);
-                in->y.push_back(l.sy[i]);
-                in->c.push_back((uint8_t)(p % DENSITY_MAP_CHANNELS));
+            // The samples of a pair are together (gather): its range, for each of the part's
+            const int p0 = g * DENSITY_MAP_CHANNELS;
+            const int p1 = MIN(p0 + DENSITY_MAP_CHANNELS, l.num_pairs);
+            size_t n = 0;
+            for (int p = p0; p < p1; ++p) n += l.pairs[p].end - l.pairs[p].beg;
+            in->x.reserve(n);
+            in->y.reserve(n);
+            in->c.reserve(n);
+            for (int p = p0; p < p1; ++p) {
+                const size_t b = MIN(l.pairs[p].beg, count), e = MIN(l.pairs[p].end, count);
+                if (e <= b) continue;
+                in->x.insert(in->x.end(), l.sx + b, l.sx + e);
+                in->y.insert(in->y.end(), l.sy + b, l.sy + e);
+                in->c.insert(in->c.end(), e - b, (uint8_t)(p - p0));
             }
         } else {
             in->x.assign(l.sx, l.sx + count);
@@ -912,31 +906,14 @@ struct Correlation : viamd::EventHandler {
             }
         };
         const uint32_t id = l.id;
-        const uint64_t serial = ++part.job_serial;
-        auto done = [this, id, g, split, hash, serial, domain](const DensityMapResult* result, const float* grid) {
+        auto find = [this, id, g]() -> DensityMapSlot* {
             Layer* layer = find_layer(id);
-            if (!layer) return;
-            DensityPart& pt = layer->parts[g];
-            if (!pt.job || pt.job_serial != serial || pt.want_hash != hash) return;
-            pt.job = nullptr;
-            if (!result) {
-                // Interrupted: tried again
-                pt.want_hash = 0;
-                return;
-            }
-            const uint8_t wrap = (uint8_t)((domain.periodic_x ? 1 : 0) | (domain.periodic_y ? 2 : 0));
-            if (pt.tex && pt.tex_wrap != wrap) density_map_texture_free(&pt.tex);
-            if (!pt.tex) pt.tex = density_map_texture_create(domain.periodic_x, domain.periodic_y);
-            pt.tex_wrap = wrap;
-            density_map_texture_upload(pt.tex, grid);
-            pt.result = *result;
-            pt.domain = domain;
-            pt.split = split;
-            pt.has_result = true;
-            pt.shown_hash = hash;
+            return layer ? &layer->parts[g].slot : nullptr;
         };
-        part.want_hash = hash;
-        part.job = density_map_launch(STR_LIT("Correlation density"), domain, sigma, num_chunks, source, done);
+        auto accepted = [this, id, g, split](DensityMapSlot*) {
+            if (Layer* layer = find_layer(id)) layer->parts[g].split = split;
+        };
+        density_map_slot_launch(&part.slot, STR_LIT("Correlation density"), domain, sigma, num_chunks, source, hash, find, accepted);
     }
 
     // ## Update
@@ -1456,9 +1433,9 @@ struct Correlation : viamd::EventHandler {
             for (int g = 0; g < layer_num_parts(l); ++g) {
                 DensityPart& part = l.parts[g];
                 const uint64_t hg = md_hash64_combine(h, (uint64_t)g) | 1;
-                if (hg == part.shown_hash || hg == part.want_hash) continue;
+                if (hg == part.slot.shown_hash || hg == part.slot.want_hash) continue;
                 // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
-                if (part.job) continue;
+                if (part.slot.job) continue;
                 launch_job(l, g, split, hg);
             }
         }
@@ -1751,10 +1728,10 @@ struct Correlation : viamd::EventHandler {
         int n = 0;
         for (int g = 0; g < layer_num_parts(l); ++g) {
             const DensityPart& part = l.parts[g];
-            if (!part.has_result || !part.tex) continue;
+            if (!part.slot.has_result || !part.slot.tex) continue;
             // Until the split one comes, the density of them all
             if (!part.split && g > 0) continue;
-            const DensityMapResult& r = part.result;
+            const DensityMapResult& r = part.slot.result;
             for (int c = 0; c < (part.split ? DENSITY_MAP_CHANNELS : 1); ++c) {
                 const int p = g * DENSITY_MAP_CHANNELS + c;
                 if (part.split && p >= l.num_pairs) break;
@@ -1763,7 +1740,7 @@ struct Correlation : viamd::EventHandler {
                 color.w = 1.0f;
                 DensityMapDraw* d = &out[n++];
                 density_map_draw_init(d);
-                d->tex = part.tex;
+                d->tex = part.slot.tex;
                 d->opacity = l.opacity;
                 d->line_width = l.line_width;
                 d->line_color[0] = color.x;
@@ -1778,8 +1755,8 @@ struct Correlation : viamd::EventHandler {
                 density_map_draw_fills_from(d, part.split ? color : vec_cast(l.color));
                 // Over a domain of its own: each layer's is its samples' extent
                 d->own_view_uv = 1;
-                density_map_plot_view_uv(d->view_uv, part.domain);
-                d->content = md_hash64_combine(part.shown_hash, (uint64_t)c);
+                density_map_plot_view_uv(d->view_uv, part.slot.domain);
+                d->content = md_hash64_combine(part.slot.shown_hash, (uint64_t)c);
             }
         }
         return n;
@@ -2151,6 +2128,21 @@ struct Correlation : viamd::EventHandler {
 
         if (show_legend && al) draw_legend(*al, pos);
 
+        // What is left out of the points shown, and densities being found
+        {
+            uint32_t stride = 1;
+            bool busy = false;
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!l.visible || !l.data_valid) continue;
+                if (layer_draws_points(l)) stride = MAX(stride, l.point_stride);
+                busy |= layer_slow(l);
+            }
+            char note[64] = "";
+            if (stride > 1) snprintf(note, sizeof(note), "Every %u samples shown", stride);
+            density_map_plot_status(note, busy);
+        }
+
         // Why there is nothing to see
         bool any = false;
         for (int i = 0; i < num_layers; ++i) any |= layers[i].visible && layers[i].data_valid;
@@ -2232,9 +2224,11 @@ struct Correlation : viamd::EventHandler {
         const bool hovered = ImPlot::IsPlotHovered();
         const int tau = CLAMP((int)lround(ImPlot::GetPlotMousePos().x), -L, L);
         int curves = 0;
+        bool lag_skipped = false;
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
             if (!l.visible || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            lag_skipped |= l.lag_skipped;
             for (int p = 0; p < l.num_pairs; ++p) {
                 const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
                 ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
@@ -2268,6 +2262,7 @@ struct Correlation : viamd::EventHandler {
             ImPlot::PlotInfLines("##cursor", &t, 1);
             draw_lag_tooltip(tau, L);
         }
+        if (curves > 0) density_map_plot_status(lag_skipped ? "Some members left out" : nullptr, false);
 
         ImPlot::EndPlot();
         ImPlot::PopStyleColor();
@@ -2549,12 +2544,7 @@ struct Correlation : viamd::EventHandler {
                     !l.data_valid ? ImGui::ColorConvertFloat4ToU32(error_color) : dim_col, stats, nullptr, 0.0f, &clip);
 
         // Working on its density
-        if (layer_busy(l)) {
-            const float t = (float)ImGui::GetTime();
-            const ImVec2 c = ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9);
-            dl->PathArcTo(c, 4.5f, t * 6.0f, t * 6.0f + 4.0f, 10);
-            dl->PathStroke(dim_col, 0, 1.5f);
-        }
+        if (layer_busy(l)) density_map_spinner(dl, ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9), dim_col);
 
         ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + row_h + 2));
         ImGui::Dummy(ImVec2(0, 0));

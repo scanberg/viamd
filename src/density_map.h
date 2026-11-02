@@ -126,6 +126,42 @@ DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, f
 // reads may then go).
 void density_map_cancel(DensityMapJob* job, bool wait);
 
+// ## Slots: the density of a layer, kept on the GPU until the next one is in
+
+// What a layer's density is, and the job finding the next one. The last result stays shown while a job runs.
+struct DensityMapSlot {
+    uint32_t tex = 0;
+    uint8_t  tex_wrap = 0;          // Along which axes tex wraps around: 1 x, 2 y
+    DensityMapResult result = {};
+    DensityMapDomain domain = {};   // Of the result
+    bool     has_result = false;
+    uint64_t shown_hash = 0;        // Of the inputs of the density in tex
+    uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none
+    DensityMapJob* job = nullptr;   // Under way
+    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+    double   job_started = 0.0;     // ImGui time
+};
+
+// Finds the slot again once the job is done (its owner may have moved, or gone: NULL)
+using DensityMapSlotFind = std::function<DensityMapSlot*()>;
+// Once the slot took a result, with it: for what the owner keeps beside it
+using DensityMapSlotAccepted = std::function<void(DensityMapSlot* slot)>;
+
+// Launches the job of a slot (that has none) for inputs of hash. When it is done, the slot found takes the result (its
+// texture made, wrapped as the domain, and filled) if it still wants it; otherwise it is left to try again.
+void density_map_slot_launch(DensityMapSlot* slot, str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks,
+                             DensityMapSource source, uint64_t hash, DensityMapSlotFind find, DensityMapSlotAccepted accepted = {});
+// Cancels its job: what it wanted is tried again
+void density_map_slot_cancel(DensityMapSlot* slot, bool wait);
+// What it shows is of nothing there is any more: found again however alike the inputs are (its job cancelled first)
+void density_map_slot_forget(DensityMapSlot* slot);
+// Its job cancelled, its texture freed, and nothing kept
+void density_map_slot_free(DensityMapSlot* slot);
+// For a copy of the owner: nothing of the original's (the original keeps its texture and its job)
+static inline void density_map_slot_detach(DensityMapSlot* slot) { *slot = DensityMapSlot{}; }
+// Its job has run for longer than delay seconds (shown as busy: not for the jobs that are quick)
+bool density_map_slot_slow(const DensityMapSlot& slot, double delay = 0.3);
+
 // The density at which the region of everything denser encloses the fraction 'level' of the samples of a channel
 float density_map_threshold(const float table[DENSITY_MAP_TABLE], float level);
 
@@ -243,3 +279,9 @@ enum DensityMapSwatch : int {
     DensityMapSwatch_Heatmap,
 };
 void density_map_swatch(ImDrawList* dl, ImVec2 min, ImVec2 max, DensityMapSwatch kind, ImVec4 color, bool fill, ImPlotColormap cmap, float alpha);
+
+// An arc going around c: working on it
+void density_map_spinner(ImDrawList* dl, ImVec2 c, ImU32 col, float radius = 4.5f);
+
+// In the lower right corner of the current plot (after SetupFinish): a note, if any, and a spinner while busy
+void density_map_plot_status(const char* note, bool busy);
