@@ -552,20 +552,19 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     }
     push_call(args, {});
 
-    // By the residue and name, as the file numbers them: particles(chain='A', resid=12)['CA'], the particle of the name
-    // within the residue
+    // Within residues as the file numbers them, each written once: particles(chain='A', resid=12). A particle is named
+    // where its name picks it alone in its residue, and taken by its position there where it does not.
     int32_t res[4] = {-1, -1, -1, -1};
-    str_t names[4] = {};
-    bool named = sys.residue.seq_id != nullptr;
+    str_t names[4] = {}, rexpr[4] = {};
+    bool unique[4] = {}, all_unique = true;
+    int32_t pos[4] = {};
+    md_bitset_t res0 = {};      // the first particle's residue, as rexpr[0] picks it
+    bool by_res = sys.residue.seq_id != nullptr;
     bool same_res = true;
-    for (size_t i = 0; i < count && named; ++i) {
-        res[i] = atom_res(c, (size_t)atoms[i]);
-        names[i] = md_atom_name(&sys.atom, (size_t)atoms[i]);
-        named = res[i] >= 0 && quotable(names[i]);
-        same_res &= res[i] == res[0];
-    }
-    bool by_res = named;
     for (size_t i = 0; i < count && by_res; ++i) {
+        res[i] = atom_res(c, (size_t)atoms[i]);
+        if (res[i] < 0) { by_res = false; break; }
+        same_res &= res[i] == res[0];
         const int32_t chain = res_chain(c, res[i]);
         sb += "particles(";
         if (chain >= 0) {
@@ -575,36 +574,110 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
             write_quoted(&sb, id);
             sb += ", ";
         }
-        md_str_writer_fmt(&sb, "resid=%d)[", (int)md_system_residue_seq_id(&sys, (size_t)res[i]));
-        write_quoted(&sb, names[i]);
-        sb += ']';
-        args[i] = take(&sb, temp);
-        by_res = picks_atom(args[i], atoms[i]);
-    }
-    md_str_writer_reset(&sb);
-    if (by_res) push_call(args, {});
-
-    // The same measurement in every residue of the name, where each of them has each of the particles once
-    const str_t resname = named && same_res ? md_system_residue_name(&sys, (size_t)res[0]) : str_t{};
-    if (quotable(resname)) {
-        size_t num_res = 0;
-        bool ok = true;
-        for (size_t i = 0; i < count && ok; ++i) {
-            sb += "residues(";
-            write_quoted(&sb, resname);
-            sb += ")[";
+        md_str_writer_fmt(&sb, "resid=%d)", (int)md_system_residue_seq_id(&sys, (size_t)res[i]));
+        rexpr[i] = take(&sb, temp);
+        // Its position among the residue's particles as the expression picks them
+        md_array(md_bitset_t) rs = 0;
+        if (!filter_sets(&rs, rexpr[i], sys, temp) || md_array_size(rs) != 1 || !md_bitset_test(rs[0], (uint32_t)atoms[i])) { by_res = false; break; }
+        if (i == 0) res0 = rs[0];
+        pos[i] = (int32_t)md_bitset_count_range(rs[0], 0, (uint32_t)atoms[i]);
+        names[i] = md_atom_name(&sys.atom, (size_t)atoms[i]);
+        if (quotable(names[i]) && !str_empty(names[i])) {
+            sb += rexpr[i];
+            sb += '[';
             write_quoted(&sb, names[i]);
             sb += ']';
-            args[i] = take(&sb, temp);
-            md_array(md_bitset_t) sets = 0;
-            ok = filter_sets(&sets, args[i], sys, temp) && md_array_size(sets) > 0 && (i == 0 || md_array_size(sets) == num_res);
-            num_res = md_array_size(sets);
-            for (size_t k = 0; k < md_array_size(sets) && ok; ++k) ok = md_bitset_count(sets[k]) == 1;
+            unique[i] = picks_atom(take(&sb, temp), atoms[i]);
         }
-        if (ok && num_res > 1) {
-            md_str_writer_fmt(&sb, "One value for each of the %zu " STR_FMT, num_res, STR_ARG(resname));
-            const str_t hint = take(&sb, temp);
-            push_call(args, hint);
+        all_unique &= unique[i];
+    }
+    md_str_writer_reset(&sb);
+    // Whether a stacked expression gives the particles, one per set, in order
+    auto stacks = [&](str_t expr, const int32_t* want, size_t n) {
+        md_array(md_bitset_t) sets = 0;
+        if (!filter_sets(&sets, expr, sys, temp) || md_array_size(sets) != n) return false;
+        for (size_t k = 0; k < n; ++k) {
+            if (md_bitset_count(sets[k]) != 1 || !md_bitset_test(sets[k], (uint32_t)want[k])) return false;
+        }
+        return true;
+    };
+    if (by_res && same_res) {
+        // One residue: its particles stacked, by name or by position, and the measurement of them as one argument
+        sb += rexpr[0];
+        sb += "[[";
+        for (size_t i = 0; i < count; ++i) {
+            if (i) sb += ", ";
+            if (all_unique) write_quoted(&sb, names[i]);
+            else md_str_writer_fmt(&sb, "%d", pos[i]);
+        }
+        sb += "]]";
+        const str_t stacked = take(&sb, temp);
+        if (stacks(stacked, atoms, count)) {
+            md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
+            Line l = {take(&sb, temp), {}};
+            md_array_push(lines, l, temp);
+        }
+    } else if (by_res) {
+        // Across residues: each particle by its residue, and its name or its position there
+        for (size_t i = 0; i < count; ++i) {
+            sb += rexpr[i];
+            sb += '[';
+            if (unique[i]) write_quoted(&sb, names[i]);
+            else md_str_writer_fmt(&sb, "%d", pos[i]);
+            sb += ']';
+            args[i] = take(&sb, temp);
+            if (!picks_atom(args[i], atoms[i])) { by_res = false; break; }
+        }
+        if (by_res) push_call(args, {});
+    }
+
+    // The same measurement in every residue of the name: by the names where each residue has each once, else by the
+    // positions where every residue of the name has the same particles in the same order, so a position means the same
+    const str_t resname = by_res && same_res ? md_system_residue_name(&sys, (size_t)res[0]) : str_t{};
+    if (quotable(resname) && !str_empty(resname)) {
+        sb += "residues(";
+        write_quoted(&sb, resname);
+        sb += ')';
+        const str_t every = take(&sb, temp);
+        md_array(md_bitset_t) units = 0;
+        size_t num_res = filter_sets(&units, every, sys, temp) ? md_array_size(units) : 0;
+        if (num_res > 1) {
+            // By positions only where every residue of the name has the selected residue's names, in its order
+            bool same = true;
+            if (!all_unique) {
+                const size_t n0 = md_bitset_count(res0);
+                uint32_t* a0 = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
+                uint32_t* au = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
+                md_bitset_extract_indices(a0, n0, res0);
+                for (size_t u = 0; u < num_res && same; ++u) {
+                    same = md_bitset_count(units[u]) == n0;
+                    if (!same) break;
+                    md_bitset_extract_indices(au, n0, units[u]);
+                    for (size_t q = 0; q < n0 && same; ++q) same = str_eq(md_atom_name(&sys.atom, a0[q]), md_atom_name(&sys.atom, au[q]));
+                }
+            }
+            if (!same) num_res = 0;
+            const bool use_names = all_unique;
+            sb += every;
+            if (use_names) {
+                sb += "[[";
+                for (size_t i = 0; i < count; ++i) { if (i) sb += ", "; write_quoted(&sb, names[i]); }
+            } else {
+                sb += ".particles[[";
+                for (size_t i = 0; i < count; ++i) { if (i) sb += ", "; md_str_writer_fmt(&sb, "%d", pos[i]); }
+            }
+            sb += "]]";
+            const str_t stacked = take(&sb, temp);
+            md_array(md_bitset_t) sets = 0;
+            bool ok = filter_sets(&sets, stacked, sys, temp) && md_array_size(sets) == num_res * count;
+            for (size_t k = 0; k < md_array_size(sets) && ok; ++k) ok = md_bitset_count(sets[k]) == 1;
+            if (ok) {
+                md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
+                const str_t text = take(&sb, temp);
+                md_str_writer_fmt(&sb, "One value for each of the %zu " STR_FMT, num_res, STR_ARG(resname));
+                Line l = {text, take(&sb, temp)};
+                md_array_push(lines, l, temp);
+            }
         }
     }
 

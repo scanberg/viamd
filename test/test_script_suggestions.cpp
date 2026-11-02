@@ -725,6 +725,44 @@ UTEST(script_suggestions, vial_what_the_particles_are) {
     unload(&l);
 }
 
+// Names a residue holds twice: positions within it, stacked; and in every residue of the name, where each has the same
+// particles in the same order
+UTEST(script_suggestions, vial_measurement_by_position) {
+    const char* pdb =
+        "HETATM    1  C   LIG A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C   LIG A   1       1.500   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  O   LIG A   1       2.200   1.200   0.000  1.00  0.00           O\n"
+        "HETATM    4  C   LIG A   2      10.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    5  C   LIG A   2      11.500   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    6  O   LIG A   2      12.200   1.200   0.000  1.00  0.00           O\n"
+        "END\n";
+    const char* file = "vial_dup_names.pdb";
+    FILE* f = fopen(file, "wb");
+    ASSERT_TRUE(f != NULL);
+    fputs(pdb, f);
+    fclose(f);
+    Loaded l;
+    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    l.sys = {.alloc = l.alloc};
+    md_system_state_t st = {.alloc = l.alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, str_from_cstr(file), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL);
+    const int32_t atoms[3] = {1, 0, 2};
+    md_array(ScriptSuggestion) s = script_suggest_measurement(V2, STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
+    print(s);
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
+    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=1)[[1, 0, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residues('LIG').particles[[1, 0, 2]])"));
+    EXPECT_FALSE(any_contains(s, "['C'"));
+    // Across residues: a name it holds twice by its position, the other by name
+    const int32_t two[2] = {1, 5};
+    md_array(ScriptSuggestion) t = script_suggest_measurement(V2, STR_LIT("m1"), two, 2, l.sys, l.alloc);
+    print(t);
+    EXPECT_TRUE(contains(t, "m1 = distance(particles(chain='A', resid=1)[1], particles(chain='A', resid=2)['O'])"));
+    unload(&l);
+    remove(file);
+}
+
 UTEST(script_suggestions, vial_measurement) {
     Loaded l;
     ASSERT_TRUE(load(&l, "1k4r.pdb"));
@@ -732,8 +770,9 @@ UTEST(script_suggestions, vial_measurement) {
     print(s);
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
     EXPECT_TRUE(contains(s, "m1 = angle(particles[30], particles[31], particles[32])"));
-    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=5)['N'], particles(chain='A', resid=5)['CA'], particles(chain='A', resid=5)['C'])"));
-    EXPECT_TRUE(contains(s, "m1 = angle(residues('HIS')['N'], residues('HIS')['CA'], residues('HIS')['C'])"));
+    // Within one residue, written once, with its particles stacked by name
+    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=5)[['N', 'CA', 'C']])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residues('HIS')[['N', 'CA', 'C']])"));
     for (size_t i = 0; i < md_array_size(s); ++i) {
         size_t loc;
         const bool every = str_find_str(&loc, s[i].text, STR_LIT("residues("));
