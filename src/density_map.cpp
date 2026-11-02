@@ -676,7 +676,6 @@ uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, 
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(l.tex, 0);
     glUniform2f(l.tex_size, (float)DENSITY_MAP_DIM, (float)DENSITY_MAP_DIM);
-    glUniform4fv(l.uv_rect, 1, view_uv);
     glUniform2f(l.inv_res, 1.0f / width, 1.0f / height);
     glUniform1i(l.clip, clip_uv ? 1 : 0);
     const float no_clip[6] = { 0, 0, 1, 0, 0, 1 };
@@ -685,6 +684,7 @@ uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, 
     for (int i = 0; i < num_draws; ++i) {
         const DensityMapDraw& d = draws[i];
         glBindTexture(GL_TEXTURE_2D, d.tex);
+        glUniform4fv(l.uv_rect, 1, d.own_view_uv ? d.view_uv : view_uv);
         glUniform4fv(l.weights, 1, d.weights);
         glUniform1i(l.mode, d.mode);
         glUniform1i(l.fill, d.fill);

@@ -165,6 +165,8 @@ struct DensityMapDraw {
     float    cmap[16][4];
     float    cmap_max;
     float    opacity;
+    int32_t  own_view_uv;   // Of a grid over a domain of its own: drawn with view_uv rather than the canvas's
+    float    view_uv[4];    // (density_map_composite)
     uint64_t content;       // Of what is in tex: another result, another drawing
 };
 
@@ -185,7 +187,8 @@ struct DensityMapCanvas {
 };
 
 // Composites the draws, the first at the bottom, into the canvas, of width x height texels, when what they show
-// changed. view_uv: the uv of the grid at the plot's lower left corner, and the extent of the plot in uv. clip_uv, if
+// changed. view_uv: the uv of the grid at the plot's lower left corner, and the extent of the plot in uv, for the draws
+// that do not have their own (DensityMapDraw::own_view_uv: layers over domains of their own). clip_uv, if
 // given: a triangle (3 uv) outside which nothing is drawn. Returns the texture, 0 when there is nothing to show.
 uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws, const float* clip_uv = nullptr);
 void     density_map_canvas_free(DensityMapCanvas* canvas);
