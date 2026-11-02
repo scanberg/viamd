@@ -49,6 +49,8 @@
 #include <plot_series.h>
 #include <plot_periodic_core.h>
 
+#include "correlation_core.h"
+
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <imgui_internal.h>
@@ -310,6 +312,11 @@ static inline double cut_periodic(double x, const SeriesPeriodic& p) {
     return series_periodic_valid(p) ? periodic_wrap(x, p.seam, series_periodic_length(p)) : x;
 }
 
+// A value as it is correlated: of periodic values, its angle in radians from the beginning of the period
+static inline double to_corr_value(double v, const SeriesPeriodic& p) {
+    return series_periodic_valid(p) ? 2.0 * M_PI * (v - p.beg) / series_periodic_length(p) : v;
+}
+
 // The value of member k of a distribution at x, in its display unit: between the centres of its bins
 static inline double bin_value_at(const SeriesHistogramView& v, double x, int k) {
     const double fi = series_histogram_index_at(v, x);
@@ -336,40 +343,6 @@ static bool is_script_distribution(const ApplicationState* app, const SeriesKey&
     if (k.source != SeriesSource_Script || !app->script.eval_ir) return false;
     const md_script_property_flags_t f = md_script_ir_property_flags(app->script.eval_ir, series_script_ident(k));
     return (f & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) && !(f & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
-}
-
-// The ranks of v[0..n[, ties given the mean of theirs, from 1
-static void rank(double* out, const double* v, size_t n, std::vector<uint32_t>& idx) {
-    idx.resize(n);
-    for (size_t i = 0; i < n; ++i) idx[i] = (uint32_t)i;
-    std::sort(idx.begin(), idx.end(), [v](uint32_t a, uint32_t b) { return v[a] < v[b]; });
-    size_t i = 0;
-    while (i < n) {
-        size_t j = i + 1;
-        while (j < n && v[idx[j]] == v[idx[i]]) ++j;
-        const double r = 0.5 * (double)(i + j + 1);   // The mean of the ranks i + 1 .. j
-        for (size_t k = i; k < j; ++k) out[idx[k]] = r;
-        i = j;
-    }
-}
-
-// Pearson's of a[0..n[ against b[0..n[, false when either does not vary
-static bool pearson(double* r, const double* a, const double* b, size_t n) {
-    if (n < 3) return false;
-    double ma = 0, mb = 0;
-    for (size_t i = 0; i < n; ++i) { ma += a[i]; mb += b[i]; }
-    ma /= (double)n;
-    mb /= (double)n;
-    double saa = 0, sbb = 0, sab = 0;
-    for (size_t i = 0; i < n; ++i) {
-        const double da = a[i] - ma, db = b[i] - mb;
-        saa += da * da;
-        sbb += db * db;
-        sab += da * db;
-    }
-    if (!(saa > 0.0) || !(sbb > 0.0)) return false;
-    *r = sab / sqrt(saa * sbb);
-    return true;
 }
 
 // The time of a fractional frame, along the timeline
@@ -985,9 +958,14 @@ struct Correlation : viamd::EventHandler {
         const int num_frames = (int)run_num_frames(app);
         uint32_t beg = 0, end = 0;
         const bool has_range = layer_frame_range(l, &beg, &end);
-        const uint64_t frames[5] = { (uint64_t)l.frames, beg, end, (uint64_t)has_range, (uint64_t)num_frames };
+        // Distributions are of every frame unless of a period: the frame shown does not change them
+        bool all_binned = l.num_x + l.num_y > 0;
+        for (int i = 0; i < l.num_x; ++i) all_binned &= l.x_info[i].binned;
+        for (int i = 0; i < l.num_y; ++i) all_binned &= l.y_info[i].binned;
+        const bool by_frame = l.frames == LayerFrames_Current && !all_binned;
+        const uint64_t frames[5] = { (uint64_t)l.frames, by_frame || l.frames != LayerFrames_Current ? beg : 0, by_frame || l.frames != LayerFrames_Current ? end : 0, (uint64_t)has_range, (uint64_t)num_frames };
         key = md_hash64(frames, sizeof(frames), key);
-        if (l.frames == LayerFrames_Current) key = md_hash64(&app->animation.frame, sizeof(app->animation.frame), key);
+        if (by_frame) key = md_hash64(&app->animation.frame, sizeof(app->animation.frame), key);
         key |= 1;
         if (key == l.data_key) return;
         l.data_key = key;
@@ -1215,72 +1193,22 @@ struct Correlation : viamd::EventHandler {
         if (!s.circular) {
             const size_t step = MAX((size_t)1, (count + MAX_RANKED - 1) / MAX_RANKED);
             const size_t m = (count + step - 1) / step;
-            std::vector<double> x(m), y(m), rx(m), ry(m);
-            std::vector<uint32_t> idx;
+            std::vector<double> x(m), y(m);
             for (size_t i = 0; i < m; ++i) {
                 x[i] = l.sx[s.beg + i * step];
                 y[i] = l.sy[s.beg + i * step];
             }
-            rank(rx.data(), x.data(), m, idx);
-            rank(ry.data(), y.data(), m, idx);
-            s.rho_valid = pearson(&s.rho, rx.data(), ry.data(), m);
+            s.rho_valid = corr_spearman(&s.rho, x.data(), y.data(), m);
             s.rho_n = m;
             return;
         }
 
-        // In radians from the start of the period
-        auto angle = [](double v, const SeriesPeriodic& per) { return 2.0 * M_PI * (v - per.beg) / series_periodic_length(per); };
-        const double inv_n = 1.0 / (double)count;
-        if (s.circular == 2) {
-            // Jammalamadaka and SenGupta (1988): about the circular means
-            double sa = 0, ca = 0, sb = 0, cb = 0;
-            for (size_t i = s.beg; i < s.end; ++i) {
-                const double a = angle(l.sx[i], px), b = angle(l.sy[i], py);
-                sa += sin(a); ca += cos(a);
-                sb += sin(b); cb += cos(b);
-            }
-            const double ma = atan2(sa, ca), mb = atan2(sb, cb);
-            double num = 0, da2 = 0, db2 = 0;
-            for (size_t i = s.beg; i < s.end; ++i) {
-                const double da = sin(angle(l.sx[i], px) - ma);
-                const double db = sin(angle(l.sy[i], py) - mb);
-                num += da * db;
-                da2 += da * da;
-                db2 += db * db;
-            }
-            if (da2 > 0.0 && db2 > 0.0) {
-                s.rc = num / sqrt(da2 * db2);
-                s.rc_valid = true;
-            }
-            return;
+        std::vector<double> x(count), y(count);
+        for (size_t i = 0; i < count; ++i) {
+            x[i] = to_corr_value(l.sx[s.beg + i], px);
+            y[i] = to_corr_value(l.sy[s.beg + i], py);
         }
-
-        // Mardia (1976), circular against linear: of the linear values with the cosine and the sine of the angles
-        const float* lin = cx ? l.sy : l.sx;
-        const float* cir = cx ? l.sx : l.sy;
-        const SeriesPeriodic& per = cx ? px : py;
-        double mx = 0, mc = 0, ms = 0;
-        for (size_t i = s.beg; i < s.end; ++i) {
-            const double a = angle(cir[i], per);
-            mx += lin[i]; mc += cos(a); ms += sin(a);
-        }
-        mx *= inv_n; mc *= inv_n; ms *= inv_n;
-        double sxx = 0, scc = 0, sss = 0, sxc = 0, sxs = 0, scs = 0;
-        for (size_t i = s.beg; i < s.end; ++i) {
-            const double a = angle(cir[i], per);
-            const double dx = lin[i] - mx, dc = cos(a) - mc, ds = sin(a) - ms;
-            sxx += dx * dx; scc += dc * dc; sss += ds * ds;
-            sxc += dx * dc; sxs += dx * ds; scs += dc * ds;
-        }
-        if (!(sxx > 0.0) || !(scc > 0.0) || !(sss > 0.0)) return;
-        const double rxc = sxc / sqrt(sxx * scc);
-        const double rxs = sxs / sqrt(sxx * sss);
-        const double rcs = scs / sqrt(scc * sss);
-        const double den = 1.0 - rcs * rcs;
-        if (!(den > 1e-12)) return;
-        const double r2 = (rxc * rxc + rxs * rxs - 2.0 * rxc * rxs * rcs) / den;
-        s.rc = sqrt(CLAMP(r2, 0.0, 1.0));
-        s.rc_valid = true;
+        s.rc_valid = corr_of(&s.rc, corr_kind(cx, cy), x.data(), y.data(), count);
     }
 
     void update() {
