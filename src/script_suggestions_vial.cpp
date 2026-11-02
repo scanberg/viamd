@@ -1,7 +1,8 @@
 // The lines of the Script menu, written in VIAL (script v2). What they offer is what script_suggestions.h says; how
 // they are written is VIAL's: selections are particles(...) with keywords, which all have to hold, and the predefined
-// sets (protein, water, ...); a particle by its position is particles[i]; and the same measurement in every residue of a
-// name is one call over arrays of sets, angle(residues('ALA') and particles(name='N'), ...).
+// sets (protein, water, ...); a particle by its position is particles[i], and by its name within its residue
+// particles(chain='A', resid=12)['CA']; and the same measurement in every residue of a name is one call over arrays of
+// sets, angle(residues('ALA')['N'], residues('ALA')['CA'], residues('ALA')['C']).
 //
 // Every line is checked as v1's are: a selection is evaluated (script::filter_sets) and has to pick exactly the selected
 // particles, each argument of a measurement has to pick its particle alone, and the line has to compile.
@@ -551,7 +552,8 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     }
     push_call(args, {});
 
-    // By the residue and name, as the file numbers them: particles(chain='A', resid=12, name='CA')
+    // By the residue and name, as the file numbers them: particles(chain='A', resid=12)['CA'], the particle of the name
+    // within the residue
     int32_t res[4] = {-1, -1, -1, -1};
     str_t names[4] = {};
     bool named = sys.residue.seq_id != nullptr;
@@ -573,9 +575,9 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
             write_quoted(&sb, id);
             sb += ", ";
         }
-        md_str_writer_fmt(&sb, "resid=%d, name=", (int)md_system_residue_seq_id(&sys, (size_t)res[i]));
+        md_str_writer_fmt(&sb, "resid=%d)[", (int)md_system_residue_seq_id(&sys, (size_t)res[i]));
         write_quoted(&sb, names[i]);
-        sb += ')';
+        sb += ']';
         args[i] = take(&sb, temp);
         by_res = picks_atom(args[i], atoms[i]);
     }
@@ -590,9 +592,9 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         for (size_t i = 0; i < count && ok; ++i) {
             sb += "residues(";
             write_quoted(&sb, resname);
-            sb += ") and particles(name=";
+            sb += ")[";
             write_quoted(&sb, names[i]);
-            sb += ')';
+            sb += ']';
             args[i] = take(&sb, temp);
             md_array(md_bitset_t) sets = 0;
             ok = filter_sets(&sets, args[i], sys, temp) && md_array_size(sets) > 0 && (i == 0 || md_array_size(sets) == num_res);
