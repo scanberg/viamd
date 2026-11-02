@@ -222,7 +222,7 @@ struct Layer {
     bool     fill = false;
     bool     lines = true;
     float    line_width = 1.5f;            // Pixels
-    bool     split_pairs = false;          // One density per pair, in its colour, rather than one of them all
+    bool     split_pairs = true;           // One density per pair, in its colour, rather than one of them all
     int      num_levels = 3;
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };   // Fractions of the samples enclosed, increasing
     float    bandwidth = 3.0f;             // % of the extent of the samples along each axis: the sigma of the smoothing
@@ -257,6 +257,7 @@ struct Layer {
     float    t_min = 0, t_max = 0;
     bool     members_truncated = false;     // Populations of different sizes paired: the fewer members of the two
     bool     binned = false;                // Of distributions: bin by bin, the samples have no frame (NO_FRAME)
+    bool     pair_colors_clash = false;     // Pairs coloured by the colour map rather than their series (pair_color)
 
     // The density: of all the samples in the first part, or of each pair (layer_splits)
     DensityPart parts[MAX_PARTS];
@@ -1421,6 +1422,7 @@ struct Correlation : viamd::EventHandler {
         for (int i = 0; i < num_layers; ++i) {
             gather(layers[i]);
             update_lag(layers[i]);
+            layers[i].pair_colors_clash = pair_colors_clash(layers[i]);
         }
         update_axis_views();
 
@@ -1682,10 +1684,30 @@ struct Correlation : viamd::EventHandler {
         snprintf(buf, cap, "%s vs %s", y, x);
     }
 
+    // The colour of the series that varies between the pairs of a layer
+    static ImVec4 series_pair_color(const Layer& l, int p) {
+        return l.num_x > 1 && l.num_y == 1 ? l.x_info[p].color : l.y_info[pair_y(l, p)].color;
+    }
+
+    // Whether two pairs of a layer would be of alike colours (those of series are of their names)
+    static bool pair_colors_clash(const Layer& l) {
+        for (int a = 0; a < l.num_pairs; ++a) {
+            for (int b = a + 1; b < l.num_pairs; ++b) {
+                const ImVec4 ca = series_pair_color(l, a), cb = series_pair_color(l, b);
+                if (fabsf(ca.x - cb.x) + fabsf(ca.y - cb.y) + fabsf(ca.z - cb.z) < 0.1f) return true;
+            }
+        }
+        return false;
+    }
+
     // The colour of a pair (and member): of the series that varies between pairs, or of its members by the colour map
     ImVec4 pair_color(const Layer& l, int p, int m) const {
         if (l.num_pairs > 1) {
-            return l.num_x > 1 && l.num_y == 1 ? l.x_info[p].color : l.y_info[pair_y(l, p)].color;
+            const ImVec4 own = series_pair_color(l, p);
+            if (!l.pair_colors_clash) return own;
+            ImVec4 c = ImPlot::GetColormapColor(p, ImPlotColormap_Deep);
+            c.w = own.w;
+            return c;
         }
         const int members = l.pairs[0].members;
         if (members > 1) return ImPlot::SampleColormap((float)m / (float)(members - 1), l.colormap);
@@ -2563,7 +2585,9 @@ struct Correlation : viamd::EventHandler {
             const SlotInfo& info = infos[i];
             char name[128];
             slot_label(name, sizeof(name), l, axis, i);
-            ImGui::ColorButton("##c", info.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(line_h * 0.5f, line_h * 0.5f));
+            // On the axis the pairs vary along, the colour they are drawn in
+            const bool varies = l.num_pairs > 1 && i < l.num_pairs && (axis == 0 ? l.num_x > 1 && l.num_y == 1 : l.num_y > 1);
+            ImGui::ColorButton("##c", varies ? pair_color(l, i, 0) : info.color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(line_h * 0.5f, line_h * 0.5f));
             ImGui::SameLine();
             const float bw = line_h;
             const ImVec2 tp = ImGui::GetCursorScreenPos();
