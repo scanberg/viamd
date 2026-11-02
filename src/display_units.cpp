@@ -18,7 +18,8 @@ struct Option {
 };
 
 // Velocity and diffusion may be built from length and time like the units nothing names, which is what they did
-// before they could be chosen
+// before they could be chosen. Velocity is by default, so it reads in the length shown everywhere else; a diffusion
+// coefficient has a unit of its own by convention, 10⁻⁵ cm²/s, in gmx msd and in the literature alike, and is shown in it.
 static const char DERIVED[] = "derived";
 
 static const Option length_options[]      = { {"Å", "Å"}, {"nm", "nm"}, {"pm", "pm"}, {"bohr", "bohr"}, {"m", "m"} };
@@ -59,7 +60,7 @@ static const QuantityDesc s_desc[Quantity_Count] = {
     DESC("unit_velocity",    "Velocity",    velocity_options,    0),  // derived
     DESC("unit_force",       "Force",       force_options,       0),  // kJ/(mol·nm)
     DESC("unit_density",     "Density",     density_options,     0),  // g/cm³
-    DESC("unit_diffusion",   "Diffusion",   diffusion_options,   0),  // derived
+    DESC("unit_diffusion",   "Diffusion",   diffusion_options,   1),  // 10⁻⁵ cm²/s, as gmx msd reports it
     DESC("unit_dipole",      "Dipole",      dipole_options,      0),  // D
 };
 #undef DESC

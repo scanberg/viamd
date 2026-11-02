@@ -26,7 +26,7 @@
 // units nothing names: Å²/ps, count/nm³. The composite ones (energy, force, ...) are recognised
 // whole by their dimensions, because their usual units are not products of the base preferences:
 // a force in kJ/(mol·nm) is not u·Å/ps². Velocity and diffusion may instead be Derived, built from
-// length and time like the units nothing names, which is their default.
+// length and time like the units nothing names; velocity is by default, diffusion is in 10⁻⁵ cm²/s.
 
 namespace display_units {
 

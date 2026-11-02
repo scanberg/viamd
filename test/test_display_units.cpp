@@ -92,11 +92,12 @@ UTEST(display_units, density_diffusion_dipole) {
     double f = 0;
     { const std::string got_ = shown("u/Å^3", &f); EXPECT_STREQ("g/cm³", got_.c_str()); }
     EXPECT_NEAR(1.66053906892, f, 1e-6);
-    { const std::string got_ = shown("nm^2/ps", &f); EXPECT_STREQ("Å²/ps", got_.c_str()); }   // derived
-    EXPECT_NEAR(100.0, f, 1e-9);
-    choose(Quantity_Diffusion, "10⁻⁵ cm²/s");
+    // Diffusion as gmx msd reports it, unless Derived
     { const std::string got_ = shown("nm^2/ps", &f); EXPECT_STREQ("10⁻⁵ cm²/s", got_.c_str()); }
     EXPECT_NEAR(1000.0, f, 1e-6);
+    choose(Quantity_Diffusion, "Derived (length²/time)");
+    { const std::string got_ = shown("nm^2/ps", &f); EXPECT_STREQ("Å²/ps", got_.c_str()); }
+    EXPECT_NEAR(100.0, f, 1e-9);
     { const std::string got_ = shown("e*Å", &f); EXPECT_STREQ("D", got_.c_str()); }
     EXPECT_NEAR(4.80320, f, 1e-4);
     reset();
