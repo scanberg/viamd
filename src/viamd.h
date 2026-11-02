@@ -1184,6 +1184,15 @@ struct ApplicationState {
         // free_trajectory_data). A workspace stores this list and loads it again in the same order.
         FileList list;
         char workspace[1024] = {0};
+
+        // Halves of a system waiting for the other half (load_data_from_file): a topology without coordinates
+        // (prmtop, psf) waits for its coordinates, and coordinates (a restart, a trajectory) wait for a topology or
+        // a structure file of their atoms. Whichever comes second builds the system. Empty paths when none waits.
+        struct {
+            FileEntry topology;
+            FileEntry coordinates;
+            FileEntry trajectory;
+        } pending;
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
@@ -2217,6 +2226,7 @@ enum LoadResult {
     LoadResult_System,      // A new system, with its run when the file holds several frames
     LoadResult_Trajectory,  // A new run for the loaded system
     LoadResult_Supplement,  // Added to the loaded system, or along its run: the system and the run are as they were
+    LoadResult_Pending,     // Half of a system (a topology without coordinates, or coordinates without one): kept until the other half is loaded
 };
 
 // Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
@@ -2226,6 +2236,12 @@ LoadResult load_data(ApplicationState* app, str_t filepath, const loader::Loader
 
 // Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
 // give it (file_role), and a system file opens its own frames as the run.
+//
+// A topology without coordinates and its coordinates may come in either order (files.pending): the first waits, and
+// the second builds the system - from the topology with the coordinates of a restart or of a trajectory's first frame
+// (which then opens as the run too), or from a structure file of the same atoms with the topology applied to it. A
+// topology of as many atoms as the loaded system is applied to it; new coordinates for a system built from a topology
+// build it again with them.
 LoadResult load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
 void init_system_data(ApplicationState* app);
 // Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.

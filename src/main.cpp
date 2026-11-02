@@ -2740,12 +2740,13 @@ void draw_load_dataset_window(ApplicationState* data) {
             state.path_changed = false;
             state.path_is_valid = md_path_is_valid(path) && !md_path_is_directory(path);
 
-            // Try to assign loader_idx from extension
-            state.loader_idx = 0;
-            str_t ext;
-            if (extract_ext(&ext, path)) {
-                state.loader_idx = (int)loader::type_from_ext(ext);
+            // The loader a dropped file would get: from the extension, and from the contents where the extension
+            // does not tell (Amber's mdout, prmtop and inpcrd have none, a .top may be Amber's)
+            loader::LoaderState detected = {};
+            if (state.path_is_valid) {
+                loader::init(&detected, path, &data->mold.sys);
             }
+            state.loader_idx = (int)detected.type;
         }
 
         if (ImGui::BeginCombo("Loader", loader::type_name(state.loader_idx).ptr)) {
@@ -2840,10 +2841,10 @@ void draw_load_dataset_window(ApplicationState* data) {
             if (type == LoaderType_LAMMPSDATA) {
                 load_state.arg = state.atom_format_buf;
             }
-            // A loader other than the extension would pick has to be stored with the file in a workspace
-            str_t ext = {};
-            extract_ext(&ext, path);
-            if (type != loader::type_from_ext(ext)) {
+            // A loader other than the file would get on its own has to be stored with it in a workspace
+            loader::LoaderState detected = {};
+            loader::init(&detected, path, &data->mold.sys);
+            if (type != detected.type) {
                 load_state.flags |= LoaderFlag_ExplicitType;
             }
 
