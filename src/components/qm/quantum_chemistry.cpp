@@ -1128,6 +1128,40 @@ static bool qm_density_sample(void* user_data, const nci_surface::Grid& samples,
 //
 // The paths are named in one place: es_path in viamd.h for the format neutral ones, and the vlx/
 // literals below for what is still VeloxChem's own vocabulary waiting for a neutral name.
+struct NciScatterExportSlice {
+    std::string layer;
+    int layer_id = 0;
+    int surface_id = 0;
+    nci_surface::Family parameter_group = nci_surface::Family::Unassigned;
+    std::string category;
+    int resolution = topology::NciSurface::Res_Medium;
+    bool category_specific = false;
+    bool standardized_reference = false;
+    std::shared_ptr<const std::vector<float>> rho;
+    nci_surface::Grid grid = {};
+    nci_surface::Params params = {};
+    std::vector<double> anchors;
+    nci_surface::Scatter scatter;
+};
+
+struct NciScatterExportJob {
+    std::string samples_path;
+    std::string anchors_path;
+    std::string density_path;
+    std::string samples_csv;
+    std::string anchors_csv;
+    std::string density_csv;
+    std::vector<NciScatterExportSlice> slices;
+    std::vector<std::vector<std::string>> anchor_rows;
+    std::atomic<int32_t> cancel = 0;
+    std::atomic<bool> done = false;
+    std::atomic<size_t> completed_slices = 0;
+    std::atomic<float> slice_progress = 0.0f;
+    task_system::ID task = task_system::INVALID_ID;
+    bool ok = false;
+    std::string error;
+};
+
 struct QuantumChemistry : viamd::EventHandler {
     QuantumChemistry() { viamd::event_system_register_handler(*this); }
 
@@ -1350,6 +1384,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // Zoomed: the curve of the CPs in view, indices [window_begin, window_end), resolved at the view's scale and
             // scaled to their share of all; it is drawn and cut in the view. Invalid when the view holds them all.
             critical_point_distribution::Curve view_curve;
+            double sampled_min = 0.0, sampled_max = 0.0;   // the range view_curve is sampled over
             critical_point_distribution::Curve selection_curve;
             uint64_t selection_curve_key = 0;
             size_t window_begin = 0, window_end = 0;
@@ -1396,6 +1431,7 @@ struct QuantumChemistry : viamd::EventHandler {
     } critical_points;
 
     topology::NciState nci_state;
+    NciScatterExportJob* nci_scatter_export_job = nullptr;
     float cp_distribution_height = 0.0f;
     float cp_points_height = 0.0f;
 
@@ -1910,6 +1946,12 @@ struct QuantumChemistry : viamd::EventHandler {
                 critical_points.ring_job = nullptr;
                 gto_energy_job_destroy(critical_points.energy_job);
                 critical_points.energy_job = nullptr;
+                if (nci_scatter_export_job) {
+                    nci_scatter_export_job->cancel.store(1, std::memory_order_relaxed);
+                    task_system::task_wait_for(nci_scatter_export_job->task);
+                    delete nci_scatter_export_job;
+                    nci_scatter_export_job = nullptr;
+                }
                 topology::nci_state_free(nci_state);
                 md_arena_allocator_destroy(arena);
                 md_bitmask_free(&critical_points.selection_mask);
@@ -1928,6 +1970,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 critical_points_poll_gto();
                 critical_points_poll_ring_surfaces();
                 critical_points_poll_energies();
+                poll_nci_scatter_export();
 
                 // What the SYSTEM holds, not what this component parsed. Orbitals are what every
                 // window here is ultimately about, and the transition windows want their own data on
@@ -5590,6 +5633,7 @@ struct QuantumChemistry : viamd::EventHandler {
         preview.critical_points.reserve(cp.enabled ? graph.num_vertices : 0);
         for (size_t i = 0; cp.enabled && i < graph.num_vertices; ++i) {
             topology::NciCriticalPoint point;
+            point.index = (uint32_t)i;
             const bool labelled = i < cp.chemical_labels.size();
             point.family = labelled ? nci_surface::family_of(cp.chemical_labels[i]) : nci_surface::Family::Unassigned;
             point.parameter_family = labelled ? nci_surface::parameter_family_of(cp.chemical_labels[i]) : nci_surface::Family::Unassigned;
@@ -6229,17 +6273,36 @@ struct QuantumChemistry : viamd::EventHandler {
                                                          [&](uint32_t i, double v) { return density(i) < v; }) - indices.begin() : 0;
             const size_t end = view ? std::upper_bound(indices.begin(), finite_end, distribution.view_max,
                                                        [&](double v, uint32_t i) { return v < density(i); }) - indices.begin() : distribution.finite;
-            if (!rebuild && begin == distribution.window_begin && end == distribution.window_end) continue;
+            // Zoomed in on part of the overview curve, the view is sampled at its own resolution (as the spectra are),
+            // with a margin for panning; it is sampled again once the view moves by more than a few samples
+            const auto& overview_curve = distribution.curve;
+            const bool log_axis = overview_curve.logarithmic;
+            const auto axis = [&](double x) { return log_axis ? std::log10(MAX(x, DBL_MIN)) : x; };
+            const double span = view && overview_curve.valid ? axis(distribution.view_max) - axis(distribution.view_min) : 0.0;
+            const bool zoomed = span > 0.0 && (!log_axis || distribution.view_min > 0.0) &&
+                                span < 0.9 * (axis(overview_curve.density.back()) - axis(overview_curve.density.front()));
+            const double tolerance = 2.0 * span / critical_point_distribution::Curve::sample_count;
+            const bool resample = zoomed != distribution.view_curve.valid ||
+                                  (zoomed && (std::abs(axis(distribution.view_min) - (axis(distribution.sampled_min) + 0.1 * span)) > tolerance ||
+                                              std::abs(axis(distribution.view_max) - (axis(distribution.sampled_max) - 0.1 * span)) > tolerance));
+            if (!rebuild && !resample && begin == distribution.window_begin && end == distribution.window_end) continue;
             distribution.window_begin = begin;
             distribution.window_end = end;
             const std::vector<double> overview = critical_point_distribution::peak_cuts(distribution.valleys, 1.0, 0.0, max_peaks);
             std::vector<double> cuts = overview;
             distribution.view_curve = {};
-            if (end - begin >= 3 && end - begin < distribution.finite) {
+            if (zoomed) {
+                const auto unaxis = [&](double v) { return log_axis ? std::pow(10.0, v) : v; };
+                distribution.sampled_min = unaxis(axis(distribution.view_min) - 0.1 * span);
+                distribution.sampled_max = unaxis(axis(distribution.view_max) + 0.1 * span);
                 std::vector<double> all, window;
                 for (size_t j = 0; j < distribution.finite; ++j) all.push_back(density(indices[j]));
                 window.assign(all.begin() + begin, all.begin() + end);
-                auto curve = critical_point_distribution::estimate(window, {}, 0, log_scale);
+                // Fewer than 3 in view: their kernels from the whole set, so one CP is not an arbitrary spike
+                const bool few = window.size() < 3;
+                auto curve = critical_point_distribution::estimate(few ? all : window, {}, 0, log_scale,
+                                                                   distribution.sampled_min, distribution.sampled_max);
+                if (few) window = all;
                 if (curve.valid && curve.logarithmic == distribution.curve.logarithmic) {
                     const double share = (double)window.size() / (double)all.size();
                     for (double& p : curve.probability) p *= share;
@@ -6789,20 +6852,374 @@ struct QuantumChemistry : viamd::EventHandler {
 
     enum CriticalPointTableExport { CPExport_None, CPExport_Csv };
 
+    static bool critical_point_csv_write(const char* path, const CriticalPointTable& table, const char* what) {
+        md_file_t file = {};
+        if (!md_file_open(&file, str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+            MD_LOG_ERROR("Critical points: could not open '%s' for writing", path);
+            return false;
+        }
+        const std::string text = critical_point_table_text(table, ',');
+        const size_t written = md_file_write(file, text.data(), text.size());
+        md_file_close(&file);
+        if (written != text.size()) {
+            MD_LOG_ERROR("Critical points: only %zu of %zu bytes written to '%s'", written, text.size(), path);
+            return false;
+        }
+        MD_LOG_INFO("Critical points: %zu %s written to '%s'", table.size() - 1, what, path);
+        return true;
+    }
+
     static void critical_point_table_export(CriticalPointTableExport request, const CriticalPointTable& table, const char* what) {
         if (request == CPExport_Csv) {
             char path[2048];
             if (!application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
-            md_file_t file = {};
-            if (!md_file_open(&file, str_from_cstr(path), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                MD_LOG_ERROR("Critical points: could not open '%s' for writing", path);
+            critical_point_csv_write(path, table, what);
+        }
+    }
+
+    static void nci_csv_append_row(std::string& out, const std::vector<std::string>& row) {
+        const char special[] = {',', '"', '\n', '\r', 0};
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (i) out += ',';
+            const std::string& field = row[i];
+            if (field.find_first_of(special) == std::string::npos) {
+                out += field;
+                continue;
+            }
+            out += '"';
+            for (char c : field) {
+                if (c == '"') out += '"';
+                out += c;
+            }
+            out += '"';
+        }
+        out += '\n';
+    }
+
+    static bool nci_export_file_write(const std::string& path, const std::string& text) {
+        md_file_t file = {};
+        if (!md_file_open(&file, str_from_cstr(path.c_str()), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+            MD_LOG_ERROR("NCI samples: could not open '%s' for writing", path.c_str());
+            return false;
+        }
+        const size_t written = md_file_write(file, text.data(), text.size());
+        md_file_close(&file);
+        if (written != text.size()) {
+            MD_LOG_ERROR("NCI samples: only %zu of %zu bytes written to '%s'", written, text.size(), path.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    // 0..3 the reference categories, 4 unassigned, 5 the types without NCI
+    static size_t nci_reference_category_index(nci_surface::Family family) {
+        if (family == nci_surface::Family::Unassigned) return 4;
+        const size_t category = nci_surface::reference_category(family);
+        return category < nci_surface::reference_category_count ? category : 5;
+    }
+
+    static const char* nci_reference_category_name(size_t index) {
+        if (index < nci_surface::reference_category_count) return nci_surface::reference_category_name(index);
+        return index == nci_surface::reference_category_count ? "Unassigned" : "Unsupported";
+    }
+
+    static nci_surface::Family nci_reference_settings_family(size_t category) {
+        return nci_surface::reference_settings_family(category);
+    }
+
+    void start_nci_scatter_export() {
+        topology::NciState& state = nci_state;
+        if (state.layer_hidden || state.selected_layer == topology::NCI_LAYER_NONE) {
+            state.export_scatter_status = "No layer is shown.";
+            MD_LOG_ERROR("NCI samples: no layer is currently shown in the viewport");
+            return;
+        }
+        const std::vector<topology::NciSurface*> surfaces = topology::nci_layer_members(state, state.selected_layer);
+        if (surfaces.empty()) {
+            state.export_scatter_status = "The shown layer has no surfaces.";
+            MD_LOG_ERROR("NCI samples: the shown layer has no surfaces");
+            return;
+        }
+
+        char path[2048];
+        if (!application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
+        auto* job = new NciScatterExportJob();
+        job->samples_path = path;
+        job->anchors_path = path;
+        const size_t extension = job->anchors_path.rfind(".csv");
+        job->density_path = job->anchors_path;
+        if (extension == std::string::npos) {
+            job->anchors_path += "-anchors.csv";
+            job->density_path += "-density.csv";
+        } else {
+            job->anchors_path.insert(extension, "-anchors");
+            job->density_path.insert(extension, "-density");
+        }
+
+        const auto number = [](double value) {
+            char text[48];
+            snprintf(text, sizeof(text), "%.9g", value);
+            return std::string(text);
+        };
+        const int layer_id = state.selected_layer;
+        const std::string layer_name = surfaces.front()->saved ? surfaces.front()->name
+                                     : surfaces.front()->family_preview ? "Preview" : "Full system";
+        job->anchor_rows.push_back({"layer", "layer_id", "surface_id", "parameter_group", "reference_category", "cp_index", "cp_category",
+                                    "chemical_environment", "cp_x (angstrom)", "cp_y (angstrom)", "cp_z (angstrom)"});
+        for (topology::NciSurface* n : surfaces) {
+            if (!n->shown || !n->have_key || !n->want_key || n->have_key != n->want_key || n->cancelled || n->failed ||
+                n->job || !n->rho) {
+                MD_LOG_ERROR("NCI samples: wait for all surfaces in the shown layer to finish before exporting");
+                delete job;
+                state.export_scatter_status = "Wait for the layer to finish.";
                 return;
             }
-            const std::string text = critical_point_table_text(table, ',');
-            md_file_write(file, text.data(), text.size());
-            md_file_close(&file);
-            MD_LOG_INFO("Critical points: %zu %s written to '%s'", table.size() - 1, what, path);
+            const size_t count = std::min({n->scatter.s.size(), n->scatter.signed_rho.size(), n->scatter.voxel.size()});
+            if (count != n->scatter.s.size() || count != n->scatter.signed_rho.size() || count != n->scatter.voxel.size()) {
+                MD_LOG_ERROR("NCI samples: scatter arrays have inconsistent lengths for layer '%s'", n->name);
+                delete job;
+                state.export_scatter_status = "Scatter data is inconsistent; see log.";
+                return;
+            }
+
+            std::array<std::vector<topology::NciSurface::CriticalPointMembership>, 5> reference_memberships;
+            for (size_t f = 0; f < n->critical_points_by_family.size(); ++f) {
+                const auto& memberships = n->critical_points_by_family[f];
+                for (const auto& cp : memberships) {
+                    std::string environment;
+                    for (const std::string& part : cp.environment) {
+                        if (!environment.empty()) environment += " > ";
+                        environment += part;
+                    }
+                    constexpr double bohr_to_angstrom = 0.529177210903;
+                    const size_t category = nci_reference_category_index(cp.family);
+                    if (category >= reference_memberships.size()) {
+                        MD_LOG_ERROR("NCI samples: CP %u has unsupported NCI category %s",
+                                     cp.index, nci_surface::family_name(cp.family));
+                        delete job;
+                        state.export_scatter_status = "Unsupported CP category; see log.";
+                        return;
+                    }
+                    reference_memberships[category].push_back(cp);
+                    job->anchor_rows.push_back({n->name, std::to_string(topology::nci_layer_key(*n)), std::to_string(n->id),
+                                                nci_surface::family_name(n->group), nci_reference_category_name(category),
+                                                std::to_string(cp.index), nci_surface::family_name(cp.family), environment,
+                                                number(cp.position[0] * bohr_to_angstrom),
+                                                number(cp.position[1] * bohr_to_angstrom),
+                                                number(cp.position[2] * bohr_to_angstrom)});
+                }
+            }
+
+            if (count) {
+                NciScatterExportSlice layer_slice;
+                layer_slice.layer = n->name;
+                layer_slice.layer_id = layer_id;
+                layer_slice.surface_id = n->id;
+                layer_slice.parameter_group = n->group;
+                layer_slice.resolution = n->resolution;
+                layer_slice.grid = n->grid;
+                layer_slice.params.s_iso = n->s_iso;
+                layer_slice.params.rho_max = n->rho_max;
+                layer_slice.params.near_radius = n->near_radius;
+                layer_slice.params.connected = n->connected;
+                layer_slice.params.radius_cap = n->radius_cap;
+                layer_slice.params.surface = false;
+                layer_slice.scatter = n->scatter;
+                job->slices.push_back(std::move(layer_slice));
+            }
+
+            for (size_t f = 0; f < reference_memberships.size(); ++f) {
+                const auto& memberships = reference_memberships[f];
+                if (memberships.empty()) continue;
+                NciScatterExportSlice category_slice;
+                category_slice.layer = n->name;
+                category_slice.layer_id = layer_id;
+                category_slice.surface_id = n->id;
+                category_slice.parameter_group = n->group;
+                category_slice.category = nci_reference_category_name(f);
+                category_slice.resolution = n->resolution;
+                category_slice.category_specific = true;
+                category_slice.standardized_reference = f < 4;
+                category_slice.rho = n->rho;
+                category_slice.grid = n->grid;
+                category_slice.params.s_iso = n->s_iso;
+                category_slice.params.rho_max = n->rho_max;
+                category_slice.params.near_radius = n->near_radius;
+                category_slice.params.connected = n->connected;
+                category_slice.params.radius_cap = n->radius_cap;
+                category_slice.params.surface = false;
+                if (category_slice.standardized_reference) {
+                    const nci_surface::Family settings_family = nci_reference_settings_family(f);
+                    const nci_surface::Defaults defaults =
+                        nci_surface::family_defaults(nci_surface::family_bit(settings_family));
+                    category_slice.params.s_iso = defaults.s_iso;
+                    category_slice.params.rho_max = defaults.rho_max;
+                    category_slice.params.near_radius = defaults.radius;
+                    category_slice.params.connected = true;
+                    category_slice.params.same_sign = true;
+                    category_slice.params.radius_cap = true;
+                }
+                category_slice.anchors.reserve(memberships.size() * 3);
+                for (const auto& cp : memberships)
+                    category_slice.anchors.insert(category_slice.anchors.end(), cp.position.begin(), cp.position.end());
+                job->slices.push_back(std::move(category_slice));
+            }
         }
+        if (job->slices.empty()) {
+            delete job;
+            state.export_scatter_status = "No completed samples are available.";
+            MD_LOG_ERROR("NCI samples: the shown layer has no completed scatter samples to export");
+            return;
+        }
+
+        job->samples_csv.reserve(1024 * 1024);
+        nci_csv_append_row(job->samples_csv, {"layer", "layer_id", "surface_id", "sample_scope", "parameter_group",
+                                              "category", "extraction_settings", "sample_index", "voxel_index", "x (angstrom)", "y (angstrom)",
+                                              "z (angstrom)", "sign(lambda2)rho (au)", "s (dimensionless)",
+                                              "eligible_grid_samples", "sample_capped", "rho_cutoff (au)",
+                                              "s_isovalue (dimensionless)", "grid_spacing_x (bohr)",
+                                              "grid_spacing_y (bohr)", "grid_spacing_z (bohr)", "resolution",
+                                              "connected", "radius_cap", "near_radius (bohr)"});
+        nci_csv_append_row(job->density_csv, {"layer", "layer_id", "surface_id", "sample_scope", "parameter_group",
+                                              "category", "extraction_settings", "bin_x", "bin_y",
+                                              "sign(lambda2)rho_min (au)", "sign(lambda2)rho_max (au)",
+                                              "s_min (dimensionless)", "s_max (dimensionless)", "volume (bohr^3)",
+                                              "total_volume (bohr^3)", "rho_cutoff (au)", "s_isovalue (dimensionless)",
+                                              "grid_spacing_x (bohr)", "grid_spacing_y (bohr)", "grid_spacing_z (bohr)",
+                                              "resolution", "connected", "radius_cap", "near_radius (bohr)"});
+
+        state.export_scatter_status = "Preparing category-separated NCI samples...";
+        state.export_scatter_progress = 0.0f;
+        state.export_scatter_in_progress = true;
+        nci_scatter_export_job = job;
+        job->task = task_system::create_pool_task(STR_LIT("##NCI scatter export"), [job, layer_name]() {
+            const auto number = [](double value) {
+                char text[48];
+                snprintf(text, sizeof(text), "%.9g", value);
+                return std::string(text);
+            };
+            for (size_t slice_idx = 0; slice_idx < job->slices.size(); ++slice_idx) {
+                if (job->cancel.load(std::memory_order_relaxed)) {
+                    job->error = "Export cancelled.";
+                    break;
+                }
+                NciScatterExportSlice& slice = job->slices[slice_idx];
+                if (slice.category_specific) {
+                    if (!slice.rho) {
+                        job->error = "A surface density grid was not available for category extraction.";
+                        break;
+                    }
+                    slice.params.near_xyz = slice.anchors;
+                    nci_surface::Mesh mesh;
+                    if (!nci_surface::extract(&mesh, slice.rho->data(), slice.grid, slice.params, &job->cancel,
+                                              &job->slice_progress, &slice.scatter)) {
+                        job->error = job->cancel.load(std::memory_order_relaxed)
+                                   ? "Export cancelled." : "Category-specific NCI extraction failed.";
+                        break;
+                    }
+                }
+                job->slice_progress.store(0.0f, std::memory_order_relaxed);
+                const int dx = slice.grid.dim[0], dy = slice.grid.dim[1], dz = slice.grid.dim[2];
+                const size_t grid_size = dx > 0 && dy > 0 && dz > 0
+                                       ? (size_t)dx * (size_t)dy * (size_t)dz : 0;
+                const size_t count = std::min({slice.scatter.s.size(), slice.scatter.signed_rho.size(),
+                                               slice.scatter.voxel.size()});
+                if (count != slice.scatter.s.size() || count != slice.scatter.signed_rho.size() ||
+                    count != slice.scatter.voxel.size()) {
+                    job->error = "Scatter arrays have inconsistent lengths.";
+                    break;
+                }
+                for (size_t i = 0; i < count; ++i) {
+                    const uint32_t voxel = slice.scatter.voxel[i];
+                    std::string x, y, z;
+                    if (voxel < grid_size) {
+                        const int ix = (int)(voxel % (uint32_t)dx);
+                        const int iy = (int)((voxel / (uint32_t)dx) % (uint32_t)dy);
+                        const int iz = (int)((size_t)voxel / ((size_t)dx * (size_t)dy));
+                        constexpr double bohr_to_angstrom = 0.529177210903;
+                        x = number((slice.grid.origin[0] + ix * slice.grid.spacing[0]) * bohr_to_angstrom);
+                        y = number((slice.grid.origin[1] + iy * slice.grid.spacing[1]) * bohr_to_angstrom);
+                        z = number((slice.grid.origin[2] + iz * slice.grid.spacing[2]) * bohr_to_angstrom);
+                    }
+                    nci_csv_append_row(job->samples_csv,
+                        {slice.layer, std::to_string(slice.layer_id), std::to_string(slice.surface_id),
+                         slice.category_specific ? "category" : "layer_union",
+                         nci_surface::family_name(slice.parameter_group),
+                         slice.category_specific ? slice.category : "",
+                         slice.standardized_reference ? "category_reference_basin" : "surface_settings",
+                         std::to_string(i), std::to_string(voxel), x, y, z,
+                         number(slice.scatter.signed_rho[i]), number(slice.scatter.s[i]),
+                         std::to_string(slice.scatter.eligible_count),
+                         slice.scatter.eligible_count > slice.scatter.s.size() ? "true" : "false",
+                         number(slice.params.rho_max), number(slice.params.s_iso),
+                         number(slice.grid.spacing[0]), number(slice.grid.spacing[1]), number(slice.grid.spacing[2]),
+                         std::to_string(slice.resolution),
+                         slice.params.connected ? "true" : "false", slice.params.radius_cap ? "true" : "false",
+                         number(slice.params.near_radius)});
+                }
+                // The continuous density, the basis of the outlines and expected regions: one row per non-empty bin
+                const nci_surface::ScatterDensity& density = slice.scatter.density;
+                constexpr int bins = nci_surface::scatter_density_bins;
+                if (density.rho_extent > 0.0f && density.volume.size() == (size_t)bins * bins) {
+                    const double w = 2.0 * density.rho_extent / bins, h = nci_surface::scatter_s_max / (double)bins;
+                    for (int by = 0; by < bins; ++by) for (int bx = 0; bx < bins; ++bx) {
+                        const float volume = density.volume[bx + (size_t)bins * by];
+                        if (!(volume > 0.0f)) continue;
+                        nci_csv_append_row(job->density_csv,
+                            {slice.layer, std::to_string(slice.layer_id), std::to_string(slice.surface_id),
+                             slice.category_specific ? "category" : "layer_union",
+                             nci_surface::family_name(slice.parameter_group),
+                             slice.category_specific ? slice.category : "",
+                             slice.standardized_reference ? "category_reference_basin" : "surface_settings",
+                             std::to_string(bx), std::to_string(by),
+                             number(-density.rho_extent + bx * w), number(-density.rho_extent + (bx + 1) * w),
+                             number(by * h), number((by + 1) * h), number(volume), number(density.total_volume),
+                             number(slice.params.rho_max), number(slice.params.s_iso),
+                             number(slice.grid.spacing[0]), number(slice.grid.spacing[1]), number(slice.grid.spacing[2]),
+                             std::to_string(slice.resolution),
+                             slice.params.connected ? "true" : "false", slice.params.radius_cap ? "true" : "false",
+                             number(slice.params.near_radius)});
+                    }
+                }
+                job->completed_slices.store(slice_idx + 1, std::memory_order_relaxed);
+            }
+
+            if (job->error.empty()) {
+                for (const auto& row : job->anchor_rows) nci_csv_append_row(job->anchors_csv, row);
+                if (!nci_export_file_write(job->samples_path, job->samples_csv)) job->error = "Could not write the samples CSV.";
+                else if (!nci_export_file_write(job->anchors_path, job->anchors_csv))
+                    job->error = "Samples were written, but the anchor CSV could not be written.";
+                else if (!nci_export_file_write(job->density_path, job->density_csv))
+                    job->error = "Samples and anchors were written, but the density CSV could not be written.";
+                else {
+                    job->ok = true;
+                    MD_LOG_INFO("NCI samples: exported layer '%s' with category-separated samples to '%s', '%s' and '%s'",
+                                layer_name.c_str(), job->samples_path.c_str(), job->anchors_path.c_str(),
+                                job->density_path.c_str());
+                }
+            }
+            if (!job->error.empty()) MD_LOG_ERROR("NCI samples: %s", job->error.c_str());
+            job->done.store(true, std::memory_order_release);
+        });
+        task_system::enqueue_task(job->task);
+    }
+
+    void poll_nci_scatter_export() {
+        NciScatterExportJob* job = nci_scatter_export_job;
+        if (!job) return;
+        const size_t total = job->slices.size();
+        const size_t completed = job->completed_slices.load(std::memory_order_relaxed);
+        const float current = job->slice_progress.load(std::memory_order_relaxed);
+        nci_state.export_scatter_progress = total
+            ? std::clamp(((float)completed + current) / (float)total, 0.0f, 1.0f) : 0.0f;
+        if (!job->done.load(std::memory_order_acquire)) return;
+        task_system::task_wait_for(job->task);
+        nci_state.export_scatter_in_progress = false;
+        nci_state.export_scatter_progress = job->ok ? 1.0f : 0.0f;
+        nci_state.export_scatter_status = job->ok ? "Export complete."
+                                                  : (job->error.empty() ? "Export failed; see log." : job->error);
+        delete job;
+        nci_scatter_export_job = nullptr;
     }
 
     // Chemistry branches aggregate every listed descendant, independently of expansion state.
@@ -7237,10 +7654,12 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_critical_point_list(const ApplicationState& state) {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
-        if (cp.chemical_labels.size() != graph.num_vertices || cp.environment_of.size() != graph.num_vertices) return;
+        const bool has_chemical_environments =
+            cp.chemical_analysis_enabled && cp.chemical_labels.size() == graph.num_vertices &&
+            cp.environment_of.size() == graph.num_vertices;
         const auto& chosen = cp.environment_selection;
         std::vector<uint32_t> rows;
-        if (!chosen.empty()) {
+        if (has_chemical_environments && !chosen.empty()) {
             std::vector<bool> is_chosen(cp.environments.size(), false);
             for (uint32_t id : chosen) if (id < is_chosen.size()) is_chosen[id] = true;
             for (uint32_t i = 0; i < graph.num_vertices; ++i) {
@@ -7255,7 +7674,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (critical_point_listed(i)) rows.push_back(i);
             }
         }
-        const bool scoped = !chosen.empty() || !cp.list_scope.empty();
+        const bool scoped = (has_chemical_environments && !chosen.empty()) || !cp.list_scope.empty();
         size_t selected_count = 0;
         bool inspected_listed = false;
         for (uint32_t i : rows) {
@@ -7283,9 +7702,14 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::SameLine();
         const bool compact_columns = ImGui::SmallButton("Compact columns");
         ImGui::SameLine();
-        if (!chosen.empty()) ImGui::TextDisabled("%zu of %zu environment%s, %zu selected", rows.size(), chosen.size(), chosen.size() == 1 ? "" : "s", selected_count);
+        if (has_chemical_environments && !chosen.empty())
+            ImGui::TextDisabled("%zu of %zu environment%s, %zu selected", rows.size(), chosen.size(),
+                                chosen.size() == 1 ? "" : "s", selected_count);
         else if (scoped) ImGui::TextDisabled("%zu of the bars clicked, %zu selected", rows.size(), selected_count);
-        else ImGui::TextDisabled("%zu listed, %zu selected; choose environments or bars to narrow", rows.size(), selected_count);
+        else if (has_chemical_environments)
+            ImGui::TextDisabled("%zu listed, %zu selected; choose environments or bars to narrow", rows.size(), selected_count);
+        else
+            ImGui::TextDisabled("%zu listed, %zu selected", rows.size(), selected_count);
 
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable |
@@ -7293,8 +7717,12 @@ struct QuantumChemistry : viamd::EventHandler {
         const ImGuiTableColumnFlags energy_flags = ImGuiTableColumnFlags_DefaultHide;
         if (!ImGui::BeginTable("##Critical points", 20, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) return;
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_NoHide, 0.7f, CPColumn_Type);
-        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_Kind);
-        ImGui::TableSetupColumn("Chemical environment", ImGuiTableColumnFlags_NoHide, 2.4f, CPColumn_Environment);
+        ImGui::TableSetupColumn(has_chemical_environments ? "Kind" : "Topology",
+                                ImGuiTableColumnFlags_DefaultHide, 0.7f, CPColumn_Kind);
+        // Without the chemical analysis the column would stay empty: it is left out
+        ImGui::TableSetupColumn("Chemical environment",
+                                has_chemical_environments ? ImGuiTableColumnFlags_NoHide : ImGuiTableColumnFlags_Disabled,
+                                2.4f, CPColumn_Environment);
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_DefaultHide, 0.5f, CPColumn_Count);
         ImGui::TableSetupColumn("Character", ImGuiTableColumnFlags_None, 0.8f, CPColumn_Character);
         ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 0.9f, CPColumn_Density);
@@ -7332,15 +7760,27 @@ struct QuantumChemistry : viamd::EventHandler {
             std::sort(cp.list_order.begin(), cp.list_order.end(), [&](uint32_t ia, uint32_t ib) {
                 const CriticalPointRow& a = cp.rows[ia];
                 const CriticalPointRow& b = cp.rows[ib];
-                const CriticalPointEnvironment& la = cp.environments[cp.environment_of[ia]];
-                const CriticalPointEnvironment& lb = cp.environments[cp.environment_of[ib]];
                 for (int s = 0; s < spec_count; ++s) {
                     const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
                     int cmp = 0;
                     switch (spec.ColumnUserID) {
                     case CPColumn_Type:        cmp = a.order - b.order; break;
-                    case CPColumn_Kind:        cmp = (int)la.kind - (int)lb.kind; break;
-                    case CPColumn_Environment: cmp = la.name.compare(lb.name); break;
+                    case CPColumn_Kind:
+                        if (has_chemical_environments) {
+                            const CriticalPointEnvironment& la = cp.environments[cp.environment_of[ia]];
+                            const CriticalPointEnvironment& lb = cp.environments[cp.environment_of[ib]];
+                            cmp = (int)la.kind - (int)lb.kind;
+                        } else {
+                            cmp = md_topo_vertex_type(&graph, ia) - md_topo_vertex_type(&graph, ib);
+                        }
+                        break;
+                    case CPColumn_Environment:
+                        if (has_chemical_environments) {
+                            const CriticalPointEnvironment& la = cp.environments[cp.environment_of[ia]];
+                            const CriticalPointEnvironment& lb = cp.environments[cp.environment_of[ib]];
+                            cmp = la.name.compare(lb.name);
+                        }
+                        break;
                     case CPColumn_Count:       cmp = (a.i > b.i) - (a.i < b.i); break;
                     case CPColumn_Density:     cmp = compare_values(a.rho, b.rho); break;
                     case CPColumn_Laplacian:   cmp = compare_values(a.laplacian, b.laplacian); break;
@@ -7374,7 +7814,6 @@ struct QuantumChemistry : viamd::EventHandler {
             for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                 const CriticalPointRow& row = cp.rows[order[r]];
                 const int type = md_topo_vertex_type(&graph, row.i);
-                const CriticalPointEnvironment& env = cp.environments[cp.environment_of[row.i]];
                 ImGui::PushID((int)row.i);
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
@@ -7397,11 +7836,19 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                 }
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(critical_point_distribution::kind_name(env.kind));
+                if (has_chemical_environments) {
+                    const CriticalPointEnvironment& env = cp.environments[cp.environment_of[row.i]];
+                    ImGui::TextUnformatted(critical_point_distribution::kind_name(env.kind));
+                } else {
+                    ImGui::TextUnformatted(critical_point_style(type).topology);
+                }
                 ImGui::TableNextColumn();
-                environment_swatch(critical_point_peak_color_of(row.i));
-                ImGui::SameLine(0.0f, 0.0f);
-                ImGui::TextUnformatted(env.name.c_str());
+                if (has_chemical_environments) {
+                    const CriticalPointEnvironment& env = cp.environments[cp.environment_of[row.i]];
+                    environment_swatch(critical_point_peak_color_of(row.i));
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::TextUnformatted(env.name.c_str());
+                }
                 ImGui::TableNextColumn();
                 ImGui::Text("%u", row.i);
                 ImGui::TableNextColumn();
@@ -7449,9 +7896,17 @@ struct QuantumChemistry : viamd::EventHandler {
                                          "x (angstrom)", "y (angstrom)", "z (angstrom)", "detail"}};
             for (uint32_t i : order) {
                 const CriticalPointRow& row = cp.rows[i];
-                const CriticalPointEnvironment& env = cp.environments[cp.environment_of[i]];
-                table.push_back({critical_point_style(md_topo_vertex_type(&graph, i)).label, critical_point_distribution::kind_name(env.kind),
-                                 env.name, std::to_string(i),
+                const int type = md_topo_vertex_type(&graph, i);
+                std::string kind, environment, detail;
+                if (has_chemical_environments) {
+                    const CriticalPointEnvironment& env = cp.environments[cp.environment_of[i]];
+                    kind = critical_point_distribution::kind_name(env.kind);
+                    environment = env.name;
+                    detail = cp.chemical_labels[i].detail;
+                } else {
+                    kind = critical_point_style(type).topology;
+                }
+                table.push_back({critical_point_style(type).label, kind, environment, std::to_string(i),
                                  critical_point_distribution::character_name((critical_point_distribution::Character)row.character),
                                  critical_point_number(row.rho), critical_point_number(row.laplacian),
                                  critical_point_number(row.ellipticity), critical_point_number(row.G), critical_point_number(row.V),
@@ -7461,7 +7916,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                  i < cp.characters.size() ? std::to_string(cp.characters[i].pauli.samples) : "0",
                                  critical_point_pauli_status(i),
                                  critical_point_number(row.xyz[0]), critical_point_number(row.xyz[1]),
-                                 critical_point_number(row.xyz[2]), cp.chemical_labels[i].detail});
+                                 critical_point_number(row.xyz[2]), detail});
             }
             critical_point_table_export(request, table, "critical points");
         }
@@ -7609,178 +8064,171 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) md_bitmask_clear(&cp.highlight_mask);
 
-        const float avail = MAX(1.0f, ImGui::GetContentRegionAvail().y);
-        const ImGuiTableFlags pane_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV;
-        if (ImGui::BeginTable("##CP NCI split", 2, pane_flags, ImVec2(0, avail))) {
-            ImGui::TableSetupColumn("##CP", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-            ImGui::TableSetupColumn("##NCI", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-            ImGui::TableNextRow();
-
-            ImGui::TableSetColumnIndex(1);
-            if (ImGui::BeginChild("##NCI column", ImVec2(0, avail), false,
-                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-                topology::draw_nci_panel(nci_state, cp.enabled);
-            }
-            ImGui::EndChild();
-
-            ImGui::TableSetColumnIndex(0);
-            if (ImGui::BeginChild("##CP column", ImVec2(0, avail), false,
-                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-        ImGui::Checkbox("Enabled", &cp.enabled);
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
-            cp.distributions_dirty = true;
-            cp.values_dirty = true;
-        }
-        ImGui::SetItemTooltip("Classify CPs by chemical environment and compute chemistry-dependent descriptors. "
-                              "The CP search and NCI surfaces remain available when this is off.");
-        ImGui::SameLine();
-        if (ImGui::Button("CP settings / export...")) ImGui::OpenPopup("##CP settings");
-        ImGui::SameLine();
-        ImGui::Checkbox("Show CPs", &cp.show_markers);
-        ImGui::SetItemTooltip("Hide markers, paths and labels without changing the CP selection, tables or NCI surfaces.");
-
-        if (ImGui::BeginPopup("##CP settings")) {
-        // --- what is searched, and how
-        ImGui::Checkbox("Enabled", &cp.enabled);
-        ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
-        ImGui::SameLine();
-        static const char* method_str[] = { "Analytic", "Volume" };
-        ImGui::SetNextItemWidth(6.5f * em);
-        if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
-            critical_points_reset();   // what is shown came from the other method
-        }
-        ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
-                              "found and placed to numerical precision, with a proof that none was missed.\n"
-                              "Volume: samples the density onto a grid and finds critical points of the samples,\n"
-                              "placed no better than to the voxel.");
-        if (cp.method == CriticalPoints::Method_Analytic) {
+        static float cp_column_width = 0.0f;
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        const float min_column_width = MIN(200.0f, available.x * 0.5f);
+        if (cp_column_width <= 0.0f) cp_column_width = available.x * 0.5f;
+        cp_column_width = CLAMP(cp_column_width, min_column_width, MAX(min_column_width, available.x - min_column_width));
+        const float column_width = cp_column_width;
+        const ImGuiWindowFlags column_flags =
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        if (ImGui::BeginChild("##CP column", ImVec2(column_width, available.y),
+                              ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX, column_flags)) {
+            ImGui::Checkbox("Enabled", &cp.enabled);
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(8.0f * em);
-            ImGui::SliderFloat("##Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
-            cp.rho_min_editing = ImGui::IsItemActive();
-            ImGui::SetItemTooltip("The density threshold: critical points where the total electron density is below this (au)\n"
-                                  "are neither searched for nor reported. A lower threshold searches a larger region and takes longer.");
+            if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
+                cp.distributions_dirty = true;
+                cp.values_dirty = true;
+            }
+            ImGui::SetItemTooltip("Classify CPs by chemical environment and compute chemistry-dependent descriptors. "
+                                  "The CP search and NCI surfaces remain available when this is off.");
+            ImGui::SameLine();
+            if (ImGui::Button("CP settings / export...")) ImGui::OpenPopup("##CP settings");
+            ImGui::SameLine();
+            ImGui::Checkbox("Show CPs", &cp.show_markers);
+            ImGui::SetItemTooltip("Hide markers, paths and labels without changing the CP selection, tables or NCI surfaces.");
+
+            if (ImGui::BeginPopup("##CP settings")) {
+                // --- what is searched, and how
+                ImGui::Checkbox("Enabled", &cp.enabled);
+                ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
+                ImGui::SameLine();
+                static const char* method_str[] = { "Analytic", "Volume" };
+                ImGui::SetNextItemWidth(6.5f * em);
+                if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
+                    critical_points_reset();   // what is shown came from the other method
+                }
+                ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
+                                      "found and placed to numerical precision, with a proof that none was missed.\n"
+                                      "Volume: samples the density onto a grid and finds critical points of the samples,\n"
+                                      "placed no better than to the voxel.");
+                if (cp.method == CriticalPoints::Method_Analytic) {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(8.0f * em);
+                    ImGui::SliderFloat("##Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+                    cp.rho_min_editing = ImGui::IsItemActive();
+                    ImGui::SetItemTooltip("The density threshold: critical points where the total electron density is below this (au)\n"
+                                          "are neither searched for nor reported. A lower threshold searches a larger region and takes longer.");
 #if MD_ENABLE_GPU
-            if (state.gpu_device) {
-                ImGui::SameLine();
-                ImGui::Checkbox("GPU", &cp.gto_use_gpu);
-                ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
-                                      "the critical points in double. Off: everything runs on the CPU. Same result either way.");
-            }
+                    if (state.gpu_device) {
+                        ImGui::SameLine();
+                        ImGui::Checkbox("GPU", &cp.gto_use_gpu);
+                        ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
+                                              "the critical points in double. Off: everything runs on the CPU. Same result either way.");
+                    }
 #endif
-        } else {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(5.5f * em);
-            ImGui::Combo("##Resolution", (int*)&cp.vol_res, volume_resolution_str, (int)VolumeResolution::Count);
-            ImGui::SetItemTooltip("The resolution of the grid the density is sampled on");
-            ImGui::SameLine();
-            ImGui::Checkbox("Per frame", &cp.vol_per_frame);
-            ImGui::SetItemTooltip("Sample the density and extract the graph again every frame");
-            ImGui::SameLine();
-            ImGui::Checkbox("Simplify", &cp.vol_simplify);
-            ImGui::SetItemTooltip("Leave out the critical points below a density threshold, and duplicate saddles");
-            if (cp.vol_simplify) {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(7.0f * em);
-                ImGui::SliderFloat("##Simplification threshold", &cp.vol_simp_threshold, 0.0f, 1.0E-2f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
-                ImGui::SetItemTooltip("The density below which critical points are left out (au)");
-            }
-        }
+                } else {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(5.5f * em);
+                    ImGui::Combo("##Resolution", (int*)&cp.vol_res, volume_resolution_str, (int)VolumeResolution::Count);
+                    ImGui::SetItemTooltip("The resolution of the grid the density is sampled on");
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Per frame", &cp.vol_per_frame);
+                    ImGui::SetItemTooltip("Sample the density and extract the graph again every frame");
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Simplify", &cp.vol_simplify);
+                    ImGui::SetItemTooltip("Leave out the critical points below a density threshold, and duplicate saddles");
+                    if (cp.vol_simplify) {
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(7.0f * em);
+                        ImGui::SliderFloat("##Simplification threshold", &cp.vol_simp_threshold, 0.0f, 1.0E-2f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SetItemTooltip("The density below which critical points are left out (au)");
+                    }
+                }
 
-        // --- how they are drawn, and the export at the end of the line
-        ImGui::SetNextItemWidth(6.0f * em);
-        ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("The size of the markers");
-        ImGui::SameLine();
-        ImGui::Checkbox("Paths", &cp.show_paths);
-        ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
-                              "RCP attractor paths, from each ring critical point to the cage critical points beside it");
-        {
-            const char* lbl = "Export " ICON_FA_CARET_DOWN;
-            const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-            ImGui::SameLine();
-            const float avail = ImGui::GetContentRegionAvail().x;
-            if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
-            ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
-            if (ImGui::Button(lbl)) ImGui::OpenPopup("##Critical point export");
-            ImGui::EndDisabled();
-            if (ImGui::BeginPopup("##Critical point export")) {
-                const bool labelled = cp.chemical_labels.size() == graph.num_vertices && cp.environment_of.size() == graph.num_vertices;
-                ImGui::SeparatorText("Topology");
-                if (ImGui::MenuItem("JSON or VTP...")) critical_points_export(state);
-                ImGui::SetItemTooltip("Every critical point and the paths between them, unfiltered, every number at the precision\n"
-                                      "it was computed in: positions (bohr), density and, from the analytic search, the Hessian.\n"
-                                      "No chemical labels. .json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes\n"
-                                      "a Morse-Smale complex) for ParaView.");
-                ImGui::SeparatorText("Chemical analysis");
-                ImGui::BeginDisabled(!labelled);
-                if (ImGui::MenuItem("Environments as CSV...")) cp.export_environments = CPExport_Csv;
-                ImGui::SetItemTooltip("Every filtered environment leaf in tree order, including collapsed ones, at full precision,\n"
-                                      "with its hierarchy path and CP indices. Parent summaries are omitted to avoid double counting.");
-                if (ImGui::MenuItem("Critical points as CSV...")) cp.export_points = CPExport_Csv;
-                ImGui::SetItemTooltip("The critical point list as listed and sorted, at full precision, with each CP's environment\n"
-                                      "and the reason for its label. Its index joins it to the topology export.");
-                ImGui::EndDisabled();
+                // --- how they are drawn, and the export at the end of the line
+                ImGui::SetNextItemWidth(6.0f * em);
+                ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                ImGui::SetItemTooltip("The size of the markers");
+                ImGui::SameLine();
+                ImGui::Checkbox("Paths", &cp.show_paths);
+                ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
+                                      "RCP attractor paths, from each ring critical point to the cage critical points beside it");
+                {
+                    const char* lbl = "Export " ICON_FA_CARET_DOWN;
+                    const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+                    ImGui::SameLine();
+                    const float avail = ImGui::GetContentRegionAvail().x;
+                    if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
+                    ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
+                    if (ImGui::Button(lbl)) ImGui::OpenPopup("##Critical point export");
+                    ImGui::EndDisabled();
+                    if (ImGui::BeginPopup("##Critical point export")) {
+                        const bool labelled = cp.chemical_labels.size() == graph.num_vertices && cp.environment_of.size() == graph.num_vertices;
+                        ImGui::SeparatorText("Topology");
+                        if (ImGui::MenuItem("JSON or VTP...")) critical_points_export(state);
+                        ImGui::SetItemTooltip("Every critical point and the paths between them, unfiltered, every number at the precision\n"
+                                              "it was computed in: positions (bohr), density and, from the analytic search, the Hessian.\n"
+                                              "No chemical labels. .json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes\n"
+                                              "a Morse-Smale complex) for ParaView.");
+                        ImGui::SeparatorText("Chemical analysis");
+                        ImGui::BeginDisabled(!labelled);
+                        if (ImGui::MenuItem("Environments as CSV...")) cp.export_environments = CPExport_Csv;
+                        ImGui::SetItemTooltip("Every filtered environment leaf in tree order, including collapsed ones, at full precision,\n"
+                                              "with its hierarchy path and CP indices. Parent summaries are omitted to avoid double counting.");
+                        if (ImGui::MenuItem("Critical points as CSV...")) cp.export_points = CPExport_Csv;
+                        ImGui::SetItemTooltip("The critical point list as listed and sorted, at full precision, with each CP's environment\n"
+                                              "and the reason for its label. Its index joins it to the topology export.");
+                        ImGui::EndDisabled();
+                        ImGui::EndPopup();
+                    }
+                }
+
+                // --- the categories: shown in the viewport or not, with their counts; and what is shown of the selection
+                uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
+                md_topo_count_vertex_types(vertex_count, &graph);
+                for (int type : critical_point_type_order) {
+                    const CriticalPointStyle& style = critical_point_style(type);
+                    ImGui::PushID(type);
+                    ImGui::Checkbox("##Visible", &cp.type_visible[type]);
+                    ImGui::SetItemTooltip("Show %s %s (%s) in the viewport, with the paths from them, and list them in the table.",
+                                          style.plural, style.signature, style.topology_plural);
+                    ImGui::PopID();
+                    ImGui::SameLine(0.0f, 0.2f * em);
+                    critical_point_swatch(type);
+                    ImGui::SameLine(0.0f, 0.2f * em);
+                    ImGui::Text("%s %u", style.plural, vertex_count[type]);
+                    ImGui::SameLine(0.0f, 1.2f * em);
+                }
+                {
+                    static const char* show_str[] = { "All CPs", "Selected CPs", "Selected + 3 \xC3\x85" };
+                    const float w = 9.5f * em;
+                    const float colour_w = 7.5f * em;
+                    ImGui::NewLine();
+                    static const char* colour_str[] = { "Category", "Peak", "Character" };
+                    ImGui::SetNextItemWidth(colour_w);
+                    ImGui::Combo("Colour", &cp.color_mode, colour_str, (int)ARRAY_SIZE(colour_str));
+                    ImGui::SetItemTooltip("What fills the markers in the viewport: their category's colour; their peak's in the plot\n"
+                                          "(grey without a value of the plotted variable); or, of the BCPs, the character of their\n"
+                                          "interaction, as in the tables - the other CPs keeping their category's.");
+                    ImGui::SameLine(0.0f, 1.2f * em);
+                    ImGui::Checkbox("Labels", &cp.show_labels);
+                    ImGui::SetItemTooltip("Name the chemical environment of each selected CP beside it in the viewport (at most 200).");
+                    ImGui::SameLine(0.0f, 1.2f * em);
+                    ImGui::SetNextItemWidth(w);
+                    ImGui::Combo("Show", &cp.show, show_str, (int)ARRAY_SIZE(show_str));
+                    ImGui::SetItemTooltip("What the viewport shows while something is selected: every CP (the selection ringed),\n"
+                                          "only the selected CPs, or every CP with those beyond 3.0 \xC3\x85 of the selection dimmed.\n"
+                                          "With nothing selected every CP is shown.");
+                }
                 ImGui::EndPopup();
             }
-        }
 
-        // --- the categories: shown in the viewport or not, with their counts; and what is shown of the selection
-        uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
-        md_topo_count_vertex_types(vertex_count, &graph);
-        for (int type : critical_point_type_order) {
-            const CriticalPointStyle& style = critical_point_style(type);
-            ImGui::PushID(type);
-            ImGui::Checkbox("##Visible", &cp.type_visible[type]);
-            ImGui::SetItemTooltip("Show %s %s (%s) in the viewport, with the paths from them, and list them in the table.",
-                                  style.plural, style.signature, style.topology_plural);
-            ImGui::PopID();
-            ImGui::SameLine(0.0f, 0.2f * em);
-            critical_point_swatch(type);
-            ImGui::SameLine(0.0f, 0.2f * em);
-            ImGui::Text("%s %u", style.plural, vertex_count[type]);
-            ImGui::SameLine(0.0f, 1.2f * em);
-        }
-        {
-            static const char* show_str[] = { "All CPs", "Selected CPs", "Selected + 3 \xC3\x85" };
-            const float w = 9.5f * em;
-            const float colour_w = 7.5f * em;
-            ImGui::NewLine();
-            static const char* colour_str[] = { "Category", "Peak", "Character" };
-            ImGui::SetNextItemWidth(colour_w);
-            ImGui::Combo("Colour", &cp.color_mode, colour_str, (int)ARRAY_SIZE(colour_str));
-            ImGui::SetItemTooltip("What fills the markers in the viewport: their category's colour; their peak's in the plot\n"
-                                  "(grey without a value of the plotted variable); or, of the BCPs, the character of their\n"
-                                  "interaction, as in the tables - the other CPs keeping their category's.");
-            ImGui::SameLine(0.0f, 1.2f * em);
-            ImGui::Checkbox("Labels", &cp.show_labels);
-            ImGui::SetItemTooltip("Name the chemical environment of each selected CP beside it in the viewport (at most 200).");
-            ImGui::SameLine(0.0f, 1.2f * em);
-            ImGui::SetNextItemWidth(w);
-            ImGui::Combo("Show", &cp.show, show_str, (int)ARRAY_SIZE(show_str));
-            ImGui::SetItemTooltip("What the viewport shows while something is selected: every CP (the selection ringed),\n"
-                                  "only the selected CPs, or every CP with those beyond 3.0 \xC3\x85 of the selection dimmed.\n"
-                                  "With nothing selected every CP is shown.");
-        }
-        ImGui::EndPopup();
-        }
+            if (cp.enabled && cp.method == CriticalPoints::Method_Analytic) draw_critical_points_gto_status();
 
-        if (cp.enabled && cp.method == CriticalPoints::Method_Analytic) draw_critical_points_gto_status();
-
-        const float em_split = ImGui::GetFontSize();
-        const float splitter = 0.5f * em_split;
-        const float spacing = ImGui::GetStyle().ItemSpacing.y;
-                const float height = MAX(1.0f, ImGui::GetContentRegionAvail().y);
-                const float panel_height = MAX(1.0f, height - 2.0f * splitter - 4.0f * spacing);
-                if (cp_distribution_height <= 0.0f) cp_distribution_height = 0.4f * panel_height;
-                cp_distribution_height = CLAMP(cp_distribution_height, 0.2f * panel_height, 0.6f * panel_height);
-                const float lower_height = MAX(1.0f, panel_height - cp_distribution_height);
-                if (cp.top_height <= 0.0f) cp.top_height = 0.5f * lower_height;
-                cp.top_height = CLAMP(cp.top_height, 0.25f * lower_height, 0.75f * lower_height);
-                if (ImGui::BeginChild("##Distribution plots", ImVec2(0, cp_distribution_height), false, ImGuiWindowFlags_NoScrollbar)) {
-                    if (ImGui::SmallButton("Distribution settings / filters...")) ImGui::OpenPopup("##Distribution settings");
-                    if (ImGui::BeginPopup("##Distribution settings")) {
+            const float em_split = ImGui::GetFontSize();
+            const float splitter = 0.5f * em_split;
+            const float spacing = ImGui::GetStyle().ItemSpacing.y;
+            const float height = MAX(1.0f, ImGui::GetContentRegionAvail().y);
+            const float panel_height = MAX(1.0f, height - 2.0f * splitter - 4.0f * spacing);
+            if (cp_distribution_height <= 0.0f) cp_distribution_height = 0.4f * panel_height;
+            cp_distribution_height = CLAMP(cp_distribution_height, 0.2f * panel_height, 0.6f * panel_height);
+            const float lower_height = MAX(1.0f, panel_height - cp_distribution_height);
+            if (cp.top_height <= 0.0f) cp.top_height = 0.5f * lower_height;
+            cp.top_height = CLAMP(cp.top_height, 0.25f * lower_height, 0.75f * lower_height);
+            if (ImGui::BeginChild("##Distribution plots", ImVec2(0, cp_distribution_height), false, ImGuiWindowFlags_NoScrollbar)) {
+                if (ImGui::SmallButton("Distribution settings / filters...")) ImGui::OpenPopup("##Distribution settings");
+                if (ImGui::BeginPopup("##Distribution settings")) {
                     ImGui::AlignTextToFramePadding();
                     ImGui::TextUnformatted("Plot");
                     ImGui::SameLine();
@@ -7835,54 +8283,59 @@ struct QuantumChemistry : viamd::EventHandler {
                         ImGui::EndTable();
                     }
                     ImGui::EndPopup();
-                    }
-                    if (cp.enabled && graph.num_vertices > 0 &&
-                        ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
-                        for (int type : critical_point_type_order) {
-                            draw_critical_point_distribution_plot(state, temp, type);
-                        }
-                        ImPlot::EndSubplots();
-                    }
-                    if (!cp.enabled || graph.num_vertices == 0) ImGui::TextWrapped("Distributions appear when critical points are available.");
                 }
-                ImGui::EndChild();
-                ImGui::InvisibleButton("##CP distribution splitter", ImVec2(-1, splitter));
-                if (ImGui::IsItemActive()) cp_distribution_height += ImGui::GetIO().MouseDelta.y;
-                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (cp.enabled && graph.num_vertices > 0 &&
+                    ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
+                    for (int type : critical_point_type_order) {
+                        draw_critical_point_distribution_plot(state, temp, type);
+                    }
+                    ImPlot::EndSubplots();
+                }
+                if (!cp.enabled || graph.num_vertices == 0) ImGui::TextWrapped("Distributions appear when critical points are available.");
+            }
+            ImGui::EndChild();
+            ImGui::InvisibleButton("##CP distribution splitter", ImVec2(-1, splitter));
+            if (ImGui::IsItemActive()) cp_distribution_height += ImGui::GetIO().MouseDelta.y;
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            if (!cp.chemical_analysis_enabled) {
+                if (cp.enabled && graph.num_vertices > 0) draw_critical_point_list(state);
+            } else {
                 if (ImGui::BeginChild("##Environments pane", ImVec2(0, cp.top_height))) {
                     if (!cp.enabled) ImGui::TextWrapped("Enable the CP search to list critical points.");
                     else if (graph.num_vertices == 0) ImGui::TextUnformatted("No critical points");
-                    else if (!cp.chemical_analysis_enabled) ImGui::TextWrapped("Chemical analysis is disabled. Enable it to classify CPs and show chemical environments.");
                     else draw_critical_point_environments(state);
                 }
                 ImGui::EndChild();
                 ImGui::InvisibleButton("##CP environment splitter", ImVec2(-1, splitter));
                 if (ImGui::IsItemActive()) cp.top_height += ImGui::GetIO().MouseDelta.y;
                 if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                if (ImGui::BeginChild("##CP point details", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
-                    const float detail_height = MAX(1.0f, ImGui::GetContentRegionAvail().y - splitter - 2.0f * spacing);
-                    if (cp_points_height <= 0.0f) cp_points_height = 0.5f * detail_height;
-                    cp_points_height = CLAMP(cp_points_height, 0.25f * detail_height, 0.75f * detail_height);
-                    if (ImGui::BeginChild("##Points pane", ImVec2(0, cp_points_height)) &&
-                        cp.enabled && graph.num_vertices > 0) {
-                        if (cp.chemical_analysis_enabled) draw_critical_point_list(state);
-                        else ImGui::TextWrapped("The chemistry-grouped CP list is unavailable while chemical analysis is disabled.");
-                    }
-                    ImGui::EndChild();
-                    ImGui::InvisibleButton("##CP point details splitter", ImVec2(-1, splitter));
-                    if (ImGui::IsItemActive()) cp_points_height += ImGui::GetIO().MouseDelta.y;
-                    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                    if (ImGui::BeginChild("##Details pane", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y))) &&
-                        cp.enabled && graph.num_vertices > 0) {
-                        if (cp.chemical_analysis_enabled) draw_critical_point_details();
-                        else ImGui::TextWrapped("Chemical labels and chemistry-dependent details are disabled.");
-                    }
-                    ImGui::EndChild();
+                const float detail_height = MAX(1.0f, ImGui::GetContentRegionAvail().y - splitter - 2.0f * spacing);
+                if (cp_points_height <= 0.0f) cp_points_height = 0.5f * detail_height;
+                cp_points_height = CLAMP(cp_points_height, 0.25f * detail_height, 0.75f * detail_height);
+                if (ImGui::BeginChild("##Points pane", ImVec2(0, cp_points_height)) &&
+                    cp.enabled && graph.num_vertices > 0) {
+                    draw_critical_point_list(state);
+                }
+                ImGui::EndChild();
+                ImGui::InvisibleButton("##CP point details splitter", ImVec2(-1, splitter));
+                if (ImGui::IsItemActive()) cp_points_height += ImGui::GetIO().MouseDelta.y;
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (ImGui::BeginChild("##Details pane", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
+                    if (cp.enabled && graph.num_vertices > 0) draw_critical_point_details();
                 }
                 ImGui::EndChild();
             }
-            ImGui::EndChild();
-            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+        cp_column_width = ImGui::GetItemRectSize().x;
+        ImGui::SameLine();
+        if (ImGui::BeginChild("##NCI column", ImVec2(0, available.y), false, column_flags)) {
+            topology::draw_nci_panel(nci_state, cp.enabled, cp.list_scope, cp.environment_selection);
+        }
+        ImGui::EndChild();
+        if (nci_state.export_scatter_requested) {
+            nci_state.export_scatter_requested = false;
+            start_nci_scatter_export();
         }
 
         // A table that was not drawn this frame does not keep a request for later

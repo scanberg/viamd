@@ -15,15 +15,13 @@ namespace topology {
 NciFamilySettings nci_family_default_settings(nci_surface::Family family) {
     const nci_surface::Defaults defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
     NciFamilySettings settings;
-    settings.s_iso = (float)defaults.s_iso;
-    settings.rho_max = (float)defaults.rho_max;
     settings.radius = (float)defaults.radius;
     return settings;
 }
 
 NciUniformSettings nci_uniform_default_settings() {
     const nci_surface::UniformDefaults defaults = nci_surface::uniform_defaults();
-    return {(float)defaults.s_iso, (float)defaults.rho_max};
+    return {(float)defaults.s_iso, (float)defaults.rho_max, (float)defaults.radius};
 }
 
 ColorScale nci_default_scale() {
@@ -138,9 +136,9 @@ void nci_apply_settings(NciState& state) {
             const NciFamilySettings& settings = state.family_settings[family_index(*n)];
             // Without classified CPs the whole system has no CP type to adapt to
             const bool adaptive = state.mode == NciParameterMode::CPAdaptive && n->families;
-            n->s_iso = adaptive ? settings.s_iso : state.uniform.s_iso;
-            n->rho_max = adaptive ? settings.rho_max : state.uniform.rho_max;
-            n->near_radius = settings.radius;
+            n->s_iso = state.uniform.s_iso;
+            n->rho_max = state.uniform.rho_max;
+            n->near_radius = adaptive ? settings.radius : state.uniform.radius;
             n->resolution = state.resolution;
             n->connected = state.connected;
             n->radius_cap = state.radius_cap;
@@ -176,9 +174,10 @@ void nci_surface_release(NciSurface& n) {
     n.triangles = 0;
     n.span = {};
     n.scatter = {};
+    n.reference_scatters = {};
     n.source_mesh = {};
     n.outline.clear();
-    n.cancelled = n.rho_failed = n.failed = false;
+    n.cancelled = n.rho_failed = n.failed = n.reference_failed = false;
     isomesh::mesh_free(&n.mesh);
     gl::free_texture(&n.colormap);
     n.uploaded_colormap = -1;
@@ -194,6 +193,10 @@ void nci_state_free(NciState& state) {
     for (auto& n : state.full_system) nci_surface_release(*n);
     state.full_system.clear();
     state.layer_outlines.clear();
+    gl::free_texture(&state.reference_texture);
+    state.reference_texture_key = 0;
+    state.reference_map_key = 0;
+    state.reference_map = {};
     state.scatter_layers.clear();
     state.view = nci_surface::View::Overview;
     state.classified_overview = true;
@@ -223,6 +226,8 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
     anchors.reserve(input.enabled ? input.critical_points.size() : 0);
     // Grouped by parameters: the CPs of one interaction region make one surface, cut at one threshold
     std::array<std::vector<std::vector<std::string>>, nci_surface::family_count> all_environments, selected_environments;
+    using CategoryMemberships = std::array<std::vector<NciSurface::CriticalPointMembership>, nci_surface::family_count>;
+    std::array<CategoryMemberships, nci_surface::family_count> all_memberships, selected_memberships;
     using TypeCounts = std::array<uint32_t, nci_surface::family_count>;
     std::array<TypeCounts, nci_surface::family_count> all_types = {}, selected_types = {};
     for (const NciCriticalPoint& cp : input.critical_points) {
@@ -230,7 +235,11 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
         const size_t group = (size_t)cp.parameter_family;
         key = md_hash64(&cp.family, sizeof(cp.family), key);
         key = md_hash64(&cp.parameter_family, sizeof(cp.parameter_family), key);
+        key = md_hash64(&cp.index, sizeof(cp.index), key);
         anchors.push_back({cp.position, cp.parameter_family, cp.selected});
+        const NciSurface::CriticalPointMembership membership = {cp.index, cp.family, cp.position, cp.environment};
+        all_memberships[group][(size_t)cp.family].push_back(membership);
+        if (cp.selected) selected_memberships[group][(size_t)cp.family].push_back(membership);
         all_types[group][(size_t)cp.family]++;
         if (cp.selected) selected_types[group][(size_t)cp.family]++;
         if (!cp.environment.empty()) {
@@ -255,6 +264,7 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
         const auto update_family = [&](std::vector<std::unique_ptr<NciSurface>>& surfaces,
                                        const std::array<std::vector<double>, nci_surface::family_count>& family_anchors,
                                        const std::array<std::vector<std::vector<std::string>>, nci_surface::family_count>& environments,
+                                       const std::array<CategoryMemberships, nci_surface::family_count>& memberships,
                                        const std::array<TypeCounts, nci_surface::family_count>& types, int id, bool full_system) {
             NciSurface* surface = nullptr;
             for (auto& candidate : surfaces) if (candidate->id == id) { surface = candidate.get(); break; }
@@ -277,12 +287,17 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
             surface->shown = !family_anchors[f].empty();
             surface->anchors = family_anchors[f];
             surface->environments = environments[f];
+            surface->critical_point_indices.clear();
+            surface->critical_points_by_family = memberships[f];
+            for (const auto& category_memberships : memberships[f])
+                for (const auto& membership : category_memberships)
+                    surface->critical_point_indices.push_back(membership.index);
             surface->type_counts = types[f];
             surface->families = 0;
             for (size_t t = 0; t < types[f].size(); ++t) if (types[f][t]) surface->families |= 1u << t;
         };
-        update_family(state.full_system, all_anchors, all_environments, all_types, -100 - (int)f, true);
-        update_family(state.previews, selected_anchors, selected_environments, selected_types, -2 - (int)f, false);
+        update_family(state.full_system, all_anchors, all_environments, all_memberships, all_types, -100 - (int)f, true);
+        update_family(state.previews, selected_anchors, selected_environments, selected_memberships, selected_types, -2 - (int)f, false);
     }
 
     state.primary.shown = !state.classified_overview;
@@ -346,8 +361,9 @@ ImVec4 nci_layer_colour(int index) {
 }
 
 void nci_update_layer_outlines(NciState& state) {
-    std::vector<int> keys = {NCI_LAYER_FULL_SYSTEM, NCI_LAYER_PREVIEW};
+    std::vector<int> keys = {NCI_LAYER_PREVIEW};
     keys.insert(keys.end(), state.layer_order.begin(), state.layer_order.end());
+    keys.push_back(NCI_LAYER_FULL_SYSTEM);
     for (auto it = state.layer_outlines.begin(); it != state.layer_outlines.end();)
         it = std::find(keys.begin(), keys.end(), it->first) == keys.end() ? state.layer_outlines.erase(it) : std::next(it);
     for (int layer : keys) {
@@ -366,19 +382,54 @@ void nci_update_layer_outlines(NciState& state) {
                 rho_max = MAX(rho_max, n->rho_max);
             }
         }
+        if (layer == NCI_LAYER_FULL_SYSTEM) {
+            for (int saved_layer : state.layer_order) {
+                const auto it = state.layer_outlines.find(saved_layer);
+                const uint64_t saved_key = it == state.layer_outlines.end() ? 0 : it->second.key;
+                key = md_hash64(&saved_key, sizeof(saved_key), key);
+            }
+        }
+        const auto style_it = state.scatter_layers.find(layer);
+        const NciScatterLayer style = style_it == state.scatter_layers.end() ? NciScatterLayer{} : style_it->second;
+        const int num_levels = CLAMP(style.num_levels, 0, nci_max_levels);
+        const bool fill = style.fill && style.style == NciLayerStyle::Contours;
+        key = md_hash64(&num_levels, sizeof(num_levels), key);
+        key = md_hash64(style.levels, sizeof(float) * (size_t)num_levels, key);
+        key = md_hash64(&fill, sizeof(fill), key);
         key |= 1;
         NciState::LayerOutline& outline = state.layer_outlines[layer];
         if (key == outline.key) continue;
         outline.key = key;
         outline.segments.clear();
-        if (!sample_count) continue;
+        outline.fills.clear();
+        if (!sample_count && layer != NCI_LAYER_FULL_SYSTEM) continue;
 
-        // Around the interactions' own regions with a one-bin margin, so it never runs on top of their thin outlines
+        // The combined contour encloses the interaction contours without adding an extra margin.
         std::vector<const nci_surface::Scatter*> scatters;
         for (const NciSurface* n : members)
             if (outline_member(*n)) scatters.push_back(&n->scatter);
-        if (!nci_surface::scatter_union_outline(&outline.segments, scatters, rho_max, 1))
-            MD_LOG_ERROR("NCI layer: invalid combined scatter samples for density outline");
+        if (layer == NCI_LAYER_FULL_SYSTEM) {
+            for (int saved_layer : state.layer_order) {
+                for (const NciSurface* n : nci_layer_members(state, saved_layer)) {
+                    if (!outline_member(*n)) continue;
+                    scatters.push_back(&n->scatter);
+                    rho_max = MAX(rho_max, n->rho_max);
+                }
+            }
+        }
+        sample_count = 0;
+        for (const nci_surface::Scatter* scatter : scatters) sample_count += scatter->s.size();
+        if (!sample_count) continue;
+        outline.segments.resize((size_t)num_levels);
+        if (fill) outline.fills.resize((size_t)num_levels);
+        for (int k = 0; k < num_levels; ++k) {
+            const float fraction = CLAMP(style.levels[k], 0.01f, 0.999f);
+            if (!nci_surface::scatter_union_outline(&outline.segments[k], scatters, rho_max, 0, fraction) ||
+                (fill && !nci_surface::scatter_union_fill(&outline.fills[k], scatters, rho_max, 0, fraction))) {
+                MD_LOG_ERROR("NCI layer: invalid combined scatter samples for density outline");
+                break;
+            }
+        }
     }
 }
 

@@ -18,6 +18,8 @@ struct NciSurfaceJob {
     std::vector<double> near;
     nci_surface::Mesh mesh;
     nci_surface::Scatter scatter;
+    std::array<nci_surface::Scatter, nci_surface::family_count> reference_scatters;
+    bool reference_ok = true;
 
     uint64_t key = 0;
     md_tick_t start = 0;
@@ -31,7 +33,9 @@ struct NciSurfaceJob {
 NciSurfaceJob* nci_surface_job_start(std::shared_ptr<const std::vector<float>> rho,
                                      const nci_surface::Grid& grid,
                                      const nci_surface::Params& params,
-                                     std::vector<double> near, uint64_t key);
+                                     std::vector<double> near,
+                                     const std::array<std::vector<double>, nci_surface::family_count>& reference_near,
+                                     uint64_t key);
 void nci_surface_job_destroy(NciSurfaceJob* job);
 
 }  // namespace topology

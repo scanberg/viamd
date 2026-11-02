@@ -907,7 +907,8 @@ bool Filter::accepts(double density) const {
     return false;
 }
 
-Curve estimate(std::span<const double> density, std::span<const uint32_t> component, size_t component_count, bool allow_log) {
+Curve estimate(std::span<const double> density, std::span<const uint32_t> component, size_t component_count, bool allow_log,
+               double sample_min, double sample_max) {
     Curve curve;
     if (density.empty()) return curve;
     for (double value : density) {
@@ -957,8 +958,12 @@ Curve estimate(std::span<const double> density, std::span<const uint32_t> compon
         bandwidth[i] = std::max(values[i] - values[lo], values[hi] - values[i]) * 0.5;
     }
     const double max_bandwidth = std::max(*std::max_element(bandwidth.begin(), bandwidth.end()), fallback);
-    const double begin = values.front() - 4.0 * max_bandwidth;
-    const double end = values.back() + 4.0 * max_bandwidth;
+    double begin = values.front() - 4.0 * max_bandwidth;
+    double end = values.back() + 4.0 * max_bandwidth;
+    if (sample_max > sample_min && (!curve.logarithmic || sample_min > 0.0)) {
+        begin = curve.logarithmic ? std::log10(sample_min) : sample_min;
+        end = curve.logarithmic ? std::log10(sample_max) : sample_max;
+    }
     const double step = (end - begin) / (Curve::sample_count - 1);
     // Keep even coincident samples resolved by the curve's sampling grid.
     for (double& width : bandwidth) width = std::max(width, 2.0 * step);

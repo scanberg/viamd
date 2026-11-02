@@ -191,3 +191,24 @@ UTEST(critical_point_distribution, log_distribution_is_scale_invariant) {
         EXPECT_NEAR(a.probability[i], b.probability[i], 1.0e-10);
     }
 }
+
+UTEST(critical_point_distribution, sampled_over_a_zoomed_range) {
+    const double values[] = {0.001, 0.00101, 0.00102, 0.00103, 0.00104, 0.00105, 0.00106, 0.00107, 1.0};
+    const auto overview = estimate(values);
+    const auto zoomed = estimate(values, {}, 0, true, 0.0009, 0.0012);
+    ASSERT_TRUE(zoomed.valid);
+    EXPECT_TRUE(zoomed.logarithmic);
+    EXPECT_NEAR(zoomed.density.front(), 0.0009, 1.0e-12);
+    EXPECT_NEAR(zoomed.density.back(), 0.0012, 1.0e-12);
+    double overview_peak = 0.0, zoomed_peak = 0.0;
+    for (int i = 0; i < overview.sample_count; ++i) {
+        overview_peak = std::max(overview_peak, overview.probability[i]);
+        zoomed_peak = std::max(zoomed_peak, zoomed.probability[i]);
+        if (i > 0) EXPECT_GT(zoomed.density[i], zoomed.density[i - 1]);
+    }
+    // The overview's grid holds the cluster's kernels wide; the zoomed one resolves them
+    EXPECT_GT(zoomed_peak, 1.5 * overview_peak);
+    // An invalid range falls back to the overview's
+    const auto fallback = estimate(values, {}, 0, true, -1.0, 0.0012);
+    EXPECT_NEAR(fallback.density.front(), overview.density.front(), 1.0e-12);
+}

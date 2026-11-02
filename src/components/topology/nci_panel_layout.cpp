@@ -4,7 +4,10 @@
 
 #include <color_scale.h>
 #include <core/md_common.h>
+#include <core/md_hash.h>
 #include <core/md_log.h>
+#include <density_map.h>
+#include <gfx/gl_utils.h>
 #include <layer_groups.h>
 #include <md_util.h>
 #include <property_grid.h>
@@ -48,7 +51,11 @@ static void draw_nci_panel_layout(bool* enabled, NciPanelDrawCallbacks callbacks
     }
     ImGui::SetItemTooltip(show_layers ? "Hide the layers" : "Show the layers");
 
-    ImGui::BeginDisabled(!*enabled);
+    if (!*enabled) {
+        ImGui::TextDisabled("Enable NCI to show the scatter plot and layers.");
+        return;
+    }
+
     const float available_height = std::max(1.0f, ImGui::GetContentRegionAvail().y);
     if (scatter_height <= 0.0f) scatter_height = available_height * 0.6f;
     const float clamped = std::clamp(scatter_height, std::min(120.0f, available_height),
@@ -71,7 +78,6 @@ static void draw_nci_panel_layout(bool* enabled, NciPanelDrawCallbacks callbacks
         if (callbacks.draw_layers) callbacks.draw_layers(callbacks.user_data);
         ImGui::EndChild();
     }
-    ImGui::EndDisabled();
 }
 
 namespace {
@@ -102,17 +108,22 @@ struct NciPanel {
     static constexpr const char* resolution_str[] = { "Coarse", "Medium", "Fine" };
     static constexpr const char* mode_str[] = { "Uniform", "CP-adaptive" };
     static constexpr const char* mode_tooltip =
-        "How the isovalue and density cutoff apply to every NCI layer, the full system included.\n"
-        "Uniform: one isovalue and cutoff for every CP type; the physically consistent mode.\n"
-        "CP-adaptive: around each CP, that CP type's own isovalue and cutoff. Illustrative only: it\n"
-        "brings out weak interactions such as pi-stacking, but the surfaces are not mutually consistent.\n"
-        "In both modes the extent around the CPs is the radius of each CP type, and one colour scale applies.";
+        "How the isovalue, density cutoff and radius apply to every NCI layer, the full system included.\n"
+        "Uniform: standard NCI, one isovalue, cutoff and radius around the CPs for every CP type.\n"
+        "CP-adaptive: the same isovalue and cutoff, with each CP type's own radius around its CPs, so\n"
+        "extended interactions such as pi-stacking are covered and compact ones stay local.\n"
+        "One colour scale applies in both modes.";
     static constexpr size_t max_samples = 32u << 20;
 
     NciState& st;
     bool critical_points_enabled;
+    std::vector<uint32_t>& critical_point_list_scope;
+    std::vector<uint32_t>& critical_point_environment_selection;
 
-    NciPanel(NciState& state, bool cp_enabled) : st(state), critical_points_enabled(cp_enabled) {}
+    NciPanel(NciState& state, bool cp_enabled, std::vector<uint32_t>& cp_list_scope,
+             std::vector<uint32_t>& cp_environment_selection)
+        : st(state), critical_points_enabled(cp_enabled), critical_point_list_scope(cp_list_scope),
+          critical_point_environment_selection(cp_environment_selection) {}
 
     // The member of the shown layer the scatter guides follow
     NciSurface* active_member() {
@@ -132,12 +143,48 @@ struct NciPanel {
         }
     }
 
-    std::unique_ptr<NciSurface> copy_preview(const NciSurface& source, int group_id, int number) {
+    // A layer is named by the CP families of its CPs, their branch of the CP tree: "Hydrogen bonds", "Aromatic rings",
+    // "Hydrogen bonds + \xCF\x80-stacking", "Hydrogen bonds + 2 more"; numbered when another layer has the name
+    std::string selection_layer_name(const std::vector<NciSurface*>& members, int number) const {
+        std::vector<std::string> families;
+        for (const NciSurface* member : members) {
+            for (const auto& path : member->environments) {
+                if (path.empty()) continue;
+                const bool branched = (path[0] == "Contacts" || path[0] == "Rings") && path.size() > 1;
+                const std::string& family = branched ? path[1] : path[0];
+                if (std::find(families.begin(), families.end(), family) == families.end()) families.push_back(family);
+            }
+        }
+        if (families.empty()) return "Layer " + std::to_string(number);
+        std::string name = families.front();
+        if (families.size() == 2) name += " + " + families[1];
+        else if (families.size() > 2) name += " + " + std::to_string(families.size() - 1) + " more";
+        const auto taken = [&](const std::string& candidate) {
+            return std::any_of(st.objects.begin(), st.objects.end(), [&](const auto& n) { return candidate == n->name; });
+        };
+        if (taken(name)) {
+            for (int k = 2;; ++k) {
+                const std::string candidate = name + " " + std::to_string(k);
+                if (!taken(candidate)) {
+                    name = candidate;
+                    break;
+                }
+            }
+        }
+        if (name.size() >= sizeof(NciSurface::name)) {
+            size_t end = sizeof(NciSurface::name) - 1;
+            while (end && (static_cast<unsigned char>(name[end]) & 0xC0) == 0x80) --end;
+            name.resize(end);
+        }
+        return name;
+    }
+
+    std::unique_ptr<NciSurface> copy_preview(const NciSurface& source, int group_id, const std::string& name) {
         auto n = std::make_unique<NciSurface>();
         n->saved = true;
         n->id = st.next_id++;
         n->object_group = group_id;
-        snprintf(n->name, sizeof(n->name), "Layer %d", number);
+        snprintf(n->name, sizeof(n->name), "%s", name.c_str());
         n->shown = true;
         n->layer_visible = true;
         n->s_iso = source.s_iso;
@@ -145,6 +192,9 @@ struct NciPanel {
         n->scale = source.scale;
         n->families = source.families;
         n->type_counts = source.type_counts;
+        n->critical_point_indices = source.critical_point_indices;
+        n->critical_points_by_family = source.critical_points_by_family;
+        n->reference_scatters = source.reference_scatters;
         n->group = source.group;
         n->environments = source.environments;
         n->opacity = source.opacity;
@@ -165,6 +215,7 @@ struct NciPanel {
         n->generation = source.generation;
         n->seconds = source.seconds;
         n->rho_seconds = source.rho_seconds;
+        n->reference_failed = source.reference_failed;
         if (!topology::upload_nci_surface_mesh(*n)) { topology::nci_surface_release(*n); return nullptr; }
         return n;
     }
@@ -187,9 +238,10 @@ struct NciPanel {
         std::vector<std::unique_ptr<NciSurface>> copies;
         const int group_id = st.next_group_id++;
         const int number = free_layer_number();
+        const std::string name = selection_layer_name(nci_layer_members(st, NCI_LAYER_PREVIEW), number);
         for (const auto& n : st.previews) {
             if (!n->shown) continue;
-            auto saved = copy_preview(*n, group_id, number);
+            auto saved = copy_preview(*n, group_id, name);
             if (!saved) {
                 for (auto& c : copies) topology::nci_surface_release(*c);
                 return;
@@ -246,14 +298,18 @@ struct NciPanel {
         ImGui::SetNextItemWidth(prop::control_width());
         if (ImGui::Combo("##NCI mode", &mode, mode_str, (int)ARRAY_SIZE(mode_str)))
             st.mode = mode ? NciParameterMode::CPAdaptive : NciParameterMode::Uniform;
+        prop::row("isovalue s", "Reduced density gradient isovalue, the same for every CP type.");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, 1.5f, "%.2f");
+        editing |= ImGui::IsItemActive();
+        prop::row("\xCF\x81 cutoff", "Density cutoff, the same for every CP type.");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI uniform rho", &st.uniform.rho_max, 0.005f, 0.2f, "< %.3f", ImGuiSliderFlags_Logarithmic);
+        editing |= ImGui::IsItemActive();
         if (!adaptive) {
-            prop::row("isovalue s", "Reduced density gradient isovalue, the same for every CP type.");
+            prop::row("radius", "Extent around the CPs, the same for every CP type (with the radius cap).");
             ImGui::SetNextItemWidth(prop::control_width());
-            ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, 1.5f, "%.2f");
-            editing |= ImGui::IsItemActive();
-            prop::row("\xCF\x81 cutoff", "Density cutoff, the same for every CP type.");
-            ImGui::SetNextItemWidth(prop::control_width());
-            ImGui::SliderFloat("##NCI uniform rho", &st.uniform.rho_max, 0.005f, 0.2f, "< %.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("##NCI uniform radius", &st.uniform.radius, 0.5f, 12.0f, "%.1f Bohr");
             editing |= ImGui::IsItemActive();
         }
         prop::row("resolution", "Grid spacing for density sampling. Finer grids are smoother and take longer.");
@@ -269,7 +325,7 @@ struct NciPanel {
         ImGui::BeginDisabled(!st.connected);
         ImGui::Checkbox("Radius cap", &st.radius_cap);
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Limit the extent around the CPs to each type's radius. Without a cap, connected regions may merge across the system.");
+        ImGui::SetItemTooltip("Limit the extent around the CPs to the radius. Without a cap, connected regions may merge across the system.");
         prop::row("opacity");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI opacity", &st.opacity, 0.05f, 1.0f, "%.2f");
@@ -277,44 +333,32 @@ struct NciPanel {
                                   "the 1st to 99th percentile of the shown layer", true);
         prop::end();
 
-        ImGui::SeparatorText("Per CP type");
-        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
-        if (ImGui::BeginTable("##NCI type settings", adaptive ? 4 : 2, flags)) {
-            const float em = ImGui::GetFontSize();
-            ImGui::TableSetupColumn("Type");
-            ImGui::TableSetupColumn("Radius", ImGuiTableColumnFlags_WidthFixed, 6.0f * em);
-            if (adaptive) {
-                ImGui::TableSetupColumn("s", ImGuiTableColumnFlags_WidthFixed, 5.0f * em);
-                ImGui::TableSetupColumn("\xCF\x81 cutoff", ImGuiTableColumnFlags_WidthFixed, 6.0f * em);
-            }
-            ImGui::TableHeadersRow();
-            for (size_t f = 0; f < st.family_settings.size(); ++f) {
-                if (!nci_surface::has_nci((nci_surface::Family)f)) continue;
-                NciFamilySettings& fs = st.family_settings[f];
-                ImGui::PushID((int)f);
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::AlignTextToFramePadding();
-                ImGui::TextUnformatted(nci_surface::family_name((nci_surface::Family)f));
-                if (!nci_surface::family_defaults(nci_surface::family_bit((nci_surface::Family)f)).established)
-                    ImGui::SetItemTooltip("Uncalibrated type: provisional defaults");
-                ImGui::TableNextColumn();
-                ImGui::SetNextItemWidth(-FLT_MIN);
-                ImGui::SliderFloat("##radius", &fs.radius, 0.5f, 12.0f, "%.1f Bohr");
-                editing |= ImGui::IsItemActive();
-                if (adaptive) {
+        if (adaptive) {
+            ImGui::SeparatorText("Radius per CP type");
+            const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
+            if (ImGui::BeginTable("##NCI type settings", 2, flags)) {
+                const float em = ImGui::GetFontSize();
+                ImGui::TableSetupColumn("Type");
+                ImGui::TableSetupColumn("Radius", ImGuiTableColumnFlags_WidthFixed, 6.0f * em);
+                ImGui::TableHeadersRow();
+                for (size_t f = 0; f < st.family_settings.size(); ++f) {
+                    if (!nci_surface::has_nci((nci_surface::Family)f)) continue;
+                    NciFamilySettings& fs = st.family_settings[f];
+                    ImGui::PushID((int)f);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted(nci_surface::family_name((nci_surface::Family)f));
+                    if (!nci_surface::family_defaults(nci_surface::family_bit((nci_surface::Family)f)).established)
+                        ImGui::SetItemTooltip("Uncalibrated type: provisional radius");
                     ImGui::TableNextColumn();
                     ImGui::SetNextItemWidth(-FLT_MIN);
-                    ImGui::SliderFloat("##s", &fs.s_iso, 0.1f, 1.5f, "%.2f");
+                    ImGui::SliderFloat("##radius", &fs.radius, 0.5f, 12.0f, "%.1f Bohr");
                     editing |= ImGui::IsItemActive();
-                    ImGui::TableNextColumn();
-                    ImGui::SetNextItemWidth(-FLT_MIN);
-                    ImGui::SliderFloat("##rho", &fs.rho_max, 0.005f, 0.2f, "< %.3f", ImGuiSliderFlags_Logarithmic);
-                    editing |= ImGui::IsItemActive();
+                    ImGui::PopID();
                 }
-                ImGui::PopID();
+                ImGui::EndTable();
             }
-            ImGui::EndTable();
         }
         if (ImGui::Button("Reset to defaults")) {
             for (size_t f = 0; f < st.family_settings.size(); ++f)
@@ -335,65 +379,123 @@ struct NciPanel {
         std::vector<NciSurface*> members;
     };
 
+    // ---- the rows, as the Ramachandran layers': the eye, a swatch of how it is drawn, the name and a line below it
+    struct RowFrame {
+        ImVec2 min;
+        float w = 0.0f, h = 0.0f, line_h = 0.0f;
+        ImVec2 swatch_min, swatch_max;
+        ImVec2 text;
+        ImVec4 clip;
+        bool hovered = false, clicked = false;
+    };
+    // The row's selectable and its eye; the caller draws the swatch and text into the frame
+    RowFrame begin_row(bool selected, bool* visible, const char* eye_tooltip) {
+        RowFrame r;
+        r.line_h = ImGui::GetTextLineHeight();
+        r.h = r.line_h * 2.0f + 8.0f;
+        r.min = ImGui::GetCursorScreenPos();
+        r.w = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemAllowOverlap();
+        r.clicked = ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap, ImVec2(r.w, r.h));
+        r.hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay) &&
+                    !ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+        const float pad = 4.0f;
+        ImGui::SetCursorScreenPos(ImVec2(r.min.x + pad, r.min.y + (r.h - ImGui::GetFrameHeight()) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
+        if (ImGui::Button(*visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) *visible = !*visible;
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("%s", eye_tooltip);
+        r.swatch_min = ImVec2(r.min.x + pad + r.line_h + 8, r.min.y + (r.h - r.line_h) * 0.5f);
+        r.swatch_max = ImVec2(r.swatch_min.x + r.line_h, r.swatch_min.y + r.line_h);
+        r.text = ImVec2(r.min.x + pad + r.line_h + 6 + r.line_h + 6, r.min.y + 4);
+        r.clip = ImVec4(r.text.x, r.min.y, r.min.x + r.w - pad, r.min.y + r.h);
+        return r;
+    }
+    void row_text(const RowFrame& r, const char* name, const char* detail, bool on, bool selected) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 text_col = ImGui::GetColorU32(on ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        // On the selection's colour the disabled one is too faint to read
+        const ImU32 dim_col = selected ? ImGui::GetColorU32(ImGuiCol_Text, 0.7f) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), r.text, text_col, name, nullptr, 0.0f, &r.clip);
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(r.text.x, r.text.y + r.line_h + 1), dim_col, detail,
+                    nullptr, 0.0f, &r.clip);
+    }
+    static void end_row(const RowFrame& r) {
+        ImGui::SetCursorScreenPos(ImVec2(r.min.x, r.min.y + r.h + 2));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+
+    // The reference's swatch: its four categories as it draws them, a quarter each
+    void reference_swatch(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float alpha) const {
+        const NciReferenceLayer& r = st.reference;
+        const ImVec2 mid((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+        const float s = mx.y - mn.y;
+        const ImVec2 centres[4] = {ImVec2(mn.x + 0.3f * s, mn.y + 0.35f * s), ImVec2(mn.x + 0.7f * s, mn.y + 0.35f * s),
+                                   ImVec2(mn.x + 0.3f * s, mn.y + 0.7f * s), ImVec2(mn.x + 0.7f * s, mn.y + 0.7f * s)};
+        for (size_t c = 0; c < nci_surface::reference_category_count; ++c) {
+            ImVec4 col = nci_type_colour(reference_colours[c]);
+            col.w = alpha * r.opacity;
+            if (r.fill) {
+                ImVec4 f = col;
+                f.w *= r.style == NciReferenceStyle::Combined ? 0.35f : 0.6f;
+                if (r.style == NciReferenceStyle::Combined) dl->AddCircleFilled(centres[c], 0.32f * s, ImGui::ColorConvertFloat4ToU32(f));
+                else {
+                    const ImVec2 a(c % 2 ? mid.x : mn.x, c < 2 ? mn.y : mid.y), b(c % 2 ? mx.x : mid.x, c < 2 ? mid.y : mx.y);
+                    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(f), c == 0 ? 3.0f : 0.0f);
+                }
+            }
+            if (r.lines || !r.fill) dl->AddCircle(centres[c], 0.2f * s, ImGui::ColorConvertFloat4ToU32(col), 0, 1.2f);
+        }
+    }
+
     bool draw_row(LayerRow& row, bool saved, RepresentationNode* const* nodes, size_t node_count,
                   LayerNodeRef* move_src, RepresentationDrop* move_drop) {
         bool dropped = false;
         ImGui::PushID(row.key);
-        const float line_h = ImGui::GetTextLineHeight();
-        const float row_h = line_h * 2.0f + 8.0f;
-        const ImVec2 row_min = ImGui::GetCursorScreenPos();
-        const float row_w = ImGui::GetContentRegionAvail().x;
-        const ImRect rect(row_min, ImVec2(row_min.x + row_w, row_min.y + row_h));
-        const bool selected = st.selected_layer == row.key;
-        const bool visible = selected && !st.layer_hidden;
-        ImGui::SetNextItemAllowOverlap();
-        // The row: the layer in the viewport, one at a time; clicking the one shown hides it
-        if (ImGui::Selectable("##row", visible, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h))) {
-            if (visible) {
+        const bool selected = !st.reference_selected && st.selected_layer == row.key;
+        const bool in_viewport = st.selected_layer == row.key && !st.layer_hidden;
+        NciScatterLayer& style = scatter_style(row.key);
+        const RowFrame r = begin_row(selected, &style.visible,
+                                     style.visible ? "Hide it in the scatter plot" : "Show it in the scatter plot");
+        // A click selects it, shown in the viewport (one layer at a time); clicking the one shown hides it there
+        if (r.clicked) {
+            if (selected && in_viewport) {
                 st.layer_hidden = true;
                 nci_apply_settings(st);
-            } else nci_select_layer(st, row.key);
+            } else select_layer(row.key);
+            st.reference_selected = false;
+            critical_point_environment_selection.clear();
+            update_critical_point_list_scope(row.key);
         }
-        const bool row_hovered = ImGui::IsItemHovered();
         if (saved) {
+            const ImRect rect(r.min, ImVec2(r.min.x + r.w, r.min.y + r.h));
             layer_tree_drag_source({NCI_LAYER_LIST_ID, (uint32_t)row.key, false}, row.label);
-            if (layer_tree_drop_target(rect, row_min.x, {NCI_LAYER_LIST_ID, (uint32_t)row.key, false},
+            if (layer_tree_drop_target(rect, r.min.x, {NCI_LAYER_LIST_ID, (uint32_t)row.key, false},
                                        false, nodes, node_count, move_src, move_drop))
                 dropped = true;
-            if (ImGui::BeginPopupContextItem("##layer menu")) {
-                if (ImGui::MenuItem("Delete layer")) st.pending_delete = row.key;
-                ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupContextItem("##layer menu")) {
+            if (ImGui::MenuItem(in_viewport ? "Hide in the viewport" : "Show in the viewport")) {
+                if (in_viewport) {
+                    st.layer_hidden = true;
+                    nci_apply_settings(st);
+                } else select_layer(row.key);
             }
+            if (saved) {
+                ImGui::Separator();
+                if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) st.pending_delete = row.key;
+            }
+            ImGui::EndPopup();
         }
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float pad = 4.0f;
-        const float button_w = ImGui::GetFrameHeight();
-        const float text_x = row_min.x + pad + button_w + 6.0f + line_h + 8.0f;
-        const ImU32 text_col = ImGui::GetColorU32(visible ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-        const ImU32 dim_col = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-        const ImVec4 clip(text_x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
-
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x + pad, row_min.y + (row_h - button_w) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
-        // The eye: the layer in the scatter plot, any number of them
-        const bool in_scatter = scatter_visible(row.key);
-        if (ImGui::Button(in_scatter ? ICON_FA_EYE "##visible" : ICON_FA_EYE_SLASH "##visible"))
-            set_scatter_visible(row.key, !in_scatter);
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-        ImGui::SetItemTooltip(in_scatter ? "Hide in the scatter plot" : "Show in the scatter plot");
-
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x + pad + button_w + 6.0f, row_min.y + (row_h - line_h) * 0.5f));
-        if (saved && !row.members.empty()) {
-            ImVec4 chip = row.members.front()->chip;
-            if (ImGui::ColorEdit3("##chip", &chip.x, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel))
-                for (NciSurface* n : row.members) n->chip = chip;
-        } else {
-            const ImVec4 chip = layer_chip(row.key, row.members);
-            ImGui::ColorButton("##chip", chip, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(line_h, line_h));
-        }
+        const DensityMapSwatch kind = style.style == NciLayerStyle::Heatmap ? DensityMapSwatch_Heatmap : DensityMapSwatch_Contours;
+        ImVec4 colour = layer_colour(row.key, row.members);
+        colour.w *= style.opacity;
+        density_map_swatch(dl, r.swatch_min, r.swatch_max, kind, colour, style.fill, ImPlotColormap_Viridis,
+                           style.visible ? 1.0f : 0.35f);
 
         const std::string types = nci_layer_types(row.members);
         size_t triangles = 0;
@@ -402,126 +504,76 @@ struct NciPanel {
             triangles += n->triangles;
             if (n->job) progress = MAX(progress, n->job->progress.load(std::memory_order_relaxed));
         }
-        // As the Ramachandran layers: where the samples fall, here in the interactions' expected regions
+        // As the Ramachandran layers: where this layer's samples fall inside the reference regions of their categories
         const RegionStats stats = region_stats(row.members);
         char expected[64] = "";
         if (stats.inside + stats.outside)
-            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% expected", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
+            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% in reference", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
         char detail[256];
         if (progress >= 0.0f) snprintf(detail, sizeof(detail), "%s \xC2\xB7 computing %.0f %%", types.c_str(), 100.0f * progress);
-        else if (visible) snprintf(detail, sizeof(detail), "%s \xC2\xB7 %zu triangles%s", types.c_str(), triangles, expected);
+        else if (in_viewport) snprintf(detail, sizeof(detail), "%s \xC2\xB7 %zu triangles%s", types.c_str(), triangles, expected);
         else snprintf(detail, sizeof(detail), "%s%s", types.c_str(), expected);
-        // CP-adaptive is not mutually consistent across parameter sets: flag the layers that mix them. Each member
-        // has one set; CPs that must share it (a ring closed by a contact and that contact) are in one member.
-        size_t parameter_sets = 0;
-        for (const NciSurface* n : row.members) parameter_sets += n->families != 0;
-        const bool illustrative = st.mode == NciParameterMode::CPAdaptive && parameter_sets > 1;
-        const ImU32 warn_col = ImGui::GetColorU32(ImVec4(0.95f, 0.70f, 0.25f, visible ? 1.0f : 0.6f));
-        const float icon_w = ImGui::CalcTextSize(ICON_FA_TRIANGLE_EXCLAMATION).x;
-        const ImRect icon_rect(ImVec2(row_min.x + row_w - pad - icon_w, row_min.y + (row_h - line_h) * 0.5f),
-                               ImVec2(row_min.x + row_w - pad, row_min.y + (row_h + line_h) * 0.5f));
-        ImVec4 text_clip = clip;
-        if (illustrative) {
-            text_clip.z = icon_rect.Min.x - 6.0f;
-            dl->AddText(icon_rect.Min, warn_col, ICON_FA_TRIANGLE_EXCLAMATION);
-        }
-        const float small = ImGui::GetFontSize() * 0.85f;
-        const ImVec2 detail_pos(text_x, row_min.y + 4.0f + line_h + 1.0f);
-        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(text_x, row_min.y + 4.0f), text_col, row.label, nullptr, 0.0f, &text_clip);
-        dl->AddText(ImGui::GetFont(), small, detail_pos, dim_col, detail, nullptr, 0.0f, &text_clip);
-        ImRect tag_rect;
-        if (illustrative) {
-            const char* tag = " \xC2\xB7 illustrative";
-            const float detail_w = ImGui::GetFont()->CalcTextSizeA(small, FLT_MAX, 0.0f, detail).x;
-            const ImVec2 tag_pos(detail_pos.x + detail_w, detail_pos.y);
-            dl->AddText(ImGui::GetFont(), small, tag_pos, warn_col, tag, nullptr, 0.0f, &text_clip);
-            tag_rect = ImRect(tag_pos, ImVec2(MIN(tag_pos.x + ImGui::GetFont()->CalcTextSizeA(small, FLT_MAX, 0.0f, tag).x, text_clip.z),
-                                              tag_pos.y + small));
-        }
-        if (row_hovered && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-            if (illustrative && (icon_rect.Contains(ImGui::GetMousePos()) || tag_rect.Contains(ImGui::GetMousePos())))
-                ImGui::SetTooltip("CP-adaptive: each CP type uses its own isovalue and \xCF\x81 cutoff.\n"
-                                  "The surfaces of different types are not mutually consistent;\n"
-                                  "use Uniform for a quantitative comparison.");
-            else {
-                ImGui::BeginTooltip();
-                ImGui::TextUnformatted(row.label);
-                ImGui::TextDisabled("%s", detail);
-                draw_region_table(stats);
-                ImGui::TextDisabled(visible ? "Click to hide it in the viewport"
+        row_text(r, row.label, detail, in_viewport || style.visible, selected);
+        if (r.hovered) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(row.label);
+            ImGui::TextDisabled("%s", detail);
+            draw_region_table(stats);
+            ImGui::TextDisabled(in_viewport ? "Shown in the viewport; click again to hide it there"
                                             : "Click to show it in the viewport (one layer at a time)");
-                ImGui::EndTooltip();
-            }
+            ImGui::EndTooltip();
         }
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + row_h + 2.0f));
-        ImGui::Dummy(ImVec2(0, 0));
+        end_row(r);
         ImGui::PopID();
         return dropped;
     }
 
-    // The interactions' expected regions in the scatter plot, pinned above the layers as the Ramachandran reference;
-    // it has no surface. The Full system below is the CP reference.
+    // The built-in reference, a row as the Ramachandran reference's; independent of the loaded system
     void draw_reference_row() {
         ImGui::PushID("##reference");
-        const float line_h = ImGui::GetTextLineHeight();
-        const float row_h = line_h * 2.0f + 8.0f;
-        const ImVec2 row_min = ImGui::GetCursorScreenPos();
-        const float row_w = ImGui::GetContentRegionAvail().x;
-        const bool on = st.show_reference;
-        ImGui::SetNextItemAllowOverlap();
-        ImGui::Selectable("##row", false, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h));
-        const bool row_hovered = ImGui::IsItemHovered();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float pad = 4.0f;
-        const float button_w = ImGui::GetFrameHeight();
-        const float text_x = row_min.x + pad + button_w + 6.0f + line_h + 8.0f;
-        const ImVec4 clip(text_x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x + pad, row_min.y + (row_h - button_w) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
-        if (ImGui::Button(on ? ICON_FA_EYE "##visible" : ICON_FA_EYE_SLASH "##visible")) st.show_reference = !on;
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-        ImGui::SetItemTooltip(on ? "Hide the expected regions in the scatter plot" : "Show the expected regions in the scatter plot");
-        const ImVec2 box(row_min.x + pad + button_w + 6.0f, row_min.y + (row_h - line_h) * 0.5f);
-        dl->AddRectFilled(box, ImVec2(box.x + line_h, box.y + line_h), ImGui::GetColorU32(ImVec4(0.85f, 0.85f, 0.85f, 0.25f)));
-        dl->AddRect(box, ImVec2(box.x + line_h, box.y + line_h), ImGui::GetColorU32(ImVec4(0.85f, 0.85f, 0.85f, 1.0f)));
-        const ImU32 text_col = ImGui::GetColorU32(on ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(text_x, row_min.y + 4.0f), text_col, "Expected regions", nullptr, 0.0f, &clip);
-        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(text_x, row_min.y + 5.0f + line_h),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), "provisional, from the calibration systems", nullptr, 0.0f, &clip);
-        if (row_hovered && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        const bool selected = st.reference_selected;
+        const RowFrame r = begin_row(selected, &st.reference.visible,
+                                     st.reference.visible ? "Hide the reference in the scatter plot"
+                                                          : "Show the reference in the scatter plot");
+        if (r.clicked) st.reference_selected = true;
+        reference_swatch(ImGui::GetWindowDrawList(), r.swatch_min, r.swatch_max, st.reference.visible ? 1.0f : 0.35f);
+        const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
+        int calculations = 0;
+        for (const auto& c : map.categories) calculations += c.valid ? c.systems : 0;
+        char detail[128];
+        snprintf(detail, sizeof(detail), "H-bonds, rings, \xCF\x80, other \xC2\xB7 %s",
+                 st.reference.style == NciReferenceStyle::Combined ? "combined" : "dominant");
+        row_text(r, "Reference", detail, st.reference.visible, selected);
+        if (r.hovered) {
             ImGui::BeginTooltip();
-            ImGui::TextUnformatted("Expected regions");
-            ImGui::TextDisabled("Where each interaction's spike is expected in the scatter plot. Provisional boxes\n"
-                                "from the calibration systems, to be replaced by a reference map; densities from\n"
-                                "other wave functions may shift them.");
-            if (ImGui::BeginTable("##regions", 3, ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TextUnformatted("Reference");
+            ImGui::TextDisabled("Built in, independent of the loaded system, as the Ramachandran reference: per CP category,\n"
+                                "the pooled (sign(lambda2)rho, s) density of reference extractions (s <= %.1f, rho <= %.2f,\n"
+                                "the category's radius) over many calculations, each weighing the same. A sample is in the\n"
+                                "reference inside its category's %.0f %% area.",
+                                nci_surface::reference_s_iso, nci_surface::reference_rho_max,
+                                100.0f * nci_surface::reference_inside_fraction);
+            if (*nci_surface::reference_data().source) ImGui::TextDisabled("%s", nci_surface::reference_data().source);
+            if (ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) {
                 ImGui::TableSetupColumn("");
-                ImGui::TableSetupColumn("sign(\xCE\xBB\xE2\x82\x82)\xCF\x81");
-                ImGui::TableSetupColumn("s below");
+                ImGui::TableSetupColumn("Calculations");
                 ImGui::TableHeadersRow();
-                for (size_t f = 0; f < nci_surface::family_count; ++f) {
-                    const nci_surface::ExpectedRegion r = nci_surface::expected_region((nci_surface::Family)f);
-                    if (!r.valid) continue;
+                for (size_t c = 0; c < map.categories.size(); ++c) {
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::TextColored(nci_type_colour((nci_surface::Family)f), "%s", nci_surface::family_name((nci_surface::Family)f));
+                    ImGui::TextColored(nci_type_colour(reference_colours[c]), "%s", reference_labels[c]);
                     ImGui::TableNextColumn();
-                    ImGui::Text("%+.3f to %+.3f", r.rho_min, r.rho_max);
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%.2f", r.s_max);
+                    if (map.categories[c].valid) ImGui::Text("%d", map.categories[c].systems);
+                    else ImGui::TextDisabled("None");
                 }
                 ImGui::EndTable();
             }
             ImGui::EndTooltip();
         }
-        ImGui::SetCursorScreenPos(ImVec2(row_min.x, row_min.y + row_h + 2.0f));
-        ImGui::Dummy(ImVec2(0, 0));
+        end_row(r);
         ImGui::PopID();
     }
 
-    // Only what needs the user: a running computation to cancel, or a failure to retry
     void draw_member_status(NciSurface& n) {
         const bool problem = !n.job && (n.cancelled || n.failed || n.rho_failed);
         if (!n.job && !problem) return;
@@ -636,8 +688,19 @@ struct NciPanel {
             return;
         }
 
-        // The selected layer: its name, CP types and the state of each type's surface
+        // Below the list, as in the Ramachandran window: what is selected, its properties
+        ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Spacing();
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput &&
+            ImGui::IsKeyPressed(ImGuiKey_Delete) && !st.reference_selected && st.selected_layer > 0) {
+            delete_layer(st.selected_layer);
+            return;
+        }
+        if (st.reference_selected) {
+            draw_reference_inspector();
+            return;
+        }
         std::vector<NciSurface*> members = nci_layer_members(st, st.selected_layer);
         if (members.empty()) {
             ImGui::TextDisabled(st.selected_layer != NCI_LAYER_PREVIEW ? "Select a layer."
@@ -645,24 +708,7 @@ struct NciPanel {
                                                           : "Tick Enabled to search for critical points.");
             return;
         }
-        if (st.selected_layer > 0) {
-            NciSurface& first = *members.front();
-            ImGui::SetNextItemWidth(MAX(1.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Delete").x -
-                                                  2.0f * ImGui::GetStyle().FramePadding.x - spacing));
-            if (ImGui::InputText("##layer name", first.name, sizeof(first.name)))
-                for (size_t i = 1; i < members.size(); ++i)
-                    snprintf(members[i]->name, sizeof(members[i]->name), "%s", first.name);
-            ImGui::SameLine();
-            if (ImGui::Button("Delete")) {
-                delete_layer(st.selected_layer);
-                return;
-            }
-        }
-        ImGui::TextWrapped("Types: %s", nci_layer_types(members).c_str());
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("Scatter");
-        ImGui::SameLine();
-        draw_scatter_layer_controls(st.selected_layer);
+        draw_layer_inspector(st.selected_layer, members);
         draw_region_table(region_stats(members));
         for (NciSurface* n : members) draw_member_status(*n);
         std::vector<std::vector<std::string>> environments;
@@ -670,7 +716,95 @@ struct NciPanel {
         draw_environments(environments);
     }
 
-    // ---- what the scatter plot draws of each layer, and how its samples sit in the expected regions
+    static void draw_levels(float* levels, int* num_levels, const char* tooltip) {
+        prop::row("levels", tooltip);
+        density_map_levels_editor(levels, num_levels);
+    }
+
+    void draw_reference_inspector() {
+        NciReferenceLayer& r = st.reference;
+        prop::begin("nci layer");
+        ImGui::PushID("##reference inspector");
+        prop::row("name");
+        ImGui::TextUnformatted("Reference");
+        prop::row("style", "Dominant: per point the densest category, more opaque at each deeper level.\n"
+                           "Combined: the categories' colours mixed where they overlap, more opaque towards each core.");
+        {
+            static const char* names[] = {"Dominant", "Combined"};
+            static const int values[] = {(int)NciReferenceStyle::Dominant, (int)NciReferenceStyle::Combined};
+            int s = (int)r.style;
+            if (density_map_segmented("##style", names, values, 2, &s, nullptr, true) && s != (int)r.style) {
+                r.style = (NciReferenceStyle)s;
+                // Combined's graded fill reads without isolines; Dominant's levels with them
+                r.lines = r.style == NciReferenceStyle::Dominant;
+            }
+        }
+        prop::row("opacity");
+        ImGui::SliderFloat("##opacity", &r.opacity, 0.0f, 1.0f, "%.2f");
+        prop::row("draw");
+        ImGui::Checkbox("fill", &r.fill);
+        ImGui::SameLine();
+        ImGui::Checkbox("lines", &r.lines);
+        if (r.lines) {
+            prop::row("line width");
+            ImGui::SliderFloat("##line_width", &r.line_width, 0.5f, 6.0f, "%.1f px");
+        }
+        draw_levels(r.levels, &r.num_levels, "The areas enclose these fractions of each category's volume (highest density regions)");
+        prop::hint("A sample is in the reference inside its category's %.0f %% area, whatever levels are drawn",
+                   100.0f * nci_surface::reference_inside_fraction);
+        ImGui::PopID();
+        prop::end();
+    }
+
+    void draw_layer_inspector(int key, const std::vector<NciSurface*>& members) {
+        NciScatterLayer& l = scatter_style(key);
+        prop::begin("nci layer");
+        ImGui::PushID(key);
+        prop::row("name");
+        if (key > 0) {
+            NciSurface& first = *members.front();
+            if (ImGui::InputText("##name", first.name, sizeof(first.name)))
+                for (size_t i = 1; i < members.size(); ++i) snprintf(members[i]->name, sizeof(members[i]->name), "%s", first.name);
+        } else ImGui::TextUnformatted(layer_name(key, members));
+        prop::row("types");
+        ImGui::TextWrapped("%s", nci_layer_types(members).c_str());
+        prop::row("style", "Contours: the union of its interactions' regions at the levels.\n"
+                           "Heatmap: the density of its samples.\n"
+                           "The layer shown in the viewport also plots its points, on the surface colour scale.");
+        {
+            static const char* names[] = {"Contours", "Heatmap"};
+            static const int values[] = {(int)NciLayerStyle::Contours, (int)NciLayerStyle::Heatmap};
+            int s = (int)l.style;
+            if (density_map_segmented("##style", names, values, 2, &s, nullptr, true)) l.style = (NciLayerStyle)s;
+        }
+        if (l.style == NciLayerStyle::Contours) {
+            prop::row("color");
+            ImVec4 colour = layer_colour(key, members);
+            if (prop::color("##color", &colour.x)) {
+                l.colour = colour;
+                l.custom_colour = true;
+                if (key > 0) for (NciSurface* n : members) n->chip = colour;
+            }
+        }
+        prop::row("opacity");
+        ImGui::SliderFloat("##opacity", &l.opacity, 0.0f, 1.0f, "%.2f");
+        if (l.style == NciLayerStyle::Contours) {
+            prop::row("draw");
+            ImGui::Checkbox("fill", &l.fill);
+            ImGui::SameLine();
+            ImGui::Checkbox("lines", &l.lines);
+            if (l.lines) {
+                prop::row("line width");
+                ImGui::SliderFloat("##line_width", &l.line_width, 0.5f, 10.0f, "%.1f px");
+            }
+            draw_levels(l.levels, &l.num_levels,
+                        "The contours enclose these fractions of each interaction's volume, their union for the layer");
+        }
+        ImGui::PopID();
+        prop::end();
+    }
+
+    // ---- what the scatter plot draws of each layer, and how its samples sit in the data-derived regions
     bool is_shown(int key) const { return key == st.selected_layer && !st.layer_hidden; }
 
     NciScatterLayer scatter_layer(int key) const {
@@ -678,24 +812,30 @@ struct NciPanel {
         return it == st.scatter_layers.end() ? NciScatterLayer{} : it->second;
     }
     bool scatter_visible(int key) const { return scatter_layer(key).visible; }
-    bool points_on(int key) const {
+    NciScatterLayer& scatter_style(int key) { return st.scatter_layers[key]; }
+    ImVec4 layer_colour(int key, const std::vector<NciSurface*>& members) const {
         const NciScatterLayer l = scatter_layer(key);
-        return l.visible && l.points;
-    }
-    bool lines_on(int key) const {
-        const NciScatterLayer l = scatter_layer(key);
-        return l.visible && l.lines;
-    }
-    void set_scatter_visible(int key, bool visible) {
-        NciScatterLayer l = scatter_layer(key);
-        l.visible = visible;
-        st.scatter_layers[key] = l;
+        return l.custom_colour ? l.colour : layer_chip(key, members);
     }
 
     std::vector<int> layer_keys() const {
         std::vector<int> keys = {NCI_LAYER_FULL_SYSTEM, NCI_LAYER_PREVIEW};
         keys.insert(keys.end(), st.layer_order.begin(), st.layer_order.end());
         return keys;
+    }
+
+    void update_critical_point_list_scope(int key) {
+        critical_point_list_scope.clear();
+        for (const NciSurface* n : nci_layer_members(st, key))
+            critical_point_list_scope.insert(critical_point_list_scope.end(), n->critical_point_indices.begin(),
+                                             n->critical_point_indices.end());
+        std::sort(critical_point_list_scope.begin(), critical_point_list_scope.end());
+        critical_point_list_scope.erase(std::unique(critical_point_list_scope.begin(), critical_point_list_scope.end()),
+                                        critical_point_list_scope.end());
+    }
+
+    void select_layer(int key) {
+        nci_select_layer(st, key);
     }
 
     // The members whose samples the plot draws: the shown layer's ready ones, or another layer's last results
@@ -710,18 +850,33 @@ struct NciPanel {
     }
 
     struct RegionStats {
-        std::array<nci_surface::RegionCounts, nci_surface::family_count> by_type = {};
+        std::array<nci_surface::RegionCounts, 4> by_type = {};
         size_t inside = 0, outside = 0;
     };
+    static size_t reference_index(nci_surface::Family family) { return nci_surface::reference_category(family); }
+
+    static inline const char* const reference_labels[nci_surface::reference_category_count] = {
+        nci_surface::reference_category_name(0), nci_surface::reference_category_name(1),
+        nci_surface::reference_category_name(2), nci_surface::reference_category_name(3)};
+    static constexpr nci_surface::Family reference_colours[nci_surface::reference_category_count] = {
+        nci_surface::Family::HydrogenBond, nci_surface::Family::Ring, nci_surface::Family::PiStacking,
+        nci_surface::Family::OtherContact};
+
+    // Each member's category samples (extracted with the reference settings) against their category's reference
     static RegionStats region_stats(const std::vector<NciSurface*>& members) {
+        const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
         RegionStats stats;
         for (const NciSurface* n : members) {
-            if (!n->families || !n->have_key || n->cancelled || n->failed) continue;
-            const auto c = nci_surface::expected_region_counts(n->scatter, n->group);
-            stats.by_type[(size_t)n->group].inside += c.inside;
-            stats.by_type[(size_t)n->group].outside += c.outside;
-            stats.inside += c.inside;
-            stats.outside += c.outside;
+            if (!n->have_key || n->cancelled || n->failed || n->reference_failed) continue;
+            for (size_t family = 0; family < n->reference_scatters.size(); ++family) {
+                const size_t group = reference_index((nci_surface::Family)family);
+                if (group >= stats.by_type.size()) continue;
+                const auto c = nci_surface::reference_counts(n->reference_scatters[family], map, group);
+                stats.by_type[group].inside += c.inside;
+                stats.by_type[group].outside += c.outside;
+                stats.inside += c.inside;
+                stats.outside += c.outside;
+            }
         }
         return stats;
     }
@@ -729,27 +884,23 @@ struct NciPanel {
         if (stats.inside + stats.outside == 0) return;
         if (!ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) return;
         ImGui::TableSetupColumn("");
-        ImGui::TableSetupColumn("in expected region");
+        ImGui::TableSetupColumn("in reference (90 %)");
         ImGui::TableHeadersRow();
         for (size_t f = 0; f < stats.by_type.size(); ++f) {
             const auto& c = stats.by_type[f];
             if (c.inside + c.outside == 0) continue;
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::TextColored(nci_type_colour((nci_surface::Family)f), "%s", nci_surface::family_name((nci_surface::Family)f));
+            ImGui::TextColored(nci_type_colour(reference_colours[f]), "%s", reference_labels[f]);
             ImGui::TableNextColumn();
             ImGui::Text("%.0f %%", 100.0 * (double)c.inside / (double)(c.inside + c.outside));
         }
         ImGui::EndTable();
     }
 
-    // Points (of a layer), isolines and area in the scatter plot, of a layer or an interaction
-    static bool draw_style_controls(bool* points, bool* lines, NciScatterArea* area, const char* area_tooltip) {
+    // Isolines and area in the scatter plot, of a layer or an interaction
+    static bool draw_style_controls(bool* lines, NciScatterArea* area, const char* area_tooltip) {
         bool changed = false;
-        if (points) {
-            changed |= ImGui::Checkbox("Points", points);
-            ImGui::SameLine();
-        }
         changed |= ImGui::Checkbox("Isolines", lines);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(6.5f * ImGui::GetFontSize());
@@ -765,14 +916,6 @@ struct NciPanel {
         return changed;
     }
 
-    void draw_scatter_layer_controls(int key) {
-        NciScatterLayer l = scatter_layer(key);
-        draw_style_controls(&l.points, &l.lines, &l.area,
-                            "Of the whole layer, in its colour. Filled: the inside of its outline. Heatmap: the density\n"
-                            "of its samples.");
-        st.scatter_layers[key] = l;
-    }
-
     // An interaction's isolines and area, the same in every layer; or those of all the interactions at once
     void draw_type_style_controls(nci_surface::Family family, const char* name) {
         static const char* area_tooltip = "In each layer, in the interaction's colour. Filled: the inside of its outline.\n"
@@ -780,13 +923,13 @@ struct NciPanel {
         NciTypeStyle& t = st.type_styles[(size_t)family];
         ImGui::TextUnformatted(name);
         ImGui::PushID("type");
-        draw_style_controls(nullptr, &t.lines, &t.area, area_tooltip);
+        draw_style_controls(&t.lines, &t.area, area_tooltip);
         ImGui::PopID();
         ImGui::Separator();
         ImGui::TextUnformatted("All interactions");
         NciTypeStyle all = t;
         ImGui::PushID("all");
-        if (draw_style_controls(nullptr, &all.lines, &all.area, area_tooltip))
+        if (draw_style_controls(&all.lines, &all.area, area_tooltip))
             for (NciTypeStyle& other : st.type_styles) {
                 other.lines = all.lines;
                 other.area = all.area;
@@ -847,20 +990,118 @@ struct NciPanel {
         end_area(dl, flags);
     }
 
-    // A layer's area, of all its samples together, in its colour or on the heatmap colour map. On the histogram
-    // ranges of the outlines: each surface's cutoff, the largest for a layer.
-    void draw_layer_area(ImVec4 colour, const std::vector<const NciSurface*>& layer, NciScatterArea area) {
-        float rho_max = 0.0f;
-        std::vector<const nci_surface::Scatter*> scatters;
-        for (const NciSurface* n : layer) {
-            rho_max = MAX(rho_max, n->rho_max);
-            scatters.push_back(&n->scatter);
+    // The levels as the core expects them: sorted, distinct, within (0, 1). While one is dragged they may not be.
+    static std::vector<float> clean_levels(const float* levels, int num_levels) {
+        std::vector<float> out;
+        for (int i = 0; i < CLAMP(num_levels, 0, nci_max_levels); ++i)
+            if (levels[i] > 0.0f && levels[i] < 1.0f) out.push_back(levels[i]);
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+    // Per level, as the Ramachandran fills stacked from the outermost: n of them reach 0.8 at the core
+    static float level_alpha(int levels) { return 1.0f - powf(0.2f, 1.0f / (float)MAX(1, levels)); }
+
+    // The reference at the inspector's levels, rebuilt when they change
+    const nci_surface::ReferenceMap& reference_map() {
+        const std::vector<float> levels = clean_levels(st.reference.levels, st.reference.num_levels);
+        uint64_t key = md_hash64(levels.data(), levels.size() * sizeof(float), 0) | 1;
+        if (key != st.reference_map_key) {
+            st.reference_map_key = key;
+            st.reference_texture_key = 0;
+            if (levels.empty() || !nci_surface::build_reference_map(&st.reference_map, nci_surface::reference_data(), levels))
+                st.reference_map = {};
         }
-        if (scatters.empty()) return;
+        return st.reference_map;
+    }
+
+    // The reference fill as a texture, made per levels and style. Dominant: per pixel the densest category's colour,
+    // more opaque at each level it is inside; Combined: the categories' colours mixed by their depth, more opaque with
+    // depth and overlap. Empty pixels take a neighbour's colour at zero alpha so linear filtering leaves no dark fringe.
+    void draw_reference_fill(const nci_surface::ReferenceMap& map) {
+        constexpr int size = 384;
+        constexpr float combined_alpha = 0.8f;
+        constexpr size_t n_cat = nci_surface::reference_category_count;
+        const uint64_t key = md_hash64(&st.reference.style, sizeof(st.reference.style), st.reference_map_key) | 1;
+        if (st.reference_texture && st.reference_texture_key != key) gl::free_texture(&st.reference_texture);
+        if (!st.reference_texture) {
+            nci_surface::ReferenceImage image;
+            nci_surface::reference_image(&image, map, size);
+            const float a = level_alpha((int)map.fractions.size());
+            std::vector<ImVec4> colours((size_t)size * size, ImVec4(0, 0, 0, 0));
+            std::vector<bool> filled((size_t)size * size, false);
+            for (size_t i = 0; i < colours.size(); ++i) {
+                if (st.reference.style == NciReferenceStyle::Dominant) {
+                    if (image.category[i] < 0) continue;
+                    colours[i] = nci_type_colour(reference_colours[(size_t)image.category[i]]);
+                    colours[i].w = 1.0f - powf(1.0f - a, (float)image.level[i]);
+                } else {
+                    ImVec4 sum(0, 0, 0, 0);
+                    float weight = 0.0f, clear = 1.0f;
+                    for (size_t c = 0; c < n_cat; ++c) {
+                        const float d = image.depth[i * n_cat + c];
+                        if (d <= 0.0f) continue;
+                        const ImVec4 col = nci_type_colour(reference_colours[c]);
+                        sum.x += d * col.x, sum.y += d * col.y, sum.z += d * col.z;
+                        weight += d;
+                        clear *= 1.0f - d;
+                    }
+                    if (weight <= 0.0f) continue;
+                    colours[i] = ImVec4(sum.x / weight, sum.y / weight, sum.z / weight, combined_alpha * (1.0f - clear));
+                }
+                filled[i] = true;
+            }
+            for (int pass = 0; pass < 2; ++pass) {
+                const std::vector<bool> from = filled;
+                for (int j = 0; j < size; ++j) for (int i = 0; i < size; ++i) {
+                    const size_t at = i + (size_t)size * j;
+                    if (from[at]) continue;
+                    for (int dy = -1; dy <= 1 && !filled[at]; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+                        const int x = i + dx, y = j + dy;
+                        if (x < 0 || y < 0 || x >= size || y >= size || !from[x + (size_t)size * y]) continue;
+                        colours[at] = colours[x + (size_t)size * y];
+                        colours[at].w = 0.0f;
+                        filled[at] = true;
+                        break;
+                    }
+                }
+            }
+            std::vector<uint32_t> pixels(colours.size());
+            for (size_t i = 0; i < pixels.size(); ++i) pixels[i] = ImGui::ColorConvertFloat4ToU32(colours[i]);
+            if (!gl::init_texture_2D(&st.reference_texture, size, size, GL_RGBA8) ||
+                !gl::set_texture_2D_data(st.reference_texture, 0, pixels.data(), GL_RGBA8)) {
+                gl::free_texture(&st.reference_texture);
+                return;
+            }
+            st.reference_texture_key = key;
+        }
+        // Image row 0 is s = 0, the bottom; ImPlot puts uv (0, 0) at the top left
+        ImPlot::PlotImage("##NCI reference", (ImTextureID)(intptr_t)st.reference_texture, ImPlotPoint(-map.rho_extent, 0.0),
+                          ImPlotPoint(map.rho_extent, nci_surface::scatter_s_max), ImVec2(0, 1), ImVec2(1, 0),
+                          ImVec4(1, 1, 1, st.reference.opacity));
+    }
+
+    static void draw_triangles(const std::vector<std::array<float, 2>>& triangles, ImVec4 colour) {
+        if (triangles.size() < 3) return;
+        ImDrawList* dl;
+        ImDrawListFlags flags;
+        begin_area(&dl, &flags);
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(colour);
+        for (size_t i = 0; i + 2 < triangles.size(); i += 3)
+            dl->AddTriangleFilled(ImPlot::PlotToPixels(triangles[i][0], triangles[i][1]),
+                                  ImPlot::PlotToPixels(triangles[i + 1][0], triangles[i + 1][1]),
+                                  ImPlot::PlotToPixels(triangles[i + 2][0], triangles[i + 2][1]), col);
+        end_area(dl, flags);
+    }
+
+    // An interaction's area: the inside of its outline in its colour, or the density of its samples
+    void draw_type_area(ImVec4 colour, const NciSurface& n, NciScatterArea area) {
+        if (!(n.rho_max > 0.0f)) return;
+        const nci_surface::Scatter* scatter = &n.scatter;
         if (area == NciScatterArea::Filled) {
             colour.w = 0.25f;
-            fill_area(scatters, rho_max, colour, 1);
-        } else if (area == NciScatterArea::Heatmap) heatmap_area(scatters, rho_max, 0.8f);
+            fill_area({&scatter, 1}, n.rho_max, colour, 0);
+        } else if (area == NciScatterArea::Heatmap) heatmap_area({&scatter, 1}, n.rho_max, 0.8f);
     }
 
     // ---- the scatter plot: the expected regions, the full-density context and the layers, Ramachandran-like
@@ -868,8 +1109,7 @@ struct NciPanel {
         static bool fit_view = false;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
-        ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it: in Uniform mode\n"
-                              "for every interaction, in CP-adaptive mode for the active one.");
+        ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it for every interaction.");
         const bool global = st.view == nci_surface::View::Overview && !st.classified_overview;
         if (global) {
             ImGui::SameLine();
@@ -888,9 +1128,40 @@ struct NciPanel {
         else if (context.cancelled) ImGui::TextDisabled("Context cancelled.");
         else if (context.failed) ImGui::TextDisabled("Context extraction failed; see the log.");
         else {
-            ImGui::TextDisabled("%zu samples", context.scatter.s.size());
-            ImGui::SetItemTooltip("%zu eligible grid samples; a capped volume sample, not an interaction-energy measure.",
-                                  context.scatter.eligible_count);
+            const double asked = nci_resolution_spacing(context.resolution);
+            const double used = MAX(context.grid.spacing[0], MAX(context.grid.spacing[1], context.grid.spacing[2]));
+            const bool coarsened = used > 1.05 * asked;
+            const nci_surface::ScatterDensity& density = context.scatter.density;
+            ImGui::BeginGroup();
+            ImGui::TextDisabled("%zu points, %.3f Bohr", context.scatter.s.size(), used);
+            if (coarsened) {
+                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1.0f), " (coarsened)");
+            }
+            ImGui::EndGroup();
+            ImGui::SetItemTooltip(
+                "Grid spacing %.3f Bohr (%s asks for %.3f%s).\n"
+                "Points: %zu of %zu eligible grid samples, a capped subsample for display only.\n"
+                "Outlines, areas, heatmaps and expected regions use the continuous density: %zu grid cells\n"
+                "supersampled (%zu subsamples), %.1f Bohr^3 of eligible volume. Not an interaction-energy measure.",
+                used, resolution_str[CLAMP(context.resolution, 0, (int)NciSurface::Res_Count - 1)], asked,
+                coarsened ? "; the box would take too many samples" : "",
+                context.scatter.s.size(), context.scatter.eligible_count, density.cells, density.subsamples,
+                density.total_volume);
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(st.export_scatter_in_progress);
+        if (ImGui::SmallButton("Export NCI samples...")) st.export_scatter_requested = true;
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Export the shown layer's scatter and separate recomputed scatter clouds for each CP category, "
+                              "with CP membership in a companion -anchors.csv file and the continuous density per\n"
+                              "(sign(lambda2)rho, s) bin, in Bohr^3, in a companion -density.csv file.");
+        if (st.export_scatter_in_progress) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Categorizing samples %.0f%%", 100.0f * st.export_scatter_progress);
+        } else if (!st.export_scatter_status.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", st.export_scatter_status.c_str());
         }
         if (context.job) {
             ImGui::SameLine();
@@ -919,20 +1190,20 @@ struct NciPanel {
             ImGui::SetItemTooltip("Scatter plot settings");
             if (ImGui::BeginPopup("##NCI scatter settings")) {
                 ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-                ImGui::SliderFloat("Layer line width", &st.layer_outline_width, 0.5f, 10.0f, "%.1f px");
-                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
                 ImGui::SliderFloat("Interaction line width", &st.type_outline_width, 0.5f, 8.0f, "%.1f px");
                 ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
                 ImGui::SliderFloat("Point size", &st.point_size, 0.5f, 6.0f, "%.1f px");
+                ImGui::Checkbox("Interaction isolines and areas", &st.show_type_styles);
+                ImGui::SetItemTooltip("Per CP type, the isolines and areas of the layers' interactions, with a legend chip each.\n"
+                                      "Off by default: the reference already shows the categories.");
                 if (ImGui::Button("Reset")) {
-                    st.layer_outline_width = NciState::default_layer_outline_width;
                     st.type_outline_width = NciState::default_type_outline_width;
                     st.point_size = NciState::default_point_size;
                 }
                 ImGui::Separator();
                 ImGui::TextDisabled("Legend: click a swatch to show or hide it, an interaction's name to make it\n"
-                                    "the active one for the isovalue guide. Right-click a layer for how it is\n"
-                                    "drawn.");
+                                    "the active one for the isovalue guide. How a layer or the reference is drawn\n"
+                                    "is set in its inspector, below the layers.");
                 ImGui::EndPopup();
             }
         }
@@ -940,7 +1211,7 @@ struct NciPanel {
         // The legend is a row of chips under the plot, so it never covers the data: the expected regions and the layers,
         // then the interactions
         const std::vector<NciSurface*> members = nci_layer_members(st, st.selected_layer);
-        const ImVec4 layer_colour = layer_chip(st.selected_layer, members);
+        const ImVec4 guide_colour = layer_colour(st.selected_layer, members);
         const std::vector<int> keys = layer_keys();
         struct LegendEntry {
             std::string text;
@@ -954,8 +1225,8 @@ struct NciPanel {
             bool new_line = false;
         };
         std::vector<LegendEntry> legend;
-        legend.push_back({"Expected regions", ImVec4(0.85f, 0.85f, 0.85f, 1.0f), LegendEntry::Reference, 0,
-                          nci_surface::Family::Count, nullptr, st.show_reference, !st.show_reference});
+        legend.push_back({"Reference", ImVec4(0.85f, 0.85f, 0.85f, 1.0f), LegendEntry::Reference, 0,
+                          nci_surface::Family::Count, nullptr, st.reference.visible, !st.reference.visible});
         if (surface_ready(context))
             legend.push_back({"All samples", ImVec4(0.8f, 0.8f, 0.8f, 1.0f), LegendEntry::Context, 0,
                               nci_surface::Family::Count, nullptr, st.show_context_samples, !st.show_context_samples});
@@ -964,7 +1235,7 @@ struct NciPanel {
         for (int key : keys) {
             const auto layer = nci_layer_members(st, key);
             if (layer.empty()) continue;
-            LegendEntry e = {layer_name(key, layer), layer_chip(key, layer), LegendEntry::Layer, key};
+            LegendEntry e = {layer_name(key, layer), layer_colour(key, layer), LegendEntry::Layer, key};
             e.on = scatter_visible(key);
             e.dim = !e.on;
             legend.push_back(e);
@@ -974,7 +1245,7 @@ struct NciPanel {
         }
         bool first_type = true;
         for (size_t f = 0; f < present.size(); ++f) {
-            if (!present[f]) continue;
+            if (!present[f] || !st.show_type_styles) continue;
             LegendEntry e;
             e.kind = LegendEntry::Type;
             e.family = (nci_surface::Family)f;
@@ -990,7 +1261,7 @@ struct NciPanel {
         const ImGuiStyle& style = ImGui::GetStyle();
         const float chip_h = ImGui::GetTextLineHeight();
         const float avail_w = ImGui::GetContentRegionAvail().x;
-        const auto swatch_w = [&](const LegendEntry& e) { return e.kind == LegendEntry::Layer ? 2.0f * chip_h : chip_h; };
+        const auto swatch_w = [&](const LegendEntry&) { return chip_h; };
         // Chips wrapped into centred lines: each line's width and first chip
         std::vector<float> line_widths;
         std::vector<size_t> line_starts;
@@ -1008,7 +1279,10 @@ struct NciPanel {
                                                  ImPlotFlags_NoLegend);
         if (!plot_open) return;
         ImPlot::SetupAxes("sign(\xCE\xBB\xE2\x82\x82)\xCF\x81 [bohr^-3]", "s");
-        ImPlot::SetupAxisLimits(ImAxis_X1, -context.rho_max, context.rho_max, ImPlotCond_Once);
+        const nci_surface::ReferenceMap& reference = reference_map();
+        float rho_extent = context.rho_max;
+        if (reference.valid) rho_extent = MAX(rho_extent, reference.rho_extent);
+        ImPlot::SetupAxisLimits(ImAxis_X1, -rho_extent, rho_extent, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, nci_surface::scatter_s_max, ImPlotCond_Once);
 
         struct Points {
@@ -1055,94 +1329,94 @@ struct NciPanel {
             ImPlot::PopPlotClipRect();
         };
 
-        // Each interaction's expected region, those of the plotted interactions (all when none is)
-        if (st.show_reference) {
-            const bool any = std::any_of(present.begin(), present.end(), [](bool p) { return p; });
-            ImPlot::PushPlotClipRect();
-            ImDrawList* dl = ImPlot::GetPlotDrawList();
-            for (size_t f = 0; f < present.size(); ++f) {
-                const nci_surface::ExpectedRegion r = nci_surface::expected_region((nci_surface::Family)f);
-                if (!r.valid || (any && !present[f]) || !st.type_styles[f].visible) continue;
-                ImVec4 colour = nci_type_colour((nci_surface::Family)f);
-                const ImVec2 a = ImPlot::PlotToPixels(r.rho_min, r.s_max), b = ImPlot::PlotToPixels(r.rho_max, 0.0);
-                const ImVec2 lo(MIN(a.x, b.x), MIN(a.y, b.y)), hi(MAX(a.x, b.x), MAX(a.y, b.y));
-                colour.w = 0.10f;
-                dl->AddRectFilled(lo, hi, ImGui::ColorConvertFloat4ToU32(colour));
-                colour.w = 0.45f;
-                dl->AddRect(lo, hi, ImGui::ColorConvertFloat4ToU32(colour), 0.0f, 0, 1.0f);
+        // The reference is independent of the loaded system, the displayed layers and their legend visibility.
+        if (st.reference.visible && reference.valid) {
+            if (st.reference.fill) draw_reference_fill(reference);
+            if (st.reference.lines) {
+                for (size_t c = 0; c < reference.categories.size(); ++c) {
+                    if (!reference.categories[c].valid) continue;
+                    ImVec4 colour = nci_type_colour(reference_colours[c]);
+                    colour.w = st.reference.opacity;
+                    for (const auto& isoline : reference.categories[c].isolines) draw_outline(isoline, colour, st.reference.line_width);
+                }
             }
-            ImPlot::PopPlotClipRect();
         }
 
         NciSurface* hovered = nullptr;
         size_t hovered_sample = 0;
         float closest = 36.0f;
-        const auto layer_outline = [&](int key) -> const std::vector<std::array<float, 4>>* {
+        const auto layer_outline = [&](int key) -> const NciState::LayerOutline* {
             const auto it = st.layer_outlines.find(key);
-            return it == st.layer_outlines.end() ? nullptr : &it->second.segments;
+            return it == st.layer_outlines.end() ? nullptr : &it->second;
         };
-        // A layer's area, samples, then outlines: thick for the whole layer, thin on top for each interaction
+        // A layer as its inspector sets: its contours (filled per level, stacked) or its heatmap; then, thin on top,
+        // each interaction's isolines and area when shown
         const auto draw_layer = [&](int key) {
-            if (!scatter_visible(key)) return;
+            const NciScatterLayer l = scatter_layer(key);
+            if (!l.visible) return;
             const auto layer = plotted_members(key);
-            if (layer.empty()) return;
-            const NciScatterLayer style_of = scatter_layer(key);
-            // The interactions' isolines and areas; the points are the layer's, whatever the interactions
-            const auto type_style = [&](const NciSurface& n) -> NciTypeStyle {
-                if (n.families) return st.type_styles[(size_t)n.group];
-                NciTypeStyle none;
-                none.visible = false;
-                return none;
-            };
-            if (style_of.area != NciScatterArea::None) {
-                const std::vector<const NciSurface*> whole(layer.begin(), layer.end());
-                draw_layer_area(layer_chip(key, nci_layer_members(st, key)), whole, style_of.area);
-            }
-            for (const NciSurface* n : layer) {
-                const NciTypeStyle t = type_style(*n);
-                if (t.visible && t.area != NciScatterArea::None) draw_layer_area(type_colour(*n), {n}, t.area);
-            }
-            for (NciSurface* n : layer) {
-                if (!style_of.points) break;
-                plot(*n, false);
-                if (!ImPlot::IsPlotHovered()) continue;
-                const ImVec2 mouse = ImGui::GetMousePos();
-                for (size_t i = 0; i < n->scatter.s.size(); ++i) {
-                    const ImVec2 p = ImPlot::PlotToPixels(n->scatter.signed_rho[i], n->scatter.s[i]);
-                    const float d2 = (p.x - mouse.x) * (p.x - mouse.x) + (p.y - mouse.y) * (p.y - mouse.y);
-                    if (d2 < closest) { closest = d2; hovered = n; hovered_sample = i; }
-                }
-            }
-            const auto* outline = lines_on(key) ? layer_outline(key) : nullptr;
+            const auto members_all = nci_layer_members(st, key);
+            ImVec4 colour = layer_colour(key, members_all);
+            const NciState::LayerOutline* outline = l.style == NciLayerStyle::Contours ? layer_outline(key) : nullptr;
+            // The full system's outline also covers the saved layers, so it shows with none of its own plotted
+            if (layer.empty() && key != NCI_LAYER_FULL_SYSTEM) return;
             if (outline) {
-                ImVec4 colour = layer_chip(key, nci_layer_members(st, key));
-                colour.w = 0.6f;
-                draw_outline(*outline, colour, st.layer_outline_width);
+                if (l.fill) {
+                    ImVec4 fill = colour;
+                    fill.w = level_alpha((int)outline->fills.size()) * l.opacity;
+                    for (const auto& triangles : outline->fills) draw_triangles(triangles, fill);
+                }
+                if (l.lines) {
+                    ImVec4 line = colour;
+                    line.w = l.opacity;
+                    for (const auto& segments : outline->segments) draw_outline(segments, line, l.line_width);
+                }
+            } else if (l.style == NciLayerStyle::Heatmap && !layer.empty()) {
+                float rho_max = 0.0f;
+                std::vector<const nci_surface::Scatter*> scatters;
+                for (const NciSurface* n : layer) {
+                    rho_max = MAX(rho_max, n->rho_max);
+                    scatters.push_back(&n->scatter);
+                }
+                heatmap_area(scatters, rho_max, 0.8f * l.opacity);
             }
+            if (!st.show_type_styles) return;
             for (const NciSurface* n : layer) {
-                const NciTypeStyle t = type_style(*n);
-                if (!t.visible || !t.lines) continue;
-                ImVec4 colour = type_colour(*n);
-                colour.w = 1.0f;
-                draw_outline(n->outline, colour, st.type_outline_width);
+                if (!n->families) continue;
+                const NciTypeStyle& t = st.type_styles[(size_t)n->group];
+                if (!t.visible) continue;
+                if (t.area != NciScatterArea::None) draw_type_area(type_colour(*n), *n, t.area);
+                if (t.lines) {
+                    ImVec4 c = type_colour(*n);
+                    c.w = 1.0f;
+                    draw_outline(n->outline, c, st.type_outline_width);
+                }
             }
         };
         // The layer shown in the viewport on top
         for (int key : keys) if (key != st.selected_layer) draw_layer(key);
         draw_layer(st.selected_layer);
+        // Point colours always come from the layer actually shown in the viewport, never from background layers.
+        if (!st.layer_hidden) for (NciSurface* n : plotted_members(st.selected_layer)) {
+            plot(*n, false);
+            if (!ImPlot::IsPlotHovered()) continue;
+            const ImVec2 mouse = ImGui::GetMousePos();
+            for (size_t i = 0; i < n->scatter.s.size(); ++i) {
+                const ImVec2 p = ImPlot::PlotToPixels(n->scatter.signed_rho[i], n->scatter.s[i]);
+                const float d2 = (p.x - mouse.x) * (p.x - mouse.x) + (p.y - mouse.y) * (p.y - mouse.y);
+                if (d2 < closest) { closest = d2; hovered = n; hovered_sample = i; }
+            }
+        }
 
         NciSurface* active = st.layer_hidden ? nullptr : active_member();
         bool guide_hovered = false;
         if (st.show_guides && active && nci_scale_member(*active)) {
             const ColorScale scale = nci_effective_scale(st, *active);
-            const bool adaptive = st.mode == NciParameterMode::CPAdaptive && active->families;
-            // Uniform: one isovalue for the layer; CP-adaptive: the active interaction's
-            const ImVec4 col = adaptive ? type_colour(*active) : layer_colour;
+            const ImVec4 col = guide_colour;
             double iso = active->s_iso;
             bool held = false, hovered_line = false;
             if (ImPlot::DragLineY(1, &iso, col, 2.0f, 0, nullptr, &hovered_line, &held)) {
-                float& target = adaptive ? st.family_settings[nci_settings_index(*active)].s_iso : st.uniform.s_iso;
-                target = (float)std::clamp(iso, 0.1, 1.5);
+                st.uniform.s_iso = (float)std::clamp(iso, 0.1, 1.5);
             }
             st.settings_editing |= held;
             guide_hovered = hovered_line || held;
@@ -1150,21 +1424,16 @@ struct NciPanel {
             ImPlot::SetNextLineStyle(col, 1.0f);
             ImPlot::PlotInfLines("##Colour limits", limits, 2);
             const double right = ImPlot::GetPlotLimits().X.Max;
-            if (adaptive) ImPlot::Annotation(right, active->s_iso, col, ImVec2(-4, -4), true, "%s: s=%.2f", nci_family_label(*active).c_str(), active->s_iso);
-            else ImPlot::Annotation(right, active->s_iso, col, ImVec2(-4, -4), true, "s=%.2f", active->s_iso);
+            ImPlot::Annotation(right, active->s_iso, col, ImVec2(-4, -4), true, "s=%.2f", active->s_iso);
             ImPlot::TagX(scale.range_beg, col, "%.4g", scale.range_beg);
             ImPlot::TagX(scale.range_end, col, "%.4g", scale.range_end);
         }
         if (hovered && !guide_hovered) {
             const int key = nci_layer_key(*hovered);
             const float rho = hovered->scatter.signed_rho[hovered_sample], s = hovered->scatter.s[hovered_sample];
-            const nci_surface::ExpectedRegion region = nci_surface::expected_region(hovered->group);
             ImGui::BeginTooltip();
             ImGui::Text("%s | %s", layer_name(key, nci_layer_members(st, key)), nci_family_label(*hovered).c_str());
             ImGui::Text("sign(lambda2)rho %.5g au | s %.3f", rho, s);
-            if (hovered->families && region.valid && s <= region.s_max)
-                ImGui::TextDisabled(nci_surface::in_expected_region(region, rho, s) ? "In the expected region"
-                                                                                     : "Outside the expected region");
             const bool guided = st.show_guides && active == hovered;
             if (is_shown(key))
                 ImGui::TextDisabled(guided ? "Click to hide the guides" : "Click to make this interaction the active one for the guides");
@@ -1183,34 +1452,28 @@ struct NciPanel {
             ImGui::PushID((int)i);
             ImVec4 colour = e.colour;
             if (!e.on) colour.w = 0.2f;
-            // The swatch toggles: a square for an interaction, a box for the expected regions, a thick bar for a layer
+            // The swatch toggles: a square for an interaction, a contour for expected regions, a thick bar for a layer
             const ImVec2 p = ImGui::GetCursorScreenPos();
             const bool toggled = ImGui::InvisibleButton("##swatch", ImVec2(swatch_w(e), chip_h));
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImU32 col = ImGui::ColorConvertFloat4ToU32(colour);
             if (e.kind == LegendEntry::Layer) {
-                const float h = MIN(chip_h, MAX(2.0f, st.layer_outline_width));
-                dl->AddRectFilled(ImVec2(p.x, p.y + 0.5f * (chip_h - h)), ImVec2(p.x + swatch_w(e), p.y + 0.5f * (chip_h + h)), col, 0.5f * h);
-                ImGui::SetItemTooltip("Click: %s in the scatter plot\nRight-click: points, isolines and area",
+                const NciScatterLayer l = scatter_layer(e.layer);
+                density_map_swatch(dl, p, ImVec2(p.x + chip_h, p.y + chip_h),
+                                   l.style == NciLayerStyle::Heatmap ? DensityMapSwatch_Heatmap : DensityMapSwatch_Contours,
+                                   e.colour, l.fill, ImPlotColormap_Viridis, e.on ? 1.0f : 0.35f);
+                ImGui::SetItemTooltip("Click: %s the layer in the scatter plot\nPoints always follow the viewport layer.",
                                       e.on ? "hide" : "show");
-                if (ImGui::BeginPopupContextItem("##layer scatter")) {
-                    ImGui::TextUnformatted(e.text.c_str());
-                    draw_scatter_layer_controls(e.layer);
-                    ImGui::EndPopup();
-                }
             } else if (e.kind == LegendEntry::Reference) {
-                ImVec4 fill = colour;
-                fill.w *= 0.25f;
-                dl->AddRectFilled(p, ImVec2(p.x + chip_h, p.y + chip_h), ImGui::ColorConvertFloat4ToU32(fill));
-                dl->AddRect(p, ImVec2(p.x + chip_h, p.y + chip_h), col);
-                ImGui::SetItemTooltip("%s the expected regions of the interactions\n(provisional, from the calibration systems)",
-                                      e.on ? "Hide" : "Show");
+                reference_swatch(dl, p, ImVec2(p.x + chip_h, p.y + chip_h), e.on ? 1.0f : 0.35f);
+                ImGui::SetItemTooltip("Click: %s the reference of hydrogen bonds, rings, pi stacking and other CPs",
+                                      e.on ? "hide" : "show");
             } else if (e.kind == LegendEntry::Context) {
                 dl->AddCircleFilled(ImVec2(p.x + 0.5f * chip_h, p.y + 0.5f * chip_h), 0.3f * chip_h, col);
                 ImGui::SetItemTooltip("%s every grid sample of the whole density, under the layers", e.on ? "Hide" : "Show");
             } else {
                 dl->AddRectFilled(p, ImVec2(p.x + chip_h, p.y + chip_h), col, style.FrameRounding);
-                ImGui::SetItemTooltip("Click: %s this interaction's isolines, area and expected region in every layer\n"
+                ImGui::SetItemTooltip("Click: %s this interaction's isolines and area in every layer\n"
                                       "Right-click: its isolines and area, or those of all the interactions",
                                       e.on ? "hide" : "show");
                 if (ImGui::BeginPopupContextItem("##type scatter")) {
@@ -1220,11 +1483,9 @@ struct NciPanel {
             }
             if (toggled) {
                 if (e.kind == LegendEntry::Type) st.type_styles[(size_t)e.family].visible = !e.on;
-                else if (e.kind == LegendEntry::Reference) st.show_reference = !e.on;
+                else if (e.kind == LegendEntry::Reference) st.reference.visible = !e.on;
                 else if (e.kind == LegendEntry::Context) st.show_context_samples = !e.on;
-                else {
-                    set_scatter_visible(e.layer, !e.on);
-                }
+                else scatter_style(e.layer).visible = !e.on;
             }
             ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(e.dim ? ImGuiCol_TextDisabled : ImGuiCol_Text));
@@ -1243,8 +1504,9 @@ struct NciPanel {
 
 } // namespace
 
-void draw_nci_panel(NciState& state, bool critical_points_enabled) {
-    NciPanel panel(state, critical_points_enabled);
+void draw_nci_panel(NciState& state, bool critical_points_enabled, std::vector<uint32_t>& critical_point_list_scope,
+                    std::vector<uint32_t>& critical_point_environment_selection) {
+    NciPanel panel(state, critical_points_enabled, critical_point_list_scope, critical_point_environment_selection);
     const topology::NciPanelDrawCallbacks callbacks = {
         &panel,
         [](void* data) { static_cast<NciPanel*>(data)->draw_scatter(); },

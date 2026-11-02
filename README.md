@@ -217,41 +217,44 @@ partition. Regions without an anchor are excluded.
 
 One general mode applies to every NCI layer, the Full system included:
 
-* **Uniform** uses one isovalue s and density cutoff for every CP type. It is
-  the physically consistent mode.
-* **CP-adaptive** extracts type-scoped regions around their anchor CPs, each
-  with its type's isovalue and cutoff. It brings out weak interactions such as
-  π-stacking, but is illustrative: the surfaces of different types are not
-  mutually consistent, and the regions are not a uniquely defined spatial
-  partition. Layers that mix CP types, such as the Full system, are tagged
-  "illustrative" with a ⚠ in this mode; hover either for the reason.
+* **Uniform** is standard NCI: one isovalue s, density cutoff and radius around
+  the CPs for every CP type.
+* **CP-adaptive** uses the same isovalue and cutoff, but each CP type's own
+  radius around its anchor CPs, so extended interactions such as π-stacking
+  are covered while compact ones stay local. Only the extent changes, so the
+  surfaces of different types stay consistent.
 
-In both modes the extent around the anchor CPs is the radius of each CP type.
 All settings are applied automatically and tuned in one place, the **NCI
-settings** (gear button): the mode, the Uniform isovalue and cutoff, resolution,
-connected regions, opacity and the colour scale, then a compact per-type table
-with the radius (and, in CP-adaptive mode, the type's s and cutoff).
+settings** (gear button): the mode, the isovalue and cutoff, the Uniform
+radius, resolution, connected regions, opacity and the colour scale, then in
+CP-adaptive mode a compact per-type radius table.
 
-The settings table lists the CP types. Bond, bond-path and attractor CPs
+The NCI types come from the CP classification: a contact CP's type is its
+branch under Contacts in the CP tree. Hydrogen bonds and halogen bonds are their
+own types; π···π, C-H···π and X-H···π are all π-stacking, so every π contact
+shares one radius; C-H···X, H···H and other contacts are other contacts. Rings
+and cages keep their own types. The settings table lists the CP types. Bond, bond-path and attractor CPs
 anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
 the same interaction region automatically share parameters. For example, a ring
 closed by π···π uses the π-stacking parameters, so one region is cut at one
-threshold. Calibrated type defaults are:
+radius. Calibrated type radii are:
 
-| Family | Baseline | s | rho cutoff (au) | Radius cap (Bohr) |
-|--------|----------|---|-----------------|------------------|
-| Hydrogen bonds | AT-AT | 1.0 | 0.07 | 1.7 |
-| Rings | Biphenyl, AT-AT | 1.0 | 0.05 | 2.0 |
-| Pi-stacking | Anthracene dimer, AT-AT | 0.85 | 0.07 | 3.7 |
-| Cages | As rings | 1.0 | 0.05 | 2.0 |
-| Halogen bonds | Provisional, uncalibrated | 0.9 | 0.07 | 2.2 |
+| Family | Radius (Bohr) |
+|--------|---------------|
+| Hydrogen bonds | 1.7 |
+| Rings | 2.0 |
+| Pi-stacking (all π contacts) | 3.7 |
+| Cages | 2.0 |
+| Halogen bonds | 2.2 (provisional, uncalibrated) |
 
-Other contacts and unassigned CPs use generic s=0.5, ρ<0.05, r=2.7 settings
-until they are calibrated. The Uniform defaults are s=0.7, ρ<0.07 and a
-colour range of ±0.03 (validated on AT-AT). All defaults are
-defined together in `src/components/topology/nci_surface_core.cpp`. Type
-regions are visualization choices; they do not assign a unique physical extent
-to an interaction.
+Other contacts and unassigned CPs use r=2.7 until they are calibrated. The
+displayed isovalue and cutoff default to s=0.7 and ρ<0.07 in both modes, the
+Uniform radius to 2.7 and the colour range to ±0.03. The reference statistics
+use their own extraction at the reference settings (s=1.0, ρ<0.05, the type
+radius), independent of the displayed ones. All defaults are defined together in
+`src/components/topology/nci_surface_core.{h,cpp}`. Type regions are
+visualization choices; they do not assign a unique physical extent to an
+interaction.
 
 One colour scale applies to every NCI surface: one palette (Jet by default) and
 one range, symmetric around zero with zero at the palette midpoint, and one
@@ -271,45 +274,51 @@ samples are plotted per interaction (a ring closed by π···π counts as
 π-stacking), and hovering a point identifies it. The legend is a centred row of
 chips under the plot. Click a point or an interaction's name to make it the
 active one for the guides: the isovalue and colour-range lines.
-Dragging the isovalue line edits the Uniform isovalue, or in CP-adaptive mode
-the active interaction's isovalue; the line is in the layer's colour in Uniform
-mode and in the interaction's colour in CP-adaptive mode. The shown layer has a
-thin outline per interaction and, in its chip colour, a thick outline around
-all of them, one histogram bin outside so the two never overlap. Each interaction always has the same colour (hydrogen bonds blue,
-π-stacking red, rings green, halogen bonds purple, other contacts orange, cages
-brown); layer colours are chosen apart from those. Outlines indicate the
-10%-of-peak level of a smoothed sample histogram, not a physical region
+Dragging the isovalue line edits the isovalue of every layer; the line is in
+the layer's colour. Each interaction always has the same colour (hydrogen
+bonds blue, π-stacking red, rings green, halogen bonds purple, other contacts
+orange, cages brown); layer colours are chosen apart from those. Outlines
+indicate a mass level of a smoothed sample density, not a physical region
 boundary.
 
-The scatter follows the Ramachandran plot's layout. The **Full system** is the
-CP reference: like any layer, it can stay drawn under the shown layer. A pinned
-**Expected regions** row above the layers shows, in the plot, where each
-interaction's spike is expected: a box of sign(λ2)ρ below an s, in the
-interaction's colour. These are provisional boxes from the calibration systems
-(AT-AT, biphenyl, anthracene dimer), to be replaced by a reference map;
-densities from other wave functions may shift them. Each layer row also reports
-the share of its samples (below each region's s) inside their interaction's
-expected region, by interaction in its tooltip.
+The scatter and its layers follow the Ramachandran window's layout. Each row
+has an eye (shown in the scatter plot or not), a swatch of how it is drawn, its
+name and a line of detail; clicking a row selects it, and its properties are
+set in the inspector below the list. The **Full system** is the CP reference:
+like any layer, it can stay drawn under the shown layer. A **Reference** row
+above the layers shows the built-in reference map, independent of the loaded
+system: per CP category (hydrogen bonds, rings, π-stacking, other), the pooled
+(sign(λ2)ρ, s) density of reference extractions (s ≤ 1.0, ρ ≤ 0.05, the
+category's radius) over many VeloxChem calculations, each weighing the same.
+Its inspector sets the style (**Dominant**, default: per point the densest
+category, more opaque at each deeper level; **Combined**: the categories'
+colours mixed where they overlap, more opaque towards each core; switching
+style turns lines on for Dominant and off for Combined), the opacity (60 % by default),
+fill and lines, the line width and the levels (by default 50, 90 and 98 % of
+each category's volume; drag a level, right-click to remove it, + to add one).
+Each layer row reports the share of its category samples inside their
+category's 90 % area, whatever levels are drawn, by category in its tooltip and
+inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
+`bake_reference.py`); other wave functions may shift it.
 
-Each layer whose eye is on is drawn with **Points** and **Isolines** and an
-area (**Filled**, the inside of its outlines in the layer colour, or
-**Heatmap**, the density of its samples). Points always take the colour scale of
-their surface in the viewport, so a colour means the same density in both; layers
-and interactions are told apart by their isolines and areas. These are set for
-the selected layer below the list, or for any layer by right-clicking its bar in
-the legend. Right-clicking an interaction's square sets its isolines (on by
-default) and area, in its colour and the same in every layer, or those of **All
-interactions** at once. Interactions never hide points: the points are the
-layer's, as in the viewport. The legend lists the
-expected regions and every layer (thick bars), then on a second line the
-interactions (squares). Clicking a swatch shows or hides it: a layer (as its
-eye), the expected regions, or an interaction's isolines, filled area and
-expected region in every layer. Clicking an interaction's name, or one of its
-points, makes it the active one for the guides; clicking the active one again
-hides them. Layers not shown in the viewport are drawn from their last
-computation, under the shown one. **All samples** in the legend toggles the context cloud. **Guides** also toggles the isovalue and
-colour-range lines; on the right, ⤢ fits the view and the gear sets the line
-widths and the point size.
+A layer's inspector sets its name (saved layers), style (**Contours**: the
+outline of all its samples together at each level, optionally filled, stacked
+per level; **Heatmap**: the density of its samples), colour, opacity, fill and
+lines, line width and levels (90 % by default). Points always take the colour
+scale of their surface in the viewport, so a colour means the same density in
+both; layers are told apart by their contours. Only the layer shown in the
+viewport plots points. The Delete key or a row's context menu removes a saved
+layer. Clicking one of the shown layer's points makes its interaction the
+active one for the guides; clicking it again hides them. Layers not shown in
+the viewport are drawn from their last computation, under the shown one. The
+legend under the plot repeats the reference and the layers with their swatches;
+clicking one shows or hides it. **All samples** in the legend toggles the
+context cloud. **Guides** also toggles the isovalue and colour-range lines; on
+the right, ⤢ fits the view and the gear sets the interaction line width and the
+point size, and **Interaction isolines and areas** (off by default) adds
+per-interaction isolines and areas in every layer, with a legend square each:
+click it to toggle, right-click for its isolines and area or those of all
+interactions, click its name to make it the active one for the guides.
 
 Saved NCI layers last for the current loaded geometry; they are cleared when
 the dataset is reset and are not saved to disk. The NCI settings are kept for

@@ -57,6 +57,14 @@ void poll_surface_job(NciSurface& n, bool context) {
         n.failed = !job->ok && !n.cancelled;
         if (n.failed) MD_LOG_ERROR("NCI surface '%s': extraction failed", n.name);
         n.scatter = job->ok ? std::move(job->scatter) : nci_surface::Scatter{};
+        n.reference_failed = job->ok && !job->reference_ok;
+        if (n.reference_failed) {
+            MD_LOG_ERROR("NCI surface '%s': category-specific reference extraction failed", n.name);
+            n.reference_scatters = {};
+        } else {
+            n.reference_scatters = job->ok ? std::move(job->reference_scatters)
+                                           : std::array<nci_surface::Scatter, nci_surface::family_count>{};
+        }
         update_scatter_outline(n);
         n.source_mesh = job->ok && !context ? std::move(job->mesh) : nci_surface::Mesh{};
         if (context) {
@@ -71,6 +79,10 @@ void poll_surface_job(NciSurface& n, bool context) {
 }
 
 }  // namespace
+
+double nci_resolution_spacing(int resolution) {
+    return resolution_spacing[CLAMP(resolution, 0, (int)NciSurface::Res_Count - 1)];
+}
 
 bool upload_nci_surface_mesh(NciSurface& n) {
     return upload_surface_mesh(n);
@@ -126,7 +138,7 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
         return;
     }
 
-    double h = resolution_spacing[CLAMP(n.resolution, 0, (int)NciSurface::Res_Count - 1)];
+    double h = nci_resolution_spacing(n.resolution);
     int dim[3];
     for (int pass = 0; pass < 2; ++pass) {
         size_t total = 1;
@@ -191,12 +203,21 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
         key = md_hash64(&params.near_radius, sizeof(params.near_radius), key);
         key = md_hash64(near.data(), near.size() * sizeof(double), key);
     }
+    std::array<std::vector<double>, nci_surface::family_count> reference_near;
+    for (size_t family = 0; family < reference_near.size(); ++family) {
+        const nci_surface::Family type = (nci_surface::Family)family;
+        if (type == nci_surface::Family::Unassigned || !nci_surface::has_nci(type)) continue;
+        auto& anchors = reference_near[family];
+        for (const NciSurface::CriticalPointMembership& cp : n.critical_points_by_family[family])
+            anchors.insert(anchors.end(), cp.position.begin(), cp.position.end());
+    }
     key |= 1;
     n.want_key = key;
     n.anchors = near;
     if (key == n.have_key || (n.job && n.job->key == key)) return;
     nci_surface_job_destroy(n.job);
-    n.job = nci_surface_job_start(n.rho, n.grid, params, std::move(near), key);
+    n.reference_failed = false;
+    n.job = nci_surface_job_start(n.rho, n.grid, params, std::move(near), reference_near, key);
 }
 
 }  // namespace topology

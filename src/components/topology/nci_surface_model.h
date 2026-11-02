@@ -15,9 +15,9 @@
 
 namespace topology {
 
-// Uniform: every CP type uses the same isovalue and density cutoff (NciState::uniform).
-// CPAdaptive: each CP type uses its own isovalue and density cutoff (NciState::family_settings).
-// In both modes the extent around the CPs is the radius of each CP type, and one colour scale applies.
+// Uniform: one isovalue, density cutoff and radius for every CP type (NciState::uniform), standard NCI.
+// CPAdaptive: the same isovalue and density cutoff, with each CP type's own radius around its CPs
+// (NciState::family_settings). One colour scale applies in both modes.
 enum class NciParameterMode : uint8_t { Uniform, CPAdaptive };
 
 constexpr int NCI_LAYER_FULL_SYSTEM = -1000;
@@ -25,6 +25,13 @@ constexpr int NCI_LAYER_PREVIEW = -1001;
 constexpr int NCI_LAYER_NONE = 0;
 
 struct NciSurface {
+    struct CriticalPointMembership {
+        uint32_t index = 0;
+        nci_surface::Family family = nci_surface::Family::Unassigned;
+        std::array<double, 3> position = {};
+        std::vector<std::string> environment;
+    };
+
     bool shown = false;
     bool layer_visible = true;
     float s_iso = 0.5f;
@@ -35,6 +42,9 @@ struct NciSurface {
     // The CP types of the anchors, as shown, and how many of each; one surface holds the CPs that share parameters
     nci_surface::Families families = 0;
     std::array<uint32_t, nci_surface::family_count> type_counts = {};
+    std::vector<uint32_t> critical_point_indices;
+    std::array<std::vector<CriticalPointMembership>, nci_surface::family_count> critical_points_by_family;
+    std::array<nci_surface::Scatter, nci_surface::family_count> reference_scatters;
     // Internal: the type whose settings the surface uses (see nci_surface::parameter_family_of)
     nci_surface::Family group = nci_surface::Family::Unassigned;
     std::vector<std::vector<std::string>> environments;
@@ -72,6 +82,7 @@ struct NciSurface {
     size_t triangles = 0;
     bool cancelled = false;
     bool failed = false;
+    bool reference_failed = false;
     uint64_t generation = 1;
 
     isomesh::Mesh mesh = {};
@@ -81,18 +92,20 @@ struct NciSurface {
 
 // The settings of one CP type, applied automatically to every layer and tuned in the NCI settings.
 // The radius applies in both modes; the isovalue and density cutoff only in CP-adaptive mode.
+// The radius around the CPs of one type, used in CP-adaptive mode
 struct NciFamilySettings {
-    float s_iso = 0.5f;
-    float rho_max = 0.05f;
     float radius = 2.7f;
 };
 
 struct NciUniformSettings {
     float s_iso = 0.5f;
     float rho_max = 0.05f;
+    float radius = 2.7f;
 };
 
 NciFamilySettings nci_family_default_settings(nci_surface::Family family);
+// The grid spacing a resolution asks for, Bohr; large boxes are sampled more coarsely (see NciSurface::grid)
+double nci_resolution_spacing(int resolution);
 NciUniformSettings nci_uniform_default_settings();
 ColorScale nci_default_scale();
 
@@ -102,20 +115,46 @@ enum class NciScatterArea : uint8_t { None, Filled, Heatmap, Count };
 const char* nci_scatter_area_name(NciScatterArea area);
 
 // What the scatter plot draws of a layer, as the Ramachandran layers: visible is the layer's eye, apart from the layer
-// shown in the viewport
+// shown in the viewport (whose points are always drawn, on the surface colour scale). Contours: the union of its
+// interactions' regions holding each level's fraction of their volume, filled and/or outlined in the layer colour.
+// Heatmap: the density of its samples.
+enum class NciLayerStyle : uint8_t { Contours, Heatmap, Count };
+constexpr int nci_max_levels = nci_surface::reference_max_levels;
 struct NciScatterLayer {
     bool visible = true;
-    bool points = true;
+    NciLayerStyle style = NciLayerStyle::Contours;
+    bool custom_colour = false;   // else the layer's default colour
+    ImVec4 colour = {1, 1, 1, 1};
+    float opacity = 1.0f;
+    bool fill = false;
     bool lines = true;
-    NciScatterArea area = NciScatterArea::None;
+    float line_width = 3.0f;
+    int num_levels = 1;
+    float levels[nci_max_levels] = {0.9f};   // fractions enclosed, increasing
 };
 
-// An interaction in the scatter plot, the same in every layer: its isolines and area in its colour; visible toggles them
-// and its expected region. Not its points: they are the layer's, as in the viewport.
+// An interaction in the scatter plot, the same in every layer: its isolines and area in its colour; visible toggles them.
+// Shown only with NciState::show_type_styles; points belong only to the viewport-active layer.
 struct NciTypeStyle {
     bool visible = true;
     bool lines = true;
     NciScatterArea area = NciScatterArea::None;
+};
+
+// The built-in reference in the scatter plot, a layer as the Ramachandran reference. Dominant: per point the densest
+// category's colour, more opaque at each deeper level. Combined: the categories' colours mixed by their depth, rising
+// from each outermost isoline to the innermost one. Both are filled and/or outlined at the levels.
+enum class NciReferenceStyle : uint8_t { Dominant, Combined, Count };
+struct NciReferenceLayer {
+    bool visible = true;
+    NciReferenceStyle style = NciReferenceStyle::Dominant;
+    float opacity = 0.6f;
+    bool fill = true;
+    bool lines = true;
+    float line_width = 1.5f;
+    int num_levels = (int)nci_surface::reference_default_fractions.size();
+    float levels[nci_max_levels] = {nci_surface::reference_default_fractions[0], nci_surface::reference_default_fractions[1],
+                                    nci_surface::reference_default_fractions[2]};
 };
 
 struct NciState {
@@ -125,6 +164,10 @@ struct NciState {
         for (size_t f = 0; f < settings.size(); ++f) settings[f] = nci_family_default_settings((nci_surface::Family)f);
         return settings;
     }();
+    bool export_scatter_requested = false;
+    bool export_scatter_in_progress = false;
+    float export_scatter_progress = 0.0f;
+    std::string export_scatter_status;
     NciUniformSettings uniform = nci_uniform_default_settings();
     NciParameterMode mode = NciParameterMode::Uniform;
     // The one colour scale of every NCI surface; Auto follows the shown layer
@@ -140,10 +183,12 @@ struct NciState {
     std::vector<std::unique_ptr<NciSurface>> objects;
     std::vector<std::unique_ptr<NciSurface>> previews;
     std::vector<std::unique_ptr<NciSurface>> full_system;
-    // Per layer key: the outline of all the layer's samples together, and the key of the samples it was made from
+    // Per layer key: per level, the outline of all the layer's samples together and its inside as triangles, and the
+    // key of the samples and levels they were made from
     struct LayerOutline {
         uint64_t key = 0;
-        std::vector<std::array<float, 4>> segments;
+        std::vector<std::vector<std::array<float, 4>>> segments;
+        std::vector<std::vector<std::array<float, 2>>> fills;
     };
     std::unordered_map<int, LayerOutline> layer_outlines;
     nci_surface::View view = nci_surface::View::Overview;
@@ -160,17 +205,24 @@ struct NciState {
     int pending_delete = 0;
     std::vector<int> layer_order;   // saved layers only
     bool show_guides = true;
-    // The expected region of each interaction in the scatter plot (nci_surface::expected_region)
-    bool show_reference = true;
+    // The built-in reference map of H-bonds, rings, pi stacking and the combined Other category, the map at its
+    // levels and its fill texture, each with the key of what they were made from
+    NciReferenceLayer reference;
+    bool reference_selected = false;   // the reference, not st.selected_layer, in the inspector
+    nci_surface::ReferenceMap reference_map;
+    uint64_t reference_map_key = 0;
+    uint32_t reference_texture = 0;
+    uint64_t reference_texture_key = 0;
     // The context cloud: every grid sample of the whole density, under the layers
     bool show_context_samples = true;
     // Per layer key, what the scatter plot draws of it; a layer without an entry has the defaults
     std::unordered_map<int, NciScatterLayer> scatter_layers;
-    // Interactions toggled in the legend: their outlines and expected regions
+    // Per-interaction isolines and areas of the layers, an option: off, the reference covers the categories
+    bool show_type_styles = false;
+    // Interactions toggled in the legend when shown: their isolines and areas
     std::array<NciTypeStyle, nci_surface::family_count> type_styles = {};
     // Scatter plot look, in pixels: a layer's outline (thick), its interactions' outlines (thin), the samples
-    static constexpr float default_layer_outline_width = 4.0f, default_type_outline_width = 1.5f, default_point_size = 1.8f;
-    float layer_outline_width = default_layer_outline_width;
+    static constexpr float default_type_outline_width = 1.5f, default_point_size = 1.8f;
     float type_outline_width = default_type_outline_width;
     float point_size = default_point_size;
     bool capacity_reported = false;
@@ -185,6 +237,7 @@ struct NciSurfaceRuntimeInput {
 
 struct NciCriticalPoint {
     std::array<double, 3> position = {};
+    uint32_t index = 0;
     nci_surface::Family family = nci_surface::Family::Unassigned;
     nci_surface::Family parameter_family = nci_surface::Family::Unassigned;
     bool selected = false;

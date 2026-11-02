@@ -105,8 +105,10 @@ struct Curve {
 
 // Probability per log10-density unit when all values are positive and allow_log, otherwise per density unit.
 // component[i] in [0, component_count) assigns density[i] to a component of the returned curve.
+// Sampled over the data (with 4 bandwidths of margin), or over [sample_min, sample_max] when sample_max > sample_min
+// (both positive for a logarithmic curve): a zoomed view, sampled at its own resolution.
 Curve estimate(std::span<const double> density, std::span<const uint32_t> component = {}, size_t component_count = 0,
-               bool allow_log = true);
+               bool allow_log = true, double sample_min = 0.0, double sample_max = 0.0);
 
 // The energy densities at a CP (Hartree / Bohr^3) from the kinetic energy density G and the Laplacian, by the local
 // virial theorem: V = lap / 4 - 2 G, H = G + V. ratio is |V| / G: below 1 closed-shell, above 2 shared-shell.

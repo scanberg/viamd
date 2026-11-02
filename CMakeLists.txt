@@ -463,11 +463,15 @@ if (VIAMD_UNITTEST)
     add_subdirectory(test)
 endif()
 
+if (VIAMD_ENABLE_QM)
+    add_subdirectory(tools/nci_reference)
+endif()
+
 # Every executable in the bin directory that reads VeloxChem files looks for the basis sets beside
 # itself (md_vlx.c), not only viamd. mdlib leaves the copy to us when embedded, so its tests and
 # benchmarks wait for this one too.
 if (TARGET viamd_copy_basis)
-    foreach(_exe viamd_test md_unittest md_benchmark)
+    foreach(_exe viamd_test md_unittest md_benchmark viamd_nci_reference)
         if (TARGET ${_exe})
             add_dependencies(${_exe} viamd_copy_basis)
         endif()
