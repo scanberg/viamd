@@ -8,7 +8,9 @@
 // member, as a distance per pair of atoms) is taken member by member, paired by index with the other side's members, or
 // against the other side's single value. A layer is over some of the frames: the current one, all of them, or those of
 // a timeline period; and drawn as points, as contours of their density (at levels of the fraction of the samples they
-// enclose), or as a heat map of it. The layers are drawn bottom up, the first one on top.
+// enclose), or as a heat map of it. The contours of a layer of several pairs may be split by pair: one density per pair,
+// of its own samples, in the colour of its series (four pairs to a job, one in each channel of the density map). The
+// layers are drawn bottom up, the first one on top.
 //
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
@@ -181,6 +183,23 @@ struct PairStats {
     double intercept() const { return my - slope() * mx; }
 };
 
+// The density of some of the samples of a layer, on the GPU, over its domain, and what it is of: of all of them in
+// channel 0, or split by pair, pair DENSITY_MAP_CHANNELS g + c in channel c of part g
+struct DensityPart {
+    uint32_t tex = 0;
+    DensityMapResult result = {};
+    DensityMapDomain domain = {};
+    bool     has_result = false;
+    bool     split = false;         // Of the result: by pair
+    uint64_t shown_hash = 0;        // Of the inputs of the density in tex
+    uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none
+    uint8_t  tex_wrap = 0;          // Along which axes tex wraps around: 1 x, 2 y
+    DensityMapJob* job = nullptr;   // Under way
+    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+};
+
+constexpr int MAX_PARTS = (MAX_PAIRS + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS;
+
 struct Layer {
     uint32_t id = 0;                // Unique while it lives, never 0
     RepresentationNode node = {};   // Where it is in the list (layer_groups.h): at the top level, there are no groups
@@ -203,6 +222,7 @@ struct Layer {
     bool     fill = false;
     bool     lines = true;
     float    line_width = 1.5f;            // Pixels
+    bool     split_pairs = false;          // One density per pair, in its colour, rather than one of them all
     int      num_levels = 3;
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };   // Fractions of the samples enclosed, increasing
     float    bandwidth = 3.0f;             // % of the extent of the samples along each axis: the sigma of the smoothing
@@ -238,17 +258,8 @@ struct Layer {
     bool     members_truncated = false;     // Populations of different sizes paired: the fewer members of the two
     bool     binned = false;                // Of distributions: bin by bin, the samples have no frame (NO_FRAME)
 
-    // The density, on the GPU, over its domain, and what it is of
-    uint32_t tex = 0;
-    DensityMapResult result = {};
-    DensityMapDomain result_domain = {};
-    uint64_t result_samples = 0;
-    bool     has_result = false;
-    uint64_t shown_hash = 0;        // Of the inputs of the density in tex
-    uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none
-    uint8_t  tex_wrap = 0;          // Along which axes tex wraps around: 1 x, 2 y
-    DensityMapJob* job = nullptr;   // Under way
-    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+    // The density: of all the samples in the first part, or of each pair (layer_splits)
+    DensityPart parts[MAX_PARTS];
 
     uint32_t point_stride = 1;      // Samples skipped to keep the points within MAX_POINTS
 
@@ -413,6 +424,7 @@ struct Correlation : viamd::EventHandler {
     // An axis of periodic values, when those of every layer shown on it are of one period (update_axis_views): it turns
     // around the circle, linked to every other plot of them (plot_periodic.h). NULL for an axis of its own (viewrect).
     PeriodicView* axis_view[2] = {};
+    std::vector<DensityMapDraw> draw_buf;   // Of render_canvas
     uint64_t axes_key = 0;          // Of what the axes are: the densities are over a periodic domain along those that are
     bool  fit_view = true;          // To the samples of the layers shown, next frame
     uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
@@ -474,9 +486,11 @@ struct Correlation : viamd::EventHandler {
                 // What the samples were of is gone: nothing of it is shown again
                 cancel_all_jobs(true);
                 for (int i = 0; i < num_layers; ++i) {
-                    layers[i].has_result = false;
-                    layers[i].shown_hash = 0;
-                    layers[i].want_hash = 0;
+                    for (DensityPart& part : layers[i].parts) {
+                        part.has_result = false;
+                        part.shown_hash = 0;
+                        part.want_hash = 0;
+                    }
                     layers[i].data_key = 0;
                 }
                 system_generation += 1;
@@ -610,8 +624,10 @@ struct Correlation : viamd::EventHandler {
     void free_derived(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
         cancel_job(l, true);
-        if (l.tex) density_map_texture_free(&l.tex);
-        l.tex = 0;
+        for (DensityPart& part : l.parts) {
+            if (part.tex) density_map_texture_free(&part.tex);
+            part.tex = 0;
+        }
         md_array_free(l.sx, heap);
         md_array_free(l.sy, heap);
         md_array_free(l.st, heap);
@@ -657,6 +673,7 @@ struct Correlation : viamd::EventHandler {
         l.fill = copy.fill;
         l.lines = copy.lines;
         l.line_width = copy.line_width;
+        l.split_pairs = copy.split_pairs;
         l.num_levels = copy.num_levels;
         MEMCPY(l.levels, copy.levels, sizeof(l.levels));
         l.bandwidth = copy.bandwidth;
@@ -800,11 +817,29 @@ struct Correlation : viamd::EventHandler {
     // ## Jobs
 
     void cancel_job(Layer& l, bool wait) {
-        if (!l.job) return;
-        // Its callback still comes, and finds the layer gone or the job not its own
-        density_map_cancel(l.job, wait);
-        l.job = nullptr;
-        l.want_hash = 0;
+        for (DensityPart& part : l.parts) {
+            if (!part.job) continue;
+            // Its callback still comes, and finds the layer gone or the job not its own
+            density_map_cancel(part.job, wait);
+            part.job = nullptr;
+            part.want_hash = 0;
+        }
+    }
+
+    static bool layer_busy(const Layer& l) {
+        for (const DensityPart& part : l.parts) {
+            if (part.job) return true;
+        }
+        return false;
+    }
+
+    // Its contours one density per pair, in the pair's colour
+    static bool layer_splits(const Layer& l) {
+        return l.split_pairs && l.style == LayerStyle_Contours && l.num_pairs > 1;
+    }
+
+    static int layer_num_parts(const Layer& l) {
+        return layer_splits(l) ? (l.num_pairs + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS : 1;
     }
 
     void cancel_all_jobs(bool wait) {
@@ -841,54 +876,70 @@ struct Correlation : viamd::EventHandler {
         return d;
     }
 
-    // The density of the samples of the layer, pooled over its pairs, in channel 0
-    void launch_job(Layer& l, uint64_t hash) {
-        ASSERT(!l.job);
+    // The density of part g of the layer: of all its samples in channel 0, or split, of its pairs in theirs
+    void launch_job(Layer& l, int g, bool split, uint64_t hash) {
+        DensityPart& part = l.parts[g];
+        ASSERT(!part.job);
         struct Input {
             std::vector<float> x, y;
+            std::vector<uint8_t> c;     // The channel of each sample, all 0 when empty
         };
         std::shared_ptr<Input> in = std::make_shared<Input>();
-        const size_t n = md_array_size(l.sx);
-        in->x.assign(l.sx, l.sx + n);
-        in->y.assign(l.sy, l.sy + n);
+        const size_t count = md_array_size(l.sx);
+        if (split) {
+            for (size_t i = 0; i < count; ++i) {
+                const int p = l.spair[i];
+                if (p / DENSITY_MAP_CHANNELS != g) continue;
+                in->x.push_back(l.sx[i]);
+                in->y.push_back(l.sy[i]);
+                in->c.push_back((uint8_t)(p % DENSITY_MAP_CHANNELS));
+            }
+        } else {
+            in->x.assign(l.sx, l.sx + count);
+            in->y.assign(l.sy, l.sy + count);
+        }
+        const size_t n = in->x.size();
         const DensityMapDomain domain = layer_domain(l);
         const float x_extent = domain.periodic_x ? domain.x_max - domain.x_min : l.x_max > l.x_min ? l.x_max - l.x_min : (domain.x_max - domain.x_min) * 0.5f;
         const float sigma = x_extent * l.bandwidth * 0.01f;
         const uint32_t num_chunks = (uint32_t)MIN((uint64_t)8, MAX((uint64_t)1, (uint64_t)(n >> 18)));
 
         auto source = [in](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
-            const size_t count = in->x.size();
-            const size_t beg = count * chunk / chunks;
-            const size_t end = count * (chunk + 1) / chunks;
+            const size_t total = in->x.size();
+            const size_t beg = total * chunk / chunks;
+            const size_t end = total * (chunk + 1) / chunks;
+            const bool channels = !in->c.empty();
             for (size_t i = beg; i < end; ++i) {
                 if ((i & 4095) == 0 && cancel.load(std::memory_order_relaxed)) return;
-                bins.add(0, in->x[i], in->y[i]);
+                bins.add(channels ? in->c[i] : 0, in->x[i], in->y[i]);
             }
         };
         const uint32_t id = l.id;
-        const uint64_t serial = ++l.job_serial;
-        auto done = [this, id, hash, serial, domain](const DensityMapResult* result, const float* grid) {
+        const uint64_t serial = ++part.job_serial;
+        auto done = [this, id, g, split, hash, serial, domain](const DensityMapResult* result, const float* grid) {
             Layer* layer = find_layer(id);
-            if (!layer || !layer->job || layer->job_serial != serial || layer->want_hash != hash) return;
-            layer->job = nullptr;
+            if (!layer) return;
+            DensityPart& pt = layer->parts[g];
+            if (!pt.job || pt.job_serial != serial || pt.want_hash != hash) return;
+            pt.job = nullptr;
             if (!result) {
                 // Interrupted: tried again
-                layer->want_hash = 0;
+                pt.want_hash = 0;
                 return;
             }
             const uint8_t wrap = (uint8_t)((domain.periodic_x ? 1 : 0) | (domain.periodic_y ? 2 : 0));
-            if (layer->tex && layer->tex_wrap != wrap) density_map_texture_free(&layer->tex);
-            if (!layer->tex) layer->tex = density_map_texture_create(domain.periodic_x, domain.periodic_y);
-            layer->tex_wrap = wrap;
-            density_map_texture_upload(layer->tex, grid);
-            layer->result = *result;
-            layer->result_domain = domain;
-            layer->result_samples = result->samples[0];
-            layer->has_result = true;
-            layer->shown_hash = hash;
+            if (pt.tex && pt.tex_wrap != wrap) density_map_texture_free(&pt.tex);
+            if (!pt.tex) pt.tex = density_map_texture_create(domain.periodic_x, domain.periodic_y);
+            pt.tex_wrap = wrap;
+            density_map_texture_upload(pt.tex, grid);
+            pt.result = *result;
+            pt.domain = domain;
+            pt.split = split;
+            pt.has_result = true;
+            pt.shown_hash = hash;
         };
-        l.want_hash = hash;
-        l.job = density_map_launch(STR_LIT("Correlation density"), domain, sigma, num_chunks, source, done);
+        part.want_hash = hash;
+        part.job = density_map_launch(STR_LIT("Correlation density"), domain, sigma, num_chunks, source, done);
     }
 
     // ## Update
@@ -1377,14 +1428,19 @@ struct Correlation : viamd::EventHandler {
             Layer& l = layers[i];
             if (!l.visible || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
 
+            const bool split = layer_splits(l);
             uint64_t h = md_hash64_combine(l.data_hash, system_generation);
             h = md_hash64(&l.bandwidth, sizeof(l.bandwidth), h);
             h = md_hash64_combine(h, axes_key);
-            h |= 1;
-            if (h == l.shown_hash || h == l.want_hash) continue;
-            // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
-            if (l.job) continue;
-            launch_job(l, h);
+            h = md_hash64(&split, sizeof(split), h);
+            for (int g = 0; g < layer_num_parts(l); ++g) {
+                DensityPart& part = l.parts[g];
+                const uint64_t hg = md_hash64_combine(h, (uint64_t)g) | 1;
+                if (hg == part.shown_hash || hg == part.want_hash) continue;
+                // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
+                if (part.job) continue;
+                launch_job(l, g, split, hg);
+            }
         }
 
         // Fitted again when the series shown change
@@ -1439,6 +1495,7 @@ struct Correlation : viamd::EventHandler {
         viamd::write_bool(state, STR_LIT("Fill"), l.fill);
         viamd::write_bool(state, STR_LIT("Lines"), l.lines);
         viamd::write_flt(state, STR_LIT("LineWidth"), l.line_width);
+        viamd::write_bool(state, STR_LIT("SplitPairs"), l.split_pairs);
         viamd::write_flt_vec(state, STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
         viamd::write_flt(state, STR_LIT("Bandwidth"), l.bandwidth);
         viamd::write_str(state, STR_LIT("Colormap"), str_from_cstr(ImPlot::GetColormapName(l.colormap)));
@@ -1513,6 +1570,8 @@ struct Correlation : viamd::EventHandler {
                 viamd::extract_bool(l->lines, arg);
             } else if (str_eq_cstr(ident, "LineWidth")) {
                 viamd::extract_flt(l->line_width, arg);
+            } else if (str_eq_cstr(ident, "SplitPairs")) {
+                viamd::extract_bool(l->split_pairs, arg);
             } else if (str_eq_cstr(ident, "Levels")) {
                 // As many as there are, up to MAX_LEVELS
                 float v[MAX_LEVELS];
@@ -1646,38 +1705,56 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // Fills what layer l is drawn with, false when there is nothing of it to draw
-    bool layer_draw(DensityMapDraw* d, const Layer& l) const {
-        density_map_draw_init(d);
-        if (!layer_draws_density(l) || !l.has_result || !l.tex) return false;
-        const DensityMapResult& r = l.result;
-        if (r.samples[0] == 0 || r.max[0] <= 0.0f) return false;
-        d->tex = l.tex;
-        d->opacity = l.opacity;
-        d->line_width = l.line_width;
-        MEMCPY(d->line_color, l.color.elem, sizeof(d->line_color));
-        d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
-        d->fill = l.fill;
-        d->lines = l.lines;
-        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
-        density_map_draw_levels(d, r, 0, l.levels, l.num_levels);
-        density_map_draw_fills_from(d, vec_cast(l.color));
-        // Over a domain of its own: each layer's is its samples' extent
-        d->own_view_uv = 1;
-        density_map_plot_view_uv(d->view_uv, l.result_domain);
-        d->content = l.shown_hash;
-        return true;
+    // Fills out with what layer l is drawn with: a draw of its density, or one of each pair's. Their number.
+    int layer_draw(DensityMapDraw* out, const Layer& l) const {
+        if (!layer_draws_density(l)) return 0;
+        int n = 0;
+        for (int g = 0; g < layer_num_parts(l); ++g) {
+            const DensityPart& part = l.parts[g];
+            if (!part.has_result || !part.tex) continue;
+            // Until the split one comes, the density of them all
+            if (!part.split && g > 0) continue;
+            const DensityMapResult& r = part.result;
+            for (int c = 0; c < (part.split ? DENSITY_MAP_CHANNELS : 1); ++c) {
+                const int p = g * DENSITY_MAP_CHANNELS + c;
+                if (part.split && p >= l.num_pairs) break;
+                if (r.samples[c] == 0 || r.max[c] <= 0.0f) continue;
+                ImVec4 color = part.split ? pair_color(l, p, 0) : vec_cast(l.color);
+                color.w = 1.0f;
+                DensityMapDraw* d = &out[n++];
+                density_map_draw_init(d);
+                d->tex = part.tex;
+                d->opacity = l.opacity;
+                d->line_width = l.line_width;
+                d->line_color[0] = color.x;
+                d->line_color[1] = color.y;
+                d->line_color[2] = color.z;
+                d->line_color[3] = part.split ? 1.0f : l.color.w;
+                d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
+                d->fill = l.fill;
+                d->lines = l.lines;
+                if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+                density_map_draw_levels(d, r, c, l.levels, l.num_levels);
+                density_map_draw_fills_from(d, part.split ? color : vec_cast(l.color));
+                // Over a domain of its own: each layer's is its samples' extent
+                d->own_view_uv = 1;
+                density_map_plot_view_uv(d->view_uv, part.domain);
+                d->content = md_hash64_combine(part.shown_hash, (uint64_t)c);
+            }
+        }
+        return n;
     }
 
     // The densities of the layers, composited (density_map_composite): 0 when there are none
     uint32_t render_canvas() {
-        DensityMapDraw draws[MAX_LAYERS];
+        draw_buf.resize((size_t)MAX_LAYERS * MAX_PAIRS);
+        DensityMapDraw* draws = draw_buf.data();
         int num_draws = 0;
         // Bottom up: the first layer is on top
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
             if (!l.visible || l.opacity <= 0.0f) continue;
-            if (layer_draw(&draws[num_draws], l)) ++num_draws;
+            num_draws += layer_draw(draws + num_draws, l);
         }
         int w = 0, h = 0;
         density_map_plot_canvas_size(&w, &h);
@@ -2414,7 +2491,7 @@ struct Correlation : viamd::EventHandler {
                     !l.data_valid ? ImGui::ColorConvertFloat4ToU32(error_color) : dim_col, stats, nullptr, 0.0f, &clip);
 
         // Working on its density
-        if (l.job) {
+        if (layer_busy(l)) {
             const float t = (float)ImGui::GetTime();
             const ImVec2 c = ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9);
             dl->PathArcTo(c, 4.5f, t * 6.0f, t * 6.0f + 4.0f, 10);
@@ -2619,6 +2696,10 @@ struct Correlation : viamd::EventHandler {
             ImGui::Checkbox("fill", &l.fill);
             ImGui::SameLine();
             ImGui::Checkbox("lines", &l.lines);
+            if (l.num_pairs > 1) {
+                prop::row("split", "One density per pair, each of its own samples, in the colour of its series: rather than one of them all, in the layer's");
+                ImGui::Checkbox("by pair", &l.split_pairs);
+            }
             if (l.lines) {
                 prop::row("line width");
                 ImGui::SliderFloat("##line_width", &l.line_width, 0.5f, 6.0f, "%.1f px");
