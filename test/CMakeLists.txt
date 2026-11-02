@@ -25,6 +25,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions_vial.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/display_units.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it

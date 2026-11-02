@@ -1227,6 +1227,19 @@ int main(int argc, char** argv) {
             state.script.text_hash = text_hash;
         }
 
+        // The display units changed: the marks' texts are written again, from the IR their markers came from
+        if (state.script.ir && !state.script.compile_ir && state.script.marks_units_version &&
+            state.script.marks_units_version != display_units::version()) {
+            state.script.marks_units_version = display_units::version();
+            const size_t num_tokens = script::num_marks(state.script.ir);
+            const script::Mark* vis_tokens = script::marks(state.script.ir);
+            for (size_t i = 0; i < num_tokens; ++i) {
+                char text_buf[256];
+                const str_t text = script::mark_text(text_buf, sizeof(text_buf), vis_tokens[i]);
+                script_editor::markers_set_text(&state.editor_markers, state.script.first_mark_marker + i, text);
+            }
+        }
+
         if (state.script.compile_ir) {
             state.script.time_since_last_change += state.app.timing.delta_s;
 
@@ -1297,11 +1310,16 @@ int main(int argc, char** argv) {
                             script_editor::markers_add(markers, script_editor::MarkerType_Warning, INT32_MAX - 1, warnings[i].range, warnings[i].text, warnings[i].context);
                         }
 
+                        // A mark's unit, and its value, are shown in the display units: written again when those change
                         const size_t num_tokens = script::num_marks(state.script.ir);
                         const script::Mark* vis_tokens = script::marks(state.script.ir);
+                        state.script.first_mark_marker = script_editor::markers_count(markers);
+                        state.script.marks_units_version = display_units::version();
                         for (size_t i = 0; i < num_tokens; ++i) {
                             const script::Mark& tok = vis_tokens[i];
-                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.ref);
+                            char text_buf[256];
+                            const str_t text = script::mark_text(text_buf, sizeof(text_buf), tok);
+                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, text, nullptr, tok.ref);
                         }
                         // What evaluating finds to fail is added after these (below), and replaced as it changes
                         state.script.num_compile_markers = script_editor::markers_count(markers);

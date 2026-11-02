@@ -638,7 +638,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     // read through its square root, so the same factor applies to the band.
     md_unit_t shown;
     out->y_scale = (float)display_units::factor(&shown, attr->unit);
-    md_unit_print(out->unit_str, sizeof(out->unit_str), shown);
+    display_units::print(out->unit_str, sizeof(out->unit_str), shown);
     series_periodic(&out->periodic, app, key, out->y_scale);
 
     // ### x

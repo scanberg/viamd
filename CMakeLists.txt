@@ -178,6 +178,7 @@ set(SRC_FILES
     src/density_map.cpp
     src/layer_groups.cpp
     src/display_units.cpp
+    src/display_units_settings.cpp
     src/surface_field.cpp
     src/event.cpp
     src/file_list.cpp

@@ -4,6 +4,11 @@
 
 #include <core/md_intrinsics.h>
 
+#include <display_units.h>
+
+#include <stdio.h>
+#include <string.h>
+
 namespace script {
 
 static inline Language lang_of(const Program* p) { return p ? p->lang : Language::V1; }
@@ -194,6 +199,28 @@ FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, str_t ex
 }
 Completions filter_complete(Language lang, str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
     return lang == Language::V2 ? v2::filter_complete(lang, expr, cursor, ctx, alloc) : v1::filter_complete(lang, expr, cursor, ctx, alloc);
+}
+
+str_t mark_text(char* buf, size_t cap, const Mark& mark) {
+    if (!mark.unit_len || md_unit_is_none(mark.unit) || !cap || mark.unit_at + mark.unit_len > mark.type_len ||
+        mark.type_len > mark.text.len) {
+        return mark.text;
+    }
+    char label[48];
+    const double scl = display_units::factor_print(label, sizeof(label), mark.unit);
+    const str_t type = {mark.text.ptr, mark.type_len};
+    const str_t rest = {mark.text.ptr + mark.type_len, mark.text.len - mark.type_len};   // " -> value", or nothing
+    // The value: converted when it is a number, as it came when it is not one or needs no converting
+    char num[48];
+    str_t value = rest;
+    if (mark.has_number && scl != 1.0 && rest.len) {
+        const int n = snprintf(num, sizeof(num), " -> %.6g", mark.number * scl);
+        value = {num, (size_t)CLAMP(n, 0, (int)sizeof(num) - 1)};
+    }
+    const int len = snprintf(buf, cap, "%.*s%s%.*s%.*s", (int)mark.unit_at, type.ptr, label,
+                             (int)(type.len - mark.unit_at - mark.unit_len), type.ptr + mark.unit_at + mark.unit_len,
+                             (int)value.len, value.ptr);
+    return {buf, (size_t)CLAMP(len, 0, (int)cap - 1)};
 }
 
 }  // namespace script

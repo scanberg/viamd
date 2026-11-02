@@ -426,6 +426,11 @@ void markers_truncate(Markers* m, size_t count) {
     m->dirty = true;
 }
 
+void markers_set_text(Markers* m, size_t index, str_t text) {
+    if (!m || !m->arena || index >= md_array_size(m->list)) return;
+    m->list[index].text = str_copy(text, m->arena);
+}
+
 void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str_t text,
                  const md_bitset_t* atoms, script::Ref vis_ref) {
     ASSERT(m);

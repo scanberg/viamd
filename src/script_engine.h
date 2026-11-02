@@ -75,13 +75,24 @@ struct Diagnostic {
     const md_bitset_t* context = nullptr;
 };
 
-// A part of the source the editor marks for hover: its range, how deeply nested, a line of text, and what it draws
+// A part of the source the editor marks for hover: its range, how deeply nested, a line of text, and what it draws.
+// v2: the text is the type, then " -> " and the value where known; the unit is where the type prints it,
+// text[unit_at, unit_at + unit_len), and number the value in it, so mark_text() can show both in the display units.
 struct Mark {
-    Range range;
-    int   depth = 0;
-    str_t text;
-    Ref   ref;
+    Range     range;
+    int       depth = 0;
+    str_t     text;
+    Ref       ref;
+    md_unit_t unit = {};
+    uint32_t  unit_at = 0, unit_len = 0;
+    uint32_t  type_len = 0;             // the type's part of text
+    bool      has_number = false;
+    double    number = 0.0;
 };
+
+// A mark's text with its unit, and its value where it is a number, in the display units (display_units.h). The text
+// as it is when it has no unit, or the display unit is the one it has.
+str_t mark_text(char* buf, size_t cap, const Mark& mark);
 
 // Empty src is not compiled: the program has the sets' names alone, no errors, and is not valid
 Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc);
@@ -285,6 +296,8 @@ struct DrawCtx {
     // v2: an evaluation of prog, for values over the trajectory, and the run, whose frame state->frame is
     const Eval*              eval = nullptr;
     str_t                    run = {};
+    // v2: value_text() prints numbers times this, the factor into the display unit of the value's unit
+    double                   value_scale = 1.0;
 };
 
 void drawing_init(Drawing* d, md_allocator_i* alloc);

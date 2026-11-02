@@ -169,6 +169,12 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         char buf[256];
         const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
         Mark m = {range_of(mk[i].span), (int)mk[i].depth, str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), Ref{x->id, mk[i].expr}};
+        m.unit = h.unit;
+        m.unit_at = h.unit_at;
+        m.unit_len = h.unit_len;
+        m.type_len = (uint32_t)MIN(strlen(h.type), m.text.len);
+        m.has_number = h.has_number;
+        m.number = h.number;
         md_array_push(p->marks, m, alloc);
     }
     const md_vial_output_t* o;
@@ -782,6 +788,7 @@ static md_vial_draw_desc_t draw_desc(const DrawCtx& ctx, int subidx) {
     d.frame = ctx.state ? (int64_t)floor(ctx.state->frame) : 0;
     d.eval = ve(ctx.eval);
     d.element = subidx;
+    d.value_scale = ctx.value_scale;
     return d;
 }
 

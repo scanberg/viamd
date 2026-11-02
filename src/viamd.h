@@ -1780,6 +1780,8 @@ struct ApplicationState {
         bool evaluate = false;     // a new evaluation, to be started
         double time_since_last_change = 0.0;
         size_t   num_compile_markers = 0;   // the editor's markers from compiling; the evaluation's come after them
+        size_t   first_mark_marker = 0;     // where the marks' markers start among them, in the order of script::marks()
+        uint64_t marks_units_version = 0;   // display_units::version() the marks' texts were written in
         uint64_t eval_errors_version = 0;   // of the evaluation's errors marked (script::eval_errors)
         uint64_t ir_fingerprint = 0;
     } script;

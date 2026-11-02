@@ -125,6 +125,8 @@ void markers_set_source(Markers* markers, str_t source);
 // evaluation's, replaced when it finds something else
 size_t markers_count(const Markers* markers);
 void   markers_truncate(Markers* markers, size_t count);
+// Replaces the text of the marker at index, as the display units change
+void   markers_set_text(Markers* markers, size_t index, str_t text);
 
 // Adds a marker for the byte range [beg, end) of the source. text and atoms are copied.
 void markers_add(Markers* markers, MarkerType type, int prio, script::Range range, str_t text,

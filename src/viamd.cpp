@@ -6853,6 +6853,7 @@ struct ScriptVisJob {
     md_system_state_t state = {};
     script::Drawing vis = {};
     str_t value_text = {};          // Ref: what the value is where the atoms were (script::value_text), in the arena
+    double value_scale = 1.0;       // Ref: into the display unit of its unit, as the mark's text shows it
     bool ok = false;
 };
 
@@ -6883,6 +6884,9 @@ static uint64_t vis_target_key(const ApplicationState* state, const ScriptVisTar
     }
     h = md_hash64(&ir_ptr, sizeof(ir_ptr), h);
     h = md_hash64(&fingerprint, sizeof(fingerprint), h);
+    // The value's text is in the display units
+    const uint64_t units = display_units::version();
+    h = md_hash64(&units, sizeof(units), h);
     return h;
 }
 
@@ -6921,6 +6925,17 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
     script::drawing_init(&job->vis, job->arena);
+    if (t.kind == ScriptVisTarget::Ref) {
+        // The value in the unit its mark shows it in
+        const size_t nm = script::num_marks(ir);
+        const script::Mark* mk = script::marks(ir);
+        for (size_t i = 0; i < nm; ++i) {
+            if (mk[i].ref.program == t.ref.program && mk[i].ref.node == t.ref.node && !md_unit_is_none(mk[i].unit)) {
+                job->value_scale = display_units::factor(nullptr, mk[i].unit);
+                break;
+            }
+        }
+    }
 
     const task_system::ID task = task_system::create_pool_task(STR_LIT("##Visualize script"), [job]() {
         script::DrawCtx ctx = {
@@ -6929,6 +6944,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
             .state = &job->state,
             .run   = job->run,
         };
+        ctx.value_scale = job->value_scale;
         const ScriptVisTarget& tgt = job->target;
         job->ok = (tgt.kind == ScriptVisTarget::Ref)
             ? script::draw_ref(&job->vis, tgt.ref, tgt.subidx, ctx, tgt.flags)
