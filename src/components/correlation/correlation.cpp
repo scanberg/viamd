@@ -76,6 +76,8 @@ constexpr size_t MAX_POINTS     = 100000;   // Of a layer of points: samples are
 constexpr size_t MAX_RANKED     = 1000000;  // Of a pair, ranked for its Spearman correlation: samples are skipped beyond
 constexpr int    NUM_BINS       = 256;      // Asked of a distribution: it may give fewer
 constexpr uint32_t NO_FRAME     = UINT32_MAX;   // Of a sample of a distribution: a bin, not a frame
+constexpr int    MAX_LAG        = 1000;     // Frames, either way, of the correlation against the lag
+constexpr double LAG_BUDGET     = 2e7;      // Samples times lags, of a pair: members are skipped beyond
 
 // Colours for new layers, the least used first
 static const vec4_t layer_palette[] = {
@@ -243,6 +245,13 @@ struct Layer {
     uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
 
     uint32_t point_stride = 1;      // Samples skipped to keep the points within MAX_POINTS
+
+    // The correlation of each pair against the lag of Y behind X (update_lag): num_pairs rows of 2 lag_max + 1, from
+    // -lag_max, NaN where there is none
+    std::vector<float> lag_r;
+    int      lag_max = 0;
+    uint64_t lag_key = 0;
+    bool     lag_skipped = false;   // Some members were left out, to keep within LAG_BUDGET
 };
 
 // The shape of a layer's axes
@@ -390,6 +399,10 @@ struct Correlation : viamd::EventHandler {
     // How it is shown
     bool show_sidebar = true;
     bool show_legend = true;
+    bool show_lag = false;          // The correlation against the lag, under the plot
+    int  max_lag = 50;              // Frames, either way
+    float lag_frac = 0.3f;          // Of the height, the lag's plot
+    int  lag_shown = 0;             // The max_lag its axis was fitted to
     ImPlotRect viewrect = ImPlotRect(0, 1, 0, 1);
     bool  fit_view = true;          // To the samples of the layers shown, next frame
     uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
@@ -595,6 +608,9 @@ struct Correlation : viamd::EventHandler {
         md_array_free(l.sframe, heap);
         md_array_free(l.spair, heap);
         md_array_free(l.smember, heap);
+        l.lag_r.clear();
+        l.lag_r.shrink_to_fit();
+        l.lag_key = 0;
     }
 
     void remove_layer(uint32_t id) {
@@ -666,6 +682,9 @@ struct Correlation : viamd::EventHandler {
     void reset_settings() {
         show_sidebar = true;
         show_legend = true;
+        show_lag = false;
+        max_lag = 50;
+        lag_frac = 0.3f;
         viewrect = ImPlotRect(0, 1, 0, 1);
         fit_view = true;
     }
@@ -1173,6 +1192,7 @@ struct Correlation : viamd::EventHandler {
 
         uint64_t h = md_hash64(l.sx, md_array_bytes(l.sx), n);
         h = md_hash64(l.sy, md_array_bytes(l.sy), h);
+        h = md_hash64(l.sframe, md_array_bytes(l.sframe), h);
         l.data_hash = h | 1;
         l.data_valid = true;
         l.data_error = "";
@@ -1211,6 +1231,87 @@ struct Correlation : viamd::EventHandler {
         s.rc_valid = corr_of(&s.rc, corr_kind(cx, cy), x.data(), y.data(), count);
     }
 
+    // Has a correlation against the lag: samples at frames, of more than one
+    bool layer_has_lag(const Layer& l) const {
+        return l.data_valid && !l.binned && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
+    }
+
+    // The correlation of each pair of X at frame f against Y at frame f + lag, pooled over members (paired with
+    // themselves), for lags of up to max_lag frames either way
+    void update_lag(Layer& l) {
+        if (!show_lag || !l.visible || !layer_has_lag(l)) return;
+        const int L = CLAMP(max_lag, 1, MAX_LAG);
+        const uint64_t key = md_hash64(&L, sizeof(L), l.data_hash) | 1;
+        if (key == l.lag_key) return;
+        l.lag_key = key;
+        l.lag_max = L;
+        l.lag_skipped = false;
+        const int nl = 2 * L + 1;
+        l.lag_r.assign((size_t)l.num_pairs * nl, NAN);
+
+        std::vector<uint32_t> ord, seg, ia, ib;
+        std::vector<uint32_t> fr;
+        std::vector<double> xv, yv, a, b;
+        for (int p = 0; p < l.num_pairs; ++p) {
+            const PairStats& s = l.pairs[p];
+            const size_t count = s.end - s.beg;
+            if (count < 3) continue;
+            const SeriesPeriodic& px = l.x_info[pair_x(l, p)].periodic;
+            const SeriesPeriodic& py = l.y_info[pair_y(l, p)].periodic;
+            const CorrKind kind = corr_kind(series_periodic_valid(px), series_periodic_valid(py));
+
+            // The samples of each member together, in the order of their frames (as they were gathered): every
+            // m_step'th member, to keep within the budget
+            const int members = MAX(1, s.members);
+            const int m_step = (int)MIN((double)members, MAX(1.0, ceil((double)count * nl / LAG_BUDGET)));
+            if (m_step > 1) l.lag_skipped = true;
+            seg.assign((size_t)members + 1, 0);
+            for (size_t k = s.beg; k < s.end; ++k) {
+                const int m = l.smember[k];
+                if (m < members && m % m_step == 0) seg[m + 1] += 1;
+            }
+            for (int m = 0; m < members; ++m) seg[m + 1] += seg[m];
+            const size_t total = seg[members];
+            ord.assign(total, 0);
+            {
+                std::vector<uint32_t> at(seg.begin(), seg.end() - 1);
+                for (size_t k = s.beg; k < s.end; ++k) {
+                    const int m = l.smember[k];
+                    if (m < members && m % m_step == 0) ord[at[m]++] = (uint32_t)k;
+                }
+            }
+            fr.resize(total);
+            xv.resize(total);
+            yv.resize(total);
+            for (size_t i = 0; i < total; ++i) {
+                fr[i] = l.sframe[ord[i]];
+                xv[i] = to_corr_value(l.sx[ord[i]], px);
+                yv[i] = to_corr_value(l.sy[ord[i]], py);
+            }
+            ia.resize(total);
+            ib.resize(total);
+            a.resize(total);
+            b.resize(total);
+
+            float* row = l.lag_r.data() + (size_t)p * nl;
+            for (int lag = -L; lag <= L; ++lag) {
+                size_t n = 0;
+                for (int m = 0; m < members; ++m) {
+                    const size_t mb = seg[m], len = seg[m + 1] - seg[m];
+                    if (len == 0) continue;
+                    const size_t c = corr_lag_match(ia.data(), ib.data(), fr.data() + mb, len, lag);
+                    for (size_t k = 0; k < c; ++k) {
+                        a[n] = xv[mb + ia[k]];
+                        b[n] = yv[mb + ib[k]];
+                        ++n;
+                    }
+                }
+                double r = 0;
+                if (corr_of(&r, kind, a.data(), b.data(), n)) row[lag + L] = (float)r;
+            }
+        }
+    }
+
     void update() {
         if (!app || !show_window) return;
         if (tree_dirty) apply_tree();
@@ -1218,6 +1319,7 @@ struct Correlation : viamd::EventHandler {
         for (int i = 0; i < num_layers; ++i) {
             Layer& l = layers[i];
             gather(l);
+            update_lag(l);
             if (!l.visible || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
 
             uint64_t h = md_hash64_combine(l.data_hash, system_generation);
@@ -1250,6 +1352,9 @@ struct Correlation : viamd::EventHandler {
         viamd::write_section_header(state, STR_LIT("Correlation"));
         viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, STR_LIT("ShowLegend"), show_legend);
+        viamd::write_bool(state, STR_LIT("ShowLag"), show_lag);
+        viamd::write_int(state, STR_LIT("MaxLag"), max_lag);
+        viamd::write_flt(state, STR_LIT("LagHeight"), lag_frac);
         // Said even when there are none, so that none stays none (rather than the defaults) once read again
         viamd::write_int(state, STR_LIT("Layers"), num_layers);
         for (int i = 0; i < num_layers; ++i) serialize_layer(state, layers[i]);
@@ -1295,6 +1400,14 @@ struct Correlation : viamd::EventHandler {
                 viamd::extract_bool(show_sidebar, arg);
             } else if (str_eq_cstr(ident, "ShowLegend")) {
                 viamd::extract_bool(show_legend, arg);
+            } else if (str_eq_cstr(ident, "ShowLag")) {
+                viamd::extract_bool(show_lag, arg);
+            } else if (str_eq_cstr(ident, "MaxLag")) {
+                viamd::extract_int(max_lag, arg);
+                max_lag = CLAMP(max_lag, 1, MAX_LAG);
+            } else if (str_eq_cstr(ident, "LagHeight")) {
+                viamd::extract_flt(lag_frac, arg);
+                lag_frac = CLAMP(lag_frac, 0.1f, 0.8f);
             } else if (str_eq_cstr(ident, "Layers")) {
                 layers_declared = true;
             }
@@ -1867,12 +1980,135 @@ struct Correlation : viamd::EventHandler {
         return l;
     }
 
+    // The correlation of each pair against the lag of Y behind X, under the plot: of the layers shown over frames
+    void draw_lag_plot() {
+        constexpr ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
+        if (!ImPlot::BeginPlot("##lag", ImVec2(-1, -1), flags)) {
+            ImPlot::PopStyleColor();
+            return;
+        }
+        const int L = CLAMP(max_lag, 1, MAX_LAG);
+        bool any_circular = false, any_linear = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!l.visible || !layer_has_lag(l)) continue;
+            for (int p = 0; p < l.num_pairs; ++p) (l.pairs[p].circular ? any_circular : any_linear) = true;
+        }
+        ImPlot::SetupAxis(ImAxis_X1, "lag of Y behind X (frames)");
+        ImPlot::SetupAxis(ImAxis_Y1, any_circular && !any_linear ? "circular r" : "r", ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_X1, -L - 0.5, L + 0.5, L != lag_shown ? ImPlotCond_Always : ImPlotCond_Once);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.05, 1.05, ImPlotCond_Always);
+        ImPlot::SetupFinish();
+        lag_shown = L;
+
+        static std::vector<float> xs;
+        xs.resize(2 * L + 1);
+        for (int k = 0; k <= 2 * L; ++k) xs[k] = (float)(k - L);
+
+        // Zero lag, and no correlation
+        const double zero = 0.0;
+        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.25f), 1.0f);
+        ImPlot::PlotInfLines("##zero_lag", &zero, 1);
+        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.25f), 1.0f);
+        ImPlot::PlotInfLines("##zero_r", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+
+        const bool hovered = ImPlot::IsPlotHovered();
+        const int tau = CLAMP((int)lround(ImPlot::GetPlotMousePos().x), -L, L);
+        int curves = 0;
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!l.visible || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            for (int p = 0; p < l.num_pairs; ++p) {
+                const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
+                ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+                c.w = MAX(l.opacity, 0.5f);
+                char id[32];
+                snprintf(id, sizeof(id), "##lag%u_%d", l.id, p);
+                ImPlot::SetNextLineStyle(c, 1.75f);
+                ImPlot::PlotLine(id, xs.data(), row, 2 * L + 1);
+                // Where it is strongest
+                int best = -1;
+                for (int k = 0; k <= 2 * L; ++k) {
+                    if (isfinite(row[k]) && (best < 0 || fabsf(row[k]) > fabsf(row[best]))) best = k;
+                }
+                if (best >= 0) {
+                    snprintf(id, sizeof(id), "##peak%u_%d", l.id, p);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.5f, c, 1.0f, ImVec4(0, 0, 0, 0.8f));
+                    ImPlot::PlotScatter(id, &xs[best], &row[best], 1);
+                }
+                ++curves;
+            }
+        }
+
+        if (curves == 0) {
+            const char* text = "Of layers over the frames of a trajectory, not of distributions";
+            const ImVec2 ts = ImGui::CalcTextSize(text);
+            const ImVec2 pos = ImPlot::GetPlotPos(), size = ImPlot::GetPlotSize();
+            ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
+        } else if (hovered) {
+            const double t = (double)tau;
+            ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.6f), 1.0f);
+            ImPlot::PlotInfLines("##cursor", &t, 1);
+            draw_lag_tooltip(tau, L);
+        }
+
+        ImPlot::EndPlot();
+        ImPlot::PopStyleColor();
+    }
+
+    void draw_lag_tooltip(int tau, int L) const {
+        ImGui::BeginTooltip();
+        const float* xv = app->timeline.x_values;
+        const int64_t nf = (int64_t)md_array_size(xv);
+        char unit[32] = "";
+        md_unit_print(unit, sizeof(unit), app->timeline.time_unit);
+        if (nf >= 2) {
+            const double dt = (xv[nf - 1] - xv[0]) / (double)(nf - 1);
+            ImGui::Text("Y %d frames %s X  (%.4g %s)", abs(tau), tau >= 0 ? "after" : "before", fabs(tau * dt), unit);
+        } else {
+            ImGui::Text("Y %d frames %s X", abs(tau), tau >= 0 ? "after" : "before");
+        }
+        bool skipped = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!l.visible || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            skipped |= l.lag_skipped;
+            for (int p = 0; p < l.num_pairs; ++p) {
+                const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
+                int best = -1;
+                for (int k = 0; k <= 2 * L; ++k) {
+                    if (isfinite(row[k]) && (best < 0 || fabsf(row[k]) > fabsf(row[best]))) best = k;
+                }
+                const ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+                ImGui::ColorButton("##c", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(ImGui::GetTextLineHeight() * 0.7f, ImGui::GetTextLineHeight() * 0.7f));
+                ImGui::SameLine();
+                char name[192];
+                pair_label(name, sizeof(name), l, p);
+                const float r = row[tau + L];
+                if (isfinite(r)) ImGui::Text("%s   %s = %.3f", name, l.pairs[p].circular ? "circular r" : "r", r);
+                else ImGui::Text("%s   -", name);
+                if (best >= 0) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(strongest at %+d: %.3f)", best - L, row[best]);
+                }
+            }
+        }
+        if (skipped) ImGui::TextDisabled("Some members of populations left out: too many samples");
+        ImGui::EndTooltip();
+    }
+
     void draw_toolbar() {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
         if (ImGui::Button(show_sidebar ? ICON_FA_LAYER_GROUP "##layers" : ICON_FA_LAYER_GROUP "##layers_off")) {
             show_sidebar = !show_sidebar;
         }
         ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
+        ImGui::SameLine();
+        if (show_lag) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(ICON_FA_CHART_LINE "##lag")) show_lag = !show_lag;
+        if (show_lag) ImGui::PopStyleColor();
+        ImGui::SetItemTooltip(show_lag ? "Hide the correlation against the lag" : "Show the correlation against the lag: of X at a frame with Y frames later (or earlier)");
 
         // On the right: fitting the view and the settings
         ImGui::SameLine();
@@ -1886,6 +2122,9 @@ struct Correlation : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Legend", &show_legend);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+            ImGui::SliderInt("Lag up to", &max_lag, 1, MAX_LAG, "%d frames", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SetItemTooltip("How far either way the correlation against the lag goes");
             ImGui::Separator();
             ImGui::TextDisabled("Drag series from the timeline onto the X or Y axis of the plot,");
             ImGui::TextDisabled("or onto the lists of the selected layer.");
@@ -2405,9 +2644,23 @@ struct Correlation : viamd::EventHandler {
                 ImGui::EndChild();
                 ImGui::SameLine();
             }
-            ImGui::BeginChild("##plot", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::BeginGroup();
+            const float avail = ImGui::GetContentRegionAvail().y;
+            const float split = 6.0f;
+            const float lag_h = show_lag ? MAX(80.0f, avail * lag_frac) : 0.0f;
+            ImGui::BeginChild("##plot", ImVec2(0, show_lag ? MAX(80.0f, avail - lag_h - split) : 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             draw_plot();
             ImGui::EndChild();
+            if (show_lag) {
+                // Dragged to share the height between the two
+                ImGui::InvisibleButton("##split", ImVec2(-1, split));
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (ImGui::IsItemActive() && avail > 0.0f) lag_frac = CLAMP(lag_frac - ImGui::GetIO().MouseDelta.y / avail, 0.1f, 0.8f);
+                ImGui::BeginChild("##lag", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                draw_lag_plot();
+                ImGui::EndChild();
+            }
+            ImGui::EndGroup();
         }
         ImGui::End();
     }
