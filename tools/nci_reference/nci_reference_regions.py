@@ -7,11 +7,15 @@ are rebinned onto a common (sign(lambda2)rho, s) grid, normalised per system so 
 summed, smoothed lightly as the app does, and contoured at fractions of the pooled mass (the highest-density
 region holding 90 % of the volume: the edge, as in the app) with its 50 % core.
 
-Usage: nci_reference_regions.py OUT_DIR export1-density.csv [export2-density.csv ...]
+With --group REGEX, exports whose file names give the same first capture of REGEX (e.g. one dimer at several
+separations) share one system's weight; names that do not match are systems of their own.
+
+Usage: nci_reference_regions.py [--group REGEX] OUT_DIR export1-density.csv [export2-density.csv ...]
 """
 import csv
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 
@@ -93,18 +97,23 @@ def mass_threshold(field, fraction):
 
 
 def main():
-    if len(sys.argv) < 3:
+    args = sys.argv[1:]
+    group = None
+    if len(args) >= 2 and args[0] == "--group":
+        group = re.compile(args[1])
+        args = args[2:]
+    if len(args) < 2:
         print(__doc__)
         return 1
-    out_dir = sys.argv[1]
-    missing = [p for p in sys.argv[2:] if not os.path.isfile(p)]
+    out_dir = args[0]
+    missing = [p for p in args[1:] if not os.path.isfile(p)]
     if missing:
         print("Not found: " + ", ".join(missing))
         print("Export each system in VIAMD (Export NCI samples...) or run viamd_nci_reference / run_batch.py; both write <name>-density.csv.")
         return 1
     os.makedirs(out_dir, exist_ok=True)
     paths = []
-    for path in sys.argv[2:]:
+    for path in args[1:]:
         found = density_file(path)
         if not found:
             print(f"{path}: not a density export, and no -density.csv companion was found")
@@ -113,14 +122,18 @@ def main():
             print(f"{path}: using its density companion {found}")
         if found not in paths:
             paths.append(found)
-    pooled = {c: np.zeros((BINS, BINS)) for c in CATEGORIES}
-    systems = {c: 0 for c in CATEGORIES}
+    # {category: {group: [normalised fields]}}; each group weighs one system, split evenly among its exports
+    groups = {c: defaultdict(list) for c in CATEGORIES}
     for path in paths:
+        name = os.path.basename(path)
+        match = group.search(name) if group else None
+        key = match.group(1) if match else name
         for category, field in load(path).items():
-            if category not in pooled or field.sum() <= 0:
+            if category not in groups or field.sum() <= 0:
                 continue
-            pooled[category] += field / field.sum()
-            systems[category] += 1
+            groups[category][key].append(field / field.sum())
+    pooled = {c: sum((sum(f) / len(f) for f in groups[c].values()), np.zeros((BINS, BINS))) for c in CATEGORIES}
+    systems = {c: len(groups[c]) for c in CATEGORIES}
     if not any(systems.values()):
         print("No category reference rows found: export with CP categories shown in the layer.")
         return 1

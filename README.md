@@ -197,9 +197,11 @@ job cancellation.
 NCI follows VIAMD's layer controls: its compact list and inspector sit below the
 interactive scatter plot. **Full system** and **Preview** are listed first;
 saved layers follow below a separator line. Selecting any number of CPs updates
-the Preview, and **+** saves it as one layer, whatever CP types it holds. Each
+the Preview, and **+** saves it as one layer, whatever CP types it holds. A new
+layer is named by the CP families it holds ("Hydrogen bonds", "Hydrogen bonds +
+π-stacking", "Aromatic rings + 2 more"), numbered if the name is taken. Each
 row shows its CP types with their CP counts (for example "Hydrogen bonds 2,
-π-stacking 1"). Clicking a row shows that layer in the viewport and hides the
+π interactions 1"). Clicking a row shows that layer in the viewport and hides the
 others (one at a time); clicking the shown row again hides it. The eye only
 shows or hides the layer in the scatter plot, any number of them. A new CP selection shows the Preview; clearing
 it returns to the Full system unless a saved layer is shown. Saved layers can be
@@ -231,19 +233,19 @@ CP-adaptive mode a compact per-type radius table.
 
 The NCI types come from the CP classification: a contact CP's type is its
 branch under Contacts in the CP tree. Hydrogen bonds and halogen bonds are their
-own types; π···π, C-H···π and X-H···π are all π-stacking, so every π contact
+own types; π···π, C-H···π and X-H···π are all π interactions, so every π contact
 shares one radius; C-H···X, H···H and other contacts are other contacts. Rings
 and cages keep their own types. The settings table lists the CP types. Bond, bond-path and attractor CPs
 anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
 the same interaction region automatically share parameters. For example, a ring
-closed by π···π uses the π-stacking parameters, so one region is cut at one
+closed by π···π uses the π-interaction parameters, so one region is cut at one
 radius. Calibrated type radii are:
 
 | Family | Radius (Bohr) |
 |--------|---------------|
 | Hydrogen bonds | 1.7 |
 | Rings | 2.0 |
-| Pi-stacking (all π contacts) | 3.7 |
+| π interactions (π···π, C-H···π, X-H···π) | 3.7 |
 | Cages | 2.0 |
 | Halogen bonds | 2.2 (provisional, uncalibrated) |
 
@@ -270,13 +272,13 @@ distribution.
 The **NCI scatter** plots reduced density gradient s against sign(λ2)ρ. A
 full-system context cloud is computed while NCI is enabled and the Critical
 Points window is open, even with the CP search disabled. The shown layer's
-samples are plotted per interaction (a ring closed by π···π counts as
-π-stacking), and hovering a point identifies it. The legend is a centred row of
+samples are plotted per interaction (a ring closed by π···π counts as a
+π interaction), and hovering a point identifies it. The legend is a centred row of
 chips under the plot. Click a point or an interaction's name to make it the
 active one for the guides: the isovalue and colour-range lines.
 Dragging the isovalue line edits the isovalue of every layer; the line is in
 the layer's colour. Each interaction always has the same colour (hydrogen
-bonds blue, π-stacking red, rings green, halogen bonds purple, other contacts
+bonds blue, π interactions red, rings green, halogen bonds purple, other contacts
 orange, cages brown); layer colours are chosen apart from those. Outlines
 indicate a mass level of a smoothed sample density, not a physical region
 boundary.
@@ -287,9 +289,13 @@ name and a line of detail; clicking a row selects it, and its properties are
 set in the inspector below the list. The **Full system** is the CP reference:
 like any layer, it can stay drawn under the shown layer. A **Reference** row
 above the layers shows the built-in reference map, independent of the loaded
-system: per CP category (hydrogen bonds, rings, π-stacking, other), the pooled
+system: per CP category (hydrogen bonds, rings, π interactions, other), the pooled
 (sign(λ2)ρ, s) density of reference extractions (s ≤ 1.0, ρ ≤ 0.05, the
-category's radius) over many VeloxChem calculations, each weighing the same.
+category's radius) over VeloxChem calculations, each system weighing the same:
+the S66 dimers at their eight S66x8 separations (B3LYP-D4/def2-SVP; each dimer
+weighs one system) and 49 larger test calculations (proteins, G-quadruplex,
+cages, helicenes, etc.), which add the strained intramolecular contacts small
+dimers lack.
 Its inspector sets the style (**Dominant**, default: per point the densest
 category, more opaque at each deeper level; **Combined**: the categories'
 colours mixed where they overlap, more opaque towards each core; switching
@@ -299,7 +305,10 @@ each category's volume; drag a level, right-click to remove it, + to add one).
 Each layer row reports the share of its category samples inside their
 category's 90 % area, whatever levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
-`bake_reference.py`); other wave functions may shift it.
+`nci_reference_regions.py`, whose `--group` makes several exports share one
+system's weight, then `bake_reference.py`); `validate_regions.py` reports how
+much of a test set's volume falls inside a map. Other wave functions may shift
+it.
 
 A layer's inspector sets its name (saved layers), style (**Contours**: the
 outline of all its samples together at each level, optionally filled, stacked
