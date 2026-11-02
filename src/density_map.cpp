@@ -139,6 +139,10 @@ static void boxes_for_gauss(int* half_w, int n, float sigma) {
 }
 
 void density_map_blur(float* data, int dim, float sigma, bool periodic) {
+    density_map_blur_axes(data, dim, sigma, periodic, periodic);
+}
+
+void density_map_blur_axes(float* data, int dim, float sigma, bool periodic_x, bool periodic_y) {
     STATIC_ASSERT(DENSITY_MAP_CHANNELS == 4, "the blur works on vec4_t");
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
     md_temp_scope_t temp = md_temp_begin();
@@ -148,7 +152,9 @@ void density_map_blur(float* data, int dim, float sigma, bool periodic) {
 
     int r[3];
     boxes_for_gauss(r, 3, sigma);
+    // Along the rows (x), then along the columns (y), each transposed into rows
     for (int pass = 0; pass < 2; ++pass) {
+        const bool periodic = pass == 0 ? periodic_x : periodic_y;
         blur_rows(tmp, grid, dim, r[0], periodic);
         blur_rows(grid, tmp, dim, r[1], periodic);
         blur_rows(tmp, grid, dim, r[2], periodic);
@@ -296,7 +302,7 @@ static void job_finalize(DensityMapJob* job) {
     }
 
     if (job->cancel.load()) return;
-    density_map_blur(d, DENSITY_MAP_DIM, job->sigma_texels, job->domain.periodic);
+    density_map_blur_axes(d, DENSITY_MAP_DIM, job->sigma_texels, density_map_wraps_x(job->domain), density_map_wraps_y(job->domain));
     if (job->cancel.load()) return;
 
     // Of what is within the triangle only, if there is one: outside it are the images
@@ -328,7 +334,7 @@ DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, f
     md_allocator_i* heap = md_get_heap_allocator();
     DensityMapJob* job = new DensityMapJob();
     job->domain = domain;
-    job->domain.triangle = domain.triangle && !domain.periodic;
+    job->domain.triangle = domain.triangle && !density_map_wraps_x(domain) && !density_map_wraps_y(domain);
     job->sigma = sigma;
     job->sigma_texels = MAX(0.25f, sigma * DENSITY_MAP_DIM / MAX(1e-12f, domain.x_max - domain.x_min));
     job->source = std::move(source);
@@ -369,15 +375,14 @@ void density_map_cancel(DensityMapJob* job, bool wait) {
 
 // ## GL
 
-uint32_t density_map_texture_create(bool periodic) {
+uint32_t density_map_texture_create(bool periodic_x, bool periodic_y) {
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    const GLint wrap = periodic ? GL_REPEAT : GL_CLAMP_TO_BORDER;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, periodic_x ? GL_REPEAT : GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, periodic_y ? GL_REPEAT : GL_CLAMP_TO_BORDER);
     const float border[4] = { 0, 0, 0, 0 };
     glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, DENSITY_MAP_DIM, DENSITY_MAP_DIM);

@@ -13,12 +13,17 @@
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
 // Their Pearson correlation, and the least squares line through them, are found pair by pair, and their Spearman rank
-// correlation (of an evenly spaced subsample past a million). A periodic series (an angle) is cut at its seam, and its
-// correlation is the circular one: Jammalamadaka-SenGupta's against another angle, Mardia's (unsigned) against a linear
-// value. Distributions (script properties over the frames) are correlated with each other bin by bin, over their common
-// range, of the layer's frames. Their density is
-// estimated off the main thread (density_map.h), over a bounded domain of their own extent, smoothed with a gaussian of
-// a fraction of it.
+// correlation (of an evenly spaced subsample past a million). The correlation of a periodic series (an angle) is the
+// circular one: Jammalamadaka-SenGupta's against another angle, Mardia's (unsigned) against a linear value. Along an axis
+// whose series, in every layer shown, are periodic of one period, the axis is periodic: it pans around the circle, cut
+// where the user likes (its menu), as the other plots of such values are (plot_periodic.h). Otherwise periodic values
+// are cut at their seam. Distributions (script properties over the frames) are correlated with each other bin by bin,
+// over their common range, of the layer's frames. The density of the samples is estimated off the main thread
+// (density_map.h), over a bounded domain of their own extent (a period along a periodic axis, around which it wraps),
+// smoothed with a gaussian of a fraction of it.
+//
+// Under the plot, the LAG view: the correlation of each pair of Y at frame f + lag against X at frame f, for lags up to a
+// bound either way, over the layer's frames (members pooled; a few of them only past a budget of samples).
 //
 //   drag a series          from the timeline or the distributions onto an axis of the plot (or a list of the
 //                          inspector): it is added to the selected layer
@@ -47,7 +52,7 @@
 #include <density_map.h>
 #include <layer_groups.h>
 #include <plot_series.h>
-#include <plot_periodic_core.h>
+#include <plot_periodic.h>
 
 #include "correlation_core.h"
 
@@ -241,6 +246,7 @@ struct Layer {
     bool     has_result = false;
     uint64_t shown_hash = 0;        // Of the inputs of the density in tex
     uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none
+    uint8_t  tex_wrap = 0;          // Along which axes tex wraps around: 1 x, 2 y
     DensityMapJob* job = nullptr;   // Under way
     uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
 
@@ -404,6 +410,10 @@ struct Correlation : viamd::EventHandler {
     float lag_frac = 0.3f;          // Of the height, the lag's plot
     int  lag_shown = 0;             // The max_lag its axis was fitted to
     ImPlotRect viewrect = ImPlotRect(0, 1, 0, 1);
+    // An axis of periodic values, when those of every layer shown on it are of one period (update_axis_views): it turns
+    // around the circle, linked to every other plot of them (plot_periodic.h). NULL for an axis of its own (viewrect).
+    PeriodicView* axis_view[2] = {};
+    uint64_t axes_key = 0;          // Of what the axes are: the densities are over a periodic domain along those that are
     bool  fit_view = true;          // To the samples of the layers shown, next frame
     uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
 
@@ -804,7 +814,7 @@ struct Correlation : viamd::EventHandler {
     }
 
     // The domain of a layer's density: its samples' extent, with room for the smoothing around them
-    static DensityMapDomain layer_domain(const Layer& l) {
+    DensityMapDomain layer_domain(const Layer& l) const {
         DensityMapDomain d = {};
         d.periodic = false;
         const float bw = l.bandwidth * 0.01f;
@@ -817,6 +827,17 @@ struct Correlation : viamd::EventHandler {
         };
         range(l.x_min, l.x_max, &d.x_min, &d.x_max);
         range(l.y_min, l.y_max, &d.y_min, &d.y_max);
+        // Along a periodic axis, around the circle: a period from where the values are given
+        if (const PeriodicView* v = axis_view[0]) {
+            d.periodic_x = true;
+            d.x_min = (float)v->period.beg;
+            d.x_max = (float)(v->period.beg + periodic_view_length(*v));
+        }
+        if (const PeriodicView* v = axis_view[1]) {
+            d.periodic_y = true;
+            d.y_min = (float)v->period.beg;
+            d.y_max = (float)(v->period.beg + periodic_view_length(*v));
+        }
         return d;
     }
 
@@ -831,7 +852,8 @@ struct Correlation : viamd::EventHandler {
         in->x.assign(l.sx, l.sx + n);
         in->y.assign(l.sy, l.sy + n);
         const DensityMapDomain domain = layer_domain(l);
-        const float sigma = (l.x_max > l.x_min ? l.x_max - l.x_min : (domain.x_max - domain.x_min) * 0.5f) * l.bandwidth * 0.01f;
+        const float x_extent = domain.periodic_x ? domain.x_max - domain.x_min : l.x_max > l.x_min ? l.x_max - l.x_min : (domain.x_max - domain.x_min) * 0.5f;
+        const float sigma = x_extent * l.bandwidth * 0.01f;
         const uint32_t num_chunks = (uint32_t)MIN((uint64_t)8, MAX((uint64_t)1, (uint64_t)(n >> 18)));
 
         auto source = [in](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
@@ -854,7 +876,10 @@ struct Correlation : viamd::EventHandler {
                 layer->want_hash = 0;
                 return;
             }
-            if (!layer->tex) layer->tex = density_map_texture_create(false);
+            const uint8_t wrap = (uint8_t)((domain.periodic_x ? 1 : 0) | (domain.periodic_y ? 2 : 0));
+            if (layer->tex && layer->tex_wrap != wrap) density_map_texture_free(&layer->tex);
+            if (!layer->tex) layer->tex = density_map_texture_create(domain.periodic_x, domain.periodic_y);
+            layer->tex_wrap = wrap;
             density_map_texture_upload(layer->tex, grid);
             layer->result = *result;
             layer->result_domain = domain;
@@ -1312,18 +1337,49 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
+    // Which axes are periodic: those along which every layer shown has values of one period, in one unit
+    void update_axis_views() {
+        uint64_t key = 0;
+        for (int a = 0; a < 2; ++a) {
+            const SlotInfo* first = nullptr;
+            bool ok = true;
+            for (int i = 0; i < num_layers && ok; ++i) {
+                const Layer& l = layers[i];
+                if (!l.visible || !l.data_valid) continue;
+                const int n = a == 0 ? l.num_x : l.num_y;
+                const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
+                for (int k = 0; k < n && ok; ++k) {
+                    if (info[k].binned || !series_periodic_valid(info[k].periodic)) ok = false;
+                    else if (!first) first = &info[k];
+                    else if (!series_periodic_equal(info[k].periodic, first->periodic) || strcmp(info[k].unit, first->unit) != 0) ok = false;
+                }
+            }
+            axis_view[a] = ok && first ? periodic_view(first->periodic, first->unit) : nullptr;
+            if (axis_view[a]) {
+                const double p[2] = { axis_view[a]->period.beg, axis_view[a]->period.end };
+                key = md_hash64(p, sizeof(p), key ^ (uint64_t)(a + 1));
+            }
+        }
+        axes_key = key;
+    }
+
     void update() {
         if (!app || !show_window) return;
         if (tree_dirty) apply_tree();
 
         for (int i = 0; i < num_layers; ++i) {
+            gather(layers[i]);
+            update_lag(layers[i]);
+        }
+        update_axis_views();
+
+        for (int i = 0; i < num_layers; ++i) {
             Layer& l = layers[i];
-            gather(l);
-            update_lag(l);
             if (!l.visible || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
 
             uint64_t h = md_hash64_combine(l.data_hash, system_generation);
             h = md_hash64(&l.bandwidth, sizeof(l.bandwidth), h);
+            h = md_hash64_combine(h, axes_key);
             h |= 1;
             if (h == l.shown_hash || h == l.want_hash) continue;
             // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
@@ -1694,6 +1750,35 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
+    // Where a point is on the plot: along a periodic axis, on the turn of the circle the axis shows
+    ImVec2 point_px(double x, double y) const {
+        if (const PeriodicView* v = axis_view[0]) x = periodic_wrap(x, v->min, periodic_view_length(*v));
+        if (const PeriodicView* v = axis_view[1]) y = periodic_wrap(y, v->min, periodic_view_length(*v));
+        return ImPlot::PlotToPixels(x, y);
+    }
+
+    // Cuts the circle of axis a where the points of the layers shown are least populated
+    void cut_least_populated(int a) {
+        PeriodicView* v = axis_view[a];
+        if (!v) return;
+        const int nb = 360;
+        float density[nb] = {};
+        const double beg = v->period.beg, len = periodic_view_length(*v);
+        bool any = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!l.visible || !l.data_valid) continue;
+            const float* s = a == 0 ? l.sx : l.sy;
+            const size_t n = md_array_size(a == 0 ? l.sx : l.sy);
+            for (size_t k = 0; k < n; ++k) {
+                const double t = (periodic_wrap(s[k], beg, len) - beg) / len;
+                density[CLAMP((int)(t * nb), 0, nb - 1)] += 1.0f;
+                any = true;
+            }
+        }
+        if (any) periodic_view_cut_least_populated(v, density, nb);
+    }
+
     // The points of the visible layers: hovered, then drawn; with the lines fitted through them
     void draw_points(bool hovered) {
         const ImVec2 mouse = ImGui::GetMousePos();
@@ -1708,7 +1793,7 @@ struct Correlation : viamd::EventHandler {
                 const float r2 = r * r;
                 const size_t n = md_array_size(l.sx);
                 for (size_t k = 0; k < n; k += l.point_stride) {
-                    const ImVec2 p = ImPlot::PlotToPixels(l.sx[k], l.sy[k]);
+                    const ImVec2 p = point_px(l.sx[k], l.sy[k]);
                     const float dx = p.x - mouse.x;
                     const float dy = p.y - mouse.y;
                     const float d2 = dx * dx + dy * dy;
@@ -1733,7 +1818,7 @@ struct Correlation : viamd::EventHandler {
             for (size_t k = 0; k < n; k += l.point_stride) {
                 ImVec4 c = point_color(l, k);
                 c.w *= l.opacity;
-                const ImVec2 p = ImPlot::PlotToPixels(l.sx[k], l.sy[k]);
+                const ImVec2 p = point_px(l.sx[k], l.sy[k]);
                 if (many) density_map_mark(dl, p, r, DensityMapMark_Square, ImGui::ColorConvertFloat4ToU32(c));
                 else density_map_mark(dl, p, r + 1.0f, DensityMapMark_Disc, ImGui::ColorConvertFloat4ToU32(c));
             }
@@ -1747,13 +1832,13 @@ struct Correlation : viamd::EventHandler {
             const size_t n = md_array_size(l.sx);
             for (size_t k = 0; k < n; ++k) {
                 if (l.sframe[k] != frame_cur) continue;
-                density_map_mark(dl, ImPlot::PlotToPixels(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220));
+                density_map_mark(dl, point_px(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220));
             }
         }
         if (hover.layer >= 0) {
             const Layer& l = layers[hover.layer];
             const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
-            density_map_mark(dl, ImPlot::PlotToPixels(l.sx[hover.idx], l.sy[hover.idx]), r + 1.0f, DensityMapMark_Ring, ring);
+            density_map_mark(dl, point_px(l.sx[hover.idx], l.sy[hover.idx]), r + 1.0f, DensityMapMark_Ring, ring);
         }
         density_map_marks_end(dl);
 
@@ -1820,7 +1905,9 @@ struct Correlation : viamd::EventHandler {
         };
         pad(&x0, &x1);
         pad(&y0, &y1);
-        viewrect = ImPlotRect(x0, x1, y0, y1);
+        // A periodic axis shows a turn of the circle, wherever it is cut: there is nothing to fit
+        if (!axis_view[0]) viewrect.X = ImPlotRange(x0, x1);
+        if (!axis_view[1]) viewrect.Y = ImPlotRange(y0, y1);
         fit_view = false;
     }
 
@@ -1920,10 +2007,19 @@ struct Correlation : viamd::EventHandler {
             axis_label(xl, sizeof(xl), *al, 0);
             axis_label(yl, sizeof(yl), *al, 1);
         }
-        ImPlot::SetupAxes(xl, yl, 0, 0);
-        ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
-        ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
+        if (axis_view[0]) periodic_axis_setup(ImAxis_X1, xl, axis_view[0], 0);
+        else {
+            ImPlot::SetupAxis(ImAxis_X1, xl);
+            ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
+        }
+        if (axis_view[1]) periodic_axis_setup(ImAxis_Y1, yl, axis_view[1], 0);
+        else {
+            ImPlot::SetupAxis(ImAxis_Y1, yl);
+            ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
+        }
         ImPlot::SetupFinish();
+        if (axis_view[0] && periodic_axis_popup(ImAxis_X1, axis_view[0])) cut_least_populated(0);
+        if (axis_view[1] && periodic_axis_popup(ImAxis_Y1, axis_view[1])) cut_least_populated(1);
 
         const ImVec2 pos = ImPlot::GetPlotPos();
         const ImVec2 psize = ImPlot::GetPlotSize();
@@ -2467,7 +2563,7 @@ struct Correlation : viamd::EventHandler {
             bool periodic = false;
             for (int i = 0; i < l.num_x; ++i) periodic |= series_periodic_valid(l.x_info[i].periodic);
             for (int i = 0; i < l.num_y; ++i) periodic |= series_periodic_valid(l.y_info[i].periodic);
-            if (periodic) prop::hint("Periodic values are cut at their seam; their correlation is the circular one");
+            if (periodic) prop::hint("Periodic values: their correlation is the circular one. An axis of one period throughout pans around the circle (right-click it to cut it elsewhere); otherwise they are cut at their seam");
         }
 
         prop::row("frames");

@@ -57,7 +57,14 @@ struct DensityMapDomain {
     // with room around it for the reflections, some 4 sigma, or what they would put there is lost
     bool  triangle = false;
     float tri[6] = {};
+    // Periodic along one axis only (an angle against a linear value): what leaves across it comes in at the other side,
+    // and the other is bounded. periodic is both.
+    bool  periodic_x = false;
+    bool  periodic_y = false;
 };
+
+static inline bool density_map_wraps_x(const DensityMapDomain& d) { return d.periodic || d.periodic_x; }
+static inline bool density_map_wraps_y(const DensityMapDomain& d) { return d.periodic || d.periodic_y; }
 
 // The grid of a chunk of a job, that its samples are added to (on the task pool)
 struct DensityMapBins {
@@ -83,12 +90,10 @@ struct DensityMapBins {
     inline bool put(int c, float x, float y) {
         int ix = (int)floorf((x - domain.x_min) * scale_x);
         int iy = (int)floorf((y - domain.y_min) * scale_y);
-        if (domain.periodic) {
-            ix &= DENSITY_MAP_DIM - 1;
-            iy &= DENSITY_MAP_DIM - 1;
-        } else if (ix < 0 || iy < 0 || ix >= DENSITY_MAP_DIM || iy >= DENSITY_MAP_DIM) {
-            return false;
-        }
+        if (density_map_wraps_x(domain)) ix &= DENSITY_MAP_DIM - 1;
+        else if (ix < 0 || ix >= DENSITY_MAP_DIM) return false;
+        if (density_map_wraps_y(domain)) iy &= DENSITY_MAP_DIM - 1;
+        else if (iy < 0 || iy >= DENSITY_MAP_DIM) return false;
         data[DENSITY_MAP_CHANNELS * (iy * DENSITY_MAP_DIM + ix) + c] += 1.0f;
         return true;
     }
@@ -139,11 +144,14 @@ void density_map_triangle_mask(uint8_t* mask, const DensityMapDomain& domain);
 
 // A gaussian blur of a dim x dim grid of DENSITY_MAP_CHANNELS, in place: periodic, or with nothing outside it
 void density_map_blur(float* data, int dim, float sigma_texels, bool periodic);
+// The same, periodic along x (the rows) and y apart
+void density_map_blur_axes(float* data, int dim, float sigma_texels, bool periodic_x, bool periodic_y);
 
 // ## GL
 
 // A texture for the grid of a job: wrapped where the domain is periodic, nothing (zero) outside it where it is bounded
-uint32_t density_map_texture_create(bool periodic);
+uint32_t density_map_texture_create(bool periodic_x, bool periodic_y);
+static inline uint32_t density_map_texture_create(bool periodic) { return density_map_texture_create(periodic, periodic); }
 void     density_map_texture_upload(uint32_t tex, const float* grid);
 void     density_map_texture_free(uint32_t* tex);
 
