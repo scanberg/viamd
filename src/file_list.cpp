@@ -12,6 +12,16 @@ FileRole file_role(LoaderFlags flags) {
     return FileRole_None;
 }
 
+FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state) {
+    FileEntry e = {};
+    str_copy_to_char_buf(e.path, sizeof(e.path), path);
+    e.type = load_state.type;
+    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
+    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
+    str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), str_from_cstr(load_state.coordinates));
+    return e;
+}
+
 void file_list_free(FileList* list, md_allocator_i* alloc) {
     ASSERT(list);
     md_array_free(list->entries, alloc);
@@ -40,7 +50,7 @@ FileRole file_list_role(const FileList* list, size_t i) {
 }
 
 static bool same_file(const FileEntry& a, const FileEntry& b) {
-    return a.type == b.type && strcmp(a.path, b.path) == 0 && strcmp(a.arg, b.arg) == 0;
+    return a.type == b.type && strcmp(a.path, b.path) == 0 && strcmp(a.arg, b.arg) == 0 && strcmp(a.coordinates, b.coordinates) == 0;
 }
 
 bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocator_i* alloc) {
@@ -128,6 +138,11 @@ static void write_input(viamd::serialization_state_t& state, const FileEntry& e,
     }
     if (e.arg[0] != '\0') {
         viamd::write_str(state, STR_LIT("Argument"), str_from_cstr(e.arg));
+    }
+    if (e.coordinates[0] != '\0') {
+        const str_t coords = str_from_cstr(e.coordinates);
+        str_t rel_coords = md_path_make_relative(state.filename, coords, alloc);
+        viamd::write_str(state, STR_LIT("Coordinates"), str_empty(rel_coords) ? coords : rel_coords);
     }
 }
 
@@ -306,6 +321,8 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
                 }
             } else if (str_eq_cstr(ident, "Argument")) {
                 viamd::extract_to_char_buf(in.entry.arg, sizeof(in.entry.arg), arg);
+            } else if (str_eq_cstr(ident, "Coordinates")) {
+                resolve_path(in.entry.coordinates, sizeof(in.entry.coordinates), folder, arg);
             }
         }
         if (has_path) {

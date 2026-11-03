@@ -182,6 +182,8 @@ set(SRC_FILES
     src/surface_field.cpp
     src/event.cpp
     src/file_list.cpp
+    src/load_order.h
+    src/load_order.cpp
     src/filter_input.cpp
     src/image.cpp
     src/imgui_widgets.cpp

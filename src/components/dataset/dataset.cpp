@@ -1045,10 +1045,10 @@ struct Dataset : viamd::EventHandler {
 
     static const char* file_role_label(const FileEntry& e, FileRole role) {
         switch (role) {
-        case FileRole_System:     return "Structure";
+        case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
         case FileRole_Trajectory: return "Trajectory";
-        case FileRole_Supplement: return e.type == LoaderType_ITP ? "Topology" : "Supplement";
-        case FileRole_Series:     return e.type == LoaderType_EDR ? "Energies" : "Series";
+        case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" : "Supplement";
+        case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
         default:                  return "";
         }
     }
@@ -1084,9 +1084,17 @@ struct Dataset : viamd::EventHandler {
                 char* d = row.details;
                 const size_t cap = sizeof(row.details);
                 switch (role) {
-                case FileRole_System:
-                    snprintf(d, cap, "%zu atoms%s", data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "");
+                case FileRole_System: {
+                    // A topology names the file its coordinates came from
+                    str_t coords = {};
+                    if (e.coordinates[0]) {
+                        coords = str_from_cstr(e.coordinates);
+                        extract_file(&coords, coords);
+                    }
+                    snprintf(d, cap, "%zu atoms%s%s" STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
+                        coords.len ? ", coordinates of " : "", STR_ARG(coords));
                     break;
+                }
                 case FileRole_Trajectory: {
                     const size_t num_frames = run_num_frames(&data);
                     const double* times = run_frame_times(&data);

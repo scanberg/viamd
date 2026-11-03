@@ -1729,15 +1729,6 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-// The entry a loaded file takes in files.list
-static FileEntry file_entry(str_t path, const loader::LoaderState& load_state) {
-    FileEntry e = {};
-    str_copy_to_char_buf(e.path, sizeof(e.path), path);
-    e.type = load_state.type;
-    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
-    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
-    return e;
-}
 
 // Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
 // False when the file holds no frames to make a run of, which is not an error for a structure file.
@@ -1753,16 +1744,28 @@ static bool open_run(ApplicationState* state, str_t path, const loader::LoaderSt
     if (num_frames == 0) {
         return false;
     }
-    file_list_record(&state->files.list, file_entry(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    file_list_record(&state->files.list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(state->files.list.runs)->frame_count = num_frames;
     return true;
 }
 
+// ## A topology and its coordinates, in either order (load_order.h): what loading is, for it
+
+static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
+    return load_data((ApplicationState*)user, path, ls, role, opens_own_run);
+}
+static size_t ops_system_atoms(void* user) { return ((ApplicationState*)user)->mold.sys.atom.count; }
+static size_t ops_run_frames(void* user) { return run_num_frames((ApplicationState*)user); }
+static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->files.list; }
+
 LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
-    // On its own the role follows from the loader flags, and a structure file opens its own frames as the run:
-    // a multi model PDB or an XYZ trajectory is a system and a run in one file
-    const FileRole role = file_role(load_state.flags);
-    return load_data(state, filepath, load_state, role, role == FileRole_System);
+    LoadOps ops = {};
+    ops.user = state;
+    ops.load = ops_load;
+    ops.system_atoms = ops_system_atoms;
+    ops.run_frames = ops_run_frames;
+    ops.files = ops_files;
+    return load_in_order(&state->files.pending, ops, filepath, load_state);
 }
 
 LoadResult load_data(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
@@ -1805,7 +1808,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                     VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
@@ -1813,6 +1816,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                 state->script.compile_ir = true;
                 if (role == FileRole_Series) {
                     const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
+                                       (load_state.type == LoaderType_AMBER_ENERGY) ? "amber_energy/<term>" :
                                        (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
                     VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; plot it from System > Series, or read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
                 } else {
@@ -1821,6 +1825,10 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
+        } else if (role == FileRole_System && (load_state.flags & LoaderFlag_NeedsCoordinates) && !(load_state.coordinates && load_state.coordinates[0])) {
+            state->files.pending.topology = file_entry_from(path_to_file, load_state);
+            VIAMD_LOG_INFO("'" STR_FMT "' is a topology without coordinates; it waits for a restart, a structure file or a trajectory of its atoms", STR_ARG(path_to_file));
+            return LoadResult_Pending;
         } else if (role == FileRole_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
@@ -1838,7 +1846,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+            file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
             state->files.list.atom_count = state->mold.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
@@ -2463,10 +2471,15 @@ void load_workspace(ApplicationState* data, str_t filename) {
         if (in.entry.arg[0] != '\0') {
             loader_state.arg = in.entry.arg;
         }
+        if (in.entry.coordinates[0] != '\0') {
+            loader_state.coordinates = in.entry.coordinates;
+        }
 
         LoadResult result = LoadResult_Failed;
         if (!md_path_is_valid(path)) {
             VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
+        } else if (in.entry.coordinates[0] != '\0' && !md_path_is_valid(str_from_cstr(in.entry.coordinates))) {
+            VIAMD_LOG_ERROR("Workspace: the coordinates '%s' of '%s' are not there", in.entry.coordinates, in.entry.path);
         } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
             // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
             VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
@@ -6359,10 +6372,15 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
     int prio = 5;
 
 
-    str_t ext;
-    if (extract_ext(&ext, path)) {
-        LoaderType type = loader::type_from_ext(ext);
-        LoaderFlags loader_flags = loader::type_flags(type);
+    str_t ext = {};
+    extract_ext(&ext, path);
+    loader::LoaderState detected = {};
+    if (!str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
+        // By the contents where the extension does not tell (Amber's mdout, prmtop and inpcrd have none)
+        loader::init(&detected, path, nullptr);
+    }
+    if (str_eq(ext, WORKSPACE_FILE_EXTENSION) || detected.type != LoaderType_Undefined) {
+        LoaderFlags loader_flags = detected.flags;
         if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
@@ -6370,8 +6388,9 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
         } else if (loader_flags & LoaderFlag_Temporal) {
             // Joins the trajectory's run, so it goes after the trajectory when both are dropped
             prio = 4;
-        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
-            // A supplemental file (a topology) needs the system in place, same as a trajectory
+        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental | LoaderFlag_Coordinates)) {
+            // A supplemental file (a topology) needs the system in place, same as a trajectory; coordinates are
+            // for a topology, which is a system file
             prio = 3;
         } else {
             flags |= FileFlags_ShowDialogue;
