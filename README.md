@@ -45,13 +45,18 @@ A series of videos is available on [youtube](https://youtube.com/playlist?list=P
 ### Critical-point density distributions
 The critical-point search is enabled by default; uncheck Enabled to stop it.
 The Critical Points window has independent CP and NCI columns. The CP column
-contains the density distributions, chemical-environment table, point list and
-selected-point details. Chemical analysis and NCI can each be disabled
+contains the density distributions, chemical-environment table and point list.
+The four CP category toggles sit above the plots. Compact hover tooltips on CP
+and environment rows replace the selected-point Details pane.
+Chemical analysis and NCI can each be disabled
 independently. The NCI scatter plot and its layer panel share the Critical Points
 window; the layer list and selected-layer inspector are below the plot.
 Disabling NCI stops its computations and hides surfaces without deleting saved
-layers or changing their settings. CP settings/export and distribution filters
-open from compact buttons. Scatter hover details show the source layer/family,
+layers or changing their settings. Each column has one settings button beside
+Enable. CP settings group Search, Appearance, Distributions / filters and Export;
+NCI settings group Surface, Scatter / extraction and Display. Layer-specific
+controls and reference interaction guides remain in their inspectors.
+Scatter hover details show the source layer/family,
 signed density, s and click hints. Drag the splitters and column borders to
 resize the panels. Extra table columns are
 hidden by default and can be enabled through the header context menu. Existing
@@ -178,8 +183,8 @@ The Distribution variable selector exposes **Regional Pauli (experimental)**
 and **Regional Pauli / TF (experimental)**, with the usual per-variable filters
 and distribution/peak colouring. Both tables offer optional columns, hidden
 by default (right-click a table header to enable them), marked with an asterisk
-for experimental descriptors. Details show the regional values and sample
-count, or the reason they are unavailable. CSV exports include both values;
+for experimental descriptors. Column tooltips show the reason regional values
+are unavailable. CSV exports include both values;
 the CP export also records valid samples and status. Environment and parent
 means give each CP with a valid regional measurement equal weight, rather than
 pooling the samples of regions of different sizes; their tooltips and exports

@@ -33,6 +33,7 @@ struct NciPanelDrawCallbacks {
     void* user_data = nullptr;
     void (*draw_scatter)(void*) = nullptr;
     void (*draw_layers)(void*) = nullptr;
+    void (*draw_settings)(void*) = nullptr;
     void (*on_enabled)(void*) = nullptr;
 };
 
@@ -51,6 +52,12 @@ static void draw_nci_panel_layout(bool* enabled, NciPanelDrawCallbacks callbacks
         restore_split = show_layers;
     }
     ImGui::SetItemTooltip(show_layers ? "Hide the layers" : "Show the layers");
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_GEAR " NCI settings")) ImGui::OpenPopup("##NCI settings");
+    if (ImGui::BeginPopup("##NCI settings")) {
+        if (callbacks.draw_settings) callbacks.draw_settings(callbacks.user_data);
+        ImGui::EndPopup();
+    }
 
     if (!*enabled) {
         ImGui::TextDisabled("Enable NCI to show the scatter plot and layers.");
@@ -290,15 +297,27 @@ struct NciPanel {
         ImGui::TreePop();
     }
 
-    // ---- settings: the general mode, the shared options, the colour scale and the per-type values, in one place
+    // Shared controls; layer-specific display stays in the layer inspector.
     void draw_settings() {
         bool editing = false;
+        ImGui::SeparatorText("Surface");
         prop::begin("NCI settings");
         prop::row("surface isovalue", "The viewport surface. Scatter samples above it are drawn desaturated: in the region, "
                                       "not in the surface. Changing it does not change the scatter samples.");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, st.uniform.scatter_s, "%.2f");
         editing |= ImGui::IsItemActive();
+        prop::row("resolution", "Grid spacing for density sampling. Finer grids are smoother and take longer.");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::Combo("##NCI resolution", &st.resolution, resolution_str, (int)ARRAY_SIZE(resolution_str));
+        ImGui::SetItemTooltip("Coarse 0.3, Medium 0.2, Fine 0.13 Bohr; made coarser where that would take more than %zu M samples.",
+                              max_samples >> 20);
+        prop::row("opacity");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI opacity", &st.opacity, 0.05f, 1.0f, "%.2f");
+        prop::end();
+        ImGui::SeparatorText("Scatter / extraction");
+        prop::begin("NCI scatter");
         prop::row("plot s range", "Display only: the scatter plot's s axis. Points above s max are shown in grey.");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI plot s", &st.uniform.plot_s, 0.2f, nci_surface::scatter_s_max, "%.2f");
@@ -346,21 +365,29 @@ struct NciPanel {
             prop::hint("Inside/outside counts always use reference-aligned samples.");
             prop::section_end();
         }
-        prop::row("resolution", "Grid spacing for density sampling. Finer grids are smoother and take longer.");
-        ImGui::SetNextItemWidth(prop::control_width());
-        ImGui::Combo("##NCI resolution", &st.resolution, resolution_str, (int)ARRAY_SIZE(resolution_str));
-        ImGui::SetItemTooltip("Coarse 0.3, Medium 0.2, Fine 0.13 Bohr; made coarser where that would take more than %zu M samples.",
-                              max_samples >> 20);
         prop::hint("Uniform connected regions, both signs of lambda2, nearest-CP ownership.");
-        prop::row("opacity");
+        prop::end();
+        ImGui::SeparatorText("Display");
+        prop::begin("NCI display");
+        prop::row("interaction line width");
         ImGui::SetNextItemWidth(prop::control_width());
-        ImGui::SliderFloat("##NCI opacity", &st.opacity, 0.05f, 1.0f, "%.2f");
+        ImGui::SliderFloat("##NCI line width", &st.type_outline_width, 0.5f, 8.0f, "%.1f px");
+        prop::row("point size");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI point size", &st.point_size, 0.5f, 6.0f, "%.1f px");
+        prop::row("interaction isolines and areas");
+        ImGui::Checkbox("##NCI type styles", &st.show_type_styles);
+        ImGui::SetItemTooltip("Per CP type, the layers' interaction isolines and areas. Off by default: "
+                              "the reference already shows the categories.");
         color_scale_draw_controls(&st.scale, st.span, md_unit_pow(md_unit_bohr_radius(), -3), "shown layer",
                                   "the 1st to 99th percentile of the shown layer", true);
         prop::end();
 
         if (ImGui::Button("Reset to defaults")) {
             st.uniform = nci_uniform_default_settings();
+            st.type_outline_width = NciState::default_type_outline_width;
+            st.point_size = NciState::default_point_size;
+            st.show_type_styles = false;
             const bool legend = st.scale.show_legend;
             st.scale = nci_default_scale();
             st.scale.show_legend = legend;
@@ -600,19 +627,11 @@ struct NciPanel {
         ImGui::TextDisabled("LAYERS");
         ImGui::SameLine();
         const float button = ImGui::GetFrameHeight();
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - 2.0f * button - spacing));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - button));
         ImGui::BeginDisabled(!preview_ready());
         if (ImGui::Button(ICON_FA_PLUS "##save", ImVec2(button, 0))) save_preview();
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Save the preview (the selected CPs) as a layer.\nSelect CPs and wait for the preview to complete.");
-        ImGui::SameLine();
-        if (ImGui::Button(ICON_FA_GEAR "##settings", ImVec2(button, 0))) ImGui::OpenPopup("##NCI settings");
-        ImGui::SetItemTooltip("NCI settings: isovalue, scatter region (s, \xCF\x81, R), resolution and colour scale");
-        if (ImGui::BeginPopup("##NCI settings")) {
-            draw_settings();
-            ImGui::EndPopup();
-        }
         ImGui::Separator();
 
         draw_reference_row();
@@ -1365,36 +1384,14 @@ struct NciPanel {
                 context.rho_failed = context.failed = context.cancelled = false;
             }
         }
-        // On the right, as in the Ramachandran plot: fitting the view and the settings
+        // Fit remains beside the plot.
         {
             const ImGuiStyle& style = ImGui::GetStyle();
-            const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x +
-                             style.FramePadding.x * 4 + style.ItemSpacing.x;
+            const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + style.FramePadding.x * 2;
             ImGui::SameLine();
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
             if (ImGui::Button(ICON_FA_EXPAND "##fit")) fit_view = true;
             ImGui::SetItemTooltip("Fit the view (or double-click the plot)");
-            ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_GEAR "##scatter settings")) ImGui::OpenPopup("##NCI scatter settings");
-            ImGui::SetItemTooltip("Scatter plot settings");
-            if (ImGui::BeginPopup("##NCI scatter settings")) {
-                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-                ImGui::SliderFloat("Interaction line width", &st.type_outline_width, 0.5f, 8.0f, "%.1f px");
-                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-                ImGui::SliderFloat("Point size", &st.point_size, 0.5f, 6.0f, "%.1f px");
-                ImGui::Checkbox("Interaction isolines and areas", &st.show_type_styles);
-                ImGui::SetItemTooltip("Per CP type, the isolines and areas of the layers' interactions, with a legend chip each.\n"
-                                      "Off by default: the reference already shows the categories.");
-                if (ImGui::Button("Reset")) {
-                    st.type_outline_width = NciState::default_type_outline_width;
-                    st.point_size = NciState::default_point_size;
-                }
-                ImGui::Separator();
-                ImGui::TextDisabled("Legend: click a swatch to show or hide it, an interaction's name to make it\n"
-                                    "the active one for the isovalue guide. How a layer or the reference is drawn\n"
-                                    "is set in its inspector, below the layers.");
-                ImGui::EndPopup();
-            }
         }
 
         // The legend is a row of chips under the plot, so it never covers the data: the expected regions and the layers,
@@ -1774,6 +1771,7 @@ void draw_nci_panel(NciState& state, bool critical_points_enabled, std::vector<u
         &panel,
         [](void* data) { static_cast<NciPanel*>(data)->draw_scatter(); },
         [](void* data) { static_cast<NciPanel*>(data)->draw_layers(); },
+        [](void* data) { static_cast<NciPanel*>(data)->draw_settings(); },
         [](void* data) { static_cast<NciPanel*>(data)->st.selection_key = 0; },
     };
     draw_nci_panel_layout(&state.enabled, callbacks);

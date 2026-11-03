@@ -1432,7 +1432,6 @@ struct QuantumChemistry : viamd::EventHandler {
     topology::NciState nci_state;
     NciScatterExportJob* nci_scatter_export_job = nullptr;
     float cp_distribution_height = 0.0f;
-    float cp_points_height = 0.0f;
 
     bool critical_point_visible(size_t i) const {
         const auto& cp = critical_points;
@@ -7516,6 +7515,16 @@ struct QuantumChemistry : viamd::EventHandler {
             const bool open = ImGui::TreeNodeEx(node.name.c_str(), node_flags);
             if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) clicked = (int)node_id;
             if (ImGui::IsItemHovered()) hovered = (int)node_id;
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && ImGui::BeginTooltip()) {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(node.name.c_str());
+                ImGui::Text("%zu CPs; \xCF\x81 %.4g to %.4g au", e.members.size(), e.min, e.max);
+                if (e.members.size() == 1 && e.members.front() < cp.chemical_labels.size()) {
+                    ImGui::TextWrapped("%s", cp.chemical_labels[e.members.front()].detail.c_str());
+                }
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
             ImGui::TableNextColumn();
             if (character > 0) {
                 ImGui::TextColored(critical_point_character_color(character), "%s", character_name(character));
@@ -7803,6 +7812,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (cp.inspected == (int)row.i) cp.inspected = -1;
                     }
                 }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) draw_critical_point_tooltip(state, row);
                 ImGui::TableNextColumn();
                 if (has_chemical_environments) {
                     const CriticalPointEnvironment& env = cp.environments[cp.environment_of[row.i]];
@@ -7891,131 +7901,38 @@ struct QuantumChemistry : viamd::EventHandler {
         if (hovered >= 0) highlight_critical_points({(uint32_t)hovered});
     }
 
-    // The CP clicked in the list, or the only selected one: its numbers and why it got its label
-    void draw_critical_point_details() {
+    void draw_critical_point_tooltip(const ApplicationState& state, const CriticalPointRow& row) {
         CriticalPoints& cp = critical_points;
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
-        if (cp.chemical_labels.size() != graph.num_vertices) return;
-        int i = cp.inspected >= 0 && (uint32_t)cp.inspected < graph.num_vertices ? cp.inspected : -1;
-        if (i < 0) {
-            md_bitset_iter_t it = md_bitmask_iter(&cp.selection_mask);
-            int count = 0;
-            while (md_bitset_iter_next(&it) && count < 2) {
-                if (it.idx < graph.num_vertices) {
-                    i = (int)it.idx;
-                    ++count;
-                }
-            }
-            if (count != 1) i = -1;
-        }
-        if (i < 0) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("Details");
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-            ImGui::TextWrapped("Click a CP in the list to see its values and why it got its label. "
-                               "Labels come from nuclei, connectivity and bond paths, not density thresholds; "
-                               "anything ambiguous stays unassigned, with the reason.");
-            ImGui::PopStyleColor();
-            return;
-        }
+        const uint32_t i = row.i;
         const int type = md_topo_vertex_type(&graph, i);
         const CriticalPointStyle& style = critical_point_style(type);
-        const auto& label = cp.chemical_labels[i];
-        const CriticalPointRow row = critical_point_row((uint32_t)i);
-        critical_point_swatch(type);
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::Text("%s %d", style.label, i);
-        ImGui::SameLine();
-        ImGui::TextUnformatted(critical_point_distribution::display_name(label, critical_point_distribution::detail_levels - 1).c_str());
-        if (ImGui::BeginTable("##Values", 2, ImGuiTableFlags_SizingFixedFit)) {
-            auto key = [](const char* text) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextDisabled("%s", text);
-                ImGui::TableNextColumn();
-            };
-            key("\xCF\x81");
-            ImGui::Text("%.9g au", row.rho);
-            if (graph.vertices_f64) {
-                const double* ev = graph.vertices_f64[i].hessian_eigenvalues;
-                key("\xE2\x88\x87\xC2\xB2\xCF\x81");
-                if (type == MD_TOPO_SPLIT_SADDLE) ImGui::Text("%.6g au (%s)", row.laplacian, row.laplacian < 0.0 ? "shared-shell" : "closed-shell");
-                else ImGui::Text("%.6g au", row.laplacian);
-                key("\xCE\xBB");
-                ImGui::Text("%.4g, %.4g, %.4g", ev[0], ev[1], ev[2]);
-                if (type == MD_TOPO_SPLIT_SADDLE) {
-                    key("\xCE\xB5");
-                    ImGui::Text("%.4f", row.ellipticity);
-                }
+        if (!ImGui::BeginTooltip()) return;
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+        ImGui::Text("%s %u %s", style.label, i, style.signature);
+        if (cp.chemical_analysis_enabled && i < cp.chemical_labels.size()) {
+            const auto& label = cp.chemical_labels[i];
+            const auto path = critical_point_distribution::environment_path(label, state.mold.sys);
+            if (!path.empty()) ImGui::TextUnformatted(path.back().c_str());
+            if (!label.detail.empty()) {
+                const std::string reason = label.detail.substr(0, label.detail.find(". "));
+                ImGui::TextWrapped("%s", reason.c_str());
             }
-            if (std::isfinite(row.G)) {
-                key("G");
-                ImGui::Text("%.6g au", row.G);
-                ImGui::SetItemTooltip("The kinetic energy density, 1/2 \xCE\xA3 D \xE2\x88\x87\xCF\x86\xC2\xB7\xE2\x88\x87\xCF\x86, positive");
-                key("V");
-                ImGui::Text("%.6g au", row.V);
-                ImGui::SetItemTooltip("The potential energy density, by the local virial theorem: \xE2\x88\x87\xC2\xB2\xCF\x81/4 - 2G");
-                key("H");
-                ImGui::Text("%.6g au (%s)", row.H, row.H < 0.0 ? "potential dominates" : "kinetic dominates");
-                ImGui::SetItemTooltip("The total energy density G + V. Negative: a covalent (shared) character (Cremer and Kraka)");
-                key("|V|/G");
-                ImGui::Text("%.3f (%s)", row.ratio, row.ratio < 1.0 ? "closed-shell" : row.ratio > 2.0 ? "shared-shell" : "intermediate");
-                ImGui::SetItemTooltip("Below 1 closed-shell (ionic, hydrogen bond, van der Waals), 1 to 2 intermediate,\n"
-                                      "above 2 shared-shell (covalent), after Espinosa et al. (2002)");
-            } else if (graph.vertices_f64 && cp.energy_job) {
-                key("Energies");
-                ImGui::TextDisabled("computing...");
-            }
-            if (type == MD_TOPO_SPLIT_SADDLE) {
-                const double emamian = critical_point_hbond_energy((uint32_t)i, critical_point_distribution::HBondFormula::Emamian);
-                if (std::isfinite(emamian)) {
-                    const double espinosa = critical_point_hbond_energy((uint32_t)i, critical_point_distribution::HBondFormula::Espinosa);
-                    key("E(HB)");
-                    if (std::isfinite(espinosa)) ImGui::Text("%.2f kcal/mol (Emamian), %.2f (Espinosa)", emamian, espinosa);
-                    else ImGui::Text("%.2f kcal/mol (Emamian)", emamian);
-                    ImGui::SetItemTooltip("Empirical hydrogen bond energies from the BCP, negative for binding:\n"
-                                          "Emamian et al. (2019) -223.08 \xCF\x81 + 0.74, fitted on neutral complexes;\n"
-                                          "Espinosa et al. (1998) V/2, which overestimates strong and charged ones.\n"
-                                          "Estimates, a few kcal/mol at best; not an interaction energy decomposition.");
-                }
-                if (std::isfinite(row.bond_order)) {
-                    key("Bond order");
-                    ImGui::Text("%.3f (Mayer)", row.bond_order);
-                    ImGui::SetItemTooltip("The Mayer bond order of the two atoms the bond path joins, from the density matrix\n"
-                                          "and the overlap. Basis dependent; about 1, 2, 3 for single, double, triple bonds.");
-                }
-            }
-            if (row.character && (size_t)i < cp.characters.size()) {
-                key("Character");
-                ImGui::TextColored(critical_point_character_color(row.character), "%s",
-                                   critical_point_distribution::character_name((critical_point_distribution::Character)row.character));
-                ImGui::SetItemTooltip("%s", critical_point_character_tooltip());
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", cp.characters[i].reason.c_str());
-            }
-            if (std::isfinite(row.interaction) && (size_t)i < cp.pair_charge.size()) {
-                key("E(int) approx.");
-                const auto& q = cp.pair_charge[i];
-                ImGui::Text("%.1f kcal/mol (%s); charges %+.3f, %+.3f", row.interaction, row.interaction < 0.0 ? "favourable" : "unfavourable", q[0], q[1]);
-                ImGui::SetItemTooltip("%s", critical_point_variable_info(CPVar_Interaction).tooltip);
-            }
-            if (md_topo_vertex_type(&graph, (uint32_t)i) == MD_TOPO_SPLIT_SADDLE) {
-                key("Regional Pauli*");
-                if (std::isfinite(row.pauli) && (size_t)i < cp.characters.size()) {
-                    ImGui::Text("%.6g au; tP/TF %.4g; %zu samples", row.pauli, row.pauli_alpha, cp.characters[i].pauli.samples);
-                } else {
-                    ImGui::TextDisabled("%s", critical_point_pauli_status((uint32_t)i));
-                }
-                ImGui::SetItemTooltip("%s\n\n%s", critical_point_variable_info(CPVar_Pauli).tooltip,
-                                      critical_point_variable_info(CPVar_PauliAlpha).tooltip);
-            }
-            key("Position");
-            ImGui::Text("%.4f, %.4f, %.4f \xC3\x85", row.xyz[0], row.xyz[1], row.xyz[2]);
-            ImGui::EndTable();
         }
-        ImGui::SeparatorText("Why this label");
-        ImGui::TextWrapped("%s", label.detail.c_str());
+        ImGui::Text("\xCF\x81 %.6g au", row.rho);
+        if (std::isfinite(row.laplacian)) ImGui::Text("\xE2\x88\x87\xC2\xB2\xCF\x81 %.4g au", row.laplacian);
+        const double value = critical_point_value(i, cp.variable);
+        if (cp.variable != CPVar_Density && std::isfinite(value)) {
+            const auto& info = critical_point_variable_info(cp.variable);
+            ImGui::Text("%s %.4g %s", info.symbol, value, info.unit);
+        }
+        if (row.character && i < cp.characters.size()) {
+            ImGui::TextColored(critical_point_character_color(row.character), "%s",
+                               critical_point_distribution::character_name((critical_point_distribution::Character)row.character));
+            ImGui::TextWrapped("%s", cp.characters[i].reason.c_str());
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
     }
 
     void draw_critical_points_window_contents(ApplicationState& state) {
@@ -8044,23 +7961,16 @@ struct QuantumChemistry : viamd::EventHandler {
                               ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX, column_flags)) {
             ImGui::Checkbox("Enabled", &cp.enabled);
             ImGui::SameLine();
-            if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
-                cp.distributions_dirty = true;
-                cp.values_dirty = true;
-            }
-            ImGui::SetItemTooltip("Classify CPs by chemical environment and compute chemistry-dependent descriptors. "
-                                  "The CP search and NCI surfaces remain available when this is off.");
-            ImGui::SameLine();
-            if (ImGui::Button("CP settings / export...")) ImGui::OpenPopup("##CP settings");
-            ImGui::SameLine();
-            ImGui::Checkbox("Show CPs", &cp.show_markers);
-            ImGui::SetItemTooltip("Hide markers, paths and labels without changing the CP selection, tables or NCI surfaces.");
+            if (ImGui::Button(ICON_FA_GEAR " CP settings")) ImGui::OpenPopup("##CP settings");
 
             if (ImGui::BeginPopup("##CP settings")) {
-                // --- what is searched, and how
-                ImGui::Checkbox("Enabled", &cp.enabled);
-                ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
-                ImGui::SameLine();
+                ImGui::SeparatorText("Search");
+                if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
+                    cp.distributions_dirty = true;
+                    cp.values_dirty = true;
+                }
+                ImGui::SetItemTooltip("Classify chemical environments and compute chemistry-dependent descriptors. "
+                                      "CP search and NCI remain available when this is off.");
                 static const char* method_str[] = { "Analytic", "Volume" };
                 ImGui::SetNextItemWidth(6.5f * em);
                 if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
@@ -8104,7 +8014,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                 }
 
-                // --- how they are drawn, and the export at the end of the line
+                ImGui::SeparatorText("Appearance");
+                ImGui::Checkbox("Show CPs", &cp.show_markers);
+                ImGui::SetItemTooltip("Hide markers, paths and labels without changing selection, tables or NCI surfaces.");
                 ImGui::SetNextItemWidth(6.0f * em);
                 ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SetItemTooltip("The size of the markers");
@@ -8112,52 +8024,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::Checkbox("Paths", &cp.show_paths);
                 ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
                                       "RCP attractor paths, from each ring critical point to the cage critical points beside it");
-                {
-                    const char* lbl = "Export " ICON_FA_CARET_DOWN;
-                    const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-                    ImGui::SameLine();
-                    const float avail = ImGui::GetContentRegionAvail().x;
-                    if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
-                    ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
-                    if (ImGui::Button(lbl)) ImGui::OpenPopup("##Critical point export");
-                    ImGui::EndDisabled();
-                    if (ImGui::BeginPopup("##Critical point export")) {
-                        const bool labelled = cp.chemical_labels.size() == graph.num_vertices && cp.environment_of.size() == graph.num_vertices;
-                        ImGui::SeparatorText("Topology");
-                        if (ImGui::MenuItem("JSON or VTP...")) critical_points_export(state);
-                        ImGui::SetItemTooltip("Every critical point and the paths between them, unfiltered, every number at the precision\n"
-                                              "it was computed in: positions (bohr), density and, from the analytic search, the Hessian.\n"
-                                              "No chemical labels. .json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes\n"
-                                              "a Morse-Smale complex) for ParaView.");
-                        ImGui::SeparatorText("Chemical analysis");
-                        ImGui::BeginDisabled(!labelled);
-                        if (ImGui::MenuItem("Environments as CSV...")) cp.export_environments = CPExport_Csv;
-                        ImGui::SetItemTooltip("Every filtered environment leaf in tree order, including collapsed ones, at full precision,\n"
-                                              "with its hierarchy path and CP indices. Parent summaries are omitted to avoid double counting.");
-                        if (ImGui::MenuItem("Critical points as CSV...")) cp.export_points = CPExport_Csv;
-                        ImGui::SetItemTooltip("The critical point list as listed and sorted, at full precision, with each CP's environment\n"
-                                              "and the reason for its label. Its index joins it to the topology export.");
-                        ImGui::EndDisabled();
-                        ImGui::EndPopup();
-                    }
-                }
-
-                // --- the categories: shown in the viewport or not, with their counts; and what is shown of the selection
-                uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
-                md_topo_count_vertex_types(vertex_count, &graph);
-                for (int type : critical_point_type_order) {
-                    const CriticalPointStyle& style = critical_point_style(type);
-                    ImGui::PushID(type);
-                    ImGui::Checkbox("##Visible", &cp.type_visible[type]);
-                    ImGui::SetItemTooltip("Show %s %s (%s) in the viewport, with the paths from them, and list them in the table.",
-                                          style.plural, style.signature, style.topology_plural);
-                    ImGui::PopID();
-                    ImGui::SameLine(0.0f, 0.2f * em);
-                    critical_point_swatch(type);
-                    ImGui::SameLine(0.0f, 0.2f * em);
-                    ImGui::Text("%s %u", style.plural, vertex_count[type]);
-                    ImGui::SameLine(0.0f, 1.2f * em);
-                }
                 {
                     static const char* show_str[] = { "All CPs", "Selected CPs", "Selected + 3 \xC3\x85" };
                     const float w = 9.5f * em;
@@ -8179,6 +8045,23 @@ struct QuantumChemistry : viamd::EventHandler {
                                           "only the selected CPs, or every CP with those beyond 3.0 \xC3\x85 of the selection dimmed.\n"
                                           "With nothing selected every CP is shown.");
                 }
+                ImGui::SeparatorText("Distributions / filters");
+                draw_critical_point_distribution_settings();
+                ImGui::SeparatorText("Export");
+                ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
+                if (ImGui::Button("Topology JSON / VTP...")) critical_points_export(state);
+                ImGui::SetItemTooltip("All CPs and paths, unfiltered, at full precision; positions in Bohr. "
+                                      "JSON for scripts, VTP for ParaView. No chemical labels.");
+                ImGui::EndDisabled();
+                const bool labelled = cp.chemical_labels.size() == graph.num_vertices && cp.environment_of.size() == graph.num_vertices;
+                ImGui::BeginDisabled(!labelled);
+                if (ImGui::Button("Environments CSV...")) cp.export_environments = CPExport_Csv;
+                ImGui::SetItemTooltip("Filtered leaves in tree order, including collapsed ones, with hierarchy paths and CP indices. "
+                                      "Parent summaries are omitted to avoid double counting.");
+                ImGui::SameLine();
+                if (ImGui::Button("Critical points CSV...")) cp.export_points = CPExport_Csv;
+                ImGui::SetItemTooltip("Filtered and sorted CPs, full-precision descriptors, chemical labels and classification reasons.");
+                ImGui::EndDisabled();
                 ImGui::EndPopup();
             }
 
@@ -8195,62 +8078,24 @@ struct QuantumChemistry : viamd::EventHandler {
             if (cp.top_height <= 0.0f) cp.top_height = 0.5f * lower_height;
             cp.top_height = CLAMP(cp.top_height, 0.25f * lower_height, 0.75f * lower_height);
             if (ImGui::BeginChild("##Distribution plots", ImVec2(0, cp_distribution_height), false, ImGuiWindowFlags_NoScrollbar)) {
-                if (ImGui::SmallButton("Distribution settings / filters...")) ImGui::OpenPopup("##Distribution settings");
-                if (ImGui::BeginPopup("##Distribution settings")) {
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextUnformatted("Plot");
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(9.0f * em_split);
-                    if (ImGui::BeginCombo("##Variable", critical_point_variable_info(cp.variable).name)) {
-                        for (int var = 0; var < CPVar_Count; ++var) {
-                            if (ImGui::Selectable(critical_point_variable_info(var).name, var == cp.variable) && var != cp.variable) {
-                                cp.variable = var;
-                                cp.values_dirty = true;
-                            }
-                            ImGui::SetItemTooltip("%s", critical_point_variable_info(var).tooltip);
-                        }
-                        ImGui::EndCombo();
+                uint32_t vertex_count[MD_TOPO_NUM_TYPES] = {};
+                md_topo_count_vertex_types(vertex_count, &graph);
+                const int columns = ImGui::GetContentRegionAvail().x >= 24.0f * em ? 4 : 2;
+                if (ImGui::BeginTable("##CP categories", columns, ImGuiTableFlags_SizingStretchSame)) {
+                    for (int type : critical_point_type_order) {
+                        const CriticalPointStyle& style = critical_point_style(type);
+                        ImGui::TableNextColumn();
+                        ImGui::PushID(type);
+                        critical_point_swatch(type);
+                        ImGui::SameLine(0.0f, 0.2f * em);
+                        char text[64];
+                        snprintf(text, sizeof(text), "%s %u", style.label, vertex_count[type]);
+                        ImGui::Checkbox(text, &cp.type_visible[type]);
+                        ImGui::SetItemTooltip("Show and list %s %s (%s), including their paths.",
+                                              style.plural, style.signature, style.topology_plural);
+                        ImGui::PopID();
                     }
-                    ImGui::SetItemTooltip("What the plots show, their peaks group the environments by, and the filters\n"
-                                          "added from them select by. The energies and bond orders come from the\n"
-                                          "analytic search.");
-                    if (cp.variable == CPVar_HBond) {
-                        ImGui::SameLine();
-                        ImGui::SetNextItemWidth(9.0f * em_split);
-                        static const char* formulas[] = { "Emamian (\xCF\x81)", "Espinosa (V/2)" };
-                        int f = (int)cp.hb_formula;
-                        if (ImGui::Combo("##H-bond formula", &f, formulas, (int)ARRAY_SIZE(formulas))) {
-                            cp.hb_formula = (critical_point_distribution::HBondFormula)f;
-                            cp.values_dirty = true;
-                        }
-                        ImGui::SetItemTooltip("Emamian et al. (J. Comput. Chem. 2019): -223.08 \xCF\x81 + 0.74 kcal/mol, fitted on neutral\n"
-                                              "complexes. Espinosa, Molins and Lecomte (Chem. Phys. Lett. 1998): V/2, known to overestimate\n"
-                                              "strong and charged hydrogen bonds.");
-                    }
-                    if (ImGui::SmallButton("BCP character filters...")) ImGui::OpenPopup("##Character filters");
-                    if (ImGui::BeginPopup("##Character filters")) {
-                        ImGui::BeginDisabled(!cp.chemical_analysis_enabled);
-                        using critical_point_distribution::Character;
-                        for (Character c : {Character::Covalent, Character::StrongAttractive, Character::Attractive, Character::Mixed, Character::Repulsive,
-                                            Character::WeakAttractive, Character::Weak, Character::WeakRepulsive, Character::Undetermined}) {
-                            environment_swatch(critical_point_character_color((int)c));
-                            ImGui::SameLine(0.0f, 0.0f);
-                            ImGui::Checkbox(critical_point_distribution::character_name(c), &cp.character_shown[(int)c]);
-                            ImGui::SetItemTooltip("Show and list the BCPs whose interaction is %s.\n\n%s",
-                                                  critical_point_distribution::character_name(c), critical_point_character_tooltip());
-                        }
-                        ImGui::EndDisabled();
-                        if (!cp.chemical_analysis_enabled) ImGui::TextDisabled("Enable chemical analysis to use CP character filters.");
-                        ImGui::EndPopup();
-                    }
-                    if (ImGui::BeginTable("##Density filters", 2, ImGuiTableFlags_SizingStretchSame)) {
-                        for (int type : critical_point_type_order) {
-                            ImGui::TableNextColumn();
-                            draw_critical_point_filter(type);
-                        }
-                        ImGui::EndTable();
-                    }
-                    ImGui::EndPopup();
+                    ImGui::EndTable();
                 }
                 if (cp.enabled && graph.num_vertices > 0 &&
                     ImPlot::BeginSubplots("##Critical point density distributions", 2, 2, ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
@@ -8277,19 +8122,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::InvisibleButton("##CP environment splitter", ImVec2(-1, splitter));
                 if (ImGui::IsItemActive()) cp.top_height += ImGui::GetIO().MouseDelta.y;
                 if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                const float detail_height = MAX(1.0f, ImGui::GetContentRegionAvail().y - splitter - 2.0f * spacing);
-                if (cp_points_height <= 0.0f) cp_points_height = 0.5f * detail_height;
-                cp_points_height = CLAMP(cp_points_height, 0.25f * detail_height, 0.75f * detail_height);
-                if (ImGui::BeginChild("##Points pane", ImVec2(0, cp_points_height)) &&
+                if (ImGui::BeginChild("##Points pane", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y))) &&
                     cp.enabled && graph.num_vertices > 0) {
                     draw_critical_point_list(state);
-                }
-                ImGui::EndChild();
-                ImGui::InvisibleButton("##CP point details splitter", ImVec2(-1, splitter));
-                if (ImGui::IsItemActive()) cp_points_height += ImGui::GetIO().MouseDelta.y;
-                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                if (ImGui::BeginChild("##Details pane", ImVec2(0, MAX(1.0f, ImGui::GetContentRegionAvail().y)))) {
-                    if (cp.enabled && graph.num_vertices > 0) draw_critical_point_details();
                 }
                 ImGui::EndChild();
             }
@@ -8305,9 +8140,66 @@ struct QuantumChemistry : viamd::EventHandler {
             nci_state.export_scatter_requested = false;
             start_nci_scatter_export();
         }
-
-        // A table that was not drawn this frame does not keep a request for later
+        // A table that was not drawn this frame does not keep a request for later.
         cp.export_environments = cp.export_points = CPExport_None;
+    }
+
+    void draw_critical_point_distribution_settings() {
+        CriticalPoints& cp = critical_points;
+        const float em_split = ImGui::GetFontSize();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Plot");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(9.0f * em_split);
+        if (ImGui::BeginCombo("##Variable", critical_point_variable_info(cp.variable).name)) {
+            for (int var = 0; var < CPVar_Count; ++var) {
+                if (ImGui::Selectable(critical_point_variable_info(var).name, var == cp.variable) && var != cp.variable) {
+                    cp.variable = var;
+                    cp.values_dirty = true;
+                }
+                ImGui::SetItemTooltip("%s", critical_point_variable_info(var).tooltip);
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("What the plots show, their peaks group the environments by, and the filters\n"
+                              "added from them select by. The energies and bond orders come from the\n"
+                              "analytic search.");
+        if (cp.variable == CPVar_HBond) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(9.0f * em_split);
+            static const char* formulas[] = { "Emamian (\xCF\x81)", "Espinosa (V/2)" };
+            int f = (int)cp.hb_formula;
+            if (ImGui::Combo("##H-bond formula", &f, formulas, (int)ARRAY_SIZE(formulas))) {
+                cp.hb_formula = (critical_point_distribution::HBondFormula)f;
+                cp.values_dirty = true;
+            }
+            ImGui::SetItemTooltip("Emamian et al. (J. Comput. Chem. 2019): -223.08 \xCF\x81 + 0.74 kcal/mol, fitted on neutral\n"
+                                  "complexes. Espinosa, Molins and Lecomte (Chem. Phys. Lett. 1998): V/2, known to overestimate\n"
+                                  "strong and charged hydrogen bonds.");
+        }
+        if (ImGui::SmallButton("BCP character filters...")) ImGui::OpenPopup("##Character filters");
+        if (ImGui::BeginPopup("##Character filters")) {
+            ImGui::BeginDisabled(!cp.chemical_analysis_enabled);
+            using critical_point_distribution::Character;
+            for (Character c : {Character::Covalent, Character::StrongAttractive, Character::Attractive, Character::Mixed, Character::Repulsive,
+                                Character::WeakAttractive, Character::Weak, Character::WeakRepulsive, Character::Undetermined}) {
+                environment_swatch(critical_point_character_color((int)c));
+                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::Checkbox(critical_point_distribution::character_name(c), &cp.character_shown[(int)c]);
+                ImGui::SetItemTooltip("Show and list the BCPs whose interaction is %s.\n\n%s",
+                                      critical_point_distribution::character_name(c), critical_point_character_tooltip());
+            }
+            ImGui::EndDisabled();
+            if (!cp.chemical_analysis_enabled) ImGui::TextDisabled("Enable chemical analysis to use CP character filters.");
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginTable("##Density filters", 2, ImGuiTableFlags_SizingStretchSame)) {
+            for (int type : critical_point_type_order) {
+                ImGui::TableNextColumn();
+                draw_critical_point_filter(type);
+            }
+            ImGui::EndTable();
+        }
     }
 
     // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
