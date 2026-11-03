@@ -99,7 +99,7 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
     }
     if (n.editing) return;
 
-    std::vector<double> near = n.saved || n.family_preview || n.full_system_family ? n.anchors : std::vector<double>{};
+    std::vector<double> near = context || n.saved || n.family_preview || n.full_system_family ? n.anchors : std::vector<double>{};
     if (!n.saved && !n.family_preview && !n.full_system_family && !context) {
         n.families = 0;
         n.environments.clear();
@@ -186,13 +186,8 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
         return;
     }
 
-    nci_surface::Params params;
+    nci_surface::Params params = nci_surface::reference_params(near, n.competitors);
     params.s_iso = n.s_iso;
-    params.scatter_s = n.scatter_s;
-    params.rho_max = n.rho_max;
-    params.near_radius = n.near_radius;
-    params.connected = n.connected;
-    params.radius_cap = n.radius_cap;
     params.surface = !context;
     uint64_t key = context ? rho_key : md_hash64(&params.s_iso, sizeof(params.s_iso), rho_key);
     key = md_hash64(&params.scatter_s, sizeof(params.scatter_s), key);

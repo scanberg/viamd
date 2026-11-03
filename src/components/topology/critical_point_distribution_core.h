@@ -66,6 +66,8 @@ std::string display_name(const ChemicalLabel& label, int level);
 int auto_detail_level(std::span<const ChemicalLabel> labels, std::span<const uint32_t> members, size_t max_groups);
 
 // Stable chemistry branches above an environment leaf, independent of detail, character and density peaks.
+std::string contact_environment_name(std::string_view interaction);
+std::string selection_environment_name(std::span<const std::vector<std::string>> paths);
 std::vector<std::string> environment_path(const ChemicalLabel& label, const md_system_t& system);
 
 struct EnvironmentTreeNode {

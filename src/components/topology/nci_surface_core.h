@@ -43,6 +43,7 @@ constexpr Families family_bit(Family family) { return 1u << (unsigned)family; }
 struct ContactClass {
     const char* name;   // ChemicalLabel::interaction
     Family family;
+    const char* description;
 };
 std::span<const ContactClass> contact_classes();
 Family contact_family(std::string_view interaction);
@@ -61,6 +62,7 @@ bool has_nci(Family family);
 // from the CPs through s < reference_scatter_s within reference_radius, rho <= reference_rho_max, both signs of
 // lambda2; only their samples with s <= reference_scatter_s; each sample belonging to its nearest CP.
 constexpr double reference_scatter_s = 1.0;
+constexpr double scatter_view_s_max = 1.1;
 constexpr double reference_rho_max = 0.07;
 constexpr double reference_radius = 2.7;   // Bohr
 
@@ -69,17 +71,7 @@ constexpr double reference_radius = 2.7;   // Bohr
 struct Params;
 Params reference_params(std::span<const double> near_xyz, std::span<const double> other_xyz = {});
 
-struct Defaults {
-    double radius = reference_radius;
-    bool established = false;
-};
-// CP-adaptive mode's display radii: calibrated for H-bonds, rings and pi-stacking; the other types keep the shared
-// radius. The scatter statistics and the reference never use them.
-Defaults family_defaults(Families families);
-
-// The displayed isovalue and density cutoff (every mode), the radius (one for every CP type in Uniform mode; per type
-// in CP-adaptive mode), and the colour range of the single NCI colour scale. The reference statistics use their own
-// extraction (reference_params), independent of these.
+// One adjustable surface isovalue; extraction is fixed to the reference for every CP type.
 struct UniformDefaults {
     double s_iso = 0.7;
     // The scatter's s, rho and R are the reference's, so the scatter plot covers what the reference map does
@@ -128,15 +120,15 @@ size_t reference_category(Family family);
 Family reference_settings_family(size_t category);
 // "Hydrogen bonds", "Rings", "\xCF\x80 interactions", "Other"; the baked data's and the batch tools' names
 const char* reference_category_name(size_t category);
-// A category's subfamily: a CP-tree branch under it (N-H···O, aromatic rings, C-H···pi, cages, ...), pooled from the
-// reference systems whose CPs of that category all belong to the branch. overlap: of its 90 % area with its category's
-// (intersection over union)
+// A class or finer chemical-environment map, pooled per CP with equal system weights.
+// overlap: intersection over union of its 90 % area with its category's.
 struct ReferenceSubfamilyData {
     size_t category = reference_category_count;
     const char* name = "";
     int systems = 0;
     float overlap = 0.0f;
     const float* field = nullptr;
+    const char* parent = "";   // Empty for a top-level class; otherwise its class name.
 };
 struct ReferenceData {
     int bins = 0;
@@ -171,6 +163,7 @@ struct ReferenceCategory {
     size_t category = reference_category_count;
     float overlap = 0.0f;
     bool valid = false;
+    const char* parent = "";
 };
 struct ReferenceMap {
     float rho_extent = 0.0f;

@@ -94,18 +94,39 @@ const char* kind_name(Kind kind) {
     return "Unassigned";
 }
 
+std::string contact_environment_name(std::string_view interaction) {
+    std::string family = interaction.empty() ? "Other contacts" : std::string(interaction);
+    if (family == "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80") family = "\xCF\x80-stacking";
+    else if (family == "Agostic") family = "Agostic contacts";
+    else if (family == "Coordination") family = "Coordination contacts";
+    else if (family.ends_with(" bond") || family.ends_with(" contact") || family == "Salt bridge" || family == "Ion pair") family += "s";
+    return family;
+}
+
+std::string selection_environment_name(std::span<const std::vector<std::string>> paths) {
+    std::vector<std::string> common;
+    bool first = true;
+    for (const auto& path : paths) {
+        if (path.empty()) continue;
+        if (first) {
+            common = path;
+            first = false;
+        } else {
+            size_t depth = 0;
+            while (depth < common.size() && depth < path.size() && common[depth] == path[depth]) ++depth;
+            common.resize(depth);
+        }
+    }
+    return common.empty() ? std::string{} : common.back();
+}
+
 std::vector<std::string> environment_path(const ChemicalLabel& label, const md_system_t& system) {
     std::vector<std::string> path;
     switch (label.kind) {
     case Kind::Atom: path = {"Atoms"}; break;
     case Kind::Bond: path = {"Bonds"}; break;
     case Kind::Contact: {
-        std::string family = label.interaction.empty() ? "Other contacts" : label.interaction;
-        if (family == "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80") family = "\xCF\x80-stacking";
-        else if (family == "Agostic") family = "Agostic contacts";
-        else if (family == "Coordination") family = "Coordination contacts";
-        else if (family.ends_with(" bond") || family.ends_with(" contact") || family == "Salt bridge" || family == "Ion pair") family += "s";
-        path = {"Contacts", family};
+        path = {"Contacts", contact_environment_name(label.interaction)};
         break;
     }
     case Kind::BondPath: path = {"Bond paths (connectivity unknown)"}; break;

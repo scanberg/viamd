@@ -356,6 +356,30 @@ UTEST(nci_surface, scatter_only_matches_surface_extraction) {
         EXPECT_EQ(a.signed_rho[i], b.signed_rho[i]);
         EXPECT_EQ(a.voxel[i], b.voxel[i]);
     }
+
+}
+
+UTEST(nci_surface, surface_isovalue_preserves_reference_scatter) {
+    Atoms pair;
+    pair.centre = {{-3, 0, 0}, {3, 0, 0}};
+    const auto g = box(6.0, 5.0, 0.2);
+    const auto rho = pair.sample(g);
+    const double anchor[] = {0, 0, 0};
+    auto params = nci_surface::reference_params(anchor);
+    params.surface = true;
+    params.s_iso = 0.4;
+    nci_surface::Mesh a, b;
+    nci_surface::Scatter sa, sb;
+    ASSERT_TRUE(nci_surface::extract(&a, rho.data(), g, params, nullptr, nullptr, &sa));
+    params.s_iso = 0.7;
+    ASSERT_TRUE(nci_surface::extract(&b, rho.data(), g, params, nullptr, nullptr, &sb));
+    EXPECT_FALSE(a.position == b.position);
+    EXPECT_TRUE(sa.voxel == sb.voxel);
+    EXPECT_TRUE(sa.signed_rho == sb.signed_rho);
+    EXPECT_TRUE(sa.s == sb.s);
+    EXPECT_EQ(sa.eligible_count, sb.eligible_count);
+    EXPECT_NEAR(sa.density.total_volume, sb.density.total_volume, 1e-8);
+    for (float s : sb.s) EXPECT_LE(s, (float)nci_surface::reference_scatter_s);
 }
 
 UTEST(nci_surface, invalid_scope_parameters) {
@@ -393,6 +417,11 @@ UTEST(nci_surface, contact_classes_and_reference_categories) {
         bool listed = false;
         for (const auto& c : nci_surface::contact_classes()) listed |= std::string_view(c.name) == name;
         EXPECT_TRUE(listed);
+    }
+    for (const auto& c : nci_surface::contact_classes()) {
+        ASSERT_TRUE(c.description != nullptr);
+        EXPECT_GT(std::string_view(c.description).size(), (size_t)10);
+        EXPECT_FALSE(critical_point_distribution::contact_environment_name(c.name).empty());
     }
     EXPECT_EQ(nci_surface::contact_family("unknown"), Family::OtherContact);
     EXPECT_EQ(nci_surface::reference_category(Family::HydrogenBond), 0u);
@@ -466,7 +495,7 @@ UTEST(nci_surface, families_follow_chemical_labels_not_character_or_detail) {
     EXPECT_TRUE(nci_surface::has_nci(Family::Unassigned));
 }
 
-UTEST(nci_surface, calibrated_family_defaults_and_mixed_membership) {
+UTEST(nci_surface, uniform_defaults_and_mixed_membership) {
     using nci_surface::Family;
     const auto hb = nci_surface::family_bit(Family::HydrogenBond);
     const auto ring = nci_surface::family_bit(Family::Ring);
@@ -474,14 +503,6 @@ UTEST(nci_surface, calibrated_family_defaults_and_mixed_membership) {
     ASSERT_TRUE(nci_surface::single_family(ring));
     EXPECT_FALSE(nci_surface::single_family(hb | ring));
     EXPECT_FALSE(nci_surface::single_family(0));
-    // Display radii of the CP-adaptive mode; the reference uses one radius for all
-    const std::pair<Family, double> radii[] = {{Family::HydrogenBond, 1.7}, {Family::Ring, 2.0}, {Family::PiStacking, 3.7},
-                                               {Family::Cage, 2.0}, {Family::HalogenBond, 2.2}};
-    for (const auto& [family, radius] : radii) {
-        const auto defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
-        EXPECT_EQ(defaults.established, family != Family::HalogenBond);
-        EXPECT_EQ(defaults.radius, radius);
-    }
     EXPECT_EQ(nci_surface::reference_scatter_s, 1.0);
     EXPECT_EQ(nci_surface::reference_rho_max, 0.07);
     EXPECT_EQ(nci_surface::reference_radius, 2.7);
@@ -492,8 +513,7 @@ UTEST(nci_surface, calibrated_family_defaults_and_mixed_membership) {
     EXPECT_EQ(uniform.radius, 2.7);
     EXPECT_EQ(uniform.color_range, 0.03);
 
-    EXPECT_FALSE(nci_surface::family_defaults(hb | ring).established);
-    EXPECT_FALSE(nci_surface::family_defaults(0).established);
+    EXPECT_EQ(nci_surface::scatter_view_s_max, 1.1);
 }
 
 UTEST(nci_surface, selection_key_changes_update_default_view_state) {
@@ -516,10 +536,15 @@ UTEST(nci_surface, selection_key_changes_update_default_view_state) {
     EXPECT_EQ(view, View::Overview);
 }
 
-UTEST(nci_surface, unassigned_family_uses_generic_parameters) {
-    const auto unknown = nci_surface::family_defaults(nci_surface::family_bit(nci_surface::Family::Unassigned));
-    EXPECT_FALSE(unknown.established);
-    EXPECT_EQ(unknown.radius, 2.7);
+UTEST(nci_surface, reference_parameters_are_uniform) {
+    const double anchors[] = {0, 0, 0};
+    const auto p = nci_surface::reference_params(anchors);
+    EXPECT_EQ(p.scatter_s, nci_surface::reference_scatter_s);
+    EXPECT_EQ(p.rho_max, nci_surface::reference_rho_max);
+    EXPECT_EQ(p.near_radius, nci_surface::reference_radius);
+    EXPECT_TRUE(p.connected);
+    EXPECT_TRUE(p.radius_cap);
+    EXPECT_TRUE(p.by_anchor);
 }
 
 UTEST(nci_surface, family_previews_extract_independent_geometries) {
@@ -528,20 +553,19 @@ UTEST(nci_surface, family_previews_extract_independent_geometries) {
     const auto g = box(6.0, 5.0, 0.2);
     const auto rho = pair.sample(g);
     const double anchor[] = {0, 0, 0};
-    const auto params = [&](nci_surface::Family family) {
-        const auto defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
+    const auto params = [&](double radius) {
         nci_surface::Params p;
         p.s_iso = nci_surface::reference_scatter_s;
         p.rho_max = nci_surface::reference_rho_max;
-        p.near_radius = defaults.radius;
+        p.near_radius = radius;
         // Up to the plot's top, so the radius rather than s bounds the scatter
         p.scatter_s = nci_surface::scatter_s_max;
         p.near_xyz = anchor;
         p.connected = true;
         return p;
     };
-    const auto hb = params(nci_surface::Family::HydrogenBond);
-    const auto stacking = params(nci_surface::Family::PiStacking);
+    const auto hb = params(1.7);
+    const auto stacking = params(3.7);
     nci_surface::Mesh a, b, repeated;
     nci_surface::Scatter sa, sb;
     ASSERT_TRUE(nci_surface::extract(&a, rho.data(), g, hb, nullptr, nullptr, &sa));
@@ -1030,6 +1054,10 @@ UTEST(nci_surface, reference_subfamilies_nest_in_their_categories) {
         ASSERT_LT(sub.category, map.categories.size());
         EXPECT_TRUE(sub.valid);
         EXPECT_GE(sub.systems, 5);
+        ASSERT_EQ(map.fractions.size(), (size_t)3);
+        EXPECT_NEAR(map.fractions[1], 0.9f, 1e-6f);
+        ASSERT_EQ(sub.isolines.size(), map.fractions.size());
+        EXPECT_FALSE(sub.isolines[1].empty());
         EXPECT_TRUE(sub.overlap > 0.0f && sub.overlap <= 1.0f);
         // Somewhere it is at its deepest level, and there its category's subfamilies share the point
         bool found = false;
@@ -1045,9 +1073,30 @@ UTEST(nci_surface, reference_subfamilies_nest_in_their_categories) {
                 if (map.subfamilies[j].category != sub.category) EXPECT_EQ(shares[j], 0.0f);
                 sum += shares[j];
             }
+
             EXPECT_NEAR(sum, 1.0f, 1e-4f);
-            EXPECT_GT(shares[i], 0.0f);
+            if (!sub.parent[0]) EXPECT_GT(shares[i], 0.0f);
+            else EXPECT_EQ(shares[i], 0.0f);
         }
         EXPECT_TRUE(found);
     }
+}
+
+UTEST(nci_surface, reference_refinements_cover_every_category) {
+    const auto& map = nci_surface::builtin_reference_map();
+    ASSERT_GT(map.subfamilies.size(), (size_t)64);
+    std::array<bool, nci_surface::reference_category_count> refined = {};
+    bool nh_o = false;
+    for (const auto& sub : map.subfamilies) {
+        if (!sub.parent[0]) continue;
+        bool parent_found = false;
+        for (const auto& parent : map.subfamilies)
+            parent_found |= parent.category == sub.category && !parent.parent[0] &&
+                            std::string_view(parent.name) == sub.parent;
+        EXPECT_TRUE(parent_found);
+        refined[sub.category] = true;
+        nh_o |= std::string_view(sub.name).find("N-H\xC2\xB7\xC2\xB7\xC2\xB7O") != std::string_view::npos;
+    }
+    for (bool available : refined) EXPECT_TRUE(available);
+    EXPECT_TRUE(nh_o);
 }

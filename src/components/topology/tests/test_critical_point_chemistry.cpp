@@ -77,6 +77,22 @@ UTEST(critical_point_chemistry, hierarchy_uses_chemistry_not_character_or_detail
     EXPECT_STREQ(path[1].c_str(), "\xCF\x80-stacking");
 }
 
+UTEST(critical_point_chemistry, selection_name_uses_specific_shared_environment) {
+    using critical_point_distribution::selection_environment_name;
+    std::vector<std::vector<std::string>> paths = {
+        {"Contacts", "Hydrogen bonds", "N-H...O"},
+        {"Contacts", "Hydrogen bonds", "N-H...O"}};
+    EXPECT_TRUE(selection_environment_name(paths) == "N-H...O");
+    paths[1][2] = "O-H...O";
+    EXPECT_TRUE(selection_environment_name(paths) == "Hydrogen bonds");
+    paths = {{"Contacts", "Halogen bonds", "Br...O"}, {"Contacts", "Halogen bonds", "Br...O"}};
+    EXPECT_TRUE(selection_environment_name(paths) == "Br...O");
+    paths = {{"Rings", "Aromatic rings", "Aromatic 5-ring C4N"}};
+    EXPECT_TRUE(selection_environment_name(paths) == "Aromatic 5-ring C4N");
+    paths.clear();
+    EXPECT_TRUE(selection_environment_name(paths).empty());
+}
+
 UTEST(critical_point_chemistry, hydrogen_bond_hierarchy_has_donor_and_acceptor) {
     Fixture f;
     using namespace critical_point_distribution;

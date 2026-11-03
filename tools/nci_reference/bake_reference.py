@@ -4,7 +4,8 @@
 Reads <REGIONS_DIR>/summary.json and one <Category>.npy per category (bins x bins, row = s bin, column = signed-rho
 bin), normalises each category to unit sum, and writes the C++ source that nci_surface::reference_data() returns.
 
-With --subfamilies, also the per-branch sub-maps of subfamily_regions.py (its summary.json and sub_<n>.npy).
+With --subfamilies, also the per-branch sub-maps of subfamily_regions.py (its summary.json and sub_<n>.npy)
+and, when present, level2/ refinements with their parent class names.
 
 Usage: bake_reference.py REGIONS_DIR [OUT_CPP] [--source TEXT] [--subfamilies SUBFAMILY_DIR]
   OUT_CPP defaults to src/components/topology/nci_reference_data_core.cpp in this repository.
@@ -64,12 +65,24 @@ def main():
             sub_summary = json.load(f)
         if int(sub_summary["bins"]) != bins:
             sys.exit("subfamilies: bins differ from the categories'")
-        for sub in sub_summary["subfamilies"]:
-            field = np.load(os.path.join(args.subfamilies, sub["file"])).astype(np.float64)
+        entries = [(args.subfamilies, sub) for sub in sub_summary["subfamilies"]]
+        finer_dir = os.path.join(args.subfamilies, "level2")
+        if os.path.isfile(os.path.join(finer_dir, "summary.json")):
+            with open(os.path.join(finer_dir, "summary.json")) as f:
+                finer = json.load(f)
+            if any(finer[key] != sub_summary[key] for key in ("bins", "rho_extent", "s_max")):
+                sys.exit("level2: grid differs from the top-level subfamilies'")
+            parents = {(sub["category"], sub["name"]) for sub in sub_summary["subfamilies"]}
+            for sub in finer["subfamilies"]:
+                if (sub["category"], sub.get("parent")) not in parents:
+                    sys.exit(f"level2: {sub['name']} has no matching parent class")
+            entries += [(finer_dir, sub) for sub in finer["subfamilies"]]
+        for directory, sub in entries:
+            field = np.load(os.path.join(directory, sub["file"])).astype(np.float64)
             if field.shape != (bins, bins) or not np.all(np.isfinite(field)) or (field < 0).any() or field.sum() <= 0:
                 sys.exit(f"{sub['name']}: expected a finite non-negative non-empty {bins}x{bins} field")
             subfamilies.append((CATEGORIES.index(sub["category"]), sub["name"], int(sub["systems"]),
-                                float(sub.get("overlap") or 0.0), field / field.sum()))
+                                float(sub.get("overlap") or 0.0), field / field.sum(), sub.get("parent", "")))
 
     # Escaped so the generated source is plain ASCII
     lines = [
@@ -96,8 +109,8 @@ def main():
         lines.append("")
     if subfamilies:
         lines.append(f"constexpr ReferenceSubfamilyData subfamilies[{len(subfamilies)}] = {{")
-        for i, (c, name, n, overlap, _) in enumerate(subfamilies):
-            lines.append(f"    {{{c}, {c_string(name)}, {n}, {overlap:.3f}f, subfamily_field_{i}}},")
+        for i, (c, name, n, overlap, _, parent) in enumerate(subfamilies):
+            lines.append(f"    {{{c}, {c_string(name)}, {n}, {overlap:.3f}f, subfamily_field_{i}, {c_string(parent)}}},")
         lines.append("};")
         lines.append("")
     lines += [

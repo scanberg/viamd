@@ -15,34 +15,34 @@
 namespace nci_surface {
 
 static constexpr ContactClass contact_class_table[] = {
-    {"Hydrogen bond", Family::HydrogenBond},
-    {"Ionic hydrogen bond", Family::HydrogenBond},
-    {"Salt bridge", Family::HydrogenBond},
-    {"\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    {"\xCF\x80-hole bond", Family::PiStacking},
+    {"Hydrogen bond", Family::HydrogenBond, "A polar donor hydrogen pointing towards an acceptor lone pair."},
+    {"Ionic hydrogen bond", Family::HydrogenBond, "A hydrogen bond with a charged donor or acceptor group."},
+    {"Salt bridge", Family::HydrogenBond, "A hydrogen bond between positive donor and negative acceptor groups."},
+    {"\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "Contact between aromatic or unsaturated atoms, such as stacked rings."},
+    {"X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "A non-carbon donor hydrogen pointing towards a pi face."},
+    {"C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "A carbon-bound hydrogen pointing towards a pi face."},
+    {"Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "A positive group over a pi face, such as ammonium over benzene."},
+    {"Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "A negative group over a pi face."},
+    {"Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking, "A lone-pair donor over a pi face."},
+    {"\xCF\x80-hole bond", Family::PiStacking, "A lone pair approaching the pi-star face of a polar double bond, such as C=O."},
     // Sigma-hole bonds share one type
-    {"Halogen bond", Family::HalogenBond},
-    {"Chalcogen bond", Family::HalogenBond},
-    {"Pnictogen bond", Family::HalogenBond},
-    {"Tetrel bond", Family::HalogenBond},
-    {"Triel bond", Family::HalogenBond},
-    {"Aerogen bond", Family::HalogenBond},
-    {"Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen", Family::OtherContact},
-    {"Dihydrogen bond", Family::OtherContact},
-    {"Hydride bond", Family::OtherContact},
-    {"Agostic", Family::OtherContact},
-    {"Coordination", Family::OtherContact},
-    {"Ion pair", Family::OtherContact},
-    {"Metal\xC2\xB7\xC2\xB7\xC2\xB7metal", Family::OtherContact},
-    {"Metal contact", Family::OtherContact},
-    {"C-H\xC2\xB7\xC2\xB7\xC2\xB7X", Family::OtherContact},
-    {"H\xC2\xB7\xC2\xB7\xC2\xB7H", Family::OtherContact},
-    {"van der Waals contact", Family::OtherContact},
+    {"Halogen bond", Family::HalogenBond, "A nucleophile along the extension of a bond to Cl, Br or I."},
+    {"Chalcogen bond", Family::HalogenBond, "A nucleophile along the extension of a bond to S, Se or Te."},
+    {"Pnictogen bond", Family::HalogenBond, "A nucleophile along the extension of a bond to P, As or Sb."},
+    {"Tetrel bond", Family::HalogenBond, "A nucleophile along the extension of a bond to C, Si or a heavier tetrel."},
+    {"Triel bond", Family::HalogenBond, "A nucleophile approaching trigonal B, Al or Ga."},
+    {"Aerogen bond", Family::HalogenBond, "A nucleophile along the extension of a bond to a noble-gas atom."},
+    {"Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen", Family::OtherContact, "A type-I halogen contact with similar angles at both halogens."},
+    {"Dihydrogen bond", Family::OtherContact, "Contact between a hydridic hydrogen and a protic donor hydrogen."},
+    {"Hydride bond", Family::OtherContact, "A contact involving a hydridic hydrogen, for example on boron or a metal."},
+    {"Agostic", Family::OtherContact, "A carbon-hydrogen bond directed towards a metal."},
+    {"Coordination", Family::OtherContact, "A metal contacting a lone-pair donor, such as water oxygen."},
+    {"Ion pair", Family::OtherContact, "Contact between oppositely charged groups."},
+    {"Metal\xC2\xB7\xC2\xB7\xC2\xB7metal", Family::OtherContact, "A nonbonded contact between two metals."},
+    {"Metal contact", Family::OtherContact, "Another nonbonded contact involving a metal."},
+    {"C-H\xC2\xB7\xC2\xB7\xC2\xB7X", Family::OtherContact, "A carbon-bound hydrogen pointing towards an acceptor atom."},
+    {"H\xC2\xB7\xC2\xB7\xC2\xB7H", Family::OtherContact, "A hydrogen-hydrogen contact without a hydridic/protic pair."},
+    {"van der Waals contact", Family::OtherContact, "A contact not assigned to a more specific chemical class."},
 };
 
 std::span<const ContactClass> contact_classes() { return contact_class_table; }
@@ -121,23 +121,6 @@ bool has_nci(Family family) {
 
 bool single_family(Families families) {
     return families && !(families & (families - 1));
-}
-
-Defaults family_defaults(Families families) {
-    const auto preset = [](double radius, bool established) {
-        Defaults d;
-        d.radius = radius;
-        d.established = established;
-        return d;
-    };
-    if (families == family_bit(Family::HydrogenBond)) return preset(1.7, true);
-    if (families == family_bit(Family::Ring)) return preset(2.0, true);
-    if (families == family_bit(Family::PiStacking)) return preset(3.7, true);
-    // Covalent cages: the 3D counterpart of ring centres
-    if (families == family_bit(Family::Cage)) return preset(2.0, true);
-    // Provisional, not calibrated: a longer contact than a hydrogen bond
-    if (families == family_bit(Family::HalogenBond)) return preset(2.2, false);
-    return {};
 }
 
 UniformDefaults uniform_defaults() { return {}; }
@@ -553,6 +536,7 @@ bool build_reference_map(ReferenceMap* out, const ReferenceData& data, std::span
         subfamily.systems = sub.systems;
         subfamily.category = sub.category;
         subfamily.overlap = sub.overlap;
+        subfamily.parent = sub.parent ? sub.parent : "";
         if (build(&subfamily, sub.field)) out->subfamilies.push_back(std::move(subfamily));
     }
     return out->valid;
@@ -599,7 +583,7 @@ std::vector<float> reference_subfamily_shares(const ReferenceMap& map, size_t ca
     float total = 0.0f;
     for (size_t i = 0; i < shares.size(); ++i) {
         const ReferenceCategory& sub = map.subfamilies[i];
-        if (sub.category != category || !sub.valid) continue;
+        if (sub.category != category || !sub.valid || sub.parent[0]) continue;
         shares[i] = std::max(0.0f, reference_value(sub.field, map.rho_extent, signed_rho, s));
         total += shares[i];
     }

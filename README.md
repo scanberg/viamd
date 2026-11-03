@@ -213,57 +213,36 @@ positive repulsive. The default Jet palette maps these to blue, green and red.
 Density is sampled on a grid (Coarse 0.3, Medium 0.2 or Fine 0.13 Bohr) and
 differentiated by finite differences. A finer grid is smoother and more accurate,
 but takes longer. Connected regions keep six-connected low-s components seeded
-near anchor CPs; an optional radius cap limits their extent. This segmentation
+near anchor CPs; a uniform 2.7 Bohr radius cap limits their extent. This segmentation
 depends on grid resolution and thresholds and is not a unique physical
 partition. Regions without an anchor are excluded.
 
-One general mode applies to every NCI layer, the Full system included:
+Every CP-anchored layer, including Full system, uses the reference extraction:
+**s ≤ 1.0, ρ ≤ 0.07, R = 2.7 Bohr**, both signs of λ2, connected regions and
+nearest-CP ownership. There is no CP-adaptive mode or per-type radius. These
+extraction parameters are fixed, not display controls.
 
-* **Uniform** is standard NCI: one isovalue s, density cutoff and radius around
-  the CPs for every CP type.
-* **CP-adaptive** uses the same isovalue and cutoff, but each CP type's own
-  radius around its anchor CPs, so extended interactions such as π-stacking
-  are covered while compact ones stay local. Only the extent changes, so the
-  surfaces of different types stay consistent.
-
-All settings are applied automatically and tuned in one place, the **NCI
-settings** (gear button): the mode, the isovalue and cutoff, the scatter s, the Uniform
-radius, resolution, connected regions, opacity and the colour scale, then in
-CP-adaptive mode a compact per-type radius table.
+The **NCI settings** (gear button) adjust the **surface isovalue**, resolution,
+opacity and colour scale. The surface isovalue defaults to **0.7** and can be
+lowered for a clearer surface; it does not change the scatter samples or reference.
 
 The NCI types come from the CP classification: a contact CP's type is its
 branch under Contacts in the CP tree. Hydrogen bonds (including ionic ones and salt bridges) and σ-hole bonds (halogen,
 chalcogen, pnictogen, tetrel, triel, aerogen) are their own types; π···π, C-H···π,
 X-H···π, cation/anion/lone pair···π and π-hole bonds are all π interactions, so every π
-contact shares one radius; the remaining contacts (C-H···X, H···H, dihydrogen, metal,
+contact shares one type; the remaining contacts (C-H···X, H···H, dihydrogen, metal,
 ion pair, van der Waals, ...) are other contacts. Rings
-and cages keep their own types. The settings table lists the CP types. Bond, bond-path and attractor CPs
+and cages keep their own types. Bond, bond-path and attractor CPs
 anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
-the same interaction region automatically share parameters. For example, a ring
-closed by π···π uses the π-interaction parameters, so one region is cut at one
-radius. Calibrated type radii are:
-
-| Family | Radius (Bohr) |
-|--------|---------------|
-| Hydrogen bonds | 1.7 |
-| Rings | 2.0 |
-| π interactions (π···π, C-H···π, X-H···π) | 3.7 |
-| Cages | 2.0 |
-| σ-hole bonds | 2.2 (provisional, uncalibrated) |
-
-Other contacts and unassigned CPs use r=2.7 until they are calibrated. The
-displayed isovalue and cutoff default to s=0.7 and ρ<0.07 in both modes, the
-Uniform radius to 2.7 and the colour range to ±0.03. The surface and the scatter
-share the cutoff and radius, but not s: with connected regions, the scatter's
-regions grow to the **scatter s** (1.0 by default, the reference's), so the
-scatter plot covers what the reference map does while the surface stays at its
-own isovalue, marked by the isovalue line in the plot. The reference statistics
-use their own uniform extraction (s ≤ 1.0, ρ ≤ 0.07, R = 2.7 Bohr for every CP
-type, both signs of λ2, each sample assigned to its nearest CP), independent of
-the displayed ones. All defaults are defined together in
-`src/components/topology/nci_surface_core.{h,cpp}`. Type regions are
-visualization choices; they do not assign a unique physical extent to an
-interaction.
+the same interaction region share the same parameters. A ring closed by π···π
+keeps the π-interaction type for classification, but uses the same extraction
+radius as every other CP. The surface and scatter share the density cutoff,
+radius and ownership rule; only the surface's display isovalue is lower than
+the scatter cutoff. In the graph a **dashed line at s = 1** marks the
+reference/scatter cutoff, while a separate movable **surface isovalue** line
+marks the displayed surface. Defaults are defined in
+`src/components/topology/nci_surface_core.{h,cpp}`. These regions do not assign
+a unique physical extent to an interaction.
 
 One colour scale applies to every NCI surface: one palette (Jet by default) and
 one range, symmetric around zero with zero at the palette midpoint, and one
@@ -324,15 +303,28 @@ Hovering the plot inside the reference lists its categories there from the most
 likely, each with its share of the categories' reference densities (each
 category weighing the same) and the smallest drawn area enclosing the point; a
 hovered sample's tooltip adds the same lines, each category followed by its
-subfamilies' part of its share. **Subfamilies** in the inspector list each
-category's CP-tree branches (hydrogen bonds and ionic hydrogen bonds; aromatic,
-aliphatic and contact-closed rings; π-stacking, C-H···π, X-H···π, cation···π and
-lone pair···π; halogen, chalcogen, pnictogen and tetrel bonds, C-H···X, H···H,
-van der Waals contacts and cages), each pooled per CP from the reference
-calculations holding one (at least 5); a checked subfamily is
-drawn as lines at the reference levels in a shade of its category's colour, and
-its tooltip gives its calculations and the overlap of its 90 % area with its
-category's. Each layer row reports the share of its category samples inside their
+subfamilies' part of its share. The collapsed **Interaction guides** section in
+the Reference inspector has **Add interaction guide...**: browse all available
+maps grouped by category, or search by name or chemical description. Hover an
+entry for a short explanation and its number of supporting systems. The optional
+**Other recognised interactions** section lists classes without a standalone map
+(fewer than 5 supporting systems); these cannot be selected. Expand a class to
+choose **Whole class** or its finer maps: donor/acceptor and intra/intermolecular
+hydrogen bonds, ring size/composition and contact-closed rings, element-pair
+and intra/intermolecular refinements of every other contact class, and cage
+subtypes. The baked reference has 18 whole-class maps and 88 finer maps; only
+refinements with at least five supporting systems are offered.
+Only selected guides stay in the inspector, with visibility and remove controls;
+**Clear** removes them all. Each guide draws only its **90% volume isoline**, in
+a shade of its category's colour, and has a `Ref:` legend entry whose swatch
+toggles it. These outlines are independent of the category map's visibility,
+opacity and levels: hide **Reference** to see just the selected guides.
+The default scatter view spans **s = 0 to 1.1**, leaving headroom above the
+cutoff. Double-click and the fit button restore that range, not s = 2.
+Saved previews inherit their deepest shared chemical-environment name, such
+as **N–H···O**, rather than just Hydrogen bonds; mixed selections fall back
+to a shared branch or a combined name.
+Each layer row reports the share of its category samples inside their
 category's 90 % area, whatever levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one

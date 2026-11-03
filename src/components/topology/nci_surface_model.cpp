@@ -12,16 +12,9 @@
 
 namespace topology {
 
-NciFamilySettings nci_family_default_settings(nci_surface::Family family) {
-    const nci_surface::Defaults defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
-    NciFamilySettings settings;
-    settings.radius = (float)defaults.radius;
-    return settings;
-}
-
 NciUniformSettings nci_uniform_default_settings() {
     const nci_surface::UniformDefaults defaults = nci_surface::uniform_defaults();
-    return {(float)defaults.s_iso, (float)defaults.scatter_s, (float)defaults.rho_max, (float)defaults.radius};
+    return {(float)defaults.s_iso};
 }
 
 ColorScale nci_default_scale() {
@@ -31,8 +24,6 @@ ColorScale nci_default_scale() {
 }
 
 namespace {
-
-size_t family_index(const NciSurface& n) { return nci_settings_index(n); }
 
 template <typename F>
 void for_each_surface(NciState& state, F&& f) {
@@ -104,10 +95,6 @@ std::vector<NciSurface*> nci_layer_members(NciState& state, int key) {
     return members;
 }
 
-size_t nci_settings_index(const NciSurface& n) {
-    return n.families ? (size_t)n.group : (size_t)nci_surface::Family::Unassigned;
-}
-
 std::string nci_layer_types(const std::vector<NciSurface*>& members) {
     std::array<uint32_t, nci_surface::family_count> counts = {};
     bool whole_system = false;
@@ -133,16 +120,13 @@ void nci_apply_settings(NciState& state) {
     apply_visibility(state);
     const auto apply = [&](const std::vector<NciSurface*>& members) {
         for (NciSurface* n : members) {
-            const NciFamilySettings& settings = state.family_settings[family_index(*n)];
-            // Without classified CPs the whole system has no CP type to adapt to
-            const bool adaptive = state.mode == NciParameterMode::CPAdaptive && n->families;
             n->s_iso = state.uniform.s_iso;
-            n->scatter_s = state.uniform.scatter_s;
-            n->rho_max = state.uniform.rho_max;
-            n->near_radius = adaptive ? settings.radius : state.uniform.radius;
+            n->scatter_s = (float)nci_surface::reference_scatter_s;
+            n->rho_max = (float)nci_surface::reference_rho_max;
+            n->near_radius = (float)nci_surface::reference_radius;
             n->resolution = state.resolution;
-            n->connected = state.connected;
-            n->radius_cap = state.radius_cap;
+            n->connected = true;
+            n->radius_cap = true;
             n->opacity = state.opacity;
             n->editing |= state.settings_editing;
         }
@@ -470,13 +454,17 @@ void nci_update_surfaces(NciState& state, const NciSurfaceRuntimeInput& runtime,
     NciSurface& context = state.context;
     context.shown = show_context;
     context.id = -1;
-    context.scope = NciSurface::Scope_Everywhere;
-    context.connected = false;
+    context.anchors.clear();
+    for (const auto& n : state.full_system)
+        context.anchors.insert(context.anchors.end(), n->anchors.begin(), n->anchors.end());
+    context.competitors = context.anchors;
+    context.scope = context.anchors.empty() ? NciSurface::Scope_Everywhere : NciSurface::Scope_Selected;
+    context.connected = true;
+    context.radius_cap = true;
+    context.near_radius = (float)nci_surface::reference_radius;
+    context.scatter_s = (float)nci_surface::reference_scatter_s;
     context.resolution = state.resolution;
-    context.rho_max = state.primary.rho_max;
-    for (const auto& n : state.previews) if (nci_scale_member(*n)) context.rho_max = MAX(context.rho_max, n->rho_max);
-    for (const auto& n : state.full_system) if (nci_scale_member(*n)) context.rho_max = MAX(context.rho_max, n->rho_max);
-    for (const auto& n : state.objects) if (nci_scale_member(*n)) context.rho_max = MAX(context.rho_max, n->rho_max);
+    context.rho_max = (float)nci_surface::reference_rho_max;
     context.generation = state.primary.generation;
     update_nci_surface(context, runtime, true);
     nci_update_scale(state);

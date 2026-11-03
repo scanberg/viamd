@@ -15,11 +15,6 @@
 
 namespace topology {
 
-// Uniform: one isovalue, density cutoff and radius for every CP type (NciState::uniform), standard NCI.
-// CPAdaptive: the same isovalue and density cutoff, with each CP type's own radius around its CPs
-// (NciState::family_settings). One colour scale applies in both modes.
-enum class NciParameterMode : uint8_t { Uniform, CPAdaptive };
-
 constexpr int NCI_LAYER_FULL_SYSTEM = -1000;
 constexpr int NCI_LAYER_PREVIEW = -1001;
 constexpr int NCI_LAYER_NONE = 0;
@@ -34,10 +29,10 @@ struct NciSurface {
 
     bool shown = false;
     bool layer_visible = true;
-    float s_iso = 0.5f;
+    float s_iso = 0.7f;
     // The s the scatter's connected regions grow to, independent of the surface isovalue
-    float scatter_s = 1.0f;
-    float rho_max = 0.05f;
+    float scatter_s = (float)nci_surface::reference_scatter_s;
+    float rho_max = (float)nci_surface::reference_rho_max;
     ColorScale scale = {.colormap = ImPlotColormap_Jet, .range_beg = -0.04f, .range_end = 0.04f,
                         .symmetric = true, .auto_range = true, .show_legend = true};
     ColorScaleSpan span = {};
@@ -94,21 +89,10 @@ struct NciSurface {
     int uploaded_colormap = -1;
 };
 
-// The settings of one CP type, applied automatically to every layer and tuned in the NCI settings.
-// The radius applies in both modes; the isovalue and density cutoff only in CP-adaptive mode.
-// The radius around the CPs of one type, used in CP-adaptive mode
-struct NciFamilySettings {
-    float radius = 2.7f;
-};
-
 struct NciUniformSettings {
-    float s_iso = 0.5f;
-    float scatter_s = 1.0f;
-    float rho_max = 0.05f;
-    float radius = 2.7f;
+    float s_iso = 0.7f;
 };
 
-NciFamilySettings nci_family_default_settings(nci_surface::Family family);
 // The grid spacing a resolution asks for, Bohr; large boxes are sampled more coarsely (see NciSurface::grid)
 double nci_resolution_spacing(int resolution);
 NciUniformSettings nci_uniform_default_settings();
@@ -160,29 +144,23 @@ struct NciReferenceLayer {
     int num_levels = (int)nci_surface::reference_default_fractions.size();
     float levels[nci_max_levels] = {nci_surface::reference_default_fractions[0], nci_surface::reference_default_fractions[1],
                                     nci_surface::reference_default_fractions[2]};
-    // Bit i: subfamily i of the reference map drawn as lines, in a shade of its category's colour; none by default
-    uint64_t subfamilies_shown = 0;
+    // Guides are independent of the category map's visibility and levels.
+    // 0: absent, 1: selected but hidden, 2: selected and visible.
+    std::vector<uint8_t> guides;
+    char guide_search[128] = {};
 };
 
 struct NciState {
     NciSurface primary;
-    std::array<NciFamilySettings, nci_surface::family_count> family_settings = [] {
-        std::array<NciFamilySettings, nci_surface::family_count> settings;
-        for (size_t f = 0; f < settings.size(); ++f) settings[f] = nci_family_default_settings((nci_surface::Family)f);
-        return settings;
-    }();
     bool export_scatter_requested = false;
     bool export_scatter_in_progress = false;
     float export_scatter_progress = 0.0f;
     std::string export_scatter_status;
     NciUniformSettings uniform = nci_uniform_default_settings();
-    NciParameterMode mode = NciParameterMode::Uniform;
     // The one colour scale of every NCI surface; Auto follows the shown layer
     ColorScale scale = nci_default_scale();
     ColorScaleSpan span = {};
     int resolution = NciSurface::Res_Medium;
-    bool connected = true;
-    bool radius_cap = true;
     float opacity = 1.0f;
     bool settings_editing = false;
 
@@ -269,7 +247,6 @@ std::string nci_layer_types(const std::vector<NciSurface*>& members);
 // The interaction a surface is computed for, e.g. "\xCF\x80-stacking" (its rings closed by \xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80 included)
 std::string nci_family_label(const NciSurface& surface);
 // The index of the settings the surface uses
-size_t nci_settings_index(const NciSurface& surface);
 void nci_apply_settings(NciState& state);
 void nci_update_scale(NciState& state);
 bool nci_surface_visible(const NciState& state, const NciSurface& surface);
