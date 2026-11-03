@@ -11,6 +11,8 @@
 
 #include <md_system.h>
 #include <md_util.h>
+#include <md_smiles.h>
+#include <md_match.h>
 #include <script_engine.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -466,6 +468,8 @@ void push_suggestion(md_array(ScriptSuggestion)* out, str_t text, str_t hint, md
 
 }  // namespace
 
+static void smiles_selection_line(md_array(ScriptSuggestion)* out, str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc);
+
 md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
     md_array(ScriptSuggestion) out = 0;
     if (md_bitset_empty(sel) || sys.atom.count == 0 || str_empty(ident)) return out;
@@ -510,8 +514,166 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
         for (size_t i = 0; i < md_array_size(listed) && !offer(listed[i], true); ++i) {}
     }
 
+    // By its chemistry: its canonical SMILES, where one of the places it matches is the selection's heavy atoms
+    smiles_selection_line(&out, ident, sel, sys, temp, alloc);
+
     md_arena_allocator_destroy(temp);
     return out;
+}
+
+// ### CHEMISTRY ###
+
+struct Line { str_t text; str_t hint; };
+
+// The atoms within radius bonds of any of the seeds, heavy ones only besides the seeds themselves: the context a
+// pattern needs to say where it is. Sorted.
+static md_array(int32_t) neighbourhood(const int32_t* seeds, size_t n, int radius, const md_system_t& sys, md_allocator_i* temp) {
+    md_array(int32_t) out = 0;
+    md_array(int32_t) front = 0;
+    for (size_t i = 0; i < n; ++i) { md_array_push(out, seeds[i], temp); md_array_push(front, seeds[i], temp); }
+    for (int r = 0; r < radius; ++r) {
+        md_array(int32_t) next = 0;
+        for (size_t f = 0; f < md_array_size(front); ++f) {
+            md_bond_iter_t it = md_bond_iter(&sys.bond, (size_t)front[f]);
+            while (md_bond_iter_has_next(&it)) {
+                const int32_t o = md_bond_iter_atom_index(&it);
+                const md_bond_kind_t kind = md_bond_kind((md_bond_flags_t)md_bond_iter_bond_flags(&it));
+                md_bond_iter_next(&it);
+                if (kind != MD_BOND_KIND_COVALENT && kind != MD_BOND_KIND_COORDINATE) continue;
+                if (md_atom_atomic_number(&sys.atom, (size_t)o) == 1) continue;
+                bool have = false;
+                for (size_t k = 0; k < md_array_size(out) && !have; ++k) have = out[k] == o;
+                if (have) continue;
+                md_array_push(out, o, temp);
+                md_array_push(next, o, temp);
+            }
+        }
+        front = next;
+    }
+    qsort(out, md_array_size(out), sizeof(int32_t), cmp_int32);
+    return out;
+}
+
+// Whether the atoms are one piece through their bonds
+static bool connected(const int32_t* atoms, size_t n, const md_system_t& sys, md_allocator_i* temp) {
+    if (!n) return false;
+    bool* seen = (bool*)md_alloc(temp, n * sizeof(bool));
+    memset(seen, 0, n * sizeof(bool));
+    size_t* stack = (size_t*)md_alloc(temp, n * sizeof(size_t));
+    size_t top = 0, reached = 1;
+    seen[0] = true;
+    stack[top++] = 0;
+    while (top) {
+        const size_t a = stack[--top];
+        md_bond_iter_t it = md_bond_iter(&sys.bond, (size_t)atoms[a]);
+        while (md_bond_iter_has_next(&it)) {
+            const int32_t o = md_bond_iter_atom_index(&it);
+            md_bond_iter_next(&it);
+            for (size_t k = 0; k < n; ++k) {
+                if (atoms[k] != o || seen[k]) continue;
+                seen[k] = true;
+                reached += 1;
+                stack[top++] = k;
+            }
+        }
+    }
+    return reached == n;
+}
+
+// Whether a pattern is cheap to look for and specific: found within a bounded search, and no more than a few hundred
+// times. A pattern of a methyl or a water is neither, in a membrane of thousands of lipids.
+static bool few_matches(size_t* count, str_t pattern, const md_system_t& sys, md_allocator_i* temp) {
+    md_match_query_t q = {};
+    if (!md_match_query_init_smiles(&q, pattern, temp, NULL)) return false;
+    md_match_desc_t desc = {};
+    desc.query = &q;
+    desc.level = MD_MATCH_LEVEL_MOLECULE;
+    desc.mode = MD_MATCH_MODE_UNIQUE;
+    desc.limit = 501;
+    desc.max_steps = 1u << 20;
+    md_match_result_t res = {};
+    if (!md_match_find(&res, &desc, &sys, temp) || res.incomplete || res.count == 0 || res.count > 500) return false;
+    *count = res.count;
+    return true;
+}
+
+static void smiles_lines(md_array(Line)* lines, str_t ident, const char* proc, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* temp) {
+    if (!sys.bond.count) return;
+    size_t last_matches = 0;
+    for (int radius = 1; radius <= 2; ++radius) {
+        md_array(int32_t) ctx = neighbourhood(atoms, count, radius, sys, temp);
+        const size_t n = md_array_size(ctx);
+        if (n > 64 || !connected(ctx, n, sys, temp)) return;
+        uint32_t* cls = (uint32_t*)md_alloc(temp, n * sizeof(uint32_t));
+        for (size_t i = 0; i < n; ++i) {
+            cls[i] = 0;
+            for (size_t j = 0; j < count; ++j) if (ctx[i] == atoms[j]) cls[i] = (uint32_t)j + 1;
+        }
+        char pattern[512];
+        const size_t len = md_smiles_write(pattern, sizeof(pattern), &sys, ctx, n, cls);
+        if (!len || len >= sizeof(pattern) || len > 160) return;
+        if (strchr(pattern, '\'') || strchr(pattern, '\\')) return;
+        size_t estimate = 0;
+        if (!few_matches(&estimate, str_from_cstr(pattern), sys, temp)) continue;
+        md_str_writer_t sb = md_str_writer_create(temp);
+        md_str_writer_fmt(&sb, "smiles_atoms('%s')", pattern);
+        const str_t expr = take(&sb, temp);
+        // The picked atoms are one row of what it gives, in order; the rows are the matches
+        md_array(md_bitset_t) sets = 0;
+        if (!filter_sets(&sets, expr, sys, temp) || md_array_size(sets) == 0 || md_array_size(sets) % count) continue;
+        const size_t matches = md_array_size(sets) / count;
+        bool found = false;
+        for (size_t m = 0; m < matches && !found; ++m) {
+            bool row = true;
+            for (size_t j = 0; j < count && row; ++j) row = md_bitset_count(sets[m * count + j]) == 1 && md_bitset_test(sets[m * count + j], (uint32_t)atoms[j]);
+            found = row;
+        }
+        if (!found) continue;
+        if (matches == last_matches) continue;     // no more telling than the shorter one
+        last_matches = matches;
+        md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(expr));
+        const str_t text = take(&sb, temp);
+        if (matches == 1) md_str_writer_fmt(&sb, "By the chemistry around the atoms, %d bond%s out: found only here", radius, radius == 1 ? "" : "s");
+        else md_str_writer_fmt(&sb, "One value for each of the %zu places with this chemistry, %d bond%s out", matches, radius, radius == 1 ? "" : "s");
+        Line l = {text, take(&sb, temp)};
+        md_array_push(*lines, l, temp);
+    }
+}
+
+str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
+    const size_t n = md_bitset_count(sel);
+    if (n == 0 || n > 4 * MD_SMILES_WRITE_MAX) return {};
+    uint32_t* idx = (uint32_t*)md_alloc(alloc, n * sizeof(uint32_t));
+    md_bitset_extract_indices(idx, n, sel);
+    // The heavy atoms, hydrogens implicit; all of them where there are no heavy atoms
+    int32_t* atoms = (int32_t*)md_alloc(alloc, n * sizeof(int32_t));
+    size_t m = 0;
+    for (size_t i = 0; i < n; ++i) if (md_atom_atomic_number(&sys.atom, idx[i]) != 1) atoms[m++] = (int32_t)idx[i];
+    if (m == 0) for (size_t i = 0; i < n; ++i) atoms[m++] = (int32_t)idx[i];
+    if (m > MD_SMILES_WRITE_MAX) return {};
+    const size_t len = md_smiles_write(NULL, 0, &sys, atoms, m, NULL);
+    if (!len) return {};
+    char* buf = (char*)md_alloc(alloc, len + 1);
+    md_smiles_write(buf, len + 1, &sys, atoms, m, NULL);
+    return {buf, len};
+}
+
+static void smiles_selection_line(md_array(ScriptSuggestion)* out, str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc) {
+    if (!sys.bond.count) return;
+    const str_t canon = script_selection_smiles(sel, sys, temp);
+    if (str_empty(canon) || canon.len > 200 || str_find_char(NULL, canon, '\'')) return;
+    // A line here picks the selection: every place with the chemistry is selected, and nothing else, hydrogens
+    // aside, which the pattern leaves implicit
+    size_t matches = 0;
+    if (!few_matches(&matches, canon, sys, temp)) return;
+    md_str_writer_t sb = md_str_writer_create(temp);
+    md_str_writer_fmt(&sb, "smiles('" STR_FMT "')", STR_ARG(canon));
+    const str_t expr = take(&sb, temp);
+    if (!picks_exactly(expr, sel, sys, temp)) return;
+    md_str_writer_fmt(&sb, STR_FMT " = " STR_FMT, STR_ARG(ident), STR_ARG(expr));
+    const str_t text = take(&sb, temp);
+    md_str_writer_fmt(&sb, "By their chemistry, as canonical SMILES: %zu place%s", matches, matches == 1 ? "" : "s");
+    push_suggestion(out, text, take(&sb, temp), alloc);
 }
 
 md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc) {
@@ -526,7 +688,6 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
 
     md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
     Ctx c = {&sys, temp};
-    struct Line { str_t text; str_t hint; };
     md_array(Line) lines = 0;
     md_str_writer_t sb = md_str_writer_create(temp);
 
@@ -602,20 +763,25 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         return true;
     };
     if (by_res && same_res) {
-        // One residue: its particles stacked, by name or by position, and the measurement of them as one argument
-        sb += rexpr[0];
-        sb += "[[";
-        for (size_t i = 0; i < count; ++i) {
-            if (i) sb += ", ";
-            if (all_unique) write_quoted(&sb, names[i]);
-            else md_str_writer_fmt(&sb, "%d", pos[i]);
-        }
-        sb += "]]";
-        const str_t stacked = take(&sb, temp);
-        if (stacks(stacked, atoms, count)) {
-            md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
-            Line l = {take(&sb, temp), {}};
-            md_array_push(lines, l, temp);
+        // One residue: its particles stacked, by name where each name is its own, and by position within it (v1's
+        // angle(2,1,3) in residue(5)), each measured as one argument
+        for (int by_pos = 0; by_pos < 2; ++by_pos) {
+            if (!by_pos && !all_unique) continue;
+            sb += rexpr[0];
+            sb += "[[";
+            for (size_t i = 0; i < count; ++i) {
+                if (i) sb += ", ";
+                if (!by_pos) write_quoted(&sb, names[i]);
+                else md_str_writer_fmt(&sb, "%d", pos[i]);
+            }
+            sb += "]]";
+            const str_t stacked = take(&sb, temp);
+            if (stacks(stacked, atoms, count)) {
+                md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
+                const str_t text = take(&sb, temp);
+                Line l = {text, by_pos ? STR_LIT("By position within the residue") : str_t{}};
+                md_array_push(lines, l, temp);
+            }
         }
     } else if (by_res) {
         // Across residues: each particle by its residue, and its name or its position there
@@ -642,44 +808,47 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         md_array(md_bitset_t) units = 0;
         size_t num_res = filter_sets(&units, every, sys, temp) ? md_array_size(units) : 0;
         if (num_res > 1) {
-            // By positions only where every residue of the name has the selected residue's names, in its order
+            // By the names where each residue has each once; by positions where every residue of the name has the
+            // selected residue's particles, by name, in the same order, so a position means the same in each
+            const size_t n0 = md_bitset_count(res0);
             bool same = true;
-            if (!all_unique) {
-                const size_t n0 = md_bitset_count(res0);
-                uint32_t* a0 = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
-                uint32_t* au = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
-                md_bitset_extract_indices(a0, n0, res0);
-                for (size_t u = 0; u < num_res && same; ++u) {
-                    same = md_bitset_count(units[u]) == n0;
-                    if (!same) break;
-                    md_bitset_extract_indices(au, n0, units[u]);
-                    for (size_t q = 0; q < n0 && same; ++q) same = str_eq(md_atom_name(&sys.atom, a0[q]), md_atom_name(&sys.atom, au[q]));
+            uint32_t* a0 = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
+            uint32_t* au = (uint32_t*)md_alloc(temp, (n0 ? n0 : 1) * sizeof(uint32_t));
+            md_bitset_extract_indices(a0, n0, res0);
+            for (size_t u = 0; u < num_res && same; ++u) {
+                same = md_bitset_count(units[u]) == n0;
+                if (!same) break;
+                md_bitset_extract_indices(au, n0, units[u]);
+                for (size_t q = 0; q < n0 && same; ++q) same = str_eq(md_atom_name(&sys.atom, a0[q]), md_atom_name(&sys.atom, au[q]));
+            }
+            for (int by_pos = 0; by_pos < 2; ++by_pos) {
+                if (!by_pos && !all_unique) continue;
+                if (by_pos && !same) continue;
+                sb += every;
+                sb += by_pos ? ".particles[[" : "[[";
+                for (size_t i = 0; i < count; ++i) {
+                    if (i) sb += ", ";
+                    if (!by_pos) write_quoted(&sb, names[i]);
+                    else md_str_writer_fmt(&sb, "%d", pos[i]);
                 }
-            }
-            if (!same) num_res = 0;
-            const bool use_names = all_unique;
-            sb += every;
-            if (use_names) {
-                sb += "[[";
-                for (size_t i = 0; i < count; ++i) { if (i) sb += ", "; write_quoted(&sb, names[i]); }
-            } else {
-                sb += ".particles[[";
-                for (size_t i = 0; i < count; ++i) { if (i) sb += ", "; md_str_writer_fmt(&sb, "%d", pos[i]); }
-            }
-            sb += "]]";
-            const str_t stacked = take(&sb, temp);
-            md_array(md_bitset_t) sets = 0;
-            bool ok = filter_sets(&sets, stacked, sys, temp) && md_array_size(sets) == num_res * count;
-            for (size_t k = 0; k < md_array_size(sets) && ok; ++k) ok = md_bitset_count(sets[k]) == 1;
-            if (ok) {
+                sb += "]]";
+                const str_t stacked = take(&sb, temp);
+                md_array(md_bitset_t) sets = 0;
+                bool ok = filter_sets(&sets, stacked, sys, temp) && md_array_size(sets) == num_res * count;
+                for (size_t k = 0; k < md_array_size(sets) && ok; ++k) ok = md_bitset_count(sets[k]) == 1;
+                if (!ok) continue;
                 md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
                 const str_t text = take(&sb, temp);
-                md_str_writer_fmt(&sb, "One value for each of the %zu " STR_FMT, num_res, STR_ARG(resname));
+                md_str_writer_fmt(&sb, "One value for each of the %zu " STR_FMT "%s", num_res, STR_ARG(resname), by_pos ? ", by position within each" : "");
                 Line l = {text, take(&sb, temp)};
                 md_array_push(lines, l, temp);
             }
         }
     }
+
+    // By the chemistry around the atoms, wherever it occurs: a SMILES of the atoms and their heavy neighbours, one and
+    // two bonds out, the atoms tagged in the order picked, [N:1][C:2]..., which smiles_atoms gives back in that order
+    smiles_lines(&lines, ident, proc, atoms, count, sys, temp);
 
     for (size_t i = 0; i < md_array_size(lines); ++i) {
         if (compiles(lines[i].text, sys, temp)) push_suggestion(&out, lines[i].text, lines[i].hint, alloc);

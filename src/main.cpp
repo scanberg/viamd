@@ -3079,6 +3079,7 @@ struct ScriptSuggestions {
     md_allocator_i* arena = nullptr;
     md_array(ScriptSuggestion) measure = 0;
     md_array(ScriptSuggestion) select = 0;
+    str_t smiles = {};      // The canonical SMILES of the selection's heavy atoms
 };
 
 static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, bool reset) {
@@ -3130,6 +3131,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
         md_arena_allocator_reset(cache.arena);
         cache.measure = 0;
         cache.select = 0;
+        cache.smiles = {};
         cache.key = key;
 
         if (num_atoms) {
@@ -3140,6 +3142,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
         if (num_selected) {
             const str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), cache.arena);
             cache.select = script_suggest_selection(state->script.language, ident, sel, sys, cache.arena);
+            if (sys.bond.count) cache.smiles = script_selection_smiles(sel, sys, cache.arena);
         }
     }
     return cache;
@@ -3352,6 +3355,21 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 ImGui::PushID((int)(1000 + i));
                 draw_script_suggestion(state, sug.select[i]);
                 ImGui::PopID();
+            }
+            if (!str_empty(sug.smiles)) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Copy SMILES")) {
+                    ImGui::SetClipboardText(sug.smiles.ptr);    // zero terminated
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
+                    ImGui::TextUnformatted(sug.smiles.ptr, sug.smiles.ptr + MIN(sug.smiles.len, (size_t)2048));
+                    ImGui::TextDisabled("The canonical SMILES of the selection's heavy atoms, the same whatever their order in the file:\n"
+                                        "smiles('...') finds every place with this chemistry");
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                }
             }
             if (!md_array_size(sug.measure) && !md_array_size(sug.select)) {
                 ImGui::TextDisabled(num_atoms_selected ? "No suggestions for the current selection" :

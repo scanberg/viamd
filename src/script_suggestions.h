@@ -40,6 +40,12 @@ md_array(ScriptSuggestion) script_suggest_selection(script::Language lang, str_t
 
 // The distance (2 atoms), angle (3) or dihedral (4) of the atoms, in the order they are given (the order they were
 // picked: the vertex of an angle is the second). By index; then by the residues which hold them, as the system counts
-// them and as the file numbers them; and, where they share a residue, the same measurement in every residue of its
-// name. Empty for any other number of atoms.
+// them and as the file numbers them, by name and by position within the residue; where they share a residue, the same
+// measurement in every residue of its name; and in VIAL, by the chemistry around them, a SMILES with the atoms tagged
+// [N:1][C:2]..., one and two bonds out, wherever it occurs. Empty for any other number of atoms.
 md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc);
+
+// The canonical SMILES of the selected atoms: the heavy atoms, the hydrogens implicit, the same text whatever their
+// order in the file, so two selections of the same chemistry read the same. What smiles('...') finds them by. Empty
+// where there is nothing to write or too much. Zero terminated.
+str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc);

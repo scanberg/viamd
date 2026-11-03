@@ -725,6 +725,39 @@ UTEST(script_suggestions, vial_what_the_particles_are) {
     unload(&l);
 }
 
+// By chemistry: the canonical SMILES of a selection, the same text for every copy of it, and a line where the places
+// with that chemistry are the selection
+UTEST(script_suggestions, vial_smiles_of_the_selection) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "tubulin-A-B.pdb"));
+    const md_system_t& sys = l.sys;
+    md_bitset_t gtp = select(l, "resname(\"GTP\")");
+    md_bitset_t gdp = select(l, "resname(\"GDP\")");
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    const str_t a = script_selection_smiles(gtp, sys, alloc);
+    const str_t b = script_selection_smiles(gdp, sys, alloc);
+    printf("    GTP %.*s\n    GDP %.*s\n", (int)a.len, a.ptr, (int)b.len, b.ptr);
+    EXPECT_FALSE(str_empty(a));
+    EXPECT_FALSE(str_eq(a, b));
+    EXPECT_EQ(0, (int)a.ptr[a.len]);     // zero terminated, for the clipboard
+    // Each copy reads the same
+    md_bitset_t gtp1 = select(l, "resname(\"GTP\") and chain(\"A\")");
+    if (!md_bitset_empty(gtp1) && !md_bitset_equal(gtp1, gtp)) EXPECT_TRUE(str_eq(a, script_selection_smiles(gtp1, sys, alloc)));
+
+    // Every GTP is the selection: the line picks it
+    md_array(ScriptSuggestion) s = suggest(l, gtp, V2);
+    print(s);
+    EXPECT_TRUE(all_pick(l, gtp, s, V2));
+    EXPECT_TRUE(any_contains(s, "sel1 = smiles('"));
+
+    // A methyl is everywhere: no line, but the text
+    EXPECT_FALSE(str_empty(script_selection_smiles(select(l, "atom(2)"), sys, alloc)));
+    s = suggest(l, select(l, "atom(2)"), V2);
+    EXPECT_FALSE(any_contains(s, "smiles("));
+    md_arena_allocator_destroy(alloc);
+    unload(&l);
+}
+
 // Names a residue holds twice: positions within it, stacked; and in every residue of the name, where each has the same
 // particles in the same order
 UTEST(script_suggestions, vial_measurement_by_position) {
@@ -776,8 +809,14 @@ UTEST(script_suggestions, vial_measurement) {
     for (size_t i = 0; i < md_array_size(s); ++i) {
         size_t loc;
         const bool every = str_find_str(&loc, s[i].text, STR_LIT("residues("));
-        EXPECT_TRUE(every == str_eq_cstr(s[i].hint, "One value for each of the 51 HIS"));
+        EXPECT_TRUE(every == str_begins_with(s[i].hint, STR_LIT("One value for each of the 51 HIS")));
     }
+    // And by position within it, as v1's angle(1,2,3) in residue(5), in it and in each HIS
+    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=5)[[0, 1, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residues('HIS').particles[[0, 1, 2]])"));
+    // And by the chemistry around it, wherever it occurs, the atoms tagged in the order picked
+    EXPECT_TRUE(any_contains(s, "m1 = angle(smiles_atoms('"));
+    EXPECT_TRUE(any_contains(s, "[N:1]"));
 
     // Across residues: not in every residue of a name
     md_array(ScriptSuggestion) t = measure(l, {"name(\"CA\") in residue(5)", "name(\"CA\") in residue(404)"}, V2);
