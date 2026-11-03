@@ -83,11 +83,17 @@ UTEST(critical_point_chemistry, selection_name_uses_specific_shared_environment)
         {"Contacts", "Hydrogen bonds", "N-H...O"},
         {"Contacts", "Hydrogen bonds", "N-H...O"}};
     EXPECT_TRUE(selection_environment_name(paths) == "N-H...O");
+    paths[0].push_back("Contact: Hydrogen bond: H (on N) ... O");
+    paths[1].push_back("Contact: Hydrogen bond: H (on N) ... O");
+    EXPECT_TRUE(selection_environment_name(paths) == "N-H...O");
     paths[1][2] = "O-H...O";
     EXPECT_TRUE(selection_environment_name(paths) == "Hydrogen bonds");
     paths = {{"Contacts", "Halogen bonds", "Br...O"}, {"Contacts", "Halogen bonds", "Br...O"}};
+    paths[0].push_back("Contact: Halogen bond: Br ... O");
+    paths[1].push_back("Contact: Halogen bond: Br ... O");
     EXPECT_TRUE(selection_environment_name(paths) == "Br...O");
     paths = {{"Rings", "Aromatic rings", "Aromatic 5-ring C4N"}};
+    paths[0].push_back("Ring: Aromatic 5-ring C4N");
     EXPECT_TRUE(selection_environment_name(paths) == "Aromatic 5-ring C4N");
     paths.clear();
     EXPECT_TRUE(selection_environment_name(paths).empty());

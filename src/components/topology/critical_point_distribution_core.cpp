@@ -108,12 +108,22 @@ std::string selection_environment_name(std::span<const std::vector<std::string>>
     bool first = true;
     for (const auto& path : paths) {
         if (path.empty()) continue;
+        size_t size = path.size();
+        // NCI inspector paths may end with a detailed "Contact: ..." CP label.
+        for (Kind kind : {Kind::Atom, Kind::Bond, Kind::Contact, Kind::BondPath, Kind::Ring,
+                          Kind::Cage, Kind::NonNuclear}) {
+            if (path.back().starts_with(std::string(kind_name(kind)) + ": ")) {
+                --size;
+                break;
+            }
+        }
+        if (!size) continue;
         if (first) {
-            common = path;
+            common.assign(path.begin(), path.begin() + size);
             first = false;
         } else {
             size_t depth = 0;
-            while (depth < common.size() && depth < path.size() && common[depth] == path[depth]) ++depth;
+            while (depth < common.size() && depth < size && common[depth] == path[depth]) ++depth;
             common.resize(depth);
         }
     }
@@ -136,8 +146,12 @@ std::vector<std::string> environment_path(const ChemicalLabel& label, const md_s
         else if (label.group.starts_with("Sugar ")) path.push_back("Sugar rings");
         else if (label.group.starts_with("Aliphatic ")) path.push_back("Aliphatic rings");
         else if (label.group.starts_with("Closed by ")) path.push_back("Contact-closed rings");
+        if (!label.group.empty()) path.push_back(label.group);
         break;
-    case Kind::Cage: path = {"Cages"}; break;
+    case Kind::Cage:
+        path = {"Cages"};
+        if (!label.group.empty()) path.push_back(label.group);
+        break;
     case Kind::NonNuclear: path = {"Non-nuclear attractors"}; break;
     case Kind::Unassigned: return {"Unassigned"};
     }

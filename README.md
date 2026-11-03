@@ -322,7 +322,9 @@ opacity and levels: hide **Reference** to see just the selected guides.
 The default scatter view spans **s = 0 to 1.1**, leaving headroom above the
 cutoff. Double-click and the fit button restore that range, not s = 2.
 Saved previews inherit their deepest shared chemical-environment name, such
-as **N–H···O**, rather than just Hydrogen bonds; mixed selections fall back
+as **N–H···O** or **Br···O**, without the descriptive CP prefix or atom-environment
+annotations. Ring and cage selections likewise use their chemical subtype.
+Mixed selections fall back
 to a shared branch or a combined name.
 Each layer row reports the share of its category samples inside their
 category's 90 % area, whatever levels are drawn, by category in its tooltip and
