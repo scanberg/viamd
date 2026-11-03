@@ -116,6 +116,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     paths = []
     for path in args[1:]:
+        # The per-CP densities (subfamily_regions.py's input), matched by a *-density.csv glob
+        if path.endswith("-cp-density.csv"):
+            continue
         found = density_file(path)
         if not found:
             print(f"{path}: not a density export, and no -density.csv companion was found")

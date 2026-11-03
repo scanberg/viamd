@@ -492,7 +492,7 @@ static std::string contact_class(const md_system_t& sys, std::span<const Positio
             if (qh != 0 || qy != 0) return "Ionic hydrogen bond";
             return "Hydrogen bond";
         }
-        if (pi_face(y)) {
+        if (pi_face(y) && !carbon_lone_pair(y)) {
             if (qh > 0) { why += ", from a cationic group."; return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
             why += ".";
             return z(parent) == 6 ? "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80" : "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";

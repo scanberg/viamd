@@ -486,6 +486,15 @@ UTEST(critical_point_chemistry, charged_metal_and_pi_hole_contact_classes) {
         s.bond(b, h);
         EXPECT_TRUE(interaction(s, h, o) == std::string("Hydride bond"));
     }
+    {   // C-H...C#N(-): the cyanide carbon's lone pair, not its pi face
+        Scene s;
+        const md_atom_flags_t sp = md_atom_flags_set_hybridization(MD_ATOM_FLAG_NONE, MD_HYBRIDIZATION_SP);
+        const int c = s.atom(6, {-1.1, 0, 0}, sp3), h = s.atom(1, {0, 0, 0}), cn = s.atom(6, {2.4, 0, 0}, sp),
+                  n = s.atom(7, {3.6, 0, 0}, sp);
+        s.bond(c, h);
+        s.bond(cn, n);
+        EXPECT_TRUE(interaction(s, h, cn) == std::string("C-H\xC2\xB7\xC2\xB7\xC2\xB7X"));
+    }
     {   // An unbonded hydride (ionic LiH): H-...Li ion pair, H-...H-F dihydrogen bond
         Scene s;
         const int li = s.atom(3, {-1.6, 0, 0}), h = s.atom(1, {0, 0, 0}), hf = s.atom(1, {1.6, 0, 0}),

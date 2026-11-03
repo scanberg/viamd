@@ -299,11 +299,21 @@ above the layers shows the built-in reference map, independent of the loaded
 system: per CP category (hydrogen bonds, rings, π interactions, other), the pooled
 (sign(λ2)ρ, s) density of uniform reference extractions (s ≤ 1.0 as a hard cut,
 ρ ≤ 0.07, R = 2.7 Bohr around every CP, both signs of λ2, each sample to its
-nearest NCI CP) over VeloxChem calculations, each system weighing the same:
-the S66 dimers at their eight S66x8 separations (B3LYP-D4/def2-SVP; each dimer
-weighs one system) and 49 larger test calculations (proteins, G-quadruplex,
-cages, helicenes, etc.), which add the strained intramolecular contacts small
-dimers lack.
+nearest NCI CP) over 1010 VeloxChem calculations (B3LYP-D4/def2-SVP), each
+system weighing the same: the S66 dimers at their eight S66x8 separations (each
+dimer weighs one system); the SH250 σ-hole set (halogen, chalcogen and pnictogen
+bonds; its 45 dimers with I, Te or Sb, which need effective core potentials,
+are left out); the IHB100 ionic hydrogen bonds; 29 hand-built systems for the
+rarer classes (cation···π, anion···π, lone pair···π, tetrel, π-hole and
+dihydrogen bonds, coordination, ion pairs); and 48 larger test calculations
+(protein, G-quadruplex, cages, helicenes, etc.), which add the strained
+intramolecular contacts small dimers lack. The same rule applies to every CP, so
+the reference matches what the scatter plot of a system shows; contacts denser
+than ρ = 0.07 at the bond (the strongest ionic hydrogen bonds) fall outside it,
+and the 2.7 Bohr sphere also holds the tails of nearby covalent density, the
+diagonal wings at |ρ| > 0.03.
+
+![Built-in reference map per category, and all categories together](docs/images/nci/reference_categories.png)
 Its inspector sets the style (**Combined**, default: the categories' colours
 mixed where they overlap, more opaque towards each core; **Dominant**: per point
 the densest category, more opaque at each deeper level; switching
@@ -315,10 +325,11 @@ likely, each with its share of the categories' reference densities (each
 category weighing the same) and the smallest drawn area enclosing the point; a
 hovered sample's tooltip adds the same lines, each category followed by its
 subfamilies' part of its share. **Subfamilies** in the inspector list each
-category's CP-tree branches (N-H···O, O-H···O and O-H···N bonds; aromatic,
-aliphatic and contact-closed rings; π-stacking, C-H···π and X-H···π; H···H,
-C-H···X, cages and other contacts), each pooled from the reference calculations
-whose CPs of that category all lie on it (at least 5); a checked subfamily is
+category's CP-tree branches (hydrogen bonds and ionic hydrogen bonds; aromatic,
+aliphatic and contact-closed rings; π-stacking, C-H···π, X-H···π, cation···π and
+lone pair···π; halogen, chalcogen, pnictogen and tetrel bonds, C-H···X, H···H,
+van der Waals contacts and cages), each pooled per CP from the reference
+calculations holding one (at least 5); a checked subfamily is
 drawn as lines at the reference levels in a shade of its category's colour, and
 its tooltip gives its calculations and the overlap of its 90 % area with its
 category's. Each layer row reports the share of its category samples inside their
@@ -327,8 +338,10 @@ inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one
 system's weight, and `subfamily_regions.py` for the subfamilies, then
 `bake_reference.py --subfamilies`); `validate_regions.py` reports how
-much of a test set's volume falls inside a map. Other wave functions may shift
-it.
+much of a test set's volume falls inside a map, and `plot_regions.py` draws
+the figures here. Other wave functions may shift it.
+
+![Reference density per interaction class, with its category's 90 % edge dashed](docs/images/nci/reference_interactions.png)
 
 A layer's inspector sets its name (saved layers), style (**Contours**: the
 outline of all its samples together at each level, optionally filled, stacked

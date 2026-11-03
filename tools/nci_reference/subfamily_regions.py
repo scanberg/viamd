@@ -4,11 +4,12 @@
 Reads each export's -cp-density.csv (the density per CP, from viamd_nci_reference) and -anchors.csv companions, so
 every CP counts in its own subfamily, whatever the other CPs of its system. Two levels:
 
-  1. the CP-tree branch under the reference category: hydrogen bonds by donor and acceptor (N-H···O, O-H···O, ...);
-     rings by kind (aromatic, aliphatic, contact-closed, ...); pi interactions and other by contact class (C-H···pi,
-     pi-stacking, sigma-hole bonds, H···H, cages, ...). Written to OUT_DIR (baked with bake_reference.py).
-  2. a finer split of each branch: hydrogen bonds and contacts by intra/intermolecular and element pair, rings by
-     size and composition ("Aromatic 6-ring C4N2", "Closed by Hydrogen bond, 7-ring"). Written to OUT_DIR/level2.
+  1. the CP-tree branch under the reference category: contacts by class (hydrogen bonds, ionic hydrogen bonds, salt
+     bridges, C-H···pi, pi-stacking, sigma-hole bonds, H···H, ...), rings by kind (aromatic, aliphatic,
+     contact-closed, ...), cages. Written to OUT_DIR (baked with bake_reference.py).
+  2. a finer split of each branch: hydrogen bonds by donor and acceptor (N-H···O, ...) and other contacts by element
+     pair, both by intra/intermolecular; rings by size and composition ("Aromatic 6-ring C4N2", "Closed by Hydrogen
+     bond, 7-ring"). Written to OUT_DIR/level2.
 
 Each subfamily is pooled as nci_reference_regions.py pools a category: every system weighing the same (--group as
 there; a system's CPs of the subfamily summed), smoothed, saved as sub_<n>.npy. A subfamily is kept with at least
@@ -36,10 +37,7 @@ EDGE = 0.9
 def branch(category, environment):
     """The CP's subfamily: the branch of its chemical-environment path under its reference category."""
     path = environment.split(" > ")
-    if category == "Hydrogen bonds":
-        # Contacts > Hydrogen bonds > N-H···O > ...
-        return path[2] if len(path) > 2 else None
-    # Rings > Aromatic rings > ...; Contacts > C-H···π > ...; Cage: Contact cage, 3 faces > ...
+    # Contacts > Hydrogen bonds | Ionic hydrogen bonds | Salt bridges > N-H···O > ...; > Aromatic rings > ...; Contacts > C-H···π > ...; Cage: Contact cage, 3 faces > ...
     if len(path) < 2:
         return None
     name = path[1].split(":")[0]
@@ -62,7 +60,9 @@ def finer(category, row, level1):
     ma, mb = row.get("molecule_a", ""), row.get("molecule_b", "")
     where = "" if not ma or not mb or ma == "-1" else (", intermolecular" if ma != mb else ", intramolecular")
     if category == "Hydrogen bonds":
-        return level1 + where
+        # By donor and acceptor: Contacts > Ionic hydrogen bonds > N-H···O > ...
+        path = row.get("chemical_environment", "").split(" > ")
+        return f"{level1}: {path[2]}{where}" if len(path) > 2 else None
     return f"{level1}: {'···'.join(sorted((ea, eb)))}{where}"
 
 
