@@ -2891,8 +2891,10 @@ static void draw_new_representation_menu(ApplicationState* state, const Represen
     if (open) {
         ImGui::TextDisabled("%llu atoms", (unsigned long long)md_bitset_count(target.atoms));
         ImGui::Separator();
+        const bool room = representation_can_add(*state);
+        if (!room) ImGui::TextDisabled("At most %zu representations per system", REPRESENTATION_MAX);
         auto item = [&](RepresentationType type, bool suggested) {
-            if (ImGui::MenuItem(representation_type_str[(int)type], suggested ? "suggested" : nullptr)) {
+            if (ImGui::MenuItem(representation_type_str[(int)type], suggested ? "suggested" : nullptr, false, room)) {
                 create_representation_of_target(state, target, type);
                 ImGui::CloseCurrentPopup();
             }
@@ -2972,7 +2974,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 if (ImGui::BeginMenu(buf)) {
                     // A representation of its own, to style the bond by, or one of the Bonds representations of the
                     // whole system
-                    if (ImGui::MenuItem("New Bonds Representation")) {
+                    if (ImGui::MenuItem("New Bonds Representation", nullptr, false, representation_can_add(*state))) {
                         representation_show_bond(state, pair, flags, nullptr);
                         ImGui::CloseCurrentPopup();
                     }

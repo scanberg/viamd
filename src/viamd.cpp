@@ -2448,10 +2448,11 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // The box as it was drawn: lines of a pixel, of its colour
     if (pending.box_enabled) {
-        Representation* box = create_representation(data, RepresentationType::SimulationBox);
-        snprintf(box->name, sizeof(box->name), "box");
-        if (pending.box_color.w > 0.0f) box->box.color = pending.box_color;
-        box->box.thickness = 0.0f;
+        if (Representation* box = create_representation(data, RepresentationType::SimulationBox)) {
+            snprintf(box->name, sizeof(box->name), "box");
+            if (pending.box_color.w > 0.0f) box->box.color = pending.box_color;
+            box->box.thickness = 0.0f;
+        }
     }
 
     // ## 3. Load the files, then apply what refers to them

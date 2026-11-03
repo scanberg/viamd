@@ -22,9 +22,13 @@ struct deserialization_state_t;
 
 // --- Representations ---
 
-// Appended at the end of 'group' (0 for the top level)
+// Whether count more can be made: a system has at most REPRESENTATION_MAX. What makes them returns NULL (or false)
+// rather than make one beyond it, and says so.
+bool representation_can_add(const ApplicationState& app, size_t count = 1);
+
+// Appended at the end of 'group' (0 for the top level). NULL when the system has as many as it can.
 Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
-// Placed just after the original, in the same group
+// Placed just after the original, in the same group. NULL when the system has as many as it can.
 Representation* clone_representation(ApplicationState* app, const Representation& rep);
 void remove_representation(ApplicationState* app, size_t idx);
 // The representations and the groups
@@ -79,8 +83,11 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
 
 // Appended at the end of 'parent' (0 for the top level)
 RepresentationGroup* create_representation_group(ApplicationState* app, str_t name = STR_LIT("group"), uint32_t parent = 0);
-// The group and everything within it, placed just after the original
+// The group and everything within it, placed just after the original. Nothing when the representations within it
+// would take the system beyond as many as it can have.
 void clone_representation_group(ApplicationState* app, uint32_t id);
+// How many representations the group holds, at any depth: what a copy of it adds
+size_t representation_group_rep_count(const ApplicationState& app, uint32_t id);
 // The group and everything within it
 void remove_representation_group(ApplicationState* app, uint32_t id);
 // The group goes, and what it held takes its place, in the group around it

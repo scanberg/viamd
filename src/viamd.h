@@ -1228,8 +1228,13 @@ struct SystemData {
 #endif
 };
 
+// The most representations a system has. A hard limit, kept far above what is used, so that what a renderer keeps per
+// atom and representation fits a fixed word: which representations an atom is in, as one bit each (uint32_t). Groups
+// are not counted: they draw nothing.
+constexpr size_t REPRESENTATION_MAX = 32;
+
 // THE REPRESENTATIONS OF A SYSTEM, and the groups they are in (representation.h). ApplicationState::representation of
-// the one system loaded (SystemContext::representation).
+// the one system loaded (SystemContext::representation). At most REPRESENTATION_MAX of them.
 struct SystemRepresentations {
     // Both in the order the window lists them. Where each one is in the tree of groups is on the
     // representation or group itself (representation_tree.h).

@@ -308,8 +308,21 @@ static uint32_t push_copy(ApplicationState* state, const Representation& src, ui
     return copy.node.id;
 }
 
+bool representation_can_add(const ApplicationState& app, size_t count) {
+    return md_array_size(app.representation.reps) + count <= REPRESENTATION_MAX;
+}
+
+// Said when one is not made for the limit
+static void log_representation_limit() {
+    VIAMD_LOG_ERROR("A system has at most %zu representations; remove one to make another", REPRESENTATION_MAX);
+}
+
 Representation* create_representation(ApplicationState* state, RepresentationType type, ColorMapping color_mapping, str_t filter, uint32_t group) {
     ASSERT(state);
+    if (!representation_can_add(*state)) {
+        log_representation_limit();
+        return nullptr;
+    }
     md_array_push(state->representation.reps, Representation(), state->allocator.persistent);
     Representation* rep = md_array_last(state->representation.reps);
     rep->node.id     = state->representation.next_rep_id++;
@@ -334,6 +347,10 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
 
 Representation* clone_representation(ApplicationState* state, const Representation& rep) {
     ASSERT(state);
+    if (!representation_can_add(*state)) {
+        log_representation_limit();
+        return nullptr;
+    }
     // Taken before anything moves: rep may be an element of the array
     const Representation src = rep;
     tree_normalize(state);
@@ -421,6 +438,16 @@ RepresentationGroup* create_representation_group(ApplicationState* state, str_t 
     return find_representation_group(state, group.node.id);
 }
 
+size_t representation_group_rep_count(const ApplicationState& app, uint32_t id) {
+    md_temp_scope_t temp = md_temp_begin();
+    md_array(uint32_t) rep_ids = 0;
+    md_array(uint32_t) group_ids = 0;
+    collect_within(&rep_ids, &group_ids, app, id, md_temp_allocator(temp));
+    const size_t n = md_array_size(rep_ids);
+    md_temp_end(temp);
+    return n;
+}
+
 void clone_representation_group(ApplicationState* state, uint32_t id) {
     ASSERT(state);
     tree_normalize(state);
@@ -433,6 +460,13 @@ void clone_representation_group(ApplicationState* state, uint32_t id) {
     md_array(uint32_t) rep_ids = 0;
     md_array(uint32_t) group_ids = 0;
     collect_within(&rep_ids, &group_ids, *state, id, alloc);
+
+    // All of it or none: a copy without some of what it held would not be a copy
+    if (!representation_can_add(*state, md_array_size(rep_ids))) {
+        log_representation_limit();
+        md_temp_end(temp);
+        return;
+    }
 
     // The groups first, so that every parent within the copy has its new id before anything refers to it.
     // The copy of the group itself goes just after the original and what it holds; what is within it keeps
@@ -2100,8 +2134,14 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
 }
 
 static void deserialize_representation(ApplicationState* data, viamd::deserialization_state_t& state) {
-    Representation* rep = create_representation(data);
     str_t ident, arg;
+    if (!representation_can_add(*data)) {
+        // Beyond as many as a system has: its entries are passed over
+        VIAMD_LOG_ERROR("Workspace: more representations than a system has (at most %zu); the rest are left out", REPRESENTATION_MAX);
+        while (viamd::next_entry(ident, arg, state)) {}
+        return;
+    }
+    Representation* rep = create_representation(data);
     while (viamd::next_entry(ident, arg, state)) {
         if (str_eq(ident, STR_LIT("Group"))) {
             // By the id of a [RepresentationGroup] before it. One that names nothing leaves it at the top level.
@@ -2954,10 +2994,21 @@ static void apply_window_actions(ApplicationState* state, const WindowActions& a
 }
 
 // The menu of a row, or of the empty space below them (node.id 0)
-static void draw_tree_menu(NodeRef node, WindowActions* act) {
+// Whether node can be duplicated: the representations it adds fit (REPRESENTATION_MAX)
+static bool can_duplicate(const ApplicationState& state, NodeRef node) {
+    return representation_can_add(state, node.group ? representation_group_rep_count(state, node.id) : 1);
+}
+
+static const char* limit_tip() {
+    static char buf[96];
+    snprintf(buf, sizeof(buf), "A system has at most %zu representations", REPRESENTATION_MAX);
+    return buf;
+}
+
+static void draw_tree_menu(const ApplicationState& state, NodeRef node, WindowActions* act) {
     const bool group = node.id && node.group;
     if (node.id == 0 || group) {
-        if (ImGui::MenuItem(ICON_FA_PLUS " Add representation")) {
+        if (ImGui::MenuItem(ICON_FA_PLUS " Add representation", nullptr, false, representation_can_add(state))) {
             act->add_representation = true;
             act->add_into = group ? node.id : 0;
         }
@@ -2980,9 +3031,10 @@ static void draw_tree_menu(NodeRef node, WindowActions* act) {
         ImGui::SetItemTooltip("Remove the group and keep what is in it, in its place");
     }
     ImGui::Separator();
-    if (ImGui::MenuItem(ICON_FA_COPY " Duplicate")) {
+    if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, can_duplicate(state, node))) {
         act->clone = node;
     }
+    if (!can_duplicate(state, node)) ImGui::SetItemTooltip("%s", limit_tip());
     if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) {
         act->remove = node;
     }
@@ -3112,10 +3164,17 @@ static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_
     }
     ImGui::SetItemTooltip(node.group ? "Show/Hide the group and everything in it" : "Show/Hide");
     ImGui::SameLine(0, tree.button_spacing);
+    const bool duplicable = can_duplicate(*state, node);
+    ImGui::BeginDisabled(!duplicable);
     if (ImGui::Button(ICON_FA_COPY, btn_size)) {
         act->clone = node;
     }
-    ImGui::SetItemTooltip(node.group ? "Duplicate the group and everything in it" : "Duplicate");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (!duplicable)     ImGui::SetTooltip("%s", limit_tip());
+        else if (node.group) ImGui::SetTooltip("Duplicate the group and everything in it");
+        else                 ImGui::SetTooltip("Duplicate");
+    }
     ImGui::SameLine(0, tree.button_spacing);
     if (ImGui::DeleteButton(ICON_FA_XMARK, btn_size)) {
         act->remove = node;
@@ -3602,7 +3661,7 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
         ImGui::OpenPopup("##menu");
     }
     if (ImGui::BeginPopup("##menu")) {
-        draw_tree_menu(node, act);
+        draw_tree_menu(*state, node, act);
         ImGui::EndPopup();
     }
 
@@ -3698,7 +3757,7 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
         ImGui::OpenPopup("##menu");
     }
     if (ImGui::BeginPopup("##menu")) {
-        draw_tree_menu(node, act);
+        draw_tree_menu(*state, node, act);
         ImGui::EndPopup();
     }
 
@@ -3743,6 +3802,14 @@ static void draw_representations_section(ApplicationState* state, const WindowTr
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Representations");
+    // How many of as many as it can have, once that comes near
+    const size_t num_reps = md_array_size(state->representation.reps);
+    if (num_reps + 4 >= REPRESENTATION_MAX) {
+        ImGui::SameLine();
+        if (num_reps >= REPRESENTATION_MAX) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%zu / %zu", num_reps, REPRESENTATION_MAX);
+        else                                ImGui::TextDisabled("%zu / %zu", num_reps, REPRESENTATION_MAX);
+        ImGui::SetItemTooltip("%s", limit_tip());
+    }
 
     ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
     if (ImGui::Button(ICON_FA_FOLDER_PLUS, {btn, btn})) {
@@ -3751,10 +3818,12 @@ static void draw_representations_section(ApplicationState* state, const WindowTr
     ImGui::SetItemTooltip("Add a group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
     ImGui::SameLine(0, spacing);
+    ImGui::BeginDisabled(!representation_can_add(*state));
     if (ImGui::Button(ICON_FA_PLUS, {btn, btn})) {
         act->add_representation = true;
     }
-    ImGui::SetItemTooltip("Add a representation");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", representation_can_add(*state) ? "Add a representation" : limit_tip());
 
     // Removing them all, behind a question: it cannot be taken back
     ImGui::SameLine(0, spacing);
@@ -3858,7 +3927,7 @@ void draw_representations_window(ApplicationState* state) {
         ImGui::EndDragDropTarget();
     }
     if (ImGui::BeginPopupContextItem("##below_menu")) {
-        draw_tree_menu(NodeRef{}, &act);
+        draw_tree_menu(*state, NodeRef{}, &act);
         ImGui::EndPopup();
     }
     }
