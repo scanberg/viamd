@@ -871,6 +871,36 @@ struct NciPanel {
         nci_surface::Family::HydrogenBond, nci_surface::Family::Ring, nci_surface::Family::PiStacking,
         nci_surface::Family::OtherContact};
 
+    // Whether (rho, s) lies inside some category's outermost drawn reference level
+    bool reference_inside(float rho, float s) {
+        const nci_surface::ReferenceMap& map = reference_map();
+        for (size_t c = 0; c < nci_surface::reference_category_count; ++c)
+            if (nci_surface::reference_level(map, c, rho, s) > 0) return true;
+        return false;
+    }
+
+    // The reference at (rho, s) for a tooltip: its categories from the most likely, each with its share and the
+    // smallest drawn area enclosing the point
+    void draw_reference_here(float rho, float s) {
+        const nci_surface::ReferenceMap& map = reference_map();
+        const auto shares = nci_surface::reference_shares(map, rho, s);
+        std::array<size_t, nci_surface::reference_category_count> order;
+        for (size_t c = 0; c < order.size(); ++c) order[c] = c;
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return shares[a] > shares[b]; });
+        ImGui::TextDisabled("Reference here");
+        for (size_t c : order) {
+            if (shares[c] < 0.005f) continue;
+            ImGui::TextColored(nci_type_colour(reference_colours[c]), "%s", reference_labels[c]);
+            ImGui::SameLine();
+            ImGui::Text("%.0f %%", 100.0f * shares[c]);
+            const int level = nci_surface::reference_level(map, c, rho, s);
+            if (level > 0) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("inside its %.0f %% area", 100.0f * map.fractions[map.fractions.size() - level]);
+            }
+        }
+    }
+
     // Each member's category samples (extracted with the reference settings) against their category's reference
     static RegionStats region_stats(const std::vector<NciSurface*>& members) {
         const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
@@ -1446,8 +1476,20 @@ struct NciPanel {
             const bool guided = st.show_guides && active == hovered;
             if (is_shown(key))
                 ImGui::TextDisabled(guided ? "Click to hide the guides" : "Click to make this interaction the active one for the guides");
+            if (st.reference.visible && reference_inside(rho, s)) {
+                ImGui::Separator();
+                draw_reference_here(rho, s);
+            }
             ImGui::EndTooltip();
             if (is_shown(key) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) toggle_guide(*hovered);
+        } else if (st.reference.visible && !guide_hovered && ImPlot::IsPlotHovered()) {
+            const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+            if (reference_inside((float)mouse.x, (float)mouse.y)) {
+                ImGui::BeginTooltip();
+                ImGui::TextDisabled("sign(lambda2)rho %.5g au | s %.3f", mouse.x, mouse.y);
+                draw_reference_here((float)mouse.x, (float)mouse.y);
+                ImGui::EndTooltip();
+            }
         }
         ImPlot::EndPlot();
 

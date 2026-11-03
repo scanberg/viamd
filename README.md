@@ -306,7 +306,10 @@ the densest category, more opaque at each deeper level; switching
 style turns lines on for Dominant and off for Combined), the opacity (60 % by default),
 fill and lines, the line width and the levels (by default 50, 90 and 98 % of
 each category's volume; drag a level, right-click to remove it, + to add one).
-Each layer row reports the share of its category samples inside their
+Hovering the plot inside the reference lists its categories there from the most
+likely, each with its share of the categories' reference densities (each
+category weighing the same) and the smallest drawn area enclosing the point; a
+hovered sample's tooltip adds the same lines. Each layer row reports the share of its category samples inside their
 category's 90 % area, whatever levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one

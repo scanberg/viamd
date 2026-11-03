@@ -473,6 +473,21 @@ int reference_level(const ReferenceMap& map, size_t category, float signed_rho, 
     return level_of(c, reference_value(c.field, map.rho_extent, signed_rho, s));
 }
 
+std::array<float, reference_category_count> reference_shares(const ReferenceMap& map, float signed_rho, float s) {
+    std::array<float, reference_category_count> shares = {};
+    if (!map.valid) return shares;
+    float total = 0.0f;
+    for (size_t c = 0; c < reference_category_count; ++c) {
+        const ReferenceCategory& category = map.categories[c];
+        if (!category.valid) continue;
+        shares[c] = std::max(0.0f, reference_value(category.field, map.rho_extent, signed_rho, s));
+        total += shares[c];
+    }
+    if (!(total > 0.0f)) return {};
+    for (float& share : shares) share /= total;
+    return shares;
+}
+
 void reference_image(ReferenceImage* out, const ReferenceMap& map, int size) {
     out->size = std::max(0, size);
     out->category.assign((size_t)out->size * out->size, -1);

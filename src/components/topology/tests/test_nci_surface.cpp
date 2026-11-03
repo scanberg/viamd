@@ -876,6 +876,14 @@ UTEST(nci_surface, builtin_reference_map_has_nested_levels_per_category) {
         EXPECT_EQ(nci_surface::reference_level(map, c, data.rho_extent * 0.99f, 1.98f), 0);
     EXPECT_EQ(nci_surface::reference_level(map, 0, 1.0f, 0.5f), 0);
     EXPECT_EQ(nci_surface::reference_level(map, 0, NAN, 0.5f), 0);
+    // At the hydrogen-bond peak, hydrogen bonds are the most likely category; the shares sum to one, or are all 0 off
+    // the map
+    const auto shares = nci_surface::reference_shares(map, peak_rho, peak_s);
+    float total = 0.0f;
+    for (float share : shares) total += share;
+    EXPECT_NEAR(total, 1.0f, 1e-5f);
+    for (size_t c = 1; c < shares.size(); ++c) EXPECT_GT(shares[0], shares[c]);
+    for (float share : nci_surface::reference_shares(map, 1.0f, 0.5f)) EXPECT_EQ(share, 0.0f);
 }
 
 UTEST(nci_surface, reference_map_levels_counts_and_dominant_image) {

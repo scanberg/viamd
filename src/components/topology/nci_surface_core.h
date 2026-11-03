@@ -164,6 +164,9 @@ bool build_reference_map(ReferenceMap* out, const ReferenceData& data, std::span
 const ReferenceMap& builtin_reference_map();
 // How deep a point lies in a category: the number of its levels the point is inside, 0 outside the outermost
 int reference_level(const ReferenceMap& map, size_t category, float signed_rho, float s);
+// Which category a point most likely belongs to: each category's share of the categories' reference densities there,
+// every category's map weighing the same; all 0 where no category has density or the point is off the map
+std::array<float, reference_category_count> reference_shares(const ReferenceMap& map, float signed_rho, float s);
 // A size x size image over [-rho_extent, rho_extent] x [0, scatter_s_max], row 0 at s = 0. category: of the categories
 // a pixel is inside (level >= 1), the one with the highest density, -1 for none; level: its level. depth[pixel *
 // reference_category_count + c]: 0 outside category c's outermost level, else rising in log density from
