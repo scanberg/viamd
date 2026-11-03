@@ -1340,6 +1340,14 @@ int main(int argc, char** argv) {
             }
         }
 
+        // A script whose every property the evaluation holds as it is, moved to other lines or edited around them,
+        // takes the evaluation over at once: nothing is computed, and its hover and marks follow the new text
+        if (state.script.eval && state.script.ir && state.script.eval_ir != state.script.ir && !state.script.eval_init &&
+            state.script.language == script::Language::V2 && !task_system::task_is_running(state.tasks.evaluate)) {
+            const ScriptPlan p = script_plan(state, frame_alloc);
+            if (p.valid && !p.changes && p.num_pending == 0) state.script.eval_init = true;
+        }
+
         // IRs replaced, once no task may be on them. Before the evaluation is started again below, which could
         // otherwise keep a task running every frame
         script_ir_collect(&state);
