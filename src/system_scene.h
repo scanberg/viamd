@@ -50,8 +50,7 @@ void system_set_operation_enabled(ApplicationState* app, SystemOperation op, boo
 void system_add_operation(ApplicationState* app, SystemOperation op);
 void system_remove_operation(ApplicationState* app, SystemOperation op);
 
-// What was turned on by other means than the window (the Operations menu, the viewport, a workspace) is had: once a
-// frame
+// What was turned on by other means than the window (the viewport, a workspace) is had: once a frame
 void system_operations_sync(ApplicationState* app);
 
 // Applied once, to the frame shown, in the order that keeps them valid together (apply_state_operations). Nothing
@@ -73,10 +72,6 @@ bool draw_system_header(ApplicationState* app);
 // The rows of the operations the system has, in their order, and what it is shown as (its copies): first under its
 // header
 void draw_system_operations(ApplicationState* app);
-
-// The state of the tracking of bond changes in the frame shown, and its advanced settings: under the operation in the
-// window, and in the Operations menu
-void draw_bond_tracking_details(ApplicationState* app);
 
 // ## Workspace
 

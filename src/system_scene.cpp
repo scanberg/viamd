@@ -281,6 +281,8 @@ static void draw_system_menu(ApplicationState* app) {
     }
 }
 
+static void draw_bond_tracking_details(ApplicationState* app);
+
 // The settings of an operation, under its row
 static void draw_operation_properties(ApplicationState* app, SystemOperation op) {
     auto& o = app->system.operations;
@@ -568,7 +570,8 @@ void draw_system_operations(ApplicationState* app) {
     ImGui::PopID();
 }
 
-void draw_bond_tracking_details(ApplicationState* app) {
+// The state of the tracking of bond changes in the frame shown, and its advanced settings, under the operation
+static void draw_bond_tracking_details(ApplicationState* app) {
     ASSERT(app);
     auto& tracking = app->system.operations.bond_tracking;
 

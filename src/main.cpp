@@ -1469,7 +1469,7 @@ int main(int argc, char** argv) {
 
         recenter_update(&state);
 
-        // An operation turned on elsewhere than under the system (the Operations menu, the viewport) is one it has
+        // An operation turned on elsewhere than under the system (the viewport, a workspace) is one it has
         system_operations_sync(&state);
 
         // The bonds formed and broken in the frame shown, before they are uploaded
@@ -2396,179 +2396,6 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Operations")) {
-            bool do_recenter = false;
-            bool do_pbc = false;
-            bool do_unwrap = false;
-            bool do_bonds = false;
-            bool redo_every_frame = false;
-            auto& tracking = data->system.operations.bond_tracking;
-
-            // Each operation can be applied to the frame shown now, or to every frame as it is shown.
-            // The labels say what happens to the atoms, not what the operation is called internally.
-            // Those which move the atoms are not, while an assembly is shown: its operators place the coordinates as
-            // the file gives them (system.assembly)
-            const bool assembly_shown = data->system.assembly >= 0;
-            if (assembly_shown) {
-                ImGui::TextDisabled("Centering, wrapping and making whole are not applied\nwhile an assembly is shown (Representations, the system)");
-            }
-            ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
-            if (ImGui::BeginTable("##table", 3, flags)) {
-                if (ImGui::IsWindowHovered()) {
-                    md_bitmask_clear(&data->selection.highlight_mask);
-                }
-                ImGui::TableSetupColumn("Now");
-                ImGui::TableSetupColumn("Every frame");
-                ImGui::TableSetupColumn("Options");
-                ImGui::TableHeadersRow();
-                ImGui::BeginDisabled(assembly_shown);
-
-                const float button_width = (ImGui::GetFontSize() / 20.f) * 175.f;
-                const md_bitset_t& target_mask = recenter_get_active_target_mask(data);
-                const bool recenter_available = !md_bitset_empty(target_mask);
-                const char* no_target_tip =
-                    "There is nothing to center on yet. Select atoms and choose 'Set as Centering Target' in the\n"
-                    "right-click menu of the viewport, or tick " ICON_FA_COMMENT_DOTS " and pick the target with a query.";
-
-                // ## Centering
-                ImGui::TableNextRow();
-
-                ImGui::TableSetColumnIndex(0);
-                if (!recenter_available) {
-                    ImGui::PushDisabled();
-                }
-                if (ImGui::Button("Center Target", ImVec2(button_width,0))) {
-                    do_recenter = true;
-                }
-                if (!recenter_available) {
-                    ImGui::PopDisabled();
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    if (!recenter_available) {
-                        ImGui::SetTooltip("%s", no_target_tip);
-                    } else {
-                        ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
-                        // Highlight the target atoms that the system will be recentered around
-                        md_bitmask_assign(&data->selection.highlight_mask, target_mask);
-                    }
-                }
-
-                ImGui::TableSetColumnIndex(1);
-                if (!recenter_available) {
-                    ImGui::PushDisabled();
-                }
-                if (ImGui::Checkbox("##recenter", &data->system.operations.recenter) && data->system.operations.recenter) {
-                    do_recenter = true;
-                }
-                if (!recenter_available) {
-                    ImGui::PopDisabled();
-                }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    ImGui::SetTooltip("%s", recenter_available ? "Keep the target in the middle of the box in every frame" : no_target_tip);
-                }
-
-                ImGui::TableSetColumnIndex(2);
-                if (ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->system.operations.fixate_orientation) && data->system.operations.recenter) {
-                    // Turning it on or off while centering every frame takes effect on the frame shown, not the next one
-                    redo_every_frame = true;
-                }
-                ImGui::SetItemTooltip("Keep orientation: when centering, also turn everything so the target\nkeeps the orientation it has in the first frame.\nEverything is wrapped into the box around the target before it is turned,\nand the box turns with it.");
-
-                ImGui::SameLine();
-                ImGui::Checkbox(ICON_FA_COMMENT_DOTS "##target-query", &data->system.operations.recenter_query.enabled);
-                ImGui::SetItemTooltip("Target by query: center on the atoms a query picks (evaluated every frame\nwhen it depends on it) instead of the target set from a selection");
-
-                if (data->system.operations.recenter_query.enabled) {
-                    auto& recenter_query = data->system.operations.recenter_query;
-                    ImGui::SameLine();
-                    if (filter_input("##recenter-query", &recenter_query.filter, data->script.language, filter_context(data))) {
-                        recenter_mark_query_dirty(data);
-                    }
-                }
-
-                // ## Periodic box
-                ImGui::TableNextRow();
-
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Wrap into Box", ImVec2(button_width,0))) {
-                    do_pbc = true;
-                }
-                ImGui::SetItemTooltip("Move every atom that is outside the periodic box back in through the opposite side\n(apply periodic boundary conditions). Molecules across the boundary are split.");
-
-                ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##pbc", &data->system.operations.apply_pbc) && data->system.operations.apply_pbc) {
-                    do_pbc = true;
-                }
-                ImGui::SetItemTooltip("Wrap every atom into the periodic box in every frame");
-
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Make Whole", ImVec2(button_width, 0))) {
-                    do_unwrap = true;
-                }
-                ImGui::SetItemTooltip("Join molecules that are split across the periodic box boundary,\nso each one is drawn in one piece (unwrap)");
-
-                ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##unwrap", &data->system.operations.unwrap_structures) && data->system.operations.unwrap_structures) {
-                    do_unwrap = true;
-                }
-                ImGui::SetItemTooltip("Keep every molecule whole in every frame");
-
-                ImGui::EndDisabled();
-
-                // ## Bonds
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Recompute Bonds", ImVec2(button_width, 0))) {
-                    do_bonds = true;
-                }
-                ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame, for when\n"
-                                      "the file's bonds are wrong or a reaction should be the topology from here on.\n"
-                                      "Changes the bonds of the system: the bonds a file, a topology or you gave stay.");
-
-                ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##track-bonds", &tracking.enabled)) {
-                    tracking.scope_dirty = true;
-                }
-                ImGui::SetItemTooltip("Track bond changes: in every frame, show the bonds that form and break against the bonds\n"
-                                      "of the system. The bonds of the system stay as they are.");
-
-                ImGui::TableSetColumnIndex(2);
-                if (tracking.enabled) {
-                    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-                    if (filter_input("##track-bonds-scope", &tracking.scope, data->script.language, filter_context(data), 0, nullptr, "all atoms")) {
-                        tracking.scope_dirty = true;
-                    }
-                    if (ImGui::IsItemHovered() && !filter_completions_open() && tracking.scope.result.success) {
-                        ImGui::SetTooltip("Where bonds are tracked: the bonds with an atom among those it picks.\nEmpty for every atom; a smaller scope is faster.");
-                    }
-                }
-                ImGui::EndTable();
-            }
-
-            if (tracking.enabled) {
-                draw_bond_tracking_details(data);
-            }
-
-            if (redo_every_frame) {
-                do_recenter = true;
-                do_pbc     |= data->system.operations.apply_pbc;
-                do_unwrap  |= data->system.operations.unwrap_structures;
-            }
-
-            // One pass, in the order that keeps them valid together, and in the lattice frame of the cell
-            // even when the coordinates are turned (see apply_state_operations)
-            if (!assembly_shown && apply_state_operations(data, do_recenter, do_pbc, do_unwrap)) {
-                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-            }
-
-            if (do_bonds) {
-                // The whole frame nearest the animation time, or the coordinates shown when there is no run
-                recompute_bonds(data, (int64_t)(data->animation.frame + 0.5));
-            }
-
-            ImGui::EndMenu();
-        }
         if (ImGui::BeginMenu("Settings")) {
             if (ImGui::Checkbox("Keep Representations", &data->settings.keep_representations)) {
                 app_settings::mark_dirty();
@@ -3209,12 +3036,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
                     tracking.scope_dirty = true;
                 } else {
-                    VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one in Operations");
+                    VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one under the system (Representations, Track bond changes)");
                 }
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SetItemTooltip("Show the bonds that form and break in every frame, for the bonds with an atom selected\n"
-                                  "(Operations > Track bond changes, with the selection as its scope)");
+                                  "(the operation Track bond changes of the system, in Representations, with the selection as its scope)");
         }
         if (ImGui::BeginMenu("Script")) {
             const ScriptSuggestions& sug = script_suggestions_get(state, ImGui::IsWindowAppearing());
