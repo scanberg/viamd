@@ -1080,7 +1080,7 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
     rep->bond_color      = BondColorMode::Uniform;
     rep->bond_base_color = {1.0f, 0.55f, 0.1f, 1.0f};
     rep->open_properties = true;
-    app->representation.show_window = true;
+    app->show_representation_window = true;
     return true;
 }
 
@@ -3735,10 +3735,10 @@ static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uin
 }
 
 void draw_representations_window(ApplicationState* state) {
-    if (!state->representation.show_window) return;
+    if (!state->show_representation_window) return;
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Representations", &state->representation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+    if (!ImGui::Begin("Representations", &state->show_representation_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::End();
         return;
     }

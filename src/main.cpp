@@ -887,7 +887,7 @@ int main(int argc, char** argv) {
     // Which of these are open is part of a workspace; the components register their own on initialize
     workspace_register_window("Timelines",       &state.timeline.show_window);
     workspace_register_window("Distributions",   &state.distributions.show_window);
-    workspace_register_window("Representations", &state.representation.show_window);
+    workspace_register_window("Representations", &state.show_representation_window);
     workspace_register_window("ScriptEditor",    &state.show_script_window);
     workspace_register_window("Animation",       &state.animation.show_window);
 
@@ -989,7 +989,7 @@ int main(int argc, char** argv) {
         if (state.show_script_window) draw_script_editor_window(&state);
         if (state.show_script_reference_window) draw_script_reference_window(&state);
         if (state.load_dataset.show_window) draw_load_dataset_window(&state);
-        if (state.representation.show_window) draw_representations_window(&state);
+        if (state.show_representation_window) draw_representations_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
         series_cache_gc(&state);
@@ -1275,7 +1275,7 @@ int main(int argc, char** argv) {
                     str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
                         extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
-                    } else if (const FileEntry* run_file = file_list_run_file(&state.files.list)) {
+                    } else if (const FileEntry* run_file = file_list_run_file(&state.file_list)) {
                         // The trajectory's folder, else the structure's
                         extract_folder_path(&cwd, str_from_cstr(run_file->path));
                     }
@@ -1973,7 +1973,7 @@ static void draw_main_menu(ApplicationState* data) {
                     prop::row("shown as", "The periodic images and the assemblies are the system's: 'Shown as', under the\n"
                                           "system in the Representations window");
                     if (ImGui::SmallButton("in Representations")) {
-                        data->representation.show_window = true;
+                        data->show_representation_window = true;
                     }
                 }
                 prop::section_end();
@@ -2234,7 +2234,7 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Animation", &data->animation.show_window);
-            ImGui::Checkbox("Representations", &data->representation.show_window);
+            ImGui::Checkbox("Representations", &data->show_representation_window);
             ImGui::Checkbox("Script Editor", &data->show_script_window);
             ImGui::Checkbox("Script Reference", &data->show_script_reference_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);

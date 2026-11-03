@@ -1280,7 +1280,7 @@ void free_trajectory_data(ApplicationState* state) {
     end_frame_extracts(state);
 
     // The run, and with it the files it was opened from and the series loaded along it
-    file_list_drop_runs(&state->files.list);
+    file_list_drop_runs(&state->file_list);
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
@@ -1439,9 +1439,9 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
 
             // Launch work to compute the values
-            task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
+            task_system::task_interrupt_and_wait_for(data->mold.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            data->mold.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 const md_system_t* sys = &data->mold.sys;
 
@@ -1501,8 +1501,8 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
                 flag_all_representations_as_dirty(data);
             });
 
-            task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
-            task_system::enqueue_task(data->tasks.backbone_computations);
+            task_system::set_task_dependency(main_task, data->mold.backbone_computations);
+            task_system::enqueue_task(data->mold.backbone_computations);
         }
 
         data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
@@ -1707,7 +1707,7 @@ void free_system_data(ApplicationState* data) {
     system_gpu_data_free(data);
 
     // Everything loaded was loaded onto the system
-    file_list_clear(&data->files.list);
+    file_list_clear(&data->file_list);
 
 
     MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
@@ -1745,8 +1745,8 @@ static bool open_run(ApplicationState* state, str_t path, const loader::LoaderSt
     if (num_frames == 0) {
         return false;
     }
-    file_list_record(&state->files.list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
-    md_array_last(state->files.list.runs)->frame_count = num_frames;
+    file_list_record(&state->file_list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    md_array_last(state->file_list.runs)->frame_count = num_frames;
     return true;
 }
 
@@ -1757,7 +1757,7 @@ static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls
 }
 static size_t ops_system_atoms(void* user) { return ((ApplicationState*)user)->mold.sys.atom.count; }
 static size_t ops_run_frames(void* user) { return run_num_frames((ApplicationState*)user); }
-static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->files.list; }
+static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->file_list; }
 
 LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
     LoadOps ops = {};
@@ -1809,7 +1809,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                     VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&state->file_list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
@@ -1847,8 +1847,8 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
-            state->files.list.atom_count = state->mold.sys.atom.count;
+            file_list_record(&state->file_list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
+            state->file_list.atom_count = state->mold.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
             // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
@@ -2117,7 +2117,7 @@ static void workspace_reset(ApplicationState* data) {
     // The workspace's files are loaded onto nothing, as they were when they were first loaded: what a file
     // is to the system can depend on what is there (a VeloxChem file of the loaded atoms supplements them,
     // and builds the system otherwise). A workspace that names no files leaves nothing loaded.
-    if (data->mold.sys.atom.count > 0 || file_list_count(&data->files.list) > 0) {
+    if (data->mold.sys.atom.count > 0 || file_list_count(&data->file_list) > 0) {
         interrupt_async_tasks(data);
         free_trajectory_data(data);
         free_system_data(data);
@@ -2486,12 +2486,12 @@ void load_workspace(ApplicationState* data, str_t filename) {
             FileEntry missing = in.entry;
             missing.type    = loader_state.type;
             missing.missing = true;
-            file_list_record(&data->files.list, missing, in.role, data->allocator.persistent);
+            file_list_record(&data->file_list, missing, in.role, data->allocator.persistent);
         }
     }
 
     // What the workspace was saved with stays the reference while the files are missing, so that a save keeps it
-    FileList& list = data->files.list;
+    FileList& list = data->file_list;
     if (list.atom_count == 0) {
         list.atom_count = plan.atom_count;
     }
@@ -2648,8 +2648,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     // The system, its run and their files, missing ones too: what could not be loaded is still what the
     // workspace is of. Its id is the one every section which refers to the system uses.
-    if (file_list_count(&app_state->files.list) > 0) {
-        file_list_serialize(state, &app_state->files.list, 0, 0);
+    if (file_list_count(&app_state->file_list) > 0) {
+        file_list_serialize(state, &app_state->file_list, 0, 0);
     }
 
     viamd::write_section_header(state, STR_LIT("Animation"));

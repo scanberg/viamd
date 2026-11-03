@@ -8287,7 +8287,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         
                         // XYZ
                         md_file_printf(xyz_file, "%zu\n", natoms);
-                        const FileEntry* system_file = file_list_system_file(&state.files.list);
+                        const FileEntry* system_file = file_list_system_file(&state.file_list);
                         md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
                             str_t sym = md_util_element_symbol(qm_numbers[i]);

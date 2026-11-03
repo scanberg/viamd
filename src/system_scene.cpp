@@ -171,7 +171,7 @@ void system_set_assembly(ApplicationState* app, int assembly) {
 }
 
 void system_label(char* buf, size_t cap, const ApplicationState& app) {
-    const FileEntry* file = file_list_system_file(&app.files.list);
+    const FileEntry* file = file_list_system_file(&app.file_list);
     str_t name = {};
     if (file && extract_file(&name, str_from_cstr(file->path)) && !str_empty(name)) {
         snprintf(buf, cap, STR_FMT, STR_ARG(name));

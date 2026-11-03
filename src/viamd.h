@@ -1132,6 +1132,274 @@ struct ScriptVisJob;
 // grid any evaluation on the device can write, which is the largest compute_dim makes.
 inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 
+// THE DATA OF A SYSTEM: the system itself (md_system_t), its state as shown, what is derived from it to draw it, its
+// run and the frames read of it. ApplicationState::mold of the one system loaded (SystemContext::data).
+struct SystemData {
+    // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
+    // created once at startup and survives every load: free_system_data rewinds it and puts the
+    // handle back, because zeroing a system also zeroes the allocator it was using.
+    // The cartoon's secondary structure (blend weights between coil, helix and sheet) lives on the GPU only: it is
+    // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
+    // interpolate_system_state), never read back and kept nowhere else.
+    md_gl_mol_t         gl_mol = {};
+    // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
+    // and derived from its atoms on the GPU (see cartoon_glyphs.h)
+    CartoonGlyphs       cartoon_glyphs = {};
+#if EXPERIMENTAL_GFX_API
+    md_gfx_handle_t     gfx_structure = {};
+#endif
+    md_system_t         sys = {};
+
+    // The actual interpolated state of the system.
+    // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
+    // secondary structure of the displayed frame (md_util_state_backbone_angles, md_util_state_secondary_structure).
+    md_system_state_t   state = {};
+
+		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
+
+    // "run/<name>": where the loaded trajectory, and everything sampled along it, lives in
+    // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
+    // frame axis is "<run>/time"; freeing the trajectory removes everything under the prefix.
+    char                run[128] = {0};
+
+    // Playback's extraction contexts, one per pool thread and indexed by the task system's thread
+    // number, so each keeps its own files open across the frames it loads. Made on first use,
+    // ended with the trajectory (free_trajectory_data), since the files they hold are its.
+    md_system_extract_t* frame_extract[64] = {};
+
+    FrameCache          frame_cache;
+
+    // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
+    float               bond_length_limit = 0.0f;
+    uint64_t            bond_length_limit_version = 0;
+
+    // Computing the backbone angles and secondary structure over the frames of the run (viamd.cpp)
+    task_system::ID     backbone_computations = task_system::INVALID_ID;
+
+    bool                interpolate_system_state = false;
+    // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
+    // interpolate_system_state skip redundant work when playback ticks without the displayed
+    // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
+    // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
+    // so the next call is never skipped by a stale match.
+    int64_t             last_interpolated_nearest_frame = -1;
+    // The (fractional) frame last interpolated, negative when there is none. A jump away from it
+    // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
+    double              last_interpolated_frame = -1.0;
+    // The stride of the frames the displayed state was last interpolated between (playback_stride).
+    // Starting or stopping playback changes it without changing the time, so it is compared
+    // against to know when the displayed state has to be made again.
+    int                 last_interpolated_stride = 1;
+    uint32_t            dirty_gpu_buffers = 0;
+    uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
+    uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
+                                                    // alone: the image of the scene depends on them only through the
+                                                    // visible and the selected atoms (representation.visibility_mask_hash,
+                                                    // render.selection_hash), not through the highlighted
+    // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
+    // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
+    void*               nto_warm = nullptr;
+
+#if MD_ENABLE_GPU
+    // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
+    // built FROM the system so that something can draw or evaluate it, and mdlib never reads it
+    // back. The test is simple - no mdlib function takes an md_system_t* and touches these -
+    // which is what keeps them out of md_system_t itself, unlike the trajectory it does read.
+    //
+    // This whole block is per DATASET, so it is what gets replicated when several systems can
+    // be loaded at once. That is also why the evaluation scratch is not here but on the device.
+    md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
+    md_gpu_addr_t       gpu_atoms = 0;         // packed float4 positions, xyz in Bohr
+    // Hash of the positions currently in gpu_atoms, 0 when nothing has been uploaded. The
+    // positions come from the system STATE, so they move with the trajectory; comparing what is
+    // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
+    // over the QM atoms against an upload of the same array.
+    uint64_t            gpu_atoms_hash = 0;
+    // The SCF density the evaluations read, as a matrix in tiles (md_gto_gpu_dmat): only the AO pairs
+    // an evaluation reads, built on the device from the orbitals, so no matrix is made on the host.
+    // Its pattern follows the atoms while they stay within its margin; the matrix is rebuilt when the
+    // density asked for, or the orbitals it is made of, change.
+    md_gto_gpu_dmat_t   gpu_dmat = nullptr;
+    uint64_t            gpu_dmat_key = 0;      // the density and the orbitals' versions it holds, 0: none
+    // The next one, made on a worker thread for the representations (viamd.cpp, DmatBuild), and the key of
+    // one that could not be (made where it is asked for instead)
+    void*               gpu_dmat_build = nullptr;
+    uint64_t            gpu_dmat_failed_key = 0;
+#endif
+};
+
+// THE REPRESENTATIONS OF A SYSTEM, and the groups they are in (representation.h). ApplicationState::representation of
+// the one system loaded (SystemContext::representation).
+struct SystemRepresentations {
+    // Both in the order the window lists them. Where each one is in the tree of groups is on the
+    // representation or group itself (representation_tree.h).
+    md_array(Representation) reps = 0;
+    md_array(RepresentationGroup) groups = 0;
+    uint32_t next_rep_id = 1;
+    uint32_t next_group_id = 1;
+    md_bitmask_t visibility_mask = {};     // the union of the masks of the shown representations
+    uint64_t visibility_mask_hash = 0;
+    bool atom_visibility_mask_dirty = false;
+    uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
+};
+
+// THE SYSTEM, as the scene shows it: what is done to its coordinates before they are drawn, the copies of it drawn,
+// and whether it is drawn at all. Listed in the Representations window above its representations (system_scene.h).
+// One, as viamd loads one system; the state here is what each system will have of its own once it loads several.
+// The figure's: in the workspace ([SystemScene]).
+struct SystemScene {
+    bool visible = true;    // Its representations are drawn only while it is
+
+    // The periodic images shown: the system again in the neighboring cells, this many each way along a, b and c, of
+    // the representations which have periodic_images (all, unless they opt out)
+    int periodic_images[3] = {0, 0, 0};
+
+    // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
+    // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
+    // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
+    // and select as. The operators place the coordinates as the file gives them, so the operations which move them
+    // (centering, wrapping, making whole) are not applied while one is shown.
+    int assembly = -1;
+
+    struct {
+        // The operations it has (SystemOperation), each turned on or off by its own flag below, which keeps its settings
+        // while it is off. One it does not have is off, and its settings are the defaults.
+        uint32_t present = 0;
+
+        bool recenter = false;
+        bool fixate_orientation = false;
+
+        // Extra transform applied to the target in its own centred frame, between fixating the
+        // orientation and placing it at the centre of the cell:
+        //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
+        // Identity by default. This is the hook for aligning the structure to something once it is
+        // centred - principal axes, a chosen bond, a user supplied orientation - without having to
+        // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
+        // it survives a change of recenter target.
+        mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
+
+        // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
+        // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
+        // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
+        // this is the only record of it: wrapping and making whole only work in the lattice frame (see
+        // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
+        // Back to identity whenever mold.state is rewritten from its source.
+        mat4_t state_rotation = MD_MAT4_IDENT_INIT;
+
+        struct {
+            AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
+            bool enabled = false;
+            uint64_t version = 1;
+            uint64_t evaluated_version = 0;
+            uint64_t ir_fingerprint = 0;
+            md_bitset_t mask = { 0 };
+        } recenter_query;
+
+        // External state which user controls
+        bool apply_pbc = false;
+        bool unwrap_structures = false;
+
+        // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
+        // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
+        // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
+        struct {
+            bool enabled = false;
+            AtomFilter scope = {};                      // Empty for every atom
+            float tolerance = MD_BOND_DELTA_TOLERANCE;
+            uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
+
+            md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
+            bool scope_dirty = true;                    // To be evaluated again
+            uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
+
+            md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
+            // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
+            // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
+            // forms more than any before it has the indices of the ones beyond run into those of the next domain.
+            size_t formed_capacity = 0;
+            // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
+            // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
+            // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
+            // formed_capacity are for the bonds.
+            md_chem_delta_t chem = {};
+            size_t ring_capacity = 0;
+            uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+            double time_ms = 0.0;                       // How long that took
+        } bond_tracking;
+
+        // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+        // This is populated by assigning a user defined selection.
+        md_bitset_t selection_mask = {0};
+
+        struct {
+            // The atoms the reference was built from, compared exactly against the active target. A query
+            // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
+            // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
+            md_bitset_t target_mask = {0};    // in the persistent allocator
+            bool valid = false;
+
+			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
+            vec4_t* rel_xyzw = nullptr;
+            vec3_t  com = {};
+        } initial_frame;
+
+    } operations;
+};
+
+// THE DATA OVER THE FRAMES OF A SYSTEM'S RUN.
+// Views onto the temporal attributes, plus the one array still owned here.
+//
+// 'stride' and 'count' are redundant with the attributes' own shape {frames, segments} and are
+// kept only so the existing consumers keep their loops. Whoever next touches those loops should
+// take the shape from the attribute and delete them - the point of the move was that a hand
+// rolled shape beside table owned storage is a second answer waiting to disagree.
+//
+// The fingerprints are gone for the same reason: md_attributes_version is the one answer to
+// "did this change", and a stamp next to the data can be forgotten by whoever writes it.
+struct SystemTrajectoryData {
+    struct {
+        size_t stride = 0;                          // == shape[1] of 'backbone/secondary_structure'
+        size_t count = 0;                           // == its element count
+        md_secondary_structure_t* data = nullptr;   // VIEW into sys.attributes, not owned
+    } secondary_structure;
+    struct {
+        size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+        size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+        md_secondary_structure_t* data = nullptr;   // owned here: a presentation smoothing, not a quantity
+        uint64_t fingerprint = 0;
+    } secondary_structure_render;
+    struct {
+        size_t stride = 0;                          // == shape[1] of 'backbone/angle'
+        size_t count = 0;                           // == its element count
+        md_backbone_angles_t* data = nullptr;       // VIEW into sys.attributes, not owned
+    } backbone_angles;
+};
+
+// A SYSTEM, as viamd holds it: what is had of each one loaded, apart from what the application has once.
+//
+// viamd loads one system, and ApplicationState holds it (system_context) together with references to its parts under
+// the names the code has always used for them (mold, system, representation, trajectory_data, file_list). Those names
+// are the transition: a place that works on a system is given the system it works on (a SystemContext, or the part it
+// needs) instead of reaching it through the application, one place at a time, and the references go when nothing uses
+// them. Once that is done for what loads a system, several can be held.
+//
+// What is not here yet, though it is of a system, and why:
+//   selection             the masks are over the atoms of a system, but the selection as the user sees it - what is
+//                         selected, hovered - spans the viewport, which will show several
+//   picking ranges        reserved per domain for the one system; several need a range per system and domain
+//   timeline.x_values     the times of a run, of which a system can have several
+//   script                one script for all systems, evaluated per system: decided with the script rewrite
+struct SystemContext {
+    // The files the system is built from, in the order they were loaded (see file_list.h). Kept by
+    // load_data_from_file, and by what frees the data they loaded (free_system_data, free_trajectory_data). A
+    // workspace stores this list and loads it again in the same order.
+    FileList              files;
+    SystemData            data;
+    SystemScene           scene;
+    SystemRepresentations representation;
+    SystemTrajectoryData  trajectory_data;
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -1180,10 +1448,7 @@ struct ApplicationState {
 
     // --- FILES ---
     struct {
-        // The files the loaded system is built from, in the order they were loaded (see file_list.h).
-        // Kept by load_data_from_file, and by what frees the data they loaded (free_system_data,
-        // free_trajectory_data). A workspace stores this list and loads it again in the same order.
-        FileList list;
+        // The files of the system are the system's (SystemContext::files, file_list)
         char workspace[1024] = {0};
 
         // Halves of a system waiting for the other half (load_data_from_file): a topology without coordinates
@@ -1250,97 +1515,14 @@ struct ApplicationState {
         md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
     } gl;
 
-    // --- MDLIB DATA ---
-    struct {
-        // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
-        // created once at startup and survives every load: free_system_data rewinds it and puts the
-        // handle back, because zeroing a system also zeroes the allocator it was using.
-        // The cartoon's secondary structure (blend weights between coil, helix and sheet) lives on the GPU only: it is
-        // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
-        // interpolate_system_state), never read back and kept nowhere else.
-        md_gl_mol_t         gl_mol = {};
-        // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
-        // and derived from its atoms on the GPU (see cartoon_glyphs.h)
-        CartoonGlyphs       cartoon_glyphs = {};
-#if EXPERIMENTAL_GFX_API
-        md_gfx_handle_t     gfx_structure = {};
-#endif
-        md_system_t         sys = {};
-
-        // The actual interpolated state of the system.
-        // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
-        // secondary structure of the displayed frame (md_util_state_backbone_angles, md_util_state_secondary_structure).
-        md_system_state_t   state = {};
-
-		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
-
-        // "run/<name>": where the loaded trajectory, and everything sampled along it, lives in
-        // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
-        // frame axis is "<run>/time"; freeing the trajectory removes everything under the prefix.
-        char                run[128] = {0};
-
-        // Playback's extraction contexts, one per pool thread and indexed by the task system's thread
-        // number, so each keeps its own files open across the frames it loads. Made on first use,
-        // ended with the trajectory (free_trajectory_data), since the files they hold are its.
-        md_system_extract_t* frame_extract[64] = {};
-
-        FrameCache          frame_cache;
-
-        // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
-        float               bond_length_limit = 0.0f;
-        uint64_t            bond_length_limit_version = 0;
-
-        bool                interpolate_system_state = false;
-        // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
-        // interpolate_system_state skip redundant work when playback ticks without the displayed
-        // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
-        // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
-        // so the next call is never skipped by a stale match.
-        int64_t             last_interpolated_nearest_frame = -1;
-        // The (fractional) frame last interpolated, negative when there is none. A jump away from it
-        // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
-        double              last_interpolated_frame = -1.0;
-        // The stride of the frames the displayed state was last interpolated between (playback_stride).
-        // Starting or stopping playback changes it without changing the time, so it is compared
-        // against to know when the displayed state has to be made again.
-        int                 last_interpolated_stride = 1;
-        uint32_t            dirty_gpu_buffers = 0;
-        uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
-        uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
-                                                        // alone: the image of the scene depends on them only through the
-                                                        // visible and the selected atoms (representation.visibility_mask_hash,
-                                                        // render.selection_hash), not through the highlighted
-        // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
-        // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
-        void*               nto_warm = nullptr;
-
-#if MD_ENABLE_GPU
-        // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
-        // built FROM the system so that something can draw or evaluate it, and mdlib never reads it
-        // back. The test is simple - no mdlib function takes an md_system_t* and touches these -
-        // which is what keeps them out of md_system_t itself, unlike the trajectory it does read.
-        //
-        // This whole block is per DATASET, so it is what gets replicated when several systems can
-        // be loaded at once. That is also why the evaluation scratch is not here but on the device.
-        md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
-        md_gpu_addr_t       gpu_atoms = 0;         // packed float4 positions, xyz in Bohr
-        // Hash of the positions currently in gpu_atoms, 0 when nothing has been uploaded. The
-        // positions come from the system STATE, so they move with the trajectory; comparing what is
-        // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
-        // over the QM atoms against an upload of the same array.
-        uint64_t            gpu_atoms_hash = 0;
-        // The SCF density the evaluations read, as a matrix in tiles (md_gto_gpu_dmat): only the AO pairs
-        // an evaluation reads, built on the device from the orbitals, so no matrix is made on the host.
-        // Its pattern follows the atoms while they stay within its margin; the matrix is rebuilt when the
-        // density asked for, or the orbitals it is made of, change.
-        md_gto_gpu_dmat_t   gpu_dmat = nullptr;
-        uint64_t            gpu_dmat_key = 0;      // the density and the orbitals' versions it holds, 0: none
-        // The next one, made on a worker thread for the representations (viamd.cpp, DmatBuild), and the key of
-        // one that could not be (made where it is asked for instead)
-        void*               gpu_dmat_build = nullptr;
-        uint64_t            gpu_dmat_failed_key = 0;
-#endif
-    } mold;
+    // --- THE SYSTEM ---
+    // The one system loaded (SystemContext), and its parts under the names the code knows them by (see SystemContext)
+    SystemContext system_context = {};
+    SystemData&            mold            = system_context.data;
+    SystemScene&           system          = system_context.scene;
+    SystemRepresentations& representation  = system_context.representation;
+    SystemTrajectoryData&  trajectory_data = system_context.trajectory_data;
+    FileList&              file_list       = system_context.files;
 
     // The script property hovered in any view of it (a plot, the script editor), by identifier. A copy,
     // not a view: the identifiers live in the script IR, which is rebuilt when the script recompiles,
@@ -1354,8 +1536,8 @@ struct ApplicationState {
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID evaluate = task_system::INVALID_ID;
+        task_system::ID evaluate = task_system::INVALID_ID;     // of the script
+
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -1587,123 +1769,7 @@ struct ApplicationState {
         } spline;
     } visuals;
 
-    // --- REPRESENTATIONS ---
-    struct {
-        // Both in the order the window lists them. Where each one is in the tree of groups is on the
-        // representation or group itself (representation_tree.h).
-        md_array(Representation) reps = 0;
-        md_array(RepresentationGroup) groups = 0;
-        uint32_t next_rep_id = 1;
-        uint32_t next_group_id = 1;
-        md_bitmask_t visibility_mask = {};     // the union of the masks of the shown representations
-        uint64_t visibility_mask_hash = 0;
-        bool atom_visibility_mask_dirty = false;
-        uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
-        bool show_window = false;
-    } representation;
-
-    // THE SYSTEM, as the scene shows it: what is done to its coordinates before they are drawn, the copies of it drawn,
-    // and whether it is drawn at all. Listed in the Representations window above its representations (system_scene.h).
-    // One, as viamd loads one system; the state here is what each system will have of its own once it loads several.
-    // The figure's: in the workspace ([SystemScene]).
-    struct {
-        bool visible = true;    // Its representations are drawn only while it is
-
-        // The periodic images shown: the system again in the neighboring cells, this many each way along a, b and c, of
-        // the representations which have periodic_images (all, unless they opt out)
-        int periodic_images[3] = {0, 0, 0};
-
-        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
-        // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
-        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
-        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
-        // (centering, wrapping, making whole) are not applied while one is shown.
-        int assembly = -1;
-
-        struct {
-            // The operations it has (SystemOperation), each turned on or off by its own flag below, which keeps its settings
-            // while it is off. One it does not have is off, and its settings are the defaults.
-            uint32_t present = 0;
-
-            bool recenter = false;
-            bool fixate_orientation = false;
-
-            // Extra transform applied to the target in its own centred frame, between fixating the
-            // orientation and placing it at the centre of the cell:
-            //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
-            // Identity by default. This is the hook for aligning the structure to something once it is
-            // centred - principal axes, a chosen bond, a user supplied orientation - without having to
-            // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
-            // it survives a change of recenter target.
-            mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
-
-            // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
-            // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
-            // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
-            // this is the only record of it: wrapping and making whole only work in the lattice frame (see
-            // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
-            // Back to identity whenever mold.state is rewritten from its source.
-            mat4_t state_rotation = MD_MAT4_IDENT_INIT;
-
-            struct {
-                AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
-                bool enabled = false;
-                uint64_t version = 1;
-                uint64_t evaluated_version = 0;
-                uint64_t ir_fingerprint = 0;
-                md_bitset_t mask = { 0 };
-            } recenter_query;
-
-            // External state which user controls
-            bool apply_pbc = false;
-            bool unwrap_structures = false;
-
-            // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
-            // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
-            // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
-            struct {
-                bool enabled = false;
-                AtomFilter scope = {};                      // Empty for every atom
-                float tolerance = MD_BOND_DELTA_TOLERANCE;
-                uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
-
-                md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
-                bool scope_dirty = true;                    // To be evaluated again
-                uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
-
-                md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
-                // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
-                // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
-                // forms more than any before it has the indices of the ones beyond run into those of the next domain.
-                size_t formed_capacity = 0;
-                // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
-                // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
-                // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
-                // formed_capacity are for the bonds.
-                md_chem_delta_t chem = {};
-                size_t ring_capacity = 0;
-                uint64_t key = 0;                           // What it was computed from, 0 when it is empty
-                double time_ms = 0.0;                       // How long that took
-            } bond_tracking;
-
-            // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
-            // This is populated by assigning a user defined selection.
-            md_bitset_t selection_mask = {0};
-
-            struct {
-                // The atoms the reference was built from, compared exactly against the active target. A query
-                // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
-                // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
-                md_bitset_t target_mask = {0};    // in the persistent allocator
-                bool valid = false;
-
-    			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
-                vec4_t* rel_xyzw = nullptr;
-                vec3_t  com = {};
-            } initial_frame;
-
-        } operations;
-    } system;
+    bool show_representation_window = false;
 
     // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
@@ -1729,33 +1795,6 @@ struct ApplicationState {
         bool lazy_rendering = true;
     } settings;
 
-    // Views onto the temporal attributes, plus the one array still owned here.
-    //
-    // 'stride' and 'count' are redundant with the attributes' own shape {frames, segments} and are
-    // kept only so the existing consumers keep their loops. Whoever next touches those loops should
-    // take the shape from the attribute and delete them - the point of the move was that a hand
-    // rolled shape beside table owned storage is a second answer waiting to disagree.
-    //
-    // The fingerprints are gone for the same reason: md_attributes_version is the one answer to
-    // "did this change", and a stamp next to the data can be forgotten by whoever writes it.
-    struct {
-        struct {
-            size_t stride = 0;                          // == shape[1] of 'backbone/secondary_structure'
-            size_t count = 0;                           // == its element count
-            md_secondary_structure_t* data = nullptr;   // VIEW into sys.attributes, not owned
-        } secondary_structure;
-        struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = nullptr;   // owned here: a presentation smoothing, not a quantity
-            uint64_t fingerprint = 0;
-        } secondary_structure_render;
-        struct {
-            size_t stride = 0;                          // == shape[1] of 'backbone/angle'
-            size_t count = 0;                           // == its element count
-            md_backbone_angles_t* data = nullptr;       // VIEW into sys.attributes, not owned
-        } backbone_angles;
-    } trajectory_data;
 
     struct {
         vec4_t point_color      = {1,0,0,0.8f};
@@ -2239,7 +2278,7 @@ void interrupt_async_tasks(ApplicationState* state);
 
 // Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
 // the run, a supplement adds to the system and a series to the run. opens_own_run: a system file of several
-// frames opens them as the run too. A file that loads is recorded in files.list.
+// frames opens them as the run too. A file that loads is recorded in file_list.
 LoadResult load_data(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
 
 // Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags

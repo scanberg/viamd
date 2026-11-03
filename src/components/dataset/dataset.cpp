@@ -1058,7 +1058,7 @@ struct Dataset : viamd::EventHandler {
     void draw_files(ApplicationState& data) {
         if (!ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-        const FileList* list = &data.files.list;
+        const FileList* list = &data.file_list;
         if (file_list_count(list) == 0) {
             ImGui::TextDisabled("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
             return;
