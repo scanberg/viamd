@@ -887,6 +887,7 @@ int main(int argc, char** argv) {
     // Which of these are open is part of a workspace; the components register their own on initialize
     workspace_register_window("Timelines",       &state.timeline.show_window);
     workspace_register_window("Distributions",   &state.distributions.show_window);
+    // The Scene window, under the name it had before (Representations): what a workspace calls it
     workspace_register_window("Representations", &state.show_representation_window);
     workspace_register_window("ScriptEditor",    &state.show_script_window);
     workspace_register_window("Animation",       &state.animation.show_window);
@@ -1971,8 +1972,8 @@ static void draw_main_menu(ApplicationState* data) {
                 if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&data->mold.state.unitcell) != 0) {
                     // What the system is shown as is the system's, listed with it
                     prop::row("shown as", "The periodic images and the assemblies are the system's: 'Shown as', under the\n"
-                                          "system in the Representations window");
-                    if (ImGui::SmallButton("in Representations")) {
+                                          "system in the Scene window");
+                    if (ImGui::SmallButton("in Scene")) {
                         data->show_representation_window = true;
                     }
                 }
@@ -2234,7 +2235,7 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Windows")) {
             ImGui::Checkbox("Animation", &data->animation.show_window);
-            ImGui::Checkbox("Representations", &data->show_representation_window);
+            ImGui::Checkbox("Scene", &data->show_representation_window);
             ImGui::Checkbox("Script Editor", &data->show_script_window);
             ImGui::Checkbox("Script Reference", &data->show_script_reference_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
@@ -3036,12 +3037,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
                     tracking.scope_dirty = true;
                 } else {
-                    VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one under the system (Representations, Track bond changes)");
+                    VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one under the system (Scene, Track bond changes)");
                 }
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SetItemTooltip("Show the bonds that form and break in every frame, for the bonds with an atom selected\n"
-                                  "(the operation Track bond changes of the system, in Representations, with the selection as its scope)");
+                                  "(the operation Track bond changes of the system, in the Scene window, with the selection as its scope)");
         }
         if (ImGui::BeginMenu("Script")) {
             const ScriptSuggestions& sug = script_suggestions_get(state, ImGui::IsWindowAppearing());

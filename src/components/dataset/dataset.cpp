@@ -1,4 +1,5 @@
 ﻿#include <viamd_event.h>
+#include <system_scene.h>
 #include <viamd.h>
 #include <representation.h>
 #include <color_utils.h>
@@ -1044,13 +1045,7 @@ struct Dataset : viamd::EventHandler {
     }
 
     static const char* file_role_label(const FileEntry& e, FileRole role) {
-        switch (role) {
-        case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
-        case FileRole_Trajectory: return "Trajectory";
-        case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" : "Supplement";
-        case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
-        default:                  return "";
-        }
+        return system_file_role_label(e, role);
     }
 
     // The files the system was built from, in the order they were loaded: its own, which build and fill it
@@ -1071,9 +1066,6 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableSetupColumn("Holds", ImGuiTableColumnFlags_WidthStretch, 2.5f);
         ImGui::TableHeadersRow();
 
-        str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
-
         for (size_t i = 0; i < file_list_count(list); ++i) {
             const FileEntry& e = *file_list_get(list, i);
             const FileRole role = file_list_role(list, i);
@@ -1081,47 +1073,7 @@ struct Dataset : viamd::EventHandler {
             row.missing = e.missing;
 
             if (!e.missing) {
-                char* d = row.details;
-                const size_t cap = sizeof(row.details);
-                switch (role) {
-                case FileRole_System: {
-                    // A topology names the file its coordinates came from
-                    str_t coords = {};
-                    if (e.coordinates[0]) {
-                        coords = str_from_cstr(e.coordinates);
-                        extract_file(&coords, coords);
-                    }
-                    snprintf(d, cap, "%zu atoms%s%s" STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
-                        coords.len ? ", coordinates of " : "", STR_ARG(coords));
-                    break;
-                }
-                case FileRole_Trajectory: {
-                    const size_t num_frames = run_num_frames(&data);
-                    const double* times = run_frame_times(&data);
-                    if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(&data))) {
-                        char unit_buf[32];
-                        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(&data));
-                        snprintf(d, cap, "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
-                    } else {
-                        snprintf(d, cap, "%zu frames", num_frames);
-                    }
-                    break;
-                }
-                case FileRole_Series:
-                    // The group the file published, which names its source
-                    for (size_t g = 0; g < num_groups; ++g) {
-                        if (str_eq(system_series_group_source(&data, groups[g]), row.path)) {
-                            snprintf(d, cap, "%zu series", system_series_members(nullptr, 0, &data, groups[g]));
-                            break;
-                        }
-                    }
-                    break;
-                case FileRole_Supplement:
-                    snprintf(d, cap, STR_FMT, STR_ARG(loader::type_name(e.type)));
-                    break;
-                default:
-                    break;
-                }
+                system_file_details(row.details, sizeof(row.details), data, data.system_context, i);
             }
             file_row(row);
         }

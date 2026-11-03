@@ -7,6 +7,8 @@
 #include <property_grid.h>
 #include <serialization_utils.h>
 #include <script_editor.h>
+#include <plot_series.h>
+#include <display_units.h>
 
 #include <core/md_bitset.h>
 #include <core/md_str.h>
@@ -225,7 +227,7 @@ static void refresh_representations(ApplicationState* app) {
 
 // The system's menu, of its header's right click and of its ⋮ button: the operations it can be given, then what is
 // done once
-static void draw_system_menu(ApplicationState* app) {
+static void draw_system_menu(ApplicationState* app, bool* remove_request) {
     const bool assembly_shown = app->system.assembly >= 0;
     const bool has_cell = md_unitcell_flags(&app->mold.state.unitcell) != 0;
 
@@ -279,6 +281,18 @@ static void draw_system_menu(ApplicationState* app) {
     if (assembly_shown) {
         ImGui::TextDisabled("Centering, wrapping and making whole are not\napplied while an assembly is shown");
     }
+
+    ImGui::Separator();
+    if (bool* show = workspace_window_flag("System")) {
+        if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details")) {
+            *show = true;
+        }
+        ImGui::SetItemTooltip("The System window: its files in full, what it is made of, its trajectory and series,\nits atom and residue types");
+    }
+    if (ImGui::MenuItem(ICON_FA_TRASH_CAN " Remove system...")) {
+        *remove_request = true;
+    }
+    ImGui::SetItemTooltip("Unload the system, its files, operations and representations");
 }
 
 static void draw_bond_tracking_details(ApplicationState* app);
@@ -500,7 +514,7 @@ static void draw_copies_row(ApplicationState* app) {
     ImGui::PopID();
 }
 
-bool draw_system_header(ApplicationState* app) {
+bool draw_system_header(ApplicationState* app, bool* remove) {
     ASSERT(app);
     ImGui::PushID("system");
 
@@ -523,8 +537,9 @@ bool draw_system_header(ApplicationState* app) {
                           "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": add an operation, or apply one to the frame shown now.",
                           (size_t)app->mold.sys.atom.count);
     }
+    bool remove_request = false;
     if (ImGui::BeginPopupContextItem("##system_menu_rc")) {
-        draw_system_menu(app);
+        draw_system_menu(app, &remove_request);
         ImGui::EndPopup();
     }
 
@@ -532,9 +547,9 @@ bool draw_system_header(ApplicationState* app) {
     if (ImGui::Button(ICON_FA_ELLIPSIS_VERTICAL, {btn, btn})) {
         ImGui::OpenPopup("##system_menu");
     }
-    ImGui::SetItemTooltip("Add an operation, or apply one to the frame shown now");
+    ImGui::SetItemTooltip("Add an operation, apply one to the frame shown now, or remove the system");
     if (ImGui::BeginPopup("##system_menu")) {
-        draw_system_menu(app);
+        draw_system_menu(app, &remove_request);
         ImGui::EndPopup();
     }
     ImGui::SameLine(0, spacing);
@@ -544,6 +559,27 @@ bool draw_system_header(ApplicationState* app) {
         if (app->system.visible) refresh_representations(app);
     }
     ImGui::SetItemTooltip("Show/Hide the system: all of its representations");
+
+    // Asked before it is done: it cannot be taken back. Done by the caller, once the window is drawn.
+    if (remove_request) {
+        ImGui::OpenPopup("Remove system?##confirm");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Remove system?##confirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Remove '%s'?", label);
+        ImGui::TextDisabled("Its files are unloaded, and its operations and representations go with it.\n"
+                            "This cannot be undone; a saved workspace still has it.");
+        ImGui::Spacing();
+        if (ImGui::DeleteButton("Remove")) {
+            *remove = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     ImGui::PopID();
     return open;
@@ -661,6 +697,181 @@ static void draw_bond_tracking_details(ApplicationState* app) {
         }
         ImGui::TreePop();
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------------------------------------
+
+const char* system_file_role_label(const FileEntry& e, FileRole role) {
+    switch (role) {
+    case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
+    case FileRole_Trajectory: return "Trajectory";
+    case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" : "Supplement";
+    case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
+    default:                  return "";
+    }
+}
+
+static const char* file_role_icon(const FileEntry& e, FileRole role) {
+    switch (role) {
+    case FileRole_System:     return ICON_FA_ATOM;
+    case FileRole_Trajectory: return ICON_FA_FILM;
+    case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? ICON_FA_DIAGRAM_PROJECT : ICON_FA_FILE_CIRCLE_PLUS;
+    case FileRole_Series:     return ICON_FA_CHART_LINE;
+    default:                  return ICON_FA_FILE;
+    }
+}
+
+void system_file_details(char* buf, size_t cap, const ApplicationState& app, const SystemContext& sys, size_t i) {
+    ASSERT(buf && cap > 0);
+    buf[0] = '\0';
+    const FileList* list = &sys.files;
+    const FileEntry* e = file_list_get(list, i);
+    if (!e || e->missing) return;
+    switch (file_list_role(list, i)) {
+    case FileRole_System: {
+        // A topology names the file its coordinates came from
+        str_t coords = {};
+        if (e->coordinates[0]) {
+            coords = str_from_cstr(e->coordinates);
+            extract_file(&coords, coords);
+        }
+        snprintf(buf, cap, "%zu atoms%s%s" STR_FMT, sys.data.sys.atom.count, md_system_is_coarse_grained(&sys.data.sys) ? ", coarse grained" : "",
+                 coords.len ? ", coordinates of " : "", STR_ARG(coords));
+        break;
+    }
+    case FileRole_Trajectory: {
+        const size_t num_frames = run_num_frames(sys.data);
+        const double* times = run_frame_times(sys.data);
+        if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(sys.data))) {
+            char unit_buf[32];
+            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(sys.data));
+            snprintf(buf, cap, "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
+        } else {
+            snprintf(buf, cap, "%zu frames", num_frames);
+        }
+        break;
+    }
+    case FileRole_Series: {
+        // The group the file published, which names its source. The series are of the one system loaded.
+        str_t groups[64];
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &app), ARRAY_SIZE(groups));
+        const str_t path = str_from_cstr(e->path);
+        for (size_t g = 0; g < num_groups; ++g) {
+            if (str_eq(system_series_group_source(&app, groups[g]), path)) {
+                snprintf(buf, cap, "%zu series", system_series_members(nullptr, 0, &app, groups[g]));
+                break;
+            }
+        }
+        break;
+    }
+    case FileRole_Supplement:
+        snprintf(buf, cap, STR_FMT, STR_ARG(loader::type_name(e->type)));
+        break;
+    default:
+        break;
+    }
+}
+
+void draw_system_files(ApplicationState* app) {
+    ASSERT(app);
+    const SystemContext& sys = app->system_context;
+    const FileList* list = &sys.files;
+    const size_t num_files = file_list_count(list);
+    if (num_files == 0) return;
+
+    ImGui::PushID("system_files");
+    const float btn = row_button_size();
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const float icon_w = icon_column_width();
+    const float right_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+
+    ImGui::Dummy({icon_w, btn});
+    ImGui::GetWindowDrawList()->AddText(ImFloor(min + (ImVec2(icon_w, btn) - ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN)) * 0.5f),
+                                        ImGui::GetColorU32(ImGuiCol_Text), ICON_FA_FOLDER_OPEN);
+    ImGui::SameLine(0, 0);
+
+    size_t num_missing = 0;
+    for (size_t i = 0; i < num_files; ++i) num_missing += file_list_get(list, i)->missing ? 1 : 0;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 3.0f));
+    const bool open = ImGui::TreeNodeEx("##files", ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_AllowOverlap, "Files (%zu)", num_files);
+    ImGui::PopStyleVar();
+    ImGui::SetItemTooltip("The files the system is built from, in the order they were loaded: its own, then those of its run");
+    if (num_missing) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " %zu not loaded", num_missing);
+    }
+
+    // The System window has them in full
+    if (bool* show = workspace_window_flag("System")) {
+        ImGui::SameLine(right_x - btn);
+        if (ImGui::Button(ICON_FA_CIRCLE_INFO, {btn, btn})) {
+            *show = true;
+        }
+        ImGui::SetItemTooltip("Details: the System window");
+    }
+
+    if (open) {
+        for (size_t i = 0; i < num_files; ++i) {
+            const FileEntry& e = *file_list_get(list, i);
+            const FileRole role = file_list_role(list, i);
+            ImGui::PushID((int)i);
+
+            // The files of the run under it, one further in
+            const bool of_run = e.run >= 0;
+            if (of_run && role != FileRole_Trajectory) ImGui::Indent();
+
+            str_t name = str_from_cstr(e.path);
+            extract_file(&name, name);
+            ImGui::AlignTextToFramePadding();
+            if (e.missing) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " " STR_FMT, STR_ARG(name));
+            } else {
+                ImGui::Text("%s " STR_FMT, file_role_icon(e, role), STR_ARG(name));
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                if (e.missing) ImGui::SetTooltip("%s, not loaded: the workspace names it, but it could not be loaded\n%s", system_file_role_label(e, role), e.path);
+                else           ImGui::SetTooltip("%s\n%s", system_file_role_label(e, role), e.path);
+            }
+            if (ImGui::BeginPopupContextItem("##file")) {
+                if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(e.path);
+                ImGui::EndPopup();
+            }
+            char details[128];
+            system_file_details(details, sizeof(details), *app, sys, i);
+            if (details[0]) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", details);
+            }
+
+            if (of_run && role != FileRole_Trajectory) ImGui::Unindent();
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
+void system_remove(ApplicationState* app, SystemContext& sys) {
+    ASSERT(app);
+    interrupt_async_tasks(app);
+    free_trajectory_data(app, sys);
+    free_system_data(app, sys);
+
+    // What was of it: its representations, its operations and what it was shown as
+    remove_all_representations(app);
+    sys.scene.visible = true;
+    for (int i = 0; i < SYSTEM_OPERATION_COUNT; ++i) {
+        system_remove_operation(app, system_operation_at(i));
+    }
+    sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
+    sys.scene.assembly = -1;
+    md_array_shrink(app->view.assembly_transforms, 0);
+    md_array_shrink(app->view.assembly_copy_offset, 0);
+    app->representation.atom_visibility_mask_dirty = true;
+    app->animation.frame = 0.0;
 }
 
 // ---------------------------------------------------------------------------------------------------------

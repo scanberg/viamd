@@ -2,7 +2,7 @@
 
 // THE SYSTEM IN THE SCENE
 //
-// The Representations window lists what is loaded by system: the system first, then the operations done to its
+// The Scene window lists what is loaded by system: the system first, then the operations done to its
 // coordinates before they are drawn, then the copies of it that are drawn (periodic images or an assembly), then its
 // representations. This unit is the part of that which is the system's own (ApplicationState::system): its rows in the
 // window, what the menus and the viewport do to it, and its section of a workspace.
@@ -19,8 +19,10 @@
 #include <stddef.h>
 
 #include <core/md_str.h>
+#include <file_list.h>
 
 struct ApplicationState;
+struct SystemContext;
 
 namespace viamd {
 struct serialization_state_t;
@@ -65,13 +67,28 @@ void system_label(char* buf, size_t cap, const ApplicationState& app);
 
 // ## UI
 
-// The header of the system in the Representations window: the system, shown or not, its menu of the operations to add
-// and the actions. Returns whether it is open: what is the system's is listed under it then, indented, by the caller.
-bool draw_system_header(ApplicationState* app);
+// The header of the system in the Scene window: the system, shown or not, its menu of the operations to add, the
+// actions, and removing it, which is asked first and then left to the caller (*remove), once the window is drawn.
+// Returns whether it is open: what is the system's is listed under it then, indented, by the caller.
+bool draw_system_header(ApplicationState* app, bool* remove);
+
+// The files of the system, one line each: what it is, its name and what it holds in short. The System window has them
+// in full (its Files), and this links to it.
+void draw_system_files(ApplicationState* app);
 
 // The rows of the operations the system has, in their order, and what it is shown as (its copies): first under its
 // header
 void draw_system_operations(ApplicationState* app);
+
+// Unloads the system: its files and data, its representations, its operations and what it is shown as
+void system_remove(ApplicationState* app, SystemContext& sys);
+
+// ## Files
+
+// What a file is to its system ("Structure", "Trajectory", "Energies", ...), and what it holds in short ("500 frames,
+// 0 - 4990 ps"): the Scene window's files and the System window's
+const char* system_file_role_label(const FileEntry& e, FileRole role);
+void system_file_details(char* buf, size_t cap, const ApplicationState& app, const SystemContext& sys, size_t i);
 
 // ## Workspace
 

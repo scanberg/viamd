@@ -2879,7 +2879,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// The Representations window
+// The Scene window (it was the Representations window): the systems loaded, and how each is shown
 // ---------------------------------------------------------------------------------------------------------
 
 #define REPRESENTATION_NODE_DND "VIAMD_REPRESENTATION_NODE"
@@ -3734,34 +3734,32 @@ static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uin
     }
 }
 
-void draw_representations_window(ApplicationState* state) {
-    if (!state->show_representation_window) return;
+// The representations of a system: a heading with what adds to them and removes them all, then their tree
+static void draw_representations_section(ApplicationState* state, const WindowTree& tree, WindowActions* act) {
+    ImGui::PushID("representations");
+    const float btn = tree.button_size;
+    const float spacing = tree.button_spacing;
+    const float right_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
-    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Representations", &state->show_representation_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::End();
-        return;
-    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Representations");
 
-    WindowActions act;
-
-    if (ImGui::Button(ICON_FA_FOLDER_PLUS)) {
-        act.add_group = true;
+    ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
+    if (ImGui::Button(ICON_FA_FOLDER_PLUS, {btn, btn})) {
+        act->add_group = true;
     }
     ImGui::SetItemTooltip("Add a group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
-    ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_PLUS)) {
-        act.add_representation = true;
+    ImGui::SameLine(0, spacing);
+    if (ImGui::Button(ICON_FA_PLUS, {btn, btn})) {
+        act->add_representation = true;
     }
     ImGui::SetItemTooltip("Add a representation");
 
-    // Removing everything at the far end, behind a question: it cannot be taken back
-    ImGui::SameLine();
-    const float trash_w = ImGui::CalcTextSize(ICON_FA_TRASH_CAN).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(ImGui::GetContentRegionAvail().x - trash_w, 0.0f));
+    // Removing them all, behind a question: it cannot be taken back
+    ImGui::SameLine(0, spacing);
     ImGui::BeginDisabled(md_array_size(state->representation.reps) == 0 && md_array_size(state->representation.groups) == 0);
-    if (ImGui::Button(ICON_FA_TRASH_CAN)) {
+    if (ImGui::Button(ICON_FA_TRASH_CAN, {btn, btn})) {
         ImGui::OpenPopup("##remove_all");
     }
     ImGui::EndDisabled();
@@ -3769,7 +3767,7 @@ void draw_representations_window(ApplicationState* state) {
     if (ImGui::BeginPopup("##remove_all")) {
         ImGui::TextUnformatted("Remove every representation and group?");
         if (ImGui::DeleteButton("remove all")) {
-            act.remove_all = true;
+            act->remove_all = true;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -3778,9 +3776,30 @@ void draw_representations_window(ApplicationState* state) {
         }
         ImGui::EndPopup();
     }
+    ImGui::PopID();
 
-    ImGui::Spacing();
-    ImGui::Separator();
+    if (tree.t.count == 0) {
+        ImGui::TextDisabled("None yet. Add one with " ICON_FA_PLUS ".");
+    }
+    // What is within a hidden system is drawn dimmed: it is hidden too, whatever its own eye says
+    const bool dim = !state->system.visible;
+    if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+    draw_tree_level(state, tree, 0, 0, act);
+    if (dim) ImGui::PopStyleVar();
+}
+
+void draw_representations_window(ApplicationState* state) {
+    if (!state->show_representation_window) return;
+
+    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
+    // The systems loaded and how each is shown. Its open state is kept in a workspace under its former name
+    // (Representations), so that one written before it was renamed opens it as it was.
+    if (!ImGui::Begin("Scene", &state->show_representation_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::End();
+        return;
+    }
+
+    WindowActions act;
 
     // The arrays are only read while the rows are drawn - every change to them waits in 'act' - so the
     // nodes gathered here hold until the end
@@ -3791,24 +3810,34 @@ void draw_representations_window(ApplicationState* state) {
     tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
                         MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 
-    // The system first, and under it, one level in: what is done to its coordinates and what it is shown as, then its
-    // representations. Closed, it lists none of them.
-    const bool system_open = draw_system_header(state);
-    if (system_open) {
-        ImGui::Indent();
-        draw_system_operations(state);
-        if (tree.t.count == 0) {
-            ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");
+    // The system, and under it, one level in: its files, what is done to its coordinates and what it is shown as,
+    // then its representations. Closed, it lists none of them. Without a system, representations which are there (a
+    // workspace whose files did not load) are still listed, to be removed or kept for the next.
+    const bool has_system = state->mold.sys.atom.count > 0 || file_list_count(&state->file_list) > 0;
+    bool reps_listed = false;
+    bool remove_system = false;
+    if (has_system) {
+        if (draw_system_header(state, &remove_system)) {
+            ImGui::Indent();
+            draw_system_files(state);
+            draw_system_operations(state);
+            draw_representations_section(state, tree, &act);
+            ImGui::Unindent();
+            reps_listed = true;
         }
-        // What is within a hidden system is drawn dimmed: it is hidden too, whatever its own eye says
-        const bool dim = !state->system.visible;
-        if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-        draw_tree_level(state, tree, 0, 0, &act);
-        if (dim) ImGui::PopStyleVar();
-        ImGui::Unindent();
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
+        ImGui::PopStyleColor();
+        if (tree.t.count > 0) {
+            ImGui::Spacing();
+            draw_representations_section(state, tree, &act);
+            reps_listed = true;
+        }
     }
 
     // The space below the rows: dropping there puts it last at the top level, and a right click adds
+    if (reps_listed) {
     const ImVec2 rest = {MAX(ImGui::GetContentRegionAvail().x, 1.0f), MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
     ImGui::InvisibleButton("##below", rest);
     if (ImGui::BeginDragDropTarget()) {
@@ -3832,9 +3861,15 @@ void draw_representations_window(ApplicationState* state) {
         draw_tree_menu(NodeRef{}, &act);
         ImGui::EndPopup();
     }
+    }
 
     ImGui::End();
 
+    if (remove_system) {
+        // The rows were drawn from what it held; nothing else is done to them
+        system_remove(state, state->system_context);
+        return;
+    }
     apply_window_actions(state, act);
 }
 

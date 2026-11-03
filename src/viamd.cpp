@@ -2033,6 +2033,13 @@ struct WorkspaceWindow {
 static WorkspaceWindow workspace_windows[64];
 static size_t num_workspace_windows = 0;
 
+bool* workspace_window_flag(const char* name) {
+    for (size_t i = 0; i < num_workspace_windows; ++i) {
+        if (strcmp(workspace_windows[i].name, name) == 0) return workspace_windows[i].show;
+    }
+    return nullptr;
+}
+
 void workspace_register_window(const char* name, bool* show) {
     ASSERT(name && show);
     for (size_t i = 0; i < num_workspace_windows; ++i) {

@@ -1244,7 +1244,7 @@ struct SystemRepresentations {
 };
 
 // THE SYSTEM, as the scene shows it: what is done to its coordinates before they are drawn, the copies of it drawn,
-// and whether it is drawn at all. Listed in the Representations window above its representations (system_scene.h).
+// and whether it is drawn at all. Listed in the Scene window above its representations (system_scene.h).
 // One, as viamd loads one system; the state here is what each system will have of its own once it loads several.
 // The figure's: in the workspace ([SystemScene]).
 struct SystemScene {
@@ -2401,6 +2401,8 @@ bool save_workspace(ApplicationState* app, str_t file);
 // is the window's identity in the file, so it stays the same when the window is renamed on screen.
 // Call once, at initialization; show has to outlive the application.
 void workspace_register_window(const char* name, bool* show);
+// The flag that shows the window registered by that name, NULL for none: to open one from another
+bool* workspace_window_flag(const char* name);
 
 // Selections
 // What filters are evaluated and completed against: the system as it is shown, and the names of the script in the editor
