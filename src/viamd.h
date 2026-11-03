@@ -1007,7 +1007,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
-    bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
+    bool periodic_images = true;    // Repeated in the periodic images of the view (system.periodic_images), as they are shown
 };
 
 // A group of representations. What it holds is shown only while the group is, and its filter, when it has one, is the
@@ -1216,25 +1216,14 @@ struct ApplicationState {
         ViewRegion region = {};
         vec2_t shift = {0, 0};
 
-        // The periodic images shown: the scene again in the neighboring cells, this many each way along a, b and c, of
-        // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
-        int periodic_images[3] = {0, 0, 0};
-
-        // The copies of the scene those representations are drawn in, by instancing (md_gl_copies_t): its own first,
-        // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
-        // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
-        // update_view_param.
+        // The copies of the scene the representations with periodic_images are drawn in, by instancing (md_gl_copies_t):
+        // its own first, then the periodic images of the system (system.periodic_images), none without a cell or images,
+        // or with an assembly shown. As of this frame and as of the last, so that an image which moves with the cell (a
+        // trajectory of changing cells) shows as moving. Set by update_view_param.
         md_array(mat4_t) periodic_transforms      = 0;
         md_array(mat4_t) periodic_transforms_prev = 0;
 
-        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
-        // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
-        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
-        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
-        // (centering, wrapping, making whole) are not applied while one is shown. The figure's: in the workspace.
-        int assembly = -1;
-
-        // Of the assembly shown, set by update_view_param: the transforms of its copies, group by group, those of group g
+        // Of the assembly shown (system.assembly), set by update_view_param: the transforms of its copies, group by group, those of group g
         // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
         md_array(mat4_t)   assembly_transforms  = 0;
         md_array(uint32_t) assembly_copy_offset = 0;
@@ -1613,85 +1602,108 @@ struct ApplicationState {
         bool show_window = false;
     } representation;
 
+    // THE SYSTEM, as the scene shows it: what is done to its coordinates before they are drawn, the copies of it drawn,
+    // and whether it is drawn at all. Listed in the Representations window above its representations (system_scene.h).
+    // One, as viamd loads one system; the state here is what each system will have of its own once it loads several.
+    // The figure's: in the workspace ([SystemScene]).
     struct {
-        bool recenter = false;
-        bool fixate_orientation = false;
+        bool visible = true;    // Its representations are drawn only while it is
 
-        // Extra transform applied to the target in its own centred frame, between fixating the
-        // orientation and placing it at the centre of the cell:
-        //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
-        // Identity by default. This is the hook for aligning the structure to something once it is
-        // centred - principal axes, a chosen bond, a user supplied orientation - without having to
-        // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
-        // it survives a change of recenter target.
-        mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
+        // The periodic images shown: the system again in the neighboring cells, this many each way along a, b and c, of
+        // the representations which have periodic_images (all, unless they opt out)
+        int periodic_images[3] = {0, 0, 0};
 
-        // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
-        // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
-        // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
-        // this is the only record of it: wrapping and making whole only work in the lattice frame (see
-        // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
-        // Back to identity whenever mold.state is rewritten from its source.
-        mat4_t state_rotation = MD_MAT4_IDENT_INIT;
+        // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
+        // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
+        // copies its operators make, drawn by instancing. The atoms of a copy are those of the system, which they pick
+        // and select as. The operators place the coordinates as the file gives them, so the operations which move them
+        // (centering, wrapping, making whole) are not applied while one is shown.
+        int assembly = -1;
 
         struct {
-            AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
-            bool enabled = false;
-            uint64_t version = 1;
-            uint64_t evaluated_version = 0;
-            uint64_t ir_fingerprint = 0;
-            md_bitset_t mask = { 0 };
-        } recenter_query;
+            // The operations it has (SystemOperation), each turned on or off by its own flag below, which keeps its settings
+            // while it is off. One it does not have is off, and its settings are the defaults.
+            uint32_t present = 0;
 
-        // External state which user controls
-        bool apply_pbc = false;
-        bool unwrap_structures = false;
+            bool recenter = false;
+            bool fixate_orientation = false;
 
-        // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
-        // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
-        // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
-        struct {
-            bool enabled = false;
-            AtomFilter scope = {};                      // Empty for every atom
-            float tolerance = MD_BOND_DELTA_TOLERANCE;
-            uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
+            // Extra transform applied to the target in its own centred frame, between fixating the
+            // orientation and placing it at the centre of the cell:
+            //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
+            // Identity by default. This is the hook for aligning the structure to something once it is
+            // centred - principal axes, a chosen bond, a user supplied orientation - without having to
+            // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
+            // it survives a change of recenter target.
+            mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
 
-            md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
-            bool scope_dirty = true;                    // To be evaluated again
-            uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
+            // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
+            // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
+            // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
+            // this is the only record of it: wrapping and making whole only work in the lattice frame (see
+            // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
+            // Back to identity whenever mold.state is rewritten from its source.
+            mat4_t state_rotation = MD_MAT4_IDENT_INIT;
 
-            md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
-            // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
-            // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
-            // forms more than any before it has the indices of the ones beyond run into those of the next domain.
-            size_t formed_capacity = 0;
-            // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
-            // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
-            // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
-            // formed_capacity are for the bonds.
-            md_chem_delta_t chem = {};
-            size_t ring_capacity = 0;
-            uint64_t key = 0;                           // What it was computed from, 0 when it is empty
-            double time_ms = 0.0;                       // How long that took
-        } bond_tracking;
+            struct {
+                AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
+                bool enabled = false;
+                uint64_t version = 1;
+                uint64_t evaluated_version = 0;
+                uint64_t ir_fingerprint = 0;
+                md_bitset_t mask = { 0 };
+            } recenter_query;
 
-        // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
-        // This is populated by assigning a user defined selection.
-        md_bitset_t selection_mask = {0};
+            // External state which user controls
+            bool apply_pbc = false;
+            bool unwrap_structures = false;
 
-        struct {
-            // The atoms the reference was built from, compared exactly against the active target. A query
-            // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
-            // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
-            md_bitset_t target_mask = {0};    // in the persistent allocator
-            bool valid = false;
+            // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
+            // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
+            // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
+            struct {
+                bool enabled = false;
+                AtomFilter scope = {};                      // Empty for every atom
+                float tolerance = MD_BOND_DELTA_TOLERANCE;
+                uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
 
-			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
-            vec4_t* rel_xyzw = nullptr;
-            vec3_t  com = {};
-        } initial_frame;
+                md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
+                bool scope_dirty = true;                    // To be evaluated again
+                uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
 
-    } operations;
+                md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
+                // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
+                // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
+                // forms more than any before it has the indices of the ones beyond run into those of the next domain.
+                size_t formed_capacity = 0;
+                // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
+                // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
+                // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
+                // formed_capacity are for the bonds.
+                md_chem_delta_t chem = {};
+                size_t ring_capacity = 0;
+                uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+                double time_ms = 0.0;                       // How long that took
+            } bond_tracking;
+
+            // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+            // This is populated by assigning a user defined selection.
+            md_bitset_t selection_mask = {0};
+
+            struct {
+                // The atoms the reference was built from, compared exactly against the active target. A query
+                // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
+                // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
+                md_bitset_t target_mask = {0};    // in the persistent allocator
+                bool valid = false;
+
+    			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
+                vec4_t* rel_xyzw = nullptr;
+                vec3_t  com = {};
+            } initial_frame;
+
+        } operations;
+    } system;
 
     // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
@@ -2258,6 +2270,9 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
 // and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
 // the reference of the topology (md_system_t::reference).
 bool recompute_bonds(ApplicationState* app, int64_t frame);
+
+// An identifier the script does not use yet: base, or base with a number after it (main.cpp)
+str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc);
 
 // To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
 // threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the
@@ -2978,7 +2993,7 @@ void file_queue_process(ApplicationState* state);
 
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
-// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (view.assembly,
+// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (system.assembly,
 // -1 for none), of those atoms in the instances of each of its groups, in all of the copies of the group.
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
 static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
@@ -2986,7 +3001,7 @@ static inline void reset_view(ViewTransform* transform, const md_system_state_t&
     reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
 
-// ASSEMBLIES (view.assembly). The groups of assembly asm_idx are [a.group_offset[asm_idx], a.group_offset[asm_idx + 1]),
+// ASSEMBLIES (system.assembly). The groups of assembly asm_idx are [a.group_offset[asm_idx], a.group_offset[asm_idx + 1]),
 // and the instances and operators of group g those assembly_group gives, pointers into the arrays of a. Both read from the
 // offsets as they are, not through the md_urange_t of md_assembly_group_range and its kin: MSVC 19.52 (/O2) compiled
 // loops from the beg of such a range to index with the 64 bits that held both of its ends, the end in the upper half,

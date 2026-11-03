@@ -68,6 +68,7 @@
 
 #include <viamd.h>
 #include <representation.h>
+#include <system_scene.h>
 #include <timeline_periods_ui.h>
 #include <plot_periodic.h>
 #include <script_reference.h>
@@ -549,7 +550,6 @@ static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
 
 static void update_md_buffers(ApplicationState* state);
-static str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc);
 
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
@@ -747,8 +747,8 @@ int main(int argc, char** argv) {
     md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
     // Sets, replaced whole
-    state.operations.selection_mask = md_bitset_empty_set();
-    state.operations.recenter_query.mask = md_bitset_empty_set();
+    state.system.operations.selection_mask = md_bitset_empty_set();
+    state.system.operations.recenter_query.mask = md_bitset_empty_set();
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
@@ -1094,7 +1094,7 @@ int main(int argc, char** argv) {
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
                 reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region,
-                           &state.mold.sys, state.view.assembly);
+                           &state.mold.sys, state.system.assembly);
             }
             state.view.target = reset_transform;
         }
@@ -1469,6 +1469,9 @@ int main(int argc, char** argv) {
 
         recenter_update(&state);
 
+        // An operation turned on elsewhere than under the system (the Operations menu, the viewport) is one it has
+        system_operations_sync(&state);
+
         // The bonds formed and broken in the frame shown, before they are uploaded
         bond_tracking_update(&state);
 
@@ -1589,7 +1592,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region, &state.mold.sys, state.view.assembly);
+                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region, &state.mold.sys, state.system.assembly);
             }
         }
 
@@ -1761,10 +1764,10 @@ static void update_view_param(ApplicationState* data) {
         }
     }
     // The copies of the assembly shown, which stand still
-    if (data->view.assembly >= 0 && (size_t)data->view.assembly >= data->mold.sys.assembly.count) {
-        data->view.assembly = -1;
+    if (data->system.assembly >= 0 && (size_t)data->system.assembly >= data->mold.sys.assembly.count) {
+        data->system.assembly = -1;
     }
-    assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, data->view.assembly, persistent_alloc);
+    assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, data->system.assembly, persistent_alloc);
     // And the subsets of its parts, which its copies draw: made when another is shown
     assembly_subsets_update(data);
 
@@ -1955,7 +1958,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SameLine(0.0f, gap);
                 if (ImGui::Button(reset_label)) {
                     reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region,
-                               &data->mold.sys, data->view.assembly);
+                               &data->mold.sys, data->system.assembly);
                 }
                 ImGui::SetItemTooltip("Frame what is shown again, from the default direction");
                 if (data->view.mode == CameraMode::Perspective) {
@@ -1965,67 +1968,13 @@ static void draw_main_menu(ApplicationState* data) {
                         data->view.camera.fov_y = DEG_TO_RAD(fov);
                     }
                 }
-                const md_assembly_data_t& assemblies = data->mold.sys.assembly;
-                if (assemblies.count > 0) {
-                    prop::row("assembly", "The biological assembly the file describes (a dimer, the shell of a virus) in place of the\n"
-                                          "coordinates as they are: the copies of its chains its operators make, drawn by instancing.\n"
-                                          "The atoms of a copy are those of the file, and pick and select as them. The operators place\n"
-                                          "the coordinates as the file gives them: centering, wrapping and making whole (Operations)\n"
-                                          "are not applied while one is shown, and coordinates they moved before stay moved.");
-                    // A chain of an assembly: a copy of a polymer strand, a part of the instances it copies
-                    auto num_chains = [&](size_t asm_idx) {
-                        const md_system_t& sys = data->mold.sys;
-                        size_t n = 0;
-                        for (size_t g = assemblies.group_offset[asm_idx]; g < assemblies.group_offset[asm_idx + 1]; ++g) {
-                            const AssemblyGroup group = assembly_group(assemblies, g);
-                            size_t polymers = 0;
-                            for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
-                                const md_urange_t res = md_system_instance_residue_range(&sys, (size_t)*k);
-                                for (uint32_t r = res.beg; r < res.end;) {
-                                    const md_part_idx_t part = md_system_part_find_by_residue_idx(&sys, r);
-                                    if (part < 0) break;
-                                    polymers += md_part_kind_is_polymer(md_system_part_kind(&sys, (size_t)part)) ? 1 : 0;
-                                    r = md_system_part_residue_range(&sys, (size_t)part).end;
-                                }
-                            }
-                            n += polymers * (size_t)(group.oper_end - group.oper);
-                        }
-                        return n;
-                    };
-                    char preview[64] = "As deposited";
-                    if (data->view.assembly >= 0 && (size_t)data->view.assembly < assemblies.count) {
-                        const str_t id = md_assembly_id(&assemblies, (size_t)data->view.assembly);
-                        snprintf(preview, sizeof(preview), "Assembly " STR_FMT " (%zu chains)", STR_ARG(id), num_chains((size_t)data->view.assembly));
+                if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&data->mold.state.unitcell) != 0) {
+                    // What the system is shown as is the system's, listed with it
+                    prop::row("shown as", "The periodic images and the assemblies are the system's: 'Shown as', under the\n"
+                                          "system in the Representations window");
+                    if (ImGui::SmallButton("in Representations")) {
+                        data->representation.show_window = true;
                     }
-                    int chosen = data->view.assembly;
-                    ImGui::SetNextItemWidth(prop::control_width());
-                    if (ImGui::BeginCombo("##assembly", preview)) {
-                        if (ImGui::Selectable("As deposited", data->view.assembly < 0)) chosen = -1;
-                        for (size_t k = 0; k < assemblies.count; ++k) {
-                            char label[64];
-                            const str_t id = md_assembly_id(&assemblies, k);
-                            snprintf(label, sizeof(label), "Assembly " STR_FMT " (%zu chains)##%zu", STR_ARG(id), num_chains(k), k);
-                            if (ImGui::Selectable(label, data->view.assembly == (int)k)) chosen = (int)k;
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (chosen != data->view.assembly) {
-                        // Its copies at once (they are set every frame, update_view_param), and what is shown changes
-                        // its extent: the view frames it
-                        data->view.assembly = chosen;
-                        assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, chosen, persistent_alloc);
-                        reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, chosen);
-                        // Room to zoom out to all of it
-                        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.target.distance * 10.0f);
-                    }
-                }
-                if (md_unitcell_flags(&data->mold.state.unitcell) != 0) {
-                    prop::row("periodic images", "The scene again in the neighboring cells, this many each way along a, b and c:\n"
-                                                 "1 1 1 shows the 26 cells around it. A representation can leave itself out\n"
-                                                 "(its periodic images, under Representations). Not with an assembly shown.");
-                    ImGui::BeginDisabled(data->view.assembly >= 0);
-                    ImGui::SliderInt3("##periodic_images", data->view.periodic_images, 0, PERIODIC_IMAGES_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::EndDisabled();
                 }
                 prop::section_end();
             }
@@ -2453,15 +2402,15 @@ static void draw_main_menu(ApplicationState* data) {
             bool do_unwrap = false;
             bool do_bonds = false;
             bool redo_every_frame = false;
-            auto& tracking = data->operations.bond_tracking;
+            auto& tracking = data->system.operations.bond_tracking;
 
             // Each operation can be applied to the frame shown now, or to every frame as it is shown.
             // The labels say what happens to the atoms, not what the operation is called internally.
             // Those which move the atoms are not, while an assembly is shown: its operators place the coordinates as
-            // the file gives them (view.assembly)
-            const bool assembly_shown = data->view.assembly >= 0;
+            // the file gives them (system.assembly)
+            const bool assembly_shown = data->system.assembly >= 0;
             if (assembly_shown) {
-                ImGui::TextDisabled("Centering, wrapping and making whole are not applied\nwhile an assembly is shown (View)");
+                ImGui::TextDisabled("Centering, wrapping and making whole are not applied\nwhile an assembly is shown (Representations, the system)");
             }
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
@@ -2508,7 +2457,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (!recenter_available) {
                     ImGui::PushDisabled();
                 }
-                if (ImGui::Checkbox("##recenter", &data->operations.recenter) && data->operations.recenter) {
+                if (ImGui::Checkbox("##recenter", &data->system.operations.recenter) && data->system.operations.recenter) {
                     do_recenter = true;
                 }
                 if (!recenter_available) {
@@ -2519,18 +2468,18 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 ImGui::TableSetColumnIndex(2);
-                if (ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->operations.fixate_orientation) && data->operations.recenter) {
+                if (ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->system.operations.fixate_orientation) && data->system.operations.recenter) {
                     // Turning it on or off while centering every frame takes effect on the frame shown, not the next one
                     redo_every_frame = true;
                 }
                 ImGui::SetItemTooltip("Keep orientation: when centering, also turn everything so the target\nkeeps the orientation it has in the first frame.\nEverything is wrapped into the box around the target before it is turned,\nand the box turns with it.");
 
                 ImGui::SameLine();
-                ImGui::Checkbox(ICON_FA_COMMENT_DOTS "##target-query", &data->operations.recenter_query.enabled);
+                ImGui::Checkbox(ICON_FA_COMMENT_DOTS "##target-query", &data->system.operations.recenter_query.enabled);
                 ImGui::SetItemTooltip("Target by query: center on the atoms a query picks (evaluated every frame\nwhen it depends on it) instead of the target set from a selection");
 
-                if (data->operations.recenter_query.enabled) {
-                    auto& recenter_query = data->operations.recenter_query;
+                if (data->system.operations.recenter_query.enabled) {
+                    auto& recenter_query = data->system.operations.recenter_query;
                     ImGui::SameLine();
                     if (filter_input("##recenter-query", &recenter_query.filter, data->script.language, filter_context(data))) {
                         recenter_mark_query_dirty(data);
@@ -2547,7 +2496,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Move every atom that is outside the periodic box back in through the opposite side\n(apply periodic boundary conditions). Molecules across the boundary are split.");
 
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##pbc", &data->operations.apply_pbc) && data->operations.apply_pbc) {
+                if (ImGui::Checkbox("##pbc", &data->system.operations.apply_pbc) && data->system.operations.apply_pbc) {
                     do_pbc = true;
                 }
                 ImGui::SetItemTooltip("Wrap every atom into the periodic box in every frame");
@@ -2560,7 +2509,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Join molecules that are split across the periodic box boundary,\nso each one is drawn in one piece (unwrap)");
 
                 ImGui::TableSetColumnIndex(1);
-                if (ImGui::Checkbox("##unwrap", &data->operations.unwrap_structures) && data->operations.unwrap_structures) {
+                if (ImGui::Checkbox("##unwrap", &data->system.operations.unwrap_structures) && data->system.operations.unwrap_structures) {
                     do_unwrap = true;
                 }
                 ImGui::SetItemTooltip("Keep every molecule whole in every frame");
@@ -2598,98 +2547,13 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (tracking.enabled) {
-                const md_bond_delta_t* delta = bond_tracking_delta(data);
-                if (delta) {
-                    const size_t num_broken = md_bitset_count(delta->broken);
-                    ImGui::Text("%zu formed, %zu broken in this frame (%.1f ms)", delta->num_formed, num_broken, tracking.time_ms);
-                    if (ImGui::IsItemHovered()) {
-                        // The atoms of the bonds that changed
-                        md_bitmask_clear(&data->selection.highlight_mask);
-                        for (size_t i = 0; i < delta->num_formed; ++i) {
-                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[0]);
-                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[1]);
-                        }
-                        md_bitset_iter_t it = md_bitset_iter(delta->broken);
-                        while (md_bitset_iter_next(&it)) {
-                            if (it.idx >= data->mold.sys.bond.count) break;
-                            const md_atom_pair_t p = data->mold.sys.bond.pairs[it.idx];
-                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)p.idx[0]);
-                            md_bitmask_set_bit(&data->selection.highlight_mask, (uint32_t)p.idx[1]);
-                        }
-                        ImGui::SetTooltip("The bonds formed are drawn as sticks and the broken ones are not drawn.\n"
-                                          "Their atoms are highlighted.");
-                    }
-                } else if (!tracking.scope.result.success) {
-                    ImGui::TextDisabled("The scope does not pick atoms: nothing is tracked");
-                } else {
-                    ImGui::TextDisabled("Nothing to track in this system");
-                }
-
-                ImGui::SameLine();
-                // VIAL has no bond changes per frame yet: its bonds() are the system's
-                const bool v2 = data->script.language == script::Language::V2;
-                ImGui::BeginDisabled(v2);
-                if (ImGui::SmallButton("Copy to Script")) {
-                    // The same as a script value, to count or plot: formed(d), broken(d), bond(d)
-                    char args[512] = "";
-                    int len = 0;
-                    const str_t scope = str_trim(str_from_cstr(tracking.scope.text));
-                    if (!str_empty(scope)) len += snprintf(args + len, sizeof(args) - len, STR_FMT, STR_ARG(scope));
-                    if (tracking.tolerance != MD_BOND_DELTA_TOLERANCE && len < (int)sizeof(args)) {
-                        len += snprintf(args + len, sizeof(args) - len, "%stolerance=%.3g", len ? ", " : "", tracking.tolerance);
-                    }
-                    if (tracking.breakable != MD_BOND_DELTA_BREAKABLE && len < (int)sizeof(args)) {
-                        len += snprintf(args + len, sizeof(args) - len, "%sbreakable={", len ? ", " : "");
-                        bool first = true;
-                        for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED && len < (int)sizeof(args); ++o) {
-                            if (!(tracking.breakable & (1u << o))) continue;
-                            len += snprintf(args + len, sizeof(args) - len, "%s'%s'", first ? "" : ", ", md_bond_origin_name((md_bond_origin_t)o));
-                            first = false;
-                        }
-                        if (len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, "}");
-                    }
-                    const str_t ident = create_unique_identifier(data->script.ir, STR_LIT("bonds_delta"), data->allocator.frame);
-                    char line[640];
-                    snprintf(line, sizeof(line), STR_FMT " = bond_delta(%s);", STR_ARG(ident), args);
-                    script_editor::append_line(data->editor, str_from_cstr(line));
-                }
-                ImGui::EndDisabled();
-                if (v2) {
-                    ImGui::SetItemTooltip("VIAL does not track bond changes yet: bond() gives the bonds of the system");
-                } else {
-                    ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
-                                          "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");
-                }
-
-                if (ImGui::TreeNode("Advanced##track-bonds")) {
-                    float tolerance = tracking.tolerance;
-                    if (ImGui::SliderFloat("tolerance", &tolerance, 0.0f, 0.45f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
-                        tracking.tolerance = tolerance;
-                    }
-                    ImGui::SetItemTooltip("A bond breaks beyond (1 + tolerance) times its cutoff and forms within (1 - tolerance) times it,\n"
-                                          "so that it does not flicker as it vibrates around the cutoff");
-                    ImGui::TextUnformatted("breakable:");
-                    for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) {
-                        ImGui::SameLine();
-                        bool on = (tracking.breakable & (1u << o)) != 0;
-                        if (ImGui::Checkbox(md_bond_origin_name((md_bond_origin_t)o), &on)) {
-                            tracking.breakable = on ? (tracking.breakable | (1u << o)) : (tracking.breakable & ~(1u << o));
-                        }
-                    }
-                    ImGui::SetItemTooltip("The bonds of which origins may break. A force field topology holds throughout a\n"
-                                          "classical simulation, and bonds you added stay unless you say otherwise.");
-                    if (ImGui::SmallButton("Defaults")) {
-                        tracking.tolerance = MD_BOND_DELTA_TOLERANCE;
-                        tracking.breakable = MD_BOND_DELTA_BREAKABLE;
-                    }
-                    ImGui::TreePop();
-                }
+                draw_bond_tracking_details(data);
             }
 
             if (redo_every_frame) {
                 do_recenter = true;
-                do_pbc     |= data->operations.apply_pbc;
-                do_unwrap  |= data->operations.unwrap_structures;
+                do_pbc     |= data->system.operations.apply_pbc;
+                do_unwrap  |= data->system.operations.unwrap_structures;
             }
 
             // One pass, in the order that keeps them valid together, and in the lattice frame of the cell
@@ -3025,7 +2889,7 @@ static int64_t find_identifier(const script::Program* ir, str_t ident) {
     return -1;
 }
 
-static str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc) {
+str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc) {
     char buf[128];
     for (int64_t i = 1; i < 1000; ++i) {
         int res = snprintf(buf, sizeof(buf), "%.*s%i", (int)base.len, base.ptr, (int)i);
@@ -3333,14 +3197,14 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     if (!str_begins_with(expr, STR_LIT("x = "))) continue;
                     expr = str_trim(str_substr(expr, 4));
                     if (str_ends_with(expr, STR_LIT(";"))) expr = str_trim(str_substr(expr, 0, expr.len - 1));
-                    if (!str_empty(expr) && expr.len < sizeof(state->operations.bond_tracking.scope.text)) return expr;
+                    if (!str_empty(expr) && expr.len < sizeof(state->system.operations.bond_tracking.scope.text)) return expr;
                 }
                 return {};
             };
             if (ImGui::MenuItem("Track Bond Changes Here")) {
                 const str_t scope = selection_scope();
                 if (!str_empty(scope)) {
-                    auto& tracking = state->operations.bond_tracking;
+                    auto& tracking = state->system.operations.bond_tracking;
                     tracking.enabled = true;
                     str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
                     tracking.scope_dirty = true;
@@ -3453,8 +3317,9 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Centering Target")) {
-                md_bitset_assign(&state->operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
-                state->operations.recenter_query.enabled = false;
+                md_bitset_assign(&state->system.operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
+                state->system.operations.recenter_query.enabled = false;
+                state->system.operations.present |= SystemOperation_Center;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }
@@ -7675,18 +7540,18 @@ static float bond_length_limit(ApplicationState* state) {
     return state->mold.bond_length_limit;
 }
 
-// The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
+// The copies of the scene the periodic images show (system.periodic_images): its own, as it is, then the translations of
 // the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
 // None without a cell or images.
 static void compute_periodic_transforms(md_array(mat4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc) {
     md_array_shrink(*transforms, 0);
     const md_unitcell_t& cell = state.mold.state.unitcell;
-    const int* n = state.view.periodic_images;
-    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || state.view.assembly >= 0) return;
+    const int* n = state.system.periodic_images;
+    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || state.system.assembly >= 0) return;
 
     mat3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = state.operations.state_rotation * mat4_from_mat3(A);
+    const mat4_t M = state.system.operations.state_rotation * mat4_from_mat3(A);
     md_array_push(*transforms, mat4_ident(), alloc);
     for (int k = -n[2]; k <= n[2]; ++k) {
         for (int j = -n[1]; j <= n[1]; ++j) {
@@ -7719,13 +7584,13 @@ static md_gl_copies_t rep_copies(const ApplicationState& state, const Representa
 static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, bool glyphs, md_allocator_i* alloc) {
     const size_t end = md_array_size(*ops);
     const md_assembly_data_t& a = state.mold.sys.assembly;
-    const bool shown = state.view.assembly >= 0 && (size_t)state.view.assembly < a.count;
-    const size_t part_beg = shown ? a.group_offset[state.view.assembly] : 0;
-    const size_t part_end = shown ? a.group_offset[state.view.assembly + 1] : 0;
+    const bool shown = state.system.assembly >= 0 && (size_t)state.system.assembly < a.count;
+    const size_t part_beg = shown ? a.group_offset[state.system.assembly] : 0;
+    const size_t part_end = shown ? a.group_offset[state.system.assembly + 1] : 0;
     const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
     const md_gl_subset_t* subsets = glyphs ? state.view.assembly_glyph_subsets : state.view.assembly_subsets;
     // Without an assembly, or its copies or subsets not of it (yet)
-    if (num_parts == 0 || num_parts != part_end - part_beg || state.view.assembly_subsets_of != state.view.assembly || md_array_size(subsets) != num_parts) {
+    if (num_parts == 0 || num_parts != part_end - part_beg || state.view.assembly_subsets_of != state.system.assembly || md_array_size(subsets) != num_parts) {
         const md_gl_copies_t copies = rep_copies(state, rep);
         for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
         return;
@@ -7757,7 +7622,7 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
 
     mat3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = state->operations.state_rotation * mat4_from_mat3(A);
+    const mat4_t M = state->system.operations.state_rotation * mat4_from_mat3(A);
     const uint32_t color = convert_color(vec4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
     const uint32_t axis_color[3] = { convert_color(vec4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
 
@@ -7991,8 +7856,8 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     uint64_t h = md_hash64(&state->mold.gpu_scene_version, sizeof(state->mold.gpu_scene_version), state->representation.gl_version);
     h = md_hash64(&state->representation.visibility_mask_hash, sizeof(state->representation.visibility_mask_hash), h);
     h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
-    h = md_hash64(state->view.periodic_images, sizeof(state->view.periodic_images), h);
-    h = md_hash64(&state->view.assembly, sizeof(state->view.assembly), h);
+    h = md_hash64(state->system.periodic_images, sizeof(state->system.periodic_images), h);
+    h = md_hash64(&state->system.assembly, sizeof(state->system.assembly), h);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
         const bool shown = representation_shown(*state, rep) && rep.type_is_valid;

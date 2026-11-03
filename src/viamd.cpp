@@ -14,6 +14,7 @@
 
 #include <viamd.h>
 #include <representation.h>
+#include <system_scene.h>
 #include <script_editor.h>
 #include <viamd_event.h>
 #include <event.h>
@@ -1273,7 +1274,7 @@ void free_trajectory_data(ApplicationState* state) {
 
     // The orientation reference was read from this run's first frame. A run loaded in its place, on the
     // same topology, has a first frame of its own.
-    state->operations.initial_frame.valid = false;
+    state->system.operations.initial_frame.valid = false;
 
     // Before anything they read goes: the contexts hold the run's files open.
     end_frame_extracts(state);
@@ -1545,7 +1546,7 @@ void assembly_subsets_free(ApplicationState* app) {
 
 void assembly_subsets_update(ApplicationState* app) {
     ASSERT(app);
-    const int assembly = app->view.assembly;
+    const int assembly = app->system.assembly;
     const uint32_t mol_id = app->mold.gl_mol.id;
     if (assembly == app->view.assembly_subsets_of && mol_id == app->view.assembly_subsets_mol) return;
     assembly_subsets_free(app);
@@ -1588,17 +1589,17 @@ void assembly_subsets_update(ApplicationState* app) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
-        md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
-        data->operations.recenter_query.filter.result = {};
-        data->operations.recenter_query.evaluated_version = 0;
-        data->operations.recenter_query.ir_fingerprint = 0;
-        data->operations.initial_frame.valid = false;
-        data->operations.state_rotation = mat4_ident();
+        md_bitset_free(&data->system.operations.recenter_query.mask, data->allocator.persistent);
+        md_bitset_free(&data->system.operations.selection_mask, data->allocator.persistent);
+        data->system.operations.recenter_query.filter.result = {};
+        data->system.operations.recenter_query.evaluated_version = 0;
+        data->system.operations.recenter_query.ir_fingerprint = 0;
+        data->system.operations.initial_frame.valid = false;
+        data->system.operations.state_rotation = mat4_ident();
         recenter_mark_query_dirty(data);
         {
             // Of the bonds of another system
-            auto& bt = data->operations.bond_tracking;
+            auto& bt = data->system.operations.bond_tracking;
             md_bond_delta_free(&bt.delta, data->allocator.persistent);
             md_chem_delta_free(&bt.chem, data->allocator.persistent);
             bt.delta = {};
@@ -1612,7 +1613,7 @@ void init_system_data(ApplicationState* data) {
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
-        data->view.assembly = -1;
+        data->system.assembly = -1;
         md_array_shrink(data->view.assembly_transforms, 0);
         md_array_shrink(data->view.assembly_copy_offset, 0);
         // Before the representations, which each make a representation of the glyphs
@@ -1690,9 +1691,9 @@ void free_system_data(ApplicationState* data) {
     data->mold.sys.alloc   = sys_alloc;
     data->mold.state.alloc = sys_alloc;
 
-    md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
-    data->operations.initial_frame.rel_xyzw = nullptr;
-    data->operations.initial_frame.valid = false;
+    md_array_free(data->system.operations.initial_frame.rel_xyzw, data->allocator.persistent);
+    data->system.operations.initial_frame.rel_xyzw = nullptr;
+    data->system.operations.initial_frame.valid = false;
 
     // The subsets of the parts of an assembly are of the molecule
     assembly_subsets_free(data);
@@ -2003,7 +2004,9 @@ bool bond_origins_parse(uint32_t* out, str_t str) {
 // VERSION, in [Workspace]: 1 (no [Workspace] section) stored the files in slots ([Files] MoleculeFile,
 // TrajectoryFile, EnergyFile, SeriesFile); 2 stores systems, their runs and their files ([System], [Run],
 // [Input]). A version newer than the reader's is read for what the reader knows.
-static const int WORKSPACE_VERSION = 2;
+// 3: the operations, the periodic images and the assembly are the system's ([SystemScene]), no longer in [Operations]
+// and [RenderSettings], which are still read
+static const int WORKSPACE_VERSION = 3;
 
 struct WorkspaceWindow {
     char  name[32];
@@ -2078,8 +2081,13 @@ struct WorkspacePending {
     bool has_recenter_target;
     md_bitset_t recenter_target;
 
-    // The id of the assembly shown, of the system the files hold (view.assembly)
+    // The id of the assembly shown, of the system the files hold (system.assembly)
     char assembly_id[8];
+
+    // Whether the workspace had the [SystemScene] of the system loaded, and an [Operations] section, which a workspace
+    // written before [SystemScene] had instead
+    bool has_system_scene;
+    bool legacy_operations;
 
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
     // filter is how a workspace from before the timeline's periods held it, and becomes one of them:
@@ -2141,30 +2149,18 @@ static void workspace_reset(ApplicationState* data) {
     }
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
-    data->view.periodic_images[0] = data->view.periodic_images[1] = data->view.periodic_images[2] = 0;
-    data->view.assembly = -1;
+    data->system.periodic_images[0] = data->system.periodic_images[1] = data->system.periodic_images[2] = 0;
+    data->system.assembly = -1;
 
     data->selection.granularity = SelectionGranularity::Atom;
     md_bitmask_clear(&data->selection.selection_mask);
     single_selection_sequence_clear(&data->selection.single_selection_sequence);
 
-    data->operations.recenter = false;
-    data->operations.fixate_orientation = false;
-    data->operations.apply_pbc = false;
-    data->operations.unwrap_structures = false;
-    {
-        auto& bt = data->operations.bond_tracking;
-        bt.enabled = false;
-        bt.scope.text[0] = '\0';
-        bt.scope.result = {};
-        bt.scope_dirty = true;
-        bt.tolerance = MD_BOND_DELTA_TOLERANCE;
-        bt.breakable = MD_BOND_DELTA_BREAKABLE;
+    // The system as a new one is shown: as it is, with no operations
+    data->system.visible = true;
+    for (int i = 0; i < SYSTEM_OPERATION_COUNT; ++i) {
+        system_remove_operation(data, system_operation_at(i));
     }
-    data->operations.recenter_query.enabled = false;
-    data->operations.recenter_query.filter.text[0] = '\0';
-    recenter_mark_query_dirty(data);
-    md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
 }
 
 // A mask by the atoms it holds. Base64 now; a workspace written before that holds the raw bytes,
@@ -2295,7 +2291,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
                     float n[3];
                     if (viamd::extract_flt_vec(n, 3, arg)) {
-                        for (int k = 0; k < 3; ++k) data->view.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+                        for (int k = 0; k < 3; ++k) data->system.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
                     }
                 }
                 else if (str_eq(ident, STR_LIT("Assembly"))) {
@@ -2324,34 +2320,31 @@ void load_workspace(ApplicationState* data, str_t filename) {
             }
             pending.has_camera = has_position && has_orientation && has_distance;
         } else if (str_eq(section, STR_LIT("Operations"))) {
-            auto& op = data->operations;
+            // Of a workspace written before [SystemScene]: the operations, all of them the one system's
+            pending.legacy_operations = true;
             while (viamd::next_entry(ident, arg, state)) {
-                if      (str_eq(ident, STR_LIT("Recenter")))            viamd::extract_bool(op.recenter, arg);
-                else if (str_eq(ident, STR_LIT("FixateOrientation")))   viamd::extract_bool(op.fixate_orientation, arg);
-                else if (str_eq(ident, STR_LIT("ApplyPbc")))            viamd::extract_bool(op.apply_pbc, arg);
-                else if (str_eq(ident, STR_LIT("UnwrapStructures")))    viamd::extract_bool(op.unwrap_structures, arg);
-                // What a workspace from before the bond changes were tracked had: the bonds of every frame guessed anew
-                else if (str_eq(ident, STR_LIT("RecalcBonds")))         viamd::extract_bool(op.bond_tracking.enabled, arg);
-                else if (str_eq(ident, STR_LIT("TrackBonds")))          viamd::extract_bool(op.bond_tracking.enabled, arg);
-                else if (str_eq(ident, STR_LIT("TrackBondsScope"))) {
-                    viamd::extract_to_char_buf(op.bond_tracking.scope.text, sizeof(op.bond_tracking.scope.text), arg);
-                    op.bond_tracking.scope_dirty = true;
+                if (str_eq(ident, STR_LIT("RecenterTarget"))) pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
+                else system_scene_read_entry(data, ident, arg);
+            }
+        } else if (str_eq(section, STR_LIT("SystemScene"))) {
+            // Of the system loaded, the first the files name (workspace_files_plan); of another, left out
+            const int loaded_id = md_array_size(pending.files.systems) > 0 ? pending.files.systems[0].id : 0;
+            bool ours = true;
+            while (viamd::next_entry(ident, arg, state)) {
+                if (str_eq(ident, STR_LIT("System"))) {
+                    int id = 0;
+                    ours = viamd::extract_int(id, arg) && id == loaded_id;
+                    if (ours) pending.has_system_scene = true;
+                } else if (!ours) {
+                    continue;
+                } else if (str_eq(ident, STR_LIT("RecenterTarget"))) {
+                    pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
+                } else if (str_eq(ident, STR_LIT("Assembly"))) {
+                    str_t id = {};
+                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
+                } else {
+                    system_scene_read_entry(data, ident, arg);
                 }
-                else if (str_eq(ident, STR_LIT("TrackBondsTolerance"))) {
-                    float tolerance = MD_BOND_DELTA_TOLERANCE;
-                    if (viamd::extract_flt(tolerance, arg)) op.bond_tracking.tolerance = CLAMP(tolerance, 0.0f, 0.45f);
-                }
-                else if (str_eq(ident, STR_LIT("TrackBondsBreakable"))) {
-                    str_t str;
-                    uint32_t mask = 0;
-                    if (viamd::extract_str(str, arg) && bond_origins_parse(&mask, str)) op.bond_tracking.breakable = mask;
-                }
-                else if (str_eq(ident, STR_LIT("RecenterQueryEnabled"))) viamd::extract_bool(op.recenter_query.enabled, arg);
-                else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
-                    viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
-                    recenter_mark_query_dirty(data);
-                }
-                else if (str_eq(ident, STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
             }
         } else if (representations_deserialize(data, section, state)) {
         } else if (str_eq(section, STR_LIT("UserBonds"))) {
@@ -2557,8 +2550,14 @@ void load_workspace(ApplicationState* data, str_t filename) {
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
         md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
     }
+    // A workspace written before [SystemScene]: the system has the operations that are on, and those with settings
+    // of their own
+    if (pending.legacy_operations && !pending.has_system_scene) {
+        system_scene_from_legacy(data);
+        if (pending.has_recenter_target) data->system.operations.present |= SystemOperation_Center;
+    }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
-        md_bitset_assign(&data->operations.selection_mask, pending.recenter_target, data->allocator.persistent);
+        md_bitset_assign(&data->system.operations.selection_mask, pending.recenter_target, data->allocator.persistent);
         recenter_update_target_data(data);
     }
 
@@ -2587,17 +2586,17 @@ void load_workspace(ApplicationState* data, str_t filename) {
     if (pending.assembly_id[0]) {
         const md_assembly_data_t& a = data->mold.sys.assembly;
         for (size_t i = 0; i < a.count; ++i) {
-            if (str_eq(md_assembly_id(&a, i), str_from_cstr(pending.assembly_id))) data->view.assembly = (int)i;
+            if (str_eq(md_assembly_id(&a, i), str_from_cstr(pending.assembly_id))) data->system.assembly = (int)i;
         }
-        if (data->view.assembly < 0) {
+        if (data->system.assembly < 0) {
             VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", pending.assembly_id);
         }
     }
 
     // The camera flies in: from the whole system to where the workspace looked from. Without a
     // stored camera, both are the whole system (or the assembly shown).
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->view.assembly);
-    if (data->view.assembly >= 0) {
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->system.assembly);
+    if (data->system.assembly >= 0) {
         // Room to zoom out to all of the assembly
         data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
     }
@@ -2696,15 +2695,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_flt(state,  STR_LIT("TonemapGamma"), v.tonemapping.gamma);
         viamd::write_bool(state, STR_LIT("DofEnabled"), v.dof.enabled);
         viamd::write_flt(state,  STR_LIT("DofAperture"), v.dof.aperture);
-        {
-            const float n[3] = { (float)app_state->view.periodic_images[0], (float)app_state->view.periodic_images[1], (float)app_state->view.periodic_images[2] };
-            viamd::write_flt_vec(state, STR_LIT("PeriodicImages"), n, 3);
-        }
-        if (app_state->view.assembly >= 0 && (size_t)app_state->view.assembly < app_state->mold.sys.assembly.count) {
-            viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&app_state->mold.sys.assembly, (size_t)app_state->view.assembly));
-        }
         // The ambient occlusion and the anti-aliasing are the computer's settings (the .ini), the simulation box a
-        // representation
+        // representation, the periodic images and the assembly the system's ([SystemScene])
     }
 
     // The target, not the camera: the camera eases towards it over several frames (camera_animate),
@@ -2716,24 +2708,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
     viamd::write_flt(state,  STR_LIT("FovY"), app_state->view.camera.fov_y);
 
-    {
-        const auto& op = app_state->operations;
-        viamd::write_section_header(state, STR_LIT("Operations"));
-        viamd::write_bool(state, STR_LIT("Recenter"), op.recenter);
-        viamd::write_bool(state, STR_LIT("FixateOrientation"), op.fixate_orientation);
-        viamd::write_bool(state, STR_LIT("ApplyPbc"), op.apply_pbc);
-        viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
-        viamd::write_bool(state, STR_LIT("TrackBonds"), op.bond_tracking.enabled);
-        viamd::write_str(state,  STR_LIT("TrackBondsScope"), str_from_cstr(op.bond_tracking.scope.text));
-        viamd::write_flt(state,  STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
-        char origins[64];
-        viamd::write_str(state,  STR_LIT("TrackBondsBreakable"), str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
-        viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
-        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
-        if (!md_bitset_empty(op.selection_mask)) {
-            viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
-        }
-    }
+    // The system as the scene shows it, of the system the files above give the id 0
+    system_scene_serialize(state, app_state, 0);
 
     representations_serialize(state, app_state);
 
@@ -5021,7 +4997,7 @@ void interpolate_system_state(ApplicationState* app) {
 
     // Fresh coordinates, in the lattice frame of the cell: the turn the previous ones carried goes
     // with them. The System State Changed handler puts one back if the orientation is kept.
-    app->operations.state_rotation = mat4_ident();
+    app->system.operations.state_rotation = mat4_ident();
 
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
@@ -5384,21 +5360,21 @@ static bool is_identity(const mat4_t& M) {
 
 void recenter_mark_query_dirty(ApplicationState* state) {
     ASSERT(state);
-    state->operations.recenter_query.version += 1;
-    if (state->operations.recenter_query.version == 0) {
-        state->operations.recenter_query.version = 1;
+    state->system.operations.recenter_query.version += 1;
+    if (state->system.operations.recenter_query.version == 0) {
+        state->system.operations.recenter_query.version = 1;
     }
 }
 
 const md_bitset_t& recenter_get_active_target_mask(const ApplicationState* state) {
     ASSERT(state);
-    return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
+    return state->system.operations.recenter_query.enabled ? state->system.operations.recenter_query.mask : state->system.operations.selection_mask;
 }
 
 bool recenter_update_query_mask(ApplicationState* state) {
     ASSERT(state);
 
-    auto& query = state->operations.recenter_query;
+    auto& query = state->system.operations.recenter_query;
     const uint64_t ir_fingerprint = state->script.ir ? state->script.ir_fingerprint : 0;
     if (query.ir_fingerprint != ir_fingerprint) {
         query.ir_fingerprint = ir_fingerprint;
@@ -5438,9 +5414,9 @@ void recenter_update_target_data(ApplicationState* state) {
 
     // The reference is only for keeping the orientation. Centering alone needs nothing from the first frame,
     // so without this a target picked by a query which depends on the frame read it from disk in every frame.
-    if (!state->operations.fixate_orientation) return;
+    if (!state->system.operations.fixate_orientation) return;
 
-    auto& ref = state->operations.initial_frame;
+    auto& ref = state->system.operations.initial_frame;
     const md_bitset_t& target_mask = recenter_get_active_target_mask(state);
 
     // Keyed on the atoms themselves. The versions this used to compare change every time a query is
@@ -5450,11 +5426,11 @@ void recenter_update_target_data(ApplicationState* state) {
         ref.valid = true;
         size_t count = md_bitset_count(target_mask);
 
-        md_array_resize(state->operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
+        md_array_resize(state->system.operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
-        state->operations.initial_frame.com = vec3_zero();
+        state->system.operations.initial_frame.com = vec3_zero();
 
-        if (state->operations.initial_frame.rel_xyzw && count > 0) {
+        if (state->system.operations.initial_frame.rel_xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
             size_t num_atoms = state->mold.sys.atom.count;
             vec3_t* temp_xyz = (vec3_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec3_t) * ALIGN_TO(num_atoms, 16));
@@ -5469,19 +5445,19 @@ void recenter_update_target_data(ApplicationState* state) {
             while (md_bitset_iter_next(&it)) {
                 uint64_t src_idx = it.idx;
                 float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
-                state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
+                state->system.operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
             // The circular mean (md_util_com_compute_vec4 with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
             vec3_t com = vec3_zero();
-            md_util_deperiodize_self_vec4(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            md_util_deperiodize_self_vec4(state->system.operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
             const vec4_t com4 = vec4_from_vec3(com, 0);
             for (size_t i = 0; i < count; ++i) {
-                state->operations.initial_frame.rel_xyzw[i] = vec4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
+                state->system.operations.initial_frame.rel_xyzw[i] = vec4_sub(state->system.operations.initial_frame.rel_xyzw[i], com4);
             }
-            state->operations.initial_frame.com = com;
+            state->system.operations.initial_frame.com = com;
         }
     }
 }
@@ -5532,20 +5508,20 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // size between recenter_update() and this call, which would silently pair up unrelated
         // atoms and yield a garbage rotation. The atoms themselves are the identity of the target.
         const bool reference_valid =
-            app->operations.fixate_orientation &&
-            app->operations.initial_frame.valid &&
-            app->operations.initial_frame.rel_xyzw &&
-            md_array_size(app->operations.initial_frame.rel_xyzw) == count &&
-            same_atoms(&app->operations.initial_frame.target_mask, &target_mask);
+            app->system.operations.fixate_orientation &&
+            app->system.operations.initial_frame.valid &&
+            app->system.operations.initial_frame.rel_xyzw &&
+            md_array_size(app->system.operations.initial_frame.rel_xyzw) == count &&
+            same_atoms(&app->system.operations.initial_frame.target_mask, &target_mask);
 
         // R maps the CURRENT target onto the reference: R * (q - target_com) ~= p. The relative fit this
         // replaced had its operands the other way around, which yields the rotation carrying the reference
         // onto the current frame - applied to the current frame, it doubled the rotation it was meant to
         // cancel. It also centred on the circular mean, which lands in the reference cell whatever image
         // the target occupies and is not the mean of the placed points.
-        if (app->operations.fixate_orientation && reference_valid) {
+        if (app->system.operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, vec3_zero(),
+            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->system.operations.initial_frame.rel_xyzw, vec3_zero(),
                                                    target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
             R = mat3_orthonormalize(R);
         } else {
@@ -5557,8 +5533,8 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // vector, so it may only be applied once every image is settled relative to the target. The
         // product is the transform this used to return in one piece,
         //     translate(target) * A * R * translate(-target_com)
-        const mat4_t A = app->operations.alignment_mat;
-        turn = (app->operations.fixate_orientation && reference_valid) || !is_identity(A);
+        const mat4_t A = app->system.operations.alignment_mat;
+        turn = (app->system.operations.fixate_orientation && reference_valid) || !is_identity(A);
 
         *translation = mat4_translate_vec3(vec3_sub(target, target_com));
         if (turn) {
@@ -5591,7 +5567,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
 
     // Into the lattice frame first. Wrapping or making whole turned coordinates against the unturned
     // cell moves atoms by vectors that are not lattice vectors, to places where they have no image.
-    const mat4_t prev_rotation = app->operations.state_rotation;
+    const mat4_t prev_rotation = app->system.operations.state_rotation;
     if (!is_identity(prev_rotation)) {
         state_transform(app, mat4_inverse(prev_rotation));
     }
@@ -5644,7 +5620,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     if (turn) {
         state_transform(app, rotation);
     }
-    app->operations.state_rotation = turn ? rotation : mat4_ident();
+    app->system.operations.state_rotation = turn ? rotation : mat4_ident();
 
     return true;
 }
@@ -5668,8 +5644,8 @@ static bool bond_coordinates(md_system_state_t* state, const ApplicationState* a
     if (!shown.xyz || shown.num_atoms != num_atoms) return false;
     MEMCPY(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
     state->unitcell = shown.unitcell;
-    if (!is_identity(app->operations.state_rotation)) {
-        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
+    if (!is_identity(app->system.operations.state_rotation)) {
+        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->system.operations.state_rotation));
     }
     return true;
 }
@@ -5722,13 +5698,13 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
 
 const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app) {
     ASSERT(app);
-    const auto& bt = app->operations.bond_tracking;
+    const auto& bt = app->system.operations.bond_tracking;
     return bt.enabled && bt.key != 0 ? &bt.delta : nullptr;
 }
 
 const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app) {
     ASSERT(app);
-    const auto& bt = app->operations.bond_tracking;
+    const auto& bt = app->system.operations.bond_tracking;
     return bt.enabled && bt.key != 0 ? &bt.chem : nullptr;
 }
 
@@ -5774,7 +5750,7 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
 }
 
 static void bond_tracking_clear(ApplicationState* app) {
-    auto& bt = app->operations.bond_tracking;
+    auto& bt = app->system.operations.bond_tracking;
     if (bt.key != 0) {
         md_bond_delta_free(&bt.delta, app->allocator.persistent);
         md_chem_delta_free(&bt.chem, app->allocator.persistent);
@@ -5788,7 +5764,7 @@ static void bond_tracking_clear(ApplicationState* app) {
 
 void bond_tracking_update(ApplicationState* app) {
     ASSERT(app);
-    auto& bt = app->operations.bond_tracking;
+    auto& bt = app->system.operations.bond_tracking;
     const md_system_t& sys = app->mold.sys;
     if (!bt.enabled || sys.atom.count == 0) {
         bond_tracking_clear(app);
@@ -6640,14 +6616,14 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
             // frame that is is not settled yet: as many as have formed in any frame are reserved for.
             const md_bond_delta_t* delta = bond_tracking_delta(state);
-            size_t num_bonds = state->mold.sys.bond.count + (delta ? MAX(delta->num_formed, state->operations.bond_tracking.formed_capacity) : 0);
+            size_t num_bonds = state->mold.sys.bond.count + (delta ? MAX(delta->num_formed, state->system.operations.bond_tracking.formed_capacity) : 0);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
             // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
             // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
-            const size_t num_frame_rings = delta ? state->operations.bond_tracking.ring_capacity : 0;
+            const size_t num_frame_rings = delta ? state->system.operations.bond_tracking.ring_capacity : 0;
             picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
@@ -6770,7 +6746,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
             // The event means mold.state was just written from its source, in the lattice frame of its
             // cell: whatever turn the previous coordinates carried went with them.
-            app->operations.state_rotation = mat4_ident();
+            app->system.operations.state_rotation = mat4_ident();
 
             // The bond changes of the frame are not here: bond_tracking_update keeps them up to date with the frame
             // shown once a frame, and they leave the bonds of the system as they are
@@ -6780,7 +6756,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // broadcasts of this event do not pass through the interpolation step that would otherwise
             // have set the bit.
             // Not while an assembly is shown, whose operators place the coordinates as the file gives them
-            if (app->view.assembly < 0 && apply_state_operations(app, app->operations.recenter, app->operations.apply_pbc, app->operations.unwrap_structures)) {
+            if (app->system.assembly < 0 && apply_state_operations(app, app->system.operations.recenter, app->system.operations.apply_pbc, app->system.operations.unwrap_structures)) {
                 app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;

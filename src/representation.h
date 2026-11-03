@@ -7,7 +7,7 @@
 // The tree itself is plain data on each representation and group (representation_tree.h). Two rules hang
 // off it:
 //
-//   shown    A representation is shown when it is enabled and so is every group around it.
+//   shown    A representation is shown when it is enabled, and so is every group around it and the system (system.visible).
 //   context  A group's filter, when it has one, is the context of everything within it: their filters are
 //            evaluated within the atoms the group picks (script::FilterCtx::atoms), and so is the filter of a
 //            group within it. The context of a representation is that of the innermost group around it that

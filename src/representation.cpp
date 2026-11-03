@@ -18,6 +18,7 @@
 #include <gfx/gl_utils.h>
 #include <iso_meshes.h>
 #include <script_suggestions.h>
+#include <system_scene.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -129,11 +130,11 @@ static bool groups_enabled(const ApplicationState& app, uint32_t parent) {
 }
 
 bool representation_shown(const ApplicationState& app, const Representation& rep) {
-    return rep.enabled && groups_enabled(app, rep.node.parent);
+    return app.system.visible && rep.enabled && groups_enabled(app, rep.node.parent);
 }
 
 bool representation_group_shown(const ApplicationState& app, const RepresentationGroup& group) {
-    return group.enabled && groups_enabled(app, group.node.parent);
+    return app.system.visible && group.enabled && groups_enabled(app, group.node.parent);
 }
 
 RepresentationContext representation_context(const ApplicationState& app, uint32_t parent) {
@@ -3410,7 +3411,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         }
 
         if (periodic) {
-            prop::row("periodic images", "Repeated in the periodic images of the view, as many as Visuals > View > Periodic Images shows");
+            prop::row("periodic images", "Repeated in the periodic images of the system, as many as it is shown in (Shown as, under the system)");
             ImGui::Checkbox("##periodic_images", &rep.periodic_images);
         }
     }
@@ -3516,7 +3517,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::row("axes", "The edges along a, b and c from the origin of the cell in red, green and blue");
             ImGui::Checkbox("##axes", &rep.box.axes);
             if (periodic) {
-                prop::row("periodic images", "Repeated in the periodic images of the view, as many as Visuals > View > Periodic Images shows");
+                prop::row("periodic images", "Repeated in the periodic images of the system, as many as it is shown in (Shown as, under the system)");
                 ImGui::Checkbox("##periodic_images", &rep.periodic_images);
             }
             if (!rep.type_is_valid) {
@@ -3790,10 +3791,19 @@ void draw_representations_window(ApplicationState* state) {
     tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
                         MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 
-    if (tree.t.count == 0) {
-        ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");
+    // The system first: what is done to its coordinates and what it is shown as, then its representations. Closed, it
+    // lists none of them.
+    const bool system_open = draw_system_rows(state);
+    if (system_open) {
+        if (tree.t.count == 0) {
+            ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");
+        }
+        // What is within a hidden system is drawn dimmed: it is hidden too, whatever its own eye says
+        const bool dim = !state->system.visible;
+        if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+        draw_tree_level(state, tree, 0, 0, &act);
+        if (dim) ImGui::PopStyleVar();
     }
-    draw_tree_level(state, tree, 0, 0, &act);
 
     // The space below the rows: dropping there puts it last at the top level, and a right click adds
     const ImVec2 rest = {MAX(ImGui::GetContentRegionAvail().x, 1.0f), MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};

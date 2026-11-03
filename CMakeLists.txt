@@ -197,6 +197,7 @@ set(SRC_FILES
     src/representation.cpp
     src/representation_tree.cpp
     src/script_editor.cpp
+    src/system_scene.cpp
     src/script_engine.h
     src/script_engine_impl.h
     src/script_engine.cpp
@@ -231,6 +232,7 @@ set(SRC_FILES
     src/plot_periodic_core.h
     src/property_grid.h
     src/representation.h
+    src/system_scene.h
     src/representation_tree.h
     src/script_editor.h
     src/script_reference.h
