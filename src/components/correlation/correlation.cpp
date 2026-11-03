@@ -10,7 +10,7 @@
 // a timeline period; and drawn as points, as contours of their density (at levels of the fraction of the samples they
 // enclose), or as a heat map of it. The contours of a layer of several pairs may be split by pair: one density per pair,
 // of its own samples, in the colour of its series (four pairs to a job, one in each channel of the density map); those of
-// a single pair of a population (1 x n), by member, likewise, with its statistics, legend and fit line. The layers are
+// a single pair of a population (1 x n), by member, likewise, with its statistics, caption entry and fit line. The layers are
 // drawn bottom up, the first one on top.
 //
 // One plot is of one kind of AXES: the series on an axis of a layer are of one unit, periodic of one period or not (a
@@ -46,6 +46,8 @@
 //   shift-drag / -click    selects the atoms the series of the points boxed are of (script properties), as the
 //                          Ramachandran plot selects residues; with the right button deselects; a right click on nothing
 //                          clears the selection
+//   hover a caption entry  under the plot (the pairs of the layer the axes are of, with their correlations): its pair
+//                          or member stands out on the plot and in the lag view, its atoms in the viewport
 //   double-click           fits the view: along a periodic axis, a whole turn from the cut; along another, all but the
 //                          farthest 0.5 % of the samples either way
 //   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
@@ -327,7 +329,7 @@ static inline void slot_axis_label(char* buf, size_t cap, const SlotInfo& s) {
     snprintf(buf, cap, "%s%s", s.unit[0] ? s.unit : "no unit", slot_periodic(s) ? " " ICON_FA_ROTATE : "");
 }
 
-// What the contours split into, the legend lists and the fit lines are of: the pairs, or of a single pair of a population
+// What the contours split into, the caption lists and the fit lines are of: the pairs, or of a single pair of a population
 // of at most MAX_GROUPS members, its members
 static inline bool layer_by_member(const Layer& l) {
     return l.num_pairs == 1 && l.pairs[0].members > 1 && l.member_stats.size() == (size_t)l.pairs[0].members;
@@ -485,6 +487,10 @@ struct Correlation : viamd::EventHandler {
     float plot_aspect = 0.0f;       // Of the plot last frame: what a view of equal axes is fitted to
     bool  view_fitted = false;      // And not moved since: fitted again when the plot changes shape (of equal axes)
     bool  fit_view = true;          // To the samples of the layers shown, next frame
+    // The group of a layer whose entry of the caption is hovered: it stands out on the plot (as of the last frame, the
+    // caption being under the plot). The layer by id, the group -1 for none.
+    uint32_t focus_layer = 0, focus_layer_next = 0;
+    int      focus_group = -1, focus_group_next = -1;
     uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
 
     // The highlight is whoever sets it to clear: what this window highlighted and no longer does is cleared once
@@ -1923,6 +1929,16 @@ struct Correlation : viamd::EventHandler {
         return l.num_pairs > 1 ? pair_color(l, g, 0) : vec_cast(l.color);
     }
 
+    // The group (layer_num_groups) sample k is of
+    static int sample_group(const Layer& l, size_t k) {
+        return layer_by_member(l) ? (int)l.smember[k] : (int)l.spair[k];
+    }
+
+    // The group of l that stands out (its caption entry hovered), -1 for none
+    int focused_group(const Layer& l) const {
+        return l.id == focus_layer && layer_num_groups(l) > 1 ? focus_group : -1;
+    }
+
     // Group g as it is called: its pair, or what its member is
     void group_label(char* buf, size_t cap, const Layer& l, int g) const {
         if (!layer_by_member(l)) {
@@ -1951,6 +1967,7 @@ struct Correlation : viamd::EventHandler {
     // Fills out with what layer l is drawn with: a draw of its density, or one of each pair's. Their number.
     int layer_draw(DensityMapDraw* out, const Layer& l) const {
         if (!layer_draws_density(l)) return 0;
+        const int fg = focused_group(l);
         int n = 0;
         for (int g = 0; g < layer_num_parts(l); ++g) {
             const DensityPart& part = l.parts[g];
@@ -1969,6 +1986,10 @@ struct Correlation : viamd::EventHandler {
                 d->tex = part.slot.tex;
                 d->opacity = l.opacity;
                 d->line_width = l.line_width;
+                if (part.split && fg >= 0) {
+                    if (p == fg) d->line_width *= 1.6f;
+                    else d->opacity *= 0.15f;
+                }
                 d->line_color[0] = color.x;
                 d->line_color[1] = color.y;
                 d->line_color[2] = color.z;
@@ -2186,7 +2207,13 @@ struct Correlation : viamd::EventHandler {
         md_bitmask_t* selection_mask = &app->selection.selection_mask;
         md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
         Hover hover;
+        const ImVec2 psize = ImPlot::GetPlotSize();
+        const double px_x = plot_lim.Size().x > 0.0 ? psize.x / plot_lim.Size().x : 0.0;   // Pixels a unit
+        const double px_y = plot_lim.Size().y > 0.0 ? psize.y / plot_lim.Size().y : 0.0;
+        const double len_x = axis_length(0), len_y = axis_length(1);
         if (hovered && !box.active) {
+            // In plot units, of the nearest copy along a periodic axis: no point is taken to pixels
+            const ImPlotPoint mp = ImPlot::GetPlotMousePos();
             float best = FLT_MAX;
             // The layer on top has it, where it has a point at all
             for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
@@ -2196,15 +2223,18 @@ struct Correlation : viamd::EventHandler {
                 const float r2 = r * r;
                 const size_t n = md_array_size(l.sx);
                 for (size_t k = 0; k < n; k += l.point_stride) {
-                    for_images(l.sx[k], l.sy[k], [&](ImVec2 p) {
-                        const float dx = p.x - mouse.x;
-                        const float dy = p.y - mouse.y;
-                        const float d2 = dx * dx + dy * dy;
-                        if (d2 < best && d2 < r2) {
-                            best = d2;
-                            hover = Hover{ i, k };
-                        }
-                    });
+                    double dx = l.sx[k] - mp.x;
+                    if (len_x > 0.0) dx -= len_x * floor(dx / len_x + 0.5);
+                    const float ex = (float)(dx * px_x);
+                    if (ex * ex >= r2) continue;
+                    double dy = l.sy[k] - mp.y;
+                    if (len_y > 0.0) dy -= len_y * floor(dy / len_y + 0.5);
+                    const float ey = (float)(dy * px_y);
+                    const float d2 = ex * ex + ey * ey;
+                    if (d2 < best && d2 < r2) {
+                        best = d2;
+                        hover = Hover{ i, k };
+                    }
                 }
             }
         }
@@ -2222,7 +2252,15 @@ struct Correlation : viamd::EventHandler {
                     add_member_atoms(highlight_mask, l, l.spair[box.click_idx], l.smember[box.click_idx]);
                 }
             } else {
-                const ImRect r(ImMin(a, mouse), ImMax(a, mouse));
+                // In plot units: a point is in it where any of its copies is
+                const ImPlotPoint m = ImPlot::PixelsToPlot(mouse);
+                const double bx0 = MIN(box.p0.x, m.x), bx1 = MAX(box.p0.x, m.x);
+                const double by0 = MIN(box.p0.y, m.y), by1 = MAX(box.p0.y, m.y);
+                auto in_box = [&](double x, double y) {
+                    if (len_x > 0.0) x = periodic_wrap(x, bx0, len_x);
+                    if (len_y > 0.0) y = periodic_wrap(y, by0, len_y);
+                    return x >= bx0 && x <= bx1 && y >= by0 && y <= by1;
+                };
                 std::vector<uint8_t> seen;
                 for (int i = 0; i < num_layers; ++i) {
                     const Layer& l = layers[i];
@@ -2234,10 +2272,7 @@ struct Correlation : viamd::EventHandler {
                     for (size_t k = 0; k < n; k += l.point_stride) {
                         const int p = l.spair[k];
                         const size_t s = off[p] + MIN((size_t)l.smember[k], off[p + 1] - off[p] - 1);
-                        if (seen[s]) continue;
-                        bool in = false;
-                        for_images(l.sx[k], l.sy[k], [&](ImVec2 q) { in |= r.Contains(q); });
-                        if (!in) continue;
+                        if (seen[s] || !in_box(l.sx[k], l.sy[k])) continue;
                         seen[s] = 1;
                         add_member_atoms(highlight_mask, l, p, l.smember[k]);
                     }
@@ -2256,9 +2291,11 @@ struct Correlation : viamd::EventHandler {
             const float r = l.point_size * 0.5f;
             const bool many = l.frames != LayerFrames_Current;   // Over frames: small squares, no outlines
             const size_t n = md_array_size(l.sx);
+            const int fg = focused_group(l);
             for (size_t k = 0; k < n; k += l.point_stride) {
                 ImVec4 c = point_color(l, k);
                 c.w *= l.opacity;
+                if (fg >= 0 && sample_group(l, k) != fg) c.w *= 0.12f;
                 const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
                 for_images(l.sx[k], l.sy[k], [&](ImVec2 p) {
                     if (many) density_map_mark(dl, p, r, DensityMapMark_Square, col);
@@ -2322,6 +2359,7 @@ struct Correlation : viamd::EventHandler {
             if (!layer_on_axes(l) || !l.data_valid || !l.show_fit) continue;
             const int ng = layer_num_groups(l);
             const bool own = ng > 1 && (layer_draws_points(l) ? l.point_coloring == PointColoring_Pair : layer_splits(l));
+            const int fg = focused_group(l);
             for (int g = 0; g < ng; ++g) {
                 const PairStats& s = group_stats(l, g);
                 if (!s.has_fit()) continue;
@@ -2330,8 +2368,10 @@ struct Correlation : viamd::EventHandler {
                 const ImVec2 p1 = ImPlot::PlotToPixels(s.x_max, a + b * s.x_max);
                 ImVec4 c = own ? group_color(l, g) : vec_cast(l.color);
                 c.w *= MAX(l.opacity, 0.5f);
-                dl->AddLine(p0, p1, IM_COL32(0, 0, 0, 160), 3.5f);
-                dl->AddLine(p0, p1, ImGui::ColorConvertFloat4ToU32(c), 1.75f);
+                const float wl = fg == g ? 1.5f : 1.0f;
+                if (fg >= 0 && fg != g) c.w *= 0.25f;
+                dl->AddLine(p0, p1, IM_COL32(0, 0, 0, fg >= 0 && fg != g ? 50 : 160), 3.5f * wl);
+                dl->AddLine(p0, p1, ImGui::ColorConvertFloat4ToU32(c), 1.75f * wl);
             }
         }
         ImPlot::PopPlotClipRect();
@@ -2529,7 +2569,7 @@ struct Correlation : viamd::EventHandler {
         view_fitted = true;
     }
 
-    // While a series is dragged: the strips along the axes it is dropped on (and the axes themselves)
+    // While a series is dragged: the strips along the axes it is dropped on
     void draw_series_drop_targets(ImVec2 pos, ImVec2 size) {
         const ImGuiPayload* payload = ImGui::GetDragDropPayload();
         const SeriesDragPayload* sp = series_payload(payload);
@@ -2554,14 +2594,14 @@ struct Correlation : viamd::EventHandler {
         const ImRect ry(ImVec2(pos.x, pos.y), ImVec2(pos.x + band_w, pos.y + size.y - band_h));
         const ImRect rects[2] = { rx, ry };
         const char* names[2] = { "X", "Y" };
-        const ImAxis axes[2] = { ImAxis_X1, ImAxis_Y1 };
 
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
         const char* hovered_reason = nullptr;
         for (int a = 0; a < 2; ++a) {
             const bool ok = ok_axis[a];
-            const bool inside = rects[a].Contains(ImGui::GetMousePos()) || ImPlot::IsAxisHovered(axes[a]) || ImPlot::IsInsetAxisHovered(axes[a]);
+            // The labels of the axes are within the strips (inset): there is no axis outside to drop on
+            const bool inside = rects[a].Contains(ImGui::GetMousePos());
             if (inside && !ok) hovered_reason = reasons[a];
             const ImVec4 c = ok ? ImVec4(0.35f, 0.75f, 1.0f, inside ? 0.30f : 0.12f) : ImVec4(1.0f, 0.4f, 0.4f, inside ? 0.25f : 0.12f);
             dl->AddRectFilled(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(c), 4.0f);
@@ -2584,67 +2624,146 @@ struct Correlation : viamd::EventHandler {
                 }
                 ImGui::EndDragDropTarget();
             }
-            if (ImPlot::BeginDragDropTargetAxis(axes[a])) {
-                if (const SeriesDragPayload* dp = accept_series()) {
-                    if (ok_axis[a]) drop_series(a, dp->key);
-                }
-                ImPlot::EndDragDropTarget();
-            }
             ImGui::PopID();
         }
     }
 
-    // The pairs of the layer the axes are of, with their correlations, in the corner: of a population, all of its members
-    // then each
-    // Its size, from pos: what the labels of the axes keep clear of
-    ImVec2 draw_legend(const Layer& l, ImVec2 pos) {
-        if (!l.data_valid || l.num_pairs == 0) return ImVec2(0, 0);
-        ImDrawList* dl = ImPlot::GetPlotDrawList();
-        const float lh = ImGui::GetTextLineHeight();
-        const float pad = 6.0f;
-        constexpr int MAX_LINES = MAX_GROUPS + 1;
-        char lines[MAX_LINES][192];
-        const PairStats* stats[MAX_LINES];
-        ImVec4 colors[MAX_LINES];
+    // ### The caption
+
+    // Under the plot, of the layer the axes are of: its pairs (of a population, all of its members, then each), in columns,
+    // each with its correlation. The rest of its statistics on hover, which makes its points and contours stand out.
+    struct CaptionEntry {
+        int    g;                   // The group (layer_num_groups); -1 for all the members of a population together
+        char   name[160];
+        char   stat[32];
+        ImVec4 color;
+        bool   significant;
+    };
+    static constexpr int MAX_CAPTION = MAX_GROUPS + 1;
+    static constexpr int CAPTION_ROWS = 3;      // Shown at most, the rest scrolled to
+
+    struct CaptionLayout {
+        int   n = 0, cols = 1, rows = 0;
+        float col_w = 0, row_h = 0, height = 0;
+    };
+
+    // A correlation, in a few characters
+    static void stats_short(char* buf, size_t cap, const PairStats& s) {
+        const char* name = s.circular ? "r\xe2\x82\x92" : "r";     // r with a subscript o, of a circle
+        if (!s.has_corr()) snprintf(buf, cap, "%s -", name);
+        else if (s.circular == 1) snprintf(buf, cap, "%s %.2f", name, s.corr());
+        else snprintf(buf, cap, "%s %+.2f", name, s.corr());
+    }
+
+    int caption_entries(const Layer& l, CaptionEntry* out) const {
+        if (!l.data_valid || l.num_pairs == 0) return 0;
         int n = 0;
-        auto add = [&](const char* name, const PairStats& s, ImVec4 c) {
-            char st[96];
-            stats_text(st, sizeof(st), s);
-            snprintf(lines[n], sizeof(lines[n]), "%s   %s", name, st);
-            stats[n] = &s;
-            colors[n] = c;
-            n += 1;
+        auto add = [&](int g, const PairStats& st, ImVec4 c) {
+            CaptionEntry& e = out[n++];
+            e.g = g;
+            if (g < 0) pair_label(e.name, sizeof(e.name), l, 0);
+            else group_label(e.name, sizeof(e.name), l, g);
+            stats_short(e.stat, sizeof(e.stat), st);
+            e.color = c;
+            e.significant = st.significant();
         };
-        const bool by_member = layer_by_member(l);
-        if (by_member) {
-            char name[160];
-            pair_label(name, sizeof(name), l, 0);
-            add(name, l.pairs[0], vec_cast(l.color));
-        }
-        for (int g = 0; g < layer_num_groups(l) && n < MAX_LINES; ++g) {
-            char name[160];
-            group_label(name, sizeof(name), l, g);
-            add(name, group_stats(l, g), group_color(l, g));
-        }
+        if (layer_by_member(l)) add(-1, l.pairs[0], vec_cast(l.color));
+        for (int g = 0; g < layer_num_groups(l) && n < MAX_CAPTION; ++g) add(g, group_stats(l, g), group_color(l, g));
+        return n;
+    }
+
+    // In columns as wide as the widest entry (the names cut short past the width there is), as many as fit
+    static CaptionLayout caption_layout(const CaptionEntry* e, int n, float avail) {
+        CaptionLayout L;
+        L.n = n;
+        if (n == 0 || avail <= 0.0f) return L;
+        const float lh = ImGui::GetTextLineHeight();
+        L.row_h = lh + 4.0f;
         float w = 0.0f;
-        for (int i = 0; i < n; ++i) w = MAX(w, ImGui::CalcTextSize(lines[i]).x);
-        const ImVec2 p0 = ImVec2(pos.x + 8, pos.y + 8);
-        const ImVec2 p1 = ImVec2(p0.x + w + lh + pad * 3, p0.y + n * (lh + 2) + pad * 2 - 2);
-        ImPlot::PushPlotClipRect();
-        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 140), 4.0f);
         for (int i = 0; i < n; ++i) {
-            const float y = p0.y + pad + i * (lh + 2);
-            // The members indented under all of them
-            const float x = p0.x + pad + (by_member && i > 0 ? lh * 0.6f : 0.0f);
-            dl->AddRectFilled(ImVec2(x, y + lh * 0.2f), ImVec2(x + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(colors[i]), 2.0f);
-            // Dim, of what is not told from no correlation
-            dl->AddText(ImVec2(x + pad + lh * 0.6f, y), stats[i]->significant() ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120), lines[i]);
+            w = MAX(w, lh * 0.6f + 6.0f + ImGui::CalcTextSize(e[i].name).x + 12.0f + ImGui::CalcTextSize(e[i].stat).x + 14.0f);
         }
-        ImPlot::PopPlotClipRect();
-        return ImVec2(p1.x - pos.x + 3, p1.y - pos.y + 3);
+        w = MIN(w, avail);
+        L.cols = MAX(1, (int)(avail / w));
+        L.col_w = avail / (float)L.cols;
+        L.rows = (n + L.cols - 1) / L.cols;
+        L.height = MIN(L.rows, CAPTION_ROWS) * L.row_h + 6.0f;
+        return L;
+    }
+
+    void draw_caption_tooltip(const Layer& l, const CaptionEntry& e) const {
+        const PairStats& st = e.g < 0 ? l.pairs[0] : group_stats(l, e.g);
+        char text[160];
+        stats_text(text, sizeof(text), st);
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(e.name);
+        ImGui::TextUnformatted(text);
+        if (st.ci_valid) ImGui::Text("95 %% interval of r: [%.3f, %.3f]", st.ci_lo, st.ci_hi);
+        ImGui::TextDisabled("%llu samples, worth about %.0f independent ones", (unsigned long long)st.n, st.n_eff);
+        if (e.g >= 0 && layer_num_groups(l) > 1) ImGui::TextDisabled("Stands out on the plot meanwhile");
+        ImGui::EndTooltip();
+    }
+
+    // Hovered, an entry's atoms are highlighted in the viewport, as a point's are (not of a population too large to)
+    void highlight_entry(const Layer& l, int g) {
+        md_bitmask_t* mask = &app->selection.highlight_mask;
+        md_bitmask_clear(mask);
+        if (layer_by_member(l) && g >= 0) {
+            add_member_atoms(mask, l, 0, g);
+        } else {
+            const int p = g < 0 ? 0 : g;
+            const int members = MAX(l.pairs[p].members, 1);
+            if (members > 256) return;
+            for (int m = 0; m < members; ++m) add_member_atoms(mask, l, p, m);
+        }
+        grow_mask_by_selection_granularity(mask, app->selection.granularity, app->mold.sys);
+        highlights_now = true;
+    }
+
+    void draw_caption(const Layer& l, const CaptionEntry* e, const CaptionLayout& L) {
+        ImGui::BeginChild("##caption", ImVec2(0, L.height), ImGuiChildFlags_None, L.rows > CAPTION_ROWS ? 0 : ImGuiWindowFlags_NoScrollbar);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float lh = ImGui::GetTextLineHeight();
+        // Within the scroll bar, when there is one
+        const float col_w = L.rows > CAPTION_ROWS ? (ImGui::GetContentRegionAvail().x / (float)L.cols) : L.col_w;
+        for (int i = 0; i < L.n; ++i) {
+            const ImVec2 p0 = ImVec2(origin.x + (i % L.cols) * col_w, origin.y + 3.0f + (i / L.cols) * L.row_h);
+            ImGui::SetCursorScreenPos(p0);
+            ImGui::PushID(i);
+            ImGui::InvisibleButton("##entry", ImVec2(MAX(col_w - 4.0f, 1.0f), L.row_h));
+            ImGui::PopID();
+            const bool hovered = ImGui::IsItemHovered();
+            if (hovered) {
+                dl->AddRectFilled(p0, ImVec2(p0.x + col_w - 4.0f, p0.y + L.row_h), ImGui::GetColorU32(ImGuiCol_HeaderHovered), 3.0f);
+                draw_caption_tooltip(l, e[i]);
+                focus_layer_next = l.id;
+                focus_group_next = e[i].g;
+                highlight_entry(l, e[i].g);
+            }
+            const float y = p0.y + 2.0f;
+            const float x = p0.x + 4.0f;
+            dl->AddRectFilled(ImVec2(x, y + lh * 0.2f), ImVec2(x + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(e[i].color), 2.0f);
+            // Dim, of what is not told from no correlation
+            const ImU32 col = ImGui::GetColorU32(e[i].significant ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+            const float sw = ImGui::CalcTextSize(e[i].stat).x;
+            const float sx = p0.x + col_w - 10.0f - sw;
+            dl->AddText(ImVec2(sx, y), col, e[i].stat);
+            const float nx = x + lh * 0.6f + 6.0f;
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col));
+            ImGui::RenderTextEllipsis(dl, ImVec2(nx, y), ImVec2(sx - 10.0f, y + lh), sx - 10.0f, e[i].name, nullptr, nullptr);
+            ImGui::PopStyleColor();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + 3.0f + L.rows * L.row_h));
+        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::EndChild();
     }
 
     void draw_plot() {
+        focus_layer = focus_layer_next;
+        focus_group = focus_group_next;
+        focus_layer_next = 0;
+        focus_group_next = -1;
         sync_cuts();
         const bool equal = equal_axes();
         // Of equal axes, fitted to the shape of the plot of the last frame
@@ -2665,13 +2784,18 @@ struct Correlation : viamd::EventHandler {
         ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
         // Opaque, whatever the windows are: what is behind the window is not to show through the data
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
-        if (!ImPlot::BeginPlot("##correlation", ImVec2(-1, -1), flags)) {
+        // Room under the plot for the caption
+        const Layer* al = axes_layer();
+        CaptionEntry caption[MAX_CAPTION];
+        const int num_caption = show_legend && al ? caption_entries(*al, caption) : 0;
+        const CaptionLayout caption_lay = caption_layout(caption, num_caption, ImGui::GetContentRegionAvail().x);
+        const float plot_h = caption_lay.n > 0 ? -(caption_lay.height + ImGui::GetStyle().ItemSpacing.y) : -1.0f;
+        if (!ImPlot::BeginPlot("##correlation", ImVec2(-1, plot_h), flags)) {
             ImPlot::PopStyleColor();
             ImPlot::PopStyleVar(2);
             input = saved_input;
             return;
         }
-        const Layer* al = axes_layer();
         char xl[160] = "X", yl[160] = "Y";
         if (al) {
             axis_label(xl, sizeof(xl), *al, 0);
@@ -2731,8 +2855,6 @@ struct Correlation : viamd::EventHandler {
 
         draw_points(ImPlot::IsPlotHovered());
 
-        ImVec2 legend_size = ImVec2(0, 0);
-        if (show_legend && al) legend_size = draw_legend(*al, pos);
 
         // What is left out of the points shown, and densities being found
         {
@@ -2774,7 +2896,7 @@ struct Correlation : viamd::EventHandler {
         }
 
         if (psize.x > 120.0f && psize.y > 120.0f) {
-            ImPlot::DrawInsetAxes(show_ticks ? 0 : ImPlotInsetFlags_NoTickLabels, legend_size, 0.78f);
+            ImPlot::DrawInsetAxes(show_ticks ? 0 : ImPlotInsetFlags_NoTickLabels, ImVec2(0, 0), 0.78f);
         }
 
         // A double-click fits the view, as the plots have it
@@ -2784,6 +2906,8 @@ struct Correlation : viamd::EventHandler {
         ImPlot::PopStyleColor();
         ImPlot::PopStyleVar(2);
         input = saved_input;
+
+        if (caption_lay.n > 0) draw_caption(*al, caption, caption_lay);
 
         // Panned or zoomed: no longer fitted. Fitted, of equal axes, and changed shape: fitted again.
         if (view_fitted) {
@@ -2860,9 +2984,12 @@ struct Correlation : viamd::EventHandler {
                 const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
                 ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
                 c.w = MAX(l.opacity, 0.5f);
+                // Of the pair whose caption entry is hovered, the others dim (members are pooled here: not by member)
+                const int fg = layer_by_member(l) ? -1 : focused_group(l);
+                if (fg >= 0 && fg != p) c.w *= 0.25f;
                 char id[32];
                 snprintf(id, sizeof(id), "##lag%u_%d", l.id, p);
-                ImPlot::SetNextLineStyle(c, 1.75f);
+                ImPlot::SetNextLineStyle(c, fg == p ? 2.6f : 1.75f);
                 ImPlot::PlotLine(id, xs.data(), row, 2 * L + 1);
                 // Where it is strongest
                 int best = -1;
@@ -2879,7 +3006,15 @@ struct Correlation : viamd::EventHandler {
         }
 
         if (curves == 0) {
-            const char* text = "Of layers over the frames of a trajectory, not of distributions";
+            // Why there is none: nothing shown, not over time, or being found
+            bool any_shown = false, any_lag = false;
+            for (int i = 0; i < num_layers; ++i) {
+                any_shown |= layer_on_axes(layers[i]) && layers[i].data_valid;
+                any_lag |= layer_on_axes(layers[i]) && layer_has_lag(layers[i]);
+            }
+            const char* text = !any_shown ? "Nothing shown on the plot's axes"
+                             : any_lag ? "Finding the correlations against the lag..."
+                             : "Of layers over several frames of a trajectory, not of distributions";
             const ImVec2 ts = ImGui::CalcTextSize(text);
             const ImVec2 pos = ImPlot::GetPlotPos(), size = ImPlot::GetPlotSize();
             ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
@@ -2959,17 +3094,18 @@ struct Correlation : viamd::EventHandler {
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
-            ImGui::Checkbox("Legend", &show_legend);
+            ImGui::Checkbox("Caption", &show_legend);
+            ImGui::SetItemTooltip("Under the plot, the correlation of each pair of the layer the axes are of");
             ImGui::Checkbox("Tick labels", &show_ticks);
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
             ImGui::SliderInt("Lag up to", &max_lag, 1, MAX_LAG, "%d frames", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
             ImGui::SetItemTooltip("How far either way the correlation against the lag goes");
             ImGui::Separator();
-            ImGui::TextDisabled("Drag series from the timeline onto the X or Y axis of the plot,");
-            ImGui::TextDisabled("or onto the lists of the selected layer.");
-            ImGui::TextDisabled("Drop a period from the timeline on the plot to add a layer over it.");
-            ImGui::TextDisabled("Click a point to go to its frame.");
-            ImGui::TextDisabled("Shift-drag to select the atoms of the points, with the right button to deselect them.");
+            ImGui::TextDisabled("Drag series from the timeline onto the X or Y strip of the plot.");
+            ImGui::TextDisabled("Layers of other units are listed apart: select one to show its axes.");
+            ImGui::TextDisabled("Drop a timeline period on the plot for a layer over its frames.");
+            ImGui::TextDisabled("Click a point to go to its frame; shift-drag to select its atoms.");
+            ImGui::TextDisabled("Double-click to fit the view; right-click a periodic axis to cut it.");
             ImGui::EndPopup();
         }
         ImGui::PopStyleVar();

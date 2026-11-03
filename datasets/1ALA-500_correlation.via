@@ -47,7 +47,7 @@ ShowLegend=1
 ShowLag=1
 MaxLag=50
 LagHeight=0.3
-Layers=5
+Layers=6
 
 [CorrelationLayer]
 Name=Collapse vs H-bonds
