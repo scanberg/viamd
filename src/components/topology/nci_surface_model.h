@@ -33,6 +33,8 @@ struct NciSurface {
     // The s the scatter's connected regions grow to, independent of the surface isovalue
     float scatter_s = (float)nci_surface::reference_scatter_s;
     float rho_max = (float)nci_surface::reference_rho_max;
+    // The s the display-only samples above scatter_s reach (the scatter plot's range)
+    float display_s = (float)nci_surface::reference_scatter_s;
     ColorScale scale = {.colormap = ImPlotColormap_Jet, .range_beg = -0.04f, .range_end = 0.04f,
                         .symmetric = true, .auto_range = true, .show_legend = true};
     ColorScaleSpan span = {};
@@ -89,8 +91,15 @@ struct NciSurface {
     int uploaded_colormap = -1;
 };
 
+// s_iso is the one main parameter (the viewport surface). The scatter's s, rho and R bound the region of every
+// surface and scatter; the reference was extracted at nci_surface::reference_*, so beyond them it is not comparable.
 struct NciUniformSettings {
     float s_iso = 0.7f;
+    float scatter_s = (float)nci_surface::reference_scatter_s;
+    float rho_max = (float)nci_surface::reference_rho_max;
+    float radius = (float)nci_surface::reference_radius;
+    // Display only: the scatter plot's s range; above scatter_s its points are grey
+    float plot_s = (float)nci_surface::reference_scatter_s;
 };
 
 // The grid spacing a resolution asks for, Bohr; large boxes are sampled more coarsely (see NciSurface::grid)

@@ -512,8 +512,6 @@ UTEST(nci_surface, uniform_defaults_and_mixed_membership) {
     EXPECT_EQ(uniform.rho_max, 0.07);
     EXPECT_EQ(uniform.radius, 2.7);
     EXPECT_EQ(uniform.color_range, 0.03);
-
-    EXPECT_EQ(nci_surface::scatter_view_s_max, 1.1);
 }
 
 UTEST(nci_surface, selection_key_changes_update_default_view_state) {
@@ -856,6 +854,58 @@ UTEST(nci_surface, scatter_keeps_both_signs_below_a_hard_s_cut) {
     for (int y = cut; y < bins; ++y) for (int x = 0; x < bins; ++x) above += scatter.density.volume[x + (size_t)bins * y];
     EXPECT_EQ(above, 0.0);
     EXPECT_GT(scatter.density.total_volume, 0.0);
+}
+
+UTEST(nci_surface, scatter_reaches_the_plot_s_range_beyond_the_reference) {
+    // The settings may raise the scatter's s past the reference's to show the tail of the plot up to s = 2
+    Atoms ring;
+    const double r = 3.0;
+    for (int a = 0; a < 3; ++a)
+        ring.centre.push_back({r * std::cos(2.0944 * a), r * std::sin(2.0944 * a), 0.0});
+    const auto g = box(5.5, 5.5, 0.15);
+    const auto rho = ring.sample(g);
+    const double bond[3] = {0.5 * (ring.centre[0][0] + ring.centre[1][0]), 0.5 * (ring.centre[0][1] + ring.centre[1][1]), 0.0};
+    nci_surface::Params params = nci_surface::reference_params(bond);
+    params.scatter_s = nci_surface::scatter_s_max;
+    params.surface = false;
+    nci_surface::Mesh mesh;
+    nci_surface::Scatter scatter;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &scatter));
+    size_t tail = 0;
+    for (float s : scatter.s) {
+        EXPECT_LE(s, nci_surface::scatter_s_max);
+        tail += s > (float)nci_surface::reference_scatter_s;
+    }
+    EXPECT_GT(tail, (size_t)0);
+}
+
+UTEST(nci_surface, display_tail_leaves_the_reference_scatter_untouched) {
+    // Points above scatter_s up to display_s go to the tail only; the scatter and its density stay the reference's
+    Atoms ring;
+    const double r = 3.0;
+    for (int a = 0; a < 3; ++a)
+        ring.centre.push_back({r * std::cos(2.0944 * a), r * std::sin(2.0944 * a), 0.0});
+    const auto g = box(5.5, 5.5, 0.15);
+    const auto rho = ring.sample(g);
+    const double bond[3] = {0.5 * (ring.centre[0][0] + ring.centre[1][0]), 0.5 * (ring.centre[0][1] + ring.centre[1][1]), 0.0};
+    nci_surface::Mesh mesh;
+    nci_surface::Scatter plain, tailed;
+    nci_surface::Params params = nci_surface::reference_params(bond);
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &plain));
+    EXPECT_TRUE(plain.tail.s.empty());
+    params.display_s = nci_surface::scatter_s_max;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &tailed));
+    EXPECT_TRUE(tailed.s == plain.s);
+    EXPECT_TRUE(tailed.signed_rho == plain.signed_rho);
+    EXPECT_EQ(tailed.eligible_count, plain.eligible_count);
+    EXPECT_TRUE(tailed.density.volume == plain.density.volume);
+    ASSERT_FALSE(tailed.tail.s.empty());
+    EXPECT_EQ(tailed.tail.s.size(), tailed.tail.signed_rho.size());
+    EXPECT_EQ(tailed.tail.s.size(), tailed.tail.anchor.size());
+    for (float s : tailed.tail.s) {
+        EXPECT_GT(s, (float)nci_surface::reference_scatter_s);
+        EXPECT_LE(s, nci_surface::scatter_s_max);
+    }
 }
 
 UTEST(nci_surface, nearest_anchor_partitions_the_scatter) {

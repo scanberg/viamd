@@ -62,7 +62,6 @@ bool has_nci(Family family);
 // from the CPs through s < reference_scatter_s within reference_radius, rho <= reference_rho_max, both signs of
 // lambda2; only their samples with s <= reference_scatter_s; each sample belonging to its nearest CP.
 constexpr double reference_scatter_s = 1.0;
-constexpr double scatter_view_s_max = 1.1;
 constexpr double reference_rho_max = 0.07;
 constexpr double reference_radius = 2.7;   // Bohr
 
@@ -71,10 +70,11 @@ constexpr double reference_radius = 2.7;   // Bohr
 struct Params;
 Params reference_params(std::span<const double> near_xyz, std::span<const double> other_xyz = {});
 
-// One adjustable surface isovalue; extraction is fixed to the reference for every CP type.
+// The surface isovalue is the main parameter; the scatter's s, rho and R default to the reference's extraction and may
+// be changed in the settings, at the cost of no longer matching the reference.
 struct UniformDefaults {
     double s_iso = 0.7;
-    // The scatter's s, rho and R are the reference's, so the scatter plot covers what the reference map does
+    // The scatter's s, rho and R default to the reference's, so the scatter plot covers what the reference map does
     double scatter_s = reference_scatter_s;
     double rho_max = reference_rho_max;
     double radius = reference_radius;
@@ -221,6 +221,9 @@ struct Params {
     // The scatter's s (0: s_iso): connected scope grows the scatter's components below it, and the scatter keeps only
     // samples with s at most it, so the scatter plot can reach further than the surface
     double scatter_s = 0.0;
+    // Display-only points above scatter_s up to it (0 or <= scatter_s: none), from the regions grown below it: the
+    // tail of the plot, in Scatter::tail. The scatter, its density and everything made from them stay at scatter_s.
+    double display_s = 0.0;
     double rho_max = 0.05;   // au
     // Anchor points in Bohr. Radius-only scope clips their union of spheres; connected scope seeds low-s components.
     std::span<const double> near_xyz = {};   // 3 per point
@@ -274,6 +277,14 @@ struct Scatter {
     // With Params::by_anchor: per point, the index of its nearest anchor in Params::near_xyz
     std::vector<uint32_t> anchor;
     size_t eligible_count = 0;
+    // Params::display_s: the samples with scatter_s < s <= display_s, capped apart (scatter_max_points), for display
+    // only; outlines, densities, counts and exports never use them
+    struct Tail {
+        std::vector<float> signed_rho;
+        std::vector<float> s;
+        std::vector<uint32_t> anchor;   // with Params::by_anchor, as Scatter::anchor
+        size_t eligible_count = 0;
+    } tail;
     // Empty for scatters built from points only; then the fields use the points' histogram.
     ScatterDensity density;
 };

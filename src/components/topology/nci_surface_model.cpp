@@ -14,7 +14,8 @@ namespace topology {
 
 NciUniformSettings nci_uniform_default_settings() {
     const nci_surface::UniformDefaults defaults = nci_surface::uniform_defaults();
-    return {(float)defaults.s_iso};
+    return {(float)defaults.s_iso, (float)defaults.scatter_s, (float)defaults.rho_max, (float)defaults.radius,
+            (float)defaults.scatter_s};
 }
 
 ColorScale nci_default_scale() {
@@ -120,10 +121,11 @@ void nci_apply_settings(NciState& state) {
     apply_visibility(state);
     const auto apply = [&](const std::vector<NciSurface*>& members) {
         for (NciSurface* n : members) {
-            n->s_iso = state.uniform.s_iso;
-            n->scatter_s = (float)nci_surface::reference_scatter_s;
-            n->rho_max = (float)nci_surface::reference_rho_max;
-            n->near_radius = (float)nci_surface::reference_radius;
+            n->scatter_s = state.uniform.scatter_s;
+            n->s_iso = MIN(state.uniform.s_iso, n->scatter_s);
+            n->rho_max = state.uniform.rho_max;
+            n->near_radius = state.uniform.radius;
+            n->display_s = state.uniform.plot_s;
             n->resolution = state.resolution;
             n->connected = true;
             n->radius_cap = true;
@@ -461,10 +463,11 @@ void nci_update_surfaces(NciState& state, const NciSurfaceRuntimeInput& runtime,
     context.scope = context.anchors.empty() ? NciSurface::Scope_Everywhere : NciSurface::Scope_Selected;
     context.connected = true;
     context.radius_cap = true;
-    context.near_radius = (float)nci_surface::reference_radius;
-    context.scatter_s = (float)nci_surface::reference_scatter_s;
+    context.near_radius = state.uniform.radius;
+    context.scatter_s = state.uniform.scatter_s;
+    context.display_s = state.uniform.plot_s;
     context.resolution = state.resolution;
-    context.rho_max = (float)nci_surface::reference_rho_max;
+    context.rho_max = state.uniform.rho_max;
     context.generation = state.primary.generation;
     update_nci_surface(context, runtime, true);
     nci_update_scale(state);

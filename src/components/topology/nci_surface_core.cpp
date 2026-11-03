@@ -152,6 +152,15 @@ Scatter scatter_subset(const Scatter& scatter, std::span<const uint8_t> keep) {
     }
     if (!scatter.signed_rho.empty())
         out.eligible_count = (size_t)std::llround((double)scatter.eligible_count * out.signed_rho.size() / scatter.signed_rho.size());
+    const Scatter::Tail& t = scatter.tail;
+    for (size_t i = 0; i < t.anchor.size() && i < t.signed_rho.size(); ++i) {
+        if (!kept(t.anchor[i])) continue;
+        out.tail.signed_rho.push_back(t.signed_rho[i]);
+        out.tail.s.push_back(t.s[i]);
+        out.tail.anchor.push_back(t.anchor[i]);
+    }
+    if (!t.signed_rho.empty())
+        out.tail.eligible_count = (size_t)std::llround((double)t.eligible_count * out.tail.signed_rho.size() / t.signed_rho.size());
     const ScatterDensity& d = scatter.density;
     if (!d.volume.empty()) {
         out.density.rho_extent = d.rho_extent;
@@ -177,6 +186,10 @@ void scatter_append(Scatter* dst, const Scatter& src) {
     dst->voxel.insert(dst->voxel.end(), src.voxel.begin(), src.voxel.end());
     dst->anchor.insert(dst->anchor.end(), src.anchor.begin(), src.anchor.end());
     dst->eligible_count += src.eligible_count;
+    dst->tail.signed_rho.insert(dst->tail.signed_rho.end(), src.tail.signed_rho.begin(), src.tail.signed_rho.end());
+    dst->tail.s.insert(dst->tail.s.end(), src.tail.s.begin(), src.tail.s.end());
+    dst->tail.anchor.insert(dst->tail.anchor.end(), src.tail.anchor.begin(), src.tail.anchor.end());
+    dst->tail.eligible_count += src.tail.eligible_count;
     const ScatterDensity& s = src.density;
     if (s.volume.empty()) return;
     ScatterDensity& d = dst->density;
@@ -1035,8 +1048,11 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
     // With connected scope, the surface keeps the components grown below s_iso; the scatter those grown below
     // scatter_s (s_iso when unset) and their one-voxel halo, for sub-voxel sampling at the components' edge
     const double scatter_s = params.scatter_s > 0.0 ? params.scatter_s : params.s_iso;
+    // The display-only tail: samples above scatter_s up to display_s, in the regions grown below display_s
+    const double display_s = scatter && params.display_s > scatter_s ? std::min(params.display_s, (double)scatter_s_max) : 0.0;
     std::vector<uint8_t> selected;
     std::vector<uint8_t> halo;
+    std::vector<uint8_t> tail_halo;
     if (params.connected && !params.near_xyz.empty()) {
         const auto grow = [&](std::vector<uint8_t>* grown, std::vector<uint8_t>* grown_halo, double s_max) -> bool {
             std::vector<uint8_t>& sel = *grown;
@@ -1103,10 +1119,17 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
             std::vector<uint8_t> scatter_selected;
             if (!grow(&scatter_selected, &halo, scatter_s)) return false;
         }
+        if (display_s > 0.0) {
+            std::vector<uint8_t> tail_selected;
+            if (!grow(&tail_selected, &tail_halo, display_s)) return false;
+        }
     }
     if (scatter) {
         const auto in_scope = [&](size_t v) {
             return (allowed.empty() || allowed[v]) && (halo.empty() || halo[v]);
+        };
+        const auto in_tail_scope = [&](size_t v) {
+            return display_s > 0.0 && (allowed.empty() || allowed[v]) && (tail_halo.empty() || tail_halo[v]);
         };
         // Each sample belongs to its nearest anchor; those nearer to one of other_xyz are not kept
         const size_t near_count = params.near_xyz.size() / 3;
@@ -1121,7 +1144,7 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
                 if (cancelled()) return;
                 for (int j = 0; j < dy; ++j) for (int i = 0; i < dx; ++i) {
                     const size_t v = l.at(i, j, k);
-                    if (!(S[v] <= scatter_s_max) || !in_scope(v)) continue;
+                    if (!(S[v] <= scatter_s_max) || !(in_scope(v) || in_tail_scope(v))) continue;
                     const double p[3] = {grid.origin[0] + i * grid.spacing[0], grid.origin[1] + j * grid.spacing[1],
                                          grid.origin[2] + k * grid.spacing[2]};
                     owner[v] = locator.nearest(p);
@@ -1162,6 +1185,35 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
             if (own) scatter->anchor.push_back(owner[v]);
         }
         if (!continuous_density(&scatter->density, l, S, params, scatter_s, keep, owner, cancel)) return false;
+
+        if (display_s > 0.0) {
+            Scatter::Tail& tail = scatter->tail;
+            std::vector<size_t> tail_reservoir;
+            tail_reservoir.reserve(scatter_max_points);
+            std::mt19937 tail_rng(1);
+            for (int k = 1; k < dz - 1; ++k) {
+                if (cancelled()) return false;
+                for (int j = 1; j < dy - 1; ++j) for (int i = 1; i < dx - 1; ++i) {
+                    const size_t v = l.at(i, j, k);
+                    if (!(S[v] > scatter_s && S[v] <= display_s) || !in_tail_scope(v) || (own && owner[v] >= near_count)) continue;
+                    ++tail.eligible_count;
+                    if (tail_reservoir.size() < scatter_max_points) {
+                        tail_reservoir.push_back(v);
+                    } else {
+                        const size_t slot = std::uniform_int_distribution<size_t>(0, tail.eligible_count - 1)(tail_rng);
+                        if (slot < scatter_max_points) tail_reservoir[slot] = v;
+                    }
+                }
+            }
+            for (size_t v : tail_reservoir) {
+                const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
+                const float r = (float)signed_density(l, i, j, k);
+                if (!std::isfinite(r)) continue;
+                tail.signed_rho.push_back(r);
+                tail.s.push_back(S[v]);
+                if (own) tail.anchor.push_back(owner[v]);
+            }
+        }
     }
 
     if (!params.surface) { report(1.0f); return true; }

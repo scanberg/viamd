@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <string>
 #include <array>
 #include <cstdio>
@@ -107,6 +108,7 @@ struct NciPanel {
     static constexpr uint32_t NCI_LAYER_LIST_ID = 3;
     static constexpr const char* resolution_str[] = { "Coarse", "Medium", "Fine" };
     static constexpr size_t max_samples = 32u << 20;
+    static constexpr ImVec4 warning_colour = ImVec4(0.95f, 0.65f, 0.2f, 1.0f);
 
     NciState& st;
     bool critical_points_enabled;
@@ -186,6 +188,7 @@ struct NciPanel {
         n->layer_visible = true;
         n->s_iso = source.s_iso;
         n->scatter_s = source.scatter_s;
+        n->display_s = source.display_s;
         n->rho_max = source.rho_max;
         n->scale = source.scale;
         n->families = source.families;
@@ -291,19 +294,64 @@ struct NciPanel {
     void draw_settings() {
         bool editing = false;
         prop::begin("NCI settings");
-        prop::row("surface isovalue", "Display surface within the fixed reference/scatter region. Changing it does not change scatter samples.");
+        prop::row("surface isovalue", "The viewport surface. Scatter samples above it are drawn desaturated: in the region, "
+                                      "not in the surface. Changing it does not change the scatter samples.");
         ImGui::SetNextItemWidth(prop::control_width());
-        ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, (float)nci_surface::reference_scatter_s, "%.2f");
+        ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, st.uniform.scatter_s, "%.2f");
         editing |= ImGui::IsItemActive();
-        prop::row("scatter / reference");
-        ImGui::Text("s <= %.1f, rho <= %.2f, R %.1f Bohr", nci_surface::reference_scatter_s,
-                    nci_surface::reference_rho_max, nci_surface::reference_radius);
+        prop::row("plot s range", "Display only: the scatter plot's s axis. Points above s max are shown in grey.");
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI plot s", &st.uniform.plot_s, 0.2f, nci_surface::scatter_s_max, "%.2f");
+        editing |= ImGui::IsItemActive();
+        if (prop::section("Scatter region", false)) {
+            // Beyond the reference's s and rho the reference has no data; any other R pools different samples. A
+            // tighter s or rho is applied to the reference too, so it needs no warning.
+            const auto warn = [](bool beyond, const char* text) {
+                if (!beyond) return;
+                prop::row("");
+                ImGui::PushStyleColor(ImGuiCol_Text, warning_colour);
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + prop::control_width());
+                ImGui::TextWrapped(ICON_FA_TRIANGLE_EXCLAMATION " %s", text);
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
+            };
+            prop::row("s max", "Samples, connected regions, contours and density up to this reduced density gradient; above "
+                               "it, up to the plot s range, points are still shown in grey, for display only. Also bounds the surface.");
+            ImGui::SetNextItemWidth(prop::control_width());
+            ImGui::SliderFloat("##NCI scatter s", &st.uniform.scatter_s, 0.2f, nci_surface::scatter_s_max, "%.2f");
+            editing |= ImGui::IsItemActive();
+            st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
+            warn(st.uniform.scatter_s > nci_surface::reference_scatter_s + 1e-4,
+                 "Beyond the reference (s <= 1): no reference above it, and layer contours are not comparable.");
+            prop::row("\xCF\x81 max", "Samples denser than this are out, both signs of lambda2. Also bounds the surface.");
+            ImGui::SetNextItemWidth(prop::control_width());
+            ImGui::SliderFloat("##NCI scatter rho", &st.uniform.rho_max, 0.01f, 0.15f, "%.3f au");
+            editing |= ImGui::IsItemActive();
+            warn(st.uniform.rho_max > nci_surface::reference_rho_max + 1e-6,
+                 "Beyond the reference (\xCF\x81 <= 0.07): no reference outside it.");
+            prop::row("R", "Distance from the CPs the regions may reach. Also bounds the surface.");
+            ImGui::SetNextItemWidth(prop::control_width());
+            ImGui::SliderFloat("##NCI scatter R", &st.uniform.radius, 1.0f, 5.0f, "%.1f Bohr");
+            editing |= ImGui::IsItemActive();
+            warn(std::abs(st.uniform.radius - nci_surface::reference_radius) > 1e-4,
+                 "The reference used R = 2.7 Bohr: points and contours are not aligned with it.");
+            prop::row("");
+            if (ImGui::Button("Reset to reference")) {
+                const NciUniformSettings defaults = nci_uniform_default_settings();
+                st.uniform.scatter_s = defaults.scatter_s;
+                st.uniform.rho_max = defaults.rho_max;
+                st.uniform.radius = defaults.radius;
+                st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
+            }
+            prop::hint("Inside/outside counts always use reference-aligned samples.");
+            prop::section_end();
+        }
         prop::row("resolution", "Grid spacing for density sampling. Finer grids are smoother and take longer.");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::Combo("##NCI resolution", &st.resolution, resolution_str, (int)ARRAY_SIZE(resolution_str));
         ImGui::SetItemTooltip("Coarse 0.3, Medium 0.2, Fine 0.13 Bohr; made coarser where that would take more than %zu M samples.",
                               max_samples >> 20);
-        prop::hint("Uniform connected regions, both signs of lambda2, nearest-CP ownership. Only the display isovalue varies.");
+        prop::hint("Uniform connected regions, both signs of lambda2, nearest-CP ownership.");
         prop::row("opacity");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI opacity", &st.opacity, 0.05f, 1.0f, "%.2f");
@@ -560,7 +608,7 @@ struct NciPanel {
         ImGui::SetItemTooltip("Save the preview (the selected CPs) as a layer.\nSelect CPs and wait for the preview to complete.");
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_GEAR "##settings", ImVec2(button, 0))) ImGui::OpenPopup("##NCI settings");
-        ImGui::SetItemTooltip("NCI settings: mode, isovalue, colour scale and the values of each CP type");
+        ImGui::SetItemTooltip("NCI settings: isovalue, scatter region (s, \xCF\x81, R), resolution and colour scale");
         if (ImGui::BeginPopup("##NCI settings")) {
             draw_settings();
             ImGui::EndPopup();
@@ -957,8 +1005,9 @@ struct NciPanel {
         return out;
     }
 
-    // Whether (rho, s) lies inside some category's outermost drawn reference level
+    // Whether (rho, s) lies inside some category's outermost drawn reference level, within the scatter's s and rho
     bool reference_inside(float rho, float s) {
+        if (std::abs(rho) > st.uniform.rho_max || s > st.uniform.scatter_s) return false;
         const nci_surface::ReferenceMap& map = reference_map();
         for (size_t c = 0; c < nci_surface::reference_category_count; ++c)
             if (nci_surface::reference_level(map, c, rho, s) > 0) return true;
@@ -1246,6 +1295,7 @@ struct NciPanel {
     // ---- the scatter plot: the expected regions, the full-density context and the layers, Ramachandran-like
     void draw_scatter() {
         static bool fit_view = false;
+        static float shown_plot_s = -1.0f;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
         ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it for every interaction.");
@@ -1275,7 +1325,7 @@ struct NciPanel {
             ImGui::TextDisabled("%zu points, %.3f Bohr", context.scatter.s.size(), used);
             if (coarsened) {
                 ImGui::SameLine(0.0f, 0.0f);
-                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1.0f), " (coarsened)");
+                ImGui::TextColored(warning_colour, " (coarsened)");
             }
             ImGui::EndGroup();
             ImGui::SetItemTooltip(
@@ -1420,7 +1470,8 @@ struct NciPanel {
             } else line_widths.back() += style.ItemSpacing.x + w;
         }
         const float legend_h = line_widths.size() * ImGui::GetFrameHeightWithSpacing();
-        const bool reset_view = fit_view;
+        const bool reset_view = fit_view || shown_plot_s != st.uniform.plot_s;
+        shown_plot_s = st.uniform.plot_s;
         if (reset_view) ImPlot::SetNextAxisToFit(ImAxis_X1);
         fit_view = false;
         const bool plot_open = ImPlot::BeginPlot("##NCI scatter", ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y - legend_h)),
@@ -1431,44 +1482,68 @@ struct NciPanel {
         float rho_extent = context.rho_max;
         if (reference.valid) rho_extent = MAX(rho_extent, reference.rho_extent);
         ImPlot::SetupAxisLimits(ImAxis_X1, -rho_extent, rho_extent, ImPlotCond_Once);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, nci_surface::scatter_view_s_max,
-                                reset_view ? ImPlotCond_Always : ImPlotCond_Once);
-        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0.0, nci_surface::scatter_view_s_max);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, st.uniform.plot_s, reset_view ? ImPlotCond_Always : ImPlotCond_Once);
+        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, 0.0, nci_surface::scatter_s_max);
         ImPlot::SetupFinish();
         if (ImPlot::IsPlotHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) fit_view = true;
 
         struct Points {
-            const nci_surface::Scatter* scatter;
+            const std::vector<float>* rho;
+            const std::vector<float>* s;
             const std::vector<uint32_t>* indices;
         };
-        const auto plot_bin = [&](const NciSurface& n, size_t bin, const std::vector<uint32_t>& indices, ImVec4 colour, float size) {
+        const auto plot_bin = [&](const NciSurface& n, size_t bin, bool tail, const std::vector<uint32_t>& indices, ImVec4 colour,
+                                  float size) {
             if (indices.empty()) return;
             const auto getter = [](int i, void* data) {
                 const auto& p = *(const Points*)data;
                 const uint32_t idx = (*p.indices)[i];
-                return ImPlotPoint(p.scatter->signed_rho[idx], p.scatter->s[idx]);
+                return ImPlotPoint((*p.rho)[idx], (*p.s)[idx]);
             };
-            Points points = {&n.scatter, &indices};
+            Points points = tail ? Points{&n.scatter.tail.signed_rho, &n.scatter.tail.s, &indices}
+                                 : Points{&n.scatter.signed_rho, &n.scatter.s, &indices};
             ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, size, colour, 0.0f, colour);
             char label[64];
             snprintf(label, sizeof(label), "##NCI %d bin %zu", n.id, bin);
             ImPlot::PlotScatterG(label, getter, &points, (int)indices.size());
         };
         // The samples of a surface, on the colour scale of its surface in the viewport; the context is neutral unless
-        // the global scale applies
+        // the global scale applies. Below the surface isovalue: full colour, in the surface. Up to the scatter's s:
+        // desaturated, in the analysed region but not in the surface. The display-only tail above it: plain grey.
+        // Drawn tail first so the surface's own samples stay on top.
+        constexpr size_t colour_bins = 65;
         const auto plot = [&](const NciSurface& n, bool neutral) {
             const auto& scatter = n.scatter;
             const ColorScale scale = n.id == -1 ? nci_effective_scale(st, st.primary) : nci_effective_scale(st, n);
-            std::array<std::vector<uint32_t>, 65> bins;
+            const auto colour_bin = [&](float rho) {
+                return neutral ? 0 : MIN(64, (int)(64.0f * color_scale_param(scale, rho) + 0.5f));
+            };
+            // Tail, above the isovalue, then the surface's samples
+            std::array<std::vector<uint32_t>, 3 * colour_bins> bins;
+            for (size_t i = 0; i < scatter.tail.s.size(); ++i)
+                bins[colour_bin(scatter.tail.signed_rho[i])].push_back((uint32_t)i);
             for (size_t i = 0; i < scatter.s.size(); ++i) {
-                const int bin = neutral ? 0 : MIN(64, (int)(64.0f * color_scale_param(scale, scatter.signed_rho[i]) + 0.5f));
-                bins[bin].push_back((uint32_t)i);
+                const bool above = scatter.s[i] > n.s_iso;
+                bins[(above ? 1 : 2) * colour_bins + colour_bin(scatter.signed_rho[i])].push_back((uint32_t)i);
             }
             for (size_t b = 0; b < bins.size(); ++b) {
-                ImVec4 colour = neutral ? ImVec4(0.8f, 0.8f, 0.8f, 0.25f)
-                                        : ImPlot::SampleColormap((float)b / (float)(bins.size() - 1), scale.colormap);
-                if (!neutral) colour.w = 0.7f;
-                plot_bin(n, b, bins[b], colour, neutral ? 1.0f : st.point_size);
+                const bool tail = b < colour_bins;
+                const bool faded = b < 2 * colour_bins;
+                const size_t c = b % colour_bins;
+                ImVec4 colour = neutral ? ImVec4(0.8f, 0.8f, 0.8f, faded ? 0.12f : 0.25f)
+                                        : ImPlot::SampleColormap((float)c / (float)(colour_bins - 1), scale.colormap);
+                if (!neutral) {
+                    colour.w = 0.7f;
+                    if (tail) {
+                        colour = ImVec4(0.6f, 0.6f, 0.6f, 0.3f);
+                    } else if (faded) {
+                        const float grey = 0.3f * colour.x + 0.59f * colour.y + 0.11f * colour.z;
+                        constexpr float keep = 0.15f;
+                        colour = ImVec4(grey + keep * (colour.x - grey), grey + keep * (colour.y - grey),
+                                        grey + keep * (colour.z - grey), 0.45f);
+                    }
+                }
+                plot_bin(n, b, tail, bins[b], colour, neutral ? 1.0f : st.point_size);
             }
         };
         if (st.show_context_samples && surface_ready(context)) plot(context, !global);
@@ -1481,7 +1556,14 @@ struct NciPanel {
             ImPlot::PopPlotClipRect();
         };
 
-        // The reference is independent of the loaded system, the displayed layers and their legend visibility.
+        // The reference is independent of the loaded system, the displayed layers and their legend visibility. A tighter
+        // scatter s or rho than the reference's cuts the reference the same way.
+        ImPlot::PushPlotClipRect();
+        {
+            const ImVec2 lo = ImPlot::PlotToPixels(-st.uniform.rho_max, 0.0);
+            const ImVec2 hi = ImPlot::PlotToPixels(st.uniform.rho_max, st.uniform.scatter_s);
+            ImGui::PushClipRect(ImVec2(MIN(lo.x, hi.x), MIN(lo.y, hi.y)), ImVec2(MAX(lo.x, hi.x), MAX(lo.y, hi.y) + 1.0f), true);
+        }
         if (st.reference.visible && reference.valid) {
             if (st.reference.fill) draw_reference_fill(reference);
             if (st.reference.lines) {
@@ -1499,6 +1581,8 @@ struct NciPanel {
             if (sub.isolines.size() < 2) continue;
             draw_outline(sub.isolines[1], subfamily_colour(guide_map, i), std::max(1.5f, st.reference.line_width));
         }
+        ImGui::PopClipRect();
+        ImPlot::PopPlotClipRect();
 
         NciSurface* hovered = nullptr;
         size_t hovered_sample = 0;
@@ -1567,19 +1651,6 @@ struct NciPanel {
         }
 
         NciSurface* active = st.layer_hidden ? nullptr : active_member();
-        {
-            const auto limits = ImPlot::GetPlotLimits();
-            const ImVec4 colour(0.65f, 0.65f, 0.65f, 1.0f);
-            const ImVec2 a = ImPlot::PlotToPixels(limits.X.Min, nci_surface::reference_scatter_s);
-            const ImVec2 b = ImPlot::PlotToPixels(limits.X.Max, nci_surface::reference_scatter_s);
-            ImPlot::PushPlotClipRect();
-            for (float x = a.x; x < b.x; x += 10.0f)
-                ImPlot::GetPlotDrawList()->AddLine(ImVec2(x, a.y), ImVec2(std::min(x + 5.0f, b.x), a.y),
-                                                  ImGui::ColorConvertFloat4ToU32(colour));
-            ImPlot::PopPlotClipRect();
-            ImPlot::Annotation(limits.X.Min, nci_surface::reference_scatter_s, colour, ImVec2(4, -4), true,
-                               "reference/scatter cutoff: s = 1");
-        }
         bool guide_hovered = false;
         if (st.show_guides && active && nci_scale_member(*active)) {
             const ColorScale scale = nci_effective_scale(st, *active);
@@ -1587,7 +1658,7 @@ struct NciPanel {
             double iso = active->s_iso;
             bool held = false, hovered_line = false;
             if (ImPlot::DragLineY(1, &iso, col, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered_line, &held)) {
-                st.uniform.s_iso = (float)std::clamp(iso, 0.1, nci_surface::reference_scatter_s);
+                st.uniform.s_iso = (float)std::clamp(iso, 0.1, (double)st.uniform.scatter_s);
             }
             st.settings_editing |= held;
             guide_hovered = hovered_line || held;
@@ -1605,6 +1676,8 @@ struct NciPanel {
             ImGui::BeginTooltip();
             ImGui::Text("%s | %s", layer_name(key, nci_layer_members(st, key)), nci_family_label(*hovered).c_str());
             ImGui::Text("sign(lambda2)rho %.5g au | s %.3f", rho, s);
+            if (s > hovered->s_iso)
+                ImGui::TextDisabled("Above the surface isovalue (s = %.2f): in the region, not in the surface", hovered->s_iso);
             const bool guided = st.show_guides && active == hovered;
             if (is_shown(key))
                 ImGui::TextDisabled(guided ? "Click to hide the guides" : "Click to make this interaction the active one for the guides");

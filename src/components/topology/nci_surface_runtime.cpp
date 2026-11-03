@@ -188,9 +188,15 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
 
     nci_surface::Params params = nci_surface::reference_params(near, n.competitors);
     params.s_iso = n.s_iso;
+    params.scatter_s = n.scatter_s;
+    params.rho_max = n.rho_max;
+    params.near_radius = n.near_radius;
+    // No tail (and no recompute) unless the plot range reaches above the scatter's s
+    params.display_s = n.display_s > n.scatter_s ? MIN(n.display_s, nci_surface::scatter_s_max) : 0.0;
     params.surface = !context;
     uint64_t key = context ? rho_key : md_hash64(&params.s_iso, sizeof(params.s_iso), rho_key);
     key = md_hash64(&params.scatter_s, sizeof(params.scatter_s), key);
+    key = md_hash64(&params.display_s, sizeof(params.display_s), key);
     key = md_hash64(&params.rho_max, sizeof(params.rho_max), key);
     key = md_hash64(&n.scope, sizeof(n.scope), key);
     key = md_hash64(&params.connected, sizeof(params.connected), key);
