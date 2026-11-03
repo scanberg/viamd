@@ -205,7 +205,7 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
     const script::Program* ir = state.script.ir;
     plan.num_frames = (uint32_t)run_num_frames(&state);
     plan.valid = script::valid(ir) && plan.num_frames > 0;
-    plan.running = task_system::task_is_running(state.tasks.evaluate);
+    plan.running = state.tasks.evaluate.running();
     if (!plan.valid) return plan;
 
     plan.same = state.script.eval && ir == state.script.eval_ir;
@@ -659,11 +659,9 @@ static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, Sel
 static void pool_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
     (void)user;
     if (count == 0) return;
-    const task_system::ID id = task_system::create_pool_task(STR_LIT("##Evaluate frames"), (uint32_t)count, [fn, arg](uint32_t beg, uint32_t end, uint32_t) {
+    task_system::parallel_for((uint32_t)count, 1, [fn, arg](uint32_t beg, uint32_t end) {
         for (uint32_t i = beg; i < end; ++i) fn(arg, i);
     });
-    task_system::enqueue_task(id);
-    task_system::task_wait_for(id);
 }
 
 int main(int argc, char** argv) {
@@ -878,7 +876,7 @@ int main(int argc, char** argv) {
 
     int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
 	num_threads = CLAMP(num_threads, 2, sys_info.num_physical_cores);
-    task_system::initialize((size_t)num_threads);
+    task_system::initialize((uint32_t)num_threads);
 
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(output_snippet(state));
@@ -1343,7 +1341,7 @@ int main(int argc, char** argv) {
         // A script whose every property the evaluation holds as it is, moved to other lines or edited around them,
         // takes the evaluation over at once: nothing is computed, and its hover and marks follow the new text
         if (state.script.eval && state.script.ir && state.script.eval_ir != state.script.ir && !state.script.eval_init &&
-            state.script.language == script::Language::V2 && !task_system::task_is_running(state.tasks.evaluate)) {
+            state.script.language == script::Language::V2 && !state.tasks.evaluate.running()) {
             const ScriptPlan p = script_plan(state, frame_alloc);
             if (p.valid && !p.changes && p.num_pending == 0) state.script.eval_init = true;
         }
@@ -1354,7 +1352,7 @@ int main(int argc, char** argv) {
 
         if (num_frames > 0) {
             if (state.script.eval_init) {
-                if (task_system::task_is_running(state.tasks.evaluate)) {
+                if (state.tasks.evaluate.running()) {
                     script::eval_interrupt(state.script.eval);
                 } else {
                     state.script.eval_init = false;
@@ -1369,7 +1367,7 @@ int main(int argc, char** argv) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
                         const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.mold.run),
-                                                        .num_threads = task_system::pool_num_threads(), .parallel_for = pool_parallel_for };
+                                                        .num_threads = task_system::num_threads(), .parallel_for = pool_parallel_for };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
 
@@ -1393,7 +1391,7 @@ int main(int argc, char** argv) {
                 // Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only starts when
                 // asked to. A distribution needs none, it is kept per frame.
                 if (state.script.evaluate) {
-                    if (task_system::task_is_running(state.tasks.evaluate)) {
+                    if (state.tasks.evaluate.running()) {
                         // Started again once it has stopped, over the frames which remain then. Nothing it has
                         // done is lost.
                         script::eval_interrupt(state.script.eval);
@@ -1418,33 +1416,26 @@ int main(int argc, char** argv) {
                             script::program_retain(ir);
                             script::Eval* eval = state.script.eval;
                             const uint32_t* frames = state.script.eval_frames;
+                            // Once it has ended, run or cancelled: the IR it held goes
+#if MEASURE_EVALUATION_TIME
+                            const uint64_t t0 = (uint64_t)md_tick_now();
+                            auto on_main = [ir, t0, n](task_system::Status) {
+                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
+                                script::program_release(ir);
+                            };
+#else
+                            auto on_main = [ir](task_system::Status) { script::program_release(ir); };
+#endif
                             if (script::eval_whole(eval)) {
                                 // v2: one call evaluates every pending frame, spreading them over the pool itself
-                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), [&state, ir, eval]() {
+                                state.tasks.evaluate.start(STR_LIT("Evaluate script"), [&state, ir, eval]() {
                                     script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), nullptr, 0);
-                                });
+                                }, on_main);
                             } else {
-                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                    (void)thread_num;
+                                state.tasks.evaluate.start_for(STR_LIT("Evaluate script"), (uint32_t)n, 1, [&state, ir, eval, frames](uint32_t beg, uint32_t end) {
                                     script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
-                                });
+                                }, on_main);
                             }
-
-                            // Once every part of it has finished
-                            task_system::ID release = task_system::create_pool_task(STR_LIT("##Release script IR"), [ir]() {
-                                script::program_release(ir);
-                            });
-                            task_system::set_task_dependency(release, state.tasks.evaluate);
-#if MEASURE_EVALUATION_TIME
-                            uint64_t time = (uint64_t)md_tick_now();
-                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval"), [t0 = time, n]() {
-                                uint64_t t1 = md_tick_now();
-                                double s = md_tick_to_seconds(t1 - t0);
-                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, s);
-                            });
-                            task_system::set_task_dependency(time_task, state.tasks.evaluate);
-#endif
-                            task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
                 }
@@ -1674,7 +1665,7 @@ int main(int argc, char** argv) {
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Main thread tasks");
-        task_system::execute_main_task_queue();
+        task_system::run_main_queue();
         POP_GPU_SECTION();
         profiler::frame_end();
 
@@ -3704,14 +3695,10 @@ static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
 
-    task_system::ID tasks[256];
-    size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
-    bool any_task_label_visible = false;
-    for (size_t i = 0; i < num_tasks; i++) {
-        str_t label = task_system::task_label(tasks[i]);
-        if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
-        any_task_label_visible = true;
-    }
+    // The jobs with a label (task_system activities)
+    task_system::ActivityInfo activities[8];
+    const size_t num_activities = task_system::activity_list(activities, ARRAY_SIZE(activities));
+    bool any_task_label_visible = num_activities > 0;
     // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
     float iso_fraction[8];
     const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
@@ -3748,23 +3735,30 @@ static void draw_async_task_window(ApplicationState* data) {
         const float size = ImGui::GetFontSize() + pad * 2;
 
         char buf[64];
-        for (size_t i = 0; i < MIN(num_tasks, 8); i++) {
-            const auto id = tasks[i];
-            str_t label = task_system::task_label(id);
-            float fract = task_system::task_fraction_complete(id);
+        for (size_t i = 0; i < num_activities; i++) {
+            const task_system::ActivityInfo& a = activities[i];
+            const bool is_evaluate = a.id == data->tasks.evaluate.activity_id();
+            float fract = a.progress;
             // One task over every frame (v2): the evaluation says how far it is
-            if (id == data->tasks.evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
+            if (is_evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
-            if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
-
-            snprintf(buf, sizeof(buf), "%.*s %.1f%%", (int)label.len, label.ptr, fract * 100.f);
-            ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad),0), buf);
-            ImGui::SameLine();
-            if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
-                task_system::task_interrupt(id);
-                if (id == data->tasks.evaluate) {
-                    script::eval_interrupt(data->script.eval);
+            if (fract < 0.0f) {
+                // no fraction to show: an indeterminate bar, to say it is not stuck
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), a.label);
+            } else {
+                snprintf(buf, sizeof(buf), "%s %.1f%%", a.label, fract * 100.f);
+                ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            }
+            if (a.cancellable) {
+                ImGui::SameLine();
+                ImGui::PushID((int)i);
+                if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
+                    task_system::activity_cancel(a.id);
+                    if (is_evaluate) {
+                        script::eval_interrupt(data->script.eval);
+                    }
                 }
+                ImGui::PopID();
             }
         }
         for (size_t i = 0; i < num_iso; i++) {
@@ -5761,13 +5755,12 @@ static void draw_debug_window(ApplicationState* data) {
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug", &data->show_debug_window)) {       
-        task_system::ID tasks[256]; 
-        size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
-        if (num_tasks > 0) {
-            ImGui::Text("Running Pool Tasks:");
-            for (size_t i = 0; i < num_tasks; ++i) {
-                str_t lbl = task_system::task_label(tasks[i]);
-                ImGui::Text("[%i]: %.*s", (int)i, (int)lbl.len, lbl.ptr);
+        task_system::ActivityInfo activities[64];
+        const size_t num_activities = task_system::activity_list(activities, ARRAY_SIZE(activities));
+        if (num_activities > 0) {
+            ImGui::Text("Running Jobs:");
+            for (size_t i = 0; i < num_activities; ++i) {
+                ImGui::Text("[%i]: %s", (int)i, activities[i].label);
             }
         }
 
@@ -6429,7 +6422,7 @@ static void draw_property_export_window(ApplicationState* data) {
         static int volume_member = 0;   // of an array of volumes; -1 for each of them, in a file of its own
         static int bins_exp      = 7;   // 128 bins
 
-        if (task_system::task_is_running(data->tasks.evaluate)) {
+        if (data->tasks.evaluate.running()) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
             return;

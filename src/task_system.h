@@ -4,61 +4,152 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <atomic>
 #include <functional>
+#include <memory>
+#include <type_traits>
+
+// The application's CPU threads: one pool, owned here, which everything else borrows.
+//
+// Three ways to use it, by the shape of the work:
+//
+//   parallel_for   Blocks the caller, which works on the range too. Fork-join, and the bulk of the uses.
+//                  From the main thread it only ever helps with work of its own priority, so a frame never
+//                  picks up a piece of a background job while it waits.
+//
+//   Job            Background work which outlives the call that starts it. Owned by the caller, like any
+//                  member: no ids, no table, no cap. Its destructor cancels and waits, so a job never runs
+//                  past the life of what it works on. A follow-up on the main thread (on_main) runs in
+//                  run_main_queue() and nowhere else.
+//
+//   detach         Fire and forget, owned here: never cancelled, and waited for by wait_all and shutdown.
+//
+// Cancellation reaches the work: inside a job body, and inside every parallel_for it issues on whatever
+// thread, cancelled() says whether the job was asked to stop, and a parallel_for stops handing out pieces.
+//
+// The overlay lists Activities: every job with a label is one, and anything else that runs over time
+// (work on the GPU over several frames) can register one as well.
 
 namespace task_system {
 
-typedef uint64_t ID;
-constexpr ID INVALID_ID = 0;
+void     initialize(uint32_t num_threads);  // including the main thread
+void     shutdown();                        // waits for everything still under way
 
-using Task = std::function<void()>;
-using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end, uint32_t thread_num)>;
+uint32_t num_threads();
+uint32_t thread_index();                    // [0, num_threads()), 0 is the main thread
 
-/*
-using Task      = void (*)(void* user_data);
-using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num);
-*/
+// ---------------------------------------------------------------------------------------------------------------------
+// Fork-join
 
-void initialize(size_t num_threads);
-void shutdown();
+typedef void (*RangeFn)(void* user, uint32_t beg, uint32_t end);
 
-// Call once per frame at some approriate time, if there are items in the main queue, the main thread will be stalled.
-// Pool tasks will not stall the main thread.
-//void execute_queued_tasks();
+// Calls fn over [0, count) in half open pieces of at least grain (but the last), in any order, on any thread,
+// the caller one of them. Returns false if the job it runs in was cancelled, and some pieces were skipped.
+bool parallel_for(uint32_t count, uint32_t grain, RangeFn fn, void* user);
 
-ID create_main_task(str_t label, Task task);
-ID create_pool_task(str_t label, Task task);
-ID create_pool_task(str_t label, uint32_t range_size, RangeTask task, uint32_t grain_size = 1);
+template <class F>
+bool parallel_for(uint32_t count, uint32_t grain, F&& f) {
+    using T = std::remove_reference_t<F>;
+    return parallel_for(count, grain, [](void* user, uint32_t beg, uint32_t end) { (*static_cast<T*>(user))(beg, end); },
+                        const_cast<void*>(static_cast<const void*>(std::addressof(f))));
+}
 
-// Sets a dependency for a task such that the task will only be executed upon the completion of 'dependency'
-void set_task_dependency(ID task, ID dependency);
+template <class F>
+bool parallel_for(uint32_t count, F&& f) { return parallel_for(count, 1, static_cast<F&&>(f)); }
 
-// Once the task is created and potential dependencies has been declared, the task is enqueued through this procedure.
-void enqueue_task(ID task);
+// ---------------------------------------------------------------------------------------------------------------------
+// Inside a job, and inside any parallel_for it issues (on any thread). Outside of a job: false, and nothing.
 
-// Call once per frame at the appropriate time to execute items queued up for the main thread. The main thread will be stalled and the tasks will be performed
-void execute_main_task_queue();
+bool cancelled();
+// The same, as a flag for an API which reads one (mdlib descriptors), to be read atomically (md_atomic_load32).
+// NULL outside of a job.
+const volatile int32_t* cancel_flag();
+// How far the job is, 0 to 1 (a negative value: unknown). start_for reports it by itself.
+void set_progress(float fraction);
 
-// This signals interruption for all running tasks
-void pool_interrupt_running_tasks();
+// ---------------------------------------------------------------------------------------------------------------------
+// Jobs
 
-// This halts the calling thread until all running tasks have completed
-void pool_wait_for_completion();
+enum class Status : uint8_t {
+    Idle,           // never started
+    Running,        // under way, or its on_main has yet to run
+    Completed,
+    Cancelled,      // asked to stop, whether before it started, while it ran or after: its results are not to be trusted
+};
 
-size_t pool_num_threads();
+struct JobState;
 
-// These do not really reflect the 'current' state since that is illdefined. But rather what the state was at the time of the function call.
-size_t pool_running_tasks(ID* out_id_arr, size_t id_arr_cap);
+class Job {
+public:
+    Job() = default;
+    ~Job();                 // cancel + wait: a job never outlives its owner. A pending on_main is dropped.
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
 
-// These are safe to call with an invalid id, in such case, they will just return some default value
-bool  task_is_running(ID);
-str_t task_label(ID);
-float task_fraction_complete(ID);
+    using Body      = std::function<void()>;
+    using RangeBody = std::function<void(uint32_t beg, uint32_t end)>;
+    using OnMain    = std::function<void(Status)>;
 
-// These are safe to call with an invalid id, and in such case, they do nothing
-void task_wait_for(ID);
-void task_interrupt(ID);
-void task_interrupt_and_wait_for(ID);
+    // An empty label keeps it out of the overlay. Restarting a job which is still under way cancels and waits for
+    // it first, and drops its pending on_main.
+    void start    (str_t label, Body body, OnMain on_main = {});
+    void start_for(str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main = {});
 
+    Status status() const;
+    bool   running() const { return status() == Status::Running; }
+    float  progress() const;    // 0 to 1, negative if unknown
+
+    void   cancel();
+    void   wait();              // for the work; an on_main still waits for run_main_queue
+    void   cancel_and_wait() { cancel(); wait(); }
+
+    // To recognize this job among the activities
+    uint64_t activity_id() const;
+
+private:
+    void release();
+    JobState* m_state = nullptr;
+};
+
+// Runs whatever happens: cancel_all does not reach it (it is for work which must be done, such as giving memory
+// back), and wait_all waits for it.
+void detach(str_t label, std::function<void()> body);
+
+// Every job at once: a load stops all work which reads what it is about to replace
+void cancel_all();
+void wait_all();
+
+// The main thread's follow-ups (Job on_main). Once per frame, and the only place they run.
+void run_main_queue();
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Activities: what the overlay shows
+
+constexpr size_t ACTIVITY_LABEL_SIZE = 64;
+
+struct Activity {
+    char                 label[ACTIVITY_LABEL_SIZE] = "";
+    std::atomic<float>   progress{-1.0f};   // negative: unknown
+    std::atomic<int32_t> cancel{0};         // set when it is asked to stop
+    bool                 cancellable = true;
+    Activity*            prev = nullptr;    // the list, under its lock
+    Activity*            next = nullptr;
+    bool                 listed = false;
+};
+
+void activity_begin(Activity* a, str_t label);
+void activity_end(Activity* a);
+
+struct ActivityInfo {
+    uint64_t id;
+    char     label[ACTIVITY_LABEL_SIZE];
+    float    progress;
+    bool     cancellable;
+};
+
+// A copy of what is under way: labels are not read while the work ends
+size_t activity_list(ActivityInfo* out, size_t cap);
+// Asks the activity to stop, if it is still under way
+void   activity_cancel(uint64_t id);
 
 }  // namespace task_system

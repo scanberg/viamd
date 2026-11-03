@@ -124,8 +124,7 @@ struct Contacts : viamd::EventHandler {
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
 
     // Computation
-    task_system::ID task = 0;
-    std::atomic<bool> busy = false;
+    task_system::Job task;
     Result result;
     Result pending;
     std::atomic<bool> pending_ready = false;
@@ -148,7 +147,7 @@ struct Contacts : viamd::EventHandler {
                 cutoff = 1.0f;
                 break;
             case viamd::EventType_ViamdShutdown:
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
                 md_system_state_free(&frame);
                 break;
             case viamd::EventType_ViamdFrameTick:
@@ -159,7 +158,8 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit:
                 // A new system: whatever was computed or loaded belongs to the old one
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
+                pending_ready = false;
                 result = Result{};
                 break;
             case viamd::EventType_ViamdSerialize: {
@@ -190,7 +190,7 @@ struct Contacts : viamd::EventHandler {
     }
 
     void compute() {
-        if (busy) return;
+        if (task.running()) return;
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& cur = app_state->mold.state;
         const size_t N = sys.atom.count;
@@ -234,8 +234,7 @@ struct Contacts : viamd::EventHandler {
         }
         pending.groups.resize(off.size() - 1);
 
-        busy = true;
-        task = task_system::create_pool_task(STR_LIT("Contacts"), [this]() {
+        task.start(STR_LIT("Contacts"), [this]() {
             const md_system_t& sys = app_state->mold.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;
@@ -287,10 +286,9 @@ struct Contacts : viamd::EventHandler {
             md_arena_allocator_destroy(arena);
             md_bitmask_free(&set_m);
             res.seconds = md_tick_to_seconds(md_tick_now() - t0);
-            pending_ready = true;
-            busy = false;
+            // A cancelled one (a new system) is for the old system: not taken
+            if (!task_system::cancelled()) pending_ready = true;
         });
-        task_system::enqueue_task(task);
     }
 
     void draw_window() {
@@ -323,6 +321,7 @@ struct Contacts : viamd::EventHandler {
                 ImGui::TextDisabled("Energy: not available, the system carries no non-bonded force field");
             }
 
+            const bool busy = task.running();
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(busy ? "Computing..." : "Compute for current frame")) compute();
             ImGui::EndDisabled();

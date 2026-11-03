@@ -1365,8 +1365,8 @@ struct ApplicationState {
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID evaluate = task_system::INVALID_ID;
+        task_system::Job backbone_computations;
+        task_system::Job evaluate;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -1775,7 +1775,7 @@ struct ApplicationState {
         ScriptVisTarget vis_target = {};
         ScriptVisJob* vis_running = nullptr;
         ScriptVisJob* vis_result = nullptr;
-        task_system::ID vis_task = task_system::INVALID_ID;
+        task_system::Job vis_task;
         const script::Drawing* vis_shown = nullptr;
 
         // Controls current subindex being visualized (if array)

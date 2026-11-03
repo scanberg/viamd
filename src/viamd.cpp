@@ -959,11 +959,11 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 }
 
 void interrupt_async_tasks(ApplicationState* state) {
-    task_system::pool_interrupt_running_tasks();
+    task_system::cancel_all();
 
     if (state->script.eval) script::eval_interrupt(state->script.eval);
 
-    task_system::pool_wait_for_completion();
+    task_system::wait_all();
 }
 
 static inline void clear_frame_cache(FrameCache* cache) {
@@ -1387,6 +1387,9 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             const size_t num_segments = data->mold.sys.protein_backbone.segment.count;
             md_attributes_t* attributes = &data->mold.sys.attributes;
 
+            // One still under way writes through the pointers replaced below: stopped first
+            data->tasks.backbone_computations.cancel_and_wait();
+
             // Both are checked against "<run>/time", published above, so a declaration whose
             // outermost extent disagrees is refused at the point the mistake is made rather than
             // surviving until something reads past the end of it.
@@ -1438,10 +1441,8 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
 
             // Launch work to compute the values
-            task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
-
-            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
+            uint64_t time = (uint64_t)md_tick_now();
+            data->tasks.backbone_computations.start_for(STR_LIT("Backbone Operations"), (uint32_t)num_frames, 1, [data](uint32_t range_beg, uint32_t range_end) {
                 const md_system_t* sys = &data->mold.sys;
 
                 md_temp_scope_t temp = md_temp_begin();
@@ -1456,7 +1457,7 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
                 if (!ex) {
                     return;
                 }
-                for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
+                for (uint32_t frame_idx = range_beg; frame_idx < range_end && !task_system::cancelled(); ++frame_idx) {
                     md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                     md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
 
@@ -1467,10 +1468,9 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
                     md_dssp_compute(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
                 }
                 md_system_extract_end(ex);
-            });
-
-            uint64_t time = (uint64_t)md_tick_now();
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
+            }, [data, t0 = time, num_frames](task_system::Status status) {
+                // Stopped part of the way (a load, or the next trajectory): the data is not for this one, or not all there
+                if (status != task_system::Status::Completed) return;
                 secondary_structure_render_denoise(
                     data->trajectory_data.secondary_structure_render.data,
                     data->trajectory_data.secondary_structure.data,
@@ -1499,9 +1499,6 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
                 data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 flag_all_representations_as_dirty(data);
             });
-
-            task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
-            task_system::enqueue_task(data->tasks.backbone_computations);
         }
 
         data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
@@ -1795,7 +1792,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
             if (state->script.eval) script::eval_interrupt(state->script.eval);
-            task_system::pool_wait_for_completion();
+            task_system::wait_all();
 
             const size_t num_atoms = state->mold.sys.atom.count;
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
@@ -3319,9 +3316,8 @@ size_t es_excited_state_count(const md_system_t& sys) {
 
 // The states' NTOs read once on a worker thread: what es_nto_ready keeps. A state's status is written by its task
 // and read by the frame. A task reads the system, so it ends before the system goes: free_system_data waits for
-// every pool task (interrupt_async_tasks) before this is freed. The task is unlabelled - a labelled one could be
-// cancelled from the async info panel before it ran, leaving its state under way for good - and es_nto_warming
-// is what the panel shows instead.
+// every pool task (interrupt_async_tasks) before this is freed. The task is detached, so nothing cancels it before
+// it has run (which would leave its state under way for good), and es_nto_warming is what the panel shows.
 struct NtoWarm {
     enum : uint8_t { NotBegun = 0, UnderWay = 1, Done = 2 };
     size_t count = 0;
@@ -3358,7 +3354,7 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
         if (w->under_way.fetch_add(1) == 0) w->t0 = md_tick_now();
         const md_system_t* sys_ptr = &state->mold.sys;
         const uint32_t idx = (uint32_t)state_idx;
-        task_system::ID task = task_system::create_pool_task(STR_LIT("##Natural transition orbitals"), [w, sys_ptr, idx]() {
+        task_system::detach({}, [w, sys_ptr, idx]() {
             // the weights: the reader computes the state's orbitals with them, and keeps all three
             const md_attribute_t* a = md_attributes_find(&sys_ptr->attributes, es_path::nto_lambda);
             if (a) {
@@ -3374,7 +3370,6 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
             w->under_way.fetch_sub(1);
             md_temp_trim();
         });
-        task_system::enqueue_task(task);
     }
     return false;
 }
@@ -4482,8 +4477,7 @@ static md_gto_gpu_dmat_t density_dmat_pattern(md_gpu_stream_t s, const md_system
 // read, which the representations' frames do not wait for (density_dmat_prepare). Made anew rather than
 // refilled, because the one in use may be read by an evaluation still on the GPU.
 struct DmatBuild {
-    task_system::ID task = task_system::INVALID_ID;
-    bool ran = false;
+    task_system::Job task;              // a cancelled one (a load) made nothing to be taken
     uint64_t key = 0;
     str_t path = {};                    // an es_path constant
     const md_system_t* sys = nullptr;
@@ -4497,7 +4491,7 @@ struct DmatBuild {
 static void dmat_build_destroy(DmatBuild* b, md_gpu_stream_t gl_stream) {
     // only once its task has ended (dmat_build_take)
     if (b->dmat) md_gto_gpu_dmat_destroy(gl_stream, b->dmat);
-    if (b->stream) md_gpu_stream_destroy(b->stream);    // of a task that never ran: nothing on it
+    if (b->stream) md_gpu_stream_destroy(b->stream);    // of a task cancelled before it ran: nothing on it
     free(b->xyz);
     delete b;
 }
@@ -4507,10 +4501,11 @@ static void dmat_build_destroy(DmatBuild* b, md_gpu_stream_t gl_stream) {
 static bool dmat_build_take(ApplicationState* state, bool wait) {
     DmatBuild* b = (DmatBuild*)state->mold.gpu_dmat_build;
     if (!b) return true;
-    if (wait) task_system::task_wait_for(b->task);
-    if (task_system::task_is_running(b->task)) return false;
+    if (wait) b->task.wait();
+    if (b->task.running()) return false;
     state->mold.gpu_dmat_build = nullptr;
-    if (b->ran && b->dmat) {
+    const bool made = b->task.status() == task_system::Status::Completed;
+    if (made && b->dmat) {
         gpu_density_jobs_settle(state);     // one not yet issued reads the dmat in use
         // its build is done on the GPU: the task waited for it before it ended (destroying its stream)
         if (state->mold.gpu_dmat) md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
@@ -4518,7 +4513,7 @@ static bool dmat_build_take(ApplicationState* state, bool wait) {
         state->mold.gpu_dmat_key = b->key;
         b->dmat = nullptr;
         MD_LOG_DEBUG("The density matrix of '" STR_FMT "' made in %.1f ms (on a worker thread)", STR_ARG(b->path), md_tick_to_milliseconds(md_tick_now() - b->t0));
-    } else if (b->ran) {
+    } else if (made) {
         state->mold.gpu_dmat_failed_key = b->key;     // made where it is asked for (density_dmat_ensure), which may fail as loudly
     }
     dmat_build_destroy(b, state->gpu_stream);
@@ -4568,8 +4563,7 @@ static bool density_dmat_prepare(ApplicationState* state, str_t density_path) {
         return true;    // made where it is asked for
     }
     MEMCPY(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
-    b->task = task_system::create_pool_task(STR_LIT("##Density matrix"), [b]() {
-        b->ran = true;
+    b->task.start({}, [b]() {
         b->dmat = density_dmat_pattern(b->stream, *b->sys, b->xyz);
         if (b->dmat && !density_dmat_fill(b->stream, b->dmat, *b->sys, b->path, b->num_cgtos)) {
             md_gto_gpu_dmat_destroy(b->stream, b->dmat);
@@ -4579,7 +4573,6 @@ static bool density_dmat_prepare(ApplicationState* state, str_t density_path) {
         b->stream = nullptr;
         md_temp_trim();     // the orbitals were read into this worker's temp arenas
     });
-    task_system::enqueue_task(b->task);
     state->mold.gpu_dmat_build = b;
     return false;
 }
@@ -5069,12 +5062,13 @@ void interpolate_system_state(ApplicationState* app) {
         payload.src_states[i] = &app->mold.frame_cache.states[slot_idx];
     }
 
-    // This holds the chain of tasks we are about to submit
-    task_system::ID tasks[16] = {0};
-    int num_tasks = 0;
+    // The steps in order, each spread over the pool where it is a range; the frame waits for them all (frame priority:
+    // the main thread never takes up background work while it does)
+    Payload* data = &payload;
 
-    task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frames"), num_frames_to_load,
-        [data = &payload, frame_cache_load_slot](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+    task_system::parallel_for(num_frames_to_load, 1,
+        [data = &payload, frame_cache_load_slot](uint32_t range_beg, uint32_t range_end) {
+            const uint32_t thread_num = task_system::thread_index();
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
                 int frame_idx = data->app->mold.frame_cache.frame_idx[slot_idx];
@@ -5095,19 +5089,17 @@ void interpolate_system_state(ApplicationState* app) {
         }
     );
 
-    tasks[num_tasks++] = load_task;
 
     switch (mode) {
         case InterpolationMode::Nearest: {
-            task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
+            {
                 data->dst_state->unitcell = data->src_states[0]->unitcell;
                 MEMCPY(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(vec3_t) * data->dst_state->num_atoms);
-            });
-            tasks[num_tasks++] = interp_task;
+            }
             break;
         }
         case InterpolationMode::Linear: {
-            task_system::ID iterp_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unitcell"), [data = &payload]() {
+            {
                 double x  = lerp(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->t);
                 double y  = lerp(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->t);
                 double z  = lerp(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->t);
@@ -5115,25 +5107,22 @@ void interpolate_system_state(ApplicationState* app) {
                 double xz = lerp(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->t);
                 double yz = lerp(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->t);
                 data->dst_state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-			});
+			}
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
+            task_system::parallel_for((uint32_t)num_atoms, grain_size, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                 size_t count = range_end - range_beg;
                 vec3_t* dst = data->dst_state->xyz + range_beg;
                 const vec3_t* src[2] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg };
 
                 md_util_interpolate_linear(dst, src, count, &data->dst_state->unitcell, data->t);
-            }, grain_size);
+            });
 
-			tasks[num_tasks++] = iterp_cell_task;
-            tasks[num_tasks++] = interp_coord_task;
 
             break;
         }
         case InterpolationMode::CubicSpline:
         case InterpolationMode::BSpline: {
-            task_system::ID iterp_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unitcell"), [data = &payload]() {
+            {
                 const md_unitcell_t* c[4] = { &data->src_states[0]->unitcell, &data->src_states[1]->unitcell, &data->src_states[2]->unitcell, &data->src_states[3]->unitcell };
                 const float* w = data->w;
                 double x  = w[0] * c[0]->x  + w[1] * c[1]->x  + w[2] * c[2]->x  + w[3] * c[3]->x;
@@ -5143,19 +5132,16 @@ void interpolate_system_state(ApplicationState* app) {
                 double xz = w[0] * c[0]->xz + w[1] * c[1]->xz + w[2] * c[2]->xz + w[3] * c[3]->xz;
                 double yz = w[0] * c[0]->yz + w[1] * c[1]->yz + w[2] * c[2]->yz + w[3] * c[3]->yz;
                 data->dst_state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-            });
+            }
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
+            task_system::parallel_for((uint32_t)num_atoms, grain_size, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                 size_t count = range_end - range_beg;
                 vec3_t* dst = data->dst_state->xyz + range_beg;
                 const vec3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
 
                 md_util_interpolate_cubic_weighted(dst, src, count, &data->dst_state->unitcell, data->w);
-            }, grain_size);
+            });
 
-            tasks[num_tasks++] = iterp_cell_task;
-            tasks[num_tasks++] = interp_coord_task;
             
             break;
         }
@@ -5167,21 +5153,19 @@ void interpolate_system_state(ApplicationState* app) {
     if (payload.dst_angle) {
         switch (mode) {
             case InterpolationMode::Nearest: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
+                {
                     const md_backbone_angles_t* src_angles[2] = {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
                     MEMCPY(data->dst_angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
-                });
+                }
 
-                tasks[num_tasks++] = angle_task;
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
+                task_system::parallel_for((uint32_t)sys.protein_backbone.segment.count, 1, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                     const md_backbone_angles_t* src_angles[2] = {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
@@ -5199,13 +5183,11 @@ void interpolate_system_state(ApplicationState* app) {
                     }
                 });
 
-                tasks[num_tasks++] = angle_task;
                 break;
             }
             case InterpolationMode::CubicSpline:
             case InterpolationMode::BSpline: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
+                task_system::parallel_for((uint32_t)sys.protein_backbone.segment.count, 1, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                     const md_backbone_angles_t* src_angles[4] = {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[0],
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
@@ -5231,7 +5213,6 @@ void interpolate_system_state(ApplicationState* app) {
                     }
                 });
 
-                tasks[num_tasks++] = angle_task;
                 break;
             }
             default:
@@ -5241,8 +5222,7 @@ void interpolate_system_state(ApplicationState* app) {
     }
 
     if (payload.dst_ss) {
-        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
+        task_system::parallel_for((uint32_t)num_segments, 1, [data = &payload, mode](uint32_t range_beg, uint32_t range_end) {
             // The state carries the secondary structure of the nearest frame as it was assigned. The cartoon blends the
             // denoised copy (a presentation smoothing, see secondary_structure_render) where it exists.
             const md_secondary_structure_t* label_nearest = data->app->trajectory_data.secondary_structure.data +
@@ -5332,22 +5312,12 @@ void interpolate_system_state(ApplicationState* app) {
             }
             }
         });
-        tasks[num_tasks++] = ss_task;
 
         // Isolated coils between matching structured segments are filled in, to reduce the noise during transitions.
         // A non temporal filtering step, after the blend above.
-        task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
+        {
             secondary_structure_weights_fill_isolated_coils(data->ss_weights, &data->app->mold.sys.protein_backbone);
-        });
-        tasks[num_tasks++] = ss_cleanup_task;
-    }
-
-    if (num_tasks > 0) {
-        for (int i = 1; i < num_tasks; ++i) {
-            task_system::set_task_dependency(tasks[i], tasks[i-1]);
         }
-        task_system::enqueue_task(tasks[0]);
-        task_system::task_wait_for(tasks[num_tasks - 1]);
     }
 
     // The weights are the renderer's input and nothing else's: straight to the GPU, from the temporary memory above
@@ -5571,12 +5541,9 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
 // Every atom of mold.state through M
 static void state_transform(ApplicationState* app, const mat4_t& M) {
     md_system_state_t& s = app->mold.state;
-    task_system::ID task = task_system::create_pool_task(STR_LIT("## Transform"), (uint32_t)s.num_atoms, [&s, M](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-        (void)thread_num;
+    task_system::parallel_for((uint32_t)s.num_atoms, 1024, [&s, M](uint32_t range_beg, uint32_t range_end) {
         mat4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
-    }, 1024);
-    task_system::enqueue_task(task);
-    task_system::task_wait_for(task);
+    });
 }
 
 bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool unwrap) {
@@ -5618,26 +5585,20 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     // a lattice vector. That differs from frame to frame for every atom crossing the trajectory's own
     // box, and for the whole system at once whenever the target's centre lands in another image.
     if (periodic && (pbc || fresh_turn)) {
-        task_system::ID task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)s.num_atoms, [&s](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
+        task_system::parallel_for((uint32_t)s.num_atoms, 1, [&s](uint32_t range_beg, uint32_t range_end) {
             md_util_pbc(s.xyz + range_beg, NULL, range_end - range_beg, &s.unitcell);
         });
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
     }
 
     if (unwrap) {
         const size_t num_molecules = md_system_molecule_count(&sys);
         if (num_molecules > 0) {
-            task_system::ID task = task_system::create_pool_task(STR_LIT("## Unwrap Molecules"), (uint32_t)num_molecules, [&s, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
+            task_system::parallel_for((uint32_t)num_molecules, 1, [&s, &sys](uint32_t range_beg, uint32_t range_end) {
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     const md_molecule_t mol = md_system_molecule(&sys, i);
                     md_util_unwrap_molecule(&s, &mol);
                 }
             });
-            task_system::enqueue_task(task);
-            task_system::task_wait_for(task);
         }
     }
 
@@ -5698,7 +5659,7 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
 void system_bonds_edit_begin(ApplicationState* app) {
     ASSERT(app);
     if (app->script.eval) script::eval_interrupt(app->script.eval);
-    task_system::pool_wait_for_completion();
+    task_system::wait_all();
 }
 
 void system_bonds_changed(ApplicationState* app, bool graph_edited) {
@@ -6956,7 +6917,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
         }
     }
 
-    const task_system::ID task = task_system::create_pool_task(STR_LIT("##Visualize script"), [job]() {
+    state->script.vis_task.start({}, [job]() {
         script::DrawCtx ctx = {
             .prog  = job->ir,
             .sys   = job->sys,
@@ -6976,10 +6937,8 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
             }
         }
     });
-    task_system::enqueue_task(task);
 
     state->script.vis_running = job;
-    state->script.vis_task = task;
 }
 
 void script_vis_begin_frame(ApplicationState* state) {
@@ -6994,7 +6953,7 @@ void script_vis_update(ApplicationState* state) {
     auto& sc = state->script;
 
     // A finished computation becomes the result
-    if (sc.vis_running && !task_system::task_is_running(sc.vis_task)) {
+    if (sc.vis_running && !sc.vis_task.running()) {
         vis_job_free(sc.vis_result);
         sc.vis_result = sc.vis_running;
         sc.vis_running = nullptr;
@@ -7056,7 +7015,7 @@ void script_vis_reset(ApplicationState* state) {
     ASSERT(state);
     auto& sc = state->script;
     if (sc.vis_running) {
-        task_system::task_wait_for(sc.vis_task);
+        sc.vis_task.wait();
         vis_job_free(sc.vis_running);
         sc.vis_running = nullptr;
     }
