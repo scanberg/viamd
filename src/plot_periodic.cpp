@@ -72,6 +72,8 @@ static int periodic_format(double value, char* buf, int size, void* user_data) {
     return snprintf(buf, size, "%g", v);
 }
 
+static void periodic_axis_ticks(ImAxis axis, const PeriodicView* view, double view_min, double view_max);
+
 void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImPlotAxisFlags flags) {
     ASSERT(view);
     const double len = periodic_view_length(*view);
@@ -97,7 +99,18 @@ void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImP
     ImPlot::SetupAxisLinks(axis, &view->min, &view->max);
     ImPlot::SetupAxisZoomConstraints(axis, len * 1.0e-4, len);
     ImPlot::SetupAxisFormat(axis, periodic_format, view);
+    periodic_axis_ticks(axis, view, view->min, view->max);
+}
 
+void periodic_axis_setup_free(ImAxis axis, const char* label, const PeriodicView* view, double min, double max, ImPlotAxisFlags flags) {
+    ASSERT(view);
+    ImPlot::SetupAxis(axis, label, flags | ImPlotAxisFlags_NoMenus);
+    ImPlot::SetupAxisFormat(axis, periodic_format, (void*)view);
+    periodic_axis_ticks(axis, view, min, max);
+}
+
+static void periodic_axis_ticks(ImAxis axis, const PeriodicView* view, double view_min, double view_max) {
+    const double len = periodic_view_length(*view);
     // Ticks a whole fraction of the period apart, counted from where the values are given: ImPlot's own, at 50 apart,
     // would read 150, -160, -110 around the end of a dihedral's period. As far apart as the plot had room for last frame.
     const ImPlotPlot* plot = ImPlot::GetCurrentPlot();
@@ -107,7 +120,7 @@ void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImP
     const double min_spacing = ImGui::GetFontSize() * (vertical ? 2.5 : 4.0);
     // The divisors of 360: a step of a whole number of degrees, and of a period of any other length the same fractions
     static const int divisions[] = {360, 180, 120, 90, 72, 60, 45, 40, 36, 30, 24, 20, 18, 12, 10, 8, 6, 4, 3, 2, 1};
-    const double view_span = view->max - view->min;
+    const double view_span = view_max - view_min;
     double step = len;
     for (int d : divisions) {
         const double s = len / d;
@@ -116,8 +129,8 @@ void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImP
             break;
         }
     }
-    const double first = view->period.beg + ceil ((view->min - view->period.beg) / step - 1.0e-9) * step;
-    const double last  = view->period.beg + floor((view->max - view->period.beg) / step + 1.0e-9) * step;
+    const double first = view->period.beg + ceil ((view_min - view->period.beg) / step - 1.0e-9) * step;
+    const double last  = view->period.beg + floor((view_max - view->period.beg) / step + 1.0e-9) * step;
     const int num_ticks = (int)floor((last - first) / step + 0.5) + 1;
     if (num_ticks >= 2) {
         ImPlot::SetupAxisTicks(axis, first, last, num_ticks);

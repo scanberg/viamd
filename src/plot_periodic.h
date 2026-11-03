@@ -62,6 +62,10 @@ void periodic_view_cut_least_populated(PeriodicView* view, const float* density,
 // and SetupFinish, in place of ImPlot::SetupAxis.
 void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImPlotAxisFlags flags);
 
+// Sets up axis as one of the view's values over [min, max], of the caller's own: labelled and ticked as periodic_axis_setup
+// does, but not linked to the view nor kept within a period (what is past the cut repeats, drawn by the caller). Between
+// BeginPlot and SetupFinish, in place of ImPlot::SetupAxis.
+void periodic_axis_setup_free(ImAxis axis, const char* label, const PeriodicView* view, double min, double max, ImPlotAxisFlags flags);
 // The menu of a periodic axis, opened by right-clicking it: where to cut the circle. Between SetupFinish and EndPlot.
 // True when the cut is asked to go where the values are least populated, which only the caller can find out: it is
 // expected to call periodic_view_cut_least_populated.

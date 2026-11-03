@@ -26,8 +26,11 @@
 // fewer independent ones: their effective number (Bretherton et al. 1999, from the lag-1 autocorrelations of X and Y over
 // the times, members not counted apart) gives the 95 % interval of Pearson's r, and what is not told from no correlation
 // is dimmed. The pairing and these statistics are in correlation_core (tested on their own). An axis of periodic
-// values is periodic: it pans around the circle, cut where the user likes (its menu), as the other plots of such values
-// are (plot_periodic.h). Distributions (script properties over the frames) are correlated with each other bin by bin,
+// values is periodic, as Ramachandran's: the points and densities repeat a period apart, past the edges of the turn
+// where it is cut (thin lines). The cut is shared with the timelines of such values (plot_periodic.h; its menu, here or
+// there, moves it, and the view turns with it), but not the view: panned or zoomed here, they stay where they are. Out
+// to two turns along a periodic axis; of two alike (angles against angles), of equal scales, out to a turn along the
+// shorter side. The labels of the axes are within the plot, as Ramachandran's. Distributions (script properties over the frames) are correlated with each other bin by bin,
 // over their common range, of the layer's frames. The density of the samples is estimated off the main thread
 // (density_map.h), over a bounded domain of their own extent (a period along a periodic axis, around which it wraps),
 // smoothed with a gaussian of a fraction of it.
@@ -42,7 +45,8 @@
 //   shift-drag / -click    selects the atoms the series of the points boxed are of (script properties), as the
 //                          Ramachandran plot selects residues; with the right button deselects; a right click on nothing
 //                          clears the selection
-//   double-click           fits the view (along a periodic axis, a whole turn)
+//   double-click           fits the view: along a periodic axis, a whole turn from the cut; along another, all but the
+//                          farthest 0.5 % of the samples either way
 //   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
 //                          layer, its frames
 
@@ -457,6 +461,7 @@ struct Correlation : viamd::EventHandler {
     // How it is shown
     bool show_sidebar = true;
     bool show_legend = true;
+    bool show_ticks = true;
     bool show_lag = false;          // The correlation against the lag, under the plot
     int  max_lag = 50;              // Frames, either way
     float lag_frac = 0.3f;          // Of the height, the lag's plot
@@ -470,6 +475,14 @@ struct Correlation : viamd::EventHandler {
     PeriodicView* axis_view[2] = {};
     std::vector<DensityMapDraw> draw_buf;   // Of render_canvas
     uint64_t axes_key = 0;          // Of what the axes are: the densities are over a periodic domain along those that are
+    // The cut of each periodic axis as last seen (sync_cuts): moved elsewhere (its menu, a timeline turning the circle),
+    // the view turns with it
+    const PeriodicView* cut_view[2] = {};
+    double cut_seen[2] = {};
+    ImPlotRect plot_lim = ImPlotRect(0, 1, 0, 1);   // As drawn this frame: where the copies of the points are
+    ImVec2 plot_margin = ImVec2(0, 0);              // A few pixels, in plot units: points just past an edge show
+    float plot_aspect = 0.0f;       // Of the plot last frame: what a view of equal axes is fitted to
+    bool  view_fitted = false;      // And not moved since: fitted again when the plot changes shape (of equal axes)
     bool  fit_view = true;          // To the samples of the layers shown, next frame
     uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
 
@@ -772,6 +785,7 @@ struct Correlation : viamd::EventHandler {
     void reset_settings() {
         show_sidebar = true;
         show_legend = true;
+        show_ticks = true;
         show_lag = false;
         max_lag = 50;
         lag_frac = 0.3f;
@@ -1651,6 +1665,7 @@ struct Correlation : viamd::EventHandler {
         viamd::write_section_header(state, STR_LIT("Correlation"));
         viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, STR_LIT("ShowLegend"), show_legend);
+        viamd::write_bool(state, STR_LIT("ShowTicks"), show_ticks);
         viamd::write_bool(state, STR_LIT("ShowLag"), show_lag);
         viamd::write_int(state, STR_LIT("MaxLag"), max_lag);
         viamd::write_flt(state, STR_LIT("LagHeight"), lag_frac);
@@ -1700,6 +1715,8 @@ struct Correlation : viamd::EventHandler {
                 viamd::extract_bool(show_sidebar, arg);
             } else if (str_eq_cstr(ident, "ShowLegend")) {
                 viamd::extract_bool(show_legend, arg);
+            } else if (str_eq_cstr(ident, "ShowTicks")) {
+                viamd::extract_bool(show_ticks, arg);
             } else if (str_eq_cstr(ident, "ShowLag")) {
                 viamd::extract_bool(show_lag, arg);
             } else if (str_eq_cstr(ident, "MaxLag")) {
@@ -2111,11 +2128,33 @@ struct Correlation : viamd::EventHandler {
         for (int p = 0; p < l.num_pairs; ++p) off[p + 1] = off[p] + (size_t)MAX(l.pairs[p].members, 1);
     }
 
-    // Where a point is on the plot: along a periodic axis, on the turn of the circle the axis shows
-    ImVec2 point_px(double x, double y) const {
-        if (const PeriodicView* v = axis_view[0]) x = periodic_wrap(x, v->min, periodic_view_length(*v));
-        if (const PeriodicView* v = axis_view[1]) y = periodic_wrap(y, v->min, periodic_view_length(*v));
-        return ImPlot::PlotToPixels(x, y);
+    double axis_length(int a) const {
+        return axis_view[a] ? periodic_view_length(*axis_view[a]) : 0.0;
+    }
+
+    // Both axes of one circle (angles against angles): of equal scales, as Ramachandran's
+    bool equal_axes() const {
+        return axis_view[0] && axis_view[1] && axis_length(0) == axis_length(1) && strcmp(axis_view[0]->unit, axis_view[1]->unit) == 0;
+    }
+
+    // Where a point is on the plot: along a periodic axis, at each of its copies a period apart within the view (or just
+    // past its edges: a point there shows in part)
+    template <typename F>
+    void for_images(double x, double y, F&& fn) const {
+        constexpr int MAX_IMAGES = 16;
+        const double lx = axis_length(0), ly = axis_length(1);
+        int nx = 1, ny = 1;
+        if (lx > 0.0) {
+            x = periodic_wrap(x, plot_lim.X.Min - plot_margin.x, lx);
+            nx = CLAMP((int)floor((plot_lim.X.Max + plot_margin.x - x) / lx) + 1, 0, MAX_IMAGES);
+        }
+        if (ly > 0.0) {
+            y = periodic_wrap(y, plot_lim.Y.Min - plot_margin.y, ly);
+            ny = CLAMP((int)floor((plot_lim.Y.Max + plot_margin.y - y) / ly) + 1, 0, MAX_IMAGES);
+        }
+        for (int i = 0; i < nx; ++i) {
+            for (int j = 0; j < ny; ++j) fn(ImPlot::PlotToPixels(x + i * lx, y + j * ly));
+        }
     }
 
     // Cuts the circle of axis a where the points of the layers shown are least populated
@@ -2156,14 +2195,15 @@ struct Correlation : viamd::EventHandler {
                 const float r2 = r * r;
                 const size_t n = md_array_size(l.sx);
                 for (size_t k = 0; k < n; k += l.point_stride) {
-                    const ImVec2 p = point_px(l.sx[k], l.sy[k]);
-                    const float dx = p.x - mouse.x;
-                    const float dy = p.y - mouse.y;
-                    const float d2 = dx * dx + dy * dy;
-                    if (d2 < best && d2 < r2) {
-                        best = d2;
-                        hover = Hover{ i, k };
-                    }
+                    for_images(l.sx[k], l.sy[k], [&](ImVec2 p) {
+                        const float dx = p.x - mouse.x;
+                        const float dy = p.y - mouse.y;
+                        const float d2 = dx * dx + dy * dy;
+                        if (d2 < best && d2 < r2) {
+                            best = d2;
+                            hover = Hover{ i, k };
+                        }
+                    });
                 }
             }
         }
@@ -2193,7 +2233,10 @@ struct Correlation : viamd::EventHandler {
                     for (size_t k = 0; k < n; k += l.point_stride) {
                         const int p = l.spair[k];
                         const size_t s = off[p] + MIN((size_t)l.smember[k], off[p + 1] - off[p] - 1);
-                        if (seen[s] || !r.Contains(point_px(l.sx[k], l.sy[k]))) continue;
+                        if (seen[s]) continue;
+                        bool in = false;
+                        for_images(l.sx[k], l.sy[k], [&](ImVec2 q) { in |= r.Contains(q); });
+                        if (!in) continue;
                         seen[s] = 1;
                         add_member_atoms(highlight_mask, l, p, l.smember[k]);
                     }
@@ -2215,9 +2258,11 @@ struct Correlation : viamd::EventHandler {
             for (size_t k = 0; k < n; k += l.point_stride) {
                 ImVec4 c = point_color(l, k);
                 c.w *= l.opacity;
-                const ImVec2 p = point_px(l.sx[k], l.sy[k]);
-                if (many) density_map_mark(dl, p, r, DensityMapMark_Square, ImGui::ColorConvertFloat4ToU32(c));
-                else density_map_mark(dl, p, r + 1.0f, DensityMapMark_Disc, ImGui::ColorConvertFloat4ToU32(c));
+                const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
+                for_images(l.sx[k], l.sy[k], [&](ImVec2 p) {
+                    if (many) density_map_mark(dl, p, r, DensityMapMark_Square, col);
+                    else density_map_mark(dl, p, r + 1.0f, DensityMapMark_Disc, col);
+                });
             }
         }
         // Where the frame shown is among the points over frames, and what is hovered
@@ -2229,7 +2274,7 @@ struct Correlation : viamd::EventHandler {
             const size_t n = md_array_size(l.sx);
             for (size_t k = 0; k < n; ++k) {
                 if (l.sframe[k] != frame_cur) continue;
-                density_map_mark(dl, point_px(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220));
+                for_images(l.sx[k], l.sy[k], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220)); });
             }
         }
         // Rings around the points whose atoms are selected or highlighted, of every layer
@@ -2256,14 +2301,17 @@ struct Correlation : viamd::EventHandler {
                         if (any_highlighted && member_atoms_in(highlight_mask, l, p, m)) st |= 2;
                         else if (any_selected && member_atoms_in(selection_mask, l, p, m)) st |= 1;
                     }
-                    if (st & 3) density_map_mark(dl, point_px(l.sx[k], l.sy[k]), r + 1.0f, DensityMapMark_Ring, (st & 2) ? hl_col : sel_col);
+                    if (st & 3) {
+                        const ImU32 col = (st & 2) ? hl_col : sel_col;
+                        for_images(l.sx[k], l.sy[k], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, col); });
+                    }
                 }
             }
         }
         if (hover.layer >= 0) {
             const Layer& l = layers[hover.layer];
             const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
-            density_map_mark(dl, point_px(l.sx[hover.idx], l.sy[hover.idx]), r + 1.0f, DensityMapMark_Ring, ring);
+            for_images(l.sx[hover.idx], l.sy[hover.idx], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, ring); });
         }
         density_map_marks_end(dl);
 
@@ -2338,38 +2386,146 @@ struct Correlation : viamd::EventHandler {
         return find_layer(selected_layer);
     }
 
-    // The view around the samples of the layers on the plot. Along a periodic axis, a whole turn of the circle, where it
-    // is cut.
-    void fit_to_layers() {
+    // The cut of each periodic axis, shared with the timelines of its values: one asked for (its menu, here or there) is
+    // applied, and the view turns along with where the cut has gone. The view is the plot's own otherwise: panned or
+    // zoomed here, the timelines stay where they are.
+    void sync_cuts() {
         for (int a = 0; a < 2; ++a) {
-            if (PeriodicView* v = axis_view[a]) v->max = v->min + periodic_view_length(*v);
-        }
-        bool any = false;
-        double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-        for (int i = 0; i < num_layers; ++i) {
-            const Layer& l = layers[i];
-            if (!layer_on_axes(l) || !l.data_valid) continue;
-            if (!any) {
-                x0 = l.x_min; x1 = l.x_max; y0 = l.y_min; y1 = l.y_max;
-                any = true;
-            } else {
-                x0 = MIN(x0, (double)l.x_min); x1 = MAX(x1, (double)l.x_max);
-                y0 = MIN(y0, (double)l.y_min); y1 = MAX(y1, (double)l.y_max);
+            PeriodicView* v = axis_view[a];
+            if (v != cut_view[a]) {
+                cut_view[a] = v;
+                if (v) cut_seen[a] = v->min;
+                fit_view = true;
+                continue;
+            }
+            if (!v) continue;
+            const double len = periodic_view_length(*v);
+            if (v->has_pending) {
+                double span = v->max - v->min;
+                if (!(span > 0.0) || span > len) span = len;
+                v->min = v->pending_min;
+                v->max = v->pending_min + span;
+                v->has_pending = false;
+            }
+            // By whole turns, nothing moves: the timelines bring their cut back into the period so
+            double d = v->min - cut_seen[a];
+            d -= len * floor(d / len + 0.5);
+            cut_seen[a] = v->min;
+            if (fabs(d) > len * 1e-9) {
+                ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+                r.Min += d;
+                r.Max += d;
             }
         }
+    }
+
+    // As the plot pans and zooms it. Along a periodic axis, back about its domain once a period away from it; of equal
+    // axes, the shorter side within [1/36, 1] of the period, the other in proportion (as Ramachandran's).
+    void constrain_view() {
+        if (viewrect.X.Max < viewrect.X.Min) ImSwap(viewrect.X.Min, viewrect.X.Max);
+        if (viewrect.Y.Max < viewrect.Y.Min) ImSwap(viewrect.Y.Min, viewrect.Y.Max);
+        if (equal_axes()) {
+            const double len = axis_length(0);
+            const double mid_x = (viewrect.X.Min + viewrect.X.Max) * 0.5;
+            const double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
+            double w = MAX(viewrect.Size().x, len * 1e-6);
+            double h = MAX(viewrect.Size().y, len * 1e-6);
+            const double short_side = MIN(w, h);
+            const double scl = short_side > len ? len / short_side : short_side < len / 36.0 ? (len / 36.0) / short_side : 1.0;
+            w *= scl;
+            h *= scl;
+            viewrect.X = ImPlotRange(mid_x - w * 0.5, mid_x + w * 0.5);
+            viewrect.Y = ImPlotRange(mid_y - h * 0.5, mid_y + h * 0.5);
+        }
+        for (int a = 0; a < 2; ++a) {
+            const PeriodicView* v = axis_view[a];
+            if (!v) continue;
+            const double len = periodic_view_length(*v);
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            const double off = (r.Min + r.Max) * 0.5 - (v->min + len * 0.5);
+            if (fabs(off) > len) {
+                const double s = len * floor(off / len + 0.5);
+                r.Min -= s;
+                r.Max -= s;
+            }
+        }
+    }
+
+    // The zoom of the wheel this frame, of equal axes, so that the view ends exactly at its limits rather than going past
+    // them to be pulled back after (as Ramachandran's limit_zoom_rate, of which this is the same solved for any period)
+    void limit_zoom_rate(float* rate) const {
+        if (!equal_axes()) return;
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel == 0.0f || *rate <= 0.0f) return;
+        const double len = axis_length(0);
+        const double short_side = MIN(viewrect.Size().x, viewrect.Size().y);
+        if (short_side <= 0.0) return;
+        double r = *rate;
+        if (wheel < 0.0f) {
+            const double f = len / short_side;
+            r = f <= 1.0 + 1e-9 ? 0.0 : MIN(r, 2.0 * (sqrt(f) - 1.0));
+        } else {
+            const double f = (len / 36.0) / short_side;
+            const double q = f >= 1.0 - 1e-9 ? 0.0 : 1.0 - sqrt(f);
+            r = q <= 0.0 ? 0.0 : q < 0.25 ? MIN(r, 2.0 * q / (1.0 - 4.0 * q)) : r;
+        }
+        *rate = (float)r;
+    }
+
+    // The view around the samples of the layers on the plot: along a linear axis, all but the farthest 0.5 % either way
+    // (a few outliers do not shrink the rest to a corner); along a periodic one, a whole turn from where it is cut. Of
+    // equal axes, the turn along the shorter side of the plot.
+    void fit_to_layers() {
+        bool any = false;
+        for (int i = 0; i < num_layers; ++i) any |= layer_on_axes(layers[i]) && layers[i].data_valid;
         // Fitted once there are samples
         if (!any) return;
-        auto pad = [](double* lo, double* hi) {
-            double r = *hi - *lo;
-            if (!(r > 0.0)) r = MAX(fabs(*lo), 1.0) * 0.1;
-            *lo -= r * 0.05;
-            *hi += r * 0.05;
-        };
-        pad(&x0, &x1);
-        pad(&y0, &y1);
-        if (!axis_view[0]) viewrect.X = ImPlotRange(x0, x1);
-        if (!axis_view[1]) viewrect.Y = ImPlotRange(y0, y1);
+        std::vector<float> pool;
+        for (int a = 0; a < 2; ++a) {
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            if (const PeriodicView* v = axis_view[a]) {
+                const double len = periodic_view_length(*v);
+                double span = len;
+                if (equal_axes() && plot_aspect > 0.0f) {
+                    span = a == 0 ? (plot_aspect >= 1.0f ? len * plot_aspect : len) : (plot_aspect >= 1.0f ? len : len / plot_aspect);
+                }
+                const double mid = v->min + len * 0.5;
+                r = ImPlotRange(mid - span * 0.5, mid + span * 0.5);
+                continue;
+            }
+            pool.clear();
+            double lo = DBL_MAX, hi = -DBL_MAX;
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!layer_on_axes(l) || !l.data_valid) continue;
+                lo = MIN(lo, (double)(a == 0 ? l.x_min : l.y_min));
+                hi = MAX(hi, (double)(a == 0 ? l.x_max : l.y_max));
+                const float* v = a == 0 ? l.sx : l.sy;
+                const size_t n = md_array_size(a == 0 ? l.sx : l.sy);
+                const size_t stride = MAX((size_t)1, n / 100000);
+                for (size_t k = 0; k < n; k += stride) {
+                    if (isfinite(v[k])) pool.push_back(v[k]);
+                }
+            }
+            if (pool.size() >= 20) {
+                const size_t n = pool.size();
+                const size_t i0 = (size_t)(n * 0.005);
+                const size_t i1 = MIN(n - 1, (size_t)(n * 0.995));
+                std::nth_element(pool.begin(), pool.begin() + i0, pool.end());
+                const double p0 = pool[i0];
+                std::nth_element(pool.begin(), pool.begin() + i1, pool.end());
+                const double p1 = pool[i1];
+                if (p1 > p0) {
+                    lo = p0;
+                    hi = p1;
+                }
+            }
+            double w = hi - lo;
+            if (!(w > 0.0)) w = MAX(fabs(lo), 1.0) * 0.1;
+            r = ImPlotRange(lo - w * 0.05, hi + w * 0.05);
+        }
         fit_view = false;
+        view_fitted = true;
     }
 
     // While a series is dragged: the strips along the axes it is dropped on (and the axes themselves)
@@ -2404,7 +2560,7 @@ struct Correlation : viamd::EventHandler {
         const char* hovered_reason = nullptr;
         for (int a = 0; a < 2; ++a) {
             const bool ok = ok_axis[a];
-            const bool inside = rects[a].Contains(ImGui::GetMousePos()) || ImPlot::IsAxisHovered(axes[a]);
+            const bool inside = rects[a].Contains(ImGui::GetMousePos()) || ImPlot::IsAxisHovered(axes[a]) || ImPlot::IsInsetAxisHovered(axes[a]);
             if (inside && !ok) hovered_reason = reasons[a];
             const ImVec4 c = ok ? ImVec4(0.35f, 0.75f, 1.0f, inside ? 0.30f : 0.12f) : ImVec4(1.0f, 0.4f, 0.4f, inside ? 0.25f : 0.12f);
             dl->AddRectFilled(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(c), 4.0f);
@@ -2439,8 +2595,9 @@ struct Correlation : viamd::EventHandler {
 
     // The pairs of the layer the axes are of, with their correlations, in the corner: of a population, all of its members
     // then each
-    void draw_legend(const Layer& l, ImVec2 pos) {
-        if (!l.data_valid || l.num_pairs == 0) return;
+    // Its size, from pos: what the labels of the axes keep clear of
+    ImVec2 draw_legend(const Layer& l, ImVec2 pos) {
+        if (!l.data_valid || l.num_pairs == 0) return ImVec2(0, 0);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         const float lh = ImGui::GetTextLineHeight();
         const float pad = 6.0f;
@@ -2483,20 +2640,33 @@ struct Correlation : viamd::EventHandler {
             dl->AddText(ImVec2(x + pad + lh * 0.6f, y), stats[i]->significant() ? IM_COL32(255, 255, 255, 230) : IM_COL32(255, 255, 255, 120), lines[i]);
         }
         ImPlot::PopPlotClipRect();
+        return ImVec2(p1.x - pos.x + 3, p1.y - pos.y + 3);
     }
 
     void draw_plot() {
+        sync_cuts();
+        const bool equal = equal_axes();
+        // Of equal axes, fitted to the shape of the plot of the last frame
+        const float aspect_before = plot_aspect;
         if (fit_view) fit_to_layers();
+        const ImPlotRect view_before = viewrect;
 
-        constexpr ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+        const ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | (equal ? ImPlotFlags_Equal : 0);
+        // No labels outside the plot: they are drawn within it (DrawInsetAxes), as Ramachandran's
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlot::InsetAxisFlags;
         // Shift is for selecting: the plot does not pan or zoom meanwhile
         ImPlotInputMap& input = ImPlot::GetInputMap();
         const ImPlotInputMap saved_input = input;
         input.OverrideMod = ImGuiMod_Shift;
+        limit_zoom_rate(&input.ZoomRate);
+        // Edge to edge: the labels are within the plot
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2));
+        ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
         // Opaque, whatever the windows are: what is behind the window is not to show through the data
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         if (!ImPlot::BeginPlot("##correlation", ImVec2(-1, -1), flags)) {
             ImPlot::PopStyleColor();
+            ImPlot::PopStyleVar(2);
             input = saved_input;
             return;
         }
@@ -2506,15 +2676,19 @@ struct Correlation : viamd::EventHandler {
             axis_label(xl, sizeof(xl), *al, 0);
             axis_label(yl, sizeof(yl), *al, 1);
         }
-        if (axis_view[0]) periodic_axis_setup(ImAxis_X1, xl, axis_view[0], 0);
-        else {
-            ImPlot::SetupAxis(ImAxis_X1, xl);
-            ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
-        }
-        if (axis_view[1]) periodic_axis_setup(ImAxis_Y1, yl, axis_view[1], 0);
-        else {
-            ImPlot::SetupAxis(ImAxis_Y1, yl);
-            ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
+        const ImAxis axes[2] = { ImAxis_X1, ImAxis_Y1 };
+        const char* labels[2] = { xl, yl };
+        for (int a = 0; a < 2; ++a) {
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            if (const PeriodicView* v = axis_view[a]) {
+                periodic_axis_setup_free(axes[a], labels[a], v, r.Min, r.Max, axis_flags);
+                // Out to two turns of the circle (of equal axes, constrain_view has it)
+                const double len = periodic_view_length(*v);
+                if (!equal) ImPlot::SetupAxisZoomConstraints(axes[a], len / 36.0, len * 2.0);
+            } else {
+                ImPlot::SetupAxis(axes[a], labels[a], axis_flags);
+            }
+            ImPlot::SetupAxisLinks(axes[a], &r.Min, &r.Max);
         }
         ImPlot::SetupFinish();
         if (axis_view[0] && periodic_axis_popup(ImAxis_X1, axis_view[0])) cut_least_populated(0);
@@ -2522,13 +2696,42 @@ struct Correlation : viamd::EventHandler {
 
         const ImVec2 pos = ImPlot::GetPlotPos();
         const ImVec2 psize = ImPlot::GetPlotSize();
+        if (psize.x > 1.0f && psize.y > 1.0f) plot_aspect = psize.x / psize.y;
+        plot_lim = ImPlot::GetPlotLimits();
+        plot_margin = ImVec2(psize.x > 1.0f ? (float)(plot_lim.Size().x * 12.0 / psize.x) : 0.0f,
+                             psize.y > 1.0f ? (float)(plot_lim.Size().y * 12.0 / psize.y) : 0.0f);
 
         // The densities, composited, under everything else
         density_map_plot_canvas(render_canvas());
 
+        // The edges of the turns of the circle, where the view goes past them: at the cut
+        {
+            ImDrawList* dl = ImPlot::GetPlotDrawList();
+            ImPlot::PushPlotClipRect();
+            const ImU32 edge = ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.5f);
+            for (int a = 0; a < 2; ++a) {
+                const PeriodicView* v = axis_view[a];
+                if (!v) continue;
+                const double len = periodic_view_length(*v);
+                const ImPlotRange& r = a == 0 ? plot_lim.X : plot_lim.Y;
+                for (double e = periodic_wrap(v->min, r.Min, len); e < r.Max; e += len) {
+                    if (e <= r.Min) continue;
+                    if (a == 0) {
+                        const float x = ImPlot::PlotToPixels(e, 0).x;
+                        dl->AddLine(ImVec2(x, pos.y), ImVec2(x, pos.y + psize.y), edge, 1.0f);
+                    } else {
+                        const float y = ImPlot::PlotToPixels(0, e).y;
+                        dl->AddLine(ImVec2(pos.x, y), ImVec2(pos.x + psize.x, y), edge, 1.0f);
+                    }
+                }
+            }
+            ImPlot::PopPlotClipRect();
+        }
+
         draw_points(ImPlot::IsPlotHovered());
 
-        if (show_legend && al) draw_legend(*al, pos);
+        ImVec2 legend_size = ImVec2(0, 0);
+        if (show_legend && al) legend_size = draw_legend(*al, pos);
 
         // What is left out of the points shown, and densities being found
         {
@@ -2569,12 +2772,30 @@ struct Correlation : viamd::EventHandler {
             ImPlot::EndDragDropTarget();
         }
 
+        if (psize.x > 120.0f && psize.y > 120.0f) {
+            ImPlot::DrawInsetAxes(show_ticks ? 0 : ImPlotInsetFlags_NoTickLabels, legend_size, 0.78f);
+        }
+
         // A double-click fits the view, as the plots have it
         if (ImPlot::FitThisFrame()) fit_view = true;
 
         ImPlot::EndPlot();
         ImPlot::PopStyleColor();
+        ImPlot::PopStyleVar(2);
         input = saved_input;
+
+        // Panned or zoomed: no longer fitted. Fitted, of equal axes, and changed shape: fitted again.
+        if (view_fitted) {
+            const double tol_x = 1e-6 * MAX(view_before.Size().x, 1e-12);
+            const double tol_y = 1e-6 * MAX(view_before.Size().y, 1e-12);
+            const bool moved = fabs(viewrect.X.Min - view_before.X.Min) > tol_x || fabs(viewrect.X.Max - view_before.X.Max) > tol_x ||
+                               fabs(viewrect.Y.Min - view_before.Y.Min) > tol_y || fabs(viewrect.Y.Max - view_before.Y.Max) > tol_y;
+            const bool reshaped = fabsf(plot_aspect - aspect_before) > 1e-3f;
+            if (equal && reshaped) fit_view = true;
+            else if (moved) view_fitted = false;
+        }
+        if (equal && aspect_before == 0.0f) fit_view = true;
+        constrain_view();
     }
 
     // Of the selected layer's series, first in the list
@@ -2738,6 +2959,7 @@ struct Correlation : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Legend", &show_legend);
+            ImGui::Checkbox("Tick labels", &show_ticks);
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
             ImGui::SliderInt("Lag up to", &max_lag, 1, MAX_LAG, "%d frames", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
             ImGui::SetItemTooltip("How far either way the correlation against the lag goes");
