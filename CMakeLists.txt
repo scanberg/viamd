@@ -124,7 +124,6 @@ add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
-add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 add_subdirectory(ext/md4c)
 add_subdirectory(ext/imgui_md)
@@ -465,7 +464,6 @@ target_link_libraries(viamd
     enkiTS
     ImGuiColorTextEdit
     implot
-    atomic_queue
     imgui_notify
     imgui_md
     ${VIAMD_EXTRA_LIBS}
