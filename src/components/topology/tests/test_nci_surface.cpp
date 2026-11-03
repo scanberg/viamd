@@ -967,3 +967,35 @@ UTEST(nci_surface, reference_map_levels_counts_and_dominant_image) {
     EXPECT_FALSE(nci_surface::build_reference_map(&map, data, nci_surface::reference_default_fractions));
     EXPECT_FALSE(map.valid);
 }
+
+UTEST(nci_surface, reference_subfamilies_nest_in_their_categories) {
+    const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
+    ASSERT_TRUE(map.valid);
+    ASSERT_FALSE(map.subfamilies.empty());
+    const nci_surface::ReferenceData& data = nci_surface::reference_data();
+    for (size_t i = 0; i < map.subfamilies.size(); ++i) {
+        const nci_surface::ReferenceCategory& sub = map.subfamilies[i];
+        ASSERT_LT(sub.category, map.categories.size());
+        EXPECT_TRUE(sub.valid);
+        EXPECT_GE(sub.systems, 5);
+        EXPECT_TRUE(sub.overlap > 0.0f && sub.overlap <= 1.0f);
+        // Somewhere it is at its deepest level, and there its category's subfamilies share the point
+        bool found = false;
+        for (int y = 0; y < data.bins && !found; ++y) for (int x = 0; x < data.bins && !found; ++x) {
+            const float rho = data.rho_extent * (2.0f * (x + 0.5f) / data.bins - 1.0f);
+            const float s = data.s_max * (y + 0.5f) / data.bins;
+            if (nci_surface::reference_subfamily_level(map, i, rho, s) < (int)map.fractions.size()) continue;
+            found = true;
+            const std::vector<float> shares = nci_surface::reference_subfamily_shares(map, sub.category, rho, s);
+            ASSERT_EQ(shares.size(), map.subfamilies.size());
+            float sum = 0.0f;
+            for (size_t j = 0; j < shares.size(); ++j) {
+                if (map.subfamilies[j].category != sub.category) EXPECT_EQ(shares[j], 0.0f);
+                sum += shares[j];
+            }
+            EXPECT_NEAR(sum, 1.0f, 1e-4f);
+            EXPECT_GT(shares[i], 0.0f);
+        }
+        EXPECT_TRUE(found);
+    }
+}

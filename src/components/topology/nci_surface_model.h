@@ -158,6 +158,8 @@ struct NciReferenceLayer {
     int num_levels = (int)nci_surface::reference_default_fractions.size();
     float levels[nci_max_levels] = {nci_surface::reference_default_fractions[0], nci_surface::reference_default_fractions[1],
                                     nci_surface::reference_default_fractions[2]};
+    // Bit i: subfamily i of the reference map drawn as lines, in a shade of its category's colour; none by default
+    uint64_t subfamilies_shown = 0;
 };
 
 struct NciState {

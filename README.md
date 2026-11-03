@@ -309,11 +309,20 @@ each category's volume; drag a level, right-click to remove it, + to add one).
 Hovering the plot inside the reference lists its categories there from the most
 likely, each with its share of the categories' reference densities (each
 category weighing the same) and the smallest drawn area enclosing the point; a
-hovered sample's tooltip adds the same lines. Each layer row reports the share of its category samples inside their
+hovered sample's tooltip adds the same lines, each category followed by its
+subfamilies' part of its share. **Subfamilies** in the inspector list each
+category's CP-tree branches (N-H···O, O-H···O and O-H···N bonds; aromatic,
+aliphatic and contact-closed rings; π-stacking, C-H···π and X-H···π; H···H,
+C-H···X, cages and other contacts), each pooled from the reference calculations
+whose CPs of that category all lie on it (at least 5); a checked subfamily is
+drawn as lines at the reference levels in a shade of its category's colour, and
+its tooltip gives its calculations and the overlap of its 90 % area with its
+category's. Each layer row reports the share of its category samples inside their
 category's 90 % area, whatever levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one
-system's weight, then `bake_reference.py`); `validate_regions.py` reports how
+system's weight, and `subfamily_regions.py` for the subfamilies, then
+`bake_reference.py --subfamilies`); `validate_regions.py` reports how
 much of a test set's volume falls inside a map. Other wave functions may shift
 it.
 

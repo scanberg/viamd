@@ -4,7 +4,9 @@
 Reads <REGIONS_DIR>/summary.json and one <Category>.npy per category (bins x bins, row = s bin, column = signed-rho
 bin), normalises each category to unit sum, and writes the C++ source that nci_surface::reference_data() returns.
 
-Usage: bake_reference.py REGIONS_DIR [OUT_CPP] [--source TEXT]
+With --subfamilies, also the per-branch sub-maps of subfamily_regions.py (its summary.json and sub_<n>.npy).
+
+Usage: bake_reference.py REGIONS_DIR [OUT_CPP] [--source TEXT] [--subfamilies SUBFAMILY_DIR]
   OUT_CPP defaults to src/components/topology/nci_reference_data_core.cpp in this repository.
 """
 import argparse
@@ -42,6 +44,7 @@ def main():
     ap.add_argument("regions")
     ap.add_argument("out", nargs="?", default=DEFAULT_OUT)
     ap.add_argument("--source", default="", help="provenance text stored with the map")
+    ap.add_argument("--subfamilies", default=None, help="subfamily_regions.py output directory")
     args = ap.parse_args()
 
     with open(os.path.join(args.regions, "summary.json")) as f:
@@ -55,6 +58,18 @@ def main():
         total = field.sum()
         fields.append(field / total if total > 0 else field)
         systems.append(int(summary["categories"].get(category, {}).get("systems", 0)))
+    subfamilies = []
+    if args.subfamilies:
+        with open(os.path.join(args.subfamilies, "summary.json")) as f:
+            sub_summary = json.load(f)
+        if int(sub_summary["bins"]) != bins:
+            sys.exit("subfamilies: bins differ from the categories'")
+        for sub in sub_summary["subfamilies"]:
+            field = np.load(os.path.join(args.subfamilies, sub["file"])).astype(np.float64)
+            if field.shape != (bins, bins) or not np.all(np.isfinite(field)) or (field < 0).any() or field.sum() <= 0:
+                sys.exit(f"{sub['name']}: expected a finite non-negative non-empty {bins}x{bins} field")
+            subfamilies.append((CATEGORIES.index(sub["category"]), sub["name"], int(sub["systems"]),
+                                float(sub.get("overlap") or 0.0), field / field.sum()))
 
     # Escaped so the generated source is plain ASCII
     lines = [
@@ -70,11 +85,19 @@ def main():
         "namespace {",
         "",
     ]
-    for c, field in enumerate(fields):
-        lines.append(f"constexpr float field_{c}[{bins * bins}] = {{")
+    named = [(f"field_{c}", field) for c, field in enumerate(fields)]
+    named += [(f"subfamily_field_{i}", s[4]) for i, s in enumerate(subfamilies)]
+    for var, field in named:
+        lines.append(f"constexpr float {var}[{bins * bins}] = {{")
         flat = field.reshape(-1)
         for i in range(0, flat.size, 8):
             lines.append("    " + ", ".join("0" if v == 0 else f"{v:.6g}f" for v in flat[i:i + 8]) + ",")
+        lines.append("};")
+        lines.append("")
+    if subfamilies:
+        lines.append(f"constexpr ReferenceSubfamilyData subfamilies[{len(subfamilies)}] = {{")
+        for i, (c, name, n, overlap, _) in enumerate(subfamilies):
+            lines.append(f"    {{{c}, {c_string(name)}, {n}, {overlap:.3f}f, subfamily_field_{i}}},")
         lines.append("};")
         lines.append("")
     lines += [
@@ -87,6 +110,7 @@ def main():
         "        {" + ", ".join(str(s) for s in systems) + "},",
         "        {" + ", ".join(f"field_{c}" for c in range(len(CATEGORIES))) + "},",
         f"        {c_string(args.source)},",
+        *(["        subfamilies,"] if subfamilies else []),
         "    };",
         "    return data;",
         "}",
@@ -96,7 +120,7 @@ def main():
     ]
     with open(args.out, "w", newline="\n") as f:
         f.write("\n".join(lines))
-    print(f"wrote {args.out}: {bins}x{bins}, systems {dict(zip(CATEGORIES, systems))}")
+    print(f"wrote {args.out}: {bins}x{bins}, systems {dict(zip(CATEGORIES, systems))}, {len(subfamilies)} subfamilies")
 
 
 if __name__ == "__main__":

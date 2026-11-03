@@ -430,30 +430,43 @@ bool build_reference_map(ReferenceMap* out, const ReferenceData& data, std::span
         if (!(fractions[k] > 0.0f && fractions[k] < 1.0f) || (k && !(fractions[k] > fractions[k - 1]))) return false;
     out->rho_extent = data.rho_extent;
     out->fractions.assign(fractions.begin(), fractions.end());
+    const auto build = [&](ReferenceCategory* category, const float* values) {
+        if (!values) return false;
+        OutlineField field = {};
+        bool finite = true;
+        for (int y = 0; y < outline_bins; ++y) for (int x = 0; x < outline_bins; ++x) {
+            const float v = values[x + (size_t)outline_bins * y];
+            finite &= std::isfinite(v) && v >= 0.0f;
+            field[(x + 1) + outline_dim * (y + 1)] = v;
+        }
+        if (!finite) return false;
+        category->inside_threshold = mass_level(field, reference_inside_fraction);
+        if (!(category->inside_threshold > 0.0f)) return false;
+        category->thresholds.resize(fractions.size());
+        category->isolines.resize(fractions.size());
+        for (size_t k = 0; k < fractions.size(); ++k) {
+            category->thresholds[k] = mass_level(field, fractions[k]);
+            contour(&category->isolines[k], field, category->thresholds[k], data.rho_extent);
+        }
+        category->field.assign(field.begin(), field.end());
+        category->valid = true;
+        return true;
+    };
     for (size_t c = 0; c < reference_category_count; ++c) {
         ReferenceCategory& category = out->categories[c];
         category.name = data.names[c] ? data.names[c] : "";
         category.systems = data.systems[c];
-        if (!data.fields[c]) continue;
-        OutlineField field = {};
-        bool finite = true;
-        for (int y = 0; y < outline_bins; ++y) for (int x = 0; x < outline_bins; ++x) {
-            const float v = data.fields[c][x + (size_t)outline_bins * y];
-            finite &= std::isfinite(v) && v >= 0.0f;
-            field[(x + 1) + outline_dim * (y + 1)] = v;
-        }
-        if (!finite) continue;
-        category.inside_threshold = mass_level(field, reference_inside_fraction);
-        if (!(category.inside_threshold > 0.0f)) continue;
-        category.thresholds.resize(fractions.size());
-        category.isolines.resize(fractions.size());
-        for (size_t k = 0; k < fractions.size(); ++k) {
-            category.thresholds[k] = mass_level(field, fractions[k]);
-            contour(&category.isolines[k], field, category.thresholds[k], data.rho_extent);
-        }
-        category.field.assign(field.begin(), field.end());
-        category.valid = true;
-        out->valid = true;
+        category.category = c;
+        out->valid |= build(&category, data.fields[c]);
+    }
+    for (const ReferenceSubfamilyData& sub : data.subfamilies) {
+        if (sub.category >= reference_category_count || !out->categories[sub.category].valid) continue;
+        ReferenceCategory subfamily;
+        subfamily.name = sub.name ? sub.name : "";
+        subfamily.systems = sub.systems;
+        subfamily.category = sub.category;
+        subfamily.overlap = sub.overlap;
+        if (build(&subfamily, sub.field)) out->subfamilies.push_back(std::move(subfamily));
     }
     return out->valid;
 }
@@ -484,6 +497,26 @@ std::array<float, reference_category_count> reference_shares(const ReferenceMap&
         total += shares[c];
     }
     if (!(total > 0.0f)) return {};
+    for (float& share : shares) share /= total;
+    return shares;
+}
+
+int reference_subfamily_level(const ReferenceMap& map, size_t subfamily, float signed_rho, float s) {
+    if (!map.valid || subfamily >= map.subfamilies.size()) return 0;
+    const ReferenceCategory& c = map.subfamilies[subfamily];
+    return level_of(c, reference_value(c.field, map.rho_extent, signed_rho, s));
+}
+
+std::vector<float> reference_subfamily_shares(const ReferenceMap& map, size_t category, float signed_rho, float s) {
+    std::vector<float> shares(map.subfamilies.size(), 0.0f);
+    float total = 0.0f;
+    for (size_t i = 0; i < shares.size(); ++i) {
+        const ReferenceCategory& sub = map.subfamilies[i];
+        if (sub.category != category || !sub.valid) continue;
+        shares[i] = std::max(0.0f, reference_value(sub.field, map.rho_extent, signed_rho, s));
+        total += shares[i];
+    }
+    if (!(total > 0.0f)) return std::vector<float>(shares.size(), 0.0f);
     for (float& share : shares) share /= total;
     return shares;
 }

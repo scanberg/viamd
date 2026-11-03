@@ -763,6 +763,55 @@ struct NciPanel {
                    100.0f * nci_surface::reference_inside_fraction);
         ImGui::PopID();
         prop::end();
+        draw_reference_subfamilies();
+    }
+
+    // The categories' subfamilies (CP-tree branches), each drawn as lines at the reference levels when checked
+    void draw_reference_subfamilies() {
+        const nci_surface::ReferenceMap& map = reference_map();
+        if (map.subfamilies.empty()) return;
+        ImGui::SeparatorText("Subfamilies");
+        ImGui::PushID("##subfamilies");
+        for (size_t c = 0; c < map.categories.size(); ++c) {
+            bool any = false;
+            for (const auto& sub : map.subfamilies) any |= sub.category == c;
+            if (!any) continue;
+            ImGui::PushID((int)c);
+            ImGui::PushStyleColor(ImGuiCol_Text, nci_type_colour(reference_colours[c]));
+            const bool open = ImGui::TreeNodeEx(reference_labels[c], ImGuiTreeNodeFlags_SpanAvailWidth);
+            ImGui::PopStyleColor();
+            if (open) {
+                for (size_t i = 0; i < map.subfamilies.size(); ++i) {
+                    const nci_surface::ReferenceCategory& sub = map.subfamilies[i];
+                    if (sub.category != c || i >= 64) continue;
+                    ImGui::PushID((int)i);
+                    const uint64_t bit = uint64_t(1) << i;
+                    bool on = (st.reference.subfamilies_shown & bit) != 0;
+                    if (ImGui::Checkbox("##on", &on))
+                        st.reference.subfamilies_shown = on ? st.reference.subfamilies_shown | bit : st.reference.subfamilies_shown & ~bit;
+                    ImGui::SameLine();
+                    const ImVec2 p = ImGui::GetCursorScreenPos();
+                    const float h = ImGui::GetFrameHeight();
+                    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + 0.5f * h), ImVec2(p.x + h, p.y + 0.5f * h),
+                                                        ImGui::ColorConvertFloat4ToU32(subfamily_colour(map, i)), 2.5f);
+                    ImGui::Dummy(ImVec2(h, h));
+                    ImGui::SameLine();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::Text("%s", sub.name);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%d", sub.systems);
+                    ImGui::SetItemTooltip("%d calculations whose %s CPs are all %s; its %.0f %% area overlaps the category's "
+                                          "by %.0f %%", sub.systems, reference_labels[c], sub.name,
+                                          100.0f * nci_surface::reference_inside_fraction, 100.0f * sub.overlap);
+                    ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        prop::hint("Pooled from the reference calculations whose CPs of a category all share one branch; branches "
+                   "with fewer than 5 such calculations have no sub-map");
+        ImGui::PopID();
     }
 
     void draw_layer_inspector(int key, const std::vector<NciSurface*>& members) {
@@ -871,6 +920,26 @@ struct NciPanel {
         nci_surface::Family::HydrogenBond, nci_surface::Family::Ring, nci_surface::Family::PiStacking,
         nci_surface::Family::OtherContact};
 
+    // A subfamily's colour: a shade of its category's, apart from its siblings'
+    static ImVec4 subfamily_colour(const nci_surface::ReferenceMap& map, size_t subfamily) {
+        const nci_surface::ReferenceCategory& sub = map.subfamilies[subfamily];
+        size_t index = 0, count = 0;
+        for (size_t i = 0; i < map.subfamilies.size(); ++i) {
+            if (map.subfamilies[i].category != sub.category) continue;
+            if (i < subfamily) ++index;
+            ++count;
+        }
+        const ImVec4 base = nci_type_colour(reference_colours[sub.category]);
+        float h, s, v;
+        ImGui::ColorConvertRGBtoHSV(base.x, base.y, base.z, h, s, v);
+        const float t = count > 1 ? (float)index / (float)(count - 1) : 0.5f;
+        h = std::fmod(h + 0.14f * (t - 0.5f) + 1.0f, 1.0f);
+        v = std::clamp(v * (1.15f - 0.45f * t), 0.0f, 1.0f);
+        ImVec4 out = base;
+        ImGui::ColorConvertHSVtoRGB(h, s, v, out.x, out.y, out.z);
+        return out;
+    }
+
     // Whether (rho, s) lies inside some category's outermost drawn reference level
     bool reference_inside(float rho, float s) {
         const nci_surface::ReferenceMap& map = reference_map();
@@ -898,7 +967,21 @@ struct NciPanel {
                 ImGui::SameLine();
                 ImGui::TextDisabled("inside its %.0f %% area", 100.0f * map.fractions[map.fractions.size() - level]);
             }
+            // Its subfamilies, by their share of the category's
+            const std::vector<float> sub = nci_surface::reference_subfamily_shares(map, c, rho, s);
+            std::vector<size_t> subs;
+            for (size_t i = 0; i < sub.size(); ++i) if (shares[c] * sub[i] >= 0.005f) subs.push_back(i);
+            std::stable_sort(subs.begin(), subs.end(), [&](size_t a, size_t b) { return sub[a] > sub[b]; });
+            ImGui::Indent();
+            for (size_t i : subs) {
+                ImGui::TextColored(subfamily_colour(map, i), "%s", map.subfamilies[i].name);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%.0f %%", 100.0f * shares[c] * sub[i]);
+            }
+            ImGui::Unindent();
         }
+        if (!map.subfamilies.empty())
+            ImGui::TextDisabled("Subfamilies split their category's share, each weighing the same");
     }
 
     // Each member's category samples (extracted with the reference settings) against their category's reference
@@ -1378,6 +1461,11 @@ struct NciPanel {
                     colour.w = st.reference.opacity;
                     for (const auto& isoline : reference.categories[c].isolines) draw_outline(isoline, colour, st.reference.line_width);
                 }
+            }
+            for (size_t i = 0; i < reference.subfamilies.size() && i < 64; ++i) {
+                if (!(st.reference.subfamilies_shown & (uint64_t(1) << i)) || !reference.subfamilies[i].valid) continue;
+                const ImVec4 colour = subfamily_colour(reference, i);
+                for (const auto& isoline : reference.subfamilies[i].isolines) draw_outline(isoline, colour, std::max(1.5f, st.reference.line_width));
             }
         }
 

@@ -121,6 +121,16 @@ size_t reference_category(Family family);
 Family reference_settings_family(size_t category);
 // "Hydrogen bonds", "Rings", "\xCF\x80 interactions", "Other"; the baked data's and the batch tools' names
 const char* reference_category_name(size_t category);
+// A category's subfamily: a CP-tree branch under it (N-H···O, aromatic rings, C-H···pi, cages, ...), pooled from the
+// reference systems whose CPs of that category all belong to the branch. overlap: of its 90 % area with its category's
+// (intersection over union)
+struct ReferenceSubfamilyData {
+    size_t category = reference_category_count;
+    const char* name = "";
+    int systems = 0;
+    float overlap = 0.0f;
+    const float* field = nullptr;
+};
 struct ReferenceData {
     int bins = 0;
     float rho_extent = 0.0f;
@@ -130,6 +140,7 @@ struct ReferenceData {
     // field[x + bins * y]: x the signed-rho bin over [-rho_extent, rho_extent], y the s bin over [0, s_max]; unit sum
     std::array<const float*, reference_category_count> fields = {};
     const char* source = "";
+    std::span<const ReferenceSubfamilyData> subfamilies = {};
 };
 const ReferenceData& reference_data();
 
@@ -149,12 +160,17 @@ struct ReferenceCategory {
     std::vector<float> thresholds;
     float inside_threshold = 0.0f;
     std::vector<std::vector<std::array<float, 4>>> isolines;
+    // Subfamilies only: the category they belong to and their overlap with it
+    size_t category = reference_category_count;
+    float overlap = 0.0f;
     bool valid = false;
 };
 struct ReferenceMap {
     float rho_extent = 0.0f;
     std::vector<float> fractions;
     std::array<ReferenceCategory, reference_category_count> categories;
+    // In the data's order, grouped by category
+    std::vector<ReferenceCategory> subfamilies;
     bool valid = false;
 };
 // At fractions in (0, 1), sorted increasing, at most reference_max_levels. Returns false when the data does not match
@@ -167,6 +183,11 @@ int reference_level(const ReferenceMap& map, size_t category, float signed_rho, 
 // Which category a point most likely belongs to: each category's share of the categories' reference densities there,
 // every category's map weighing the same; all 0 where no category has density or the point is off the map
 std::array<float, reference_category_count> reference_shares(const ReferenceMap& map, float signed_rho, float s);
+// How deep a point lies in a subfamily, as reference_level
+int reference_subfamily_level(const ReferenceMap& map, size_t subfamily, float signed_rho, float s);
+// Within a category, each of its subfamilies' share of their reference densities at the point (each subfamily weighing
+// the same), in map.subfamilies' order, 0 for the other categories' subfamilies; all 0 where none has density
+std::vector<float> reference_subfamily_shares(const ReferenceMap& map, size_t category, float signed_rho, float s);
 // A size x size image over [-rho_extent, rho_extent] x [0, scatter_s_max], row 0 at s = 0. category: of the categories
 // a pixel is inside (level >= 1), the one with the highest density, -1 for none; level: its level. depth[pixel *
 // reference_category_count + c]: 0 outside category c's outermost level, else rising in log density from
