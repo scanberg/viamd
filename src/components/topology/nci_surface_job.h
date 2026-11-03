@@ -16,6 +16,8 @@ struct NciSurfaceJob {
     nci_surface::Grid grid = {};
     nci_surface::Params params = {};
     std::vector<double> near;
+    // Every NCI CP of the system: a sample nearer to one of these than to near is not this surface's
+    std::vector<double> competitors;
     nci_surface::Mesh mesh;
     nci_surface::Scatter scatter;
     std::array<nci_surface::Scatter, nci_surface::family_count> reference_scatters;
@@ -34,6 +36,7 @@ NciSurfaceJob* nci_surface_job_start(std::shared_ptr<const std::vector<float>> r
                                      const nci_surface::Grid& grid,
                                      const nci_surface::Params& params,
                                      std::vector<double> near,
+                                     std::vector<double> competitors,
                                      const std::array<std::vector<double>, nci_surface::family_count>& reference_near,
                                      uint64_t key);
 void nci_surface_job_destroy(NciSurfaceJob* job);

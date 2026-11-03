@@ -252,6 +252,8 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
     const nci_surface::CriticalPointGroups anchor_groups = nci_surface::group_critical_points(anchors);
     const auto& all_anchors = anchor_groups.all_anchors;
     const auto& selected_anchors = anchor_groups.selected_anchors;
+    std::vector<double> system_anchors;
+    for (const auto& near : all_anchors) system_anchors.insert(system_anchors.end(), near.begin(), near.end());
     for (const auto& near : all_anchors)
         if (!near.empty()) key = md_hash64(near.data(), near.size() * sizeof(double), key);
     for (const auto& near : selected_anchors)
@@ -287,6 +289,7 @@ void nci_sync_preview(NciState& state, const NciPreviewInput& input) {
             }
             surface->shown = !family_anchors[f].empty();
             surface->anchors = family_anchors[f];
+            surface->competitors = system_anchors;
             surface->environments = environments[f];
             surface->critical_point_indices.clear();
             surface->critical_points_by_family = memberships[f];

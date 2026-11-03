@@ -1137,7 +1137,6 @@ struct NciScatterExportSlice {
     int resolution = topology::NciSurface::Res_Medium;
     bool category_specific = false;
     bool standardized_reference = false;
-    std::shared_ptr<const std::vector<float>> rho;
     nci_surface::Grid grid = {};
     nci_surface::Params params = {};
     std::vector<double> anchors;
@@ -6923,10 +6922,6 @@ struct QuantumChemistry : viamd::EventHandler {
         return index == nci_surface::reference_category_count ? "Unassigned" : "Unsupported";
     }
 
-    static nci_surface::Family nci_reference_settings_family(size_t category) {
-        return nci_surface::reference_settings_family(category);
-    }
-
     void start_nci_scatter_export() {
         topology::NciState& state = nci_state;
         if (state.layer_hidden || state.selected_layer == topology::NCI_LAYER_NONE) {
@@ -7029,6 +7024,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 job->slices.push_back(std::move(layer_slice));
             }
 
+            // The category slices: the surface's reference extraction (uniform settings, each sample to its nearest
+            // CP of the system), merged over the CP types of each category
             for (size_t f = 0; f < reference_memberships.size(); ++f) {
                 const auto& memberships = reference_memberships[f];
                 if (memberships.empty()) continue;
@@ -7040,27 +7037,11 @@ struct QuantumChemistry : viamd::EventHandler {
                 category_slice.category = nci_reference_category_name(f);
                 category_slice.resolution = n->resolution;
                 category_slice.category_specific = true;
-                category_slice.standardized_reference = f < 4;
-                category_slice.rho = n->rho;
+                category_slice.standardized_reference = true;
                 category_slice.grid = n->grid;
-                category_slice.params.s_iso = n->s_iso;
-                category_slice.params.rho_max = n->rho_max;
-                category_slice.params.near_radius = n->near_radius;
-                category_slice.params.connected = n->connected;
-                category_slice.params.radius_cap = n->radius_cap;
-                category_slice.params.surface = false;
-                if (category_slice.standardized_reference) {
-                    const nci_surface::Family settings_family = nci_reference_settings_family(f);
-                    const nci_surface::Defaults defaults =
-                        nci_surface::family_defaults(nci_surface::family_bit(settings_family));
-                    category_slice.params.s_iso = defaults.s_iso;
-                    category_slice.params.rho_max = defaults.rho_max;
-                    category_slice.params.near_radius = defaults.radius;
-                    category_slice.params.connected = true;
-                    category_slice.params.same_sign = true;
-                    category_slice.params.radius_cap = true;
-                }
-                category_slice.anchors.reserve(memberships.size() * 3);
+                for (size_t family = 0; family < n->reference_scatters.size(); ++family)
+                    if (nci_reference_category_index((nci_surface::Family)family) == f)
+                        nci_surface::scatter_append(&category_slice.scatter, n->reference_scatters[family]);
                 for (const auto& cp : memberships)
                     category_slice.anchors.insert(category_slice.anchors.end(), cp.position.begin(), cp.position.end());
                 job->slices.push_back(std::move(category_slice));
@@ -7105,20 +7086,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     break;
                 }
                 NciScatterExportSlice& slice = job->slices[slice_idx];
-                if (slice.category_specific) {
-                    if (!slice.rho) {
-                        job->error = "A surface density grid was not available for category extraction.";
-                        break;
-                    }
-                    slice.params.near_xyz = slice.anchors;
-                    nci_surface::Mesh mesh;
-                    if (!nci_surface::extract(&mesh, slice.rho->data(), slice.grid, slice.params, &job->cancel,
-                                              &job->slice_progress, &slice.scatter)) {
-                        job->error = job->cancel.load(std::memory_order_relaxed)
-                                   ? "Export cancelled." : "Category-specific NCI extraction failed.";
-                        break;
-                    }
-                }
                 job->slice_progress.store(0.0f, std::memory_order_relaxed);
                 const int dx = slice.grid.dim[0], dy = slice.grid.dim[1], dz = slice.grid.dim[2];
                 const size_t grid_size = dx > 0 && dy > 0 && dz > 0
@@ -7147,7 +7114,7 @@ struct QuantumChemistry : viamd::EventHandler {
                          slice.category_specific ? "category" : "layer_union",
                          nci_surface::family_name(slice.parameter_group),
                          slice.category_specific ? slice.category : "",
-                         slice.standardized_reference ? "category_reference_basin" : "surface_settings",
+                         slice.standardized_reference ? "category_reference_uniform" : "surface_settings",
                          std::to_string(i), std::to_string(voxel), x, y, z,
                          number(slice.scatter.signed_rho[i]), number(slice.scatter.s[i]),
                          std::to_string(slice.scatter.eligible_count),
@@ -7171,7 +7138,7 @@ struct QuantumChemistry : viamd::EventHandler {
                              slice.category_specific ? "category" : "layer_union",
                              nci_surface::family_name(slice.parameter_group),
                              slice.category_specific ? slice.category : "",
-                             slice.standardized_reference ? "category_reference_basin" : "surface_settings",
+                             slice.standardized_reference ? "category_reference_uniform" : "surface_settings",
                              std::to_string(bx), std::to_string(by),
                              number(-density.rho_extent + bx * w), number(-density.rho_extent + (bx + 1) * w),
                              number(by * h), number((by + 1) * h), number(volume), number(density.total_volume),

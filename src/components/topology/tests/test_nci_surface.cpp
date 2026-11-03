@@ -162,6 +162,7 @@ UTEST(nci_surface, scatter_samples_volume_and_respects_scope) {
     const double centre[] = {0, 0, 0};
     params.near_xyz = centre;
     params.near_radius = 1.0;
+    params.scatter_s = 1.0;
     nci_surface::Mesh mesh;
     nci_surface::Scatter scatter;
     ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &scatter));
@@ -179,7 +180,7 @@ UTEST(nci_surface, scatter_samples_volume_and_respects_scope) {
         if (!(r > 0) || r > params.rho_max) continue;
         double s, signed_rho;
         nci_surface::sample(&s, &signed_rho, rho.data(), g, i, j, k);
-        if (s > nci_surface::scatter_s_max) continue;
+        if (s > params.scatter_s) continue;
         ASSERT_LT(expected, scatter.s.size());
         EXPECT_NEAR(scatter.s[expected], s, 1e-6);
         EXPECT_NEAR(scatter.signed_rho[expected], signed_rho, 1e-6);
@@ -471,20 +472,20 @@ UTEST(nci_surface, calibrated_family_defaults_and_mixed_membership) {
     ASSERT_TRUE(nci_surface::single_family(ring));
     EXPECT_FALSE(nci_surface::single_family(hb | ring));
     EXPECT_FALSE(nci_surface::single_family(0));
-    // Only the radius depends on the CP type; s and rho are the shared reference values
+    // Display radii of the CP-adaptive mode; the reference uses one radius for all
     const std::pair<Family, double> radii[] = {{Family::HydrogenBond, 1.7}, {Family::Ring, 2.0}, {Family::PiStacking, 3.7},
                                                {Family::Cage, 2.0}, {Family::HalogenBond, 2.2}};
     for (const auto& [family, radius] : radii) {
         const auto defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
         EXPECT_EQ(defaults.established, family != Family::HalogenBond);
-        EXPECT_EQ(defaults.s_iso, nci_surface::reference_s_iso);
-        EXPECT_EQ(defaults.rho_max, nci_surface::reference_rho_max);
         EXPECT_EQ(defaults.radius, radius);
     }
-    EXPECT_EQ(nci_surface::reference_s_iso, 1.0);
-    EXPECT_EQ(nci_surface::reference_rho_max, 0.05);
+    EXPECT_EQ(nci_surface::reference_scatter_s, 1.0);
+    EXPECT_EQ(nci_surface::reference_rho_max, 0.07);
+    EXPECT_EQ(nci_surface::reference_radius, 2.7);
     const auto uniform = nci_surface::uniform_defaults();
     EXPECT_EQ(uniform.s_iso, 0.7);
+    EXPECT_EQ(uniform.scatter_s, 1.0);
     EXPECT_EQ(uniform.rho_max, 0.07);
     EXPECT_EQ(uniform.radius, 2.7);
     EXPECT_EQ(uniform.color_range, 0.03);
@@ -516,8 +517,6 @@ UTEST(nci_surface, selection_key_changes_update_default_view_state) {
 UTEST(nci_surface, unassigned_family_uses_generic_parameters) {
     const auto unknown = nci_surface::family_defaults(nci_surface::family_bit(nci_surface::Family::Unassigned));
     EXPECT_FALSE(unknown.established);
-    EXPECT_EQ(unknown.s_iso, nci_surface::reference_s_iso);
-    EXPECT_EQ(unknown.rho_max, nci_surface::reference_rho_max);
     EXPECT_EQ(unknown.radius, 2.7);
 }
 
@@ -530,9 +529,11 @@ UTEST(nci_surface, family_previews_extract_independent_geometries) {
     const auto params = [&](nci_surface::Family family) {
         const auto defaults = nci_surface::family_defaults(nci_surface::family_bit(family));
         nci_surface::Params p;
-        p.s_iso = defaults.s_iso;
-        p.rho_max = defaults.rho_max;
+        p.s_iso = nci_surface::reference_scatter_s;
+        p.rho_max = nci_surface::reference_rho_max;
         p.near_radius = defaults.radius;
+        // Up to the plot's top, so the radius rather than s bounds the scatter
+        p.scatter_s = nci_surface::scatter_s_max;
         p.near_xyz = anchor;
         p.connected = true;
         return p;
@@ -803,7 +804,7 @@ UTEST(nci_surface, continuous_density_respects_scope_and_cancel) {
     EXPECT_FALSE(nci_surface::extract(&mesh, rho.data(), g, params, &cancel, nullptr, &scatter));
 }
 
-UTEST(nci_surface, same_sign_flood_stays_in_the_seed_basin) {
+UTEST(nci_surface, scatter_keeps_both_signs_below_a_hard_s_cut) {
     // A three-atom ring: bond contacts with lambda2 < 0 on its edges, the ring's lambda2 > 0 region inside
     Atoms ring;
     const double r = 3.0;
@@ -812,35 +813,72 @@ UTEST(nci_surface, same_sign_flood_stays_in_the_seed_basin) {
     const auto g = box(5.5, 5.5, 0.15);
     const auto rho = ring.sample(g);
     const double bond[3] = {0.5 * (ring.centre[0][0] + ring.centre[1][0]), 0.5 * (ring.centre[0][1] + ring.centre[1][1]), 0.0};
-    nci_surface::Params params;
-    params.s_iso = 1.0;
-    params.rho_max = 0.07;
-    params.near_xyz = bond;
-    params.near_radius = 3.0;
-    params.connected = true;
-    params.surface = false;
-    const auto split = [](const nci_surface::Scatter& scatter, size_t* positive_points, double* positive_volume) {
-        *positive_points = 0;
-        for (float x : scatter.signed_rho) *positive_points += x > 0.0f;
-        constexpr int bins = nci_surface::scatter_density_bins;
-        *positive_volume = 0.0;
-        for (int y = 0; y < bins; ++y) for (int x = bins / 2; x < bins; ++x)
-            *positive_volume += scatter.density.volume[x + (size_t)bins * y];
-    };
     nci_surface::Mesh mesh;
-    nci_surface::Scatter all, basin;
-    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &all));
-    params.same_sign = true;
-    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &basin));
-    size_t all_points, basin_points;
-    double all_volume, basin_volume;
-    split(all, &all_points, &all_volume);
-    split(basin, &basin_points, &basin_volume);
-    ASSERT_GT(all_points, (size_t)0);  // Unconstrained, the flood crosses into the ring
-    EXPECT_EQ(basin_points, (size_t)0);
-    EXPECT_LT(basin_volume, 0.02 * basin.density.total_volume);  // Only interpolation slivers at the basin edge
-    EXPECT_GT(basin.density.total_volume, 0.0);
-    EXPECT_LT(basin.eligible_count, all.eligible_count);
+    nci_surface::Scatter scatter;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, nci_surface::reference_params(bond), nullptr, nullptr, &scatter));
+    size_t positive = 0, negative = 0;
+    for (size_t i = 0; i < scatter.s.size(); ++i) {
+        EXPECT_LE(scatter.s[i], (float)nci_surface::reference_scatter_s);
+        (scatter.signed_rho[i] > 0.0f ? positive : negative)++;
+    }
+    EXPECT_GT(positive, (size_t)0);
+    EXPECT_GT(negative, (size_t)0);
+    // No density above the cut either
+    constexpr int bins = nci_surface::scatter_density_bins;
+    const int cut = (int)std::ceil(nci_surface::reference_scatter_s / nci_surface::scatter_s_max * bins);
+    double above = 0.0;
+    for (int y = cut; y < bins; ++y) for (int x = 0; x < bins; ++x) above += scatter.density.volume[x + (size_t)bins * y];
+    EXPECT_EQ(above, 0.0);
+    EXPECT_GT(scatter.density.total_volume, 0.0);
+}
+
+UTEST(nci_surface, nearest_anchor_partitions_the_scatter) {
+    Atoms ring;
+    const double r = 3.0;
+    for (int a = 0; a < 3; ++a)
+        ring.centre.push_back({r * std::cos(2.0944 * a), r * std::sin(2.0944 * a), 0.0});
+    const auto g = box(5.5, 5.5, 0.15);
+    const auto rho = ring.sample(g);
+    // The three bond midpoints and the ring centre
+    std::vector<double> anchors;
+    for (int a = 0; a < 3; ++a) {
+        const auto& p = ring.centre[a];
+        const auto& q = ring.centre[(a + 1) % 3];
+        anchors.insert(anchors.end(), {0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1]), 0.0});
+    }
+    anchors.insert(anchors.end(), {0.0, 0.0, 0.0});
+    nci_surface::Mesh mesh;
+    nci_surface::Scatter all;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, nci_surface::reference_params(anchors), nullptr, nullptr, &all));
+    ASSERT_EQ(all.anchor.size(), all.s.size());
+    ASSERT_FALSE(all.density.by_anchor.empty());
+    for (uint32_t a : all.anchor) EXPECT_LT(a, 4u);
+
+    // The subsets of a partition add up to the whole
+    nci_surface::Scatter sum;
+    for (uint8_t a = 0; a < 4; ++a) {
+        std::vector<uint8_t> keep(4, 0);
+        keep[a] = 1;
+        const auto part = nci_surface::scatter_subset(all, keep);
+        for (uint32_t b : part.anchor) EXPECT_EQ(b, (uint32_t)a);
+        EXPECT_GT(part.density.total_volume, 0.0);
+        nci_surface::scatter_append(&sum, part);
+    }
+    EXPECT_EQ(sum.s.size(), all.s.size());
+    EXPECT_NEAR(sum.density.total_volume, all.density.total_volume, 1e-6 * all.density.total_volume);
+    for (size_t b = 0; b < all.density.volume.size(); ++b)
+        EXPECT_NEAR(sum.density.volume[b], all.density.volume[b], 1e-3f * (all.density.volume[b] + 1e-6f));
+
+    // With the others as competitors, one anchor's own extraction is its share of the partition
+    const std::span<const double> first(anchors.data(), 3), rest(anchors.data() + 3, anchors.size() - 3);
+    nci_surface::Scatter own;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, nci_surface::reference_params(first, rest), nullptr, nullptr, &own));
+    const std::vector<uint8_t> keep_first = {1, 0, 0, 0};
+    const auto share = nci_surface::scatter_subset(all, keep_first);
+    EXPECT_GT(own.density.total_volume, 0.0);
+    // The connected growth from one seed may miss parts reached only through the others' regions
+    EXPECT_LE(own.density.total_volume, share.density.total_volume * (1.0 + 1e-6));
+    EXPECT_GT(own.density.total_volume, 0.5 * share.density.total_volume);
 }
 
 UTEST(nci_surface, builtin_reference_map_has_nested_levels_per_category) {

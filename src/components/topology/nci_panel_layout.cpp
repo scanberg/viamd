@@ -195,6 +195,7 @@ struct NciPanel {
         n->type_counts = source.type_counts;
         n->critical_point_indices = source.critical_point_indices;
         n->critical_points_by_family = source.critical_points_by_family;
+        n->competitors = source.competitors;
         n->reference_scatters = source.reference_scatters;
         n->group = source.group;
         n->environments = source.environments;
@@ -558,9 +559,9 @@ struct NciPanel {
             ImGui::TextUnformatted("Reference");
             ImGui::TextDisabled("Built in, independent of the loaded system, as the Ramachandran reference: per CP category,\n"
                                 "the pooled (sign(lambda2)rho, s) density of reference extractions (s <= %.1f, rho <= %.2f,\n"
-                                "the category's radius) over many calculations, each weighing the same. A sample is in the\n"
-                                "reference inside its category's %.0f %% area.",
-                                nci_surface::reference_s_iso, nci_surface::reference_rho_max,
+                                "%.1f Bohr from a CP, each sample to its nearest CP) over many calculations, each weighing\n"
+                                "the same. A sample is in the reference inside its category's %.0f %% area.",
+                                nci_surface::reference_scatter_s, nci_surface::reference_rho_max, nci_surface::reference_radius,
                                 100.0f * nci_surface::reference_inside_fraction);
             if (*nci_surface::reference_data().source) ImGui::TextDisabled("%s", nci_surface::reference_data().source);
             if (ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) {

@@ -204,11 +204,12 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
     if (!near.empty()) {
         key = md_hash64(&params.near_radius, sizeof(params.near_radius), key);
         key = md_hash64(near.data(), near.size() * sizeof(double), key);
+        if (!n.competitors.empty()) key = md_hash64(n.competitors.data(), n.competitors.size() * sizeof(double), key);
     }
     std::array<std::vector<double>, nci_surface::family_count> reference_near;
     for (size_t family = 0; family < reference_near.size(); ++family) {
         const nci_surface::Family type = (nci_surface::Family)family;
-        if (type == nci_surface::Family::Unassigned || !nci_surface::has_nci(type)) continue;
+        if (!nci_surface::has_nci(type)) continue;
         auto& anchors = reference_near[family];
         for (const NciSurface::CriticalPointMembership& cp : n.critical_points_by_family[family])
             anchors.insert(anchors.end(), cp.position.begin(), cp.position.end());
@@ -219,7 +220,8 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
     if (key == n.have_key || (n.job && n.job->key == key)) return;
     nci_surface_job_destroy(n.job);
     n.reference_failed = false;
-    n.job = nci_surface_job_start(n.rho, n.grid, params, std::move(near), reference_near, key);
+    std::vector<double> competitors = near.empty() ? std::vector<double>{} : n.competitors;
+    n.job = nci_surface_job_start(n.rho, n.grid, params, std::move(near), std::move(competitors), reference_near, key);
 }
 
 }  // namespace topology

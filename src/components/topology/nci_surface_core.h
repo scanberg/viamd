@@ -55,30 +55,35 @@ bool single_family(Families families);
 // any NCI cutoff.
 bool has_nci(Family family);
 
-// The categorised reference extraction (the pooled reference map, exports): one extended isovalue and density cutoff
-// for every CP type; only the radius around the CPs depends on the type.
-constexpr double reference_s_iso = 1.0;
-constexpr double reference_rho_max = 0.05;
+// The scatter extraction, the same for every CP type, the reference map and the app's defaults: the regions grown
+// from the CPs through s < reference_scatter_s within reference_radius, rho <= reference_rho_max, both signs of
+// lambda2; only their samples with s <= reference_scatter_s; each sample belonging to its nearest CP.
+constexpr double reference_scatter_s = 1.0;
+constexpr double reference_rho_max = 0.07;
+constexpr double reference_radius = 2.7;   // Bohr
+
+// The reference extraction's parameters (scatter only, by anchor), around near_xyz, with other_xyz competing for the
+// samples
+struct Params;
+Params reference_params(std::span<const double> near_xyz, std::span<const double> other_xyz = {});
 
 struct Defaults {
-    double s_iso = reference_s_iso;
-    double rho_max = reference_rho_max;
-    double radius = 2.7;
+    double radius = reference_radius;
     bool established = false;
 };
-// Calibrated single-family H-bond, ring and pi-stacking radii, with the shared reference s and rho; the other types
-// (halogen bonds TBD) keep the generic radius.
+// CP-adaptive mode's display radii: calibrated for H-bonds, rings and pi-stacking; the other types keep the shared
+// radius. The scatter statistics and the reference never use them.
 Defaults family_defaults(Families families);
 
 // The displayed isovalue and density cutoff (every mode), the radius (one for every CP type in Uniform mode; per type
 // in CP-adaptive mode), and the colour range of the single NCI colour scale. The reference statistics use their own
-// extraction at reference_s_iso and reference_rho_max, independent of these.
+// extraction (reference_params), independent of these.
 struct UniformDefaults {
     double s_iso = 0.7;
-    // The scatter's s, the reference's, so the scatter plot covers what the reference map does
-    double scatter_s = reference_s_iso;
-    double rho_max = 0.07;
-    double radius = 2.7;
+    // The scatter's s, rho and R are the reference's, so the scatter plot covers what the reference map does
+    double scatter_s = reference_scatter_s;
+    double rho_max = reference_rho_max;
+    double radius = reference_radius;
     double color_range = 0.03;
 };
 UniformDefaults uniform_defaults();
@@ -218,19 +223,21 @@ struct DensityProvider {
 
 struct Params {
     double s_iso   = 0.5;
-    // Connected scope: the scatter keeps the components grown below this s instead (0: s_iso), so the scatter plot can
-    // reach further than the surface
+    // The scatter's s (0: s_iso): connected scope grows the scatter's components below it, and the scatter keeps only
+    // samples with s at most it, so the scatter plot can reach further than the surface
     double scatter_s = 0.0;
     double rho_max = 0.05;   // au
     // Anchor points in Bohr. Radius-only scope clips their union of spheres; connected scope seeds low-s components.
     std::span<const double> near_xyz = {};   // 3 per point
+    // Competing anchor points (Bohr, 3 per point; may repeat near_xyz's): the scatter keeps only samples nearer to an
+    // anchor of near_xyz than to any of them, so each sample belongs to one CP. The surface ignores them.
+    std::span<const double> other_xyz = {};
     double near_radius = 3.0;
     bool connected = false; // Six-connected components, seeded within two voxels of each anchor
-    // With connected: grow only through samples whose sign(lambda2) matches the seed's, the interaction's own basin,
-    // and keep only that sign in the scatter. Used for the category references.
-    bool same_sign = false;
     bool radius_cap = true;
     bool surface = true; // False for a scatter-only extraction
+    // Label each scatter sample with its nearest anchor (Scatter::anchor, ScatterDensity::by_anchor)
+    bool by_anchor = false;
 };
 
 struct Mesh {
@@ -250,9 +257,16 @@ constexpr int scatter_density_bins = 2 * scatter_field_bins;
 // supersampled (trilinear rho, gradient and lambda2; sign(lambda2) taken after interpolation), not from the capped
 // points. volume[x + bins * y] covers signed rho -rho_extent + 2 rho_extent (x, x + 1) / bins and
 // s scatter_s_max (y, y + 1) / bins.
+struct AnchorBin {
+    uint32_t anchor = 0;   // index of the point in Params::near_xyz
+    uint32_t bin = 0;      // x + bins * y
+    float volume = 0.0f;
+};
 struct ScatterDensity {
     float rho_extent = 0.0f;
     std::vector<float> volume;
+    // With Params::by_anchor: the volume split by nearest anchor, sorted by anchor then bin
+    std::vector<AnchorBin> by_anchor;
     double total_volume = 0.0;
     size_t cells = 0;
     size_t subsamples = 0;
@@ -262,6 +276,8 @@ struct Scatter {
     std::vector<float> signed_rho;
     std::vector<float> s;
     std::vector<uint32_t> voxel;
+    // With Params::by_anchor: per point, the index of its nearest anchor in Params::near_xyz
+    std::vector<uint32_t> anchor;
     size_t eligible_count = 0;
     // Empty for scatters built from points only; then the fields use the points' histogram.
     ScatterDensity density;
@@ -277,6 +293,12 @@ struct CriticalPointGroups {
     std::array<std::vector<double>, family_count> all_anchors;
     std::array<std::vector<double>, family_count> selected_anchors;
 };
+
+// The part of a scatter extracted with by_anchor whose nearest anchors are kept (keep[anchor] != 0): its points
+// and density. eligible_count scales with the kept share of the points.
+Scatter scatter_subset(const Scatter& scatter, std::span<const uint8_t> keep);
+// Appends src's points and density (same rho extent) to dst
+void scatter_append(Scatter* dst, const Scatter& src);
 
 // Groups CP coordinates for the overview and selection preview. Unclassified points use Unassigned.
 CriticalPointGroups group_critical_points(std::span<const CriticalPointAnchor> points);
@@ -303,11 +325,11 @@ struct Heatmap {
 bool scatter_heatmap(Heatmap* out, std::span<const Scatter* const> scatters, float rho_max);
 
 // Returns false when cancelled (cancel set non-zero) or the input is invalid; progress (optional) goes from 0 to 1.
-// Optional scatter: a deterministic reservoir of grid samples with s <= 2, respecting rho_max and near_xyz.
-// It samples the volume, not the surface. Connected scope keeps the selected low-s components
-// and their one-voxel halo; its scatter therefore follows scatter_s (s_iso when unset). voxel indexes into grid.
+// Optional scatter: a deterministic reservoir of grid samples with s <= scatter_s (s_iso when unset), respecting
+// rho_max, near_xyz and other_xyz. It samples the volume, not the surface. Connected scope keeps the components grown
+// below scatter_s and their one-voxel halo, then only the samples at most scatter_s. voxel indexes into grid.
 // The scatter's continuous density covers the same region: each point inside a cell belongs to its nearest grid
-// sample's scope.
+// sample's scope and anchor.
 bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params,
              const std::atomic<int32_t>* cancel = nullptr, std::atomic<float>* progress = nullptr,
              Scatter* scatter = nullptr);

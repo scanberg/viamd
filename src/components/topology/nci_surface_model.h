@@ -61,6 +61,8 @@ struct NciSurface {
     int id = 0;
     char name[64] = "Full system";
     std::vector<double> anchors;
+    // Every NCI CP of the system; each scatter sample belongs to its nearest CP, kept only if that is one of anchors
+    std::vector<double> competitors;
     nci_surface::Mesh source_mesh;
     std::vector<std::array<float, 4>> outline;
     float opacity = 1.0f;

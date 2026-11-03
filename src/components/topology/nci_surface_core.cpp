@@ -122,6 +122,73 @@ Defaults family_defaults(Families families) {
 
 UniformDefaults uniform_defaults() { return {}; }
 
+Params reference_params(std::span<const double> near_xyz, std::span<const double> other_xyz) {
+    Params p;
+    p.s_iso = reference_scatter_s;
+    p.scatter_s = reference_scatter_s;
+    p.rho_max = reference_rho_max;
+    p.near_xyz = near_xyz;
+    p.other_xyz = other_xyz;
+    p.near_radius = reference_radius;
+    p.radius_cap = true;
+    p.connected = true;
+    p.surface = false;
+    p.by_anchor = true;
+    return p;
+}
+
+Scatter scatter_subset(const Scatter& scatter, std::span<const uint8_t> keep) {
+    const auto kept = [&](uint32_t anchor) { return anchor < keep.size() && keep[anchor]; };
+    Scatter out;
+    for (size_t i = 0; i < scatter.anchor.size() && i < scatter.signed_rho.size(); ++i) {
+        if (!kept(scatter.anchor[i])) continue;
+        out.signed_rho.push_back(scatter.signed_rho[i]);
+        out.s.push_back(scatter.s[i]);
+        if (i < scatter.voxel.size()) out.voxel.push_back(scatter.voxel[i]);
+        out.anchor.push_back(scatter.anchor[i]);
+    }
+    if (!scatter.signed_rho.empty())
+        out.eligible_count = (size_t)std::llround((double)scatter.eligible_count * out.signed_rho.size() / scatter.signed_rho.size());
+    const ScatterDensity& d = scatter.density;
+    if (!d.volume.empty()) {
+        out.density.rho_extent = d.rho_extent;
+        out.density.volume.assign(d.volume.size(), 0.0f);
+        double total = 0.0;
+        for (const AnchorBin& b : d.by_anchor) {
+            if (!kept(b.anchor) || b.bin >= out.density.volume.size()) continue;
+            out.density.volume[b.bin] += b.volume;
+            out.density.by_anchor.push_back(b);
+            total += b.volume;
+        }
+        out.density.total_volume = total;
+        const double share = d.total_volume > 0.0 ? total / d.total_volume : 0.0;
+        out.density.cells = (size_t)std::llround(d.cells * share);
+        out.density.subsamples = (size_t)std::llround(d.subsamples * share);
+    }
+    return out;
+}
+
+void scatter_append(Scatter* dst, const Scatter& src) {
+    dst->signed_rho.insert(dst->signed_rho.end(), src.signed_rho.begin(), src.signed_rho.end());
+    dst->s.insert(dst->s.end(), src.s.begin(), src.s.end());
+    dst->voxel.insert(dst->voxel.end(), src.voxel.begin(), src.voxel.end());
+    dst->anchor.insert(dst->anchor.end(), src.anchor.begin(), src.anchor.end());
+    dst->eligible_count += src.eligible_count;
+    const ScatterDensity& s = src.density;
+    if (s.volume.empty()) return;
+    ScatterDensity& d = dst->density;
+    if (d.volume.empty()) {
+        d.rho_extent = s.rho_extent;
+        d.volume.assign(s.volume.size(), 0.0f);
+    }
+    if (d.volume.size() != s.volume.size()) return;
+    for (size_t b = 0; b < s.volume.size(); ++b) d.volume[b] += s.volume[b];
+    d.by_anchor.insert(d.by_anchor.end(), s.by_anchor.begin(), s.by_anchor.end());
+    d.total_volume += s.total_volume;
+    d.cells += s.cells;
+    d.subsamples += s.subsamples;
+}
+
 CriticalPointGroups group_critical_points(std::span<const CriticalPointAnchor> points) {
     CriticalPointGroups groups;
     for (const CriticalPointAnchor& point : points) {
@@ -713,11 +780,11 @@ inline float hash_unit(uint64_t x) {
 // values span. At each subsample: trilinear rho, gradient and lambda2 from the corners; s from the interpolated rho
 // and gradient; signed rho from the interpolated lambda2, so a cell crossing lambda2 = 0 splits between the two
 // sides rather than smearing across signed rho = 0. A subsample counts when its rho is in (0, rho_max], its s at
-// most s_max, and its nearest sample is in scope; it adds its share of the cell's volume.
-constexpr uint8_t basin_negative = 2, basin_positive = 3;
-
+// most s_cut, and its nearest sample is kept (in scope, nearest to one of the anchors); it adds its share of the
+// cell's volume, with by_anchor also to that sample's anchor.
+template <typename Keep>
 bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector<float>& S, const Params& params,
-                        const std::vector<uint8_t>& allowed, const std::vector<uint8_t>& halo,
+                        double s_cut, Keep&& keep, const std::vector<uint32_t>& owner,
                         const std::atomic<int32_t>* cancel) {
     constexpr int bins = scatter_density_bins, max_m = 4;
     const int dx = l.dx, dy = l.dy, dz = l.dz;
@@ -727,12 +794,10 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
     *out = {};
     out->rho_extent = rho_extent;
     std::vector<double> total((size_t)bins * bins, 0.0);
+    std::unordered_map<uint64_t, double> total_by_anchor;
+    const bool by_anchor = params.by_anchor && !owner.empty();
     std::mutex merge;
     std::atomic<bool> stop = false;
-    // halo: 0 out of scope, 1 in scope, basin_negative / basin_positive in scope for that sign of lambda2 only
-    auto in_scope = [&](size_t v) {
-        return (allowed.empty() || allowed[v]) && (halo.empty() || halo[v]);
-    };
     // Cells (i, j, k) .. (i + 1, j + 1, k + 1), all corners interior: i in [1, dx - 3]
     parallel_slabs(dz - 3, [&](int kk) {
         if (stop.load(std::memory_order_relaxed)) return;
@@ -756,6 +821,7 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
             return q;
         };
         std::vector<double> local;
+        std::unordered_map<uint64_t, double> local_by_anchor;
         size_t cells = 0, subsamples = 0;
         double volume = 0.0;
         for (int j = 1; j < dy - 2; ++j) for (int i = 1; i < dx - 2; ++i) {
@@ -763,7 +829,7 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
             bool candidate = false;
             for (int c = 0; c < 8; ++c) {
                 vertex[c] = l.at(i + (c & 1), j + ((c >> 1) & 1), k + (c >> 2));
-                candidate |= S[vertex[c]] <= scatter_s_max && in_scope(vertex[c]);
+                candidate |= S[vertex[c]] <= scatter_s_max && keep(vertex[c]);
             }
             if (!candidate) continue;
             if (local.empty()) local.assign((size_t)bins * bins, 0.0);
@@ -789,7 +855,7 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
                 const float u[3] = {(a + hash_unit(seed)) / m, (b + hash_unit(seed + 1)) / m, (c + hash_unit(seed + 2)) / m};
                 // The nearest sample decides the scope, as each point of the scatter stands for its voxel
                 const int nearest = (u[0] >= 0.5f) | ((u[1] >= 0.5f) << 1) | ((u[2] >= 0.5f) << 2);
-                if (!in_scope(vertex[nearest])) continue;
+                if (!keep(vertex[nearest])) continue;
                 float v[5] = {0, 0, 0, 0, 0};
                 for (int corner_index = 0; corner_index < 8; ++corner_index) {
                     float w = 1.0f;
@@ -801,18 +867,20 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
                 if (!(v[0] > 0.0f) || v[0] > rho_extent) continue;
                 const double grad[3] = {v[1], v[2], v[3]};
                 const double s = critical_point_distribution::reduced_density_gradient(v[0], grad);
-                if (!(s >= 0.0) || s > scatter_s_max) continue;
-                if (!halo.empty() && halo[vertex[nearest]] != 1 && (v[4] < 0.0f) != (halo[vertex[nearest]] == basin_negative)) continue;
+                if (!(s >= 0.0) || s > s_cut) continue;
                 const double x = v[4] < 0.0f ? -v[0] : v[0];
                 const int bx = std::clamp((int)((x + rho_extent) / bin_w), 0, bins - 1);
                 const int by = std::clamp((int)(s / bin_h), 0, bins - 1);
                 local[bx + (size_t)bins * by] += weight;
+                if (by_anchor)
+                    local_by_anchor[((uint64_t)owner[vertex[nearest]] << 32) | (uint64_t)(bx + bins * by)] += weight;
                 volume += weight;
             }
         }
         if (local.empty()) return;
         std::lock_guard<std::mutex> lock(merge);
         for (size_t b = 0; b < local.size(); ++b) total[b] += local[b];
+        for (const auto& [key, part] : local_by_anchor) total_by_anchor[key] += part;
         out->cells += cells;
         out->subsamples += subsamples;
         out->total_volume += volume;
@@ -822,8 +890,90 @@ bool continuous_density(ScatterDensity* out, const Lattice& l, const std::vector
         return false;
     }
     out->volume.assign(total.begin(), total.end());
+    out->by_anchor.reserve(total_by_anchor.size());
+    for (const auto& [key, part] : total_by_anchor)
+        out->by_anchor.push_back({(uint32_t)(key >> 32), (uint32_t)(key & 0xffffffffu), (float)part});
+    std::sort(out->by_anchor.begin(), out->by_anchor.end(), [](const AnchorBin& a, const AnchorBin& b) {
+        return a.anchor != b.anchor ? a.anchor < b.anchor : a.bin < b.bin;
+    });
     return true;
 }
+
+// The nearest of the anchors, near_xyz's then other_xyz's, by a uniform bucket grid; ties go to the lower index, so
+// to near_xyz. Index i < near count is near_xyz's point i.
+class AnchorLocator {
+public:
+    AnchorLocator(std::span<const double> near_xyz, std::span<const double> other_xyz) : near_(near_xyz), other_(other_xyz) {
+        count_ = (near_.size() + other_.size()) / 3;
+        if (!count_) return;
+        double lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+        for (size_t i = 0; i < count_; ++i) for (int a = 0; a < 3; ++a) {
+            lo[a] = std::min(lo[a], at(i)[a]);
+            hi[a] = std::max(hi[a], at(i)[a]);
+        }
+        cell_ = 2.0;
+        for (int a = 0; a < 3; ++a) cell_ = std::max(cell_, (hi[a] - lo[a]) / 64.0);
+        for (int a = 0; a < 3; ++a) {
+            origin_[a] = lo[a];
+            dim_[a] = (int)std::floor((hi[a] - lo[a]) / cell_) + 1;
+        }
+        start_.assign((size_t)dim_[0] * dim_[1] * dim_[2] + 1, 0);
+        std::vector<uint32_t> bucket_of(count_);
+        for (size_t i = 0; i < count_; ++i) {
+            int b[3];
+            for (int a = 0; a < 3; ++a) b[a] = std::clamp((int)((at(i)[a] - origin_[a]) / cell_), 0, dim_[a] - 1);
+            bucket_of[i] = (uint32_t)(b[0] + dim_[0] * (b[1] + dim_[1] * b[2]));
+            ++start_[bucket_of[i] + 1];
+        }
+        for (size_t b = 1; b < start_.size(); ++b) start_[b] += start_[b - 1];
+        items_.resize(count_);
+        std::vector<uint32_t> fill(start_.begin(), start_.end() - 1);
+        for (size_t i = 0; i < count_; ++i) items_[fill[bucket_of[i]]++] = (uint32_t)i;
+    }
+    uint32_t nearest(const double p[3]) const {
+        if (!count_) return UINT32_MAX;
+        int c[3];
+        for (int a = 0; a < 3; ++a) c[a] = std::clamp((int)std::floor((p[a] - origin_[a]) / cell_), 0, dim_[a] - 1);
+        double best = INFINITY;
+        uint32_t best_index = UINT32_MAX;
+        for (int r = 0;; ++r) {
+            int lo[3], hi[3];
+            bool covers = true;
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::max(0, c[a] - r);
+                hi[a] = std::min(dim_[a] - 1, c[a] + r);
+                covers &= lo[a] == 0 && hi[a] == dim_[a] - 1;
+            }
+            for (int z = lo[2]; z <= hi[2]; ++z) for (int y = lo[1]; y <= hi[1]; ++y) for (int x = lo[0]; x <= hi[0]; ++x) {
+                // Only the shell r: the inner buckets were visited before
+                if (std::max({std::abs(x - c[0]), std::abs(y - c[1]), std::abs(z - c[2])}) != r) continue;
+                const size_t b = (size_t)x + (size_t)dim_[0] * ((size_t)y + (size_t)dim_[1] * z);
+                for (uint32_t k = start_[b]; k < start_[b + 1]; ++k) {
+                    const uint32_t i = items_[k];
+                    const double* q = at(i);
+                    const double d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+                    if (d2 < best || (d2 == best && i < best_index)) { best = d2; best_index = i; }
+                }
+            }
+            if (covers) break;
+            // Any anchor outside the visited buckets is at least this far
+            double bound = INFINITY;
+            for (int a = 0; a < 3; ++a) {
+                if (lo[a] > 0) bound = std::min(bound, p[a] - (origin_[a] + lo[a] * cell_));
+                if (hi[a] < dim_[a] - 1) bound = std::min(bound, origin_[a] + (hi[a] + 1) * cell_ - p[a]);
+            }
+            if (bound > 0.0 && best < bound * bound) break;
+        }
+        return best_index;
+    }
+private:
+    const double* at(size_t i) const { return i * 3 < near_.size() ? &near_[i * 3] : &other_[i * 3 - near_.size()]; }
+    std::span<const double> near_, other_;
+    size_t count_ = 0;
+    double cell_ = 1.0, origin_[3] = {0, 0, 0};
+    int dim_[3] = {0, 0, 0};
+    std::vector<uint32_t> start_, items_;
+};
 
 }  // namespace
 
@@ -879,22 +1029,11 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
     std::vector<uint8_t> allowed;
     if (!near_mask(&allowed, grid, params, 0.0, cancel)) return false;
     // With connected scope, the surface keeps the components grown below s_iso; the scatter those grown below
-    // scatter_s (s_iso when unset) and their one-voxel halo
+    // scatter_s (s_iso when unset) and their one-voxel halo, for sub-voxel sampling at the components' edge
     const double scatter_s = params.scatter_s > 0.0 ? params.scatter_s : params.s_iso;
     std::vector<uint8_t> selected;
     std::vector<uint8_t> halo;
     if (params.connected && !params.near_xyz.empty()) {
-        // With same_sign, a component holds its basin: basin_negative or basin_positive, by the seed's sign(lambda2)
-        std::vector<uint8_t> sign_cache;
-        if (params.same_sign) sign_cache.assign(n, 0);
-        const auto basin = [&](size_t v) -> uint8_t {
-            if (!params.same_sign) return 1;
-            if (!sign_cache[v]) {
-                const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
-                sign_cache[v] = signed_density(l, i, j, k) < 0.0 ? basin_negative : basin_positive;
-            }
-            return sign_cache[v];
-        };
         const auto grow = [&](std::vector<uint8_t>* grown, std::vector<uint8_t>* grown_halo, double s_max) -> bool {
             std::vector<uint8_t>& sel = *grown;
             sel.assign(n, 0);
@@ -925,7 +1064,7 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
                             }
                             if (d2 < closest) { closest = d2; seed = v; }
                         }
-                if (seed != n && !sel[seed]) { sel[seed] = basin(seed); queue.push_back((uint32_t)seed); }
+                if (seed != n && !sel[seed]) { sel[seed] = 1; queue.push_back((uint32_t)seed); }
             }
             for (size_t head = 0; head < queue.size(); ++head) {
                 if ((head & 4095) == 0 && cancelled()) return false;
@@ -936,8 +1075,8 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
                     q[a] += d;
                     if (q[a] < 1 || q[a] >= grid.dim[a] - 1) continue;
                     const size_t u = l.at(q[0], q[1], q[2]);
-                    if (!sel[u] && S[u] < s_max && (allowed.empty() || allowed[u]) && basin(u) == sel[v]) {
-                        sel[u] = sel[v];
+                    if (!sel[u] && S[u] < s_max && (allowed.empty() || allowed[u])) {
+                        sel[u] = 1;
                         queue.push_back((uint32_t)u);
                     }
                 }
@@ -949,13 +1088,8 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
                 if ((head & 4095) == 0 && cancelled()) return false;
                 const size_t v = queue[head];
                 const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
-                for (int c = -1; c <= 1; ++c) for (int b = -1; b <= 1; ++b) for (int a = -1; a <= 1; ++a) {
-                    const size_t u = l.at(i + a, j + b, k + c);
-                    if (h[u]) continue;
-                    // The outer layer has no derivatives; it is never sampled
-                    const bool interior = i + a > 0 && i + a < dx - 1 && j + b > 0 && j + b < dy - 1 && k + c > 0 && k + c < dz - 1;
-                    if (!params.same_sign || (interior && basin(u) == sel[v])) h[u] = sel[v];
-                }
+                for (int c = -1; c <= 1; ++c) for (int b = -1; b <= 1; ++b) for (int a = -1; a <= 1; ++a)
+                    h[l.at(i + a, j + b, k + c)] = 1;
             }
             return true;
         };
@@ -967,6 +1101,31 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
         }
     }
     if (scatter) {
+        const auto in_scope = [&](size_t v) {
+            return (allowed.empty() || allowed[v]) && (halo.empty() || halo[v]);
+        };
+        // Each sample belongs to its nearest anchor; those nearer to one of other_xyz are not kept
+        const size_t near_count = params.near_xyz.size() / 3;
+        const bool own = near_count && (params.by_anchor || !params.other_xyz.empty());
+        std::vector<uint32_t> owner;
+        if (own) {
+            for (double x : params.other_xyz) if (!std::isfinite(x)) return false;
+            if (params.other_xyz.size() % 3 != 0) return false;
+            const AnchorLocator locator(params.near_xyz, params.other_xyz);
+            owner.assign(n, UINT32_MAX);
+            parallel_slabs(dz, [&](int k) {
+                if (cancelled()) return;
+                for (int j = 0; j < dy; ++j) for (int i = 0; i < dx; ++i) {
+                    const size_t v = l.at(i, j, k);
+                    if (!(S[v] <= scatter_s_max) || !in_scope(v)) continue;
+                    const double p[3] = {grid.origin[0] + i * grid.spacing[0], grid.origin[1] + j * grid.spacing[1],
+                                         grid.origin[2] + k * grid.spacing[2]};
+                    owner[v] = locator.nearest(p);
+                }
+            });
+            if (cancelled()) return false;
+        }
+        const auto keep = [&](size_t v) { return in_scope(v) && (!own || owner[v] < near_count); };
         std::vector<size_t> reservoir;
         reservoir.reserve(scatter_max_points);
         std::mt19937 rng(0);
@@ -974,7 +1133,7 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
             if (cancelled()) return false;
             for (int j = 1; j < dy - 1; ++j) for (int i = 1; i < dx - 1; ++i) {
                 const size_t v = l.at(i, j, k);
-                if (!(S[v] <= scatter_s_max) || (!allowed.empty() && !allowed[v]) || (!halo.empty() && !halo[v])) continue;
+                if (!(S[v] <= scatter_s) || !keep(v)) continue;
                 ++scatter->eligible_count;
                 if (reservoir.size() < scatter_max_points) {
                     reservoir.push_back(v);
@@ -987,6 +1146,7 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
         scatter->signed_rho.reserve(reservoir.size());
         scatter->s.reserve(reservoir.size());
         scatter->voxel.reserve(reservoir.size());
+        if (own) scatter->anchor.reserve(reservoir.size());
         for (size_t v : reservoir) {
             if (cancelled()) return false;
             const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
@@ -995,8 +1155,9 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
             scatter->signed_rho.push_back(r);
             scatter->s.push_back(S[v]);
             scatter->voxel.push_back((uint32_t)v);
+            if (own) scatter->anchor.push_back(owner[v]);
         }
-        if (!continuous_density(&scatter->density, l, S, params, allowed, halo, cancel)) return false;
+        if (!continuous_density(&scatter->density, l, S, params, scatter_s, keep, owner, cancel)) return false;
     }
 
     if (!params.surface) { report(1.0f); return true; }

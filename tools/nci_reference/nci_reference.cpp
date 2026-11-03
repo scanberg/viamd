@@ -2,9 +2,12 @@
 //
 // The same pipeline the NCI panel runs before "Export NCI samples...", for the category reference rows only:
 // the analytic critical point search, the chemical labels (with ring surfaces for tied ring CPs), the CPs grouped
-// into the reference categories (hydrogen bonds, rings, pi-stacking, other), and per category a scatter-only
-// extraction with the reference settings (shared s <= 1.0 and rho <= 0.05, the category's radius), flooded within its CPs' sign(lambda2) basin. Writes
-// <prefix>-density.csv and <prefix>-anchors.csv in the format of the GUI export, for nci_reference_regions.py.
+// into the reference categories (hydrogen bonds, rings, pi interactions, other), and one scatter-only extraction over
+// every NCI CP with the uniform reference settings (nci_surface::reference_params: s <= 1.0, rho <= 0.07, 2.7 Bohr,
+// both signs of lambda2), each sample to its nearest CP. Writes, in the format of the GUI export,
+// <prefix>-density.csv (per category) and <prefix>-anchors.csv (per CP, with its atoms and contact class) for
+// nci_reference_regions.py; <prefix>-cp-density.csv, the density per CP, so CPs may be regrouped later without
+// recomputing; and <prefix>.xyz, the geometry.
 //
 // The density is evaluated on the CPU (md_topo_gto_density_derivatives), only within reach of the anchors.
 
@@ -41,21 +44,17 @@ static_assert(category_count == nci_surface::reference_category_count);
 const char* category_names[category_count] = {
     nci_surface::reference_category_name(0), nci_surface::reference_category_name(1),
     nci_surface::reference_category_name(2), nci_surface::reference_category_name(3)};
-const nci_surface::Family category_settings[category_count] = {
-    nci_surface::reference_settings_family(0), nci_surface::reference_settings_family(1),
-    nci_surface::reference_settings_family(2), nci_surface::reference_settings_family(3)};
 
 int category_of(nci_surface::Family family) {
     const size_t category = nci_surface::reference_category(family);
     return category < nci_surface::reference_category_count ? (int)category : -1;
 }
 
-// One set of extraction settings: uniform s and rho for every category (R stays the category's), or, without
-// --settings, the reference defaults (nci_surface::family_defaults)
+// One set of extraction settings, the same for every CP; without --settings the reference's
 struct SettingSet {
-    std::string tag;   // empty: the reference defaults, written to PREFIX-density.csv
-    double s_iso = 0.0, rho_max = 0.0;
-    double radius = 0.0;   // Bohr; 0: the category's
+    std::string tag;   // empty: the reference settings, written to PREFIX-density.csv
+    double s_cut = nci_surface::reference_scatter_s, rho_max = nci_surface::reference_rho_max;
+    double radius = nci_surface::reference_radius;   // Bohr
 };
 
 struct Options {
@@ -71,10 +70,12 @@ void usage() {
             "usage: viamd_nci_reference [--spacing BOHR] [--max-samples N] [--rho-min AU] [--settings TAG:S:RHO[:R] ...]\n"
             "                           INPUT.h5 OUTPUT_PREFIX\n"
             "Writes OUTPUT_PREFIX-density.csv and OUTPUT_PREFIX-anchors.csv: the NCI category references of the\n"
-            "calculation, as VIAMD's NCI export writes them. --spacing defaults to 0.2 Bohr (Medium).\n"
-            "--settings (repeatable) uses s <= S and rho <= RHO for every category, and radius R (Bohr) when given,\n"
-            "otherwise each category's radius. Each set writes OUTPUT_PREFIX-TAG-density.csv; the critical points\n"
-            "are searched once for all sets.\n");
+            "calculation, as VIAMD's NCI export writes them; OUTPUT_PREFIX-cp-density.csv, the same per CP; and\n"
+            "OUTPUT_PREFIX.xyz. --spacing defaults to 0.2 Bohr (Medium).\n"
+            "--settings (repeatable) uses s <= S, rho <= RHO and radius R (Bohr, default %.1f) instead of the\n"
+            "reference's (s <= %.1f, rho <= %.2f). Each set writes OUTPUT_PREFIX-TAG-density.csv and\n"
+            "OUTPUT_PREFIX-TAG-cp-density.csv; the critical points are searched once for all sets.\n",
+            nci_surface::reference_radius, nci_surface::reference_scatter_s, nci_surface::reference_rho_max);
 }
 
 bool parse(Options* o, int argc, char** argv) {
@@ -99,11 +100,11 @@ bool parse(Options* o, int argc, char** argv) {
             SettingSet set;
             set.tag = spec.substr(0, c1);
             char* end = nullptr;
-            set.s_iso = std::strtod(spec.c_str() + c1 + 1, &end);
+            set.s_cut = std::strtod(spec.c_str() + c1 + 1, &end);
             if (end != spec.c_str() + c2) return false;
             set.rho_max = std::strtod(spec.c_str() + c2 + 1, &end);
             if (*end == ':') set.radius = std::strtod(end + 1, &end);
-            if (*end || !(set.s_iso > 0.0) || !(set.rho_max > 0.0) || !(set.radius >= 0.0)) return false;
+            if (*end || !(set.s_cut > 0.0) || !(set.rho_max > 0.0) || !(set.radius > 0.0)) return false;
             o->sets.push_back(set);
         }
         else if (a == "-h" || a == "--help") return false;
@@ -299,26 +300,48 @@ int main(int argc, char** argv) {
         }
     }
 
-    // CPs by reference category: the CP's type decides the category, as in the export
-    std::array<std::vector<double>, category_count> anchors;
+    // Every NCI CP is an anchor; the CP's type decides its category, as in the export (-1: no reference category)
+    std::vector<double> anchors;
+    std::vector<int> anchor_category;
+    std::vector<uint32_t> anchor_cp;
+    std::array<size_t, category_count> category_cps = {};
+    const auto element = [&](int atom) -> std::string {
+        if (atom < 0 || (size_t)atom >= state.num_atoms) return "";
+        const str_t symbol = md_atomic_number_symbol(md_atom_atomic_number(&sys.atom, atom));
+        return std::string(symbol.ptr, symbol.len);
+    };
     std::string anchors_csv;
     csv_row(anchors_csv, {"layer", "layer_id", "surface_id", "parameter_group", "reference_category", "cp_index", "cp_category",
-                          "chemical_environment", "cp_x (angstrom)", "cp_y (angstrom)", "cp_z (angstrom)"});
+                          "chemical_environment", "cp_x (angstrom)", "cp_y (angstrom)", "cp_z (angstrom)", "kind",
+                          "interaction", "group", "detail", "atom_a", "atom_b", "element_a", "element_b"});
     for (uint32_t i = 0; i < (uint32_t)graph.num_vertices; ++i) {
         const nci_surface::Family family = nci_surface::family_of(labels[i]);
         const nci_surface::Family parameter_family = nci_surface::parameter_family_of(labels[i]);
+        if (!nci_surface::has_nci(parameter_family)) continue;
         const int category = category_of(family);
-        if (category < 0 || !nci_surface::has_nci(parameter_family)) continue;
         const auto& v = graph.vertices_f64[i];
-        anchors[category].insert(anchors[category].end(), {v.x, v.y, v.z});
+        anchors.insert(anchors.end(), {v.x, v.y, v.z});
+        anchor_category.push_back(category);
+        anchor_cp.push_back(i);
+        if (category >= 0) ++category_cps[category];
         std::string environment;
         std::vector<std::string> path = critical_point_distribution::environment_path(labels[i], sys);
         path.push_back(critical_point_distribution::display_name(labels[i]));
         for (const std::string& part : path) environment += (environment.empty() ? "" : " > ") + part;
-        csv_row(anchors_csv, {"Full system", "-1", "0", nci_surface::family_name(parameter_family), category_names[category],
+        const auto& label = labels[i];
+        csv_row(anchors_csv, {"Full system", "-1", "0", nci_surface::family_name(parameter_family),
+                              category >= 0 ? category_names[category] : "Unassigned",
                               std::to_string(i), nci_surface::family_name(family), environment,
-                              number(v.x * bohr_to_angstrom), number(v.y * bohr_to_angstrom), number(v.z * bohr_to_angstrom)});
+                              number(v.x * bohr_to_angstrom), number(v.y * bohr_to_angstrom), number(v.z * bohr_to_angstrom),
+                              critical_point_distribution::kind_name(label.kind), label.interaction, label.group, label.detail,
+                              std::to_string(label.atom[0]), std::to_string(label.atom[1]),
+                              element(label.atom[0]), element(label.atom[1])});
     }
+
+    // The geometry, so the CPs can be reclassified later
+    std::string xyz = std::to_string(state.num_atoms) + "\n" + opt.input + "\n";
+    for (size_t i = 0; i < state.num_atoms; ++i)
+        xyz += element((int)i) + " " + number(state.xyz[i].x) + " " + number(state.xyz[i].y) + " " + number(state.xyz[i].z) + "\n";
 
     double atoms_lo[3] = {INFINITY, INFINITY, INFINITY}, atoms_hi[3] = {-INFINITY, -INFINITY, -INFINITY};
     for (size_t i = 0; i < atom_xyz.size(); i += 3)
@@ -333,32 +356,32 @@ int main(int argc, char** argv) {
                           "s_min (dimensionless)", "s_max (dimensionless)", "volume (bohr^3)", "total_volume (bohr^3)",
                           "rho_cutoff (au)", "s_isovalue (dimensionless)", "grid_spacing_x (bohr)", "grid_spacing_y (bohr)",
                           "grid_spacing_z (bohr)", "resolution", "connected", "radius_cap", "near_radius (bohr)"});
-    std::vector<std::string> density_csv(opt.sets.size(), header);
-    printf("%s: %zu atoms, %zu AOs, %zu CPs in %.1f s (%s)\n", opt.input.c_str(), (size_t)state.num_atoms, num_ao,
-           (size_t)graph.num_vertices, cp_seconds, info.complete ? "complete" : "incomplete");
-    for (int c = 0; c < category_count; ++c) {
-        if (anchors[c].empty()) {
-            printf("  %-15s no CPs\n", category_names[c]);
-            continue;
-        }
+    std::string cp_header;
+    csv_row(cp_header, {"cp_index", "reference_category", "bin_x", "bin_y", "volume (bohr^3)"});
+    std::vector<std::string> density_csv(opt.sets.size(), header), cp_density_csv(opt.sets.size(), cp_header);
+    printf("%s: %zu atoms, %zu AOs, %zu CPs (%zu NCI) in %.1f s (%s)\n", opt.input.c_str(), (size_t)state.num_atoms, num_ao,
+           (size_t)graph.num_vertices, anchors.size() / 3, cp_seconds, info.complete ? "complete" : "incomplete");
+    for (int c = 0; c < category_count; ++c) printf("  %-15s %5zu CPs\n", category_names[c], category_cps[c]);
+
+    if (!anchors.empty()) {
         t = std::chrono::steady_clock::now();
-        const nci_surface::Family settings = category_settings[c];
-        const nci_surface::Defaults defaults = nci_surface::family_defaults(nci_surface::family_bit(settings));
         // One grid and one density for all sets: sized for the largest radius
-        const auto radius_of = [&](const SettingSet& set) { return set.radius > 0.0 ? set.radius : defaults.radius; };
         double reach = 0.0;
-        for (const SettingSet& set : opt.sets) reach = std::max(reach, radius_of(set));
+        for (const SettingSet& set : opt.sets) reach = std::max(reach, set.radius);
         double lo[3], hi[3];
         for (int a = 0; a < 3; ++a) {
             double alo = INFINITY, ahi = -INFINITY;
-            for (size_t p = a; p < anchors[c].size(); p += 3) {
-                alo = std::min(alo, anchors[c][p]);
-                ahi = std::max(ahi, anchors[c][p]);
+            for (size_t p = a; p < anchors.size(); p += 3) {
+                alo = std::min(alo, anchors[p]);
+                ahi = std::max(ahi, anchors[p]);
             }
             lo[a] = std::max(atoms_lo[a], alo - reach - 1.0);
             hi[a] = std::min(atoms_hi[a], ahi + reach + 1.0);
         }
-        if (!(hi[0] > lo[0] && hi[1] > lo[1] && hi[2] > lo[2])) continue;
+        if (!(hi[0] > lo[0] && hi[1] > lo[1] && hi[2] > lo[2])) {
+            fprintf(stderr, "%s: the CPs are outside the atoms' box\n", opt.input.c_str());
+            return 1;
+        }
         double h = opt.spacing;
         int gdim[3];
         for (int pass = 0; pass < 2; ++pass) {
@@ -379,66 +402,74 @@ int main(int argc, char** argv) {
         const double h_max = std::max({grid.spacing[0], grid.spacing[1], grid.spacing[2]});
         std::vector<float> rho;
         // The flood stays within the radius; the derivatives there reach two samples further
-        if (!sample_density(&rho, grid, anchors[c], reach + 3.0 * h_max, desc)) {
-            fprintf(stderr, "%s: the density could not be evaluated for %s\n", opt.input.c_str(), category_names[c]);
+        if (!sample_density(&rho, grid, anchors, reach + 3.0 * h_max, desc)) {
+            fprintf(stderr, "%s: the density could not be evaluated\n", opt.input.c_str());
             return 1;
         }
         const double rho_seconds = seconds_since(t);
 
+        constexpr int bins = nci_surface::scatter_density_bins;
         for (size_t k = 0; k < opt.sets.size(); ++k) {
             const SettingSet& set = opt.sets[k];
             const auto t_set = std::chrono::steady_clock::now();
-            nci_surface::Params params;
-            params.s_iso = set.tag.empty() ? defaults.s_iso : set.s_iso;
-            params.rho_max = set.tag.empty() ? defaults.rho_max : set.rho_max;
-            params.near_radius = radius_of(set);
-            params.near_xyz = anchors[c];
-            params.connected = true;
-            params.same_sign = true;
-            params.radius_cap = true;
-            params.surface = false;
+            nci_surface::Params params = nci_surface::reference_params(anchors);
+            params.s_iso = params.scatter_s = set.s_cut;
+            params.rho_max = set.rho_max;
+            params.near_radius = set.radius;
             nci_surface::Mesh mesh;
             nci_surface::Scatter scatter;
             if (!nci_surface::extract(&mesh, rho.data(), grid, params, nullptr, nullptr, &scatter)) {
-                fprintf(stderr, "%s: the %s extraction failed\n", opt.input.c_str(), category_names[c]);
+                fprintf(stderr, "%s: the extraction failed\n", opt.input.c_str());
                 return 1;
             }
             const nci_surface::ScatterDensity& density = scatter.density;
-            constexpr int bins = nci_surface::scatter_density_bins;
-            double positive = 0.0;
-            if (density.rho_extent > 0.0f && density.volume.size() == (size_t)bins * bins) {
-                const double w = 2.0 * density.rho_extent / bins, bh = nci_surface::scatter_s_max / (double)bins;
-                for (int by = 0; by < bins; ++by) for (int bx = 0; bx < bins; ++bx) {
-                    const float volume = density.volume[bx + (size_t)bins * by];
-                    if (!(volume > 0.0f)) continue;
-                    if (bx >= bins / 2) positive += volume;
-                    csv_row(density_csv[k], {"Full system", "-1", "0", "category", nci_surface::family_name(settings), category_names[c],
-                                          "category_reference_basin", std::to_string(bx), std::to_string(by),
-                                          number(-density.rho_extent + bx * w), number(-density.rho_extent + (bx + 1) * w),
-                                          number(by * bh), number((by + 1) * bh), number(volume), number(density.total_volume),
-                                          number(params.rho_max), number(params.s_iso), number(grid.spacing[0]),
-                                          number(grid.spacing[1]), number(grid.spacing[2]), "-1", "true", "true",
-                                          number(params.near_radius)});
-                }
+            if (!(density.rho_extent > 0.0f) || density.volume.size() != (size_t)bins * bins) continue;
+            std::array<std::vector<double>, category_count> volume;
+            std::array<double, category_count> total = {}, positive = {};
+            for (auto& v : volume) v.assign((size_t)bins * bins, 0.0);
+            for (const nci_surface::AnchorBin& b : density.by_anchor) {
+                if (b.anchor >= anchor_category.size() || b.bin >= (size_t)bins * bins) continue;
+                const int c = anchor_category[b.anchor];
+                csv_row(cp_density_csv[k], {std::to_string(anchor_cp[b.anchor]), c >= 0 ? category_names[c] : "Unassigned",
+                                            std::to_string(b.bin % bins), std::to_string(b.bin / bins), number(b.volume)});
+                if (c < 0) continue;
+                volume[c][b.bin] += b.volume;
+                total[c] += b.volume;
+                if ((int)(b.bin % bins) >= bins / 2) positive[c] += b.volume;
             }
-            printf("  %-15s %-8s %5zu CPs, grid %dx%dx%d at %.3f Bohr, %.1f Bohr^3 (%.0f%% positive), density %.1f s, extraction %.1f s\n",
-                   category_names[c], set.tag.empty() ? "default" : set.tag.c_str(), anchors[c].size() / 3, gdim[0], gdim[1], gdim[2], h_max, density.total_volume,
-                   density.total_volume > 0 ? 100.0 * positive / density.total_volume : 0.0, rho_seconds, seconds_since(t_set));
+            const double w = 2.0 * density.rho_extent / bins, bh = nci_surface::scatter_s_max / (double)bins;
+            for (int c = 0; c < category_count; ++c) {
+                const nci_surface::Family settings = nci_surface::reference_settings_family(c);
+                for (int by = 0; by < bins; ++by) for (int bx = 0; bx < bins; ++bx) {
+                    const double v = volume[c][bx + (size_t)bins * by];
+                    if (!(v > 0.0)) continue;
+                    csv_row(density_csv[k], {"Full system", "-1", "0", "category", nci_surface::family_name(settings), category_names[c],
+                                             "category_reference_uniform", std::to_string(bx), std::to_string(by),
+                                             number(-density.rho_extent + bx * w), number(-density.rho_extent + (bx + 1) * w),
+                                             number(by * bh), number((by + 1) * bh), number(v), number(total[c]),
+                                             number(params.rho_max), number(params.scatter_s), number(grid.spacing[0]),
+                                             number(grid.spacing[1]), number(grid.spacing[2]), "-1", "true", "true",
+                                             number(params.near_radius)});
+                }
+                if (category_cps[c])
+                    printf("  %-15s %-8s %.1f Bohr^3 (%.0f%% positive)\n", category_names[c], set.tag.empty() ? "default" : set.tag.c_str(),
+                           total[c], total[c] > 0 ? 100.0 * positive[c] / total[c] : 0.0);
+            }
+            printf("  grid %dx%dx%d at %.3f Bohr, density %.1f s, extraction %.1f s, %.1f Bohr^3 in all\n", gdim[0], gdim[1], gdim[2],
+                   h_max, rho_seconds, seconds_since(t_set), density.total_volume);
         }
     }
 
-    const std::string anchors_path = opt.prefix + "-anchors.csv";
-    if (!write_file(anchors_path, anchors_csv)) {
-        fprintf(stderr, "could not write %s\n", anchors_path.c_str());
-        return 1;
-    }
+    const auto write = [&](const std::string& path, const std::string& text) {
+        if (write_file(path, text)) return true;
+        fprintf(stderr, "could not write %s\n", path.c_str());
+        return false;
+    };
+    if (!write(opt.prefix + "-anchors.csv", anchors_csv) || !write(opt.prefix + ".xyz", xyz)) return 1;
     for (size_t k = 0; k < opt.sets.size(); ++k) {
-        const std::string path = opt.prefix + (opt.sets[k].tag.empty() ? "" : "-" + opt.sets[k].tag) + "-density.csv";
-        if (!write_file(path, density_csv[k])) {
-            fprintf(stderr, "could not write %s\n", path.c_str());
-            return 1;
-        }
-        printf("  wrote %s\n", path.c_str());
+        const std::string stem = opt.prefix + (opt.sets[k].tag.empty() ? "" : "-" + opt.sets[k].tag);
+        if (!write(stem + "-density.csv", density_csv[k]) || !write(stem + "-cp-density.csv", cp_density_csv[k])) return 1;
+        printf("  wrote %s-density.csv\n", stem.c_str());
     }
     printf("  done in %.1f s\n", seconds_since(t_start));
     md_topo_extremum_graph_free(&graph);
