@@ -3872,6 +3872,17 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
 // which narrows to one matrix. The caller names what it wants and this cares neither which of the
 // two shapes it came from, nor whether the values were stored or worked out on demand, because
 // md_attribute_slice_format answers the first and the extract answers the second.
+// The context a density is extracted through: a density built from its orbitals on demand (md_qm's providers)
+// spreads its tiles over the pool, at the priority of whoever asks. One per extraction, since a context is not
+// to be used by two threads at once.
+struct DensityIo {
+    md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
+    DensityIo() = default;
+    DensityIo(const DensityIo&) = delete;
+    DensityIo& operator=(const DensityIo&) = delete;
+    ~DensityIo() { md_attribute_io_destroy(io); }
+};
+
 double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice_ptr) {
     const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
@@ -3882,12 +3893,13 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 
     // Square or packed, stored or computed on demand: md_qm reads either, and says why when the
     // slice does not narrow it to one symmetric matrix
-    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, attr, slice);
+    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, attr, slice, nullptr);
     if (dim == 0) {
         return nullptr;
     }
     double* dst = (double*)md_temp_alloc(temp, sizeof(double) * dim * dim);
-    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, attr, slice) != dim) {
+    DensityIo io;
+    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, attr, slice, io.io) != dim) {
         return nullptr;
     }
 
@@ -3906,13 +3918,14 @@ float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_sy
         return nullptr;
     }
 
-    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, slice);
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, slice, nullptr);
     if (dim == 0) {
         return nullptr;
     }
     const size_t len = dim * (dim + 1) / 2;
     float* dst = (float*)md_temp_alloc(temp, sizeof(float) * len);
-    if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, slice) != dim) {
+    DensityIo io;
+    if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, slice, io.io) != dim) {
         return nullptr;
     }
 
@@ -4645,7 +4658,7 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     }
 
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s);
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s, nullptr);
     if (dim == 0) {
         return false;
     }
@@ -4670,7 +4683,8 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     if (!dst) {
         return false;
     }
-    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, attr, s) == dim;
+    DensityIo io;
+    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, attr, s, io.io) == dim;
     md_gpu_upload_end(state->gpu_stream);
     if (!extracted) {
         return false;

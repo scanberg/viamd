@@ -10,6 +10,7 @@
 #include <md_xyz.h>
 #include <md_ase_traj.h>
 #include <md_mmcif.h>
+#include <task_system.h>
 #include <md_lammps.h>
 #include <md_dcd.h>
 #include <md_util.h>
@@ -301,7 +302,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             return false;
 #if MD_HDF5
         case LoaderType_VLX_H5:
-            return md_vlx_system_init_from_file(out_sys, out_state, filepath);
+            return md_vlx_system_init_from_file(out_sys, out_state, filepath, task_system::executor());
 #endif
         case LoaderType_MOLDEN:
             return md_molden_system_init_from_file(out_sys, out_state, filepath);
@@ -322,7 +323,7 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
     switch (state.type) {
 #if MD_HDF5
         case LoaderType_VLX_H5:
-            return md_vlx_system_supplement_from_file(out_sys, filepath);
+            return md_vlx_system_supplement_from_file(out_sys, filepath, task_system::executor());
 #endif
         case LoaderType_ITP:
             return md_itp_system_supplement_from_file(out_sys, filepath);
