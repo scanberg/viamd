@@ -7,6 +7,7 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct md_system_t;
@@ -46,6 +47,13 @@ struct ChemicalLabel {
     // ("C aromatic [C2H]"), a contact ring's size and composition, then the residues ("in PHE"). May be empty.
     std::vector<std::string> finer;
 };
+
+// Hydrogen bonds, ionic hydrogen bonds and salt bridges: the contact classes with a D-H···A geometry
+inline bool hydrogen_bond_class(std::string_view interaction) {
+    return interaction == "Hydrogen bond" || interaction == "Ionic hydrogen bond" || interaction == "Salt bridge";
+}
+// The net formal charge of the atom's charged group (the nearest formal charges within 3 bonds), 0 if none
+int group_charge(const md_system_t& system, int atom);
 
 // Levels of detail of a group: 0 is ChemicalLabel::group, then its finer names
 inline constexpr int detail_levels = 3;

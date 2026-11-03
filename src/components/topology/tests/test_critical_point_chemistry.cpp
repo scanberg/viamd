@@ -197,7 +197,7 @@ UTEST(critical_point_chemistry, nonbonded_is_not_inferred_without_connectivity) 
     f.sys.bond.conn.offset = offsets;
     f.sys.bond.conn.offset_count = 4;
     const auto labels = f.labels();
-    EXPECT_STREQ(labels[2].group.c_str(), "Other contact: C \xC2\xB7\xC2\xB7\xC2\xB7 O");
+    EXPECT_STREQ(labels[2].group.c_str(), "van der Waals contact: C \xC2\xB7\xC2\xB7\xC2\xB7 O");
     EXPECT_TRUE(labels[2].kind == critical_point_distribution::Kind::Contact);
 }
 
@@ -289,6 +289,7 @@ struct Scene {
     std::vector<md_particle_type_idx_t> type_idx;
     std::vector<md_atomic_number_t> z;
     std::vector<md_atom_flags_t> flags;
+    std::vector<int8_t> charge;
     std::vector<Position> atoms;
     std::vector<std::pair<int, int>> bonds;
     std::vector<md_topo_vert_t> vertices;
@@ -311,6 +312,7 @@ struct Scene {
         type_idx.push_back((md_particle_type_idx_t)z.size());
         z.push_back(number);
         flags.push_back(f);
+        charge.push_back(0);
         atoms.push_back(p);
         point(MD_TOPO_MAXIMUM, p, 100.0f);
         return (int)atoms.size() - 1;
@@ -344,6 +346,7 @@ struct Scene {
         sys.atom.type.count = n;
         sys.atom.type.z = z.data();
         sys.atom.flags = flags.data();
+        sys.atom.formal_charge = charge.data();
         sys.bond.count = bonds.size();
         sys.bond.conn.offset = offsets.data();
         sys.bond.conn.offset_count = n + 1;
@@ -386,7 +389,7 @@ UTEST(critical_point_chemistry, hydrogen_bond_needs_a_polar_donor_and_its_angle)
     s.vertices[h].y = (float)(1.0 * ANGSTROM_TO_BOHR);
     labels = s.labels();
     group = labels[contact].group;
-    EXPECT_STREQ(group.c_str(), "Other contact (intermolecular): H (on O) \xC2\xB7\xC2\xB7\xC2\xB7 N");
+    EXPECT_STREQ(group.c_str(), "van der Waals contact (intermolecular): H (on O) \xC2\xB7\xC2\xB7\xC2\xB7 N");
 }
 
 UTEST(critical_point_chemistry, pi_stacking_between_aromatic_atoms) {
@@ -411,11 +414,93 @@ static std::string classify(int zr, Position pr, int zx, Position px, int zy, Po
     return s.labels()[contact].interaction;
 }
 
+// The class of the contact between atoms x and y of a scene
+static std::string interaction(Scene& s, int x, int y) {
+    const uint32_t contact = s.path(x, y, 0.01f);
+    return s.labels()[contact].interaction;
+}
+
+UTEST(critical_point_chemistry, charged_metal_and_pi_hole_contact_classes) {
+    const md_atom_flags_t ar = MD_ATOM_FLAG_AROMATIC;
+    const md_atom_flags_t sp2 = md_atom_flags_set_hybridization(MD_ATOM_FLAG_NONE, MD_HYBRIDIZATION_SP2);
+    const md_atom_flags_t sp3 = md_atom_flags_set_hybridization(MD_ATOM_FLAG_NONE, MD_HYBRIDIZATION_SP3);
+    {   // N(+)-H...O: ionic hydrogen bond; ...O(-): salt bridge
+        Scene s;
+        const int n = s.atom(7, {-1.0, 0, 0}), h = s.atom(1, {0, 0, 0}), o = s.atom(8, {1.8, 0, 0});
+        s.bond(n, h);
+        s.charge[n] = 1;
+        EXPECT_TRUE(interaction(s, h, o) == std::string("Ionic hydrogen bond"));
+        s.charge[o] = -1;
+        EXPECT_TRUE(interaction(s, h, o) == std::string("Salt bridge"));
+    }
+    {   // N(+)-H over an aromatic carbon: cation...pi
+        Scene s;
+        const int n = s.atom(7, {0, 0, -1.0}), h = s.atom(1, {0, 0, 0}), c = s.atom(6, {0, 0, 2.4}, ar);
+        s.bond(n, h);
+        s.charge[n] = 1;
+        EXPECT_TRUE(interaction(s, h, c) == std::string("Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+    }
+    {   // A carboxylate-like O(-) over an aromatic carbon, and a halide over an sp2 carbon: anion...pi
+        Scene s;
+        const int c0 = s.atom(6, {0, 0, -1.3}), o = s.atom(8, {0, 0, 0}), c = s.atom(6, {0, 0, 3.0}, ar);
+        s.bond(c0, o);
+        s.charge[o] = -1;
+        EXPECT_TRUE(interaction(s, o, c) == std::string("Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+        Scene t;
+        const int cl = t.atom(17, {0, 0, 0}), c1 = t.atom(6, {0, 0, 3.2}, sp2), c2 = t.atom(6, {1.35, 0, 3.2}, sp2);
+        t.bond(c1, c2);
+        EXPECT_TRUE(interaction(t, cl, c1) == std::string("Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+    }
+    {   // N over a C=O, about perpendicular: pi-hole bond (n -> pi*)
+        Scene s;
+        const int c = s.atom(6, {0, 0, 0}, sp2), o = s.atom(8, {0, 1.2, 0}, sp2), n = s.atom(7, {0, -0.3, 2.9});
+        s.bond(c, o);
+        EXPECT_TRUE(interaction(s, n, c) == std::string("\xCF\x80-hole bond"));
+    }
+    {   // A trigonal boron towards N: triel bond
+        Scene s;
+        const int b = s.atom(5, {0, 0, 0}), n = s.atom(7, {0, 0, 2.6});
+        const int f[3] = {s.atom(9, {1.3, 0, 0}), s.atom(9, {-0.65, 1.13, 0}), s.atom(9, {-0.65, -1.13, 0})};
+        for (int k : f) s.bond(b, k);
+        EXPECT_TRUE(interaction(s, b, n) == std::string("Triel bond"));
+    }
+    {   // F-Xe...O linear: aerogen bond
+        Scene s;
+        const int xe = s.atom(54, {0, 0, 0}), o = s.atom(8, {3.0, 0, 0}), f = s.atom(9, {-2.0, 0, 0});
+        s.bond(f, xe);
+        EXPECT_TRUE(interaction(s, xe, o) == std::string("Aerogen bond"));
+    }
+    {   // Metals: an ion pair with a halide, two metals, a C-H towards a metal
+        Scene s;
+        const int na = s.atom(11, {0, 0, 0}), cl = s.atom(17, {2.4, 0, 0}), li = s.atom(3, {0, 3.0, 0});
+        EXPECT_TRUE(interaction(s, na, cl) == std::string("Ion pair"));
+        EXPECT_TRUE(interaction(s, na, li) == std::string("Metal\xC2\xB7\xC2\xB7\xC2\xB7metal"));
+        Scene t;
+        const int c = t.atom(6, {-1.1, 0, 0}, sp3), h = t.atom(1, {0, 0, 0}), ti = t.atom(22, {0, 2.0, 0});
+        t.bond(c, h);
+        EXPECT_TRUE(interaction(t, h, ti) == std::string("Agostic"));
+    }
+    {   // A hydridic B-H towards a lone pair: hydride bond
+        Scene s;
+        const int b = s.atom(5, {-1.2, 0, 0}), h = s.atom(1, {0, 0, 0}), o = s.atom(8, {2.4, 0, 0});
+        s.bond(b, h);
+        EXPECT_TRUE(interaction(s, h, o) == std::string("Hydride bond"));
+    }
+    {   // An unbonded hydride (ionic LiH): H-...Li ion pair, H-...H-F dihydrogen bond
+        Scene s;
+        const int li = s.atom(3, {-1.6, 0, 0}), h = s.atom(1, {0, 0, 0}), hf = s.atom(1, {1.6, 0, 0}),
+                  f = s.atom(9, {2.5, 0, 0});
+        s.bond(hf, f);
+        EXPECT_TRUE(interaction(s, h, li) == std::string("Ion pair"));
+        EXPECT_TRUE(interaction(s, h, hf) == std::string("Dihydrogen bond"));
+    }
+}
+
 UTEST(critical_point_chemistry, sigma_hole_and_ion_contact_classes) {
     const md_atom_flags_t ar = MD_ATOM_FLAG_AROMATIC;
     // C-X...N, linear: halogen bond; bent: not
     EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 35, {0, 0, 0}, 7, {3.0, 0, 0}) == std::string("Halogen bond"));
-    EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 35, {0, 0, 0}, 7, {0.5, 3.0, 0}) == std::string("Other contact"));
+    EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 35, {0, 0, 0}, 7, {0.5, 3.0, 0}) == std::string("van der Waals contact"));
     // N-I...O (not only C-X), and C-Br over an aromatic carbon
     EXPECT_TRUE(classify(7, {-2.0, 0, 0}, 53, {0, 0, 0}, 8, {2.8, 0, 0}) == std::string("Halogen bond"));
     EXPECT_TRUE(classify(6, {-1.9, 0, 0}, 35, {0, 0, 0}, 6, {3.3, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) == std::string("Halogen bond"));
@@ -429,7 +514,7 @@ UTEST(critical_point_chemistry, sigma_hole_and_ion_contact_classes) {
     // Ions and metals over pi systems; metal contacts
     EXPECT_TRUE(classify(0, {}, 11, {0, 0, 0}, 6, {2.6, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
                 std::string("Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
-    EXPECT_TRUE(classify(0, {}, 11, {0, 0, 0}, 8, {2.3, 0, 0}) == std::string("Metal contact"));
+    EXPECT_TRUE(classify(0, {}, 11, {0, 0, 0}, 8, {2.3, 0, 0}) == std::string("Coordination"));
     EXPECT_TRUE(classify(0, {}, 17, {0, 0, 0}, 6, {3.2, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
                 std::string("Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
     EXPECT_TRUE(classify(6, {0, 0, 1.2}, 8, {0, 0, 0}, 6, {3.1, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
@@ -451,15 +536,15 @@ UTEST(critical_point_chemistry, ring_cp_inside_a_contact_closed_cycle) {
     auto labels = s.labels();
     EXPECT_TRUE(labels[rcp].kind == Kind::Ring);
     std::string group = labels[rcp].group;
-    EXPECT_STREQ(group.c_str(), "Closed by Other contact");
+    EXPECT_STREQ(group.c_str(), "Closed by van der Waals contact");
     // The ring belongs to its closing interaction, for its NCI parameters
-    EXPECT_STREQ(labels[rcp].interaction.c_str(), "Other contact");
+    EXPECT_STREQ(labels[rcp].interaction.c_str(), "van der Waals contact");
 
     // A ring CP with the density of the ring's contact is flagged
     s.vertices[rcp].value = 0.0495f;
     labels = s.labels();
     group = labels[rcp].group;
-    EXPECT_STREQ(group.c_str(), "Closed by Other contact (near-degenerate)");
+    EXPECT_STREQ(group.c_str(), "Closed by van der Waals contact (near-degenerate)");
 
     // Too far out of the ring's plane
     s.vertices[rcp].value = 0.03f;

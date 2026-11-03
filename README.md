@@ -232,9 +232,11 @@ radius, resolution, connected regions, opacity and the colour scale, then in
 CP-adaptive mode a compact per-type radius table.
 
 The NCI types come from the CP classification: a contact CP's type is its
-branch under Contacts in the CP tree. Hydrogen bonds and σ-hole bonds (halogen, chalcogen, pnictogen, tetrel) are
-their own types; π···π, C-H···π and X-H···π are all π interactions, so every π contact
-shares one radius; C-H···X, H···H and other contacts are other contacts. Rings
+branch under Contacts in the CP tree. Hydrogen bonds (including ionic ones and salt bridges) and σ-hole bonds (halogen,
+chalcogen, pnictogen, tetrel, triel, aerogen) are their own types; π···π, C-H···π,
+X-H···π, cation/anion/lone pair···π and π-hole bonds are all π interactions, so every π
+contact shares one radius; the remaining contacts (C-H···X, H···H, dihydrogen, metal,
+ion pair, van der Waals, ...) are other contacts. Rings
 and cages keep their own types. The settings table lists the CP types. Bond, bond-path and attractor CPs
 anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
 the same interaction region automatically share parameters. For example, a ring
@@ -442,25 +444,36 @@ and as a prefix elsewhere ("Bond: C aromatic – C aromatic"):
 - Contact (···): the same, for atoms not bonded in the topology, classified from
   elements, connectivity and geometry, and tagged intramolecular or intermolecular
   when molecules are known:
-  - Hydrogen bond: H on N/O/F/S to N/O/F/S/Cl/Br/I, with D–H···A above 110 degrees.
-  - X–H···π / C–H···π: such an H, or an H on C, to an atom of an aromatic ring
-    (same angle).
-  - C–H···X: an H on C to N/O/F/S/Cl/Br/I (same angle).
-  - Hydrogen bond acceptors also include P and Se.
-  - Dihydrogen bond: H on B/Si/Ge or a metal to H on N/O/F/S; other H···H is H···H.
-  - σ-hole bonds: Halogen, Chalcogen, Pnictogen or Tetrel bond when the largest
-    R–X···Y angle is above 140 degrees (tetrel: sp3 C above 160 degrees) towards a
-    nucleophile Y; Halogen···halogen (type I) when both C–X···X angles agree within
-    15 degrees.
-  - Cation···π (metal or ammonium N to an aromatic atom), Metal contact (other
-    metal contacts), Anion···π (isolated anion) and Lone pair···π (non-aromatic
-    acceptor) over an aromatic atom.
-  - π···π (atoms of different aromatic rings, or sp2/sp atoms bonded to one, such
-    as stacked carbonyls), else Other contact.
-  In the NCI layers, the π contacts (π···π, X–H···π, C–H···π, Cation/Anion/Lone
-  pair···π) are π interactions, the σ-hole bonds are one type, and
-  Halogen···halogen, Dihydrogen bond, Metal contact, C–H···X, H···H and Other
-  contact are other contacts.
+  classified in this order (group charges are md_chem's formal charges summed over
+  bonded charged atoms, so a nitro group is neutral; an isolated metal counts as a
+  cation and an isolated halogen as an anion):
+  - H···H: Dihydrogen bond when one H is hydridic (on B/Si/Ge or a metal, or an
+    unbonded hydride) and the other on N/O/F/S/Se/halogen, else H···H.
+  - H···Y: Agostic (C–H to a metal), Hydride bond (hydridic H), Metal contact (other
+    H to a metal), then, with D–H···Y above 110 degrees (else van der Waals contact):
+    an H on N/O/F/S/Se/Cl/Br/I to N/O/F/P/S/Se/Cl/Br/I or a terminal C≡ (cyanide, CO)
+    is a Salt bridge (cationic donor group, anionic acceptor group), an Ionic hydrogen
+    bond (either charged) or a Hydrogen bond; towards a π face (aromatic atom or sp2/sp
+    C) it is Cation···π (cationic donor group), X–H···π or C–H···π; an H on C to an
+    acceptor or an anion is C–H···X. An unbonded hydride to a metal is an Ion pair.
+  - Triel bond: a trigonal B/Al/Ga towards a nucleophile.
+  - With a metal: Metal···metal, Ion pair (opposite charges), Cation···π, Coordination
+    (to a lone pair), else Metal contact.
+  - σ-hole bonds: Halogen, Chalcogen, Pnictogen, Tetrel or Aerogen bond when the
+    largest R–X···Y angle is above 140 degrees (tetrel: sp3 C above 160 degrees)
+    towards a nucleophile Y; Halogen···halogen (type I) when both C–X···X angles agree
+    within 15 degrees.
+  - A charged group over a π face: Cation···π or Anion···π.
+  - π-hole bond: a lone pair over the π* of a C=O, N=O, S=O, P=O or C=S (70–130
+    degrees to the double bond).
+  - π···π (aromatic or sp2/sp B/C/N/O/S atoms on both ends), Lone pair···π, Ion pair
+    (opposite group charges), else van der Waals contact.
+  In the NCI layers, Hydrogen bond, Ionic hydrogen bond and Salt bridge are hydrogen
+  bonds; π···π, X–H···π, C–H···π, Cation/Anion/Lone pair···π and π-hole bonds are π
+  interactions; Halogen, Chalcogen, Pnictogen, Tetrel, Triel and Aerogen bonds are
+  σ-hole bonds; Halogen···halogen, Dihydrogen bond, Hydride bond, Agostic,
+  Coordination, Ion pair, Metal···metal, Metal contact, C–H···X, H···H and van der
+  Waals contact are other contacts.
 - Bond path (~): the same, when the system has no connectivity.
 - Ring: an RCP within 0.50 Angstrom of the centroid of exactly one perceived ring
   (3-7 atoms), named by aromaticity, size and composition ("Aromatic 6-ring C6").
@@ -478,10 +491,11 @@ and as a prefix elsewhere ("Bond: C aromatic – C aromatic"):
   narrowest sectors) and the cycle holding every nucleus it reaches wins; if none
   or several do, the ring CP stays unassigned. Bonded
   cycles are named "Bonded 8-ring"; cycles closed by contacts are named by their
-  strongest contact class ("Closed by Hydrogen bond", in the order Hydrogen bond,
-  Halogen, Chalcogen, Pnictogen and Tetrel bond, Halogen···halogen, Cation···π,
-  Anion···π, π···π, X–H···π, Lone pair···π, C–H···π, Dihydrogen bond, Metal
-  contact, C–H···X, H···H, Other contact), with size,
+  strongest contact class ("Closed by Hydrogen bond", in the order Salt bridge,
+  Ionic hydrogen bond, Hydrogen bond, Halogen, Chalcogen, Pnictogen, Tetrel, Triel
+  and Aerogen bond, Halogen···halogen, Coordination, Ion pair, Cation···π, Anion···π,
+  π-hole bond, π···π, X–H···π, Lone pair···π, C–H···π, Dihydrogen bond, Hydride
+  bond, Agostic, Metal···metal, Metal contact, C–H···X, H···H, van der Waals contact), with size,
   composition and contacts in the details. A ring CP with a
   density within 2% of a BCP on its ring is marked near-degenerate: the pair is
   close to annihilating.

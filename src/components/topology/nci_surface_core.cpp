@@ -16,23 +16,33 @@ namespace nci_surface {
 
 static constexpr ContactClass contact_class_table[] = {
     {"Hydrogen bond", Family::HydrogenBond},
+    {"Ionic hydrogen bond", Family::HydrogenBond},
+    {"Salt bridge", Family::HydrogenBond},
     {"\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
-    // Sigma-hole bonds share the halogen-bond type
+    {"\xCF\x80-hole bond", Family::PiStacking},
+    // Sigma-hole bonds share one type
     {"Halogen bond", Family::HalogenBond},
     {"Chalcogen bond", Family::HalogenBond},
     {"Pnictogen bond", Family::HalogenBond},
     {"Tetrel bond", Family::HalogenBond},
+    {"Triel bond", Family::HalogenBond},
+    {"Aerogen bond", Family::HalogenBond},
     {"Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen", Family::OtherContact},
     {"Dihydrogen bond", Family::OtherContact},
+    {"Hydride bond", Family::OtherContact},
+    {"Agostic", Family::OtherContact},
+    {"Coordination", Family::OtherContact},
+    {"Ion pair", Family::OtherContact},
+    {"Metal\xC2\xB7\xC2\xB7\xC2\xB7metal", Family::OtherContact},
     {"Metal contact", Family::OtherContact},
     {"C-H\xC2\xB7\xC2\xB7\xC2\xB7X", Family::OtherContact},
     {"H\xC2\xB7\xC2\xB7\xC2\xB7H", Family::OtherContact},
-    {"Other contact", Family::OtherContact},
+    {"van der Waals contact", Family::OtherContact},
 };
 
 std::span<const ContactClass> contact_classes() { return contact_class_table; }

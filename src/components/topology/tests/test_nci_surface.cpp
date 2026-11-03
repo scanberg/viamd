@@ -386,7 +386,9 @@ UTEST(nci_surface, contact_classes_and_reference_categories) {
     // The CP contact classes (critical_point_distribution's contact_class) each have a type
     const char* classes[] = {"Hydrogen bond", "Halogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
                              "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
-                             "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "Other contact"};
+                             "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "van der Waals contact",
+                             "Ionic hydrogen bond", "Salt bridge", "\xCF\x80-hole bond", "Triel bond", "Aerogen bond",
+                             "Hydride bond", "Agostic", "Coordination", "Ion pair", "Metal\xC2\xB7\xC2\xB7\xC2\xB7metal"};
     for (const char* name : classes) {
         bool listed = false;
         for (const auto& c : nci_surface::contact_classes()) listed |= std::string_view(c.name) == name;

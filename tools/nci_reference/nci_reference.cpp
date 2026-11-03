@@ -6,7 +6,7 @@
 // every NCI CP with the uniform reference settings (nci_surface::reference_params: s <= 1.0, rho <= 0.07, 2.7 Bohr,
 // both signs of lambda2), each sample to its nearest CP. Writes, in the format of the GUI export,
 // <prefix>-density.csv (per category) and <prefix>-anchors.csv (per CP: its label at every level of detail, atoms,
-// elements, molecules, contact class, type, rho and Hessian eigenvalues) for nci_reference_regions.py;
+// elements, molecules, group charges, contact class, type, rho and Hessian eigenvalues) for nci_reference_regions.py;
 // <prefix>-cp-density.csv, the density per CP, and <prefix>-samples.bin, up to 50,000 raw samples with their CP, so
 // CPs may be regrouped and the map rebinned later without recomputing; and <prefix>.xyz, the geometry.
 //
@@ -315,6 +315,10 @@ int main(int argc, char** argv) {
         if (atom < 0 || (size_t)atom >= state.num_atoms) return "";
         return std::to_string((int)md_system_molecule_find_by_atom_idx(&sys, atom));
     };
+    const auto charge = [&](int atom) -> std::string {
+        if (atom < 0 || (size_t)atom >= state.num_atoms) return "";
+        return std::to_string(critical_point_distribution::group_charge(sys, atom));
+    };
     const auto cp_type_name = [](md_topo_critical_point_type_t type) -> std::string {
         switch (type) {
             case MD_TOPO_SPLIT_SADDLE: return "BCP";
@@ -328,7 +332,7 @@ int main(int argc, char** argv) {
     csv_row(anchors_csv, {"layer", "layer_id", "surface_id", "parameter_group", "reference_category", "cp_index", "cp_category",
                           "chemical_environment", "cp_x (angstrom)", "cp_y (angstrom)", "cp_z (angstrom)", "kind",
                           "interaction", "group", "detail", "atom_a", "atom_b", "element_a", "element_b",
-                          "molecule_a", "molecule_b", "cp_type", "rho (au)", "lambda1 (au)", "lambda2 (au)", "lambda3 (au)",
+                          "molecule_a", "molecule_b", "charge_a", "charge_b", "cp_type", "rho (au)", "lambda1 (au)", "lambda2 (au)", "lambda3 (au)",
                           "laplacian (au)", "finer_1", "finer_2", "finer_3"});
     for (uint32_t i = 0; i < (uint32_t)graph.num_vertices; ++i) {
         const nci_surface::Family family = nci_surface::family_of(labels[i]);
@@ -353,6 +357,7 @@ int main(int argc, char** argv) {
                               critical_point_distribution::kind_name(label.kind), label.interaction, label.group, label.detail,
                               std::to_string(label.atom[0]), std::to_string(label.atom[1]),
                               element(label.atom[0]), element(label.atom[1]), molecule(label.atom[0]), molecule(label.atom[1]),
+                              charge(label.atom[0]), charge(label.atom[1]),
                               cp_type_name(graph.types[i]), number(v.value), number(v.hessian_eigenvalues[0]),
                               number(v.hessian_eigenvalues[1]), number(v.hessian_eigenvalues[2]),
                               number(v.hessian_eigenvalues[0] + v.hessian_eigenvalues[1] + v.hessian_eigenvalues[2]),
