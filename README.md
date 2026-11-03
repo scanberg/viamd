@@ -232,8 +232,8 @@ radius, resolution, connected regions, opacity and the colour scale, then in
 CP-adaptive mode a compact per-type radius table.
 
 The NCI types come from the CP classification: a contact CP's type is its
-branch under Contacts in the CP tree. Hydrogen bonds and halogen bonds are their
-own types; π···π, C-H···π and X-H···π are all π interactions, so every π contact
+branch under Contacts in the CP tree. Hydrogen bonds and σ-hole bonds (halogen, chalcogen, pnictogen, tetrel) are
+their own types; π···π, C-H···π and X-H···π are all π interactions, so every π contact
 shares one radius; C-H···X, H···H and other contacts are other contacts. Rings
 and cages keep their own types. The settings table lists the CP types. Bond, bond-path and attractor CPs
 anchor no NCI surface, because their density is far above any NCI cutoff. CPs in
@@ -247,7 +247,7 @@ radius. Calibrated type radii are:
 | Rings | 2.0 |
 | π interactions (π···π, C-H···π, X-H···π) | 3.7 |
 | Cages | 2.0 |
-| Halogen bonds | 2.2 (provisional, uncalibrated) |
+| σ-hole bonds | 2.2 (provisional, uncalibrated) |
 
 Other contacts and unassigned CPs use r=2.7 until they are calibrated. The
 displayed isovalue and cutoff default to s=0.7 and ρ<0.07 in both modes, the
@@ -256,8 +256,9 @@ share the cutoff and radius, but not s: with connected regions, the scatter's
 regions grow to the **scatter s** (1.0 by default, the reference's), so the
 scatter plot covers what the reference map does while the surface stays at its
 own isovalue, marked by the isovalue line in the plot. The reference statistics
-use their own extraction at the reference settings (s=1.0, ρ<0.05, the type
-radius), independent of the displayed ones. All defaults are defined together in
+use their own uniform extraction (s ≤ 1.0, ρ ≤ 0.07, R = 2.7 Bohr for every CP
+type, both signs of λ2, each sample assigned to its nearest CP), independent of
+the displayed ones. All defaults are defined together in
 `src/components/topology/nci_surface_core.{h,cpp}`. Type regions are
 visualization choices; they do not assign a unique physical extent to an
 interaction.
@@ -282,7 +283,7 @@ chips under the plot. Click a point or an interaction's name to make it the
 active one for the guides: the isovalue and colour-range lines.
 Dragging the isovalue line edits the isovalue of every layer; the line is in
 the layer's colour. Each interaction always has the same colour (hydrogen
-bonds blue, π interactions red, rings green, halogen bonds purple, other contacts
+bonds blue, π interactions red, rings green, σ-hole bonds purple, other contacts
 orange, cages brown); layer colours are chosen apart from those. Outlines
 indicate a mass level of a smoothed sample density, not a physical region
 boundary.
@@ -294,8 +295,9 @@ set in the inspector below the list. The **Full system** is the CP reference:
 like any layer, it can stay drawn under the shown layer. A **Reference** row
 above the layers shows the built-in reference map, independent of the loaded
 system: per CP category (hydrogen bonds, rings, π interactions, other), the pooled
-(sign(λ2)ρ, s) density of reference extractions (s ≤ 1.0, ρ ≤ 0.05, the
-category's radius) over VeloxChem calculations, each system weighing the same:
+(sign(λ2)ρ, s) density of uniform reference extractions (s ≤ 1.0 as a hard cut,
+ρ ≤ 0.07, R = 2.7 Bohr around every CP, both signs of λ2, each sample to its
+nearest NCI CP) over VeloxChem calculations, each system weighing the same:
 the S66 dimers at their eight S66x8 separations (B3LYP-D4/def2-SVP; each dimer
 weighs one system) and 49 larger test calculations (proteins, G-quadruplex,
 cages, helicenes, etc.), which add the strained intramolecular contacts small
@@ -444,9 +446,21 @@ and as a prefix elsewhere ("Bond: C aromatic – C aromatic"):
   - X–H···π / C–H···π: such an H, or an H on C, to an atom of an aromatic ring
     (same angle).
   - C–H···X: an H on C to N/O/F/S/Cl/Br/I (same angle).
-  - H···H, Halogen bond (C–X···Y above 140 degrees, X = Cl/Br/I, Y = N/O/S),
-    π···π (atoms of different aromatic rings, or sp2/sp atoms bonded to one, such
+  - Hydrogen bond acceptors also include P and Se.
+  - Dihydrogen bond: H on B/Si/Ge or a metal to H on N/O/F/S; other H···H is H···H.
+  - σ-hole bonds: Halogen, Chalcogen, Pnictogen or Tetrel bond when the largest
+    R–X···Y angle is above 140 degrees (tetrel: sp3 C above 160 degrees) towards a
+    nucleophile Y; Halogen···halogen (type I) when both C–X···X angles agree within
+    15 degrees.
+  - Cation···π (metal or ammonium N to an aromatic atom), Metal contact (other
+    metal contacts), Anion···π (isolated anion) and Lone pair···π (non-aromatic
+    acceptor) over an aromatic atom.
+  - π···π (atoms of different aromatic rings, or sp2/sp atoms bonded to one, such
     as stacked carbonyls), else Other contact.
+  In the NCI layers, the π contacts (π···π, X–H···π, C–H···π, Cation/Anion/Lone
+  pair···π) are π interactions, the σ-hole bonds are one type, and
+  Halogen···halogen, Dihydrogen bond, Metal contact, C–H···X, H···H and Other
+  contact are other contacts.
 - Bond path (~): the same, when the system has no connectivity.
 - Ring: an RCP within 0.50 Angstrom of the centroid of exactly one perceived ring
   (3-7 atoms), named by aromaticity, size and composition ("Aromatic 6-ring C6").
@@ -465,7 +479,9 @@ and as a prefix elsewhere ("Bond: C aromatic – C aromatic"):
   or several do, the ring CP stays unassigned. Bonded
   cycles are named "Bonded 8-ring"; cycles closed by contacts are named by their
   strongest contact class ("Closed by Hydrogen bond", in the order Hydrogen bond,
-  Halogen bond, π···π, X–H···π, C–H···π, C–H···X, H···H, Other contact), with size,
+  Halogen, Chalcogen, Pnictogen and Tetrel bond, Halogen···halogen, Cation···π,
+  Anion···π, π···π, X–H···π, Lone pair···π, C–H···π, Dihydrogen bond, Metal
+  contact, C–H···X, H···H, Other contact), with size,
   composition and contacts in the details. A ring CP with a
   density within 2% of a BCP on its ring is marked near-degenerate: the pair is
   close to annihilating.

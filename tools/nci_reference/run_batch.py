@@ -6,9 +6,10 @@ distinct geometry with --per-geometry), preferring *.scf.results.h5, skipping NT
 CLI on each. Resumable: a molecule whose -density.csv exists is skipped. When a file cannot be used the next
 candidate of the same molecule is tried. Ends by running nci_reference_regions.py over all outputs.
 
-With --settings TAG:S:RHO[:R] (repeatable) every category uses s <= S, rho <= RHO and radius R (default: each
-category's radius), one
-NAME-TAG-density.csv per set from a single critical point search, pooled into OUT_DIR/regions-TAG.
+Without --settings the CLI uses the uniform reference settings (s <= 1.0, rho <= 0.07, R 2.7 Bohr for every CP, each
+sample to its nearest CP). With --settings TAG:S:RHO[:R] (repeatable) every CP uses s <= S, rho <= RHO and radius R
+(default 2.7), one NAME-TAG-density.csv (and NAME-TAG-cp-density.csv) per set from a single critical point search,
+pooled into OUT_DIR/regions-TAG.
 
 Usage: run_batch.py ROOT OUT_DIR [--cli PATH] [--spacing BOHR] [--max-atoms N] [--timeout S] [--jobs N]
                     [--settings TAG:S:RHO[:R] ...] [--per-geometry] [--exclude SUBSTRING ...] [--dry-run]
@@ -156,7 +157,7 @@ def main():
         if tag:
             densities = [f for f in os.listdir(args.out) if f.endswith(f"-{tag}-density.csv")]
         else:
-            densities = [f for f in os.listdir(args.out) if f.endswith("-density.csv")]
+            densities = [f for f in os.listdir(args.out) if f.endswith("-density.csv") and not f.endswith("-cp-density.csv")]
         if not densities:
             code = 1
             continue

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Pool VIAMD NCI -density.csv files (GUI exports or viamd_nci_reference output) into per-category expected regions (Ramachandran-like).
 
-Each export's category reference rows (sample_scope=category, extraction_settings=category_reference_basin: each
-category flooded within its CPs' sign(lambda2) basin; older category_reference_defaults exports are skipped)
+Each export's category reference rows (sample_scope=category, extraction_settings=category_reference_uniform: one
+extraction at s <= 1.0, rho <= 0.07, 2.7 Bohr around every NCI CP, both signs of lambda2, each sample to its nearest
+CP; exports of the older per-category settings, category_reference_defaults or _basin, are skipped)
 are rebinned onto a common (sign(lambda2)rho, s) grid, normalised per system so each system weighs the same,
 summed, smoothed lightly as the app does, and contoured at fractions of the pooled mass (the highest-density
 region holding 90 % of the volume: the edge, as in the app) with its 50 % core.
@@ -32,6 +33,7 @@ MASS_LEVELS = [0.5, 0.9]
 
 
 DENSITY_COLUMN = "sign(lambda2)rho_min (au)"
+REFERENCE_SETTINGS = "category_reference_uniform"
 
 
 def density_file(path):
@@ -61,10 +63,10 @@ def load(path):
         for row in csv.DictReader(f):
             if row["sample_scope"] != "category":
                 continue
-            if row["extraction_settings"] == "category_reference_defaults":
+            if row["extraction_settings"] in ("category_reference_defaults", "category_reference_basin"):
                 stale = True
                 continue
-            if row["extraction_settings"] != "category_reference_basin":
+            if row["extraction_settings"] != REFERENCE_SETTINGS:
                 continue
             lo = float(row["sign(lambda2)rho_min (au)"])
             hi = float(row["sign(lambda2)rho_max (au)"])
@@ -77,7 +79,7 @@ def load(path):
                 if overlap > 0:
                     out[row["category"]][y, x] += overlap * v
     if stale and not out:
-        print(f"{path}: exported before the sign(lambda2) basin references; re-export it with the current build")
+        print(f"{path}: exported before the uniform references; re-export it with the current build")
     return out
 
 

@@ -5,9 +5,10 @@
 // into the reference categories (hydrogen bonds, rings, pi interactions, other), and one scatter-only extraction over
 // every NCI CP with the uniform reference settings (nci_surface::reference_params: s <= 1.0, rho <= 0.07, 2.7 Bohr,
 // both signs of lambda2), each sample to its nearest CP. Writes, in the format of the GUI export,
-// <prefix>-density.csv (per category) and <prefix>-anchors.csv (per CP, with its atoms and contact class) for
-// nci_reference_regions.py; <prefix>-cp-density.csv, the density per CP, so CPs may be regrouped later without
-// recomputing; and <prefix>.xyz, the geometry.
+// <prefix>-density.csv (per category) and <prefix>-anchors.csv (per CP: its label at every level of detail, atoms,
+// elements, molecules, contact class, type, rho and Hessian eigenvalues) for nci_reference_regions.py;
+// <prefix>-cp-density.csv, the density per CP, and <prefix>-samples.bin, up to 50,000 raw samples with their CP, so
+// CPs may be regrouped and the map rebinned later without recomputing; and <prefix>.xyz, the geometry.
 //
 // The density is evaluated on the CPU (md_topo_gto_density_derivatives), only within reach of the anchors.
 
@@ -70,11 +71,11 @@ void usage() {
             "usage: viamd_nci_reference [--spacing BOHR] [--max-samples N] [--rho-min AU] [--settings TAG:S:RHO[:R] ...]\n"
             "                           INPUT.h5 OUTPUT_PREFIX\n"
             "Writes OUTPUT_PREFIX-density.csv and OUTPUT_PREFIX-anchors.csv: the NCI category references of the\n"
-            "calculation, as VIAMD's NCI export writes them; OUTPUT_PREFIX-cp-density.csv, the same per CP; and\n"
-            "OUTPUT_PREFIX.xyz. --spacing defaults to 0.2 Bohr (Medium).\n"
+            "calculation, as VIAMD's NCI export writes them; OUTPUT_PREFIX-cp-density.csv, the same per CP;\n"
+            "OUTPUT_PREFIX-samples.bin, raw samples with their CP; and OUTPUT_PREFIX.xyz. --spacing defaults to 0.2 Bohr (Medium).\n"
             "--settings (repeatable) uses s <= S, rho <= RHO and radius R (Bohr, default %.1f) instead of the\n"
             "reference's (s <= %.1f, rho <= %.2f). Each set writes OUTPUT_PREFIX-TAG-density.csv and\n"
-            "OUTPUT_PREFIX-TAG-cp-density.csv; the critical points are searched once for all sets.\n",
+            "OUTPUT_PREFIX-TAG-cp-density.csv and -samples.bin; the critical points are searched once for all sets.\n",
             nci_surface::reference_radius, nci_surface::reference_scatter_s, nci_surface::reference_rho_max);
 }
 
@@ -310,10 +311,25 @@ int main(int argc, char** argv) {
         const str_t symbol = md_atomic_number_symbol(md_atom_atomic_number(&sys.atom, atom));
         return std::string(symbol.ptr, symbol.len);
     };
+    const auto molecule = [&](int atom) -> std::string {
+        if (atom < 0 || (size_t)atom >= state.num_atoms) return "";
+        return std::to_string((int)md_system_molecule_find_by_atom_idx(&sys, atom));
+    };
+    const auto cp_type_name = [](md_topo_critical_point_type_t type) -> std::string {
+        switch (type) {
+            case MD_TOPO_SPLIT_SADDLE: return "BCP";
+            case MD_TOPO_JOIN_SADDLE: return "RCP";
+            case MD_TOPO_MINIMUM: return "CCP";
+            case MD_TOPO_MAXIMUM: return "NCP";
+            default: return "";
+        }
+    };
     std::string anchors_csv;
     csv_row(anchors_csv, {"layer", "layer_id", "surface_id", "parameter_group", "reference_category", "cp_index", "cp_category",
                           "chemical_environment", "cp_x (angstrom)", "cp_y (angstrom)", "cp_z (angstrom)", "kind",
-                          "interaction", "group", "detail", "atom_a", "atom_b", "element_a", "element_b"});
+                          "interaction", "group", "detail", "atom_a", "atom_b", "element_a", "element_b",
+                          "molecule_a", "molecule_b", "cp_type", "rho (au)", "lambda1 (au)", "lambda2 (au)", "lambda3 (au)",
+                          "laplacian (au)", "finer_1", "finer_2", "finer_3"});
     for (uint32_t i = 0; i < (uint32_t)graph.num_vertices; ++i) {
         const nci_surface::Family family = nci_surface::family_of(labels[i]);
         const nci_surface::Family parameter_family = nci_surface::parameter_family_of(labels[i]);
@@ -329,13 +345,18 @@ int main(int argc, char** argv) {
         path.push_back(critical_point_distribution::display_name(labels[i]));
         for (const std::string& part : path) environment += (environment.empty() ? "" : " > ") + part;
         const auto& label = labels[i];
+        const auto finer = [&](size_t k) { return k < label.finer.size() ? label.finer[k] : std::string(); };
         csv_row(anchors_csv, {"Full system", "-1", "0", nci_surface::family_name(parameter_family),
                               category >= 0 ? category_names[category] : "Unassigned",
                               std::to_string(i), nci_surface::family_name(family), environment,
                               number(v.x * bohr_to_angstrom), number(v.y * bohr_to_angstrom), number(v.z * bohr_to_angstrom),
                               critical_point_distribution::kind_name(label.kind), label.interaction, label.group, label.detail,
                               std::to_string(label.atom[0]), std::to_string(label.atom[1]),
-                              element(label.atom[0]), element(label.atom[1])});
+                              element(label.atom[0]), element(label.atom[1]), molecule(label.atom[0]), molecule(label.atom[1]),
+                              cp_type_name(graph.types[i]), number(v.value), number(v.hessian_eigenvalues[0]),
+                              number(v.hessian_eigenvalues[1]), number(v.hessian_eigenvalues[2]),
+                              number(v.hessian_eigenvalues[0] + v.hessian_eigenvalues[1] + v.hessian_eigenvalues[2]),
+                              finer(0), finer(1), finer(2)});
     }
 
     // The geometry, so the CPs can be reclassified later
@@ -359,6 +380,9 @@ int main(int argc, char** argv) {
     std::string cp_header;
     csv_row(cp_header, {"cp_index", "reference_category", "bin_x", "bin_y", "volume (bohr^3)"});
     std::vector<std::string> density_csv(opt.sets.size(), header), cp_density_csv(opt.sets.size(), cp_header);
+    // Raw samples: "NCISAMP1", uint64 count, uint64 eligible count (the samples are a uniform random subset of it),
+    // float64 voxel volume (bohr^3), then per sample float32 sign(lambda2)rho, float32 s, uint32 cp_index
+    std::vector<std::string> samples_bin(opt.sets.size());
     printf("%s: %zu atoms, %zu AOs, %zu CPs (%zu NCI) in %.1f s (%s)\n", opt.input.c_str(), (size_t)state.num_atoms, num_ao,
            (size_t)graph.num_vertices, anchors.size() / 3, cp_seconds, info.complete ? "complete" : "incomplete");
     for (int c = 0; c < category_count; ++c) printf("  %-15s %5zu CPs\n", category_names[c], category_cps[c]);
@@ -422,6 +446,22 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "%s: the extraction failed\n", opt.input.c_str());
                 return 1;
             }
+            {
+                std::string& out = samples_bin[k];
+                const auto put = [&](const void* p, size_t n) { out.append((const char*)p, n); };
+                const uint64_t count = scatter.s.size(), eligible = scatter.eligible_count;
+                const double voxel = grid.spacing[0] * grid.spacing[1] * grid.spacing[2];
+                out = "NCISAMP1";
+                put(&count, 8);
+                put(&eligible, 8);
+                put(&voxel, 8);
+                for (size_t p = 0; p < count; ++p) {
+                    const uint32_t cp = p < scatter.anchor.size() && scatter.anchor[p] < anchor_cp.size() ? anchor_cp[scatter.anchor[p]] : UINT32_MAX;
+                    put(&scatter.signed_rho[p], 4);
+                    put(&scatter.s[p], 4);
+                    put(&cp, 4);
+                }
+            }
             const nci_surface::ScatterDensity& density = scatter.density;
             if (!(density.rho_extent > 0.0f) || density.volume.size() != (size_t)bins * bins) continue;
             std::array<std::vector<double>, category_count> volume;
@@ -468,7 +508,9 @@ int main(int argc, char** argv) {
     if (!write(opt.prefix + "-anchors.csv", anchors_csv) || !write(opt.prefix + ".xyz", xyz)) return 1;
     for (size_t k = 0; k < opt.sets.size(); ++k) {
         const std::string stem = opt.prefix + (opt.sets[k].tag.empty() ? "" : "-" + opt.sets[k].tag);
-        if (!write(stem + "-density.csv", density_csv[k]) || !write(stem + "-cp-density.csv", cp_density_csv[k])) return 1;
+        if (!write(stem + "-density.csv", density_csv[k]) || !write(stem + "-cp-density.csv", cp_density_csv[k]) ||
+            (!samples_bin[k].empty() && !write(stem + "-samples.bin", samples_bin[k])))
+            return 1;
         printf("  wrote %s-density.csv\n", stem.c_str());
     }
     printf("  done in %.1f s\n", seconds_since(t_start));
