@@ -1,0 +1,3055 @@
+// CORRELATION
+//
+// One series plotted against another over the frames of the trajectory, in one scatter plot.
+//
+// What is plotted is a stack of LAYERS the user defines, as in the Ramachandran window (without its reference). A layer
+// pairs series dropped from the timeline (or the dataset) on its X and Y axes: one against one, one against several
+// (1 x n, n x 1), or several against as many, pairwise (x_i against y_i). A series of a population (one value per
+// member, as a distance per pair of atoms) is taken member by member, paired by index with the other side's members, or
+// against the other side's single value. A layer is over some of the frames: the current one, all of them, or those of
+// a timeline period; and drawn as points, as contours of their density (at levels of the fraction of the samples they
+// enclose), or as a heat map of it. The contours of a layer of several pairs may be split by pair: one density per pair,
+// of its own samples, in the colour of its series (four pairs to a job, one in each channel of the density map); those of
+// a single pair of a population (1 x n), by member, likewise, with its statistics, caption entry and fit line. The layers are
+// drawn bottom up, the first one on top.
+//
+// One plot is of one kind of AXES: the series on an axis of a layer are of one unit, periodic of one period or not (a
+// series unlike them is refused), and the layers shown are those whose axes are alike the selected layer's. The list
+// groups the layers by their axes, under a header that tells them; the others are dimmed. Selecting (or showing) a layer
+// of other axes turns the plot to them: it is shown, and the layers of the axes the plot had are hidden.
+//
+// The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
+// own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
+// Their Pearson correlation, and the least squares line through them, are found pair by pair, and their Spearman rank
+// correlation (of an evenly spaced subsample past a million). The correlation of a periodic series (an angle) is the
+// circular one: Jammalamadaka-SenGupta's against another angle, Mardia's against a linear value (unsigned, so with
+// Pearson's against the cosine and the sine of the angle, signed). Successive frames being alike, the samples are worth
+// fewer independent ones: their effective number (Bretherton et al. 1999, from the lag-1 autocorrelations of X and Y over
+// the times, members not counted apart) gives the 95 % interval of Pearson's r, and what is not told from no correlation
+// is dimmed. The pairing and these statistics are in correlation_core (tested on their own). An axis of periodic
+// values is periodic, as Ramachandran's: the points and densities repeat a period apart, past the edges of the turn
+// where it is cut (thin lines). The cut is shared with the timelines of such values (plot_periodic.h; its menu, here or
+// there, moves it, and the view turns with it), but not the view: panned or zoomed here, they stay where they are. Out
+// to two turns along a periodic axis; of two alike (angles against angles), of equal scales, out to a turn along the
+// shorter side. The labels of the axes are within the plot, as Ramachandran's. Only series over time are plotted, not
+// distributions. The density of the samples is estimated off the main thread
+// (density_map.h), over a bounded domain of their own extent (a period along a periodic axis, around which it wraps),
+// smoothed with a gaussian of a fraction of it.
+//
+// Under the plot, the LAG view: the correlation of each pair of Y at frame f + lag against X at frame f, for lags up to a
+// bound either way, over the layer's frames (members pooled; a few of them only past a budget of samples).
+//
+//   drag a series          from the timeline onto an axis of the plot (or a list of the
+//                          inspector): it is added to the selected layer
+//   hover                  says what the point under the pointer is, and shows it in the viewport
+//   click                  on a point over time, goes to its frame
+//   shift-drag / -click    selects the atoms the series of the points boxed are of (script properties), as the
+//                          Ramachandran plot selects residues; with the right button deselects; a right click on nothing
+//                          clears the selection
+//   hover a caption entry  under the plot (the pairs of the layer the axes are of, with their correlations): its pair
+//                          or member stands out on the plot and in the lag view, its atoms in the viewport
+//   double-click           fits the view: along a periodic axis, a whole turn from the cut; along another, all but the
+//                          farthest 0.5 % of the samples either way
+//   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
+//                          layer, its frames
+
+#include <core/md_common.h>
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_log.h>
+#include <core/md_vec_math.h>
+#include <core/md_array.h>
+#include <core/md_bitset.h>
+#include <core/md_hash.h>
+#include <md_attributes.h>
+
+#include <viamd_event.h>
+#include <viamd.h>
+#include <serialization_utils.h>
+#include <timeline_periods_ui.h>
+#include <property_grid.h>
+#include <gfx/gl.h>
+#include <task_system.h>
+#include <density_map.h>
+#include <layer_groups.h>
+#include <plot_series.h>
+#include <plot_periodic.h>
+
+#include "correlation_core.h"
+
+#include <imgui_widgets.h>
+#include <implot_widgets.h>
+#include <imgui_internal.h>
+#include <implot_internal.h>
+
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <vector>
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
+
+namespace correlation {
+
+// ## Constants
+
+constexpr int MAX_LAYERS        = 16;
+constexpr int MAX_AXIS_SERIES   = 16;       // On each axis of a layer
+constexpr int MAX_PAIRS         = MAX_AXIS_SERIES;
+constexpr int MAX_LEVELS        = DENSITY_MAP_MAX_LEVELS;
+constexpr size_t MAX_POINTS     = 100000;   // Of a layer of points: samples are skipped beyond
+constexpr size_t MAX_RANKED     = 1000000;  // Of a pair, ranked for its Spearman correlation: samples are skipped beyond
+constexpr int    MAX_LAG        = 1000;     // Frames, either way, of the correlation against the lag
+constexpr double LAG_BUDGET     = 2e7;      // Samples times lags, of a pair: members are skipped beyond
+
+// Colours for new layers, the least used first
+static const vec4_t layer_palette[] = {
+    {0.95f, 0.95f, 0.95f, 1.0f},
+    {1.00f, 0.62f, 0.20f, 1.0f},
+    {0.35f, 0.80f, 1.00f, 1.0f},
+    {0.95f, 0.42f, 0.80f, 1.0f},
+    {0.55f, 0.90f, 0.35f, 1.0f},
+    {1.00f, 0.88f, 0.30f, 1.0f},
+    {0.68f, 0.58f, 1.00f, 1.0f},
+    {1.00f, 0.42f, 0.42f, 1.0f},
+};
+
+static const ImVec4 error_color = {1.00f, 0.43f, 0.43f, 1.0f};
+
+// ## Layers
+
+enum LayerFrames : int {
+    LayerFrames_Current = 0,    // The frame shown
+    LayerFrames_All,            // The whole trajectory
+    LayerFrames_Period,         // The frames of a timeline period, where they are now
+    LayerFrames_Count,
+};
+
+enum LayerStyle : int {
+    LayerStyle_Points = 0,
+    LayerStyle_Contours,
+    LayerStyle_Heatmap,
+    LayerStyle_Count,
+};
+
+enum PointColoring : int {
+    PointColoring_Layer = 0,    // The layer's colour
+    PointColoring_Pair,         // Each pair (or member) its own
+    PointColoring_Time,         // The time, through the layer's colour map
+    PointColoring_Count,
+};
+
+static const char* style_names[LayerStyle_Count] = { "Points", "Contours", "Heatmap" };
+static const char* point_coloring_names[PointColoring_Count] = { "Layer color", "Pair", "Time" };
+
+// What a series on an axis of a layer resolved to, the last time its samples were gathered
+struct SlotInfo {
+    bool  ok = false;
+    int   dim = 1;
+    SeriesPeriodic periodic = {};   // Of periodic values, in the display unit
+    char  label[96] = "";
+    char  unit[32] = "";
+    char  script_ident[64] = "";
+    md_script_vis_ref_t vis_ref = {};
+    ImVec4 color = {1, 1, 1, 1};
+};
+
+// The samples of one pair, pooled over its members: what its correlation and line are found from
+struct PairStats {
+    uint64_t n = 0;
+    double   mx = 0, my = 0;
+    double   sxx = 0, syy = 0, sxy = 0;    // Sums of the products of the deviations
+    float    x_min = 0, x_max = 0;
+    int      members = 0;
+
+    inline void add(double x, double y) {
+        if (n == 0) {
+            x_min = x_max = (float)x;
+        } else {
+            x_min = MIN(x_min, (float)x);
+            x_max = MAX(x_max, (float)x);
+        }
+        n += 1;
+        const double dx = x - mx;
+        const double dy = y - my;
+        mx += dx / (double)n;
+        my += dy / (double)n;
+        sxx += dx * (x - mx);
+        syy += dy * (y - my);
+        sxy += dx * (y - my);
+    }
+    // Found once the samples are in (pair_statistics)
+    size_t beg = 0, end = 0;        // Its samples, in the layer's arrays
+    bool   rho_valid = false;       // Spearman's, of the ranks
+    double rho = 0;
+    uint64_t rho_n = 0;             // The samples ranked: at most MAX_RANKED
+    int    circular = 0;            // Axes of periodic values: then rc in place of Pearson's
+    bool   rc_valid = false;        // One: Mardia's circular-linear (0..1). Two: Jammalamadaka-SenGupta's circular (-1..1)
+    double rc = 0;
+    bool   parts_valid = false;     // Circular-linear: Pearson's of the linear value against the cosine and the sine
+    double r_cos = 0, r_sin = 0;
+    // What the samples are worth, successive ones being alike: the times (not the members, which move together) by the
+    // lag-1 autocorrelations of X and Y (Bretherton). And the 95 % interval of Pearson's r it gives.
+    double ax = 0, ay = 0;
+    double n_eff = 0;
+    bool   ci_valid = false;
+    double ci_lo = 0, ci_hi = 0;
+    // Whether the correlation is told from none: its interval excludes 0. True when there is none to tell.
+    bool   significant() const { return !ci_valid || ci_lo > 0.0 || ci_hi < 0.0; }
+
+    bool   has_r()     const { return n >= 3 && sxx > 0.0 && syy > 0.0; }
+    double r()         const { return has_r() ? sxy / sqrt(sxx * syy) : 0.0; }
+    bool   has_corr()  const { return circular ? rc_valid : has_r(); }
+    double corr()      const { return circular ? rc : r(); }
+    // No line through values around a circle
+    bool   has_fit()   const { return n >= 2 && sxx > 0.0 && !circular; }
+    double slope()     const { return has_fit() ? sxy / sxx : 0.0; }
+    double intercept() const { return my - slope() * mx; }
+};
+
+// The density of some of the samples of a layer, on the GPU, over its domain, and what it is of: of all of them in
+// channel 0, or split by group (pair, or member of a single pair of a population), group DENSITY_MAP_CHANNELS g + c in
+// channel c of part g
+struct DensityPart {
+    DensityMapSlot slot;
+    bool split = false;             // Of the result: by group
+};
+
+constexpr int MAX_GROUPS = 32;      // Members a pair of a population is split into, at most
+constexpr int MAX_PARTS = (MAX_GROUPS + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS;
+static_assert(MAX_GROUPS >= MAX_PAIRS, "the pairs are groups too");
+
+struct Layer {
+    uint32_t id = 0;                // Unique while it lives, never 0
+    RepresentationNode node = {};   // Where it is in the list (layer_groups.h): at the top level, there are no groups
+    char     name[64] = "";         // Empty: named after what it shows (layer_label)
+    bool     visible = true;
+
+    SeriesKey xs[MAX_AXIS_SERIES] = {};
+    SeriesKey ys[MAX_AXIS_SERIES] = {};
+    int      num_x = 0;
+    int      num_y = 0;
+
+    LayerFrames frames = LayerFrames_All;
+    uint32_t    period = 0;         // Of LayerFrames_Period, by id
+
+    LayerStyle style = LayerStyle_Points;
+    vec4_t   color = {1, 1, 1, 1};
+    float    opacity = 1.0f;
+
+    // Contours
+    bool     fill = false;
+    bool     lines = true;
+    float    line_width = 1.5f;            // Pixels
+    bool     split_pairs = true;           // One density per pair, in its colour, rather than one of them all
+    int      num_levels = 3;
+    float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };   // Fractions of the samples enclosed, increasing
+    float    bandwidth = 3.0f;             // % of the extent of the samples along each axis: the sigma of the smoothing
+
+    // Heatmap (and points by time)
+    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    bool     log_scale = false;
+
+    // Points
+    PointColoring point_coloring = PointColoring_Pair;
+    float    point_size = 4.0f;            // Pixels across
+    bool     show_fit = false;             // The least squares line of each pair
+
+    // ### Derived, not saved
+
+    // The samples, gathered when what they are of changes
+    md_array(float)    sx = 0;
+    md_array(float)    sy = 0;
+    md_array(float)    st = 0;      // Time
+    md_array(uint32_t) sframe = 0;  // The frame nearest
+    md_array(uint16_t) spair = 0;
+    md_array(uint16_t) smember = 0;
+    uint64_t data_key = 0;          // Of what they were gathered from
+    uint64_t data_hash = 0;         // Of the samples themselves
+    bool     data_valid = false;
+    const char* data_error = "";    // Why there are none
+    int      num_pairs = 0;
+    PairStats pairs[MAX_PAIRS] = {};
+    SlotInfo x_info[MAX_AXIS_SERIES] = {};
+    SlotInfo y_info[MAX_AXIS_SERIES] = {};
+    float    x_min = 0, x_max = 0, y_min = 0, y_max = 0;
+    float    t_min = 0, t_max = 0;
+    bool     members_truncated = false;     // Populations of different sizes paired: the fewer members of the two
+    bool     pair_colors_clash = false;     // Pairs coloured by the colour map rather than their series (pair_color)
+
+    // The density: of all the samples in the first part, or of each pair (layer_splits)
+    DensityPart parts[MAX_PARTS];
+
+    uint32_t point_stride = 1;      // Samples skipped to keep the points within MAX_POINTS
+
+    // The correlation of each pair against the lag of Y behind X (update_lag): num_pairs rows of 2 lag_max + 1, from
+    // -lag_max, NaN where there is none
+    std::vector<float> lag_r;
+    int      lag_max = 0;
+    uint64_t lag_key = 0;
+    bool     lag_skipped = false;   // Some members were left out, to keep within LAG_BUDGET
+
+    // A single pair of a population (against a value or another): its members apart, as pairs are (layer_by_member).
+    // The samples of member m are member_order[member_off[m], member_off[m + 1]), in the order of their frames.
+    std::vector<uint32_t>  member_order;
+    std::vector<uint32_t>  member_off;
+    std::vector<PairStats> member_stats;
+
+    // What its axes are (layer_axes_sig): the layers alike share the plot, 0 while an axis has no series (available)
+    uint64_t axes_sig = 0;
+};
+
+// What an axis is of: the unit of the values, and whether they are periodic, of which period. One plot shows one of each:
+// the series on an axis of a layer are alike, and the layers shown are those alike the selected one (the list groups them).
+static inline bool slot_periodic(const SlotInfo& s) { return series_periodic_valid(s.periodic); }
+static inline bool slots_alike(const SlotInfo& a, const SlotInfo& b) {
+    if (strcmp(a.unit, b.unit) != 0 || slot_periodic(a) != slot_periodic(b)) return false;
+    return !slot_periodic(a) || series_periodic_equal(a.periodic, b.periodic);
+}
+static inline uint64_t slot_axis_hash(const SlotInfo& s, uint64_t h) {
+    h = md_hash64(s.unit, strlen(s.unit), h);
+    if (slot_periodic(s)) {
+        const double p[2] = { s.periodic.beg, s.periodic.end };
+        h = md_hash64(p, sizeof(p), h ^ 0x9e37);
+    }
+    return h;
+}
+static inline uint64_t layer_axes_sig(const Layer& l) {
+    if (l.num_x == 0 || l.num_y == 0 || !l.x_info[0].ok || !l.y_info[0].ok) return 0;
+    return slot_axis_hash(l.y_info[0], slot_axis_hash(l.x_info[0], 0x51) ^ 0xa7) | 1;
+}
+// The unit of an axis as the list and the plot tell it: and a turn, of periodic values
+static inline void slot_axis_label(char* buf, size_t cap, const SlotInfo& s) {
+    snprintf(buf, cap, "%s%s", s.unit[0] ? s.unit : "no unit", slot_periodic(s) ? " " ICON_FA_ROTATE : "");
+}
+
+// What the contours split into, the caption lists and the fit lines are of: the pairs, or of a single pair of a population
+// of at most MAX_GROUPS members, its members
+static inline bool layer_by_member(const Layer& l) {
+    return l.num_pairs == 1 && l.pairs[0].members > 1 && l.member_stats.size() == (size_t)l.pairs[0].members;
+}
+static inline int layer_num_groups(const Layer& l) { return layer_by_member(l) ? l.pairs[0].members : l.num_pairs; }
+static inline const PairStats& group_stats(const Layer& l, int g) { return layer_by_member(l) ? l.member_stats[g] : l.pairs[g]; }
+
+// How a layer's axes pair up (correlation_core.h)
+static inline CorrShape layer_shape(const Layer& l) { return corr_shape(l.num_x, l.num_y); }
+static inline int layer_num_pairs(const Layer& l) { return corr_num_pairs(l.num_x, l.num_y); }
+static inline int pair_x(const Layer& l, int p) { return corr_pair_slot(l.num_x, p); }
+static inline int pair_y(const Layer& l, int p) { return corr_pair_slot(l.num_y, p); }
+
+// ## Series keys in the workspace: "source;variant;path"
+
+static const char* variant_names[SeriesVariant_Count] = { "values", "mean", "sigma", "extent", "aggregate" };
+
+static void key_to_str(char* buf, size_t cap, const SeriesKey& k) {
+    snprintf(buf, cap, "%s;%s;%s", series_source_name(k.source), variant_names[k.variant < SeriesVariant_Count ? k.variant : 0], k.path);
+}
+
+static bool key_from_str(SeriesKey* out, str_t s) {
+    SeriesKey k = {};
+    str_t parts[2];
+    for (int i = 0; i < 2; ++i) {
+        size_t sep = 0;
+        if (!str_find_char(&sep, s, ';')) return false;
+        parts[i] = str_substr(s, 0, sep);
+        s = str_substr(s, sep + 1);
+    }
+    if (!series_source_from_name(&k.source, parts[0], nullptr)) return false;
+    bool found = false;
+    for (int v = 0; v < SeriesVariant_Count; ++v) {
+        if (str_eq_cstr(parts[1], variant_names[v])) {
+            k.variant = (SeriesVariant)v;
+            found = true;
+        }
+    }
+    if (!found || str_empty(s)) return false;
+    str_copy_to_char_buf(k.path, sizeof(k.path), s);
+    *out = k;
+    return true;
+}
+
+// The value of member k of a series at fractional sample index fi, in its display unit. Of periodic values, the short way
+// around the circle between the samples, and possibly outside the period they are given in (cut_periodic).
+static inline double sample_at(const SeriesTemporalView& v, double fi, int k) {
+    const double period = series_periodic_valid(v.periodic) ? series_periodic_length(v.periodic) : 0.0;
+    return corr_interp(v.y, (size_t)v.stride, v.num_samples, v.y_scale, fi, k, period);
+}
+
+// A periodic value laid out where the circle is cut: at the seam of its series, where its values are least likely to be
+static inline double cut_periodic(double x, const SeriesPeriodic& p) {
+    return series_periodic_valid(p) ? periodic_wrap(x, p.seam, series_periodic_length(p)) : x;
+}
+
+// A value as it is correlated: of periodic values, its angle in radians from the beginning of the period
+static inline double to_corr_value(double v, const SeriesPeriodic& p) {
+    return series_periodic_valid(p) ? 2.0 * M_PI * (v - p.beg) / series_periodic_length(p) : v;
+}
+
+// A key as it is plotted here: the values of a population pooled over its members are its values (each member is a
+// sample anyway), and the frames are the layer's (the period of a key goes to its layer, see drop_series)
+static SeriesKey plotted_key(const SeriesKey& k) {
+    SeriesKey out = k;
+    if (out.variant == SeriesVariant_Aggregate) out.variant = SeriesVariant_Values;
+    out.period = 0;
+    return out;
+}
+
+// The time of a fractional frame, along the timeline
+static double frame_time(const ApplicationState* app, double frame) {
+    const int64_t n = (int64_t)md_array_size(app->timeline.x_values);
+    if (n <= 0) return frame;
+    const int64_t f0 = CLAMP((int64_t)frame, (int64_t)0, n - 1);
+    const int64_t f1 = CLAMP((int64_t)frame + 1, (int64_t)0, n - 1);
+    const double t = frame - floor(frame);
+    return app->timeline.x_values[f0] + (app->timeline.x_values[f1] - app->timeline.x_values[f0]) * t;
+}
+
+// The frame whose time is nearest t
+static uint32_t nearest_frame(const ApplicationState* app, double t) {
+    const float* xs = app->timeline.x_values;
+    const int64_t n = (int64_t)md_array_size(xs);
+    if (n <= 0) return 0;
+    if (t <= xs[0]) return 0;
+    if (t >= xs[n - 1]) return (uint32_t)(n - 1);
+    int64_t lo = 0, hi = n - 1;
+    while (hi - lo > 1) {
+        const int64_t mid = (lo + hi) / 2;
+        if (xs[mid] <= t) lo = mid;
+        else hi = mid;
+    }
+    return (uint32_t)(t - xs[lo] <= xs[hi] - t ? lo : hi);
+}
+
+// ## The component
+
+struct Correlation : viamd::EventHandler {
+    ApplicationState* app = nullptr;
+    bool show_window = false;
+
+    // In the order of the list (apply_tree): what is listed first is drawn on top
+    Layer layers[MAX_LAYERS];
+    int   num_layers = 0;
+    uint32_t next_layer_id = 1;
+    uint32_t selected_layer = 0;    // By id: the one the inspector shows, and that series dropped on the plot go to
+    bool  tree_dirty = false;       // The layers are to be put in the order of the list again
+    static constexpr uint32_t LIST_ID = 2;  // What its rows are dragged as (LayerNodeRef)
+
+    uint64_t system_generation = 1;  // Moves with every system loaded or freed: samples are of one of them
+
+    // How it is shown
+    bool show_sidebar = true;
+    bool show_legend = true;
+    bool show_ticks = true;
+    bool show_lag = false;          // The correlation against the lag, under the plot
+    int  max_lag = 50;              // Frames, either way
+    float lag_frac = 0.3f;          // Of the height, the lag's plot
+    int  lag_shown = 0;             // The max_lag its axis was fitted to
+    ImPlotRect viewrect = ImPlotRect(0, 1, 0, 1);
+    // What the axes are of (layer_axes_sig): of the selected layer, or while it has none, as they were. The layers shown
+    // are those alike (layer_on_axes).
+    uint64_t active_sig = 0;
+    // An axis of periodic values (update_axis_views): it turns around the circle, linked to every other plot of them
+    // (plot_periodic.h). NULL for an axis of its own (viewrect).
+    PeriodicView* axis_view[2] = {};
+    std::vector<DensityMapDraw> draw_buf;   // Of render_canvas
+    uint64_t axes_key = 0;          // Of what the axes are: the densities are over a periodic domain along those that are
+    // The cut of each periodic axis as last seen (sync_cuts): moved elsewhere (its menu, a timeline turning the circle),
+    // the view turns with it
+    const PeriodicView* cut_view[2] = {};
+    double cut_seen[2] = {};
+    ImPlotRect plot_lim = ImPlotRect(0, 1, 0, 1);   // As drawn this frame: where the copies of the points are
+    ImVec2 plot_margin = ImVec2(0, 0);              // A few pixels, in plot units: points just past an edge show
+    float plot_aspect = 0.0f;       // Of the plot last frame: what a view of equal axes is fitted to
+    bool  view_fitted = false;      // And not moved since: fitted again when the plot changes shape (of equal axes)
+    bool  fit_view = true;          // To the samples of the layers shown, next frame
+    // The group of a layer whose entry of the caption is hovered: it stands out on the plot (as of the last frame, the
+    // caption being under the plot). The layer by id, the group -1 for none.
+    uint32_t focus_layer = 0, focus_layer_next = 0;
+    int      focus_group = -1, focus_group_next = -1;
+    uint64_t fit_key = 0;           // Of the series of the layers shown: fitted again when they change
+
+    // The highlight is whoever sets it to clear: what this window highlighted and no longer does is cleared once
+    bool  owns_highlight = false;
+    bool  highlights_now = false;
+
+    // Box selection, as Ramachandran's: of the atoms the series of the points boxed are of
+    struct {
+        bool active = false;
+        SelectionOperator op = SelectionOperator::Or;
+        ImPlotPoint p0, p1;
+        int    click_layer = -1;    // The point pressed on, which a click (a box of no size) takes
+        size_t click_idx = 0;
+    } box;
+
+    // The atoms of a script property (or of a member of it), by what it is in which compilation: found once
+    struct AtomsEntry {
+        uint64_t key;
+        md_bitset_t atoms;
+    };
+    md_array(AtomsEntry) atoms_cache = nullptr;
+
+    DensityMapCanvas canvas = {};
+
+    bool read_layers = false;       // While a workspace is read: whether it had any
+    bool layers_declared = false;   // and whether it said how many (possibly none)
+
+    Correlation() { viamd::event_system_register_handler(*this); }
+
+    // ## Events
+
+    void process_events(const viamd::Event* events, size_t num_events) final {
+        for (size_t i = 0; i < num_events; ++i) {
+            const viamd::Event e = events[i];
+            switch (e.type) {
+            case viamd::EventType_ViamdInitialize: {
+                app = (ApplicationState*)e.payload;
+                create_default_layers();
+                workspace_register_window("Correlation", &show_window);
+                break;
+            }
+            case viamd::EventType_ViamdShutdown:
+                shutdown();
+                break;
+            case viamd::EventType_ViamdSerialize:
+                serialize(*(viamd::serialization_state_t*)e.payload);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                clear_layers();
+                reset_settings();
+                read_layers = false;
+                layers_declared = false;
+                break;
+            case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
+                const str_t section = viamd::section_header(state);
+                if (str_eq(section, STR_LIT("Correlation"))) {
+                    deserialize_settings(state);
+                } else if (str_eq(section, STR_LIT("CorrelationLayer"))) {
+                    deserialize_layer(state);
+                }
+                break;
+            }
+            case viamd::EventType_ViamdDeserializeEnd:
+                if (!read_layers && !layers_declared) create_default_layers();
+                fit_view = true;
+                break;
+            case viamd::EventType_ViamdSystemInit:
+                system_generation += 1;
+                break;
+            case viamd::EventType_ViamdSystemFree:
+            case viamd::EventType_ViamdTrajectoryFree:
+                // What the samples were of is gone: nothing of it is shown again
+                cancel_all_jobs(true);
+                for (int i = 0; i < num_layers; ++i) {
+                    for (DensityPart& part : layers[i].parts) density_map_slot_forget(&part.slot);
+                    layers[i].data_key = 0;
+                }
+                system_generation += 1;
+                clear_atoms_cache();
+                box.active = false;
+                density_map_canvas_invalidate(&canvas);
+                break;
+            case viamd::EventType_ViamdFrameTick:
+                update();
+                draw();
+                break;
+            case viamd::EventType_ViamdWindowDrawMenu:
+                ImGui::Checkbox("Correlation", &show_window);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    void shutdown() {
+        cancel_all_jobs(true);
+        clear_layers();
+        clear_atoms_cache();
+        md_array_free(atoms_cache, md_get_heap_allocator());
+        atoms_cache = nullptr;
+        density_map_canvas_free(&canvas);
+        density_map_shutdown();
+    }
+
+    void clear_atoms_cache() {
+        for (size_t i = 0; i < md_array_size(atoms_cache); ++i) md_bitset_free(&atoms_cache[i].atoms, md_get_heap_allocator());
+        md_array_shrink(atoms_cache, 0);
+    }
+
+    // ## Layers
+
+    Layer* find_layer(uint32_t id) {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return &layers[i];
+        }
+        return nullptr;
+    }
+
+    const Layer* find_layer(uint32_t id) const {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return &layers[i];
+        }
+        return nullptr;
+    }
+
+    int layer_index(uint32_t id) const {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].id == id) return i;
+        }
+        return -1;
+    }
+
+    vec4_t next_layer_color() const {
+        int best = 0;
+        int best_uses = INT32_MAX;
+        for (int p = 0; p < (int)ARRAY_SIZE(layer_palette); ++p) {
+            int uses = 0;
+            for (int i = 0; i < num_layers; ++i) {
+                if (vec4_equal(layers[i].color, layer_palette[p])) ++uses;
+            }
+            if (uses < best_uses) {
+                best = p;
+                best_uses = uses;
+            }
+        }
+        return layer_palette[best];
+    }
+
+    // ### The list
+
+    size_t tree_nodes(RepresentationNode* out[MAX_LAYERS]) {
+        for (int i = 0; i < num_layers; ++i) out[i] = &layers[i].node;
+        return (size_t)num_layers;
+    }
+
+    // The tree made canonical, and the layers put in its order (moved: what points at them is no longer valid)
+    void apply_tree() {
+        RepresentationNode* nodes[MAX_LAYERS];
+        representation_tree_normalize(nodes, tree_nodes(nodes));
+        bool moved = false;
+        for (int i = 1; i < num_layers; ++i) {
+            for (int j = i; j > 0 && layers[j - 1].node.order > layers[j].node.order; --j) {
+                const Layer tmp = layers[j];
+                layers[j] = layers[j - 1];
+                layers[j - 1] = tmp;
+                moved = true;
+            }
+        }
+        if (moved) density_map_canvas_invalidate(&canvas);
+        tree_dirty = false;
+    }
+
+    void tree_changed() {
+        RepresentationNode* nodes[MAX_LAYERS];
+        representation_tree_normalize(nodes, tree_nodes(nodes));
+        tree_dirty = true;
+    }
+
+    // Adds a layer: first for 'at' 0, last for -1, or before what is at position 'at' of the list. NULL when there is no
+    // room. In place in the list once the tree is applied (apply_tree).
+    Layer* add_layer(LayerFrames frames, LayerStyle style, int at = -1) {
+        if (num_layers >= MAX_LAYERS) return nullptr;
+        Layer& l = layers[num_layers++];
+        l = Layer{};
+        l.id = next_layer_id++;
+        l.node.id = l.id;
+        if (at < 0) {
+            l.node.order = LAYER_TREE_LAST;
+        } else if (at == 0) {
+            RepresentationNode* nodes[MAX_LAYERS];
+            l.node.order = layer_tree_first_order(nodes, tree_nodes(nodes), 0);
+        } else {
+            l.node.order = 2 * at - 1;  // Between those at at - 1 and at, the orders being two apart
+        }
+        l.frames = frames;
+        l.style = style;
+        l.color = next_layer_color();
+        if (style == LayerStyle_Contours) {
+            l.fill = false;
+            l.lines = true;
+        }
+        tree_changed();
+        return &l;
+    }
+
+    // The series of another layer
+    static void copy_series(Layer& dst, const Layer& src) {
+        MEMCPY(dst.xs, src.xs, sizeof(dst.xs));
+        MEMCPY(dst.ys, src.ys, sizeof(dst.ys));
+        dst.num_x = src.num_x;
+        dst.num_y = src.num_y;
+        dst.data_key = 0;
+    }
+
+    void free_derived(Layer& l) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        cancel_job(l, true);
+        for (DensityPart& part : l.parts) density_map_slot_free(&part.slot);
+        md_array_free(l.sx, heap);
+        md_array_free(l.sy, heap);
+        md_array_free(l.st, heap);
+        md_array_free(l.sframe, heap);
+        md_array_free(l.spair, heap);
+        md_array_free(l.smember, heap);
+        l.lag_r.clear();
+        l.lag_r.shrink_to_fit();
+        l.lag_key = 0;
+    }
+
+    void remove_layer(uint32_t id) {
+        const int idx = layer_index(id);
+        if (idx < 0) return;
+        free_derived(layers[idx]);
+        for (int i = idx; i + 1 < num_layers; ++i) layers[i] = layers[i + 1];
+        num_layers -= 1;
+        layers[num_layers] = Layer{};
+        if (selected_layer == id) {
+            selected_layer = num_layers > 0 ? layers[MIN(idx, num_layers - 1)].id : 0;
+        }
+        tree_changed();
+        density_map_canvas_invalidate(&canvas);
+    }
+
+    // A copy of what is set, without what is derived from it (found again), just above it
+    void duplicate_layer(uint32_t id) {
+        const Layer* src = find_layer(id);
+        if (!src || num_layers >= MAX_LAYERS) return;
+        const Layer copy = *src;
+        Layer& l = layers[num_layers++];
+        l = Layer{};
+        l.id = next_layer_id++;
+        l.node = {l.id, 0, copy.node.order - 1, false};
+        MEMCPY(l.name, copy.name, sizeof(l.name));
+        l.visible = copy.visible;
+        copy_series(l, copy);
+        l.frames = copy.frames;
+        l.period = copy.period;
+        l.style = copy.style;
+        l.color = copy.color;
+        l.opacity = copy.opacity;
+        l.fill = copy.fill;
+        l.lines = copy.lines;
+        l.line_width = copy.line_width;
+        l.split_pairs = copy.split_pairs;
+        l.num_levels = copy.num_levels;
+        MEMCPY(l.levels, copy.levels, sizeof(l.levels));
+        l.bandwidth = copy.bandwidth;
+        l.colormap = copy.colormap;
+        l.log_scale = copy.log_scale;
+        l.point_coloring = copy.point_coloring;
+        l.point_size = copy.point_size;
+        l.show_fit = copy.show_fit;
+        selected_layer = l.id;
+        tree_changed();
+    }
+
+    void clear_layers() {
+        for (int i = 0; i < num_layers; ++i) {
+            free_derived(layers[i]);
+            layers[i] = Layer{};
+        }
+        num_layers = 0;
+        selected_layer = 0;
+        tree_dirty = false;
+        density_map_canvas_invalidate(&canvas);
+    }
+
+    void move_node(LayerNodeRef src, LayerNodeRef target, RepresentationDrop drop) {
+        RepresentationNode* nodes[MAX_LAYERS];
+        const size_t n = tree_nodes(nodes);
+        const int si = representation_tree_find(nodes, n, false, src.id);
+        const int ti = target.id ? representation_tree_find(nodes, n, false, target.id) : -1;    // None: the end of the list
+        if (si < 0 || (target.id && ti < 0) || src.group) return;
+        if (layer_tree_move(nodes, n, (size_t)si, ti, drop)) tree_dirty = true;
+    }
+
+    void reset_settings() {
+        show_sidebar = true;
+        show_legend = true;
+        show_ticks = true;
+        show_lag = false;
+        max_lag = 50;
+        lag_frac = 0.3f;
+        viewrect = ImPlotRect(0, 1, 0, 1);
+        fit_view = true;
+    }
+
+    // One layer of points over all frames, waiting for its series
+    void create_default_layers() {
+        clear_layers();
+        if (Layer* l = add_layer(LayerFrames_All, LayerStyle_Points)) {
+            l->color = {1, 1, 1, 1};
+            selected_layer = l->id;
+        }
+    }
+
+    // ### Series on the axes
+
+    // Added to an axis of the layer, at its end. Allowed to be a shape that is not valid (yet): several on each axis,
+    // different in number, while they are being put together.
+    bool add_series(Layer& l, int axis, const SeriesKey& key) {
+        SeriesKey* keys = axis == 0 ? l.xs : l.ys;
+        int* count = axis == 0 ? &l.num_x : &l.num_y;
+        if (*count >= MAX_AXIS_SERIES) return false;
+        keys[(*count)++] = key;
+        l.data_key = 0;
+        fit_view = true;
+        return true;
+    }
+
+    void remove_series(Layer& l, int axis, int idx) {
+        SeriesKey* keys = axis == 0 ? l.xs : l.ys;
+        int* count = axis == 0 ? &l.num_x : &l.num_y;
+        if (idx < 0 || idx >= *count) return;
+        for (int i = idx; i + 1 < *count; ++i) keys[i] = keys[i + 1];
+        *count -= 1;
+        keys[*count] = SeriesKey{};
+        l.data_key = 0;
+        fit_view = true;
+    }
+
+    void swap_axes(Layer& l) {
+        for (int i = 0; i < MAX_AXIS_SERIES; ++i) {
+            const SeriesKey tmp = l.xs[i];
+            l.xs[i] = l.ys[i];
+            l.ys[i] = tmp;
+        }
+        const int n = l.num_x;
+        l.num_x = l.num_y;
+        l.num_y = n;
+        l.data_key = 0;
+        fit_view = true;
+    }
+
+    // A series dropped on an axis of the plot: to the selected layer, or a new one when there is none. Taken over a period,
+    // it brings the period to a layer that has no series yet and is over every frame.
+    void drop_series(int axis, const SeriesKey& key) {
+        Layer* l = find_layer(selected_layer);
+        if (!l) {
+            l = add_layer(LayerFrames_All, LayerStyle_Points, 0);
+            if (!l) return;
+            selected_layer = l->id;
+        }
+        drop_series_on(*l, axis, key);
+    }
+
+    void drop_series_on(Layer& l, int axis, const SeriesKey& key) {
+        if (key.period != 0 && l.num_x + l.num_y == 0 && l.frames == LayerFrames_All && timeline_periods_find(&app->timeline.periods, key.period)) {
+            l.frames = LayerFrames_Period;
+            l.period = key.period;
+        }
+        add_series(l, axis, plotted_key(key));
+    }
+
+    // A series can be plotted here when it can be over time, and is not a range of values
+    bool series_droppable(const SeriesKey& dropped, const char** reason) const {
+        *reason = nullptr;
+        if (dropped.variant == SeriesVariant_Extent) {
+            *reason = "Its range: drop its values or mean instead";
+            return false;
+        }
+        const SeriesKey key = plotted_key(dropped);
+        if (!(series_views(app, key, reason) & SeriesView_Timeline)) {
+            if (!*reason) *reason = "Not over time";
+            return false;
+        }
+        return true;
+    }
+
+    // Why a series is not to go on an axis of a layer: unlike the series already on it (slots_alike). NULL when it may.
+    const char* axis_refusal(const Layer& l, int axis, const SeriesKey& dropped) {
+        const int n = axis == 0 ? l.num_x : l.num_y;
+        const SlotInfo* info = axis == 0 ? l.x_info : l.y_info;
+        if (n == 0 || !info[0].ok) return nullptr;
+        static SeriesTemporalView v;
+        SlotInfo s;
+        resolve_slot(&v, &s, plotted_key(dropped));
+        if (!s.ok || slots_alike(s, info[0])) return nullptr;
+        static char buf[192];
+        char have[48], got[48];
+        slot_axis_label(have, sizeof(have), info[0]);
+        slot_axis_label(got, sizeof(got), s);
+        if (strcmp(have, got) == 0) {
+            snprintf(buf, sizeof(buf), "Of another period than the series on %s: put it on a layer of its own", axis == 0 ? "X" : "Y");
+        } else {
+            snprintf(buf, sizeof(buf), "In %s, the series on %s in %s: put it on a layer of its own", got, axis == 0 ? "X" : "Y", have);
+        }
+        return buf;
+    }
+
+    // A payload of a series, from the timeline
+    static const SeriesDragPayload* series_payload(const ImGuiPayload* p) {
+        if (!p || p->DataSize != (int)sizeof(SeriesDragPayload)) return nullptr;
+        if (!p->IsDataType(TIMELINE_SERIES_DND)) return nullptr;
+        return (const SeriesDragPayload*)p->Data;
+    }
+
+    // Accepts a series on the drop target open: the payload once it is delivered
+    static const SeriesDragPayload* accept_series(ImGuiDragDropFlags flags = 0) {
+        return series_payload(ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, flags));
+    }
+
+    // ## Jobs
+
+    void cancel_job(Layer& l, bool wait) {
+        for (DensityPart& part : l.parts) density_map_slot_cancel(&part.slot, wait);
+    }
+
+    static bool layer_busy(const Layer& l) {
+        for (const DensityPart& part : l.parts) {
+            if (part.slot.job) return true;
+        }
+        return false;
+    }
+
+    static bool layer_slow(const Layer& l) {
+        for (const DensityPart& part : l.parts) {
+            if (density_map_slot_slow(part.slot)) return true;
+        }
+        return false;
+    }
+
+    // Its contours one density per pair (or member, layer_by_member), in its colour
+    static bool layer_splits(const Layer& l) {
+        return l.split_pairs && l.style == LayerStyle_Contours && layer_num_groups(l) > 1;
+    }
+
+    static int layer_num_parts(const Layer& l) {
+        return layer_splits(l) ? (layer_num_groups(l) + DENSITY_MAP_CHANNELS - 1) / DENSITY_MAP_CHANNELS : 1;
+    }
+
+    void cancel_all_jobs(bool wait) {
+        for (int i = 0; i < num_layers; ++i) {
+            cancel_job(layers[i], wait);
+        }
+    }
+
+    // The domain of a layer's density: its samples' extent, with room for the smoothing around them
+    DensityMapDomain layer_domain(const Layer& l) const {
+        DensityMapDomain d = {};
+        d.periodic = false;
+        const float bw = l.bandwidth * 0.01f;
+        auto range = [bw](float lo, float hi, float* out_lo, float* out_hi) {
+            float r = hi - lo;
+            if (!(r > 0.0f)) r = MAX(fabsf(lo), 1.0f) * 0.1f;
+            const float pad = r * (4.0f * bw + 0.02f);
+            *out_lo = lo - pad;
+            *out_hi = hi + pad;
+        };
+        range(l.x_min, l.x_max, &d.x_min, &d.x_max);
+        range(l.y_min, l.y_max, &d.y_min, &d.y_max);
+        // Along a periodic axis, around the circle: a period from where the values are given
+        if (const PeriodicView* v = axis_view[0]) {
+            d.periodic_x = true;
+            d.x_min = (float)v->period.beg;
+            d.x_max = (float)(v->period.beg + periodic_view_length(*v));
+        }
+        if (const PeriodicView* v = axis_view[1]) {
+            d.periodic_y = true;
+            d.y_min = (float)v->period.beg;
+            d.y_max = (float)(v->period.beg + periodic_view_length(*v));
+        }
+        return d;
+    }
+
+    // The density of part g of the layer: of all its samples in channel 0, or split, of its pairs in theirs
+    void launch_job(Layer& l, int g, bool split, uint64_t hash) {
+        DensityPart& part = l.parts[g];
+        ASSERT(!part.slot.job);
+        struct Input {
+            std::vector<float> x, y;
+            std::vector<uint8_t> c;     // The channel of each sample, all 0 when empty
+        };
+        std::shared_ptr<Input> in = std::make_shared<Input>();
+        const size_t count = md_array_size(l.sx);
+        if (split && layer_by_member(l)) {
+            // The members of the part's, each its samples
+            const int m0 = g * DENSITY_MAP_CHANNELS;
+            const int m1 = MIN(m0 + DENSITY_MAP_CHANNELS, layer_num_groups(l));
+            const size_t n = l.member_off[m1] - l.member_off[m0];
+            in->x.reserve(n);
+            in->y.reserve(n);
+            in->c.reserve(n);
+            for (int m = m0; m < m1; ++m) {
+                for (uint32_t i = l.member_off[m]; i < l.member_off[m + 1]; ++i) {
+                    const uint32_t k = l.member_order[i];
+                    if (k >= count) continue;
+                    in->x.push_back(l.sx[k]);
+                    in->y.push_back(l.sy[k]);
+                    in->c.push_back((uint8_t)(m - m0));
+                }
+            }
+        } else if (split) {
+            // The samples of a pair are together (gather): its range, for each of the part's
+            const int p0 = g * DENSITY_MAP_CHANNELS;
+            const int p1 = MIN(p0 + DENSITY_MAP_CHANNELS, l.num_pairs);
+            size_t n = 0;
+            for (int p = p0; p < p1; ++p) n += l.pairs[p].end - l.pairs[p].beg;
+            in->x.reserve(n);
+            in->y.reserve(n);
+            in->c.reserve(n);
+            for (int p = p0; p < p1; ++p) {
+                const size_t b = MIN(l.pairs[p].beg, count), e = MIN(l.pairs[p].end, count);
+                if (e <= b) continue;
+                in->x.insert(in->x.end(), l.sx + b, l.sx + e);
+                in->y.insert(in->y.end(), l.sy + b, l.sy + e);
+                in->c.insert(in->c.end(), e - b, (uint8_t)(p - p0));
+            }
+        } else {
+            in->x.assign(l.sx, l.sx + count);
+            in->y.assign(l.sy, l.sy + count);
+        }
+        const size_t n = in->x.size();
+        const DensityMapDomain domain = layer_domain(l);
+        const float x_extent = domain.periodic_x ? domain.x_max - domain.x_min : l.x_max > l.x_min ? l.x_max - l.x_min : (domain.x_max - domain.x_min) * 0.5f;
+        const float sigma = x_extent * l.bandwidth * 0.01f;
+        const uint32_t num_chunks = (uint32_t)MIN((uint64_t)8, MAX((uint64_t)1, (uint64_t)(n >> 18)));
+
+        auto source = [in](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
+            const size_t total = in->x.size();
+            const size_t beg = total * chunk / chunks;
+            const size_t end = total * (chunk + 1) / chunks;
+            const bool channels = !in->c.empty();
+            for (size_t i = beg; i < end; ++i) {
+                if ((i & 4095) == 0 && cancel.load(std::memory_order_relaxed)) return;
+                bins.add(channels ? in->c[i] : 0, in->x[i], in->y[i]);
+            }
+        };
+        const uint32_t id = l.id;
+        auto find = [this, id, g]() -> DensityMapSlot* {
+            Layer* layer = find_layer(id);
+            return layer ? &layer->parts[g].slot : nullptr;
+        };
+        auto accepted = [this, id, g, split](DensityMapSlot*) {
+            if (Layer* layer = find_layer(id)) layer->parts[g].split = split;
+        };
+        density_map_slot_launch(&part.slot, STR_LIT("Correlation density"), domain, sigma, num_chunks, source, hash, find, accepted);
+    }
+
+    // ## Update
+
+    // The frames [beg, end) of the layer, false when it covers none
+    bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
+        const int num_frames = (int)run_num_frames(app);
+        if (num_frames <= 0) return false;
+        switch (l.frames) {
+        case LayerFrames_Current: {
+            const int f = CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            *beg = (uint32_t)f;
+            *end = (uint32_t)f + 1;
+            return true;
+        }
+        case LayerFrames_All:
+            *beg = 0;
+            *end = (uint32_t)num_frames;
+            return true;
+        case LayerFrames_Period: {
+            const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
+            int b = 0, e = 0;
+            if (!p || !timeline_period_frames(&b, &e, *p, app->animation.frame, num_frames)) return false;
+            *beg = (uint32_t)b;
+            *end = (uint32_t)e + 1;
+            return true;
+        }
+        default:
+            return false;
+        }
+    }
+
+    // Drawn as a density: over frames, of a trajectory
+    bool layer_draws_density(const Layer& l) const {
+        if (l.style == LayerStyle_Points) return false;
+        if (l.frames == LayerFrames_Current) return false;
+        return run_num_frames(app) >= 2;
+    }
+
+    // Drawn as points: those of the frame shown are, whatever the style (a density of one point per pair says nothing)
+    bool layer_draws_points(const Layer& l) const {
+        return l.style == LayerStyle_Points || l.frames == LayerFrames_Current || run_num_frames(app) < 2;
+    }
+
+    static uint64_t series_version(const ApplicationState* app, const SeriesKey& k) {
+        const str_t path = str_from_cstr(k.path);
+        const md_attributes_t* t = series_table(app, k.source, path);
+        const md_attribute_t* a = t ? md_attributes_find(t, path) : nullptr;
+        return a ? a->version : 0;
+    }
+
+    // What a series on an axis is, over time into v, and what of it its samples depend on
+    uint64_t resolve_slot(SeriesTemporalView* v, SlotInfo* info, const SeriesKey& key) {
+        *info = SlotInfo{};
+        const SeriesKey k = plotted_key(key);
+        uint64_t h = md_hash64(&k.source, sizeof(k.source), 0);
+        h = md_hash64(&k.variant, sizeof(k.variant), h);
+        h = md_hash64(k.path, strlen(k.path), h);
+        h = md_hash64_combine(h, series_version(app, k));
+        const SeriesState st = series_state(app, k);
+        h = md_hash64_combine(h, ((uint64_t)st.num_frames << 8) | st.status);
+        info->color = series_default_color(app, k);
+
+        // A band's centre (Sigma: its mean) is its value here; a range has none
+        info->ok = series_resolve_temporal(v, app, k) && k.variant != SeriesVariant_Extent && v->x && v->y && v->stride >= 1;
+        info->dim = MAX(1, v->dim);
+        info->periodic = v->periodic;
+        snprintf(info->label, sizeof(info->label), "%s", v->label);
+        snprintf(info->unit, sizeof(info->unit), "%s", v->unit_str);
+        snprintf(info->script_ident, sizeof(info->script_ident), "%s", v->script_ident);
+        info->vis_ref = v->vis_ref;
+        const uintptr_t ptrs[2] = { (uintptr_t)v->x, (uintptr_t)v->y };
+        h = md_hash64(ptrs, sizeof(ptrs), h);
+        const int64_t dims[3] = { v->num_samples, v->stride, info->ok };
+        h = md_hash64(dims, sizeof(dims), h);
+        h = md_hash64(&v->y_scale, sizeof(v->y_scale), h);
+        return h;
+    }
+
+    // The samples of the layer, gathered again when what they are of changes
+    void gather(Layer& l) {
+        static SeriesTemporalView vx[MAX_AXIS_SERIES];
+        static SeriesTemporalView vy[MAX_AXIS_SERIES];
+
+        uint64_t key = md_hash64_combine(system_generation, app->timeline.units_version);
+        for (int i = 0; i < l.num_x; ++i) key = md_hash64_combine(key, resolve_slot(&vx[i], &l.x_info[i], l.xs[i]) ^ 0x1111);
+        for (int i = 0; i < l.num_y; ++i) key = md_hash64_combine(key, resolve_slot(&vy[i], &l.y_info[i], l.ys[i]) ^ 0x2222);
+        const int num_frames = (int)run_num_frames(app);
+        uint32_t beg = 0, end = 0;
+        const bool has_range = layer_frame_range(l, &beg, &end);
+        const uint64_t frames[5] = { (uint64_t)l.frames, beg, end, (uint64_t)has_range, (uint64_t)num_frames };
+        key = md_hash64(frames, sizeof(frames), key);
+        if (l.frames == LayerFrames_Current) key = md_hash64(&app->animation.frame, sizeof(app->animation.frame), key);
+        key |= 1;
+        if (key == l.data_key) return;
+        l.data_key = key;
+
+        md_array_shrink(l.sx, 0);
+        md_array_shrink(l.sy, 0);
+        md_array_shrink(l.st, 0);
+        md_array_shrink(l.sframe, 0);
+        md_array_shrink(l.spair, 0);
+        md_array_shrink(l.smember, 0);
+        l.data_valid = false;
+        l.data_hash = 0;
+        l.num_pairs = 0;
+        l.members_truncated = false;
+        l.point_stride = 1;
+        for (int p = 0; p < MAX_PAIRS; ++p) l.pairs[p] = PairStats{};
+        l.member_order.clear();
+        l.member_off.clear();
+        l.member_stats.clear();
+
+        const CorrShape shape = layer_shape(l);
+        if (shape == CorrShape_Empty) {
+            l.data_error = "drop series on the X and Y axes";
+            return;
+        }
+        if (shape == CorrShape_Mismatch) {
+            l.data_error = "pair as many X as Y, or one against several";
+            return;
+        }
+        // Of a workspace from before they had to be alike (drop_refusal)
+        for (int a = 0; a < 2; ++a) {
+            const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
+            const int n = a == 0 ? l.num_x : l.num_y;
+            for (int i = 1; i < n; ++i) {
+                if (info[0].ok && info[i].ok && !slots_alike(info[0], info[i])) {
+                    l.data_error = a == 0 ? "the series on X are of different units" : "the series on Y are of different units";
+                    return;
+                }
+            }
+        }
+        if (!has_range || num_frames <= 0) {
+            l.data_error = l.frames == LayerFrames_Period ? "the period is missing" : "no frames";
+            return;
+        }
+        l.num_pairs = layer_num_pairs(l);
+
+        const float* run_x = app->timeline.x_values;
+        const bool bounded = l.frames == LayerFrames_Period;
+        const double t_beg = bounded ? run_x[beg] : -HUGE_VAL;
+        const double t_end = bounded ? run_x[end - 1] : HUGE_VAL;
+        const double t_eps = bounded ? 1e-6 * MAX(fabs(t_end - t_beg), 1e-6) : 0.0;
+        const bool current = l.frames == LayerFrames_Current;
+        const double t_cur = frame_time(app, app->animation.frame);
+        const uint32_t frame_cur = (uint32_t)CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_allocator_i* alloc = md_temp_allocator(temp);
+
+        bool any_resolved = false;
+        for (int p = 0; p < l.num_pairs; ++p) {
+            const int xi = pair_x(l, p);
+            const int yi = pair_y(l, p);
+            if (!l.x_info[xi].ok || !l.y_info[yi].ok) continue;
+            any_resolved = true;
+            const SeriesTemporalView& X = vx[xi];
+            const SeriesTemporalView& Y = vy[yi];
+            if (X.num_samples <= 0 || Y.num_samples <= 0) continue;
+            const int dx = l.x_info[xi].dim;
+            const int dy = l.y_info[yi].dim;
+            bool truncated = false;
+            const int members = corr_members(dx, dy, &truncated);
+            l.members_truncated |= truncated;
+            l.pairs[p].members = members;
+
+            md_bitset_t mask_x = {}, mask_y = {};
+            const bool has_mask_x = series_frame_mask(&mask_x, app, l.xs[xi], alloc);
+            const bool has_mask_y = series_frame_mask(&mask_y, app, l.ys[yi], alloc);
+            const bool same_axis = X.x == Y.x && X.num_samples == Y.num_samples;
+            const bool x_on_frames = X.x == run_x && (int)md_array_size(run_x) == X.num_samples;
+            const double y_lo = Y.x[0], y_hi = Y.x[Y.num_samples - 1];
+
+            // Whether Y has a value at fractional sample index fy: both samples around it evaluated
+            auto y_held = [&](double fy) {
+                if (!has_mask_y) return true;
+                const uint32_t i0 = (uint32_t)floor(fy);
+                const uint32_t i1 = MIN(i0 + 1, (uint32_t)Y.num_samples - 1);
+                return md_bitset_test(mask_y, i0) && (fy == (double)i0 || md_bitset_test(mask_y, i1));
+            };
+            auto x_held = [&](double fx) {
+                if (!has_mask_x) return true;
+                const uint32_t i0 = (uint32_t)floor(fx);
+                const uint32_t i1 = MIN(i0 + 1, (uint32_t)X.num_samples - 1);
+                return md_bitset_test(mask_x, i0) && (fx == (double)i0 || md_bitset_test(mask_x, i1));
+            };
+            auto push = [&](double x, double y, double t, uint32_t frame, int m) {
+                push_sample(l, p, x, y, t, frame, m);
+            };
+
+            if (current) {
+                if (t_cur < X.x[0] || t_cur > X.x[X.num_samples - 1] || t_cur < y_lo || t_cur > y_hi) continue;
+                const double fx = series_temporal_index_at(X, t_cur);
+                const double fy = series_temporal_index_at(Y, t_cur);
+                if (!x_held(fx) || !y_held(fy)) continue;
+                for (int m = 0; m < members; ++m) {
+                    push(sample_at(X, fx, corr_member_slot(dx, m)), sample_at(Y, fy, corr_member_slot(dy, m)), t_cur, frame_cur, m);
+                }
+                continue;
+            }
+
+            for (int i = 0; i < X.num_samples; ++i) {
+                const double t = X.x[i];
+                if (t < t_beg - t_eps || t > t_end + t_eps) continue;
+                if (has_mask_x && !md_bitset_test(mask_x, (uint32_t)i)) continue;
+                double fy = (double)i;
+                if (!same_axis) {
+                    if (t < y_lo || t > y_hi) continue;
+                    fy = series_temporal_index_at(Y, t);
+                }
+                if (!y_held(fy)) continue;
+                const uint32_t frame = x_on_frames ? (uint32_t)i : nearest_frame(app, t);
+                for (int m = 0; m < members; ++m) {
+                    const double x = (double)X.y[(size_t)i * X.stride + (corr_member_slot(dx, m))] * X.y_scale;
+                    push(x, sample_at(Y, fy, corr_member_slot(dy, m)), t, frame, m);
+                }
+            }
+        }
+
+        finish_gather(l, any_resolved ? "no samples over its frames" : "the series are not available");
+    }
+
+    // A sample of pair p, its periodic values laid out where their circle is cut
+    static void push_sample(Layer& l, int p, double x, double y, double t, uint32_t frame, int m) {
+        if (!isfinite(x) || !isfinite(y)) return;
+        x = cut_periodic(x, l.x_info[pair_x(l, p)].periodic);
+        y = cut_periodic(y, l.y_info[pair_y(l, p)].periodic);
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_array_push(l.sx, (float)x, heap);
+        md_array_push(l.sy, (float)y, heap);
+        md_array_push(l.st, (float)t, heap);
+        md_array_push(l.sframe, frame, heap);
+        md_array_push(l.spair, (uint16_t)p, heap);
+        md_array_push(l.smember, (uint16_t)m, heap);
+        l.pairs[p].add(x, y);
+    }
+
+    // Once the samples are in: their extent, their statistics, and how many of them are drawn
+    void finish_gather(Layer& l, const char* empty_error) {
+        const size_t n = md_array_size(l.sx);
+        if (n == 0) {
+            l.data_error = empty_error;
+            return;
+        }
+        l.x_min = l.x_max = l.sx[0];
+        l.y_min = l.y_max = l.sy[0];
+        l.t_min = l.t_max = l.st[0];
+        for (size_t i = 1; i < n; ++i) {
+            l.x_min = MIN(l.x_min, l.sx[i]);
+            l.x_max = MAX(l.x_max, l.sx[i]);
+            l.y_min = MIN(l.y_min, l.sy[i]);
+            l.y_max = MAX(l.y_max, l.sy[i]);
+            l.t_min = MIN(l.t_min, l.st[i]);
+            l.t_max = MAX(l.t_max, l.st[i]);
+        }
+        // The samples of a pair are together, in the order of the pairs
+        for (int p = 0; p < l.num_pairs; ++p) l.pairs[p].beg = l.pairs[p].end = 0;
+        for (size_t i = 0; i < n;) {
+            const int p = l.spair[i];
+            size_t j = i;
+            while (j < n && l.spair[j] == p) ++j;
+            l.pairs[p].beg = i;
+            l.pairs[p].end = j;
+            i = j;
+        }
+        for (int p = 0; p < l.num_pairs; ++p) pair_statistics(l, p);
+
+        // A single pair of a population: its members apart, each in the order of its frames
+        if (l.num_pairs == 1 && l.pairs[0].members > 1 && l.pairs[0].members <= MAX_GROUPS) {
+            const PairStats& s0 = l.pairs[0];
+            const int members = s0.members;
+            l.member_off.assign((size_t)members + 1, 0);
+            for (size_t k = s0.beg; k < s0.end; ++k) {
+                if (l.smember[k] < members) l.member_off[l.smember[k] + 1] += 1;
+            }
+            for (int m = 0; m < members; ++m) l.member_off[m + 1] += l.member_off[m];
+            l.member_order.assign(l.member_off[members], 0);
+            std::vector<uint32_t> fill(l.member_off.begin(), l.member_off.end() - 1);
+            for (size_t k = s0.beg; k < s0.end; ++k) {
+                if (l.smember[k] < members) l.member_order[fill[l.smember[k]]++] = (uint32_t)k;
+            }
+            l.member_stats.assign((size_t)members, PairStats{});
+            for (int m = 0; m < members; ++m) {
+                PairStats& s = l.member_stats[m];
+                s.members = 1;
+                const uint32_t* idx = l.member_order.data() + l.member_off[m];
+                const size_t count = l.member_off[m + 1] - l.member_off[m];
+                for (size_t i = 0; i < count; ++i) s.add(l.sx[idx[i]], l.sy[idx[i]]);
+                sample_statistics(l, &s, 0, idx, count);
+            }
+        }
+
+        uint64_t h = md_hash64(l.sx, md_array_bytes(l.sx), n);
+        h = md_hash64(l.sy, md_array_bytes(l.sy), h);
+        h = md_hash64(l.sframe, md_array_bytes(l.sframe), h);
+        l.data_hash = h | 1;
+        l.data_valid = true;
+        l.data_error = "";
+        l.point_stride = (uint32_t)MAX((size_t)1, (n + MAX_POINTS - 1) / MAX_POINTS);
+    }
+
+    // Spearman's correlation of a pair, of at most MAX_RANKED of its samples; of periodic values, the circular one. And
+    // what its samples are worth, and the interval of Pearson's r.
+    static void pair_statistics(Layer& l, int p) {
+        sample_statistics(l, &l.pairs[p], p, nullptr, l.pairs[p].end - l.pairs[p].beg);
+    }
+
+    // The same of samples of pair p into s: those of its range, or those indexed by idx (of one member, s.members 1)
+    static void sample_statistics(const Layer& l, PairStats* sp, int p, const uint32_t* idx, size_t count) {
+        PairStats& s = *sp;
+        if (count < 3) return;
+        auto at = [&](size_t i) { return idx ? (size_t)idx[i] : s.beg + i; };
+        const SeriesPeriodic& px = l.x_info[pair_x(l, p)].periodic;
+        const SeriesPeriodic& py = l.y_info[pair_y(l, p)].periodic;
+        const bool cx = series_periodic_valid(px);
+        const bool cy = series_periodic_valid(py);
+        s.circular = (int)cx + (int)cy;
+
+        // The members are sequences of their own, interleaved in the order of their samples
+        const int members = MAX(1, s.members);
+        std::vector<double> x(count), y(count);
+        std::vector<uint32_t> group(count);
+        for (size_t i = 0; i < count; ++i) {
+            x[i] = to_corr_value(l.sx[at(i)], px);
+            y[i] = to_corr_value(l.sy[at(i)], py);
+            group[i] = members > 1 ? l.smember[at(i)] : 0;
+        }
+        // Of an angle, how alike successive ones are along the circle: by its cosine and sine, the larger
+        auto lag1 = [&](const std::vector<double>& v, bool circ) {
+            if (!circ) return corr_lag1(v.data(), group.data(), count, (size_t)members);
+            std::vector<double> c(count), sn(count);
+            for (size_t i = 0; i < count; ++i) { c[i] = cos(v[i]); sn[i] = sin(v[i]); }
+            return MAX(corr_lag1(c.data(), group.data(), count, (size_t)members), corr_lag1(sn.data(), group.data(), count, (size_t)members));
+        };
+        s.ax = lag1(x, cx);
+        s.ay = lag1(y, cy);
+        s.n_eff = corr_effective_n((double)count / members, s.ax, s.ay);
+        if (!s.circular && s.has_r()) s.ci_valid = corr_fisher_interval(&s.ci_lo, &s.ci_hi, s.r(), s.n_eff, 1.959964);
+
+        if (!s.circular) {
+            const size_t step = MAX((size_t)1, (count + MAX_RANKED - 1) / MAX_RANKED);
+            const size_t m = (count + step - 1) / step;
+            std::vector<double> xr(m), yr(m);
+            for (size_t i = 0; i < m; ++i) {
+                xr[i] = x[i * step];
+                yr[i] = y[i * step];
+            }
+            s.rho_valid = corr_spearman(&s.rho, xr.data(), yr.data(), m);
+            s.rho_n = m;
+            return;
+        }
+
+        const CorrKind kind = corr_kind(cx, cy);
+        s.rc_valid = corr_of(&s.rc, kind, x.data(), y.data(), count);
+        if (kind == CorrKind_CircularX) s.parts_valid = corr_circular_linear_parts(&s.r_cos, &s.r_sin, x.data(), y.data(), count);
+        if (kind == CorrKind_CircularY) s.parts_valid = corr_circular_linear_parts(&s.r_cos, &s.r_sin, y.data(), x.data(), count);
+    }
+
+    // Has a correlation against the lag: samples at frames, of more than one
+    bool layer_has_lag(const Layer& l) const {
+        return l.data_valid && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
+    }
+
+    // The correlation of each pair of X at frame f against Y at frame f + lag, pooled over members (paired with
+    // themselves), for lags of up to max_lag frames either way
+    void update_lag(Layer& l) {
+        if (!show_lag || !layer_on_axes(l) || !layer_has_lag(l)) return;
+        const int L = CLAMP(max_lag, 1, MAX_LAG);
+        const uint64_t key = md_hash64(&L, sizeof(L), l.data_hash) | 1;
+        if (key == l.lag_key) return;
+        l.lag_key = key;
+        l.lag_max = L;
+        l.lag_skipped = false;
+        const int nl = 2 * L + 1;
+        l.lag_r.assign((size_t)l.num_pairs * nl, NAN);
+
+        std::vector<uint32_t> ord, seg, ia, ib;
+        std::vector<uint32_t> fr;
+        std::vector<double> xv, yv, a, b;
+        for (int p = 0; p < l.num_pairs; ++p) {
+            const PairStats& s = l.pairs[p];
+            const size_t count = s.end - s.beg;
+            if (count < 3) continue;
+            const SeriesPeriodic& px = l.x_info[pair_x(l, p)].periodic;
+            const SeriesPeriodic& py = l.y_info[pair_y(l, p)].periodic;
+            const CorrKind kind = corr_kind(series_periodic_valid(px), series_periodic_valid(py));
+
+            // The samples of each member together, in the order of their frames (as they were gathered): every
+            // m_step'th member, to keep within the budget
+            const int members = MAX(1, s.members);
+            const int m_step = (int)MIN((double)members, MAX(1.0, ceil((double)count * nl / LAG_BUDGET)));
+            if (m_step > 1) l.lag_skipped = true;
+            seg.assign((size_t)members + 1, 0);
+            for (size_t k = s.beg; k < s.end; ++k) {
+                const int m = l.smember[k];
+                if (m < members && m % m_step == 0) seg[m + 1] += 1;
+            }
+            for (int m = 0; m < members; ++m) seg[m + 1] += seg[m];
+            const size_t total = seg[members];
+            ord.assign(total, 0);
+            {
+                std::vector<uint32_t> at(seg.begin(), seg.end() - 1);
+                for (size_t k = s.beg; k < s.end; ++k) {
+                    const int m = l.smember[k];
+                    if (m < members && m % m_step == 0) ord[at[m]++] = (uint32_t)k;
+                }
+            }
+            fr.resize(total);
+            xv.resize(total);
+            yv.resize(total);
+            for (size_t i = 0; i < total; ++i) {
+                fr[i] = l.sframe[ord[i]];
+                xv[i] = to_corr_value(l.sx[ord[i]], px);
+                yv[i] = to_corr_value(l.sy[ord[i]], py);
+            }
+            ia.resize(total);
+            ib.resize(total);
+            a.resize(total);
+            b.resize(total);
+
+            float* row = l.lag_r.data() + (size_t)p * nl;
+            for (int lag = -L; lag <= L; ++lag) {
+                size_t n = 0;
+                for (int m = 0; m < members; ++m) {
+                    const size_t mb = seg[m], len = seg[m + 1] - seg[m];
+                    if (len == 0) continue;
+                    const size_t c = corr_lag_match(ia.data(), ib.data(), fr.data() + mb, len, lag);
+                    for (size_t k = 0; k < c; ++k) {
+                        a[n] = xv[mb + ia[k]];
+                        b[n] = yv[mb + ib[k]];
+                        ++n;
+                    }
+                }
+                double r = 0;
+                if (corr_of(&r, kind, a.data(), b.data(), n)) row[lag + L] = (float)r;
+            }
+        }
+    }
+
+    // Whether a layer is on the plot: shown, and of what the axes are of
+    bool layer_on_axes(const Layer& l) const { return l.visible && l.axes_sig != 0 && l.axes_sig == active_sig; }
+
+    // A layer of what the axes are of: the selected one, else the first shown, else the first. NULL when there is none.
+    const Layer* active_layer() const {
+        if (active_sig == 0) return nullptr;
+        const Layer* sel = find_layer(selected_layer);
+        if (sel && sel->axes_sig == active_sig) return sel;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].axes_sig == active_sig && (pass == 1 || layers[i].visible)) return &layers[i];
+            }
+        }
+        return nullptr;
+    }
+
+    // What the axes are of: of the selected layer, or while it has none of its own, as they were, or failing that of the
+    // first layer shown that has some
+    void update_active_axes() {
+        for (int i = 0; i < num_layers; ++i) layers[i].axes_sig = layer_axes_sig(layers[i]);
+        const Layer* sel = find_layer(selected_layer);
+        if (sel && sel->axes_sig != 0) {
+            active_sig = sel->axes_sig;
+            return;
+        }
+        bool present = false;
+        for (int i = 0; i < num_layers; ++i) present |= active_sig != 0 && layers[i].axes_sig == active_sig;
+        if (present) return;
+        active_sig = 0;
+        for (int pass = 0; pass < 2 && !active_sig; ++pass) {
+            for (int i = 0; i < num_layers && !active_sig; ++i) {
+                if (layers[i].axes_sig != 0 && (pass == 1 || layers[i].visible)) active_sig = layers[i].axes_sig;
+            }
+        }
+    }
+
+    // Which axes are periodic: those whose values are, all of one period (as they are alike)
+    void update_axis_views() {
+        const Layer* al = active_layer();
+        uint64_t key = 0;
+        for (int a = 0; a < 2; ++a) {
+            const SlotInfo* info = al ? (a == 0 ? al->x_info : al->y_info) : nullptr;
+            axis_view[a] = info && slot_periodic(info[0]) ? periodic_view(info[0].periodic, info[0].unit) : nullptr;
+            if (axis_view[a]) {
+                const double p[2] = { axis_view[a]->period.beg, axis_view[a]->period.end };
+                key = md_hash64(p, sizeof(p), key ^ (uint64_t)(a + 1));
+            }
+        }
+        axes_key = key;
+    }
+
+    void update() {
+        if (!app || !show_window) return;
+        if (tree_dirty) apply_tree();
+
+        for (int i = 0; i < num_layers; ++i) gather(layers[i]);
+        update_active_axes();
+        update_axis_views();
+        for (int i = 0; i < num_layers; ++i) {
+            update_lag(layers[i]);
+            layers[i].pair_colors_clash = pair_colors_clash(layers[i]);
+        }
+
+        for (int i = 0; i < num_layers; ++i) {
+            Layer& l = layers[i];
+            if (!layer_on_axes(l) || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
+
+            const bool split = layer_splits(l);
+            uint64_t h = md_hash64_combine(l.data_hash, system_generation);
+            h = md_hash64(&l.bandwidth, sizeof(l.bandwidth), h);
+            h = md_hash64_combine(h, axes_key);
+            h = md_hash64(&split, sizeof(split), h);
+            for (int g = 0; g < layer_num_parts(l); ++g) {
+                DensityPart& part = l.parts[g];
+                const uint64_t hg = md_hash64_combine(h, (uint64_t)g) | 1;
+                if (hg == part.slot.shown_hash || hg == part.slot.want_hash) continue;
+                // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
+                if (part.slot.job) continue;
+                launch_job(l, g, split, hg);
+            }
+        }
+
+        // Fitted again when the series shown change, and what the axes are of
+        uint64_t fk = active_sig;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l)) continue;
+            fk = md_hash64(l.xs, sizeof(SeriesKey) * l.num_x, fk ^ (uint64_t)l.num_x);
+            fk = md_hash64(l.ys, sizeof(SeriesKey) * l.num_y, fk ^ ((uint64_t)l.num_y << 8));
+            fk = md_hash64_combine(fk, l.data_valid);
+        }
+        if (fk != fit_key) {
+            fit_key = fk;
+            fit_view = true;
+        }
+    }
+
+    // ## Workspace
+
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("Correlation"));
+        viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
+        viamd::write_bool(state, STR_LIT("ShowLegend"), show_legend);
+        viamd::write_bool(state, STR_LIT("ShowTicks"), show_ticks);
+        viamd::write_bool(state, STR_LIT("ShowLag"), show_lag);
+        viamd::write_int(state, STR_LIT("MaxLag"), max_lag);
+        viamd::write_flt(state, STR_LIT("LagHeight"), lag_frac);
+        // Said even when there are none, so that none stays none (rather than the defaults) once read again
+        viamd::write_int(state, STR_LIT("Layers"), num_layers);
+        for (int i = 0; i < num_layers; ++i) serialize_layer(state, layers[i]);
+    }
+
+    void serialize_layer(viamd::serialization_state_t& state, const Layer& l) {
+        viamd::write_section_header(state, STR_LIT("CorrelationLayer"));
+        if (l.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(l.name));
+        viamd::write_bool(state, STR_LIT("Visible"), l.visible);
+        char buf[SERIES_PATH_CAP + 64];
+        for (int i = 0; i < l.num_x; ++i) {
+            key_to_str(buf, sizeof(buf), l.xs[i]);
+            viamd::write_str(state, STR_LIT("X"), str_from_cstr(buf));
+        }
+        for (int i = 0; i < l.num_y; ++i) {
+            key_to_str(buf, sizeof(buf), l.ys[i]);
+            viamd::write_str(state, STR_LIT("Y"), str_from_cstr(buf));
+        }
+        static const str_t frames[LayerFrames_Count] = { STR_LIT("current"), STR_LIT("all"), STR_LIT("period") };
+        viamd::write_str(state, STR_LIT("Frames"), frames[l.frames]);
+        if (l.frames == LayerFrames_Period) viamd::write_int(state, STR_LIT("Period"), (int)l.period);
+        static const str_t styles[LayerStyle_Count] = { STR_LIT("points"), STR_LIT("contours"), STR_LIT("heatmap") };
+        viamd::write_str(state, STR_LIT("Style"), styles[l.style]);
+        viamd::write_vec4(state, STR_LIT("Color"), l.color);
+        viamd::write_flt(state, STR_LIT("Opacity"), l.opacity);
+        viamd::write_bool(state, STR_LIT("Fill"), l.fill);
+        viamd::write_bool(state, STR_LIT("Lines"), l.lines);
+        viamd::write_flt(state, STR_LIT("LineWidth"), l.line_width);
+        viamd::write_bool(state, STR_LIT("SplitPairs"), l.split_pairs);
+        viamd::write_flt_vec(state, STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
+        viamd::write_flt(state, STR_LIT("Bandwidth"), l.bandwidth);
+        viamd::write_str(state, STR_LIT("Colormap"), str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+        viamd::write_bool(state, STR_LIT("LogScale"), l.log_scale);
+        static const str_t colorings[PointColoring_Count] = { STR_LIT("layer"), STR_LIT("pair"), STR_LIT("time") };
+        viamd::write_str(state, STR_LIT("PointColoring"), colorings[l.point_coloring]);
+        viamd::write_flt(state, STR_LIT("PointSize"), l.point_size);
+        viamd::write_bool(state, STR_LIT("ShowFit"), l.show_fit);
+    }
+
+    void deserialize_settings(viamd::deserialization_state_t& state) {
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "ShowLayers")) {
+                viamd::extract_bool(show_sidebar, arg);
+            } else if (str_eq_cstr(ident, "ShowLegend")) {
+                viamd::extract_bool(show_legend, arg);
+            } else if (str_eq_cstr(ident, "ShowTicks")) {
+                viamd::extract_bool(show_ticks, arg);
+            } else if (str_eq_cstr(ident, "ShowLag")) {
+                viamd::extract_bool(show_lag, arg);
+            } else if (str_eq_cstr(ident, "MaxLag")) {
+                viamd::extract_int(max_lag, arg);
+                max_lag = CLAMP(max_lag, 1, MAX_LAG);
+            } else if (str_eq_cstr(ident, "LagHeight")) {
+                viamd::extract_flt(lag_frac, arg);
+                lag_frac = CLAMP(lag_frac, 0.1f, 0.8f);
+            } else if (str_eq_cstr(ident, "Layers")) {
+                layers_declared = true;
+            }
+        }
+    }
+
+    // As the list is read: each last
+    void deserialize_layer(viamd::deserialization_state_t& state) {
+        if (!read_layers) {
+            // The first of the workspace: the ones there are go
+            clear_layers();
+            read_layers = true;
+        }
+        Layer* l = add_layer(LayerFrames_All, LayerStyle_Points);
+        str_t ident, arg;
+        if (!l) {
+            while (viamd::next_entry(ident, arg, state)) {}
+            return;
+        }
+        while (viamd::next_entry(ident, arg, state)) {
+            str_t s = {};
+            if (str_eq_cstr(ident, "Name")) {
+                viamd::extract_to_char_buf(l->name, sizeof(l->name), arg);
+            } else if (str_eq_cstr(ident, "Visible")) {
+                viamd::extract_bool(l->visible, arg);
+            } else if ((str_eq_cstr(ident, "X") || str_eq_cstr(ident, "Y")) && viamd::extract_str(s, arg)) {
+                SeriesKey k = {};
+                if (key_from_str(&k, s)) {
+                    const bool x = str_eq_cstr(ident, "X");
+                    int* count = x ? &l->num_x : &l->num_y;
+                    if (*count < MAX_AXIS_SERIES) (x ? l->xs : l->ys)[(*count)++] = k;
+                }
+            } else if (str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
+                l->frames = str_eq_cstr(s, "current") ? LayerFrames_Current : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
+            } else if (str_eq_cstr(ident, "Period")) {
+                int id = 0;
+                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MAX(id, 0);
+            } else if (str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
+                l->style = str_eq_cstr(s, "contours") ? LayerStyle_Contours : str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
+            } else if (str_eq_cstr(ident, "Color")) {
+                viamd::extract_vec4(l->color, arg);
+            } else if (str_eq_cstr(ident, "Opacity")) {
+                viamd::extract_flt(l->opacity, arg);
+            } else if (str_eq_cstr(ident, "Fill")) {
+                viamd::extract_bool(l->fill, arg);
+            } else if (str_eq_cstr(ident, "Lines")) {
+                viamd::extract_bool(l->lines, arg);
+            } else if (str_eq_cstr(ident, "LineWidth")) {
+                viamd::extract_flt(l->line_width, arg);
+            } else if (str_eq_cstr(ident, "SplitPairs")) {
+                viamd::extract_bool(l->split_pairs, arg);
+            } else if (str_eq_cstr(ident, "Levels")) {
+                // As many as there are, up to MAX_LEVELS
+                float v[MAX_LEVELS];
+                int n = 0;
+                for (int k = MAX_LEVELS; k > 0; --k) {
+                    if (viamd::extract_flt_vec(v, (size_t)k, arg)) {
+                        n = k;
+                        break;
+                    }
+                }
+                if (n > 0) {
+                    l->num_levels = n;
+                    MEMCPY(l->levels, v, sizeof(float) * n);
+                }
+            } else if (str_eq_cstr(ident, "Bandwidth")) {
+                viamd::extract_flt(l->bandwidth, arg);
+            } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->colormap = cm;
+            } else if (str_eq_cstr(ident, "LogScale")) {
+                viamd::extract_bool(l->log_scale, arg);
+            } else if (str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
+                l->point_coloring = str_eq_cstr(s, "layer") ? PointColoring_Layer : str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Pair;
+            } else if (str_eq_cstr(ident, "PointSize")) {
+                viamd::extract_flt(l->point_size, arg);
+            } else if (str_eq_cstr(ident, "ShowFit")) {
+                viamd::extract_bool(l->show_fit, arg);
+            }
+        }
+        sanitize_layer(*l);
+        if (!selected_layer) selected_layer = l->id;
+    }
+
+    static void sort_levels(Layer& l) {
+        for (int i = 1; i < l.num_levels; ++i) {
+            for (int j = i; j > 0 && l.levels[j - 1] > l.levels[j]; --j) {
+                const float tmp = l.levels[j];
+                l.levels[j] = l.levels[j - 1];
+                l.levels[j - 1] = tmp;
+            }
+        }
+    }
+
+    static void sanitize_layer(Layer& l) {
+        l.frames = (LayerFrames)CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
+        l.style = (LayerStyle)CLAMP((int)l.style, 0, LayerStyle_Count - 1);
+        l.opacity = CLAMP(l.opacity, 0.0f, 1.0f);
+        l.line_width = CLAMP(l.line_width, 0.5f, 8.0f);
+        l.bandwidth = CLAMP(l.bandwidth, 0.5f, 20.0f);
+        l.point_size = CLAMP(l.point_size, 1.0f, 16.0f);
+        l.num_levels = CLAMP(l.num_levels, 1, MAX_LEVELS);
+        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = CLAMP(l.levels[i], 0.01f, 0.999f);
+        sort_levels(l);
+        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+    }
+
+    // ## Drawing
+
+    // What a layer is over, as its name when it has none of its own
+    void layer_label(char* buf, size_t cap, const Layer& l) const {
+        if (l.name[0]) {
+            snprintf(buf, cap, "%s", l.name);
+            return;
+        }
+        if (l.frames == LayerFrames_Current) {
+            snprintf(buf, cap, "Current frame");
+        } else if (l.frames == LayerFrames_All) {
+            snprintf(buf, cap, "All frames");
+        } else {
+            const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
+            snprintf(buf, cap, "%s", p ? p->name : "No period");
+        }
+    }
+
+    // The series of a slot as it is called
+    void slot_label(char* buf, size_t cap, const Layer& l, int axis, int i) const {
+        const SlotInfo& info = axis == 0 ? l.x_info[i] : l.y_info[i];
+        if (info.label[0]) snprintf(buf, cap, "%s", info.label);
+        else series_label(buf, cap, app, axis == 0 ? l.xs[i] : l.ys[i]);
+    }
+
+    // An axis of a layer as it is labelled: its series, or how many, and their unit when they share it
+    void axis_label(char* buf, size_t cap, const Layer& l, int axis) const {
+        const int n = axis == 0 ? l.num_x : l.num_y;
+        const SlotInfo* info = axis == 0 ? l.x_info : l.y_info;
+        if (n == 0) {
+            snprintf(buf, cap, "%s", axis == 0 ? "X" : "Y");
+            return;
+        }
+        const char* unit = info[0].unit;
+        for (int i = 1; i < n; ++i) {
+            if (strcmp(info[i].unit, unit) != 0) unit = "";
+        }
+        char name[128];
+        if (n == 1) slot_label(name, sizeof(name), l, axis, 0);
+        else snprintf(name, sizeof(name), "%d series", n);
+        if (unit[0]) snprintf(buf, cap, "%s (%s)", name, unit);
+        else snprintf(buf, cap, "%s", name);
+    }
+
+    // A pair as it is called: what varies along it, or both of its series
+    void pair_label(char* buf, size_t cap, const Layer& l, int p) const {
+        char x[96], y[96];
+        slot_label(x, sizeof(x), l, 0, pair_x(l, p));
+        slot_label(y, sizeof(y), l, 1, pair_y(l, p));
+        snprintf(buf, cap, "%s vs %s", y, x);
+    }
+
+    // The colour of the series that varies between the pairs of a layer
+    static ImVec4 series_pair_color(const Layer& l, int p) {
+        return l.num_x > 1 && l.num_y == 1 ? l.x_info[p].color : l.y_info[pair_y(l, p)].color;
+    }
+
+    // Whether two pairs of a layer would be of alike colours (those of series are of their names)
+    static bool pair_colors_clash(const Layer& l) {
+        for (int a = 0; a < l.num_pairs; ++a) {
+            for (int b = a + 1; b < l.num_pairs; ++b) {
+                const ImVec4 ca = series_pair_color(l, a), cb = series_pair_color(l, b);
+                if (fabsf(ca.x - cb.x) + fabsf(ca.y - cb.y) + fabsf(ca.z - cb.z) < 0.1f) return true;
+            }
+        }
+        return false;
+    }
+
+    // The colour of a pair (and member): of the series that varies between pairs, or of its members by the colour map
+    ImVec4 pair_color(const Layer& l, int p, int m) const {
+        if (l.num_pairs > 1) {
+            const ImVec4 own = series_pair_color(l, p);
+            if (!l.pair_colors_clash) return own;
+            ImVec4 c = ImPlot::GetColormapColor(p, ImPlotColormap_Deep);
+            c.w = own.w;
+            return c;
+        }
+        const int members = l.pairs[0].members;
+        if (members > 1) return ImPlot::SampleColormap((float)m / (float)(members - 1), l.colormap);
+        return vec_cast(l.color);
+    }
+
+    // The colour of group g (layer_num_groups): of its pair or member, the layer's of a single one
+    ImVec4 group_color(const Layer& l, int g) const {
+        if (layer_by_member(l)) return pair_color(l, 0, g);
+        return l.num_pairs > 1 ? pair_color(l, g, 0) : vec_cast(l.color);
+    }
+
+    // The group (layer_num_groups) sample k is of
+    static int sample_group(const Layer& l, size_t k) {
+        return layer_by_member(l) ? (int)l.smember[k] : (int)l.spair[k];
+    }
+
+    // The group of l that stands out (its caption entry hovered), -1 for none
+    int focused_group(const Layer& l) const {
+        return l.id == focus_layer && layer_num_groups(l) > 1 ? focus_group : -1;
+    }
+
+    // Group g as it is called: its pair, or what its member is
+    void group_label(char* buf, size_t cap, const Layer& l, int g) const {
+        if (!layer_by_member(l)) {
+            pair_label(buf, cap, l, g);
+            return;
+        }
+        const SeriesKey& key = l.y_info[0].dim > 1 ? l.ys[0] : l.xs[0];
+        const str_t member = series_member_label(app, key, g);
+        if (!str_empty(member)) snprintf(buf, cap, "member %d \xc2\xb7 " STR_FMT, g + 1, STR_ARG(member));
+        else snprintf(buf, cap, "member %d", g + 1);
+    }
+
+    ImVec4 point_color(const Layer& l, size_t idx) const {
+        switch (l.point_coloring) {
+        case PointColoring_Pair:
+            return pair_color(l, l.spair[idx], l.smember[idx]);
+        case PointColoring_Time: {
+            if (!(l.t_max > l.t_min)) return vec_cast(l.color);
+            return ImPlot::SampleColormap((l.st[idx] - l.t_min) / (l.t_max - l.t_min), l.colormap);
+        }
+        default:
+            return vec_cast(l.color);
+        }
+    }
+
+    // Fills out with what layer l is drawn with: a draw of its density, or one of each pair's. Their number.
+    int layer_draw(DensityMapDraw* out, const Layer& l) const {
+        if (!layer_draws_density(l)) return 0;
+        const int fg = focused_group(l);
+        int n = 0;
+        for (int g = 0; g < layer_num_parts(l); ++g) {
+            const DensityPart& part = l.parts[g];
+            if (!part.slot.has_result || !part.slot.tex) continue;
+            // Until the split one comes, the density of them all
+            if (!part.split && g > 0) continue;
+            const DensityMapResult& r = part.slot.result;
+            for (int c = 0; c < (part.split ? DENSITY_MAP_CHANNELS : 1); ++c) {
+                const int p = g * DENSITY_MAP_CHANNELS + c;
+                if (part.split && p >= layer_num_groups(l)) break;
+                if (r.samples[c] == 0 || r.max[c] <= 0.0f) continue;
+                ImVec4 color = part.split ? group_color(l, p) : vec_cast(l.color);
+                color.w = 1.0f;
+                DensityMapDraw* d = &out[n++];
+                density_map_draw_init(d);
+                d->tex = part.slot.tex;
+                d->opacity = l.opacity;
+                d->line_width = l.line_width;
+                if (part.split && fg >= 0) {
+                    if (p == fg) d->line_width *= 1.6f;
+                    else d->opacity *= 0.15f;
+                }
+                d->line_color[0] = color.x;
+                d->line_color[1] = color.y;
+                d->line_color[2] = color.z;
+                d->line_color[3] = part.split ? 1.0f : l.color.w;
+                d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
+                d->fill = l.fill;
+                d->lines = l.lines;
+                if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+                density_map_draw_levels(d, r, c, l.levels, l.num_levels);
+                density_map_draw_fills_from(d, part.split ? color : vec_cast(l.color));
+                // Over a domain of its own: each layer's is its samples' extent
+                d->own_view_uv = 1;
+                density_map_plot_view_uv(d->view_uv, part.slot.domain);
+                d->content = md_hash64_combine(part.slot.shown_hash, (uint64_t)c);
+            }
+        }
+        return n;
+    }
+
+    // The densities of the layers, composited (density_map_composite): 0 when there are none
+    uint32_t render_canvas() {
+        draw_buf.resize((size_t)MAX_LAYERS * MAX_GROUPS);
+        DensityMapDraw* draws = draw_buf.data();
+        int num_draws = 0;
+        // Bottom up: the first layer is on top
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || l.opacity <= 0.0f) continue;
+            num_draws += layer_draw(draws + num_draws, l);
+        }
+        int w = 0, h = 0;
+        density_map_plot_canvas_size(&w, &h);
+        if (num_draws == 0 || w <= 0 || h <= 0) return 0;
+        return density_map_composite(&canvas, w, h, draws[0].view_uv, draws, num_draws);
+    }
+
+    // ### Points
+
+    // What the pointer is on
+    struct Hover {
+        int    layer = -1;
+        size_t idx = 0;
+    };
+
+    void draw_tooltip(const Hover& h) const {
+        const Layer& l = layers[h.layer];
+        const int p = l.spair[h.idx];
+        const int m = l.smember[h.idx];
+        const int xi = pair_x(l, p);
+        const int yi = pair_y(l, p);
+        char x[96], y[96];
+        slot_label(x, sizeof(x), l, 0, xi);
+        slot_label(y, sizeof(y), l, 1, yi);
+        ImGui::BeginTooltip();
+        ImGui::Text("%s  %.4g %s", x, l.sx[h.idx], l.x_info[xi].unit);
+        ImGui::Text("%s  %.4g %s", y, l.sy[h.idx], l.y_info[yi].unit);
+        if (l.pairs[p].members > 1) {
+            const SeriesKey& key = l.y_info[yi].dim > 1 ? l.ys[yi] : l.xs[xi];
+            const str_t member = series_member_label(app, key, m);
+            if (!str_empty(member)) ImGui::TextDisabled("member %d \xc2\xb7 " STR_FMT, m + 1, STR_ARG(member));
+            else ImGui::TextDisabled("member %d", m + 1);
+        }
+        ImGui::TextDisabled("frame %u \xc2\xb7 t = %.4g", l.sframe[h.idx], l.st[h.idx]);
+        char label[128];
+        layer_label(label, sizeof(label), l);
+        ImGui::TextDisabled("%s \xc2\xb7 click to go to the frame", label);
+        ImGui::EndTooltip();
+    }
+
+    // A pair's correlation as text: Pearson's and Spearman's, or of periodic values the circular one
+    // Of the circular-linear, its signed parts too. Marked when the correlation is not told from none.
+    static void stats_text(char* buf, size_t cap, const PairStats& s) {
+        if (s.circular) {
+            if (!s.has_corr()) snprintf(buf, cap, "circular r = -");
+            else if (s.parts_valid) snprintf(buf, cap, "circular r = %.3f (cos %+.2f, sin %+.2f)", s.corr(), s.r_cos, s.r_sin);
+            else snprintf(buf, cap, "circular r = %.3f", s.corr());
+            return;
+        }
+        char r[24] = "r = -", rho[24] = "";
+        if (s.has_r()) snprintf(r, sizeof(r), "r = %.3f", s.r());
+        if (s.rho_valid) snprintf(rho, sizeof(rho), " \xc2\xb7 \xcf\x81 = %.3f", s.rho);
+        snprintf(buf, cap, "%s%s%s", r, rho, s.significant() ? "" : "  (n.s.)");
+    }
+
+    // What the series of the hovered point show in the viewport: the script's visualization of Y, else of X
+    void visualize(const Hover& h) {
+        const Layer& l = layers[h.layer];
+        const int p = l.spair[h.idx];
+        const int m = l.smember[h.idx];
+        const SlotInfo* infos[2] = { &l.y_info[pair_y(l, p)], &l.x_info[pair_x(l, p)] };
+        for (const SlotInfo* info : infos) {
+            if (!info->ok || !info->script_ident[0]) continue;
+            const int k = info->dim > 1 ? m : -1;
+            script_visualize_ref(app, info->vis_ref, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_set_hovered_property(app, str_from_cstr(info->script_ident), k);
+            highlights_now = true;
+            return;
+        }
+    }
+
+    // The atoms a script property is of, of its member m where it has several (as the viewport shows them): of what it is
+    // in the compilation which made it, found once. None for a series not of the script.
+    md_bitset_t property_atoms(const SlotInfo& info, int m) {
+        if (!info.ok || !info.script_ident[0]) return md_bitset_empty_set();
+        const md_script_ir_t* ir = script_ir_of(app, info.vis_ref);
+        if (!ir) return md_bitset_empty_set();
+        const int sub = info.dim > 1 ? m : -1;
+        uint64_t key = md_hash64_combine(system_generation, md_script_ir_fingerprint(ir));
+        key = md_hash64(&info.vis_ref.ir_id, sizeof(info.vis_ref.ir_id), key);
+        key = md_hash64(&info.vis_ref.node_idx, sizeof(info.vis_ref.node_idx), key);
+        key = md_hash64(&sub, sizeof(sub), key);
+        for (size_t i = 0; i < md_array_size(atoms_cache); ++i) {
+            if (atoms_cache[i].key == key) return atoms_cache[i].atoms;
+        }
+        // Of compilations long gone: forgotten
+        if (md_array_size(atoms_cache) >= 4096) clear_atoms_cache();
+
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        md_script_vis_t vis = {};
+        md_script_vis_init(&vis, arena);
+        const md_script_vis_ctx_t ctx = { .ir = ir, .sys = &app->mold.sys, .state = &app->mold.state };
+        AtomsEntry e = { key, md_bitset_empty_set() };
+        if (md_script_vis_eval_ref(&vis, info.vis_ref, sub, &ctx, MD_SCRIPT_VISUALIZE_ATOMS)) {
+            e.atoms = md_bitset_copy(vis.atom_mask, md_get_heap_allocator());
+        }
+        md_script_vis_free(&vis);
+        md_arena_allocator_destroy(arena);
+        md_array_push(atoms_cache, e, md_get_heap_allocator());
+        return e.atoms;
+    }
+
+    // The atoms of a sample of pair p, member m: of its X and its Y
+    void add_member_atoms(md_bitmask_t* mask, const Layer& l, int p, int m) {
+        md_bitmask_or(mask, property_atoms(l.x_info[pair_x(l, p)], m));
+        md_bitmask_or(mask, property_atoms(l.y_info[pair_y(l, p)], m));
+    }
+
+    // Whether every atom of a sample of pair p, member m is in mask (and it has any)
+    bool member_atoms_in(const md_bitmask_t* mask, const Layer& l, int p, int m) {
+        bool any = false;
+        const md_bitset_t sets[2] = { property_atoms(l.x_info[pair_x(l, p)], m), property_atoms(l.y_info[pair_y(l, p)], m) };
+        for (const md_bitset_t& s : sets) {
+            md_bitset_iter_t it = md_bitset_iter(s);
+            while (md_bitset_iter_next(&it)) {
+                if (!md_bitmask_test_bit(mask, it.idx)) return false;
+                any = true;
+            }
+        }
+        return any;
+    }
+
+    // Where the members of pair p of a layer start, among those of all its pairs: off[num_pairs] of them in all
+    static void member_offsets(const Layer& l, size_t* off) {
+        off[0] = 0;
+        for (int p = 0; p < l.num_pairs; ++p) off[p + 1] = off[p] + (size_t)MAX(l.pairs[p].members, 1);
+    }
+
+    double axis_length(int a) const {
+        return axis_view[a] ? periodic_view_length(*axis_view[a]) : 0.0;
+    }
+
+    // Both axes of one circle (angles against angles): of equal scales, as Ramachandran's
+    bool equal_axes() const {
+        return axis_view[0] && axis_view[1] && axis_length(0) == axis_length(1) && strcmp(axis_view[0]->unit, axis_view[1]->unit) == 0;
+    }
+
+    // Where a point is on the plot: along a periodic axis, at each of its copies a period apart within the view (or just
+    // past its edges: a point there shows in part)
+    template <typename F>
+    void for_images(double x, double y, F&& fn) const {
+        constexpr int MAX_IMAGES = 16;
+        const double lx = axis_length(0), ly = axis_length(1);
+        int nx = 1, ny = 1;
+        if (lx > 0.0) {
+            x = periodic_wrap(x, plot_lim.X.Min - plot_margin.x, lx);
+            nx = CLAMP((int)floor((plot_lim.X.Max + plot_margin.x - x) / lx) + 1, 0, MAX_IMAGES);
+        }
+        if (ly > 0.0) {
+            y = periodic_wrap(y, plot_lim.Y.Min - plot_margin.y, ly);
+            ny = CLAMP((int)floor((plot_lim.Y.Max + plot_margin.y - y) / ly) + 1, 0, MAX_IMAGES);
+        }
+        for (int i = 0; i < nx; ++i) {
+            for (int j = 0; j < ny; ++j) fn(ImPlot::PlotToPixels(x + i * lx, y + j * ly));
+        }
+    }
+
+    // Cuts the circle of axis a where the points of the layers shown are least populated
+    void cut_least_populated(int a) {
+        PeriodicView* v = axis_view[a];
+        if (!v) return;
+        const int nb = 360;
+        float density[nb] = {};
+        const double beg = v->period.beg, len = periodic_view_length(*v);
+        bool any = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !l.data_valid) continue;
+            const float* s = a == 0 ? l.sx : l.sy;
+            const size_t n = md_array_size(a == 0 ? l.sx : l.sy);
+            for (size_t k = 0; k < n; ++k) {
+                const double t = (periodic_wrap(s[k], beg, len) - beg) / len;
+                density[CLAMP((int)(t * nb), 0, nb - 1)] += 1.0f;
+                any = true;
+            }
+        }
+        if (any) periodic_view_cut_least_populated(v, density, nb);
+    }
+
+    // The points of the visible layers: hovered, then drawn; with the lines fitted through them
+    void draw_points(bool hovered) {
+        const ImVec2 mouse = ImGui::GetMousePos();
+        md_bitmask_t* selection_mask = &app->selection.selection_mask;
+        md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
+        Hover hover;
+        const ImVec2 psize = ImPlot::GetPlotSize();
+        const double px_x = plot_lim.Size().x > 0.0 ? psize.x / plot_lim.Size().x : 0.0;   // Pixels a unit
+        const double px_y = plot_lim.Size().y > 0.0 ? psize.y / plot_lim.Size().y : 0.0;
+        const double len_x = axis_length(0), len_y = axis_length(1);
+        if (hovered && !box.active) {
+            // In plot units, of the nearest copy along a periodic axis: no point is taken to pixels
+            const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+            float best = FLT_MAX;
+            // The layer on top has it, where it has a point at all
+            for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
+                const Layer& l = layers[i];
+                if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
+                const float r = MAX(6.0f, l.point_size);
+                const float r2 = r * r;
+                const size_t n = md_array_size(l.sx);
+                for (size_t k = 0; k < n; k += l.point_stride) {
+                    double dx = l.sx[k] - mp.x;
+                    if (len_x > 0.0) dx -= len_x * floor(dx / len_x + 0.5);
+                    const float ex = (float)(dx * px_x);
+                    if (ex * ex >= r2) continue;
+                    double dy = l.sy[k] - mp.y;
+                    if (len_y > 0.0) dy -= len_y * floor(dy / len_y + 0.5);
+                    const float ey = (float)(dy * px_y);
+                    const float d2 = ex * ex + ey * ey;
+                    if (d2 < best && d2 < r2) {
+                        best = d2;
+                        hover = Hover{ i, k };
+                    }
+                }
+            }
+        }
+
+        // The highlight while a box is drawn: the atoms of what it covers, or of the point pressed on for a click
+        bool box_is_click = false;
+        if (box.active) {
+            const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+            box_is_click = fabsf(a.x - mouse.x) < 3.0f && fabsf(a.y - mouse.y) < 3.0f;
+            md_bitmask_clear(highlight_mask);
+            highlights_now = true;
+            if (box_is_click) {
+                if (box.click_layer >= 0 && box.click_layer < num_layers && box.click_idx < md_array_size(layers[box.click_layer].sx)) {
+                    const Layer& l = layers[box.click_layer];
+                    add_member_atoms(highlight_mask, l, l.spair[box.click_idx], l.smember[box.click_idx]);
+                }
+            } else {
+                // In plot units: a point is in it where any of its copies is
+                const ImPlotPoint m = ImPlot::PixelsToPlot(mouse);
+                const double bx0 = MIN(box.p0.x, m.x), bx1 = MAX(box.p0.x, m.x);
+                const double by0 = MIN(box.p0.y, m.y), by1 = MAX(box.p0.y, m.y);
+                auto in_box = [&](double x, double y) {
+                    if (len_x > 0.0) x = periodic_wrap(x, bx0, len_x);
+                    if (len_y > 0.0) y = periodic_wrap(y, by0, len_y);
+                    return x >= bx0 && x <= bx1 && y >= by0 && y <= by1;
+                };
+                std::vector<uint8_t> seen;
+                for (int i = 0; i < num_layers; ++i) {
+                    const Layer& l = layers[i];
+                    if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
+                    size_t off[MAX_PAIRS + 1];
+                    member_offsets(l, off);
+                    seen.assign(off[l.num_pairs], 0);
+                    const size_t n = md_array_size(l.sx);
+                    for (size_t k = 0; k < n; k += l.point_stride) {
+                        const int p = l.spair[k];
+                        const size_t s = off[p] + MIN((size_t)l.smember[k], off[p + 1] - off[p] - 1);
+                        if (seen[s] || !in_box(l.sx[k], l.sy[k])) continue;
+                        seen[s] = 1;
+                        add_member_atoms(highlight_mask, l, p, l.smember[k]);
+                    }
+                }
+            }
+            grow_mask_by_selection_granularity(highlight_mask, app->selection.granularity, app->mold.sys);
+        }
+
+        const uint32_t frame_cur = (uint32_t)MAX(0.0, app->animation.frame + 0.5);
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        density_map_marks_begin(dl);
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
+            const float r = l.point_size * 0.5f;
+            const bool many = l.frames != LayerFrames_Current;   // Over frames: small squares, no outlines
+            const size_t n = md_array_size(l.sx);
+            const int fg = focused_group(l);
+            for (size_t k = 0; k < n; k += l.point_stride) {
+                ImVec4 c = point_color(l, k);
+                c.w *= l.opacity;
+                if (fg >= 0 && sample_group(l, k) != fg) c.w *= 0.12f;
+                const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
+                for_images(l.sx[k], l.sy[k], [&](ImVec2 p) {
+                    if (many) density_map_mark(dl, p, r, DensityMapMark_Square, col);
+                    else density_map_mark(dl, p, r + 1.0f, DensityMapMark_Disc, col);
+                });
+            }
+        }
+        // Where the frame shown is among the points over frames, and what is hovered
+        const ImU32 ring = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.highlight.outline));
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l) || l.frames == LayerFrames_Current) continue;
+            const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
+            const size_t n = md_array_size(l.sx);
+            for (size_t k = 0; k < n; ++k) {
+                if (l.sframe[k] != frame_cur) continue;
+                for_images(l.sx[k], l.sy[k], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, IM_COL32(255, 255, 255, 220)); });
+            }
+        }
+        // Rings around the points whose atoms are selected or highlighted, of every layer
+        const bool any_selected = !md_bitmask_empty(selection_mask);
+        const bool any_highlighted = !md_bitmask_empty(highlight_mask);
+        if (any_selected || any_highlighted) {
+            const ImU32 sel_col = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.selection.outline));
+            const ImU32 hl_col = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.highlight.outline));
+            std::vector<uint8_t> state;     // Of each member: 1 selected, 2 highlighted, 4 known
+            for (int i = num_layers - 1; i >= 0; --i) {
+                const Layer& l = layers[i];
+                if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
+                size_t off[MAX_PAIRS + 1];
+                member_offsets(l, off);
+                state.assign(off[l.num_pairs], 0);
+                const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
+                const size_t n = md_array_size(l.sx);
+                for (size_t k = 0; k < n; k += l.point_stride) {
+                    const int p = l.spair[k];
+                    const int m = l.smember[k];
+                    uint8_t& st = state[off[p] + MIN((size_t)m, off[p + 1] - off[p] - 1)];
+                    if (!st) {
+                        st = 4;
+                        if (any_highlighted && member_atoms_in(highlight_mask, l, p, m)) st |= 2;
+                        else if (any_selected && member_atoms_in(selection_mask, l, p, m)) st |= 1;
+                    }
+                    if (st & 3) {
+                        const ImU32 col = (st & 2) ? hl_col : sel_col;
+                        for_images(l.sx[k], l.sy[k], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, col); });
+                    }
+                }
+            }
+        }
+        if (hover.layer >= 0) {
+            const Layer& l = layers[hover.layer];
+            const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
+            for_images(l.sx[hover.idx], l.sy[hover.idx], [&](ImVec2 p) { density_map_mark(dl, p, r + 1.0f, DensityMapMark_Ring, ring); });
+        }
+        density_map_marks_end(dl);
+
+        // The least squares line of each pair (or member), over the range of its X: in its colour where it has one
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !l.data_valid || !l.show_fit) continue;
+            const int ng = layer_num_groups(l);
+            const bool own = ng > 1 && (layer_draws_points(l) ? l.point_coloring == PointColoring_Pair : layer_splits(l));
+            const int fg = focused_group(l);
+            for (int g = 0; g < ng; ++g) {
+                const PairStats& s = group_stats(l, g);
+                if (!s.has_fit()) continue;
+                const double a = s.intercept(), b = s.slope();
+                const ImVec2 p0 = ImPlot::PlotToPixels(s.x_min, a + b * s.x_min);
+                const ImVec2 p1 = ImPlot::PlotToPixels(s.x_max, a + b * s.x_max);
+                ImVec4 c = own ? group_color(l, g) : vec_cast(l.color);
+                c.w *= MAX(l.opacity, 0.5f);
+                const float wl = fg == g ? 1.5f : 1.0f;
+                if (fg >= 0 && fg != g) c.w *= 0.25f;
+                dl->AddLine(p0, p1, IM_COL32(0, 0, 0, fg >= 0 && fg != g ? 50 : 160), 3.5f * wl);
+                dl->AddLine(p0, p1, ImGui::ColorConvertFloat4ToU32(c), 1.75f * wl);
+            }
+        }
+        ImPlot::PopPlotClipRect();
+
+        if (hover.layer >= 0) {
+            draw_tooltip(hover);
+            visualize(hover);
+            // A click (not a pan) on a point: its frame
+            if (!ImGui::GetIO().KeyShift && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f) {
+                app->animation.frame = (double)layers[hover.layer].sframe[hover.idx];
+            }
+        }
+
+        // Selecting, as in the Ramachandran plot: shift-drag a box, shift-click a point; the right button takes away; a right
+        // click on nothing clears
+        const ImPlotPoint pm = ImPlot::GetPlotMousePos();
+        if (!box.active && hovered && ImGui::GetIO().KeyShift && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+            box.active = true;
+            box.op = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ? SelectionOperator::Or : SelectionOperator::AndNot;
+            box.p0 = box.p1 = pm;
+            box.click_layer = hover.layer;
+            box.click_idx = hover.idx;
+        }
+        if (box.active) {
+            box.p1 = pm;
+            const vec4_t sel = app->selection.color.selection.outline;
+            if (!box_is_click) {
+                const vec4_t c = box.op == SelectionOperator::Or ? sel : vec4_t{1.0f, 0.4f, 0.4f, 0.9f};
+                const ImVec2 a = ImPlot::PlotToPixels(box.p0);
+                ImPlot::PushPlotClipRect();
+                dl->AddRectFilled(ImMin(a, mouse), ImMax(a, mouse), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.12f)));
+                dl->AddRect(ImMin(a, mouse), ImMax(a, mouse), ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
+                ImPlot::PopPlotClipRect();
+            }
+            const ImGuiMouseButton button = box.op == SelectionOperator::Or ? ImGuiMouseButton_Left : ImGuiMouseButton_Right;
+            if (ImGui::IsMouseReleased(button) || !ImGui::IsMouseDown(button)) {
+                if (!box_is_click || box.click_layer >= 0) {
+                    modify_field(selection_mask, md_bitmask_view(highlight_mask), box.op);
+                } else if (box.op == SelectionOperator::AndNot) {
+                    md_bitmask_clear(selection_mask);
+                }
+                box.active = false;
+                box.click_layer = -1;
+            }
+        }
+    }
+
+    // The layer whose series name the axes: of what they are of, the selected one first, then those shown. Of none, the
+    // selected layer with a series on one axis only, being put together.
+    const Layer* axes_layer() const {
+        if (const Layer* al = active_layer()) return al;
+        return find_layer(selected_layer);
+    }
+
+    // The cut of each periodic axis, shared with the timelines of its values: one asked for (its menu, here or there) is
+    // applied, and the view turns along with where the cut has gone. The view is the plot's own otherwise: panned or
+    // zoomed here, the timelines stay where they are.
+    void sync_cuts() {
+        for (int a = 0; a < 2; ++a) {
+            PeriodicView* v = axis_view[a];
+            if (v != cut_view[a]) {
+                cut_view[a] = v;
+                if (v) cut_seen[a] = v->min;
+                fit_view = true;
+                continue;
+            }
+            if (!v) continue;
+            const double len = periodic_view_length(*v);
+            if (v->has_pending) {
+                double span = v->max - v->min;
+                if (!(span > 0.0) || span > len) span = len;
+                v->min = v->pending_min;
+                v->max = v->pending_min + span;
+                v->has_pending = false;
+            }
+            // By whole turns, nothing moves: the timelines bring their cut back into the period so
+            double d = v->min - cut_seen[a];
+            d -= len * floor(d / len + 0.5);
+            cut_seen[a] = v->min;
+            if (fabs(d) > len * 1e-9) {
+                ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+                r.Min += d;
+                r.Max += d;
+            }
+        }
+    }
+
+    // As the plot pans and zooms it. Along a periodic axis, back about its domain once a period away from it; of equal
+    // axes, the shorter side within [1/36, 1] of the period, the other in proportion (as Ramachandran's).
+    void constrain_view() {
+        if (viewrect.X.Max < viewrect.X.Min) ImSwap(viewrect.X.Min, viewrect.X.Max);
+        if (viewrect.Y.Max < viewrect.Y.Min) ImSwap(viewrect.Y.Min, viewrect.Y.Max);
+        if (equal_axes()) {
+            const double len = axis_length(0);
+            const double mid_x = (viewrect.X.Min + viewrect.X.Max) * 0.5;
+            const double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
+            double w = MAX(viewrect.Size().x, len * 1e-6);
+            double h = MAX(viewrect.Size().y, len * 1e-6);
+            const double short_side = MIN(w, h);
+            const double scl = short_side > len ? len / short_side : short_side < len / 36.0 ? (len / 36.0) / short_side : 1.0;
+            w *= scl;
+            h *= scl;
+            viewrect.X = ImPlotRange(mid_x - w * 0.5, mid_x + w * 0.5);
+            viewrect.Y = ImPlotRange(mid_y - h * 0.5, mid_y + h * 0.5);
+        }
+        for (int a = 0; a < 2; ++a) {
+            const PeriodicView* v = axis_view[a];
+            if (!v) continue;
+            const double len = periodic_view_length(*v);
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            const double off = (r.Min + r.Max) * 0.5 - (v->min + len * 0.5);
+            if (fabs(off) > len) {
+                const double s = len * floor(off / len + 0.5);
+                r.Min -= s;
+                r.Max -= s;
+            }
+        }
+    }
+
+    // The zoom of the wheel this frame, of equal axes, so that the view ends exactly at its limits rather than going past
+    // them to be pulled back after (as Ramachandran's limit_zoom_rate, of which this is the same solved for any period)
+    void limit_zoom_rate(float* rate) const {
+        if (!equal_axes()) return;
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel == 0.0f || *rate <= 0.0f) return;
+        const double len = axis_length(0);
+        const double short_side = MIN(viewrect.Size().x, viewrect.Size().y);
+        if (short_side <= 0.0) return;
+        double r = *rate;
+        if (wheel < 0.0f) {
+            const double f = len / short_side;
+            r = f <= 1.0 + 1e-9 ? 0.0 : MIN(r, 2.0 * (sqrt(f) - 1.0));
+        } else {
+            const double f = (len / 36.0) / short_side;
+            const double q = f >= 1.0 - 1e-9 ? 0.0 : 1.0 - sqrt(f);
+            r = q <= 0.0 ? 0.0 : q < 0.25 ? MIN(r, 2.0 * q / (1.0 - 4.0 * q)) : r;
+        }
+        *rate = (float)r;
+    }
+
+    // The view around the samples of the layers on the plot: along a linear axis, all but the farthest 0.5 % either way
+    // (a few outliers do not shrink the rest to a corner); along a periodic one, a whole turn from where it is cut. Of
+    // equal axes, the turn along the shorter side of the plot.
+    void fit_to_layers() {
+        bool any = false;
+        for (int i = 0; i < num_layers; ++i) any |= layer_on_axes(layers[i]) && layers[i].data_valid;
+        // Fitted once there are samples
+        if (!any) return;
+        std::vector<float> pool;
+        for (int a = 0; a < 2; ++a) {
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            if (const PeriodicView* v = axis_view[a]) {
+                const double len = periodic_view_length(*v);
+                double span = len;
+                if (equal_axes() && plot_aspect > 0.0f) {
+                    span = a == 0 ? (plot_aspect >= 1.0f ? len * plot_aspect : len) : (plot_aspect >= 1.0f ? len : len / plot_aspect);
+                }
+                const double mid = v->min + len * 0.5;
+                r = ImPlotRange(mid - span * 0.5, mid + span * 0.5);
+                continue;
+            }
+            pool.clear();
+            double lo = DBL_MAX, hi = -DBL_MAX;
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!layer_on_axes(l) || !l.data_valid) continue;
+                lo = MIN(lo, (double)(a == 0 ? l.x_min : l.y_min));
+                hi = MAX(hi, (double)(a == 0 ? l.x_max : l.y_max));
+                const float* v = a == 0 ? l.sx : l.sy;
+                const size_t n = md_array_size(a == 0 ? l.sx : l.sy);
+                const size_t stride = MAX((size_t)1, n / 100000);
+                for (size_t k = 0; k < n; k += stride) {
+                    if (isfinite(v[k])) pool.push_back(v[k]);
+                }
+            }
+            if (pool.size() >= 20) {
+                const size_t n = pool.size();
+                const size_t i0 = (size_t)(n * 0.005);
+                const size_t i1 = MIN(n - 1, (size_t)(n * 0.995));
+                std::nth_element(pool.begin(), pool.begin() + i0, pool.end());
+                const double p0 = pool[i0];
+                std::nth_element(pool.begin(), pool.begin() + i1, pool.end());
+                const double p1 = pool[i1];
+                if (p1 > p0) {
+                    lo = p0;
+                    hi = p1;
+                }
+            }
+            double w = hi - lo;
+            if (!(w > 0.0)) w = MAX(fabs(lo), 1.0) * 0.1;
+            r = ImPlotRange(lo - w * 0.05, hi + w * 0.05);
+        }
+        fit_view = false;
+        view_fitted = true;
+    }
+
+    // While a series is dragged: the strips along the axes it is dropped on
+    void draw_series_drop_targets(ImVec2 pos, ImVec2 size) {
+        const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+        const SeriesDragPayload* sp = series_payload(payload);
+        if (!sp) return;
+        const char* reason = nullptr;
+        const bool droppable = series_droppable(sp->key, &reason);
+        // Onto the selected layer (drop_series): alike what is on the axis already
+        bool ok_axis[2] = { droppable, droppable };
+        const char* reasons[2] = { reason, reason };
+        if (droppable) {
+            if (Layer* sel = find_layer(selected_layer)) {
+                for (int a = 0; a < 2; ++a) {
+                    reasons[a] = axis_refusal(*sel, a, sp->key);
+                    ok_axis[a] = !reasons[a];
+                }
+            }
+        }
+
+        const float band_h = CLAMP(size.y * 0.25f, 36.0f, 120.0f);
+        const float band_w = CLAMP(size.x * 0.25f, 36.0f, 140.0f);
+        const ImRect rx(ImVec2(pos.x + band_w, pos.y + size.y - band_h), ImVec2(pos.x + size.x, pos.y + size.y));
+        const ImRect ry(ImVec2(pos.x, pos.y), ImVec2(pos.x + band_w, pos.y + size.y - band_h));
+        const ImRect rects[2] = { rx, ry };
+        const char* names[2] = { "X", "Y" };
+
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        const char* hovered_reason = nullptr;
+        for (int a = 0; a < 2; ++a) {
+            const bool ok = ok_axis[a];
+            // The labels of the axes are within the strips (inset): there is no axis outside to drop on
+            const bool inside = rects[a].Contains(ImGui::GetMousePos());
+            if (inside && !ok) hovered_reason = reasons[a];
+            const ImVec4 c = ok ? ImVec4(0.35f, 0.75f, 1.0f, inside ? 0.30f : 0.12f) : ImVec4(1.0f, 0.4f, 0.4f, inside ? 0.25f : 0.12f);
+            dl->AddRectFilled(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(c), 4.0f);
+            dl->AddRect(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.8f)), 4.0f, 0, 1.0f);
+            char text[64];
+            snprintf(text, sizeof(text), ok ? "Drop on %s" : "Cannot plot on %s", names[a]);
+            const ImVec2 ts = ImGui::CalcTextSize(text);
+            dl->AddText(ImVec2(rects[a].GetCenter().x - ts.x * 0.5f, rects[a].GetCenter().y - ts.y * 0.5f), IM_COL32(255, 255, 255, 230), text);
+        }
+        ImPlot::PopPlotClipRect();
+        if (hovered_reason) ImGui::SetTooltip("%s", hovered_reason);
+        else if (!droppable && reason) ImGui::SetTooltip("%s", reason);
+
+        for (int a = 0; a < 2; ++a) {
+            ImGui::PushID(a);
+            bool open = ImGui::BeginDragDropTargetCustom(rects[a], ImGui::GetID("##series_band"));
+            if (open) {
+                if (const SeriesDragPayload* dp = accept_series()) {
+                    if (ok_axis[a]) drop_series(a, dp->key);
+                }
+                ImGui::EndDragDropTarget();
+            }
+            ImGui::PopID();
+        }
+    }
+
+    // ### The caption
+
+    // Under the plot, of the layer the axes are of: its pairs (of a population, all of its members, then each), in columns,
+    // each with its correlation. The rest of its statistics on hover, which makes its points and contours stand out.
+    struct CaptionEntry {
+        int    g;                   // The group (layer_num_groups); -1 for all the members of a population together
+        char   name[160];
+        char   stat[32];
+        ImVec4 color;
+        bool   significant;
+    };
+    static constexpr int MAX_CAPTION = MAX_GROUPS + 1;
+    static constexpr int CAPTION_ROWS = 3;      // Shown at most, the rest scrolled to
+
+    struct CaptionLayout {
+        int   n = 0, cols = 1, rows = 0;
+        float col_w = 0, row_h = 0, height = 0;
+    };
+
+    // A correlation, in a few characters
+    static void stats_short(char* buf, size_t cap, const PairStats& s) {
+        const char* name = s.circular ? "r\xe2\x82\x92" : "r";     // r with a subscript o, of a circle
+        if (!s.has_corr()) snprintf(buf, cap, "%s -", name);
+        else if (s.circular == 1) snprintf(buf, cap, "%s %.2f", name, s.corr());
+        else snprintf(buf, cap, "%s %+.2f", name, s.corr());
+    }
+
+    int caption_entries(const Layer& l, CaptionEntry* out) const {
+        if (!l.data_valid || l.num_pairs == 0) return 0;
+        int n = 0;
+        auto add = [&](int g, const PairStats& st, ImVec4 c) {
+            CaptionEntry& e = out[n++];
+            e.g = g;
+            if (g < 0) pair_label(e.name, sizeof(e.name), l, 0);
+            else group_label(e.name, sizeof(e.name), l, g);
+            stats_short(e.stat, sizeof(e.stat), st);
+            e.color = c;
+            e.significant = st.significant();
+        };
+        if (layer_by_member(l)) add(-1, l.pairs[0], vec_cast(l.color));
+        for (int g = 0; g < layer_num_groups(l) && n < MAX_CAPTION; ++g) add(g, group_stats(l, g), group_color(l, g));
+        return n;
+    }
+
+    // In columns as wide as the widest entry (the names cut short past the width there is), as many as fit
+    static CaptionLayout caption_layout(const CaptionEntry* e, int n, float avail) {
+        CaptionLayout L;
+        L.n = n;
+        if (n == 0 || avail <= 0.0f) return L;
+        const float lh = ImGui::GetTextLineHeight();
+        L.row_h = lh + 4.0f;
+        float w = 0.0f;
+        for (int i = 0; i < n; ++i) {
+            w = MAX(w, lh * 0.6f + 6.0f + ImGui::CalcTextSize(e[i].name).x + 12.0f + ImGui::CalcTextSize(e[i].stat).x + 14.0f);
+        }
+        w = MIN(w, avail);
+        L.cols = MAX(1, (int)(avail / w));
+        L.col_w = avail / (float)L.cols;
+        L.rows = (n + L.cols - 1) / L.cols;
+        L.height = MIN(L.rows, CAPTION_ROWS) * L.row_h + 6.0f;
+        return L;
+    }
+
+    void draw_caption_tooltip(const Layer& l, const CaptionEntry& e) const {
+        const PairStats& st = e.g < 0 ? l.pairs[0] : group_stats(l, e.g);
+        char text[160];
+        stats_text(text, sizeof(text), st);
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(e.name);
+        ImGui::TextUnformatted(text);
+        if (st.ci_valid) ImGui::Text("95 %% interval of r: [%.3f, %.3f]", st.ci_lo, st.ci_hi);
+        ImGui::TextDisabled("%llu samples, worth about %.0f independent ones", (unsigned long long)st.n, st.n_eff);
+        if (e.g >= 0 && layer_num_groups(l) > 1) ImGui::TextDisabled("Stands out on the plot meanwhile");
+        ImGui::EndTooltip();
+    }
+
+    // Hovered, an entry's atoms are highlighted in the viewport, as a point's are (not of a population too large to)
+    void highlight_entry(const Layer& l, int g) {
+        md_bitmask_t* mask = &app->selection.highlight_mask;
+        md_bitmask_clear(mask);
+        if (layer_by_member(l) && g >= 0) {
+            add_member_atoms(mask, l, 0, g);
+        } else {
+            const int p = g < 0 ? 0 : g;
+            const int members = MAX(l.pairs[p].members, 1);
+            if (members > 256) return;
+            for (int m = 0; m < members; ++m) add_member_atoms(mask, l, p, m);
+        }
+        grow_mask_by_selection_granularity(mask, app->selection.granularity, app->mold.sys);
+        highlights_now = true;
+    }
+
+    void draw_caption(const Layer& l, const CaptionEntry* e, const CaptionLayout& L) {
+        ImGui::BeginChild("##caption", ImVec2(0, L.height), ImGuiChildFlags_None, L.rows > CAPTION_ROWS ? 0 : ImGuiWindowFlags_NoScrollbar);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float lh = ImGui::GetTextLineHeight();
+        // Within the scroll bar, when there is one
+        const float col_w = L.rows > CAPTION_ROWS ? (ImGui::GetContentRegionAvail().x / (float)L.cols) : L.col_w;
+        for (int i = 0; i < L.n; ++i) {
+            const ImVec2 p0 = ImVec2(origin.x + (i % L.cols) * col_w, origin.y + 3.0f + (i / L.cols) * L.row_h);
+            ImGui::SetCursorScreenPos(p0);
+            ImGui::PushID(i);
+            ImGui::InvisibleButton("##entry", ImVec2(MAX(col_w - 4.0f, 1.0f), L.row_h));
+            ImGui::PopID();
+            const bool hovered = ImGui::IsItemHovered();
+            if (hovered) {
+                dl->AddRectFilled(p0, ImVec2(p0.x + col_w - 4.0f, p0.y + L.row_h), ImGui::GetColorU32(ImGuiCol_HeaderHovered), 3.0f);
+                draw_caption_tooltip(l, e[i]);
+                focus_layer_next = l.id;
+                focus_group_next = e[i].g;
+                highlight_entry(l, e[i].g);
+            }
+            const float y = p0.y + 2.0f;
+            const float x = p0.x + 4.0f;
+            dl->AddRectFilled(ImVec2(x, y + lh * 0.2f), ImVec2(x + lh * 0.6f, y + lh * 0.8f), ImGui::ColorConvertFloat4ToU32(e[i].color), 2.0f);
+            // Dim, of what is not told from no correlation
+            const ImU32 col = ImGui::GetColorU32(e[i].significant ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+            const float sw = ImGui::CalcTextSize(e[i].stat).x;
+            const float sx = p0.x + col_w - 10.0f - sw;
+            dl->AddText(ImVec2(sx, y), col, e[i].stat);
+            const float nx = x + lh * 0.6f + 6.0f;
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col));
+            ImGui::RenderTextEllipsis(dl, ImVec2(nx, y), ImVec2(sx - 10.0f, y + lh), sx - 10.0f, e[i].name, nullptr, nullptr);
+            ImGui::PopStyleColor();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + 3.0f + L.rows * L.row_h));
+        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::EndChild();
+    }
+
+    void draw_plot() {
+        focus_layer = focus_layer_next;
+        focus_group = focus_group_next;
+        focus_layer_next = 0;
+        focus_group_next = -1;
+        sync_cuts();
+        const bool equal = equal_axes();
+        // Of equal axes, fitted to the shape of the plot of the last frame
+        const float aspect_before = plot_aspect;
+        if (fit_view) fit_to_layers();
+        const ImPlotRect view_before = viewrect;
+
+        const ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | (equal ? ImPlotFlags_Equal : 0);
+        // No labels outside the plot: they are drawn within it (DrawInsetAxes), as Ramachandran's
+        const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlot::InsetAxisFlags;
+        // Shift is for selecting: the plot does not pan or zoom meanwhile
+        ImPlotInputMap& input = ImPlot::GetInputMap();
+        const ImPlotInputMap saved_input = input;
+        input.OverrideMod = ImGuiMod_Shift;
+        limit_zoom_rate(&input.ZoomRate);
+        // Edge to edge: the labels are within the plot
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(2, 2));
+        ImPlot::PushStyleVar(ImPlotStyleVar_LabelPadding, ImVec2(0, 0));
+        // Opaque, whatever the windows are: what is behind the window is not to show through the data
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
+        // Room under the plot for the caption
+        const Layer* al = axes_layer();
+        CaptionEntry caption[MAX_CAPTION];
+        const int num_caption = show_legend && al ? caption_entries(*al, caption) : 0;
+        const CaptionLayout caption_lay = caption_layout(caption, num_caption, ImGui::GetContentRegionAvail().x);
+        const float plot_h = caption_lay.n > 0 ? -(caption_lay.height + ImGui::GetStyle().ItemSpacing.y) : -1.0f;
+        if (!ImPlot::BeginPlot("##correlation", ImVec2(-1, plot_h), flags)) {
+            ImPlot::PopStyleColor();
+            ImPlot::PopStyleVar(2);
+            input = saved_input;
+            return;
+        }
+        char xl[160] = "X", yl[160] = "Y";
+        if (al) {
+            axis_label(xl, sizeof(xl), *al, 0);
+            axis_label(yl, sizeof(yl), *al, 1);
+        }
+        const ImAxis axes[2] = { ImAxis_X1, ImAxis_Y1 };
+        const char* labels[2] = { xl, yl };
+        for (int a = 0; a < 2; ++a) {
+            ImPlotRange& r = a == 0 ? viewrect.X : viewrect.Y;
+            if (const PeriodicView* v = axis_view[a]) {
+                periodic_axis_setup_free(axes[a], labels[a], v, r.Min, r.Max, axis_flags);
+                // Out to two turns of the circle (of equal axes, constrain_view has it)
+                const double len = periodic_view_length(*v);
+                if (!equal) ImPlot::SetupAxisZoomConstraints(axes[a], len / 36.0, len * 2.0);
+            } else {
+                ImPlot::SetupAxis(axes[a], labels[a], axis_flags);
+            }
+            ImPlot::SetupAxisLinks(axes[a], &r.Min, &r.Max);
+        }
+        ImPlot::SetupFinish();
+        if (axis_view[0] && periodic_axis_popup(ImAxis_X1, axis_view[0])) cut_least_populated(0);
+        if (axis_view[1] && periodic_axis_popup(ImAxis_Y1, axis_view[1])) cut_least_populated(1);
+
+        const ImVec2 pos = ImPlot::GetPlotPos();
+        const ImVec2 psize = ImPlot::GetPlotSize();
+        if (psize.x > 1.0f && psize.y > 1.0f) plot_aspect = psize.x / psize.y;
+        plot_lim = ImPlot::GetPlotLimits();
+        plot_margin = ImVec2(psize.x > 1.0f ? (float)(plot_lim.Size().x * 12.0 / psize.x) : 0.0f,
+                             psize.y > 1.0f ? (float)(plot_lim.Size().y * 12.0 / psize.y) : 0.0f);
+
+        // The densities, composited, under everything else
+        density_map_plot_canvas(render_canvas());
+
+        // The edges of the turns of the circle, where the view goes past them: at the cut
+        {
+            ImDrawList* dl = ImPlot::GetPlotDrawList();
+            ImPlot::PushPlotClipRect();
+            const ImU32 edge = ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.5f);
+            for (int a = 0; a < 2; ++a) {
+                const PeriodicView* v = axis_view[a];
+                if (!v) continue;
+                const double len = periodic_view_length(*v);
+                const ImPlotRange& r = a == 0 ? plot_lim.X : plot_lim.Y;
+                for (double e = periodic_wrap(v->min, r.Min, len); e < r.Max; e += len) {
+                    if (e <= r.Min) continue;
+                    if (a == 0) {
+                        const float x = ImPlot::PlotToPixels(e, 0).x;
+                        dl->AddLine(ImVec2(x, pos.y), ImVec2(x, pos.y + psize.y), edge, 1.0f);
+                    } else {
+                        const float y = ImPlot::PlotToPixels(0, e).y;
+                        dl->AddLine(ImVec2(pos.x, y), ImVec2(pos.x + psize.x, y), edge, 1.0f);
+                    }
+                }
+            }
+            ImPlot::PopPlotClipRect();
+        }
+
+        draw_points(ImPlot::IsPlotHovered());
+
+
+        // What is left out of the points shown, and densities being found
+        {
+            uint32_t stride = 1;
+            bool busy = false;
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!layer_on_axes(l) || !l.data_valid) continue;
+                if (layer_draws_points(l)) stride = MAX(stride, l.point_stride);
+                busy |= layer_slow(l);
+            }
+            char note[64] = "";
+            if (stride > 1) snprintf(note, sizeof(note), "Every %u samples shown", stride);
+            density_map_plot_status(note, busy);
+        }
+
+        // Why there is nothing to see
+        bool any = false;
+        for (int i = 0; i < num_layers; ++i) any |= layer_on_axes(layers[i]) && layers[i].data_valid;
+        if (!any) {
+            const char* text = num_layers == 0 ? "Add a layer with +"
+                             : al && al->data_valid ? "nothing shown of these axes: show a layer of them"
+                             : al && al->data_error[0] ? al->data_error : "drop series on the X and Y axes";
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%c%s", toupper(text[0]), text + 1);
+            const ImVec2 ts = ImGui::CalcTextSize(buf);
+            ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + (psize.x - ts.x) * 0.5f, pos.y + (psize.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), buf);
+        }
+
+        draw_series_drop_targets(pos, psize);
+
+        // A period from the timeline: a new layer of the selected one's series over it
+        if (ImPlot::BeginDragDropTargetPlot()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
+                ASSERT(payload->DataSize == sizeof(uint32_t));
+                add_period_layer(*(const uint32_t*)payload->Data);
+            }
+            ImPlot::EndDragDropTarget();
+        }
+
+        if (psize.x > 120.0f && psize.y > 120.0f) {
+            ImPlot::DrawInsetAxes(show_ticks ? 0 : ImPlotInsetFlags_NoTickLabels, ImVec2(0, 0), 0.78f);
+        }
+
+        // A double-click fits the view, as the plots have it
+        if (ImPlot::FitThisFrame()) fit_view = true;
+
+        ImPlot::EndPlot();
+        ImPlot::PopStyleColor();
+        ImPlot::PopStyleVar(2);
+        input = saved_input;
+
+        if (caption_lay.n > 0) draw_caption(*al, caption, caption_lay);
+
+        // Panned or zoomed: no longer fitted. Fitted, of equal axes, and changed shape: fitted again.
+        if (view_fitted) {
+            const double tol_x = 1e-6 * MAX(view_before.Size().x, 1e-12);
+            const double tol_y = 1e-6 * MAX(view_before.Size().y, 1e-12);
+            const bool moved = fabs(viewrect.X.Min - view_before.X.Min) > tol_x || fabs(viewrect.X.Max - view_before.X.Max) > tol_x ||
+                               fabs(viewrect.Y.Min - view_before.Y.Min) > tol_y || fabs(viewrect.Y.Max - view_before.Y.Max) > tol_y;
+            const bool reshaped = fabsf(plot_aspect - aspect_before) > 1e-3f;
+            if (equal && reshaped) fit_view = true;
+            else if (moved) view_fitted = false;
+        }
+        if (equal && aspect_before == 0.0f) fit_view = true;
+        constrain_view();
+    }
+
+    // Of the selected layer's series, first in the list
+    Layer* add_period_layer(uint32_t period_id) {
+        const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, period_id);
+        if (!p) return nullptr;
+        const Layer* src = find_layer(selected_layer);
+        const uint32_t src_id = src ? src->id : 0;
+        Layer* l = add_layer(LayerFrames_Period, LayerStyle_Contours, 0);
+        if (!l) return nullptr;
+        if (const Layer* s = find_layer(src_id)) copy_series(*l, *s);
+        l->period = period_id;
+        l->color = p->color;
+        l->color.w = 1.0f;
+        selected_layer = l->id;
+        return l;
+    }
+
+    // The correlation of each pair against the lag of Y behind X, under the plot: of the layers shown over frames
+    void draw_lag_plot() {
+        constexpr ImPlotFlags flags = ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
+        if (!ImPlot::BeginPlot("##lag", ImVec2(-1, -1), flags)) {
+            ImPlot::PopStyleColor();
+            return;
+        }
+        const int L = CLAMP(max_lag, 1, MAX_LAG);
+        bool any_circular = false, any_linear = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !layer_has_lag(l)) continue;
+            for (int p = 0; p < l.num_pairs; ++p) (l.pairs[p].circular ? any_circular : any_linear) = true;
+        }
+        ImPlot::SetupAxis(ImAxis_X1, "lag of Y behind X (frames)");
+        ImPlot::SetupAxis(ImAxis_Y1, any_circular && !any_linear ? "circular r" : "r", ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_X1, -L - 0.5, L + 0.5, L != lag_shown ? ImPlotCond_Always : ImPlotCond_Once);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -1.05, 1.05, ImPlotCond_Always);
+        ImPlot::SetupFinish();
+        lag_shown = L;
+
+        static std::vector<float> xs;
+        xs.resize(2 * L + 1);
+        for (int k = 0; k <= 2 * L; ++k) xs[k] = (float)(k - L);
+
+        // Zero lag, and no correlation
+        const double zero = 0.0;
+        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.25f), 1.0f);
+        ImPlot::PlotInfLines("##zero_lag", &zero, 1);
+        ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.25f), 1.0f);
+        ImPlot::PlotInfLines("##zero_r", &zero, 1, ImPlotInfLinesFlags_Horizontal);
+
+        const bool hovered = ImPlot::IsPlotHovered();
+        const int tau = CLAMP((int)lround(ImPlot::GetPlotMousePos().x), -L, L);
+        int curves = 0;
+        bool lag_skipped = false;
+        for (int i = num_layers - 1; i >= 0; --i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            lag_skipped |= l.lag_skipped;
+            for (int p = 0; p < l.num_pairs; ++p) {
+                const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
+                ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+                c.w = MAX(l.opacity, 0.5f);
+                // Of the pair whose caption entry is hovered, the others dim (members are pooled here: not by member)
+                const int fg = layer_by_member(l) ? -1 : focused_group(l);
+                if (fg >= 0 && fg != p) c.w *= 0.25f;
+                char id[32];
+                snprintf(id, sizeof(id), "##lag%u_%d", l.id, p);
+                ImPlot::SetNextLineStyle(c, fg == p ? 2.6f : 1.75f);
+                ImPlot::PlotLine(id, xs.data(), row, 2 * L + 1);
+                // Where it is strongest
+                int best = -1;
+                for (int k = 0; k <= 2 * L; ++k) {
+                    if (isfinite(row[k]) && (best < 0 || fabsf(row[k]) > fabsf(row[best]))) best = k;
+                }
+                if (best >= 0) {
+                    snprintf(id, sizeof(id), "##peak%u_%d", l.id, p);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.5f, c, 1.0f, ImVec4(0, 0, 0, 0.8f));
+                    ImPlot::PlotScatter(id, &xs[best], &row[best], 1);
+                }
+                ++curves;
+            }
+        }
+
+        if (curves == 0) {
+            // Why there is none: nothing shown, not over time, or being found
+            bool any_shown = false, any_lag = false;
+            for (int i = 0; i < num_layers; ++i) {
+                any_shown |= layer_on_axes(layers[i]) && layers[i].data_valid;
+                any_lag |= layer_on_axes(layers[i]) && layer_has_lag(layers[i]);
+            }
+            const char* text = !any_shown ? "Nothing shown on the plot's axes"
+                             : any_lag ? "Finding the correlations against the lag..."
+                             : "Of layers over several frames of a trajectory";
+            const ImVec2 ts = ImGui::CalcTextSize(text);
+            const ImVec2 pos = ImPlot::GetPlotPos(), size = ImPlot::GetPlotSize();
+            ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
+        } else if (hovered) {
+            const double t = (double)tau;
+            ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 0.6f), 1.0f);
+            ImPlot::PlotInfLines("##cursor", &t, 1);
+            draw_lag_tooltip(tau, L);
+        }
+        if (curves > 0) density_map_plot_status(lag_skipped ? "Some members left out" : nullptr, false);
+
+        ImPlot::EndPlot();
+        ImPlot::PopStyleColor();
+    }
+
+    void draw_lag_tooltip(int tau, int L) const {
+        ImGui::BeginTooltip();
+        const float* xv = app->timeline.x_values;
+        const int64_t nf = (int64_t)md_array_size(xv);
+        char unit[32] = "";
+        md_unit_print(unit, sizeof(unit), app->timeline.time_unit);
+        if (nf >= 2) {
+            const double dt = (xv[nf - 1] - xv[0]) / (double)(nf - 1);
+            ImGui::Text("Y %d frames %s X  (%.4g %s)", abs(tau), tau >= 0 ? "after" : "before", fabs(tau * dt), unit);
+        } else {
+            ImGui::Text("Y %d frames %s X", abs(tau), tau >= 0 ? "after" : "before");
+        }
+        bool skipped = false;
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            skipped |= l.lag_skipped;
+            for (int p = 0; p < l.num_pairs; ++p) {
+                const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
+                int best = -1;
+                for (int k = 0; k <= 2 * L; ++k) {
+                    if (isfinite(row[k]) && (best < 0 || fabsf(row[k]) > fabsf(row[best]))) best = k;
+                }
+                const ImVec4 c = l.num_pairs > 1 ? pair_color(l, p, 0) : vec_cast(l.color);
+                ImGui::ColorButton("##c", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(ImGui::GetTextLineHeight() * 0.7f, ImGui::GetTextLineHeight() * 0.7f));
+                ImGui::SameLine();
+                char name[192];
+                pair_label(name, sizeof(name), l, p);
+                const float r = row[tau + L];
+                if (isfinite(r)) ImGui::Text("%s   %s = %.3f", name, l.pairs[p].circular ? "circular r" : "r", r);
+                else ImGui::Text("%s   -", name);
+                if (best >= 0) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(strongest at %+d: %.3f)", best - L, row[best]);
+                }
+            }
+        }
+        if (skipped) ImGui::TextDisabled("Some members of populations left out: too many samples");
+        ImGui::EndTooltip();
+    }
+
+    void draw_toolbar() {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+        if (ImGui::Button(show_sidebar ? ICON_FA_LAYER_GROUP "##layers" : ICON_FA_LAYER_GROUP "##layers_off")) {
+            show_sidebar = !show_sidebar;
+        }
+        ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
+        ImGui::SameLine();
+        if (show_lag) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button(ICON_FA_CHART_LINE "##lag")) show_lag = !show_lag;
+        if (show_lag) ImGui::PopStyleColor();
+        ImGui::SetItemTooltip(show_lag ? "Hide the correlation against the lag" : "Show the correlation against the lag: of X at a frame with Y frames later (or earlier)");
+
+        // On the right: fitting the view and the settings
+        ImGui::SameLine();
+        const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
+        if (ImGui::Button(ICON_FA_EXPAND)) {
+            fit_view = true;
+        }
+        ImGui::SetItemTooltip("Fit the view (or double-click the plot)");
+        ImGui::SameLine();
+        if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
+        if (ImGui::BeginPopup("##settings")) {
+            ImGui::Checkbox("Caption", &show_legend);
+            ImGui::SetItemTooltip("Under the plot, the correlation of each pair of the layer the axes are of");
+            ImGui::Checkbox("Tick labels", &show_ticks);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+            ImGui::SliderInt("Lag up to", &max_lag, 1, MAX_LAG, "%d frames", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SetItemTooltip("How far either way the correlation against the lag goes");
+            ImGui::Separator();
+            ImGui::TextDisabled("Drag series from the timeline onto the X or Y strip of the plot.");
+            ImGui::TextDisabled("Layers of other units are listed apart: select one to show its axes.");
+            ImGui::TextDisabled("Drop a timeline period on the plot for a layer over its frames.");
+            ImGui::TextDisabled("Click a point to go to its frame; shift-drag to select its atoms.");
+            ImGui::TextDisabled("Double-click to fit the view; right-click a periodic axis to cut it.");
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar();
+    }
+
+    // ## The sidebar
+
+#include "correlation_sidebar.inl"
+
+    void draw() {
+        highlights_now = false;
+        draw_window();
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
+        owns_highlight = highlights_now;
+    }
+
+    void draw_window() {
+        if (!show_window || !app) return;
+
+        ImGui::SetNextWindowSize(ImVec2(760, 480), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Correlation", &show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoScrollbar)) {
+            draw_toolbar();
+            if (show_sidebar) {
+                ImGui::BeginChild("##sidebar", ImVec2(320, 0), ImGuiChildFlags_ResizeX | ImGuiChildFlags_Borders);
+                draw_sidebar();
+                ImGui::EndChild();
+                ImGui::SameLine();
+            }
+            ImGui::BeginGroup();
+            const float avail = ImGui::GetContentRegionAvail().y;
+            const float split = 6.0f;
+            const float lag_h = show_lag ? MAX(80.0f, avail * lag_frac) : 0.0f;
+            ImGui::BeginChild("##plot", ImVec2(0, show_lag ? MAX(80.0f, avail - lag_h - split) : 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            draw_plot();
+            ImGui::EndChild();
+            if (show_lag) {
+                // Dragged to share the height between the two
+                ImGui::InvisibleButton("##split", ImVec2(-1, split));
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (ImGui::IsItemActive() && avail > 0.0f) lag_frac = CLAMP(lag_frac - ImGui::GetIO().MouseDelta.y / avail, 0.1f, 0.8f);
+                ImGui::BeginChild("##lag", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                draw_lag_plot();
+                ImGui::EndChild();
+            }
+            ImGui::EndGroup();
+        }
+        ImGui::End();
+    }
+};
+
+static Correlation instance = {};
+
+}  // namespace correlation

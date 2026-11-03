@@ -200,8 +200,8 @@ static const char* point_coloring_names[PointColoring_Count] = { "Layer color", 
 // What a density job found
 // A density job's: the density's distribution by class (a channel each, and all of them in PANEL_ALL), and where its
 // samples fall in the reference
+// What is counted along with a density: of the samples, how many fall in each region
 struct DensityResult {
-    DensityMapResult map = {};
     uint64_t regions[NUM_PANELS][Region_Count] = {};
     uint32_t num_frames = 0;
 };
@@ -248,13 +248,8 @@ struct Layer {
     bool     segs_valid = false;    // The filter evaluated (or there is none)
 
     // The density, on the GPU, and what it is of
-    uint32_t tex = 0;
-    DensityResult result = {};
-    bool     has_result = false;
-    uint64_t shown_hash = 0;        // Of the inputs of the density in tex
-    uint64_t want_hash = 0;         // Of the inputs it should be of, 0 for none (as for points)
-    DensityMapJob* job = nullptr;   // Under way
-    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+    DensityMapSlot density;
+    DensityResult result = {};      // Counted with the density in it
 
     // Of the points shown: how many fall in each region, by plot
     uint32_t point_regions[NUM_PANELS][Region_Count] = {};
@@ -419,11 +414,7 @@ struct Ramachandran : viamd::EventHandler {
                 // What the densities were of is gone: nothing of it is shown again, even where the next system's
                 // attributes happen to have the same versions
                 cancel_all_jobs(true);
-                for (int i = 0; i < num_layers; ++i) {
-                    layers[i].has_result = false;
-                    layers[i].shown_hash = 0;
-                    layers[i].want_hash = 0;
-                }
+                for (int i = 0; i < num_layers; ++i) density_map_slot_forget(&layers[i].density);
                 system_generation += 1;
                 panel_hash_reset();
                 break;
@@ -620,9 +611,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void free_layer(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
-        cancel_job(l, true);
-        if (l.tex) glDeleteTextures(1, &l.tex);
-        l.tex = 0;
+        density_map_slot_free(&l.density);
         md_bitset_free(&l.atoms, heap);
         for (int t = 0; t < NUM_TYPES; ++t) md_array_free(l.segs[t], heap);
     }
@@ -654,12 +643,7 @@ struct Ramachandran : viamd::EventHandler {
         l.segs_key = 0;
         l.segs_hash = 0;
         l.segs_valid = false;
-        l.tex = 0;
-        l.has_result = false;
-        l.shown_hash = 0;
-        l.want_hash = 0;
-        l.job = nullptr;
-        l.job_serial = 0;
+        density_map_slot_detach(&l.density);
         tree_changed();
         return &l;
     }
@@ -851,11 +835,8 @@ struct Ramachandran : viamd::EventHandler {
     // ## Jobs
 
     void cancel_job(Layer& l, bool wait) {
-        if (!l.job) return;
         // Its callback still comes, and finds the layer gone or the job not its own
-        density_map_cancel(l.job, wait);
-        l.job = nullptr;
-        l.want_hash = 0;
+        density_map_slot_cancel(&l.density, wait);
     }
 
     void cancel_all_jobs(bool wait) {
@@ -867,7 +848,7 @@ struct Ramachandran : viamd::EventHandler {
     // The density of the angles of the layer's residues over frames [frame_beg, frame_end): a channel for each class.
     // Where the samples fall in the reference is counted along, by chunk.
     void launch_job(Layer& l, uint64_t hash, uint32_t frame_beg, uint32_t frame_end) {
-        ASSERT(!l.job);
+        ASSERT(!l.density.job);
         const md_backbone_angles_t* angles = app->trajectory_data.backbone_angles.data;
         ASSERT(angles && frame_end > frame_beg);
 
@@ -913,21 +894,15 @@ struct Ramachandran : viamd::EventHandler {
             }
         };
         const uint32_t id = l.id;
-        const uint64_t serial = ++l.job_serial;
-        auto done = [this, in, id, hash, serial](const DensityMapResult* result, const float* grid) {
+        auto find = [this, id]() -> DensityMapSlot* {
             Layer* layer = find_layer(id);
-            if (!layer || !layer->job || layer->job_serial != serial || layer->want_hash != hash) return;
-            layer->job = nullptr;
-            if (!result) {
-                // Interrupted: tried again
-                layer->want_hash = 0;
-                return;
-            }
-            if (!layer->tex) layer->tex = density_map_texture_create(true);
-            density_map_texture_upload(layer->tex, grid);
+            return layer ? &layer->density : nullptr;
+        };
+        auto accepted = [this, in, id](DensityMapSlot*) {
+            Layer* layer = find_layer(id);
+            if (!layer) return;
             DensityResult& r = layer->result;
             r = {};
-            r.map = *result;
             r.num_frames = in->frame_end - in->frame_beg;
             for (int c = 0; c < 8; ++c) {
                 for (int t = 0; t < NUM_TYPES; ++t) {
@@ -937,11 +912,8 @@ struct Ramachandran : viamd::EventHandler {
                     }
                 }
             }
-            layer->has_result = true;
-            layer->shown_hash = hash;
         };
-        l.want_hash = hash;
-        l.job = density_map_launch(STR_LIT("Ramachandran density"), rama_domain, l.bandwidth, num_chunks, source, done);
+        density_map_slot_launch(&l.density, STR_LIT("Ramachandran density"), rama_domain, l.bandwidth, num_chunks, source, hash, find, accepted);
     }
 
     // ## Update
@@ -1144,9 +1116,9 @@ struct Ramachandran : viamd::EventHandler {
             h = md_hash64(&l.bandwidth, sizeof(l.bandwidth), h);
             h |= 1;
 
-            if (h == l.shown_hash || h == l.want_hash) continue;
+            if (h == l.density.shown_hash || h == l.density.want_hash) continue;
             // One at a time: a job under way is let finish (its result is shown meanwhile), the latest is asked for after
-            if (l.job) continue;
+            if (l.density.job) continue;
             launch_job(l, h, beg, end);
         }
     }
@@ -1497,13 +1469,13 @@ struct Ramachandran : viamd::EventHandler {
             return true;
         }
 
-        if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.segs_valid || !angles_available()) return false;
-        const DensityMapResult& r = l.result.map;
+        if (!layer_draws_density(l) || !l.density.has_result || !l.density.tex || !l.segs_valid || !angles_available()) return false;
+        const DensityMapResult& r = l.density.result;
         if (r.samples[panel] == 0 || r.max[panel] <= 0.0f) return false;
-        d->tex = l.tex;
+        d->tex = l.density.tex;
         density_map_draw_levels(d, r, panel, l.levels, l.num_levels);
         density_map_draw_fills_from(d, vec_cast(l.color));
-        d->content = l.shown_hash;
+        d->content = l.density.shown_hash;
         return true;
     }
 
@@ -1920,6 +1892,21 @@ struct Ramachandran : viamd::EventHandler {
         const bool hovered = ImPlot::IsPlotHovered();
         draw_points(panel, hovered);
 
+        // What is left out of the points shown, and densities being found
+        {
+            uint32_t stride = 1;
+            bool busy = false;
+            for (int i = 0; i < num_layers; ++i) {
+                const Layer& l = layers[i];
+                if (!layer_shown(l) || l.source != LayerSource_System) continue;
+                if (l.style == LayerStyle_Points && l.frames != LayerFrames_Current) stride = MAX(stride, l.point_stride);
+                busy |= density_map_slot_slow(l.density);
+            }
+            char note[64] = "";
+            if (stride > 1) snprintf(note, sizeof(note), "Every %u frames shown", stride);
+            density_map_plot_status(note, busy);
+        }
+
         // The class and how many residues of it there are, in the corner; the labels of the axes along the edges
         ImVec2 title_size = ImVec2(0, 0);
         {
@@ -2160,8 +2147,8 @@ struct Ramachandran : viamd::EventHandler {
         if (l.style == LayerStyle_Points) {
             count = l.point_count[panel];
             for (int k = 0; k < Region_Count; ++k) regions[k] = l.point_regions[panel][k];
-        } else if (l.has_result) {
-            count = l.result.map.samples[panel];
+        } else if (l.density.has_result) {
+            count = l.density.result.samples[panel];
             for (int k = 0; k < Region_Count; ++k) regions[k] = l.result.regions[panel][k];
         }
         if (count == 0) {
@@ -2193,7 +2180,7 @@ struct Ramachandran : viamd::EventHandler {
             return;
         }
         const bool points = l.style == LayerStyle_Points;
-        if (!points && l.has_result) {
+        if (!points && l.density.has_result) {
             ImGui::TextDisabled("%u frames, smoothed by %.1f\xc2\xb0", l.result.num_frames, l.bandwidth);
         }
         if (ImGui::BeginTable("##stats", 5, ImGuiTableFlags_SizingFixedFit)) {
@@ -2213,8 +2200,8 @@ struct Ramachandran : viamd::EventHandler {
                 if (points) {
                     count = l.point_count[p];
                     for (int k = 0; k < Region_Count; ++k) regions[k] = l.point_regions[p][k];
-                } else if (l.has_result) {
-                    count = l.result.map.samples[p];
+                } else if (l.density.has_result) {
+                    count = l.density.result.samples[p];
                     for (int k = 0; k < Region_Count; ++k) regions[k] = l.result.regions[p][k];
                 }
                 ImGui::TableNextRow();
@@ -2374,12 +2361,7 @@ struct Ramachandran : viamd::EventHandler {
                     invalid ? IM_COL32(255, 110, 110, 255) : dim_col, stats, nullptr, 0.0f, &clip);
 
         // Working on its density
-        if (l.job) {
-            const float t = (float)ImGui::GetTime();
-            const ImVec2 c = ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9);
-            dl->PathArcTo(c, 4.5f, t * 6.0f, t * 6.0f + 4.0f, 10);
-            dl->PathStroke(dim_col, 0, 1.5f);
-        }
+        if (l.density.job) density_map_spinner(dl, ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9), dim_col);
 
         ImGui::SetCursorScreenPos(ImVec2(row_min.x - indent, row_min.y + row_h + 2));
         ImGui::Dummy(ImVec2(0, 0));
@@ -2683,13 +2665,13 @@ struct Ramachandran : viamd::EventHandler {
             ImGui::Checkbox("##log", &l.log_scale);
         }
         if (l.source == LayerSource_System && l.style != LayerStyle_Points) {
-            prop::row("bandwidth", "The standard deviation of the gaussian the density is smoothed with");
+            prop::row("bandwidth", "The standard deviation of the gaussian the density is smoothed with, in degrees");
             ImGui::SliderFloat("##bandwidth", &l.bandwidth, 1.0f, 20.0f, "%.1f\xc2\xb0", ImGuiSliderFlags_AlwaysClamp);
         }
         if (l.source == LayerSource_System && l.style == LayerStyle_Points) {
             prop::row("point size");
             ImGui::SliderFloat("##point_size", &l.point_size, 1.0f, 12.0f, "%.0f px");
-            prop::row("color by");
+            prop::row("color by", "Layer: its colour. Region: the allowed and the outliers stand out. Time: by the colour map");
             int c = (int)l.point_coloring;
             if (ImGui::Combo("##coloring", &c, point_coloring_names, PointColoring_Count)) l.point_coloring = (PointColoring)c;
             if (l.point_coloring == PointColoring_Time) {

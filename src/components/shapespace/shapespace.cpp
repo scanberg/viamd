@@ -225,13 +225,7 @@ struct Layer {
     uint64_t current_key = 0;
 
     // The density
-    uint32_t tex = 0;
-    DensityMapResult result = {};
-    bool     has_result = false;
-    uint64_t shown_hash = 0;
-    uint64_t want_hash = 0;
-    DensityMapJob* job = nullptr;
-    uint64_t job_serial = 0;        // Of the job launched last: the callbacks of cancelled ones are not its
+    DensityMapSlot density;
 
     // The bandwidth found for the samples (Scott's rule), and what of
     float    auto_bandwidth = 0.0f;
@@ -419,9 +413,7 @@ struct Shapespace : viamd::EventHandler {
             Layer& l = layers[i];
             cancel_job(l, wait);
             l.eval.reset();
-            l.has_result = false;
-            l.shown_hash = 0;
-            l.want_hash = 0;
+            density_map_slot_forget(&l.density);
             l.structs_key = 0;
             l.current_key = 0;
         }
@@ -564,8 +556,7 @@ struct Shapespace : viamd::EventHandler {
 
     void free_layer(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
-        cancel_job(l, true);
-        density_map_texture_free(&l.tex);
+        density_map_slot_free(&l.density);
         for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitset_free(&l.structures[i], heap);
         md_array_free(l.structures, heap);
         md_array_free(l.current_coords, heap);
@@ -810,15 +801,12 @@ struct Shapespace : viamd::EventHandler {
     // ## Jobs
 
     void cancel_job(Layer& l, bool wait) {
-        if (!l.job) return;
-        density_map_cancel(l.job, wait);
-        l.job = nullptr;
-        l.want_hash = 0;
+        density_map_slot_cancel(&l.density, wait);
     }
 
     // The density of the shapes of the layer's evaluation over frames [beg, end)
     void launch_job(Layer& l, uint64_t hash, uint32_t beg, uint32_t end, float sigma) {
-        ASSERT(!l.job && l.eval && l.eval->complete());
+        ASSERT(!l.density.job && l.eval && l.eval->complete());
         EvaluationRef eval = l.eval;
         const uint64_t num_samples = (uint64_t)eval->num_structures * (end - beg);
         const uint32_t num_chunks = (uint32_t)MIN((uint64_t)MIN(8u, end - beg), (num_samples >> 20) + 1);
@@ -835,24 +823,12 @@ struct Shapespace : viamd::EventHandler {
             }
         };
         const uint32_t id = l.id;
-        const uint64_t serial = ++l.job_serial;
-        auto done = [this, id, hash, serial](const DensityMapResult* result, const float* grid) {
+        auto find = [this, id]() -> DensityMapSlot* {
             Layer* layer = find_layer(id);
-            if (!layer || !layer->job || layer->job_serial != serial || layer->want_hash != hash) return;
-            layer->job = nullptr;
-            if (!result) {
-                layer->want_hash = 0;
-                return;
-            }
-            if (!layer->tex) layer->tex = density_map_texture_create(false);
-            density_map_texture_upload(layer->tex, grid);
-            layer->result = *result;
-            layer->has_result = true;
-            layer->shown_hash = hash;
+            return layer ? &layer->density : nullptr;
         };
-        l.want_hash = hash;
         // The bandwidth is of the triangle's side, which is 1
-        l.job = density_map_launch(STR_LIT("Shapespace density"), shape_domain, sigma, num_chunks, source, done);
+        density_map_slot_launch(&l.density, STR_LIT("Shapespace density"), shape_domain, sigma, num_chunks, source, hash, find);
     }
 
     // ## Update
@@ -1081,7 +1057,7 @@ struct Shapespace : viamd::EventHandler {
             const float sigma = l.bandwidth > 0.0f ? l.bandwidth : l.auto_bandwidth;
             h = md_hash64(&sigma, sizeof(sigma), h);
             h |= 1;
-            if (h == l.shown_hash || h == l.want_hash || l.job) continue;
+            if (h == l.density.shown_hash || h == l.density.want_hash || l.density.job) continue;
             launch_job(l, h, beg, end, sigma);
         }
         // Evaluations no layer holds any longer (nor a density job: they hold them too)
@@ -1370,10 +1346,10 @@ struct Shapespace : viamd::EventHandler {
     }
 
     bool layer_draw(DensityMapDraw* d, const Layer& l) const {
-        if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.eval || !l.eval->complete()) return false;
-        if (l.result.samples[0] == 0 || l.result.max[0] <= 0.0f) return false;
+        if (!layer_draws_density(l) || !l.density.has_result || !l.density.tex || !l.eval || !l.eval->complete()) return false;
+        if (l.density.result.samples[0] == 0 || l.density.result.max[0] <= 0.0f) return false;
         density_map_draw_init(d);
-        d->tex = l.tex;
+        d->tex = l.density.tex;
         d->opacity = l.opacity;
         d->line_width = l.line_width;
         d->line_color[0] = l.color.x;
@@ -1384,9 +1360,9 @@ struct Shapespace : viamd::EventHandler {
         d->fill = l.fill;
         d->lines = l.lines;
         if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
-        density_map_draw_levels(d, l.result, 0, l.levels, l.num_levels);
+        density_map_draw_levels(d, l.density.result, 0, l.levels, l.num_levels);
         density_map_draw_fills_from(d, l.color);
-        d->content = l.shown_hash;
+        d->content = l.density.shown_hash;
         return true;
     }
 
@@ -1776,6 +1752,21 @@ struct Shapespace : viamd::EventHandler {
             density_map_plot_canvas(render_densities());
             draw_points(ImPlot::IsPlotHovered());
 
+            // What is left out of the points shown, and what is being found
+            {
+                uint32_t stride = 1;
+                bool busy = false;
+                for (int i = 0; i < num_layers; ++i) {
+                    const Layer& l = layers[i];
+                    if (!layer_shown(l)) continue;
+                    if (l.style == LayerStyle_Points && l.frames != LayerFrames_Current) stride = MAX(stride, l.point_stride);
+                    busy |= density_map_slot_slow(l.density) || (l.eval && !l.eval->complete());
+                }
+                char note[64] = "";
+                if (stride > 1) snprintf(note, sizeof(note), "Every %u frames shown", stride);
+                density_map_plot_status(note, busy);
+            }
+
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
                     add_period_layer(*(const uint32_t*)payload->Data);
@@ -2016,11 +2007,8 @@ struct Shapespace : viamd::EventHandler {
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.85f, ImVec2(text_min.x, text_min.y + line_h + 1),
                     !l.structs_valid ? IM_COL32(255, 110, 110, 255) : dim_col, stats, nullptr, 0.0f, &clip);
         // Working on it: its evaluation or its density
-        if (l.job || (l.eval && !l.eval->complete())) {
-            const float t = (float)ImGui::GetTime();
-            const ImVec2 c = ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9);
-            dl->PathArcTo(c, 4.5f, t * 6.0f, t * 6.0f + 4.0f, 10);
-            dl->PathStroke(ImGui::GetColorU32(ImGuiCol_TextDisabled), 0, 1.5f);
+        if (l.density.job || (l.eval && !l.eval->complete())) {
+            density_map_spinner(dl, ImVec2(row_min.x + row_w - pad - 6, row_min.y + 9), ImGui::GetColorU32(ImGuiCol_TextDisabled));
         }
 
         ImGui::SetCursorScreenPos(ImVec2(row_min.x - indent, row_min.y + row_h + 2));
@@ -2272,7 +2260,7 @@ struct Shapespace : viamd::EventHandler {
         if (l.style == LayerStyle_Points) {
             prop::row("point size");
             ImGui::SliderFloat("##point_size", &l.point_size, 1.0f, 12.0f, "%.0f px");
-            prop::row("color by");
+            prop::row("color by", "Layer: its colour. Structure: a colour for each. Time: by the colour map");
             int c = (int)l.point_coloring;
             if (ImGui::Combo("##coloring", &c, point_coloring_names, PointColoring_Count)) l.point_coloring = (PointColoring)c;
             if (l.frames != LayerFrames_Current && l.point_stride > 1) {
