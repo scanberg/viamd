@@ -36,8 +36,10 @@ constexpr size_t family_count = (size_t)Family::Count;
 using Families = uint32_t;
 constexpr Families family_bit(Family family) { return 1u << (unsigned)family; }
 // The CP classification is the one source of the types: a CP's type is its branch of the CP tree (the contact class,
-// ChemicalLabel::interaction, under Contacts), mapped by this table. Every pi contact shares the pi-stacking type, and
-// so its radius; C-H...X and H...H are other contacts. A class not in the table is an other contact.
+// ChemicalLabel::interaction, under Contacts), mapped by this table. Every pi contact (pi...pi, X-H...pi, cation,
+// anion and lone pair...pi) shares the pi type, and so its radius; the sigma-hole bonds (halogen, chalcogen, pnictogen,
+// tetrel) share the halogen-bond type; C-H...X, H...H, dihydrogen bonds, metal and type I halogen contacts are other
+// contacts. A class not in the table is an other contact.
 struct ContactClass {
     const char* name;   // ChemicalLabel::interaction
     Family family;

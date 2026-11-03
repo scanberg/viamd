@@ -399,6 +399,46 @@ UTEST(critical_point_chemistry, pi_stacking_between_aromatic_atoms) {
     EXPECT_STREQ(group.c_str(), "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80: C aromatic \xC2\xB7\xC2\xB7\xC2\xB7 C aromatic");
 }
 
+// The class of the contact x...y, with x bonded to r (r < 0: x isolated) and y bonded to q (q < 0: y isolated)
+static std::string classify(int zr, Position pr, int zx, Position px, int zy, Position py, int zq = 0, Position pq = {},
+                            md_atom_flags_t fx = MD_ATOM_FLAG_NONE, md_atom_flags_t fy = MD_ATOM_FLAG_NONE) {
+    Scene s;
+    const int x = s.atom((md_atomic_number_t)zx, px, fx);
+    const int y = s.atom((md_atomic_number_t)zy, py, fy);
+    if (zr) s.bond(s.atom((md_atomic_number_t)zr, pr), x);
+    if (zq) s.bond(s.atom((md_atomic_number_t)zq, pq), y);
+    const uint32_t contact = s.path(x, y, 0.01f);
+    return s.labels()[contact].interaction;
+}
+
+UTEST(critical_point_chemistry, sigma_hole_and_ion_contact_classes) {
+    const md_atom_flags_t ar = MD_ATOM_FLAG_AROMATIC;
+    // C-X...N, linear: halogen bond; bent: not
+    EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 35, {0, 0, 0}, 7, {3.0, 0, 0}) == std::string("Halogen bond"));
+    EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 35, {0, 0, 0}, 7, {0.5, 3.0, 0}) == std::string("Other contact"));
+    // N-I...O (not only C-X), and C-Br over an aromatic carbon
+    EXPECT_TRUE(classify(7, {-2.0, 0, 0}, 53, {0, 0, 0}, 8, {2.8, 0, 0}) == std::string("Halogen bond"));
+    EXPECT_TRUE(classify(6, {-1.9, 0, 0}, 35, {0, 0, 0}, 6, {3.3, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) == std::string("Halogen bond"));
+    // Chalcogen and pnictogen sigma holes
+    EXPECT_TRUE(classify(6, {-1.8, 0, 0}, 34, {0, 0, 0}, 7, {3.0, 0, 0}) == std::string("Chalcogen bond"));
+    EXPECT_TRUE(classify(9, {-1.6, 0, 0}, 15, {0, 0, 0}, 8, {3.0, 0, 0}) == std::string("Pnictogen bond"));
+    EXPECT_TRUE(classify(9, {-1.6, 0, 0}, 14, {0, 0, 0}, 7, {3.0, 0, 0}) == std::string("Tetrel bond"));
+    // Type I halogen...halogen: both C-X...X angles alike
+    EXPECT_TRUE(classify(6, {-1.3, -1.3, 0}, 17, {0, 0, 0}, 17, {3.4, 0, 0}, 6, {4.7, 1.3, 0}) ==
+                std::string("Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen"));
+    // Ions and metals over pi systems; metal contacts
+    EXPECT_TRUE(classify(0, {}, 11, {0, 0, 0}, 6, {2.6, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
+                std::string("Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+    EXPECT_TRUE(classify(0, {}, 11, {0, 0, 0}, 8, {2.3, 0, 0}) == std::string("Metal contact"));
+    EXPECT_TRUE(classify(0, {}, 17, {0, 0, 0}, 6, {3.2, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
+                std::string("Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+    EXPECT_TRUE(classify(6, {0, 0, 1.2}, 8, {0, 0, 0}, 6, {3.1, 0, 0}, 0, {}, MD_ATOM_FLAG_NONE, ar) ==
+                std::string("Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"));
+    // A hydridic and a protic hydrogen: dihydrogen bond; two C-H: H...H
+    EXPECT_TRUE(classify(5, {-1.2, 0, 0}, 1, {0, 0, 0}, 1, {1.8, 0, 0}, 7, {2.8, 0, 0}) == std::string("Dihydrogen bond"));
+    EXPECT_TRUE(classify(6, {-1.1, 0, 0}, 1, {0, 0, 0}, 1, {2.2, 0, 0}, 6, {3.3, 0, 0}) == std::string("H\xC2\xB7\xC2\xB7\xC2\xB7H"));
+}
+
 UTEST(critical_point_chemistry, ring_cp_inside_a_contact_closed_cycle) {
     Scene s;
     const int a = s.atom(6, {0.0, 0.0, 0.0});

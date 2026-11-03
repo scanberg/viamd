@@ -103,6 +103,11 @@ std::vector<std::string> environment_path(const ChemicalLabel& label, const md_s
         std::string family = label.interaction.empty() ? "Other contacts" : label.interaction;
         if (family == "Hydrogen bond") family = "Hydrogen bonds";
         else if (family == "Halogen bond") family = "Halogen bonds";
+        else if (family == "Chalcogen bond") family = "Chalcogen bonds";
+        else if (family == "Pnictogen bond") family = "Pnictogen bonds";
+        else if (family == "Tetrel bond") family = "Tetrel bonds";
+        else if (family == "Dihydrogen bond") family = "Dihydrogen bonds";
+        else if (family == "Metal contact") family = "Metal contacts";
         else if (family == "Other contact") family = "Other contacts";
         else if (family == "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80") family = "\xCF\x80-stacking";
         path = {"Contacts", family};
@@ -296,8 +301,9 @@ static bool share_ring(const md_system_t& sys, int a, int b) {
 }
 
 // The class of a contact bond path between atoms a and b, from elements, connectivity and geometry. The angle
-// criteria are the usual ones (IUPAC 2011 for hydrogen bonds: D-H...A above 110 degrees; halogen bonds: C-X...Y
-// above 140 degrees); a contact failing them is "Other contact". A class names the geometry and topology only.
+// criteria are the usual ones (IUPAC 2011 for hydrogen bonds: D-H...A above 110 degrees; IUPAC 2013/2019 for
+// sigma-hole bonds: R-X...Y above 140 degrees, R the atom bonded to X opposite Y; 160 for carbon tetrel bonds);
+// a contact failing them is "Other contact". A class names the geometry and topology only.
 static std::string contact_class(const md_system_t& sys, std::span<const Position> xyz, int a, int b, std::string& why) {
     auto z = [&](int i) { return (int)md_atom_atomic_number(&sys.atom, i); };
     auto ring_aromatic = [&](int i) { return (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_AROMATIC) != 0; };
@@ -311,12 +317,54 @@ static std::string contact_class(const md_system_t& sys, std::span<const Positio
         }
         return false;
     };
-    auto acceptor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 16 || n == 17 || n == 35 || n == 53; };
+    auto acceptor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 15 || n == 16 || n == 17 || n == 34 || n == 35 || n == 53; };
     auto donor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 16; };
-    auto halogen = [](int n) { return n == 17 || n == 35 || n == 53; };
-    char buf[128];
+    auto halogen = [](int n) { return n == 17 || n == 35 || n == 53 || n == 85; };
+    auto chalcogen = [](int n) { return n == 16 || n == 34 || n == 52; };
+    auto pnictogen = [](int n) { return n == 15 || n == 33 || n == 51; };
+    auto tetrel = [](int n) { return n == 6 || n == 14 || n == 32 || n == 50 || n == 82; };
+    auto metal = [](int n) {
+        return n == 3 || n == 4 || n == 11 || n == 12 || n == 13 || (n >= 19 && n <= 31) || (n >= 37 && n <= 50) ||
+               (n >= 55 && n <= 84) || n >= 87;
+    };
+    // Below hydrogen in electronegativity: a hydrogen bonded to it is hydridic
+    auto hydridic_parent = [&](int n) { return n == 5 || n == 14 || n == 32 || metal(n); };
+    auto bonded_count = [&](int i) {
+        int count = 0;
+        if (!sys.bond.conn.offset) return 0;
+        for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) ++count;
+        return count;
+    };
+    // The largest R-x...y angle over the atoms R bonded to x; -1 without bonds
+    auto sigma_angle = [&](int x, int y, int* opposite) {
+        double best = -1.0;
+        *opposite = -1;
+        if (!sys.bond.conn.offset) return best;
+        for (auto it = md_bond_iter(&sys.bond, x); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int r = (int)md_bond_iter_atom_index(&it);
+            const double angle = angle_degrees(xyz[r], xyz[x], xyz[y]);
+            if (angle > best) { best = angle; *opposite = r; }
+        }
+        return best;
+    };
+    char buf[160];
 
-    if (z(a) == 1 && z(b) == 1) { why = "Both ends are hydrogens."; return "H\xC2\xB7\xC2\xB7\xC2\xB7H"; }
+    if (z(a) == 1 && z(b) == 1) {
+        const int pa = bonded_partner(sys, a), pb = bonded_partner(sys, b);
+        if (pa >= 0 && pb >= 0) {
+            for (int pass = 0; pass < 2; ++pass) {
+                const int hydride = pass ? pb : pa, proton = pass ? pa : pb;
+                if (hydridic_parent(z(hydride)) && donor(z(proton))) {
+                    snprintf(buf, sizeof(buf), "%s-H\xC2\xB7\xC2\xB7\xC2\xB7H-%s: a hydridic and a protic hydrogen.",
+                             element(sys, hydride).c_str(), element(sys, proton).c_str());
+                    why = buf;
+                    return "Dihydrogen bond";
+                }
+            }
+        }
+        why = "Both ends are hydrogens.";
+        return "H\xC2\xB7\xC2\xB7\xC2\xB7H";
+    }
     if (z(a) == 1 || z(b) == 1) {
         const int h = z(a) == 1 ? a : b, other = h == a ? b : a;
         const int parent = bonded_partner(sys, h);
@@ -332,17 +380,64 @@ static std::string contact_class(const md_system_t& sys, std::span<const Positio
         if (z(parent) == 6 && acceptor(z(other))) return "C-H\xC2\xB7\xC2\xB7\xC2\xB7X";
         return "Other contact";
     }
+    // Metals and ions: a cation over a pi system, otherwise a metal contact
     for (int pass = 0; pass < 2; ++pass) {
+        const int m = pass ? b : a, y = pass ? a : b;
+        if (!metal(z(m))) continue;
+        if (aromatic(y) && !metal(z(y))) {
+            why = element(sys, m) + " over an aromatic system.";
+            return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+        }
+        why = element(sys, m) + "\xC2\xB7\xC2\xB7\xC2\xB7" + element(sys, y) + ": a metal end.";
+        return "Metal contact";
+    }
+    // A tetracoordinate nitrogen (ammonium) over a pi system
+    for (int pass = 0; pass < 2; ++pass) {
+        const int n = pass ? b : a, y = pass ? a : b;
+        if (z(n) == 7 && bonded_count(n) == 4 && ring_aromatic(y)) {
+            why = "Tetracoordinate N (ammonium) over an aromatic ring.";
+            return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+        }
+    }
+    // Sigma-hole bonds: the donor x along the extension of a bond R-x, towards a nucleophile y (lone pair, pi or anion)
+    {
+        auto nucleophile = [&](int y) { return acceptor(z(y)) || aromatic(y) || bonded_count(y) == 0 ||
+                                               md_atom_hybridization(&sys.atom, y) == MD_HYBRIDIZATION_SP2 ||
+                                               md_atom_hybridization(&sys.atom, y) == MD_HYBRIDIZATION_SP; };
+        double angle[2] = {-1.0, -1.0};
+        int opposite[2] = {-1, -1};
+        for (int pass = 0; pass < 2; ++pass) {
+            const int x = pass ? b : a, y = pass ? a : b;
+            if (halogen(z(x)) || chalcogen(z(x)) || pnictogen(z(x)) || tetrel(z(x))) angle[pass] = sigma_angle(x, y, &opposite[pass]);
+        }
+        if (halogen(z(a)) && halogen(z(b)) && angle[0] >= 0.0 && angle[1] >= 0.0 && std::abs(angle[0] - angle[1]) < 15.0) {
+            snprintf(buf, sizeof(buf), "Symmetric R-X\xC2\xB7\xC2\xB7\xC2\xB7X-R angles %.0f and %.0f degrees (type I).", angle[0], angle[1]);
+            why = buf;
+            return "Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen";
+        }
+        const int pass = angle[1] > angle[0] ? 1 : 0;
         const int x = pass ? b : a, y = pass ? a : b;
-        if (!halogen(z(x)) || !(z(y) == 7 || z(y) == 8 || z(y) == 16)) continue;
-        const int parent = bonded_partner(sys, x);
-        if (parent < 0 || z(parent) != 6) continue;
-        const double angle = angle_degrees(xyz[parent], xyz[x], xyz[y]);
-        snprintf(buf, sizeof(buf), "C-%s\xC2\xB7\xC2\xB7\xC2\xB7%s angle %.0f degrees", element(sys, x).c_str(), element(sys, y).c_str(), angle);
-        why = buf;
-        if (angle >= 140.0) { why += "."; return "Halogen bond"; }
+        const double threshold = z(x) == 6 ? 160.0 : 140.0;
+        const bool sp3_carbon = z(x) != 6 || md_atom_hybridization(&sys.atom, x) == MD_HYBRIDIZATION_SP3;
+        if (angle[pass] >= threshold && sp3_carbon && nucleophile(y) && opposite[pass] >= 0) {
+            snprintf(buf, sizeof(buf), "%s-%s\xC2\xB7\xC2\xB7\xC2\xB7%s angle %.0f degrees.", element(sys, opposite[pass]).c_str(),
+                     element(sys, x).c_str(), element(sys, y).c_str(), angle[pass]);
+            why = buf;
+            if (halogen(z(x))) return "Halogen bond";
+            if (chalcogen(z(x))) return "Chalcogen bond";
+            if (pnictogen(z(x))) return "Pnictogen bond";
+            return "Tetrel bond";
+        }
     }
     if (aromatic(a) && aromatic(b) && !share_ring(sys, a, b)) { why = "Both ends belong to aromatic systems (ring atoms, or conjugated substituents) of different rings."; return "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
+    // A lone pair or an anion over a pi system
+    for (int pass = 0; pass < 2; ++pass) {
+        const int p = pass ? b : a, y = pass ? a : b;
+        if (!ring_aromatic(p) || aromatic(y) || !acceptor(z(y))) continue;
+        if (bonded_count(y) == 0) { why = "An isolated " + element(sys, y) + " (anion) over an aromatic ring."; return "Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
+        why = "A " + element(sys, y) + " lone pair over an aromatic ring.";
+        return "Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+    }
     if (why.empty()) why = "No class criterion is met.";
     return "Other contact";
 }
@@ -427,8 +522,12 @@ static bool bond_path_cycles(const std::vector<std::vector<PathEdge>>& adjacency
 
 // The closing contacts of a ring, most specific first: a contact ring or cage is grouped by, and belongs to the
 // interaction of, the first of them
-static const char* const closing_priority[] = {"Hydrogen bond", "Halogen bond", "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
-                                               "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+static const char* const closing_priority[] = {"Hydrogen bond", "Halogen bond", "Chalcogen bond", "Pnictogen bond",
+                                               "Tetrel bond", "Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen",
+                                               "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+                                               "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+                                               "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+                                               "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Dihydrogen bond", "Metal contact",
                                                "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "Other contact"};
 static size_t closing_rank(const std::string& cls) {
     for (size_t k = 0; k < sizeof(closing_priority) / sizeof(closing_priority[0]); ++k) if (cls == closing_priority[k]) return k;

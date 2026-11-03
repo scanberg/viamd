@@ -19,7 +19,17 @@ static constexpr ContactClass contact_class_table[] = {
     {"\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
     {"C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
+    {"Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
+    {"Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
+    {"Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", Family::PiStacking},
+    // Sigma-hole bonds share the halogen-bond type
     {"Halogen bond", Family::HalogenBond},
+    {"Chalcogen bond", Family::HalogenBond},
+    {"Pnictogen bond", Family::HalogenBond},
+    {"Tetrel bond", Family::HalogenBond},
+    {"Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen", Family::OtherContact},
+    {"Dihydrogen bond", Family::OtherContact},
+    {"Metal contact", Family::OtherContact},
     {"C-H\xC2\xB7\xC2\xB7\xC2\xB7X", Family::OtherContact},
     {"H\xC2\xB7\xC2\xB7\xC2\xB7H", Family::OtherContact},
     {"Other contact", Family::OtherContact},
@@ -74,7 +84,7 @@ const char* family_name(Family family) {
     case Family::HydrogenBond: return "Hydrogen bonds";
     case Family::Ring: return "Rings";
     case Family::PiStacking: return "\xCF\x80 interactions";
-    case Family::HalogenBond: return "Halogen bonds";
+    case Family::HalogenBond: return "\xCF\x83-hole bonds";
     case Family::OtherContact: return "Other contacts";
     case Family::Bond: return "Bonds";
     case Family::BondPath: return "Bond paths (connectivity unknown)";
