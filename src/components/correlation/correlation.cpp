@@ -15,7 +15,8 @@
 //
 // One plot is of one kind of AXES: the series on an axis of a layer are of one unit, periodic of one period or not (a
 // series unlike them is refused), and the layers shown are those whose axes are alike the selected layer's. The list
-// groups the layers by their axes, under a header that tells them; the others are dimmed until one of them is selected.
+// groups the layers by their axes, under a header that tells them; the others are dimmed. Selecting (or showing) a layer
+// of other axes turns the plot to them: it is shown, and the layers of the axes the plot had are hidden.
 //
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
@@ -3099,8 +3100,20 @@ struct Correlation : viamd::EventHandler {
 
     // Over the layers whose axes are of the same: what they are of, and the ones the plot shows marked. Clicked, those
     // shown, by selecting the first of them.
+    // Selects l. Of other axes than the plot's: the plot turns to them, l shown and the layers of the axes it had hidden,
+    // so that what is shown is what is on the plot (more of these axes are then shown with their eyes).
+    void select_layer(Layer& l) {
+        selected_layer = l.id;
+        if (l.axes_sig == 0 || l.axes_sig == active_sig) return;
+        for (int j = 0; j < num_layers; ++j) {
+            if (layers[j].axes_sig == active_sig) layers[j].visible = false;
+        }
+        l.visible = true;
+        active_sig = l.axes_sig;
+    }
+
     void draw_axes_header(uint64_t sig) {
-        const Layer* first = nullptr;
+        Layer* first = nullptr;
         int count = 0;
         for (int i = 0; i < num_layers; ++i) {
             if (layers[i].axes_sig != sig) continue;
@@ -3122,7 +3135,7 @@ struct Correlation : viamd::EventHandler {
             snprintf(tip, sizeof(tip), "X in %s%s, Y in %s%s: the layers below share the axes.%s",
                      first->x_info[0].unit[0] ? first->x_info[0].unit : "no unit", slot_periodic(first->x_info[0]) ? " (periodic)" : "",
                      first->y_info[0].unit[0] ? first->y_info[0].unit : "no unit", slot_periodic(first->y_info[0]) ? " (periodic)" : "",
-                     active ? " Shown." : " Click, or select one of them, to show them.");
+                     active ? " Shown." : " Click (or one of them, or its eye) to turn the plot to them: those shown now are hidden.");
         }
 
         const float h = ImGui::GetTextLineHeight() + 4.0f;
@@ -3130,7 +3143,7 @@ struct Correlation : viamd::EventHandler {
         const float w = ImGui::GetContentRegionAvail().x;
         ImGui::Dummy(ImVec2(0, 2));
         ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + 2));
-        if (ImGui::InvisibleButton("##axes", ImVec2(w, h)) && sig != 0 && !active) selected_layer = first->id;
+        if (ImGui::InvisibleButton("##axes", ImVec2(w, h)) && sig != 0 && !active) select_layer(*first);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tip);
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
@@ -3165,7 +3178,7 @@ struct Correlation : viamd::EventHandler {
         // The row, a selectable under the eye, the swatch and the text
         ImGui::SetNextItemAllowOverlap();
         if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap, ImVec2(row_w, row_h))) {
-            selected_layer = l.id;
+            select_layer(l);
         }
         const bool row_hovered = ImGui::IsItemHovered();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay) && !ImGui::IsMouseDragging(0)) {
@@ -3173,7 +3186,7 @@ struct Correlation : viamd::EventHandler {
         }
         layer_tree_drag_source({LIST_ID, l.id, false}, label);
         if (ImGui::BeginPopupContextItem("##menu")) {
-            selected_layer = l.id;
+            if (ImGui::IsWindowAppearing()) select_layer(l);
             if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, num_layers < MAX_LAYERS)) act->duplicate = l.id;
             if (ImGui::MenuItem(ICON_FA_RIGHT_LEFT " Swap X and Y", nullptr, false, l.num_x + l.num_y > 0)) swap_axes(l);
             ImGui::Separator();
@@ -3217,12 +3230,7 @@ struct Correlation : viamd::EventHandler {
         const bool switches = !on_plot && l.axes_sig != 0;
         if (ImGui::Button(l.visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) {
             if (switches) {
-                // Those of the axes it replaces are hidden: what is shown is what is on the plot
-                for (int j = 0; j < num_layers; ++j) {
-                    if (layers[j].axes_sig == active_sig) layers[j].visible = false;
-                }
-                l.visible = true;
-                selected_layer = l.id;
+                select_layer(l);
             } else {
                 l.visible = !l.visible;
             }
