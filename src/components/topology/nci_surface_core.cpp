@@ -793,6 +793,7 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
     if (scatter) *scatter = {};
     const int dx = grid.dim[0], dy = grid.dim[1], dz = grid.dim[2];
     if (!rho || dx < 3 || dy < 3 || dz < 3 || !(params.s_iso > 0.0) || !std::isfinite(params.s_iso) ||
+        !(params.scatter_s >= 0.0) || !std::isfinite(params.scatter_s) ||
         !(params.rho_max > 0.0) || !std::isfinite(params.rho_max) || params.near_xyz.size() % 3 != 0 ||
         (params.radius_cap && (!(params.near_radius > 0.0) || !std::isfinite(params.near_radius)))) return false;
     for (double h : grid.spacing) if (!(h > 0.0) || !std::isfinite(h)) return false;
@@ -829,12 +830,13 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
 
     std::vector<uint8_t> allowed;
     if (!near_mask(&allowed, grid, params, 0.0, cancel)) return false;
+    // With connected scope, the surface keeps the components grown below s_iso; the scatter those grown below
+    // scatter_s (s_iso when unset) and their one-voxel halo
+    const double scatter_s = params.scatter_s > 0.0 ? params.scatter_s : params.s_iso;
     std::vector<uint8_t> selected;
     std::vector<uint8_t> halo;
     if (params.connected && !params.near_xyz.empty()) {
-        selected.assign(n, 0);
-        std::vector<uint32_t> queue;
-        // With same_sign, selected holds the basin: basin_negative or basin_positive, by the seed's sign(lambda2)
+        // With same_sign, a component holds its basin: basin_negative or basin_positive, by the seed's sign(lambda2)
         std::vector<uint8_t> sign_cache;
         if (params.same_sign) sign_cache.assign(n, 0);
         const auto basin = [&](size_t v) -> uint8_t {
@@ -845,61 +847,75 @@ bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params
             }
             return sign_cache[v];
         };
-        // A CP rarely lies exactly on the lattice. Seed the nearest eligible sample within two voxels.
-        for (size_t p = 0; p < params.near_xyz.size(); p += 3) {
-            if (cancelled()) return false;
-            int centre[3];
-            bool inside = true;
-            for (int a = 0; a < 3; ++a) {
-                const double c = (params.near_xyz[p + a] - grid.origin[a]) / grid.spacing[a];
-                inside &= c >= -2.0 && c <= grid.dim[a] + 1.0;
-                centre[a] = (int)std::lround(std::clamp(c, -2.0, (double)grid.dim[a] + 1.0));
-            }
-            if (!inside) continue;
-            size_t seed = n;
-            double closest = INFINITY;
-            for (int k = std::max(1, centre[2] - 2); k <= std::min(dz - 2, centre[2] + 2); ++k)
-                for (int j = std::max(1, centre[1] - 2); j <= std::min(dy - 2, centre[1] + 2); ++j)
-                    for (int i = std::max(1, centre[0] - 2); i <= std::min(dx - 2, centre[0] + 2); ++i) {
-                        const size_t v = l.at(i, j, k);
-                        if (!(S[v] < params.s_iso) || (!allowed.empty() && !allowed[v])) continue;
-                        const int ijk[3] = {i, j, k};
-                        double d2 = 0.0;
-                        for (int a = 0; a < 3; ++a) {
-                            const double d = grid.origin[a] + ijk[a] * grid.spacing[a] - params.near_xyz[p + a];
-                            d2 += d * d;
+        const auto grow = [&](std::vector<uint8_t>* grown, std::vector<uint8_t>* grown_halo, double s_max) -> bool {
+            std::vector<uint8_t>& sel = *grown;
+            sel.assign(n, 0);
+            std::vector<uint32_t> queue;
+            // A CP rarely lies exactly on the lattice. Seed the nearest eligible sample within two voxels.
+            for (size_t p = 0; p < params.near_xyz.size(); p += 3) {
+                if (cancelled()) return false;
+                int centre[3];
+                bool inside = true;
+                for (int a = 0; a < 3; ++a) {
+                    const double c = (params.near_xyz[p + a] - grid.origin[a]) / grid.spacing[a];
+                    inside &= c >= -2.0 && c <= grid.dim[a] + 1.0;
+                    centre[a] = (int)std::lround(std::clamp(c, -2.0, (double)grid.dim[a] + 1.0));
+                }
+                if (!inside) continue;
+                size_t seed = n;
+                double closest = INFINITY;
+                for (int k = std::max(1, centre[2] - 2); k <= std::min(dz - 2, centre[2] + 2); ++k)
+                    for (int j = std::max(1, centre[1] - 2); j <= std::min(dy - 2, centre[1] + 2); ++j)
+                        for (int i = std::max(1, centre[0] - 2); i <= std::min(dx - 2, centre[0] + 2); ++i) {
+                            const size_t v = l.at(i, j, k);
+                            if (!(S[v] < s_max) || (!allowed.empty() && !allowed[v])) continue;
+                            const int ijk[3] = {i, j, k};
+                            double d2 = 0.0;
+                            for (int a = 0; a < 3; ++a) {
+                                const double d = grid.origin[a] + ijk[a] * grid.spacing[a] - params.near_xyz[p + a];
+                                d2 += d * d;
+                            }
+                            if (d2 < closest) { closest = d2; seed = v; }
                         }
-                        if (d2 < closest) { closest = d2; seed = v; }
+                if (seed != n && !sel[seed]) { sel[seed] = basin(seed); queue.push_back((uint32_t)seed); }
+            }
+            for (size_t head = 0; head < queue.size(); ++head) {
+                if ((head & 4095) == 0 && cancelled()) return false;
+                const size_t v = queue[head];
+                const int ijk[3] = {(int)(v % dx), (int)((v / dx) % dy), (int)(v / ((size_t)dx * dy))};
+                for (int a = 0; a < 3; ++a) for (int d : {-1, 1}) {
+                    int q[3] = {ijk[0], ijk[1], ijk[2]};
+                    q[a] += d;
+                    if (q[a] < 1 || q[a] >= grid.dim[a] - 1) continue;
+                    const size_t u = l.at(q[0], q[1], q[2]);
+                    if (!sel[u] && S[u] < s_max && (allowed.empty() || allowed[u]) && basin(u) == sel[v]) {
+                        sel[u] = sel[v];
+                        queue.push_back((uint32_t)u);
                     }
-            if (seed != n && !selected[seed]) { selected[seed] = basin(seed); queue.push_back((uint32_t)seed); }
-        }
-        for (size_t head = 0; head < queue.size(); ++head) {
-            if ((head & 4095) == 0 && cancelled()) return false;
-            const size_t v = queue[head];
-            const int ijk[3] = {(int)(v % dx), (int)((v / dx) % dy), (int)(v / ((size_t)dx * dy))};
-            for (int a = 0; a < 3; ++a) for (int d : {-1, 1}) {
-                int q[3] = {ijk[0], ijk[1], ijk[2]};
-                q[a] += d;
-                if (q[a] < 1 || q[a] >= grid.dim[a] - 1) continue;
-                const size_t u = l.at(q[0], q[1], q[2]);
-                if (!selected[u] && S[u] < params.s_iso && (allowed.empty() || allowed[u]) && basin(u) == selected[v]) {
-                    selected[u] = selected[v];
-                    queue.push_back((uint32_t)u);
                 }
             }
-        }
-        halo = selected;
-        for (size_t head = 0; head < queue.size(); ++head) {
-            if ((head & 4095) == 0 && cancelled()) return false;
-            const size_t v = queue[head];
-            const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
-            for (int c = -1; c <= 1; ++c) for (int b = -1; b <= 1; ++b) for (int a = -1; a <= 1; ++a) {
-                const size_t u = l.at(i + a, j + b, k + c);
-                if (halo[u]) continue;
-                // The outer layer has no derivatives; it is never sampled
-                const bool interior = i + a > 0 && i + a < dx - 1 && j + b > 0 && j + b < dy - 1 && k + c > 0 && k + c < dz - 1;
-                if (!params.same_sign || (interior && basin(u) == selected[v])) halo[u] = selected[v];
+            if (!grown_halo) return true;
+            std::vector<uint8_t>& h = *grown_halo;
+            h = sel;
+            for (size_t head = 0; head < queue.size(); ++head) {
+                if ((head & 4095) == 0 && cancelled()) return false;
+                const size_t v = queue[head];
+                const int i = (int)(v % dx), j = (int)((v / dx) % dy), k = (int)(v / ((size_t)dx * dy));
+                for (int c = -1; c <= 1; ++c) for (int b = -1; b <= 1; ++b) for (int a = -1; a <= 1; ++a) {
+                    const size_t u = l.at(i + a, j + b, k + c);
+                    if (h[u]) continue;
+                    // The outer layer has no derivatives; it is never sampled
+                    const bool interior = i + a > 0 && i + a < dx - 1 && j + b > 0 && j + b < dy - 1 && k + c > 0 && k + c < dz - 1;
+                    if (!params.same_sign || (interior && basin(u) == sel[v])) h[u] = sel[v];
+                }
             }
+            return true;
+        };
+        const bool shared = scatter_s == params.s_iso;
+        if ((params.surface || (shared && scatter)) && !grow(&selected, shared && scatter ? &halo : nullptr, params.s_iso)) return false;
+        if (scatter && !shared) {
+            std::vector<uint8_t> scatter_selected;
+            if (!grow(&scatter_selected, &halo, scatter_s)) return false;
         }
     }
     if (scatter) {

@@ -35,6 +35,8 @@ struct NciSurface {
     bool shown = false;
     bool layer_visible = true;
     float s_iso = 0.5f;
+    // The s the scatter's connected regions grow to, independent of the surface isovalue
+    float scatter_s = 1.0f;
     float rho_max = 0.05f;
     ColorScale scale = {.colormap = ImPlotColormap_Jet, .range_beg = -0.04f, .range_end = 0.04f,
                         .symmetric = true, .auto_range = true, .show_legend = true};
@@ -99,6 +101,7 @@ struct NciFamilySettings {
 
 struct NciUniformSettings {
     float s_iso = 0.5f;
+    float scatter_s = 1.0f;
     float rho_max = 0.05f;
     float radius = 2.7f;
 };
@@ -147,10 +150,10 @@ struct NciTypeStyle {
 enum class NciReferenceStyle : uint8_t { Dominant, Combined, Count };
 struct NciReferenceLayer {
     bool visible = true;
-    NciReferenceStyle style = NciReferenceStyle::Dominant;
+    NciReferenceStyle style = NciReferenceStyle::Combined;
     float opacity = 0.6f;
     bool fill = true;
-    bool lines = true;
+    bool lines = false;
     float line_width = 1.5f;
     int num_levels = (int)nci_surface::reference_default_fractions.size();
     float levels[nci_max_levels] = {nci_surface::reference_default_fractions[0], nci_surface::reference_default_fractions[1],

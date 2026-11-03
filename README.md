@@ -227,7 +227,7 @@ One general mode applies to every NCI layer, the Full system included:
   surfaces of different types stay consistent.
 
 All settings are applied automatically and tuned in one place, the **NCI
-settings** (gear button): the mode, the isovalue and cutoff, the Uniform
+settings** (gear button): the mode, the isovalue and cutoff, the scatter s, the Uniform
 radius, resolution, connected regions, opacity and the colour scale, then in
 CP-adaptive mode a compact per-type radius table.
 
@@ -251,7 +251,11 @@ radius. Calibrated type radii are:
 
 Other contacts and unassigned CPs use r=2.7 until they are calibrated. The
 displayed isovalue and cutoff default to s=0.7 and ρ<0.07 in both modes, the
-Uniform radius to 2.7 and the colour range to ±0.03. The reference statistics
+Uniform radius to 2.7 and the colour range to ±0.03. The surface and the scatter
+share the cutoff and radius, but not s: with connected regions, the scatter's
+regions grow to the **scatter s** (1.0 by default, the reference's), so the
+scatter plot covers what the reference map does while the surface stays at its
+own isovalue, marked by the isovalue line in the plot. The reference statistics
 use their own extraction at the reference settings (s=1.0, ρ<0.05, the type
 radius), independent of the displayed ones. All defaults are defined together in
 `src/components/topology/nci_surface_core.{h,cpp}`. Type regions are
@@ -296,9 +300,9 @@ the S66 dimers at their eight S66x8 separations (B3LYP-D4/def2-SVP; each dimer
 weighs one system) and 49 larger test calculations (proteins, G-quadruplex,
 cages, helicenes, etc.), which add the strained intramolecular contacts small
 dimers lack.
-Its inspector sets the style (**Dominant**, default: per point the densest
-category, more opaque at each deeper level; **Combined**: the categories'
-colours mixed where they overlap, more opaque towards each core; switching
+Its inspector sets the style (**Combined**, default: the categories' colours
+mixed where they overlap, more opaque towards each core; **Dominant**: per point
+the densest category, more opaque at each deeper level; switching
 style turns lines on for Dominant and off for Combined), the opacity (60 % by default),
 fill and lines, the line width and the levels (by default 50, 90 and 98 % of
 each category's volume; drag a level, right-click to remove it, + to add one).

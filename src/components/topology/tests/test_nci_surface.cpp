@@ -298,6 +298,40 @@ UTEST(nci_surface, connected_scope_selects_whole_components_with_optional_cap) {
     EXPECT_TRUE(scatter.s.empty());
 }
 
+UTEST(nci_surface, scatter_s_widens_the_scatter_without_changing_the_surface) {
+    Atoms pair;
+    pair.centre = {{-3, 0, 0}, {3, 0, 0}};
+    const auto g = box(6.0, 5.0, 0.2);
+    const auto rho = pair.sample(g);
+    nci_surface::Params params;
+    const double anchor[] = {0, 0, 0};
+    params.near_xyz = anchor;
+    params.connected = true;
+    params.near_radius = 4.0;
+    params.s_iso = 0.4;
+    nci_surface::Mesh base, wide;
+    nci_surface::Scatter base_scatter, wide_scatter, same_scatter;
+    ASSERT_TRUE(nci_surface::extract(&base, rho.data(), g, params, nullptr, nullptr, &base_scatter));
+    ASSERT_GT(base.index.size(), (size_t)0);
+    params.scatter_s = 1.0;
+    ASSERT_TRUE(nci_surface::extract(&wide, rho.data(), g, params, nullptr, nullptr, &wide_scatter));
+    EXPECT_TRUE(wide.index == base.index);
+    EXPECT_TRUE(wide.position == base.position);
+    EXPECT_GT(wide_scatter.eligible_count, base_scatter.eligible_count);
+    EXPECT_GT(wide_scatter.density.total_volume, base_scatter.density.total_volume);
+    float base_max = 0, wide_max = 0;
+    for (float s : base_scatter.s) base_max = std::max(base_max, s);
+    for (float s : wide_scatter.s) wide_max = std::max(wide_max, s);
+    EXPECT_GT(wide_max, base_max);
+    // Equal to s_iso it is the default
+    params.scatter_s = params.s_iso;
+    ASSERT_TRUE(nci_surface::extract(&wide, rho.data(), g, params, nullptr, nullptr, &same_scatter));
+    EXPECT_EQ(same_scatter.eligible_count, base_scatter.eligible_count);
+    EXPECT_TRUE(same_scatter.voxel == base_scatter.voxel);
+    params.scatter_s = -1.0;
+    EXPECT_FALSE(nci_surface::extract(&wide, rho.data(), g, params));
+}
+
 UTEST(nci_surface, scatter_only_matches_surface_extraction) {
     Atoms pair;
     pair.centre = {{-3, 0, 0}, {3, 0, 0}};

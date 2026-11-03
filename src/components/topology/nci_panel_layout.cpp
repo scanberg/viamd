@@ -188,6 +188,7 @@ struct NciPanel {
         n->shown = true;
         n->layer_visible = true;
         n->s_iso = source.s_iso;
+        n->scatter_s = source.scatter_s;
         n->rho_max = source.rho_max;
         n->scale = source.scale;
         n->families = source.families;
@@ -302,6 +303,14 @@ struct NciPanel {
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI uniform s", &st.uniform.s_iso, 0.1f, 1.5f, "%.2f");
         editing |= ImGui::IsItemActive();
+        prop::row("scatter s", "How far in s the scatter plot's connected regions reach, independent of the surface "
+                               "isovalue; at the reference's 1.0 the scatter covers what the reference map does. "
+                               "Without connected regions the scatter holds every sample up to s = 2 within the radius.");
+        ImGui::BeginDisabled(!st.connected);
+        ImGui::SetNextItemWidth(prop::control_width());
+        ImGui::SliderFloat("##NCI scatter s", &st.uniform.scatter_s, 0.1f, 2.0f, "%.2f");
+        editing |= ImGui::IsItemActive();
+        ImGui::EndDisabled();
         prop::row("\xCF\x81 cutoff", "Density cutoff, the same for every CP type.");
         ImGui::SetNextItemWidth(prop::control_width());
         ImGui::SliderFloat("##NCI uniform rho", &st.uniform.rho_max, 0.005f, 0.2f, "< %.3f", ImGuiSliderFlags_Logarithmic);

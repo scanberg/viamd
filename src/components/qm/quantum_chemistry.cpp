@@ -7019,6 +7019,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 layer_slice.resolution = n->resolution;
                 layer_slice.grid = n->grid;
                 layer_slice.params.s_iso = n->s_iso;
+                layer_slice.params.scatter_s = n->scatter_s;
                 layer_slice.params.rho_max = n->rho_max;
                 layer_slice.params.near_radius = n->near_radius;
                 layer_slice.params.connected = n->connected;
@@ -7151,7 +7152,7 @@ struct QuantumChemistry : viamd::EventHandler {
                          number(slice.scatter.signed_rho[i]), number(slice.scatter.s[i]),
                          std::to_string(slice.scatter.eligible_count),
                          slice.scatter.eligible_count > slice.scatter.s.size() ? "true" : "false",
-                         number(slice.params.rho_max), number(slice.params.s_iso),
+                         number(slice.params.rho_max), number(slice.params.scatter_s > 0.0 ? slice.params.scatter_s : slice.params.s_iso),
                          number(slice.grid.spacing[0]), number(slice.grid.spacing[1]), number(slice.grid.spacing[2]),
                          std::to_string(slice.resolution),
                          slice.params.connected ? "true" : "false", slice.params.radius_cap ? "true" : "false",
@@ -7174,7 +7175,7 @@ struct QuantumChemistry : viamd::EventHandler {
                              std::to_string(bx), std::to_string(by),
                              number(-density.rho_extent + bx * w), number(-density.rho_extent + (bx + 1) * w),
                              number(by * h), number((by + 1) * h), number(volume), number(density.total_volume),
-                             number(slice.params.rho_max), number(slice.params.s_iso),
+                             number(slice.params.rho_max), number(slice.params.scatter_s > 0.0 ? slice.params.scatter_s : slice.params.s_iso),
                              number(slice.grid.spacing[0]), number(slice.grid.spacing[1]), number(slice.grid.spacing[2]),
                              std::to_string(slice.resolution),
                              slice.params.connected ? "true" : "false", slice.params.radius_cap ? "true" : "false",

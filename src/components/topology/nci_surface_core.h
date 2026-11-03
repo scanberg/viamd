@@ -75,6 +75,8 @@ Defaults family_defaults(Families families);
 // extraction at reference_s_iso and reference_rho_max, independent of these.
 struct UniformDefaults {
     double s_iso = 0.7;
+    // The scatter's s, the reference's, so the scatter plot covers what the reference map does
+    double scatter_s = reference_s_iso;
     double rho_max = 0.07;
     double radius = 2.7;
     double color_range = 0.03;
@@ -192,6 +194,9 @@ struct DensityProvider {
 
 struct Params {
     double s_iso   = 0.5;
+    // Connected scope: the scatter keeps the components grown below this s instead (0: s_iso), so the scatter plot can
+    // reach further than the surface
+    double scatter_s = 0.0;
     double rho_max = 0.05;   // au
     // Anchor points in Bohr. Radius-only scope clips their union of spheres; connected scope seeds low-s components.
     std::span<const double> near_xyz = {};   // 3 per point
@@ -276,7 +281,7 @@ bool scatter_heatmap(Heatmap* out, std::span<const Scatter* const> scatters, flo
 // Returns false when cancelled (cancel set non-zero) or the input is invalid; progress (optional) goes from 0 to 1.
 // Optional scatter: a deterministic reservoir of grid samples with s <= 2, respecting rho_max and near_xyz.
 // It samples the volume, not the surface. Connected scope keeps the selected low-s components
-// and their one-voxel halo; its scatter therefore follows s_iso. voxel indexes into grid.
+// and their one-voxel halo; its scatter therefore follows scatter_s (s_iso when unset). voxel indexes into grid.
 // The scatter's continuous density covers the same region: each point inside a cell belongs to its nearest grid
 // sample's scope.
 bool extract(Mesh* out, const float* rho, const Grid& grid, const Params& params,

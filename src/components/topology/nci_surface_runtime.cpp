@@ -188,12 +188,14 @@ void update_nci_surface(NciSurface& n, const NciSurfaceRuntimeInput& input, bool
 
     nci_surface::Params params;
     params.s_iso = n.s_iso;
+    params.scatter_s = n.scatter_s;
     params.rho_max = n.rho_max;
     params.near_radius = n.near_radius;
     params.connected = n.connected;
     params.radius_cap = n.radius_cap;
     params.surface = !context;
     uint64_t key = context ? rho_key : md_hash64(&params.s_iso, sizeof(params.s_iso), rho_key);
+    key = md_hash64(&params.scatter_s, sizeof(params.scatter_s), key);
     key = md_hash64(&params.rho_max, sizeof(params.rho_max), key);
     key = md_hash64(&n.scope, sizeof(n.scope), key);
     key = md_hash64(&params.connected, sizeof(params.connected), key);

@@ -21,7 +21,7 @@ NciFamilySettings nci_family_default_settings(nci_surface::Family family) {
 
 NciUniformSettings nci_uniform_default_settings() {
     const nci_surface::UniformDefaults defaults = nci_surface::uniform_defaults();
-    return {(float)defaults.s_iso, (float)defaults.rho_max, (float)defaults.radius};
+    return {(float)defaults.s_iso, (float)defaults.scatter_s, (float)defaults.rho_max, (float)defaults.radius};
 }
 
 ColorScale nci_default_scale() {
@@ -137,6 +137,7 @@ void nci_apply_settings(NciState& state) {
             // Without classified CPs the whole system has no CP type to adapt to
             const bool adaptive = state.mode == NciParameterMode::CPAdaptive && n->families;
             n->s_iso = state.uniform.s_iso;
+            n->scatter_s = state.uniform.scatter_s;
             n->rho_max = state.uniform.rho_max;
             n->near_radius = adaptive ? settings.radius : state.uniform.radius;
             n->resolution = state.resolution;
