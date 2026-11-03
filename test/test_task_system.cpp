@@ -309,3 +309,58 @@ UTEST(viamd_task_system, an_idle_job_is_answered) {
     job.wait();
     job.cancel();
 }
+
+UTEST(viamd_task_system, the_executor_keeps_its_contract) {
+    ensure_task_system();
+
+    // md_executor.h: every index once, thread_idx below num_threads and never shared by two pieces at once
+    const md_executor_t* ex = task_system::executor();
+    ASSERT_TRUE(ex != nullptr);
+    EXPECT_EQ(task_system::num_threads(), md_executor_num_threads(ex));
+
+    struct Ctx {
+        std::vector<std::atomic<int>> hits;
+        std::vector<std::atomic<int>> in_use;
+        std::atomic<int> bad{0};
+        uint32_t num_threads = 0;
+    } c;
+    const uint32_t N = 5000;
+    c.num_threads = md_executor_num_threads(ex);
+    c.hits = std::vector<std::atomic<int>>(N);
+    c.in_use = std::vector<std::atomic<int>>(c.num_threads);
+    const bool ok = md_parallel_for(ex, N, 16, [](void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
+        Ctx* c = (Ctx*)arg;
+        if (thread_idx >= c->num_threads) { c->bad += 1; return; }
+        if (c->in_use[thread_idx].fetch_add(1) != 0) c->bad += 1;
+        for (uint32_t i = beg; i < end; ++i) c->hits[i] += 1;
+        c->in_use[thread_idx].fetch_sub(1);
+    }, &c);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(0, c.bad.load());
+    uint32_t wrong = 0;
+    for (uint32_t i = 0; i < N; ++i) wrong += c.hits[i].load() != 1;
+    EXPECT_EQ(0u, wrong);
+}
+
+UTEST(viamd_task_system, an_executor_loop_stops_with_its_job) {
+    ensure_task_system();
+
+    std::atomic<int> result(-1);
+    std::atomic<uint32_t> pieces(0);
+    std::atomic<bool> started(false);
+    task_system::Job job;
+    job.start({}, [&]() {
+        started = true;
+        while (!task_system::cancelled()) md_thread_sleep(1);
+        // An mdlib procedure's loop, issued from a cancelled job: no piece runs, and it says so
+        const bool ok = md_parallel_for(task_system::executor(), 100, 1, [](void* arg, uint32_t, uint32_t, uint32_t) {
+            ((std::atomic<uint32_t>*)arg)->fetch_add(1);
+        }, &pieces);
+        result = ok ? 1 : 0;
+    });
+    while (!started) md_thread_sleep(1);
+    job.cancel();
+    job.wait();
+    EXPECT_EQ(0, result.load());
+    EXPECT_EQ(0u, pieces.load());
+}

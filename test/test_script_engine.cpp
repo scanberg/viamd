@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <script_engine.h>
 
@@ -204,18 +205,15 @@ UTEST(script_v2, editor) {
 }
 
 namespace {
-// The frames one after another: enough to show that what the evaluation spreads over threads is all done
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
-}
-
 script::EvalDesc eval_desc() {
     script::EvalDesc d;
     d.num_frames = peptide()->num_frames;
     d.sys = &peptide()->sys;
     d.run = STR_LIT("run");
-    d.num_threads = 3;
-    d.parallel_for = serial_for;
+    // The frames one thread at a time, out of order and over three thread_idx: what the evaluation spreads over
+    // threads is all done, whichever order and worker the frames come in
+    static test_executor_t shuffled = test_executor_shuffled(3);
+    d.executor = test_executor(&shuffled);
     return d;
 }
 }  // namespace

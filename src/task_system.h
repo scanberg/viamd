@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <core/md_executor.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -56,6 +57,11 @@ bool parallel_for(uint32_t count, uint32_t grain, F&& f) {
 
 template <class F>
 bool parallel_for(uint32_t count, F&& f) { return parallel_for(count, 1, static_cast<F&&>(f)); }
+
+// The pool as an executor, for what mdlib spreads over threads (md_executor.h): parallel_for underneath, with
+// thread_index() as thread_idx. Its loops run at the priority of whoever issues them, and stop with their job. NULL
+// before initialize(): mdlib then runs the loops on the calling thread.
+const md_executor_t* executor();
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Inside a job, and inside any parallel_for it issues (on any thread). Outside of a job: false, and nothing.

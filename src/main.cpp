@@ -654,16 +654,6 @@ static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, Sel
     modify_field(&state->selection.selection_mask, atom_mask, op);
 }
 
-// What an evaluation spreads frames over (script::EvalDesc::parallel_for): viamd's pool. Called from a pool task, which
-// works on the range while it waits for it.
-static void pool_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    (void)user;
-    if (count == 0) return;
-    task_system::parallel_for((uint32_t)count, 1, [fn, arg](uint32_t beg, uint32_t end) {
-        for (uint32_t i = beg; i < end; ++i) fn(arg, i);
-    });
-}
-
 int main(int argc, char** argv) {
 #if DEBUG
     persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
@@ -1367,7 +1357,7 @@ int main(int argc, char** argv) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
                         const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.mold.run),
-                                                        .num_threads = task_system::num_threads(), .parallel_for = pool_parallel_for };
+                                                        .executor = task_system::executor() };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
 

@@ -379,6 +379,26 @@ bool parallel_for(uint32_t count, uint32_t grain, RangeFn fn, void* user) {
     return !set.skipped.load(std::memory_order_relaxed);
 }
 
+// A piece of an executor loop is under way on this thread: md_executor.h forbids it to issue or wait for parallel
+// work, since a thread which waits may run another piece of the same loop with the same thread_idx
+static thread_local bool tl_in_executor_piece = false;
+
+static bool executor_parallel_for(void* user, uint32_t count, uint32_t grain, md_range_fn body, void* arg) {
+    (void)user;
+    return parallel_for(count, grain, [body, arg](uint32_t beg, uint32_t end) {
+        ASSERT(!tl_in_executor_piece && "a piece of an executor loop issued or waited for parallel work (md_executor.h)");
+        tl_in_executor_piece = true;
+        body(arg, beg, end, thread_index());
+        tl_in_executor_piece = false;
+    });
+}
+
+static md_executor_t g_executor = {};
+
+const md_executor_t* executor() {
+    return g_initialized ? &g_executor : nullptr;
+}
+
 bool cancelled() {
     return tl_ctx.job && job_cancelled(tl_ctx.job);
 }
@@ -397,6 +417,7 @@ void initialize(uint32_t num_threads) {
     ASSERT(!g_initialized);
     g_ts.Initialize(num_threads);
     g_initialized = true;
+    g_executor = {executor_parallel_for, nullptr, g_ts.GetNumTaskThreads()};
 }
 
 void shutdown() {

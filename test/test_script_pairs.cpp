@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <script_engine.h>
 
@@ -119,10 +120,6 @@ std::string read_file(const fs::path& p) {
     return ss.str();
 }
 
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
-}
-
 // Compiles and evaluates over every frame; NULL, said why, when either fails
 script::Eval* run_script(script::Language lang, const std::string& src, const Data& d, script::Program** out_prog, md_allocator_i* alloc) {
     script::CompileDesc cd;
@@ -139,8 +136,8 @@ script::Eval* run_script(script::Language lang, const std::string& src, const Da
     ed.num_frames = d.num_frames;
     ed.sys = &d.sys;
     ed.run = STR_LIT("run");
-    ed.num_threads = 2;
-    ed.parallel_for = serial_for;
+    static test_executor_t shuffled = test_executor_shuffled(2);   // one thread, two thread_idx, pieces out of order
+    ed.executor = test_executor(&shuffled);
     script::Eval* e = script::eval_create(nullptr, p, ed, alloc);
     if (!e) return nullptr;
     if (d.num_frames) {

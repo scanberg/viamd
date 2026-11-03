@@ -767,7 +767,8 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->desc.density_matrix     = job->density;
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
-    job->desc.cancel             = &job->cancel;   // num_threads 0: every core
+    job->desc.cancel             = &job->cancel;
+    job->desc.executor           = task_system::executor();   // its loops on the pool, stopped with the job
     job->desc.progress           = &job->progress;
 
     job->graph.alloc = md_get_heap_allocator();

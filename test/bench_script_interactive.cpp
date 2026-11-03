@@ -79,10 +79,6 @@ bool load(Bench* b, const char* top, const char* traj) {
     return true;
 }
 
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
-}
-
 // The same analysis in each language, with the filters a user of it would write
 struct Case {
     const char* name;
@@ -158,8 +154,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     ed.num_frames = b.num_frames;
     ed.sys = &b.sys;
     ed.run = STR_LIT("run");
-    ed.num_threads = 1;
-    ed.parallel_for = serial_for;
+    // no executor: the frames on this thread
     script::Eval* e = script::eval_create(nullptr, p, ed, palloc);
     if (e && b.num_frames) {
         std::vector<uint32_t> frames(b.num_frames);
