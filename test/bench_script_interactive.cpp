@@ -63,8 +63,8 @@ bool load(Bench* b, const char* top, const char* traj) {
     b->sys = {.alloc = b->alloc};
     b->state = {.alloc = b->alloc};
     const str_t t = str_from_cstr(top);
-    bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t)
-                                      : md_pdb_system_init_from_file(&b->sys, &b->state, t, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
+    bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t, NULL)
+                                      : md_pdb_system_init_from_file(&b->sys, &b->state, t, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     ok = ok && md_util_system_infer(&b->sys, &b->state, MD_UTIL_INFER_ALL);
     if (!ok) return false;
     const str_t r = str_from_cstr(traj ? traj : top);

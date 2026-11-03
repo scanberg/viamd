@@ -38,7 +38,7 @@ const Peptide* peptide() {
         p.sys = { .alloc = p.alloc };
         p.state = { .alloc = p.alloc };
         const str_t path = STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&p.sys, &p.state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) &&
+        if (md_pdb_system_init_from_file(&p.sys, &p.state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
             md_util_system_infer(&p.sys, &p.state, MD_UTIL_INFER_ALL) &&
             md_pdb_system_publish_run(&p.sys, path, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
             const md_attribute_t* t = md_attributes_find(&p.sys.attributes, STR_LIT("run/time"));

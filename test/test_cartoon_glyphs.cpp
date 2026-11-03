@@ -45,7 +45,7 @@ UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     ASSERT_EQ(64, (int)sys.lipid.count);
 
@@ -158,7 +158,7 @@ UTEST(cartoon_glyphs, martini_cholesterol_of_dummies_drawn_as_of_beads) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro)));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     ASSERT_EQ(2u, (uint32_t)sys.lipid.count);
 
@@ -187,7 +187,7 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
     ASSERT_GT(bb.segment.count, (size_t)100);
@@ -275,7 +275,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro")));
+    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL));
 
     char* text = (char*)md_alloc(alloc, 64 * (ref.atom.count + 1));
@@ -341,7 +341,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
         md_system_state_t st = { .alloc = alloc };
         char path[256];
         snprintf(path, sizeof(path), VIAMD_TEST_DATA_DIR "/martini/%s.gro", names[n]);
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path)));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), NULL));
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL));
         const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
         ASSERT_EQ((size_t)2, bb.range.count);

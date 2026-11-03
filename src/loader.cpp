@@ -250,10 +250,10 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             if (state.flags & LoaderFlag_DisableCacheWrite) {
                 options |= MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE;
             }
-            return md_pdb_system_init_from_file(out_sys, out_state, filepath, options);
+            return md_pdb_system_init_from_file(out_sys, out_state, filepath, options, task_system::executor());
         }
         case LoaderType_GRO:
-            return md_gro_system_init_from_file(out_sys, out_state, filepath);
+            return md_gro_system_init_from_file(out_sys, out_state, filepath, task_system::executor());
         case LoaderType_TPR:
             return md_tpr_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_ASE_TRAJ:
