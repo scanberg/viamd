@@ -84,7 +84,7 @@ const Data* load(const std::string& files) {
     const str_t top = {names[0].c_str(), names[0].size()};
     bool ok = ends_with(names[0], ".gro") ? md_gro_system_init_from_file(&d->sys, &d->state, top, NULL)
                                            : md_pdb_system_init_from_file(&d->sys, &d->state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
-    ok = ok && md_util_system_infer(&d->sys, &d->state, MD_UTIL_INFER_ALL);
+    ok = ok && md_util_system_infer(&d->sys, &d->state, MD_UTIL_INFER_ALL, NULL);
     if (!ok) return nullptr;
     bool run = false;
     if (ends_with(names[0], ".pdb") && names.size() == 1) run = md_pdb_system_publish_run(&d->sys, top, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);

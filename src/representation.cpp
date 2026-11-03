@@ -627,6 +627,11 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
         .args = {},
         .rep = rep.md_rep,
     };
+    if (rep.sphere_fallback) {
+        op.type = (md_gl_rep_type_t)RepresentationType::SpaceFill;
+        op.args.space_fill.radius_scale = 1.0f;
+        return op;
+    }
     switch (rep.type) {
     case RepresentationType::SpaceFill:
         op.args.space_fill.radius_scale = rep.scale.x;
@@ -886,6 +891,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
         rep->type_is_valid = representation_particle_type_valid(*state, rep->type);
+        rep->sphere_fallback = !rep->type_is_valid && system_inference_pending(*state) && sys.atom.count > 0;
+        rep->type_is_valid |= rep->sphere_fallback;
         break;
     case RepresentationType::ElectronicStructure:
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);

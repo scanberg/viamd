@@ -36,12 +36,12 @@ bool load(Loaded* l, const char* file) {
     md_system_state_t st = { .alloc = l->alloc };
     const str_t p = str_from_cstr(path);
     bool ok = false;
-    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT);
+    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
     if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p);
     else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, MD_XYZ_OPTION_NONE);
     else                           ok = md_pdb_system_init_from_file(&l->sys, &st, p, MD_PDB_OPTION_NONE, NULL);
-    return ok && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL);
+    return ok && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL, NULL);
 }
 
 void unload(Loaded* l) {
@@ -352,7 +352,7 @@ UTEST(script_suggestions, glycans) {
     l.sys = { .alloc = l.alloc };
     md_system_state_t st = { .alloc = l.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL));
+    ASSERT_TRUE(md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(2u, (unsigned)md_system_molecule_count(&l.sys));
     ASSERT_EQ(4u, (unsigned)md_system_part_count(&l.sys));
 
@@ -779,7 +779,7 @@ UTEST(script_suggestions, vial_measurement_by_position) {
     l.sys = {.alloc = l.alloc};
     md_system_state_t st = {.alloc = l.alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, str_from_cstr(file), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL);
+    md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL, NULL);
     const int32_t atoms[3] = {1, 0, 2};
     md_array(ScriptSuggestion) s = script_suggest_measurement(V2, STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
     print(s);

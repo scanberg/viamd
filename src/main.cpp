@@ -948,6 +948,7 @@ int main(int argc, char** argv) {
         const double   max_frame = (double)last_frame;
 
         file_queue_process(&state);
+        system_inference_update(&state);
 
         script_vis_begin_frame(&state);
 
@@ -2990,7 +2991,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_ring_data_free(&mol->ring, data->mold.sys.alloc);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT);
+    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT, NULL);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
@@ -7870,7 +7871,7 @@ static void draw_representations_opaque(ApplicationState* state) {
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
 
-            if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
+            if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid && !rep.sphere_fallback) {
                 const size_t beg = md_array_size(glyph_ops);
                 representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
                 place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
@@ -7982,6 +7983,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&shown, sizeof(shown), h);
         if (!shown) continue;
         h = md_hash64(&rep.type, sizeof(rep.type), h);
+        h = md_hash64(&rep.sphere_fallback, sizeof(rep.sphere_fallback), h);
         h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
@@ -8198,7 +8200,7 @@ static void draw_representations_marks(ApplicationState* data) {
         const Representation& rep = data->representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
-        if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
+        if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
             place_ops(&glyph_ops, beg, *data, rep, true, frame_alloc);
