@@ -10,13 +10,12 @@
             return;
         }
         const size_t n = md_array_size(l.sx);
-        const char* what = l.binned ? "bins" : "samples";
         if (l.num_pairs == 1) {
             char st[96];
             stats_text(st, sizeof(st), l.pairs[0]);
-            snprintf(buf, cap, "%s \xc2\xb7 %zu %s", st, n, what);
+            snprintf(buf, cap, "%s \xc2\xb7 %zu samples", st, n);
         } else {
-            snprintf(buf, cap, "%d pairs \xc2\xb7 %zu %s", l.num_pairs, n, what);
+            snprintf(buf, cap, "%d pairs \xc2\xb7 %zu samples", l.num_pairs, n);
         }
     }
 
@@ -33,7 +32,7 @@
         ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
         static const char* tips[COLS] = {
             nullptr,
-            "Samples: frames (times members), or places along the bins of distributions",
+            "Samples: frames (times members)",
             "Pearson's correlation. Of periodic values (angles), the circular one: Jammalamadaka-SenGupta's of two (-1..1), Mardia's of one against a linear value (0..1, no sign; hover for the signed parts)",
             "The 95 % confidence interval of Pearson's r, by Fisher's z over the effective number of samples: successive frames are alike, and members move together, so they are worth fewer independent ones (Bretherton et al. 1999). Dimmed when it includes 0",
             "Spearman's rank correlation: how monotonic, whatever the shape",
@@ -343,8 +342,7 @@
 
     // ### Picking series
 
-    // What there is to put on an axis, as the export window lists it: the script's properties over time, its
-    // distributions, and the series loaded along the run (energies, ...), each under a heading
+    // What there is to put on an axis, as the export window lists it: the script's properties over time and the series loaded along the run (energies, ...), each under a heading
     struct PickSection {
         char label[96];
         size_t beg, end;            // Of the keys
@@ -366,10 +364,6 @@
         };
         section("Script, over time");
         series_for_each_script_property(app, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_TEMPORAL, [&](const SeriesKey& k) { pick_keys.push_back(k); });
-        section("Script, distributions");
-        series_for_each_script_property(app, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION, [&](const SeriesKey& k) {
-            if (is_script_distribution(app, k)) pick_keys.push_back(k);
-        });
         str_t groups[64];
         const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), app), ARRAY_SIZE(groups));
         std::vector<str_t> paths;
@@ -510,7 +504,6 @@
         ImGui::GetWindowDrawList()->AddRect(r.Min, r.Max, ImGui::GetColorU32(ImGuiCol_Border), 3.0f);
         if (ImGui::BeginDragDropTargetCustom(r, ImGui::GetID("##drop"))) {
             const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, ImGuiDragDropFlags_AcceptBeforeDelivery);
-            if (!p) p = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND, ImGuiDragDropFlags_AcceptBeforeDelivery);
             if (const SeriesDragPayload* sp = series_payload(p)) {
                 const SeriesKey key = sp->key;
                 const char* reason = nullptr;
@@ -552,14 +545,10 @@
         if (l.members_truncated) {
             prop::hint("Populations of different sizes: paired up to the smaller");
         }
-        if (l.binned) {
-            prop::hint("Distributions: correlated bin by bin over their common range, of the frames below");
-        } else {
-            bool periodic = false;
-            for (int i = 0; i < l.num_x; ++i) periodic |= series_periodic_valid(l.x_info[i].periodic);
-            for (int i = 0; i < l.num_y; ++i) periodic |= series_periodic_valid(l.y_info[i].periodic);
-            if (periodic) prop::hint("Periodic values: their correlation is the circular one. An axis of one period throughout pans around the circle (right-click it to cut it elsewhere); otherwise they are cut at their seam");
-        }
+        bool periodic = false;
+        for (int i = 0; i < l.num_x; ++i) periodic |= series_periodic_valid(l.x_info[i].periodic);
+        for (int i = 0; i < l.num_y; ++i) periodic |= series_periodic_valid(l.y_info[i].periodic);
+        if (periodic) prop::hint("Periodic values: their correlation is the circular one. An axis of one period throughout pans around the circle (right-click it to cut it elsewhere); otherwise they are cut at their seam");
 
         prop::row("frames");
         {

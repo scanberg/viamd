@@ -31,15 +31,15 @@
 // where it is cut (thin lines). The cut is shared with the timelines of such values (plot_periodic.h; its menu, here or
 // there, moves it, and the view turns with it), but not the view: panned or zoomed here, they stay where they are. Out
 // to two turns along a periodic axis; of two alike (angles against angles), of equal scales, out to a turn along the
-// shorter side. The labels of the axes are within the plot, as Ramachandran's. Distributions (script properties over the frames) are correlated with each other bin by bin,
-// over their common range, of the layer's frames. The density of the samples is estimated off the main thread
+// shorter side. The labels of the axes are within the plot, as Ramachandran's. Only series over time are plotted, not
+// distributions. The density of the samples is estimated off the main thread
 // (density_map.h), over a bounded domain of their own extent (a period along a periodic axis, around which it wraps),
 // smoothed with a gaussian of a fraction of it.
 //
 // Under the plot, the LAG view: the correlation of each pair of Y at frame f + lag against X at frame f, for lags up to a
 // bound either way, over the layer's frames (members pooled; a few of them only past a budget of samples).
 //
-//   drag a series          from the timeline or the distributions onto an axis of the plot (or a list of the
+//   drag a series          from the timeline onto an axis of the plot (or a list of the
 //                          inspector): it is added to the selected layer
 //   hover                  says what the point under the pointer is, and shows it in the viewport
 //   click                  on a point over time, goes to its frame
@@ -100,8 +100,6 @@ constexpr int MAX_PAIRS         = MAX_AXIS_SERIES;
 constexpr int MAX_LEVELS        = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS     = 100000;   // Of a layer of points: samples are skipped beyond
 constexpr size_t MAX_RANKED     = 1000000;  // Of a pair, ranked for its Spearman correlation: samples are skipped beyond
-constexpr int    NUM_BINS       = 256;      // Asked of a distribution: it may give fewer
-constexpr uint32_t NO_FRAME     = UINT32_MAX;   // Of a sample of a distribution: a bin, not a frame
 constexpr int    MAX_LAG        = 1000;     // Frames, either way, of the correlation against the lag
 constexpr double LAG_BUDGET     = 2e7;      // Samples times lags, of a pair: members are skipped beyond
 
@@ -148,12 +146,10 @@ static const char* point_coloring_names[PointColoring_Count] = { "Layer color", 
 // What a series on an axis of a layer resolved to, the last time its samples were gathered
 struct SlotInfo {
     bool  ok = false;
-    bool  binned = false;           // A distribution as evaluated: its bins are its samples
     int   dim = 1;
     SeriesPeriodic periodic = {};   // Of periodic values, in the display unit
     char  label[96] = "";
     char  unit[32] = "";
-    char  bin_unit[32] = "";        // Of the bins of a distribution
     char  script_ident[64] = "";
     md_script_vis_ref_t vis_ref = {};
     ImVec4 color = {1, 1, 1, 1};
@@ -280,7 +276,6 @@ struct Layer {
     float    x_min = 0, x_max = 0, y_min = 0, y_max = 0;
     float    t_min = 0, t_max = 0;
     bool     members_truncated = false;     // Populations of different sizes paired: the fewer members of the two
-    bool     binned = false;                // Of distributions: bin by bin, the samples have no frame (NO_FRAME)
     bool     pair_colors_clash = false;     // Pairs coloured by the colour map rather than their series (pair_color)
 
     // The density: of all the samples in the first part, or of each pair (layer_splits)
@@ -307,7 +302,7 @@ struct Layer {
 
 // What an axis is of: the unit of the values, and whether they are periodic, of which period. One plot shows one of each:
 // the series on an axis of a layer are alike, and the layers shown are those alike the selected one (the list groups them).
-static inline bool slot_periodic(const SlotInfo& s) { return !s.binned && series_periodic_valid(s.periodic); }
+static inline bool slot_periodic(const SlotInfo& s) { return series_periodic_valid(s.periodic); }
 static inline bool slots_alike(const SlotInfo& a, const SlotInfo& b) {
     if (strcmp(a.unit, b.unit) != 0 || slot_periodic(a) != slot_periodic(b)) return false;
     return !slot_periodic(a) || series_periodic_equal(a.periodic, b.periodic);
@@ -391,18 +386,6 @@ static inline double to_corr_value(double v, const SeriesPeriodic& p) {
     return series_periodic_valid(p) ? 2.0 * M_PI * (v - p.beg) / series_periodic_length(p) : v;
 }
 
-// The value of member k of a distribution at x, in its display unit: between the centres of its bins
-static inline double bin_value_at(const SeriesHistogramView& v, double x, int k) {
-    const double fi = series_histogram_index_at(v, x);
-    const int n = v.num_bins;
-    const int i0 = CLAMP((int)floor(fi), 0, n - 1);
-    const int i1 = CLAMP(i0 + 1, 0, n - 1);
-    const double t = CLAMP(fi - (double)i0, 0.0, 1.0);
-    const double a = v.bins[(size_t)k * n + i0];
-    const double b = v.bins[(size_t)k * n + i1];
-    return (a + (b - a) * t) * v.y_scale;
-}
-
 // A key as it is plotted here: the values of a population pooled over its members are its values (each member is a
 // sample anyway), and the frames are the layer's (the period of a key goes to its layer, see drop_series)
 static SeriesKey plotted_key(const SeriesKey& k) {
@@ -410,13 +393,6 @@ static SeriesKey plotted_key(const SeriesKey& k) {
     if (out.variant == SeriesVariant_Aggregate) out.variant = SeriesVariant_Values;
     out.period = 0;
     return out;
-}
-
-// Whether key is of a script distribution, evaluated as such (not a property over time binned)
-static bool is_script_distribution(const ApplicationState* app, const SeriesKey& k) {
-    if (k.source != SeriesSource_Script || !app->script.eval_ir) return false;
-    const md_script_property_flags_t f = md_script_ir_property_flags(app->script.eval_ir, series_script_ident(k));
-    return (f & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) && !(f & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL);
 }
 
 // The time of a fractional frame, along the timeline
@@ -867,8 +843,7 @@ struct Correlation : viamd::EventHandler {
         add_series(l, axis, plotted_key(key));
     }
 
-    // A series can be plotted here when it can be over time, or is a script distribution (correlated bin by bin with
-    // another), and is not a range of values
+    // A series can be plotted here when it can be over time, and is not a range of values
     bool series_droppable(const SeriesKey& dropped, const char** reason) const {
         *reason = nullptr;
         if (dropped.variant == SeriesVariant_Extent) {
@@ -876,9 +851,8 @@ struct Correlation : viamd::EventHandler {
             return false;
         }
         const SeriesKey key = plotted_key(dropped);
-        if (is_script_distribution(app, key)) return true;
         if (!(series_views(app, key, reason) & SeriesView_Timeline)) {
-            if (!*reason) *reason = "Not over time, and not a distribution";
+            if (!*reason) *reason = "Not over time";
             return false;
         }
         return true;
@@ -890,9 +864,8 @@ struct Correlation : viamd::EventHandler {
         const SlotInfo* info = axis == 0 ? l.x_info : l.y_info;
         if (n == 0 || !info[0].ok) return nullptr;
         static SeriesTemporalView v;
-        static SeriesHistogramView hv;
         SlotInfo s;
-        resolve_slot(&v, &hv, &s, plotted_key(dropped), l.frames == LayerFrames_Period ? l.period : 0);
+        resolve_slot(&v, &s, plotted_key(dropped));
         if (!s.ok || slots_alike(s, info[0])) return nullptr;
         static char buf[192];
         char have[48], got[48];
@@ -906,18 +879,16 @@ struct Correlation : viamd::EventHandler {
         return buf;
     }
 
-    // A payload of a series, from the timeline or the distributions
+    // A payload of a series, from the timeline
     static const SeriesDragPayload* series_payload(const ImGuiPayload* p) {
         if (!p || p->DataSize != (int)sizeof(SeriesDragPayload)) return nullptr;
-        if (!p->IsDataType(TIMELINE_SERIES_DND) && !p->IsDataType(DISTRIBUTION_SERIES_DND)) return nullptr;
+        if (!p->IsDataType(TIMELINE_SERIES_DND)) return nullptr;
         return (const SeriesDragPayload*)p->Data;
     }
 
-    // Accepts a series of either kind on the drop target open: the payload once it is delivered
+    // Accepts a series on the drop target open: the payload once it is delivered
     static const SeriesDragPayload* accept_series(ImGuiDragDropFlags flags = 0) {
-        const ImGuiPayload* p = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, flags);
-        if (!p) p = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND, flags);
-        return series_payload(p);
+        return series_payload(ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND, flags));
     }
 
     // ## Jobs
@@ -1087,17 +1058,15 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // Drawn as a density: over frames, of a trajectory; or the bins of distributions
+    // Drawn as a density: over frames, of a trajectory
     bool layer_draws_density(const Layer& l) const {
         if (l.style == LayerStyle_Points) return false;
-        if (l.binned) return true;
         if (l.frames == LayerFrames_Current) return false;
         return run_num_frames(app) >= 2;
     }
 
     // Drawn as points: those of the frame shown are, whatever the style (a density of one point per pair says nothing)
     bool layer_draws_points(const Layer& l) const {
-        if (l.binned) return l.style == LayerStyle_Points;
         return l.style == LayerStyle_Points || l.frames == LayerFrames_Current || run_num_frames(app) < 2;
     }
 
@@ -1108,9 +1077,8 @@ struct Correlation : viamd::EventHandler {
         return a ? a->version : 0;
     }
 
-    // What a series on an axis is, and what of it its samples depend on: over time into v, or a distribution (over the
-    // layer's period, 0 for every frame) into hv
-    uint64_t resolve_slot(SeriesTemporalView* v, SeriesHistogramView* hv, SlotInfo* info, const SeriesKey& key, uint32_t period) {
+    // What a series on an axis is, over time into v, and what of it its samples depend on
+    uint64_t resolve_slot(SeriesTemporalView* v, SlotInfo* info, const SeriesKey& key) {
         *info = SlotInfo{};
         const SeriesKey k = plotted_key(key);
         uint64_t h = md_hash64(&k.source, sizeof(k.source), 0);
@@ -1120,23 +1088,6 @@ struct Correlation : viamd::EventHandler {
         const SeriesState st = series_state(app, k);
         h = md_hash64_combine(h, ((uint64_t)st.num_frames << 8) | st.status);
         info->color = series_default_color(app, k);
-
-        if (is_script_distribution(app, k)) {
-            info->binned = true;
-            info->ok = series_resolve_histogram(hv, app, k, NUM_BINS, period) && hv->bins && hv->num_bins >= 2 && hv->x_max > hv->x_min;
-            info->dim = MAX(1, hv->dim);
-            snprintf(info->label, sizeof(info->label), "%s", hv->label);
-            snprintf(info->unit, sizeof(info->unit), "%s", hv->y_unit_str);
-            snprintf(info->bin_unit, sizeof(info->bin_unit), "%s", hv->x_unit_str);
-            snprintf(info->script_ident, sizeof(info->script_ident), "%s", hv->script_ident);
-            info->vis_ref = hv->vis_ref;
-            const uintptr_t ptr = (uintptr_t)hv->bins;
-            h = md_hash64(&ptr, sizeof(ptr), h);
-            const double dims[6] = { (double)hv->num_bins, (double)hv->dim, hv->x_min, hv->x_max, hv->y_scale, (double)info->ok };
-            h = md_hash64(dims, sizeof(dims), h);
-            h = md_hash64(&period, sizeof(period), h);
-            return h;
-        }
 
         // A band's centre (Sigma: its mean) is its value here; a range has none
         info->ok = series_resolve_temporal(v, app, k) && k.variant != SeriesVariant_Extent && v->x && v->y && v->stride >= 1;
@@ -1158,24 +1109,16 @@ struct Correlation : viamd::EventHandler {
     void gather(Layer& l) {
         static SeriesTemporalView vx[MAX_AXIS_SERIES];
         static SeriesTemporalView vy[MAX_AXIS_SERIES];
-        static SeriesHistogramView hx[MAX_AXIS_SERIES];
-        static SeriesHistogramView hy[MAX_AXIS_SERIES];
 
-        const uint32_t dist_period = l.frames == LayerFrames_Period ? l.period : 0;
         uint64_t key = md_hash64_combine(system_generation, app->timeline.units_version);
-        for (int i = 0; i < l.num_x; ++i) key = md_hash64_combine(key, resolve_slot(&vx[i], &hx[i], &l.x_info[i], l.xs[i], dist_period) ^ 0x1111);
-        for (int i = 0; i < l.num_y; ++i) key = md_hash64_combine(key, resolve_slot(&vy[i], &hy[i], &l.y_info[i], l.ys[i], dist_period) ^ 0x2222);
+        for (int i = 0; i < l.num_x; ++i) key = md_hash64_combine(key, resolve_slot(&vx[i], &l.x_info[i], l.xs[i]) ^ 0x1111);
+        for (int i = 0; i < l.num_y; ++i) key = md_hash64_combine(key, resolve_slot(&vy[i], &l.y_info[i], l.ys[i]) ^ 0x2222);
         const int num_frames = (int)run_num_frames(app);
         uint32_t beg = 0, end = 0;
         const bool has_range = layer_frame_range(l, &beg, &end);
-        // Distributions are of every frame unless of a period: the frame shown does not change them
-        bool all_binned = l.num_x + l.num_y > 0;
-        for (int i = 0; i < l.num_x; ++i) all_binned &= l.x_info[i].binned;
-        for (int i = 0; i < l.num_y; ++i) all_binned &= l.y_info[i].binned;
-        const bool by_frame = l.frames == LayerFrames_Current && !all_binned;
-        const uint64_t frames[5] = { (uint64_t)l.frames, by_frame || l.frames != LayerFrames_Current ? beg : 0, by_frame || l.frames != LayerFrames_Current ? end : 0, (uint64_t)has_range, (uint64_t)num_frames };
+        const uint64_t frames[5] = { (uint64_t)l.frames, beg, end, (uint64_t)has_range, (uint64_t)num_frames };
         key = md_hash64(frames, sizeof(frames), key);
-        if (by_frame) key = md_hash64(&app->animation.frame, sizeof(app->animation.frame), key);
+        if (l.frames == LayerFrames_Current) key = md_hash64(&app->animation.frame, sizeof(app->animation.frame), key);
         key |= 1;
         if (key == l.data_key) return;
         l.data_key = key;
@@ -1190,7 +1133,6 @@ struct Correlation : viamd::EventHandler {
         l.data_hash = 0;
         l.num_pairs = 0;
         l.members_truncated = false;
-        l.binned = false;
         l.point_stride = 1;
         for (int p = 0; p < MAX_PAIRS; ++p) l.pairs[p] = PairStats{};
         l.member_order.clear();
@@ -1217,24 +1159,11 @@ struct Correlation : viamd::EventHandler {
                 }
             }
         }
-        int num_binned = 0;
-        for (int i = 0; i < l.num_x; ++i) num_binned += l.x_info[i].binned;
-        for (int i = 0; i < l.num_y; ++i) num_binned += l.y_info[i].binned;
-        if (num_binned > 0 && num_binned < l.num_x + l.num_y) {
-            l.data_error = "a distribution pairs only with distributions";
-            return;
-        }
-        l.binned = num_binned > 0;
-        if (!l.binned && (!has_range || num_frames <= 0)) {
+        if (!has_range || num_frames <= 0) {
             l.data_error = l.frames == LayerFrames_Period ? "the period is missing" : "no frames";
             return;
         }
         l.num_pairs = layer_num_pairs(l);
-        if (l.binned) {
-            gather_binned(l, hx, hy);
-            finish_gather(l, nullptr);
-            return;
-        }
 
         const float* run_x = app->timeline.x_values;
         const bool bounded = l.frames == LayerFrames_Period;
@@ -1336,42 +1265,11 @@ struct Correlation : viamd::EventHandler {
         l.pairs[p].add(x, y);
     }
 
-    // Distributions, bin by bin over the range they share: each pair at as many places as the finer of the two has bins,
-    // its values there interpolated between the centres of the bins. What a sample is at is its place (in st).
-    void gather_binned(Layer& l, const SeriesHistogramView* hx, const SeriesHistogramView* hy) {
-        for (int p = 0; p < l.num_pairs; ++p) {
-            const int xi = pair_x(l, p);
-            const int yi = pair_y(l, p);
-            if (!l.x_info[xi].ok || !l.y_info[yi].ok) continue;
-            const SeriesHistogramView& X = hx[xi];
-            const SeriesHistogramView& Y = hy[yi];
-            const double lo = MAX(X.x_min, Y.x_min);
-            const double hi = MIN(X.x_max, Y.x_max);
-            if (!(hi > lo)) continue;
-            const int dx = l.x_info[xi].dim;
-            const int dy = l.y_info[yi].dim;
-            bool truncated = false;
-            const int members = corr_members(dx, dy, &truncated);
-            l.members_truncated |= truncated;
-            l.pairs[p].members = members;
-            const int n = MAX(X.num_bins, Y.num_bins);
-            for (int j = 0; j < n; ++j) {
-                const double at = lo + (j + 0.5) * (hi - lo) / n;
-                for (int m = 0; m < members; ++m) {
-                    push_sample(l, p, bin_value_at(X, at, corr_member_slot(dx, m)), bin_value_at(Y, at, corr_member_slot(dy, m)), at, NO_FRAME, m);
-                }
-            }
-        }
-        bool any = false;
-        for (int p = 0; p < l.num_pairs; ++p) any |= l.x_info[pair_x(l, p)].ok && l.y_info[pair_y(l, p)].ok;
-        l.data_error = any ? "the distributions share no range of values" : "the distributions are not available";
-    }
-
     // Once the samples are in: their extent, their statistics, and how many of them are drawn
     void finish_gather(Layer& l, const char* empty_error) {
         const size_t n = md_array_size(l.sx);
         if (n == 0) {
-            if (!l.binned) l.data_error = empty_error;
+            l.data_error = empty_error;
             return;
         }
         l.x_min = l.x_max = l.sx[0];
@@ -1490,7 +1388,7 @@ struct Correlation : viamd::EventHandler {
 
     // Has a correlation against the lag: samples at frames, of more than one
     bool layer_has_lag(const Layer& l) const {
-        return l.data_valid && !l.binned && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
+        return l.data_valid && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
     }
 
     // The correlation of each pair of X at frame f against Y at frame f + lag, pooled over members (paired with
@@ -2052,13 +1950,10 @@ struct Correlation : viamd::EventHandler {
             if (!str_empty(member)) ImGui::TextDisabled("member %d \xc2\xb7 " STR_FMT, m + 1, STR_ARG(member));
             else ImGui::TextDisabled("member %d", m + 1);
         }
-        const bool binned = l.sframe[h.idx] == NO_FRAME;
-        if (binned) ImGui::TextDisabled("at %.4g %s", l.st[h.idx], l.x_info[xi].bin_unit);
-        else ImGui::TextDisabled("frame %u \xc2\xb7 t = %.4g", l.sframe[h.idx], l.st[h.idx]);
+        ImGui::TextDisabled("frame %u \xc2\xb7 t = %.4g", l.sframe[h.idx], l.st[h.idx]);
         char label[128];
         layer_label(label, sizeof(label), l);
-        if (binned) ImGui::TextDisabled("%s", label);
-        else ImGui::TextDisabled("%s \xc2\xb7 click to go to the frame", label);
+        ImGui::TextDisabled("%s \xc2\xb7 click to go to the frame", label);
         ImGui::EndTooltip();
     }
 
@@ -2380,8 +2275,7 @@ struct Correlation : viamd::EventHandler {
             draw_tooltip(hover);
             visualize(hover);
             // A click (not a pan) on a point: its frame
-            if (!ImGui::GetIO().KeyShift && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
-                layers[hover.layer].sframe[hover.idx] != NO_FRAME) {
+            if (!ImGui::GetIO().KeyShift && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f) {
                 app->animation.frame = (double)layers[hover.layer].sframe[hover.idx];
             }
         }
@@ -3014,7 +2908,7 @@ struct Correlation : viamd::EventHandler {
             }
             const char* text = !any_shown ? "Nothing shown on the plot's axes"
                              : any_lag ? "Finding the correlations against the lag..."
-                             : "Of layers over several frames of a trajectory, not of distributions";
+                             : "Of layers over several frames of a trajectory";
             const ImVec2 ts = ImGui::CalcTextSize(text);
             const ImVec2 pos = ImPlot::GetPlotPos(), size = ImPlot::GetPlotSize();
             ImPlot::GetPlotDrawList()->AddText(ImVec2(pos.x + (size.x - ts.x) * 0.5f, pos.y + (size.y - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
