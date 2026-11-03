@@ -3213,13 +3213,25 @@ struct Correlation : viamd::EventHandler {
         // Of other axes than the plot's: dim, whether shown or not
         const bool on_plot = l.axes_sig != 0 && l.axes_sig == active_sig;
         if (!on_plot) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        // Of other axes: shown, and selected, so that the plot turns to its axes (as a click on its card does)
+        const bool switches = !on_plot && l.axes_sig != 0;
         if (ImGui::Button(l.visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) {
-            l.visible = !l.visible;
+            if (switches) {
+                // Those of the axes it replaces are hidden: what is shown is what is on the plot
+                for (int j = 0; j < num_layers; ++j) {
+                    if (layers[j].axes_sig == active_sig) layers[j].visible = false;
+                }
+                l.visible = true;
+                selected_layer = l.id;
+            } else {
+                l.visible = !l.visible;
+            }
         }
         if (!on_plot) ImGui::PopStyleColor();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
-        ImGui::SetItemTooltip("%s%s", l.visible ? "Hide" : "Show", on_plot || l.axes_sig == 0 ? "" : " (of other axes than the plot's: select it to show them)");
+        if (switches) ImGui::SetItemTooltip("Show, on its axes: the plot turns to them, and the layers of the axes shown are hidden");
+        else ImGui::SetItemTooltip("%s", l.visible ? "Hide" : "Show");
 
         // The swatch: what it looks like
         const ImVec2 sw_min = ImVec2(row_min.x + pad + line_h + 8, row_min.y + (row_h - line_h) * 0.5f);
