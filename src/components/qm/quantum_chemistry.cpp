@@ -7962,6 +7962,9 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::Checkbox("Enabled", &cp.enabled);
             ImGui::SameLine();
             if (ImGui::Button(ICON_FA_GEAR " CP settings")) ImGui::OpenPopup("##CP settings");
+            ImGui::SameLine();
+            ImGui::Checkbox("Show CPs", &cp.show_markers);
+            ImGui::SetItemTooltip("Hide markers, paths and labels without changing selection, tables or NCI surfaces.");
 
             if (ImGui::BeginPopup("##CP settings")) {
                 ImGui::SeparatorText("Search");
@@ -8015,8 +8018,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
 
                 ImGui::SeparatorText("Appearance");
-                ImGui::Checkbox("Show CPs", &cp.show_markers);
-                ImGui::SetItemTooltip("Hide markers, paths and labels without changing selection, tables or NCI surfaces.");
                 ImGui::SetNextItemWidth(6.0f * em);
                 ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SetItemTooltip("The size of the markers");

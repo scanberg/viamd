@@ -54,6 +54,7 @@ window; the layer list and selected-layer inspector are below the plot.
 Disabling NCI stops its computations and hides surfaces without deleting saved
 layers or changing their settings. Each column has one settings button beside
 Enable. CP settings group Search, Appearance, Distributions / filters and Export;
+**Show CPs** stays beside the CP settings button for quick viewport toggling.
 NCI settings group Surface, Scatter / extraction and Display. Layer-specific
 controls and reference interaction guides remain in their inspectors.
 Scatter hover details show the source layer/family,
