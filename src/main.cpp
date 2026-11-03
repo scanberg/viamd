@@ -1470,9 +1470,6 @@ int main(int argc, char** argv) {
 
         recenter_update(&state);
 
-        // An operation turned on elsewhere than under the system (the viewport, a workspace) is one it has
-        system_operations_sync(&state);
-
         // The bonds formed and broken in the frame shown, before they are uploaded
         bond_tracking_update(&state);
 
@@ -3147,7 +3144,6 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
             if (ImGui::MenuItem("Set as Centering Target")) {
                 md_bitset_assign(&state->system.operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
                 state->system.operations.recenter_query.enabled = false;
-                state->system.operations.present |= SystemOperation_Center;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }

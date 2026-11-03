@@ -88,9 +88,6 @@ bool system_operation_enabled(const ApplicationState& app, SystemOperation op) {
     return false;
 }
 
-bool system_has_operation(const ApplicationState& app, SystemOperation op) {
-    return (app.system.operations.present & op) || system_operation_enabled(app, op);
-}
 
 void system_apply_now(ApplicationState* app, bool center, bool wrap, bool make_whole) {
     ASSERT(app);
@@ -105,7 +102,6 @@ void system_set_operation_enabled(ApplicationState* app, SystemOperation op, boo
     ASSERT(app);
     auto& o = app->system.operations;
     *enabled_flag(app, op) = enabled;
-    if (enabled) o.present |= op;
 
     if (op == SystemOperation_TrackBonds) {
         o.bond_tracking.scope_dirty = true;
@@ -115,45 +111,28 @@ void system_set_operation_enabled(ApplicationState* app, SystemOperation op, boo
     }
 }
 
-void system_add_operation(ApplicationState* app, SystemOperation op) {
-    system_set_operation_enabled(app, op, true);
-}
-
-void system_remove_operation(ApplicationState* app, SystemOperation op) {
+void system_reset_operations(ApplicationState* app) {
     ASSERT(app);
     auto& o = app->system.operations;
-    *enabled_flag(app, op) = false;
-    o.present &= ~(uint32_t)op;
+    o.recenter = false;
+    o.fixate_orientation = false;
+    o.recenter_query.enabled = false;
+    o.recenter_query.filter.text[0] = '\0';
+    o.recenter_query.filter.result = {};
+    md_bitset_free(&o.selection_mask, app->allocator.persistent);
+    o.selection_mask = md_bitset_empty_set();
+    recenter_mark_query_dirty(app);
 
-    switch (op) {
-    case SystemOperation_Center:
-        o.fixate_orientation = false;
-        o.recenter_query.enabled = false;
-        o.recenter_query.filter.text[0] = '\0';
-        o.recenter_query.filter.result = {};
-        md_bitset_free(&o.selection_mask, app->allocator.persistent);
-        o.selection_mask = md_bitset_empty_set();
-        recenter_mark_query_dirty(app);
-        break;
-    case SystemOperation_TrackBonds: {
-        auto& bt = o.bond_tracking;
-        bt.scope.text[0] = '\0';
-        bt.scope.result = {};
-        bt.scope_dirty = true;
-        bt.tolerance = MD_BOND_DELTA_TOLERANCE;
-        bt.breakable = MD_BOND_DELTA_BREAKABLE;
-        break;
-    }
-    default:
-        break;
-    }
-}
+    o.apply_pbc = false;
+    o.unwrap_structures = false;
 
-void system_operations_sync(ApplicationState* app) {
-    ASSERT(app);
-    for (const OperationInfo& info : operation_info) {
-        if (system_operation_enabled(*app, info.op)) app->system.operations.present |= info.op;
-    }
+    auto& bt = o.bond_tracking;
+    bt.enabled = false;
+    bt.scope.text[0] = '\0';
+    bt.scope.result = {};
+    bt.scope_dirty = true;
+    bt.tolerance = MD_BOND_DELTA_TOLERANCE;
+    bt.breakable = MD_BOND_DELTA_BREAKABLE;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -225,29 +204,11 @@ static void refresh_representations(ApplicationState* app) {
     flag_dynamic_representations_as_dirty(app);
 }
 
-// The system's menu, of its header's right click and of its ⋮ button: the operations it can be given, then what is
-// done once
+// The system's menu, of its header's right click and of its ⋮ button: what is done once, the details, removing it
 static void draw_system_menu(ApplicationState* app, bool* remove_request) {
     const bool assembly_shown = app->system.assembly >= 0;
     const bool has_cell = md_unitcell_flags(&app->mold.state.unitcell) != 0;
 
-    ImGui::TextDisabled("Add operation");
-    bool any = false;
-    for (const OperationInfo& info : operation_info) {
-        if (system_has_operation(*app, info.op)) continue;
-        any = true;
-        char label[64];
-        snprintf(label, sizeof(label), "%s %s", info.icon, info.name);
-        if (ImGui::MenuItem(label)) {
-            system_add_operation(app, info.op);
-        }
-        ImGui::SetItemTooltip("%s", info.tooltip);
-    }
-    if (!any) {
-        ImGui::TextDisabled("  (it has all of them)");
-    }
-
-    ImGui::Separator();
     ImGui::TextDisabled("Now, to the frame shown");
 
     const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
@@ -260,7 +221,7 @@ static void draw_system_menu(ApplicationState* app, bool* remove_request) {
             md_bitmask_assign(&app->selection.highlight_mask, target_mask);
             ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
         } else {
-            ImGui::SetTooltip("There is nothing to center on yet: give the system the Center operation and a target");
+            ImGui::SetTooltip("There is nothing to center on yet: give the Center operation a target (Operations)");
         }
     }
     if (ImGui::MenuItem(ICON_FA_CUBE " Wrap into box", nullptr, false, has_cell && !assembly_shown)) {
@@ -376,7 +337,7 @@ static bool operation_has_properties(SystemOperation op) {
     return op == SystemOperation_Center || op == SystemOperation_TrackBonds;
 }
 
-// The row of an operation: its icon, its name (open for its settings, if it has any), on or off, and removing it
+// The row of an operation: its icon, its name (open for its settings, if it has any), and on or off
 static void draw_operation_row(ApplicationState* app, const OperationInfo& info) {
     ImGui::PushID(info.key);
 
@@ -385,7 +346,7 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
     const bool enabled = system_operation_enabled(*app, info.op);
 
     const float btn = row_button_size();
-    const float spacing = 2.0f;
+    const float spacing = 0.0f;
     const ImVec2 min = ImGui::GetCursorScreenPos();
     const float avail = ImGui::GetContentRegionAvail().x;
     const float right_x = ImGui::GetCursorPosX() + avail;
@@ -414,8 +375,8 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
         else          ImGui::SetTooltip("%s", info.tooltip);
     }
 
-    // On or off, and removing it, from the right edge
-    ImGui::SameLine(right_x - (btn + spacing) * 2, spacing);
+    // On or off, at the right edge
+    ImGui::SameLine(right_x - btn, spacing);
     bool on = enabled;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, pad));
     if (ImGui::Checkbox("##on", &on)) {
@@ -423,12 +384,6 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
     }
     ImGui::PopStyleVar();
     ImGui::SetItemTooltip(enabled ? "On: applied in every frame. Off keeps its settings." : "Off, its settings kept. On: applied in every frame.");
-    ImGui::SameLine(0, spacing);
-    bool remove = false;
-    if (ImGui::DeleteButton(ICON_FA_XMARK, {btn, btn})) {
-        remove = true;
-    }
-    ImGui::SetItemTooltip("Remove the operation and its settings");
 
     if (open) {
         if (inactive) ImGui::BeginDisabled();
@@ -438,9 +393,6 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
         ImGui::TreePop();
     }
 
-    if (remove) {
-        system_remove_operation(app, info.op);
-    }
     ImGui::PopID();
 }
 
@@ -534,7 +486,7 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
     if (!app->system.visible) ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("The system, %zu atoms: the operations on its coordinates, what it is shown as, its representations.\n"
-                          "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": add an operation, or apply one to the frame shown now.",
+                          "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": apply an operation to the frame shown now, recompute the bonds, the details.",
                           (size_t)app->mold.sys.atom.count);
     }
     bool remove_request = false;
@@ -543,22 +495,28 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
         ImGui::EndPopup();
     }
 
-    ImGui::SameLine(right_x - (btn + spacing) * 2, spacing);
-    if (ImGui::Button(ICON_FA_ELLIPSIS_VERTICAL, {btn, btn})) {
-        ImGui::OpenPopup("##system_menu");
-    }
-    ImGui::SetItemTooltip("Add an operation, apply one to the frame shown now, or remove the system");
-    if (ImGui::BeginPopup("##system_menu")) {
-        draw_system_menu(app, &remove_request);
-        ImGui::EndPopup();
-    }
-    ImGui::SameLine(0, spacing);
+    // As the rows of the representations: show/hide, more, remove
+    ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
     if (ImGui::Button(app->system.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
         app->system.visible = !app->system.visible;
         app->representation.atom_visibility_mask_dirty = true;
         if (app->system.visible) refresh_representations(app);
     }
     ImGui::SetItemTooltip("Show/Hide the system: all of its representations");
+    ImGui::SameLine(0, spacing);
+    if (ImGui::Button(ICON_FA_ELLIPSIS_VERTICAL, {btn, btn})) {
+        ImGui::OpenPopup("##system_menu");
+    }
+    ImGui::SetItemTooltip("Apply an operation to the frame shown now, recompute the bonds, the details");
+    if (ImGui::BeginPopup("##system_menu")) {
+        draw_system_menu(app, &remove_request);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0, spacing);
+    if (ImGui::DeleteButton(ICON_FA_XMARK, {btn, btn})) {
+        remove_request = true;
+    }
+    ImGui::SetItemTooltip("Remove the system: asked first");
 
     // Asked before it is done: it cannot be taken back. Done by the caller, once the window is drawn.
     if (remove_request) {
@@ -588,21 +546,51 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
 void draw_system_operations(ApplicationState* app) {
     ASSERT(app);
     ImGui::PushID("system");
-    bool any = false;
+
+    // One row, folded by default, that says which are on: all of them, opted into, under it
+    char on[128] = "";
+    int len = 0;
+    bool inactive = false;
     for (const OperationInfo& info : operation_info) {
-        if (!system_has_operation(*app, info.op)) continue;
-        draw_operation_row(app, info);
-        any = true;
+        if (!system_operation_enabled(*app, info.op)) continue;
+        len += snprintf(on + len, sizeof(on) - len, "%s%s", len ? ", " : "", info.name);
+        inactive |= info.moves_atoms && app->system.assembly >= 0;
     }
-    const ImVec2 before = ImGui::GetCursorScreenPos();
+
+    const float btn = row_button_size();
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const float icon_w = icon_column_width();
+    ImGui::Dummy({icon_w, btn});
+    ImGui::GetWindowDrawList()->AddText(ImFloor(min + (ImVec2(icon_w, btn) - ImGui::CalcTextSize(ICON_FA_SLIDERS)) * 0.5f),
+                                        ImGui::GetColorU32(len ? ImGuiCol_Text : ImGuiCol_TextDisabled), ICON_FA_SLIDERS);
+    ImGui::SameLine(0, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 3.0f));
+    const bool open = ImGui::TreeNodeEx("##operations", ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_AllowOverlap, "Operations");
+    ImGui::PopStyleVar();
+    ImGui::SetItemTooltip("What is done to the coordinates of the system before they are drawn, in every frame, in this order.\n"
+                          "The script measures the coordinates as the files give them, not as these leave them.");
+    ImGui::SameLine();
+    if (len) {
+        if (inactive) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s", on);
+        else          ImGui::TextDisabled("%s", on);
+        if (inactive) ImGui::SetItemTooltip("Centering, wrapping and making whole are not applied while an assembly is shown");
+    } else {
+        ImGui::TextDisabled("none");
+    }
+
+    if (open) {
+        for (const OperationInfo& info : operation_info) {
+            draw_operation_row(app, info);
+        }
+        ImGui::TreePop();
+    }
+
     draw_copies_row(app);
-    any |= ImGui::GetCursorScreenPos().y != before.y;
-    if (any) {
-        // What is done to the system and what it is shown as, apart from how it is drawn
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-    }
+
+    // What is done to the system and what it is shown as, apart from how it is drawn
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
     ImGui::PopID();
 }
 
@@ -863,9 +851,7 @@ void system_remove(ApplicationState* app, SystemContext& sys) {
     // What was of it: its representations, its operations and what it was shown as
     remove_all_representations(app);
     sys.scene.visible = true;
-    for (int i = 0; i < SYSTEM_OPERATION_COUNT; ++i) {
-        system_remove_operation(app, system_operation_at(i));
-    }
+    system_reset_operations(app);
     sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
     sys.scene.assembly = -1;
     md_array_shrink(app->view.assembly_transforms, 0);
@@ -887,37 +873,21 @@ void system_scene_serialize(viamd::serialization_state_t& state, const Applicati
     viamd::write_int(state, STR_LIT("System"), system_id);
     viamd::write_bool(state, STR_LIT("Visible"), s.visible);
 
-    // The operations it has, in their order; the settings of those alone
-    char list[128] = "";
-    int len = 0;
-    for (const OperationInfo& info : operation_info) {
-        if (!system_has_operation(*app, info.op)) continue;
-        len += snprintf(list + len, sizeof(list) - len, "%s%s", len ? ", " : "", info.key);
+    // The operations: on or off, and their settings
+    viamd::write_bool(state, STR_LIT("Recenter"), op.recenter);
+    viamd::write_bool(state, STR_LIT("FixateOrientation"), op.fixate_orientation);
+    viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
+    viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
+    if (!md_bitset_empty(op.selection_mask)) {
+        viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
     }
-    viamd::write_str(state, STR_LIT("Operations"), str_from_cstr(list));
-
-    if (system_has_operation(*app, SystemOperation_Center)) {
-        viamd::write_bool(state, STR_LIT("Recenter"), op.recenter);
-        viamd::write_bool(state, STR_LIT("FixateOrientation"), op.fixate_orientation);
-        viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
-        viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
-        if (!md_bitset_empty(op.selection_mask)) {
-            viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
-        }
-    }
-    if (system_has_operation(*app, SystemOperation_Wrap)) {
-        viamd::write_bool(state, STR_LIT("ApplyPbc"), op.apply_pbc);
-    }
-    if (system_has_operation(*app, SystemOperation_MakeWhole)) {
-        viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
-    }
-    if (system_has_operation(*app, SystemOperation_TrackBonds)) {
-        viamd::write_bool(state, STR_LIT("TrackBonds"), op.bond_tracking.enabled);
-        viamd::write_str(state,  STR_LIT("TrackBondsScope"), str_from_cstr(op.bond_tracking.scope.text));
-        viamd::write_flt(state,  STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
-        char origins[64];
-        viamd::write_str(state,  STR_LIT("TrackBondsBreakable"), str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
-    }
+    viamd::write_bool(state, STR_LIT("ApplyPbc"), op.apply_pbc);
+    viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
+    viamd::write_bool(state, STR_LIT("TrackBonds"), op.bond_tracking.enabled);
+    viamd::write_str(state,  STR_LIT("TrackBondsScope"), str_from_cstr(op.bond_tracking.scope.text));
+    viamd::write_flt(state,  STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
+    char origins[64];
+    viamd::write_str(state,  STR_LIT("TrackBondsBreakable"), str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
 
     // What it is shown as
     if ((s.periodic_images[0] | s.periodic_images[1] | s.periodic_images[2]) != 0) {
@@ -936,24 +906,8 @@ bool system_scene_read_entry(ApplicationState* app, str_t ident, str_t arg) {
     if (str_eq(ident, STR_LIT("Visible"))) {
         viamd::extract_bool(s.visible, arg);
     } else if (str_eq(ident, STR_LIT("Operations"))) {
-        str_t list = {};
-        if (!viamd::extract_str(list, arg)) return true;
-        op.present = 0;
-        while (!str_empty(list)) {
-            size_t loc = list.len;
-            str_find_char(&loc, list, ',');
-            const str_t tok = str_trim(str_substr(list, 0, loc));
-            list = loc < list.len ? str_substr(list, loc + 1) : str_t{};
-            if (str_empty(tok)) continue;
-            bool known = false;
-            for (const OperationInfo& info : operation_info) {
-                if (str_eq_cstr(tok, info.key)) {
-                    op.present |= info.op;
-                    known = true;
-                }
-            }
-            if (!known) VIAMD_LOG_INFO("Workspace: no operation '" STR_FMT "' in this build of viamd, it is left out", STR_ARG(tok));
-        }
+        // The operations a system had, of a workspace written while they were added and removed: every system has
+        // them all now, on or off by their own entries
     } else if (str_eq(ident, STR_LIT("Recenter"))) {
         viamd::extract_bool(op.recenter, arg);
     } else if (str_eq(ident, STR_LIT("FixateOrientation"))) {
@@ -990,12 +944,4 @@ bool system_scene_read_entry(ApplicationState* app, str_t ident, str_t arg) {
         return false;
     }
     return true;
-}
-
-void system_scene_from_legacy(ApplicationState* app) {
-    ASSERT(app);
-    auto& op = app->system.operations;
-    system_operations_sync(app);
-    if (op.recenter_query.enabled || op.recenter_query.filter.text[0] || op.fixate_orientation) op.present |= SystemOperation_Center;
-    if (op.bond_tracking.scope.text[0]) op.present |= SystemOperation_TrackBonds;
 }

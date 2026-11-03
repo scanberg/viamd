@@ -2,15 +2,14 @@
 
 // THE SYSTEM IN THE SCENE
 //
-// The Scene window lists what is loaded by system: the system first, then the operations done to its
-// coordinates before they are drawn, then the copies of it that are drawn (periodic images or an assembly), then its
+// The Scene window lists what is loaded by system: the system first, then its files, the operations done to its
+// coordinates before they are drawn, the copies of it that are drawn (periodic images or an assembly), then its
 // representations. This unit is the part of that which is the system's own (ApplicationState::system): its rows in the
 // window, what the menus and the viewport do to it, and its section of a workspace.
 //
-// The operations are the coordinate operations of apply_state_operations and the tracking of bond changes. A system
-// has each of them or not, and lists those it has in one fixed order, the order they apply in - none can be moved
-// before another, as no other order is valid. One it has is turned on and off by its own flag, which keeps its
-// settings while it is off. Removing it turns it off and puts its settings back to their defaults.
+// The operations are the coordinate operations of apply_state_operations and the tracking of bond changes. Every
+// system lists all of them, opted into one by one, in one fixed order, the order they apply in - none can be moved
+// before another, as no other order is valid. Turned off, an operation keeps its settings.
 //
 // What is done once, to the frame shown (centering, wrapping, making whole now, recomputing the bonds), is an action
 // of the system, not an operation it has.
@@ -41,19 +40,14 @@ constexpr int SYSTEM_OPERATION_COUNT = 4;
 SystemOperation system_operation_at(int idx);
 const char* system_operation_name(SystemOperation op);
 
-// Whether the system has the operation, and whether it is on
-bool system_has_operation(const ApplicationState& app, SystemOperation op);
+// Whether the operation is on
 bool system_operation_enabled(const ApplicationState& app, SystemOperation op);
 
-// Turns it on or off (it is had either way once turned on). Turned on, it is applied to the frame shown at once.
+// Turns it on or off. Turned on, it is applied to the frame shown at once.
 void system_set_operation_enabled(ApplicationState* app, SystemOperation op, bool enabled);
 
-// Added on, or removed: turned off, its settings back to the defaults
-void system_add_operation(ApplicationState* app, SystemOperation op);
-void system_remove_operation(ApplicationState* app, SystemOperation op);
-
-// What was turned on by other means than the window (the viewport, a workspace) is had: once a frame
-void system_operations_sync(ApplicationState* app);
+// Every operation off, its settings back to the defaults: as a new system has them
+void system_reset_operations(ApplicationState* app);
 
 // Applied once, to the frame shown, in the order that keeps them valid together (apply_state_operations). Nothing
 // while an assembly is shown.
@@ -76,8 +70,8 @@ bool draw_system_header(ApplicationState* app, bool* remove);
 // in full (its Files), and this links to it.
 void draw_system_files(ApplicationState* app);
 
-// The rows of the operations the system has, in their order, and what it is shown as (its copies): first under its
-// header
+// The system's operations, in their order, folded under one row that says which are on, then what it is shown as (its
+// copies): under its files
 void draw_system_operations(ApplicationState* app);
 
 // Unloads the system: its files and data, its representations, its operations and what it is shown as
@@ -99,7 +93,3 @@ void system_scene_serialize(viamd::serialization_state_t& state, const Applicati
 // for an entry it does not read: System, which the caller matches against the system loaded, and what refers to the
 // loaded system (Assembly, RecenterTarget), which the caller keeps until it is loaded.
 bool system_scene_read_entry(ApplicationState* app, str_t ident, str_t arg);
-
-// After the entries of a workspace written before [SystemScene] were read: it has the operations that are on, and
-// those with settings of their own (a target, a scope)
-void system_scene_from_legacy(ApplicationState* app);

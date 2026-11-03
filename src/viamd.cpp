@@ -2109,11 +2109,6 @@ struct WorkspacePending {
     // The id of the assembly shown, of the system the files hold (system.assembly)
     char assembly_id[8];
 
-    // Whether the workspace had the [SystemScene] of the system loaded, and an [Operations] section, which a workspace
-    // written before [SystemScene] had instead
-    bool has_system_scene;
-    bool legacy_operations;
-
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
     // filter is how a workspace from before the timeline's periods held it, and becomes one of them:
     // what was shown over the filter is shown over that period.
@@ -2181,11 +2176,9 @@ static void workspace_reset(ApplicationState* data) {
     md_bitmask_clear(&data->selection.selection_mask);
     single_selection_sequence_clear(&data->selection.single_selection_sequence);
 
-    // The system as a new one is shown: as it is, with no operations
+    // The system as a new one is shown: as it is, with every operation off
     data->system.visible = true;
-    for (int i = 0; i < SYSTEM_OPERATION_COUNT; ++i) {
-        system_remove_operation(data, system_operation_at(i));
-    }
+    system_reset_operations(data);
 }
 
 // A mask by the atoms it holds. Base64 now; a workspace written before that holds the raw bytes,
@@ -2346,7 +2339,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
             pending.has_camera = has_position && has_orientation && has_distance;
         } else if (str_eq(section, STR_LIT("Operations"))) {
             // Of a workspace written before [SystemScene]: the operations, all of them the one system's
-            pending.legacy_operations = true;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("RecenterTarget"))) pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
                 else system_scene_read_entry(data, ident, arg);
@@ -2359,7 +2351,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 if (str_eq(ident, STR_LIT("System"))) {
                     int id = 0;
                     ours = viamd::extract_int(id, arg) && id == loaded_id;
-                    if (ours) pending.has_system_scene = true;
                 } else if (!ours) {
                     continue;
                 } else if (str_eq(ident, STR_LIT("RecenterTarget"))) {
@@ -2574,12 +2565,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
     };
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
         md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
-    }
-    // A workspace written before [SystemScene]: the system has the operations that are on, and those with settings
-    // of their own
-    if (pending.legacy_operations && !pending.has_system_scene) {
-        system_scene_from_legacy(data);
-        if (pending.has_recenter_target) data->system.operations.present |= SystemOperation_Center;
     }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitset_assign(&data->system.operations.selection_mask, pending.recenter_target, data->allocator.persistent);

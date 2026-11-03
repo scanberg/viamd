@@ -1261,11 +1261,9 @@ struct SystemScene {
     // (centering, wrapping, making whole) are not applied while one is shown.
     int assembly = -1;
 
+    // The operations on its coordinates (SystemOperation), each turned on or off by its own flag, which keeps its
+    // settings while it is off
     struct {
-        // The operations it has (SystemOperation), each turned on or off by its own flag below, which keeps its settings
-        // while it is off. One it does not have is off, and its settings are the defaults.
-        uint32_t present = 0;
-
         bool recenter = false;
         bool fixate_orientation = false;
 
