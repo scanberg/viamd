@@ -23,13 +23,13 @@ struct md_allocator_i;
 // the menu, rather than failing once it is in the script.
 //
 // The lines are written in the language of the script they go into (script::Language): mdscript's name("CA") and
-// chain("A"), VIAL's particles(name='CA', chain='A'). The forms differ, the checks do not.
+// chain("A"), VIAL's particle(name='CA', chain='A'). The forms differ, the checks do not.
 //
 // Nothing here knows of the application: the system and the atoms in, the lines out, which is what lets
 // test/test_script_suggestions.cpp check them against real files.
 
 struct ScriptSuggestion {
-    str_t text;     // The line, ready to append to the script: 'sel1 = name("CA") and chain("A");', 'sel1 = particles(name='CA', chain='A')'
+    str_t text;     // The line, ready to append to the script: 'sel1 = name("CA") and chain("A");', 'sel1 = particle(name='CA', chain='A')'
     str_t hint;     // What the line gives, which it does not show itself: "11 residues", "one value for each of 12 ALA"
 };
 

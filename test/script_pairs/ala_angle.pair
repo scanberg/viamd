@@ -3,5 +3,5 @@
 === v1
 a = angle(name("N") in residue(5), name("CA") in residue(5), name("C") in residue(5));
 === vial
-r = residues[4]
-a = angle(r and particles(name='N'), r and particles(name='CA'), r and particles(name='C'))
+r = residue[4]
+a = angle(r and particle(name='N'), r and particle(name='CA'), r and particle(name='C'))

@@ -3,4 +3,4 @@
 === v1
 d = distance(com(resname("R2M")), com(resname("CNT")));
 === vial
-d = distance(particles(resname='R2M').com, particles(resname='CNT').com)
+d = distance(particle(resname='R2M').com, particle(resname='CNT').com)

@@ -3,5 +3,5 @@
 === v1
 ns = count(within(3.0:5.0, resname("R2M")) and element("O"));
 === vial
-cat = particles(resname='R2M')
-ns = count(within(5.0, of=cat) and not within(3.0, of=cat) and particles(element='O') and not cat)
+cat = particle(resname='R2M')
+ns = count(within(5.0, of=cat) and not within(3.0, of=cat) and particle(element='O') and not cat)

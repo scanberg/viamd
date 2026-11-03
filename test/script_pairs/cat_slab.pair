@@ -3,4 +3,4 @@
 === v1
 ns = count(within_z(20:25));
 === vial
-ns = count(particles[particles.z in 20.0..25.0])
+ns = count(particle[particle.z in 20.0..25.0])

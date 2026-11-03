@@ -3,5 +3,5 @@
 === v1
 nw = count(within(3.5, resname("R2M")) and element("O") and water());
 === vial
-cat = particles(resname='R2M')
-nw = count(within(3.5, of=cat) and water and particles(element='O'))
+cat = particle(resname='R2M')
+nw = count(within(3.5, of=cat) and water and particle(element='O'))

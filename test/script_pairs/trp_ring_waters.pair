@@ -3,5 +3,5 @@
 === v1
 nw = count(within(3.5, ring(kind="aromatic") in resname("TRP")) and water(), "residue");
 === vial
-aro = particles(rings(kind='aromatic', scope=particles(resname='TRP')))
-nw = len(residues(within(3.5, of=aro) and water))
+aro = particle(ring(kind='aromatic', scope=particle(resname='TRP')))
+nw = len(residue(within(3.5, of=aro) and water))

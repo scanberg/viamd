@@ -1,41 +1,41 @@
 # Selections of tubulin (PDB 4EB6): v1 || VIAL. Positions are 1-based in v1 and 0-based in VIAL; ids are the file's in both
 # data: tubulin-A-B.pdb
-all()                                   || particles
+all()                                   || particle
 protein()                               || protein
 water()                                 || water
 ion()                                   || ion
 backbone()                              || backbone
 sidechain()                             || sidechain
 not protein()                           || not protein
-name("CA")                              || particles(name='CA')
-name("C*")                              || particles(name='C*')
-name({"N", "CA", "C"})                  || particles(name=['N', 'CA', 'C'])
-element("C")                            || particles(element='C')
-element({"N", "O"})                     || particles(element=['N', 'O'])
-resname("GTP")                          || particles(resname='GTP')
-resname({"GTP", "GDP", "VLB"})          || particles(resname=['GTP', 'GDP', 'VLB'])
-chain("A")                              || particles(chain='A')
-chain({"A", "C"})                       || particles(chain=['A', 'C'])
-name("CA") and chain("A")               || particles(name='CA', chain='A')
-resid(12) in chain("A")                 || particles(chain='A', resid=12)
-resid(10:20) in chain("B")              || particles(chain='B', resid=10..20)
-name("CA") in resid(10:20) in chain("B")   || particles(chain='B', resid=10..20, name='CA')
-residue(1)                              || residues[0]
-residue(1:5)                            || particles(residues[0:5])
-atom(1)                                 || particles[0]
-atom(1:7)                               || particles[0:7]
-atom({3, 9, 27})                        || particles[[2, 8, 26]]
-protein() and chain("B")                || protein and particles(chain='B')
+name("CA")                              || particle(name='CA')
+name("C*")                              || particle(name='C*')
+name({"N", "CA", "C"})                  || particle(name=['N', 'CA', 'C'])
+element("C")                            || particle(element='C')
+element({"N", "O"})                     || particle(element=['N', 'O'])
+resname("GTP")                          || particle(resname='GTP')
+resname({"GTP", "GDP", "VLB"})          || particle(resname=['GTP', 'GDP', 'VLB'])
+chain("A")                              || particle(chain='A')
+chain({"A", "C"})                       || particle(chain=['A', 'C'])
+name("CA") and chain("A")               || particle(name='CA', chain='A')
+resid(12) in chain("A")                 || particle(chain='A', resid=12)
+resid(10:20) in chain("B")              || particle(chain='B', resid=10..20)
+name("CA") in resid(10:20) in chain("B")   || particle(chain='B', resid=10..20, name='CA')
+residue(1)                              || residue[0]
+residue(1:5)                            || particle(residue[0:5])
+atom(1)                                 || particle[0]
+atom(1:7)                               || particle[0:7]
+atom({3, 9, 27})                        || particle[[2, 8, 26]]
+protein() and chain("B")                || protein and particle(chain='B')
 protein() and not backbone()            || protein and not backbone
-resname("HOH") or resname("SO4")        || particles(resname=['HOH', 'SO4'])
-within(5.0, resname("VLB"))             || within(5.0, of=particles(resname='VLB')) and not particles(resname='VLB')
-residue(within(5.0, resname("VLB")))    || particles(residues(within(5.0, of=particles(resname='VLB')) and not particles(resname='VLB')))
-polymer()                               || particles(polymers)
-polymer(2)                              || polymers[1]
-polymer() in chain("A")                 || particles(polymers(chain='A'))
-ring()                                  || particles(rings)
-ring(kind="aromatic")                   || particles(rings(kind='aromatic'))
-ring(size=5)                            || particles(rings(size=5))
-molecule(2)                             || molecules[1]
-smiles("c1ccccc1")                      || particles(smiles('c1ccccc1'))
-smiles("C(=O)O")                        || particles(smiles('C(=O)O'))
+resname("HOH") or resname("SO4")        || particle(resname=['HOH', 'SO4'])
+within(5.0, resname("VLB"))             || within(5.0, of=particle(resname='VLB')) and not particle(resname='VLB')
+residue(within(5.0, resname("VLB")))    || particle(residue(within(5.0, of=particle(resname='VLB')) and not particle(resname='VLB')))
+polymer()                               || particle(polymer)
+polymer(2)                              || polymer[1]
+polymer() in chain("A")                 || particle(polymer(chain='A'))
+ring()                                  || particle(ring)
+ring(kind="aromatic")                   || particle(ring(kind='aromatic'))
+ring(size=5)                            || particle(ring(size=5))
+molecule(2)                             || molecule[1]
+smiles("c1ccccc1")                      || particle(smiles('c1ccccc1'))
+smiles("C(=O)O")                        || particle(smiles('C(=O)O'))

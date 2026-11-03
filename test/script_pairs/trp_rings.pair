@@ -3,5 +3,5 @@
 === v1
 d = distance(com(ring(size=6, kind="aromatic") in resname("TRP")), com(ring(size=5) in resname("TRP")));
 === vial
-trp = particles(resname='TRP')
-d = distance(particles(rings(kind='aromatic', size=6, scope=trp)).com, particles(rings(size=5, scope=trp)).com)
+trp = particle(resname='TRP')
+d = distance(particle(ring(kind='aromatic', size=6, scope=trp)).com, particle(ring(size=5, scope=trp)).com)

@@ -4,4 +4,4 @@ nucleic()                               || nucleic
 nucleobase()                            || nucleobase
 nucleoside()                            || nucleoside
 backbone() and nucleic()                || backbone and nucleic
-nucleobase() and resname("DA*")         || nucleobase and particles(resname='DA*')
+nucleobase() and resname("DA*")         || nucleobase and particle(resname='DA*')

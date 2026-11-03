@@ -709,19 +709,19 @@ UTEST(script_suggestions, vial_what_the_particles_are) {
     s = suggest(l, sel, V2);
     print(s);
     EXPECT_TRUE(all_pick(l, sel, s, V2));
-    EXPECT_TRUE(contains(s, "sel1 = particles(chain='A', name='CA')"));
-    EXPECT_FALSE(any_contains(s, "protein and"));     // says nothing that particles(chain='A', name='CA') does not
+    EXPECT_TRUE(contains(s, "sel1 = particle(chain='A', name='CA')"));
+    EXPECT_FALSE(any_contains(s, "protein and"));     // says nothing that particle(chain='A', name='CA') does not
 
     sel = select(l, "residue(2:4)");
     s = suggest(l, sel, V2);
     print(s);
     EXPECT_TRUE(all_pick(l, sel, s, V2));
     EXPECT_TRUE(any_contains(s, "resid=2..4"));
-    EXPECT_TRUE(any_contains(s, "particles["));
+    EXPECT_TRUE(any_contains(s, "particle["));
 
     sel = select(l, "all()");
     s = suggest(l, sel, V2);
-    EXPECT_TRUE(md_array_size(s) > 0 && str_eq_cstr(s[0].text, "sel1 = particles"));
+    EXPECT_TRUE(md_array_size(s) > 0 && str_eq_cstr(s[0].text, "sel1 = particle"));
     unload(&l);
 }
 
@@ -784,14 +784,14 @@ UTEST(script_suggestions, vial_measurement_by_position) {
     md_array(ScriptSuggestion) s = script_suggest_measurement(V2, STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
     print(s);
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
-    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=1)[[1, 0, 2]])"));
-    EXPECT_TRUE(contains(s, "m1 = angle(residues('LIG').particles[[1, 0, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=1)[[1, 0, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('LIG').particle[[1, 0, 2]])"));
     EXPECT_FALSE(any_contains(s, "['C'"));
     // Across residues: a name it holds twice by its position, the other by name
     const int32_t two[2] = {1, 5};
     md_array(ScriptSuggestion) t = script_suggest_measurement(V2, STR_LIT("m1"), two, 2, l.sys, l.alloc);
     print(t);
-    EXPECT_TRUE(contains(t, "m1 = distance(particles(chain='A', resid=1)[1], particles(chain='A', resid=2)['O'])"));
+    EXPECT_TRUE(contains(t, "m1 = distance(particle(chain='A', resid=1)[1], particle(chain='A', resid=2)['O'])"));
     unload(&l);
     remove(file);
 }
@@ -802,18 +802,18 @@ UTEST(script_suggestions, vial_measurement) {
     md_array(ScriptSuggestion) s = measure(l, {"name(\"N\") in residue(5)", "name(\"CA\") in residue(5)", "name(\"C\") in residue(5)"}, V2);
     print(s);
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
-    EXPECT_TRUE(contains(s, "m1 = angle(particles[30], particles[31], particles[32])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle[30], particle[31], particle[32])"));
     // Within one residue, written once, with its particles stacked by name
-    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=5)[['N', 'CA', 'C']])"));
-    EXPECT_TRUE(contains(s, "m1 = angle(residues('HIS')[['N', 'CA', 'C']])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));
     for (size_t i = 0; i < md_array_size(s); ++i) {
         size_t loc;
-        const bool every = str_find_str(&loc, s[i].text, STR_LIT("residues("));
+        const bool every = str_find_str(&loc, s[i].text, STR_LIT("residue("));
         EXPECT_TRUE(every == str_begins_with(s[i].hint, STR_LIT("One value for each of the 51 HIS")));
     }
     // And by position within it, as v1's angle(1,2,3) in residue(5), in it and in each HIS
-    EXPECT_TRUE(contains(s, "m1 = angle(particles(chain='A', resid=5)[[0, 1, 2]])"));
-    EXPECT_TRUE(contains(s, "m1 = angle(residues('HIS').particles[[0, 1, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[[0, 1, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS').particle[[0, 1, 2]])"));
     // And by the chemistry around it, wherever it occurs, the atoms tagged in the order picked
     EXPECT_TRUE(any_contains(s, "m1 = angle(smiles_atoms('"));
     EXPECT_TRUE(any_contains(s, "[N:1]"));
@@ -822,8 +822,8 @@ UTEST(script_suggestions, vial_measurement) {
     md_array(ScriptSuggestion) t = measure(l, {"name(\"CA\") in residue(5)", "name(\"CA\") in residue(404)"}, V2);
     print(t);
     for (size_t i = 0; i < md_array_size(t); ++i) EXPECT_TRUE(compiles(l, t[i].text, V2));
-    EXPECT_TRUE(contains(t, "m1 = distance(particles(chain='A', resid=5)['CA'], particles(chain='B', resid=9)['CA'])"));
-    EXPECT_FALSE(any_contains(t, "residues("));
+    EXPECT_TRUE(contains(t, "m1 = distance(particle(chain='A', resid=5)['CA'], particle(chain='B', resid=9)['CA'])"));
+    EXPECT_FALSE(any_contains(t, "residue("));
     EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(1)"}, V2)));
     unload(&l);
 }

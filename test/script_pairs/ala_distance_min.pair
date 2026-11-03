@@ -3,4 +3,4 @@
 === v1
 dm = distance_min(residue(1), residue(15));
 === vial
-dm = distance(residues[0], residues[14], between='closest')
+dm = distance(residue[0], residue[14], between='closest')

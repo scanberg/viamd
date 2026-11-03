@@ -3,5 +3,5 @@
 === v1
 r = rmsd(name("CA"));
 === vial
-ca = particles(name='CA')
+ca = particle(name='CA')
 r = rmsd(ca, at(ca.xyz, frame=0), weights='mass')

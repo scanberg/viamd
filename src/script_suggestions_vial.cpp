@@ -1,8 +1,8 @@
 // The lines of the Script menu, written in VIAL (script v2). What they offer is what script_suggestions.h says; how
-// they are written is VIAL's: selections are particles(...) with keywords, which all have to hold, and the predefined
-// sets (protein, water, ...); a particle by its position is particles[i], and by its name within its residue
-// particles(chain='A', resid=12)['CA']; and the same measurement in every residue of a name is one call over arrays of
-// sets, angle(residues('ALA')['N'], residues('ALA')['CA'], residues('ALA')['C']).
+// they are written is VIAL's: selections are particle(...) with keywords, which all have to hold, and the predefined
+// sets (protein, water, ...); a particle by its position is particle[i], and by its name within its residue
+// particle(chain='A', resid=12)['CA']; and the same measurement in every residue of a name is one call over arrays of
+// sets, angle(residue('ALA')['N'], residue('ALA')['CA'], residue('ALA')['C']).
 //
 // Every line is checked as v1's are: a selection is evaluated (script::filter_sets) and has to pick exactly the selected
 // particles, each argument of a measurement has to pick its particle alone, and the line has to compile.
@@ -253,7 +253,7 @@ bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
 
 // ### SELECTION: WHAT THE PARTICLES ARE ###
 
-// particles(k=v, ...) of every combination of up to three keywords, optionally within a predefined set that holds the
+// particle(k=v, ...) of every combination of up to three keywords, optionally within a predefined set that holds the
 // selection, which picks it: tested cheaply first, then evaluated. The shortest few.
 void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     const md_system_t& sys = *c.sys;
@@ -308,7 +308,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
         }
     }
     // Only those that say nothing more than they need: no other picks it with fewer of its keywords, in the system or
-    // in its own context. particles(name='CA') is enough; protein and particles(name='CA') adds nothing.
+    // in its own context. particle(name='CA') is enough; protein and particle(name='CA') adds nothing.
     md_array(str_t) found = 0;
     md_str_writer_t sb = md_str_writer_create(c.temp);
     for (size_t i = 0; i < md_array_size(fits); ++i) {
@@ -327,7 +327,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
         }
         if (!minimal) continue;
         if (f.ctx) { sb += contexts[f.ctx].name; sb += " and "; }
-        sb += "particles(";
+        sb += "particle(";
         bool first = true;
         for (int k = 0; k < Key_Count; ++k) {
             if (!(f.mask & (1u << k))) continue;
@@ -355,8 +355,8 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
 
 // ### SELECTION: WHERE THE PARTICLES ARE ###
 
-// By the residues which hold them, chain by chain: whole residues as runs of ids, particles(chain='A', resid=10..20),
-// and part of one by the names of its particles, particles(chain='A', resid=12, name=['N', 'CA']). False where a
+// By the residues which hold them, chain by chain: whole residues as runs of ids, particle(chain='A', resid=10..20),
+// and part of one by the names of its particles, particle(chain='A', resid=12, name=['N', 'CA']). False where a
 // particle is in no residue, a name or chain id cannot be written, or there are more terms than make a line.
 bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     const md_system_t& sys = *c.sys;
@@ -371,7 +371,7 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     str_t run_names = {};
     auto flush = [&]() {
         if (run_chain == -2) return;
-        sb += "particles(";
+        sb += "particle(";
         if (run_chain >= 0) {
             sb += "chain=";
             write_quoted(&sb, md_system_chain_id(&sys, (size_t)run_chain));
@@ -423,7 +423,7 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     return md_str_writer_len(out) <= c.limit;
 }
 
-// By their positions in the system: particles[4], particles[10:20], particles[[3, 7, 9]], joined by `or`
+// By their positions in the system: particle[4], particle[10:20], particle[[3, 7, 9]], joined by `or`
 bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     md_array(str_t) terms = 0;
     md_array(uint32_t) singles = 0;
@@ -433,7 +433,7 @@ bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     auto flush = [&]() {
         if (beg < 0) return;
         if (end - beg >= 3) {
-            md_str_writer_fmt(&sb, "particles[%lld:%lld]", (long long)beg, (long long)end);
+            md_str_writer_fmt(&sb, "particle[%lld:%lld]", (long long)beg, (long long)end);
             md_array_push(terms, take(&sb, c.temp), c.temp);
         } else {
             for (int64_t i = beg; i < end; ++i) md_array_push(singles, (uint32_t)i, c.temp);
@@ -448,9 +448,9 @@ bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     }
     flush();
     const size_t ns = md_array_size(singles);
-    if (ns == 1) md_str_writer_fmt(&sb, "particles[%u]", singles[0]);
+    if (ns == 1) md_str_writer_fmt(&sb, "particle[%u]", singles[0]);
     else if (ns > 1) {
-        sb += "particles[[";
+        sb += "particle[[";
         for (size_t i = 0; i < ns && md_str_writer_len(&sb) <= c.limit; ++i) md_str_writer_fmt(&sb, i ? ", %u" : "%u", singles[i]);
         sb += "]]";
     }
@@ -479,7 +479,7 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
 
     md_array(str_t) cand = 0;
     const uint64_t count = md_bitset_count(sel);
-    if (count == sys.atom.count) md_array_push(cand, STR_LIT("particles"), temp);
+    if (count == sys.atom.count) md_array_push(cand, STR_LIT("particle"), temp);
     else describe(&cand, c, sel);
 
     md_str_writer_t sb = md_str_writer_create(temp);
@@ -708,12 +708,12 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     // By position: always right, whatever the particles are called
     str_t args[4] = {};
     for (size_t i = 0; i < count; ++i) {
-        md_str_writer_fmt(&sb, "particles[%d]", atoms[i]);
+        md_str_writer_fmt(&sb, "particle[%d]", atoms[i]);
         args[i] = take(&sb, temp);
     }
     push_call(args, {});
 
-    // Within residues as the file numbers them, each written once: particles(chain='A', resid=12). A particle is named
+    // Within residues as the file numbers them, each written once: particle(chain='A', resid=12). A particle is named
     // where its name picks it alone in its residue, and taken by its position there where it does not.
     int32_t res[4] = {-1, -1, -1, -1};
     str_t names[4] = {}, rexpr[4] = {};
@@ -727,7 +727,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         if (res[i] < 0) { by_res = false; break; }
         same_res &= res[i] == res[0];
         const int32_t chain = res_chain(c, res[i]);
-        sb += "particles(";
+        sb += "particle(";
         if (chain >= 0) {
             const str_t id = md_system_chain_id(&sys, (size_t)chain);
             if (!quotable(id)) { by_res = false; break; }
@@ -801,7 +801,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     // positions where every residue of the name has the same particles in the same order, so a position means the same
     const str_t resname = by_res && same_res ? md_system_residue_name(&sys, (size_t)res[0]) : str_t{};
     if (quotable(resname) && !str_empty(resname)) {
-        sb += "residues(";
+        sb += "residue(";
         write_quoted(&sb, resname);
         sb += ')';
         const str_t every = take(&sb, temp);
@@ -825,7 +825,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
                 if (!by_pos && !all_unique) continue;
                 if (by_pos && !same) continue;
                 sb += every;
-                sb += by_pos ? ".particles[[" : "[[";
+                sb += by_pos ? ".particle[[" : "[[";
                 for (size_t i = 0; i < count; ++i) {
                     if (i) sb += ", ";
                     if (!by_pos) write_quoted(&sb, names[i]);

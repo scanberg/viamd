@@ -3,4 +3,4 @@
 === v1
 z = coord_z(atom(1));
 === vial
-z = particles[0].z
+z = particle[0].z

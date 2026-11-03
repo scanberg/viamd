@@ -2645,7 +2645,7 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::EndDisabled();
                 if (v2) {
-                    ImGui::SetItemTooltip("VIAL does not track bond changes yet: its bonds() are the bonds of the system");
+                    ImGui::SetItemTooltip("VIAL does not track bond changes yet: bond() gives the bonds of the system");
                 } else {
                     ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
                                           "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");

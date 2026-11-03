@@ -3,5 +3,5 @@
 === v1
 n = count(within(6.0, residue(1)));
 === vial
-r0 = residues[0]
+r0 = residue[0]
 n = count(within(6.0, of=r0) and not r0)

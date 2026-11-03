@@ -3,4 +3,4 @@
 === v1
 dd = distance(name("N"), name("C")) in residue(:);
 === vial
-dd = distance(residues and particles(name='N'), residues and particles(name='C'))
+dd = distance(residue and particle(name='N'), residue and particle(name='C'))

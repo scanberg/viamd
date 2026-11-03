@@ -1,5 +1,5 @@
 # Selections that change per frame, at the structure's coordinates: v1's within_z is VIAL's mask on a set
 # data: catalyst.gro catalyst.xtc
-within(3.5, resname("R2M")) and water()     || within(3.5, of=particles(resname='R2M')) and water
-within_z(20:25)                             || particles[particles.z in 20.0..25.0]
-within_x(10:30) and element("O")            || particles[particles.x in 10.0..30.0] and particles(element='O')
+within(3.5, resname("R2M")) and water()     || within(3.5, of=particle(resname='R2M')) and water
+within_z(20:25)                             || particle[particle.z in 20.0..25.0]
+within_x(10:30) and element("O")            || particle[particle.x in 10.0..30.0] and particle(element='O')

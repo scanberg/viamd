@@ -3,5 +3,5 @@
 === v1
 d = distance(name("CA") in residue(1), name("CA") in residue(15));
 === vial
-ca = particles(name='CA')
+ca = particle(name='CA')
 d = distance(ca[0], ca[14])

@@ -1011,7 +1011,7 @@ FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, str_t expr, const
 }
 
 FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
-    // bonds(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
+    // bond(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
     Filtered f;
     run_filter(&f, expr, ctx);
     if (f.r.success && dst) {

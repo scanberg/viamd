@@ -6,4 +6,4 @@ rr = rmsd(residue(:));
 === vial
 def fitted(r: group):
     return rmsd(r, at(r.xyz, frame=0), weights='mass')
-rr = fitted(residues)
+rr = fitted(residue)

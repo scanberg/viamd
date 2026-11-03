@@ -98,27 +98,27 @@ const Case cases[] = {
      "d1 = distance(com(residue(1)), com(residue(2)));\n"
      "dm = distance_min(residue(1), residue(2));\n"
      "a = angle(1, 2, 3);\n",
-     "d1 = distance(residues[0].com, residues[1].com)\n"
-     "dm = distance(residues[0], residues[1], between='closest')\n"
-     "a = angle(particles[0], particles[1], particles[2])\n",
+     "d1 = distance(residue[0].com, residue[1].com)\n"
+     "dm = distance(residue[0], residue[1], between='closest')\n"
+     "a = angle(particle[0], particle[1], particle[2])\n",
      {"residue(1:3)", "element(\"O\") and water()", nullptr},
-     {"particles(residues[0:3])", "particles(element='O') and water", nullptr}},
+     {"particle(residue[0:3])", "particle(element='O') and water", nullptr}},
     {"neighbourhood",
      "nw = count(within(3.5, residue(1)) and water(), \"residue\");\n"
      "ns = count(within(3.0:5.0, residue(1)) and element(\"O\"));\n",
-     "r0 = residues[0]\n"
-     "nw = len(residues(within(3.5, of=r0) and water and not r0))\n"
-     "ns = count(within(5.0, of=r0) and not within(3.0, of=r0) and particles(element='O') and not r0)\n",
+     "r0 = residue[0]\n"
+     "nw = len(residue(within(3.5, of=r0) and water and not r0))\n"
+     "ns = count(within(5.0, of=r0) and not within(3.0, of=r0) and particle(element='O') and not r0)\n",
      {"within(3.5, residue(1)) and water()", "residue(within(5.0, residue(1)))", nullptr},
-     {"within(3.5, of=residues[0]) and water and not residues[0]",
-      "particles(residues(within(5.0, of=residues[0]) and not residues[0]))", nullptr}},
+     {"within(3.5, of=residue[0]) and water and not residue[0]",
+      "particle(residue(within(5.0, of=residue[0]) and not residue[0]))", nullptr}},
     {"per residue",
      "c = distance(1, 2) in residue(1:3);\n"
      "s = count(within_z(20:25));\n",
-     "c = [distance(particles(r)[0], particles(r)[1]) for r in residues[0:3]]\n"
-     "s = count(particles[particles.z in 20.0..25.0])\n",
+     "c = [distance(particle(r)[0], particle(r)[1]) for r in residue[0:3]]\n"
+     "s = count(particle[particle.z in 20.0..25.0])\n",
      {"within_z(20:25)", "residue(2:3)", nullptr},
-     {"particles[particles.z in 20.0..25.0]", "particles(residues[1:3])", nullptr}},
+     {"particle[particle.z in 20.0..25.0]", "particle(residue[1:3])", nullptr}},
 };
 
 struct Times {

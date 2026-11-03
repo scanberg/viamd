@@ -67,7 +67,7 @@ UTEST(script_v2, compile_and_outputs) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_get_heap_allocator();
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
         "m  = mean(d, axis='frame')\n";
@@ -112,7 +112,7 @@ UTEST(script_v2, compile_and_outputs) {
     EXPECT_TRUE(call);
 
     // Refs belong to their compilation; renamed and spaced, the same fingerprints
-    script::Program* q = compile_v2("ca = particles(name='CA')\ndist  = distance(ca[0],   ca[1])\nh = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\nm = mean(dist, axis='frame')\n", alloc);
+    script::Program* q = compile_v2("ca = particle(name='CA')\ndist  = distance(ca[0],   ca[1])\nh = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\nm = mean(dist, axis='frame')\n", alloc);
     EXPECT_FALSE(script::ref_valid(q, ref));
     EXPECT_EQ(script::output_fingerprint(p, STR_LIT("d")), script::output_fingerprint(q, STR_LIT("dist")));
     EXPECT_NE(script::fingerprint(p), script::fingerprint(q));     // d is called dist
@@ -123,7 +123,7 @@ UTEST(script_v2, compile_and_outputs) {
 UTEST(script_v2, diagnostics_and_sets) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_get_heap_allocator();
-    script::Program* p = compile_v2("x = particles(nme='CA')\ny = 1 +\n", alloc);
+    script::Program* p = compile_v2("x = particle(nme='CA')\ny = 1 +\n", alloc);
     EXPECT_FALSE(script::valid(p));
     ASSERT_GT(script::num_errors(p), 0u);
     const script::Diagnostic* e = script::errors(p);
@@ -163,13 +163,13 @@ UTEST(script_v2, editor) {
     const size_t nb = script::builtin_names(V2, nullptr, 0);
     str_t* names = (str_t*)md_alloc(alloc, nb * sizeof(str_t));
     EXPECT_EQ(nb, script::builtin_names(V2, names, nb));
-    EXPECT_TRUE(has_name(names, nb, "distance") && has_name(names, nb, "particles"));
+    EXPECT_TRUE(has_name(names, nb, "distance") && has_name(names, nb, "particle"));
     EXPECT_TRUE(script::name_valid(V2, STR_LIT("my_sel")));
     EXPECT_FALSE(script::name_valid(V2, STR_LIT("protein")));
     EXPECT_FALSE(script::name_valid(V2, STR_LIT("for")));
 
     // Completion: a selector's keyword, and the system's values in a string
-    const str_t src = STR_LIT("x = particles(res");
+    const str_t src = STR_LIT("x = particle(res");
     script::Completions c = script::complete(V2, src, (int)src.len, &peptide()->sys, alloc);
     bool found = false;
     for (size_t i = 0; i < c.count; ++i) {
@@ -181,8 +181,8 @@ UTEST(script_v2, editor) {
         }
     }
     EXPECT_TRUE(found);
-    EXPECT_EQ(14, c.range.beg);
-    const str_t s2 = STR_LIT("x = particles(resname='AL')");
+    EXPECT_EQ(13, c.range.beg);
+    const str_t s2 = STR_LIT("x = particle(resname='AL')");
     c = script::complete(V2, s2, (int)s2.len - 2, &peptide()->sys, alloc);
     found = false;
     for (size_t i = 0; i < c.count; ++i) found |= str_eq(c.items[i].label, STR_LIT("ALA"));
@@ -225,7 +225,7 @@ UTEST(script_v2, evaluate) {
     md_allocator_i* alloc = md_get_heap_allocator();
     const size_t nf = peptide()->num_frames;
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "h  = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
         "dc = distance(ca[0], ca.xyz)\n";
@@ -293,7 +293,7 @@ UTEST(script_v2, evaluate) {
     EXPECT_FALSE(script::aggregate_info(&info, e, 7, STR_LIT("h")));
 
     // An edit: renamed, d is taken over and nothing is pending; its values are there at once
-    script::Program* q = compile_v2("ca = particles(name='CA')\ndist = distance(ca[0], ca[1])\nh = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\n", alloc);
+    script::Program* q = compile_v2("ca = particle(name='CA')\ndist = distance(ca[0], ca[1])\nh = histogram(dist, axis='frame', bins=10, range=(0.0, 20.0))\n", alloc);
     script::Plan plans[4];
     md_bitset_t would = md_bitset_empty_set();
     ASSERT_TRUE(script::plan(plans, 4, &would, e, q, nf, alloc));
@@ -318,7 +318,7 @@ UTEST(script_v2, drawing) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const char* src =
-        "ca = particles(name='CA')\n"
+        "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
         "a  = angle(ca[0], ca[1], ca[2])\n";
     script::Program* p = compile_v2(src, alloc);
@@ -362,12 +362,12 @@ UTEST(script_v2, drawing) {
 
     // A selection: its atoms; an expression of the language: what it picks
     script::drawing_clear(&dr);
-    ASSERT_TRUE(script::draw_ref(&dr, mark_of("particles(name='CA')"), -1, ctx, script::DRAW_ATOMS));
+    ASSERT_TRUE(script::draw_ref(&dr, mark_of("particle(name='CA')"), -1, ctx, script::DRAW_ATOMS));
     ASSERT_EQ(1u, md_array_size(dr.groups));
     const uint64_t nca = md_bitset_count(dr.atom_mask);
     EXPECT_GT(nca, 2u);
     script::drawing_clear(&dr);
-    ASSERT_TRUE(script::draw_text(&dr, STR_LIT("residues()"), ctx, script::DRAW_DEFAULT));
+    ASSERT_TRUE(script::draw_text(&dr, STR_LIT("residue()"), ctx, script::DRAW_DEFAULT));
     EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(dr.groups));
     script::drawing_clear(&dr);
     EXPECT_FALSE(script::draw_ref(&dr, script::Ref{1, 1}, -1, ctx, script::DRAW_DEFAULT));   // another compilation's
@@ -379,7 +379,7 @@ UTEST(script_v2, filters) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     const script::Language V2 = script::Language::V2;
-    script::Program* p = compile_v2("ca = particles(name='CA')\nres = residues()\n", alloc);
+    script::Program* p = compile_v2("ca = particle(name='CA')\nres = residue()\n", alloc);
     script::FilterCtx ctx;
     ctx.sys = &peptide()->sys;
     ctx.state = &peptide()->state;
@@ -401,7 +401,7 @@ UTEST(script_v2, filters) {
     EXPECT_EQ((uint64_t)peptide()->sys.atom.count - nca, md_bitset_count(atoms));
 
     md_array(md_bitset_t) sets = nullptr;
-    r = script::filter_sets(V2, &sets, STR_LIT("residues()"), ctx, alloc);
+    r = script::filter_sets(V2, &sets, STR_LIT("residue()"), ctx, alloc);
     ASSERT_TRUE(r.success);
     EXPECT_EQ(md_system_residue_count(&peptide()->sys), md_array_size(sets));
     // An array the program publishes, by name: all its sets, or one
@@ -413,11 +413,11 @@ UTEST(script_v2, filters) {
     ASSERT_TRUE(r.success);
     EXPECT_EQ((uint64_t)md_system_residue_atom_count(&peptide()->sys, 1), md_bitset_count(atoms));
 
-    // Bonds: the pairs bonds() gives, or the bonds among atoms; the same for one residue
+    // Bonds: the pairs bond() gives, or the bonds among atoms; the same for one residue
     md_array(md_atom_pair_t) b1 = nullptr;
     md_array(md_atom_pair_t) b2 = nullptr;
-    ASSERT_TRUE(script::filter_bonds(V2, &b1, STR_LIT("bonds(residues()[0])"), ctx, alloc).success);
-    ASSERT_TRUE(script::filter_bonds(V2, &b2, STR_LIT("residues()[0]"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b1, STR_LIT("bond(residue()[0])"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b2, STR_LIT("residue()[0]"), ctx, alloc).success);
     EXPECT_GT(md_array_size(b1), 0u);
     EXPECT_EQ(md_array_size(b1), md_array_size(b2));
 
@@ -426,18 +426,18 @@ UTEST(script_v2, filters) {
     ASSERT_TRUE(r.success);
     EXPECT_TRUE(r.is_dynamic);
     md_bitset_t scope = md_bitset_empty_set();
-    ASSERT_TRUE(script::filter(V2, &scope, STR_LIT("residues()[0]"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter(V2, &scope, STR_LIT("residue()[0]"), ctx, alloc).success);
     script::FilterCtx sc = ctx;
     sc.atoms = &scope;
     ASSERT_TRUE(script::filter(V2, &atoms, STR_LIT("protein"), sc, alloc).success);
     EXPECT_EQ(md_bitset_count(scope), md_bitset_count(atoms));
-    r = script::filter(V2, &atoms, STR_LIT("particles(nme='CA')"), ctx, alloc);
+    r = script::filter(V2, &atoms, STR_LIT("particle(nme='CA')"), ctx, alloc);
     EXPECT_FALSE(r.success);
     EXPECT_EQ('E', r.error[0]);
     EXPECT_GE(r.error_range.beg, 0);
     EXPECT_LE(r.error_range.end, 19);
 
-    script::Completions c = script::filter_complete(V2, STR_LIT("particles(res"), 13, ctx, alloc);
+    script::Completions c = script::filter_complete(V2, STR_LIT("particle(res"), 12, ctx, alloc);
     bool found = false;
     for (size_t i = 0; i < c.count; ++i) found |= str_eq(c.items[i].label, STR_LIT("resname"));
     EXPECT_TRUE(found);
@@ -449,7 +449,7 @@ UTEST(script_v2, runtime_errors) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_get_heap_allocator();
     // A position past the CA particles from some frame on: compiles, and is missing there (R0101), a warning
-    const char* src = "ca = particles(name='CA')\nx = distance(ca[0], ca[frame()])\nd = distance(ca[0], ca[1])\n";
+    const char* src = "ca = particle(name='CA')\nx = distance(ca[0], ca[frame()])\nd = distance(ca[0], ca[1])\n";
     script::Program* p = compile_v2(src, alloc);
     ASSERT_TRUE(script::valid(p));
     script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
@@ -474,7 +474,7 @@ UTEST(script_v2, runtime_errors) {
 UTEST(script_v2, program_users) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    script::Program* p = compile_v2("ca = particles(name='CA')\n", alloc);
+    script::Program* p = compile_v2("ca = particle(name='CA')\n", alloc);
     EXPECT_EQ(0u, script::program_users(p));
     script::program_retain(p);
     script::program_retain(p);
@@ -497,8 +497,8 @@ UTEST(script_v2, volumes) {
     md_allocator_i* alloc = md_get_heap_allocator();
     const size_t nf = peptide()->num_frames;
     const char* src =
-        "s = sdf(residues[1:5], particles(name='O'), 6.0)\n"
-        "d = density(particles(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n";
+        "s = sdf(residue[1:5], particle(name='O'), 6.0)\n"
+        "d = density(particle(), box=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)), samples=0.25)\n";
     script::Program* p = compile_v2(src, alloc);
     ASSERT_TRUE(script::valid(p));
     EXPECT_EQ((uint32_t)(script::OUTPUT_VOLUME | script::OUTPUT_SDF), script::output_flags(p, STR_LIT("s")));
