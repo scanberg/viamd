@@ -1087,10 +1087,10 @@ static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_stru
 // The cartoon's secondary structure for the displayed state's own labels, uploaded directly: the weights are renderer
 // input and are kept nowhere but on the GPU. Without a run there is nothing to blend between; interpolate_system_state
 // uploads its own blend of the frames around the displayed one.
-static void upload_secondary_structure_weights(ApplicationState* data) {
-    const md_system_t& sys = data->mold.sys;
+static void upload_secondary_structure_weights(SystemData& data) {
+    const md_system_t& sys = data.sys;
     const size_t num_segments = sys.protein_backbone.segment.count;
-    const md_secondary_structure_t* ss = md_util_state_secondary_structure(&data->mold.state, &sys);
+    const md_secondary_structure_t* ss = md_util_state_secondary_structure(&data.state, &sys);
     if (!ss || num_segments == 0) return;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -1100,7 +1100,7 @@ static void upload_secondary_structure_weights(ApplicationState* data) {
         weights[i] = md_gl_secondary_structure_convert(ss[i]);
     }
     secondary_structure_weights_fill_isolated_coils(weights, &sys.protein_backbone);
-    md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)num_segments, weights, 0);
+    md_gl_mol_set_backbone_secondary_structure(data.gl_mol, 0, (uint32_t)num_segments, weights, 0);
 }
 
 static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
@@ -1174,13 +1174,13 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
 
 // #trajectorydata
 
-str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf) {
+str_t run_attribute_path(char* buf, size_t cap, const SystemData& sys, str_t leaf) {
     ASSERT(buf && cap > 0);
     buf[0] = '\0';
-    if (app->mold.run[0] == '\0') {
+    if (sys.run[0] == '\0') {
         return {};
     }
-    const int len = snprintf(buf, cap, "%s/" STR_FMT, app->mold.run, STR_ARG(leaf));
+    const int len = snprintf(buf, cap, "%s/" STR_FMT, sys.run, STR_ARG(leaf));
     if (len <= 0 || (size_t)len >= cap) {
         buf[0] = '\0';
         return {};
@@ -1188,30 +1188,37 @@ str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str
     return {buf, (size_t)len};
 }
 
-const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf) {
-    ASSERT(app);
-    if (app->mold.run[0] == '\0') return nullptr;
-    return md_attributes_find_in(&app->mold.sys.attributes, str_from_cstr(app->mold.run), leaf);
+const md_attribute_t* run_attribute(const SystemData& sys, str_t leaf) {
+    if (sys.run[0] == '\0') return nullptr;
+    return md_attributes_find_in(&sys.sys.attributes, str_from_cstr(sys.run), leaf);
 }
 
-const md_attribute_t* run_time_axis(const ApplicationState* app) {
-    const md_attribute_t* axis = run_attribute(app, STR_LIT("time"));
+const md_attribute_t* run_time_axis(const SystemData& sys) {
+    const md_attribute_t* axis = run_attribute(sys, STR_LIT("time"));
     return md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1) ? axis : nullptr;
 }
 
-size_t run_num_frames(const ApplicationState* app) {
-    const md_attribute_t* axis = run_time_axis(app);
+size_t run_num_frames(const SystemData& sys) {
+    const md_attribute_t* axis = run_time_axis(sys);
     return axis ? axis->format.shape[0] : 0;
 }
 
-const double* run_frame_times(const ApplicationState* app) {
-    return (const double*)md_attribute_view(run_time_axis(app), MD_ATTRIBUTE_TYPE_F64, 1, 1);
+const double* run_frame_times(const SystemData& sys) {
+    return (const double*)md_attribute_view(run_time_axis(sys), MD_ATTRIBUTE_TYPE_F64, 1, 1);
 }
 
-md_unit_t run_time_unit(const ApplicationState* app) {
-    const md_attribute_t* axis = run_time_axis(app);
+md_unit_t run_time_unit(const SystemData& sys) {
+    const md_attribute_t* axis = run_time_axis(sys);
     return axis ? axis->unit : md_unit_none();
 }
+
+// Of the one system loaded (see SystemContext)
+str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf) { return run_attribute_path(buf, cap, app->mold, leaf); }
+const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf) { return run_attribute(app->mold, leaf); }
+const md_attribute_t* run_time_axis(const ApplicationState* app) { return run_time_axis(app->mold); }
+size_t run_num_frames(const ApplicationState* app) { return run_num_frames(app->mold); }
+const double* run_frame_times(const ApplicationState* app) { return run_frame_times(app->mold); }
+md_unit_t run_time_unit(const ApplicationState* app) { return run_time_unit(app->mold); }
 
 const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
     ASSERT(app);
@@ -1228,9 +1235,9 @@ const md_secondary_structure_t* displayed_secondary_structure(const ApplicationS
 
 static const str_t frame_extract_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
 
-bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out) {
-    ASSERT(app && out);
-    md_system_extract_t* ex = md_system_extract_begin(&app->mold.sys, str_from_cstr(app->mold.run),
+bool extract_frame(const SystemData& sys, int64_t frame, md_system_state_t* out) {
+    ASSERT(out);
+    md_system_extract_t* ex = md_system_extract_begin(&sys.sys, str_from_cstr(sys.run),
         frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
     if (!ex) {
         return false;
@@ -1240,10 +1247,12 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
     return ok;
 }
 
-static void end_frame_extracts(ApplicationState* app) {
-    for (size_t i = 0; i < ARRAY_SIZE(app->mold.frame_extract); ++i) {
-        md_system_extract_end(app->mold.frame_extract[i]);
-        app->mold.frame_extract[i] = nullptr;
+bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out) { return extract_frame(app->mold, frame, out); }
+
+static void end_frame_extracts(SystemData& sys) {
+    for (size_t i = 0; i < ARRAY_SIZE(sys.frame_extract); ++i) {
+        md_system_extract_end(sys.frame_extract[i]);
+        sys.frame_extract[i] = nullptr;
     }
 }
 
@@ -1269,18 +1278,18 @@ static void run_path_from_file(char* buf, size_t cap, str_t path) {
     buf[MIN(len, cap - 1)] = '\0';
 }
 
-void free_trajectory_data(ApplicationState* state) {
+void free_trajectory_data(ApplicationState* state, SystemContext& sys) {
     ASSERT(state);
 
     // The orientation reference was read from this run's first frame. A run loaded in its place, on the
     // same topology, has a first frame of its own.
-    state->system.operations.initial_frame.valid = false;
+    sys.scene.operations.initial_frame.valid = false;
 
     // Before anything they read goes: the contexts hold the run's files open.
-    end_frame_extracts(state);
+    end_frame_extracts(sys.data);
 
     // The run, and with it the files it was opened from and the series loaded along it
-    file_list_drop_runs(&state->file_list);
+    file_list_drop_runs(&sys.files);
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
@@ -1298,62 +1307,62 @@ void free_trajectory_data(ApplicationState* state) {
     // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
     // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
     // table owns them and releases them with the system; dropping the views is all that is owed.
-    state->trajectory_data.backbone_angles.data       = nullptr;
-    state->trajectory_data.backbone_angles.stride     = 0;
-    state->trajectory_data.backbone_angles.count      = 0;
-    state->trajectory_data.secondary_structure.data   = nullptr;
-    state->trajectory_data.secondary_structure.stride = 0;
-    state->trajectory_data.secondary_structure.count  = 0;
+    sys.trajectory_data.backbone_angles.data       = nullptr;
+    sys.trajectory_data.backbone_angles.stride     = 0;
+    sys.trajectory_data.backbone_angles.count      = 0;
+    sys.trajectory_data.secondary_structure.data   = nullptr;
+    sys.trajectory_data.secondary_structure.stride = 0;
+    sys.trajectory_data.secondary_structure.count  = 0;
 
     // The denoised render copy is still an ordinary array owned here.
-    md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
+    md_array_free(sys.trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
     // A stale match here would make interpolate_system_state silently skip pushing the new run's
     // first frame to the renderer whenever it happens to resolve to the same nearest frame index
     // as whatever was last displayed (frame 0 is the common case).
-    state->mold.last_interpolated_nearest_frame = -1;
-    state->mold.last_interpolated_frame = -1.0;
+    sys.data.last_interpolated_nearest_frame = -1;
+    sys.data.last_interpolated_frame = -1.0;
 
     // The views above are dropped first; now the storage they pointed at goes with the run - its
     // frame axis, the quantities derived per frame, and whatever was loaded against it.
-    if (state->mold.run[0]) {
-        md_attributes_remove_prefix(&state->mold.sys.attributes, str_from_cstr(state->mold.run));
-        state->mold.run[0] = '\0';
+    if (sys.data.run[0]) {
+        md_attributes_remove_prefix(&sys.data.sys.attributes, str_from_cstr(sys.data.run));
+        sys.data.run[0] = '\0';
     }
 
-    free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
+    free_frame_cache(&sys.data.frame_cache, state->allocator.persistent);
 }
 
-void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_flags) {
+void init_trajectory_data(ApplicationState* data, SystemContext& sys, str_t run_file, uint32_t traj_flags) {
     // The trajectory is a RUN in the attribute table: "<run>/time" is its frame axis, and everything
     // sampled along it lives below the same prefix - the positions streamed from the file, the per
     // frame backbone data below, an energy file loaded later - so that freeing the trajectory is
     // removing the prefix. A trajectory that came inside the structure file (a multi model PDB) is
     // named after that; a structure of one frame publishes nothing and has no run.
     {
-        run_path_from_file(data->mold.run, sizeof(data->mold.run), run_file);
-        const str_t run = str_from_cstr(data->mold.run);
-        if (!loader::publish_run(&data->mold.sys, run_file, run, traj_flags)) {
-            md_attributes_remove_prefix(&data->mold.sys.attributes, run);
-            data->mold.run[0] = '\0';
+        run_path_from_file(sys.data.run, sizeof(sys.data.run), run_file);
+        const str_t run = str_from_cstr(sys.data.run);
+        if (!loader::publish_run(&sys.data.sys, run_file, run, traj_flags)) {
+            md_attributes_remove_prefix(&sys.data.sys.attributes, run);
+            sys.data.run[0] = '\0';
         }
     }
 
-    size_t num_frames = run_num_frames(data);
+    size_t num_frames = run_num_frames(sys.data);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
-        const double* frame_times = run_frame_times(data);
+        const double* frame_times = run_frame_times(sys.data);
         char path_buf[256];
 
-        init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
+        init_frame_cache(&sys.data.frame_cache, sys.data.sys.atom.count, data->allocator.persistent);
 
         ASSERT(frame_times);
 
         // The timeline carries time in the unit the user asked to see it in. Everything downstream
         // reads x_values and view_range, so this is the one place the conversion happens; a later
         // change to the preference is picked up by update_timeline_time_unit in main.cpp.
-        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(data));
+        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(sys.data));
         data->timeline.time_scale    = time_scl;
         data->timeline.units_version = display_units::version();
 
@@ -1370,9 +1379,9 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
-        extract_frame(data, frame_idx, &data->mold.state);
+        extract_frame(sys.data, frame_idx, &sys.data.state);
 
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
+        if (sys.data.sys.protein_backbone.segment.count > 0) {
             // The angles and the per frame secondary structure are TEMPORAL attributes: the table
             // owns the storage and the trajectory_data fields below are views onto it. That is the
             // point of the move - 'stride' and 'count' were a hand rolled shape {F,S}, and the one
@@ -1385,8 +1394,8 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             // reads EVERY frame at once - a per plane provider would recompute the whole trajectory
             // each time the window redraws. Reserved-and-filled-lazily is the interesting third
             // option, and it only starts paying at trajectory lengths where this allocation hurts.
-            const size_t num_segments = data->mold.sys.protein_backbone.segment.count;
-            md_attributes_t* attributes = &data->mold.sys.attributes;
+            const size_t num_segments = sys.data.sys.protein_backbone.segment.count;
+            md_attributes_t* attributes = &sys.data.sys.attributes;
 
             // Both are checked against "<run>/time", published above, so a declaration whose
             // outermost extent disagrees is refused at the point the mistake is made rather than
@@ -1396,7 +1405,7 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             // tells a consumer these are labels rather than numbers to average - which is the rule
             // md_system.h already states for integral attributes.
             const md_attribute_desc_t ss_desc = {
-                .path   = run_attribute_path(path_buf, sizeof(path_buf), data, STR_LIT("backbone/secondary_structure")),
+                .path   = run_attribute_path(path_buf, sizeof(path_buf), sys.data, STR_LIT("backbone/secondary_structure")),
                 .format = {
                     .type = MD_ATTRIBUTE_TYPE_I32, .components = 1,
                     .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
@@ -1407,16 +1416,16 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
             };
             md_attribute_id_t ss_id = md_attributes_replace(attributes, &ss_desc);
 
-            data->trajectory_data.secondary_structure.data   = (md_secondary_structure_t*)md_attributes_data(attributes, ss_id, MD_ATTRIBUTE_TYPE_I32);
-            data->trajectory_data.secondary_structure.stride = num_segments;
-            data->trajectory_data.secondary_structure.count  = num_segments * num_frames;
+            sys.trajectory_data.secondary_structure.data   = (md_secondary_structure_t*)md_attributes_data(attributes, ss_id, MD_ATTRIBUTE_TYPE_I32);
+            sys.trajectory_data.secondary_structure.stride = num_segments;
+            sys.trajectory_data.secondary_structure.count  = num_segments * num_frames;
 
             const md_attribute_format_t angle_format = {
                 .type = MD_ATTRIBUTE_TYPE_F32, .components = 2,   // phi, psi - one value, two parts
                 .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
             };
             const md_attribute_desc_t angle_desc = {
-                .path   = run_attribute_path(path_buf, sizeof(path_buf), data, STR_LIT("backbone/angle")),
+                .path   = run_attribute_path(path_buf, sizeof(path_buf), sys.data, STR_LIT("backbone/angle")),
                 .format = angle_format,
                 .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
                 .unit   = md_unit_radian(),
@@ -1426,24 +1435,24 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
 
             // md_backbone_angles_t is exactly {float phi; float psi;}, so the table's storage IS a
             // md_backbone_angles_t array - no repacking, and the existing consumers keep their type.
-            data->trajectory_data.backbone_angles.data   = (md_backbone_angles_t*)md_attributes_data(attributes, angle_id, MD_ATTRIBUTE_TYPE_F32);
-            data->trajectory_data.backbone_angles.stride = num_segments;
-            data->trajectory_data.backbone_angles.count  = num_segments * num_frames;
+            sys.trajectory_data.backbone_angles.data   = (md_backbone_angles_t*)md_attributes_data(attributes, angle_id, MD_ATTRIBUTE_TYPE_F32);
+            sys.trajectory_data.backbone_angles.stride = num_segments;
+            sys.trajectory_data.backbone_angles.count  = num_segments * num_frames;
 
             // The denoised copy stays an ordinary array: it is a PRESENTATION smoothing of the one
             // above, read only by the renderer, and publishing it would put two answers to "what is
             // the secondary structure at frame f" in the same table.
-            data->trajectory_data.secondary_structure_render.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.secondary_structure_render.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure_render.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
+            sys.trajectory_data.secondary_structure_render.stride = sys.data.sys.protein_backbone.segment.count;
+            sys.trajectory_data.secondary_structure_render.count = sys.data.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(sys.trajectory_data.secondary_structure_render.data, sys.data.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(sys.trajectory_data.secondary_structure_render.data, 0, md_array_bytes(sys.trajectory_data.secondary_structure_render.data));
 
             // Launch work to compute the values
-            task_system::task_interrupt_and_wait_for(data->mold.backbone_computations);
+            task_system::task_interrupt_and_wait_for(sys.data.backbone_computations);
 
-            data->mold.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            sys.data.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [s = &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                const md_system_t* sys = &data->mold.sys;
+                const md_system_t* sys = &s->data.sys;
 
                 md_temp_scope_t temp = md_temp_begin();
                 defer { md_temp_end(temp); };
@@ -1452,31 +1461,31 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
 				md_system_state_init(&frame_state, sys->atom.count);
 
                 // One context for the range, so the run's files stay open across its frames.
-                md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->mold.run),
+                md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(s->data.run),
                     frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
                 if (!ex) {
                     return;
                 }
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-                    md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+                    md_backbone_angles_t* bb_dst = s->trajectory_data.backbone_angles.data + s->trajectory_data.backbone_angles.stride * frame_idx;
+                    md_secondary_structure_t* ss_dst = s->trajectory_data.secondary_structure.data + s->trajectory_data.secondary_structure.stride * frame_idx;
 
                     if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
                         continue;
                     }
-                    md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
-                    md_dssp_compute(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                    md_util_backbone_angles_compute(bb_dst, s->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                    md_dssp_compute(ss_dst, s->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
                 }
                 md_system_extract_end(ex);
             });
 
             uint64_t time = (uint64_t)md_tick_now();
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
+            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, s = &sys, t0 = time, num_frames]() {
                 secondary_structure_render_denoise(
-                    data->trajectory_data.secondary_structure_render.data,
-                    data->trajectory_data.secondary_structure.data,
+                    s->trajectory_data.secondary_structure_render.data,
+                    s->trajectory_data.secondary_structure.data,
                     num_frames,
-                    data->trajectory_data.secondary_structure.stride);
+                    s->trajectory_data.secondary_structure.stride);
 
                 uint64_t t1 = (uint64_t)md_tick_now();
                 double elapsed = md_tick_to_seconds(t1 - t0);
@@ -1486,27 +1495,27 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
                 // The table carries that now; the hand rolled fingerprints beside the data are gone,
                 // because a stamp that lives next to storage the table owns is a second answer
                 // waiting to disagree with it.
-                md_attributes_t* attributes = &data->mold.sys.attributes;
+                md_attributes_t* attributes = &s->data.sys.attributes;
                 char buf[256];
-                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), data, STR_LIT("backbone/angle"))));
-                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), data, STR_LIT("backbone/secondary_structure"))));
-                data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
+                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), s->data, STR_LIT("backbone/angle"))));
+                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), s->data, STR_LIT("backbone/secondary_structure"))));
+                s->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				// The data just went from placeholder to real values for every frame - force the
 				// next interpolate_system_state to actually push it, even if playback is paused on
 				// the same nearest frame it was on before this task started.
-				data->mold.last_interpolated_nearest_frame = -1;
-				data->mold.interpolate_system_state = true;
-                data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+				s->data.last_interpolated_nearest_frame = -1;
+				s->data.interpolate_system_state = true;
+                s->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 flag_all_representations_as_dirty(data);
             });
 
-            task_system::set_task_dependency(main_task, data->mold.backbone_computations);
-            task_system::enqueue_task(data->mold.backbone_computations);
+            task_system::set_task_dependency(main_task, sys.data.backbone_computations);
+            task_system::enqueue_task(sys.data.backbone_computations);
         }
 
-        data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
-        data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
+        sys.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
 
         // Prefetch frames
         //launch_prefetch_job(data);
@@ -1587,19 +1596,19 @@ void assembly_subsets_update(ApplicationState* app) {
     }
 }
 
-void init_system_data(ApplicationState* data) {
-    if (data->mold.sys.atom.count) {
-        md_bitset_free(&data->system.operations.recenter_query.mask, data->allocator.persistent);
-        md_bitset_free(&data->system.operations.selection_mask, data->allocator.persistent);
-        data->system.operations.recenter_query.filter.result = {};
-        data->system.operations.recenter_query.evaluated_version = 0;
-        data->system.operations.recenter_query.ir_fingerprint = 0;
-        data->system.operations.initial_frame.valid = false;
-        data->system.operations.state_rotation = mat4_ident();
+void init_system_data(ApplicationState* data, SystemContext& sys) {
+    if (sys.data.sys.atom.count) {
+        md_bitset_free(&sys.scene.operations.recenter_query.mask, data->allocator.persistent);
+        md_bitset_free(&sys.scene.operations.selection_mask, data->allocator.persistent);
+        sys.scene.operations.recenter_query.filter.result = {};
+        sys.scene.operations.recenter_query.evaluated_version = 0;
+        sys.scene.operations.recenter_query.ir_fingerprint = 0;
+        sys.scene.operations.initial_frame.valid = false;
+        sys.scene.operations.state_rotation = mat4_ident();
         recenter_mark_query_dirty(data);
         {
             // Of the bonds of another system
-            auto& bt = data->system.operations.bond_tracking;
+            auto& bt = sys.scene.operations.bond_tracking;
             md_bond_delta_free(&bt.delta, data->allocator.persistent);
             md_chem_delta_free(&bt.chem, data->allocator.persistent);
             bt.delta = {};
@@ -1611,28 +1620,28 @@ void init_system_data(ApplicationState* data) {
             bt.scope_dirty = true;
         }
 
-        data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
+        sys.data.gl_mol = md_gl_mol_create(&sys.data.sys);
         // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
-        data->system.assembly = -1;
+        sys.scene.assembly = -1;
         md_array_shrink(data->view.assembly_transforms, 0);
         md_array_shrink(data->view.assembly_copy_offset, 0);
         // Before the representations, which each make a representation of the glyphs
-        cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
+        cartoon_glyphs_init(&sys.data.cartoon_glyphs, sys.data.sys, sys.data.gl_mol, data->allocator.persistent);
 
         // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
         // frame (interpolate_system_state)
-        if (md_util_state_backbone_compute(&data->mold.state, &data->mold.sys)) {
-            upload_secondary_structure_weights(data);
+        if (md_util_state_backbone_compute(&sys.data.state, &sys.data.sys)) {
+            upload_secondary_structure_weights(sys.data);
         }
 
         mat3_t A;
-		md_unitcell_A_extract_float(A.elem, &data->mold.state.unitcell);
+		md_unitcell_A_extract_float(A.elem, &sys.data.state.unitcell);
 		vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
-        data->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+        sys.data.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
 
         vec3_t aabb_min = {};
         vec3_t aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.xyz, nullptr, nullptr, data->mold.state.num_atoms);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, sys.data.state.xyz, nullptr, nullptr, sys.data.state.num_atoms);
 
         const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
         const float max_cell_ext = vec3_reduce_max(cell_ext);
@@ -1640,7 +1649,7 @@ void init_system_data(ApplicationState* data) {
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
-        reset_view(&default_view, data->mold.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
+        reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
@@ -1651,17 +1660,17 @@ void init_system_data(ApplicationState* data) {
         
 
 #if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = data->mold.sys;
+        const md_system_t& mol = sys.data.sys;
         vec3_t aabb_min, aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
+        sys.data.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        md_gfx_structure_set_atom_position(sys.data.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_radius(sys.data.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_aabb(sys.data.gfx_structure, &aabb_min, &aabb_max);
         if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+            md_gfx_structure_set_instance_atom_ranges(sys.data.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
+            md_gfx_structure_set_instance_transforms(sys.data.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
         }
 #endif
     }
@@ -1675,7 +1684,7 @@ void init_system_data(ApplicationState* data) {
     es_nto_ready(data, 0);
 }
 
-void free_system_data(ApplicationState* data) {
+void free_system_data(ApplicationState* data, SystemContext& sys) {
     ASSERT(data);
     interrupt_async_tasks(data);
     es_nto_warm_free(data);     // its tasks were waited for above
@@ -1684,34 +1693,34 @@ void free_system_data(ApplicationState* data) {
     // second handle to it: MEMSET over md_system_t clears sys.alloc along with everything else, so
     // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
     // next load reuses it.
-    md_allocator_i* sys_alloc = data->mold.sys.alloc;
+    md_allocator_i* sys_alloc = sys.data.sys.alloc;
     md_arena_allocator_reset(sys_alloc);
-    MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
-    MEMSET(&data->mold.state, 0, sizeof(data->mold.state));
-    data->mold.sys.alloc   = sys_alloc;
-    data->mold.state.alloc = sys_alloc;
+    MEMSET(&sys.data.sys, 0, sizeof(sys.data.sys));
+    MEMSET(&sys.data.state, 0, sizeof(sys.data.state));
+    sys.data.sys.alloc   = sys_alloc;
+    sys.data.state.alloc = sys_alloc;
 
-    md_array_free(data->system.operations.initial_frame.rel_xyzw, data->allocator.persistent);
-    data->system.operations.initial_frame.rel_xyzw = nullptr;
-    data->system.operations.initial_frame.valid = false;
+    md_array_free(sys.scene.operations.initial_frame.rel_xyzw, data->allocator.persistent);
+    sys.scene.operations.initial_frame.rel_xyzw = nullptr;
+    sys.scene.operations.initial_frame.valid = false;
 
     // The subsets of the parts of an assembly are of the molecule
     assembly_subsets_free(data);
-    md_gl_mol_destroy(data->mold.gl_mol);
+    md_gl_mol_destroy(sys.data.gl_mol);
     // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
     // representations, a frame after a load that failed) sees no molecule rather than a stale one
-    data->mold.gl_mol = {};
-    cartoon_glyphs_free(&data->mold.cartoon_glyphs);
+    sys.data.gl_mol = {};
+    cartoon_glyphs_free(&sys.data.cartoon_glyphs);
 
     // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
     system_gpu_data_free(data);
 
     // Everything loaded was loaded onto the system
-    file_list_clear(&data->file_list);
+    file_list_clear(&sys.files);
 
 
-    MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
-    clear_frame_cache(&data->mold.frame_cache);
+    MEMSET(sys.data.frame_cache.states, 0, sizeof(sys.data.frame_cache.states));
+    clear_frame_cache(&sys.data.frame_cache);
 
     md_bitmask_clear(&data->selection.selection_mask);
     md_bitmask_clear(&data->selection.highlight_mask);
@@ -1733,35 +1742,43 @@ void free_system_data(ApplicationState* data) {
 
 // Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
 // False when the file holds no frames to make a run of, which is not an error for a structure file.
-static bool open_run(ApplicationState* state, str_t path, const loader::LoaderState& load_state) {
+static bool open_run(ApplicationState* state, SystemContext& sys, str_t path, const loader::LoaderState& load_state) {
     interrupt_async_tasks(state);
-    free_trajectory_data(state);
+    free_trajectory_data(state, sys);
     state->animation.frame = 0;
 
     // Publishing the run IS opening the trajectory: the run is named after the file, and its
     // positions are read from it frame by frame from here on.
-    init_trajectory_data(state, path, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
-    const size_t num_frames = run_num_frames(state);
+    init_trajectory_data(state, sys, path, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
+    const size_t num_frames = run_num_frames(sys.data);
     if (num_frames == 0) {
         return false;
     }
-    file_list_record(&state->file_list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
-    md_array_last(state->file_list.runs)->frame_count = num_frames;
+    file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    md_array_last(sys.files.runs)->frame_count = num_frames;
     return true;
 }
 
 // ## A topology and its coordinates, in either order (load_order.h): what loading is, for it
 
-static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
-    return load_data((ApplicationState*)user, path, ls, role, opens_own_run);
-}
-static size_t ops_system_atoms(void* user) { return ((ApplicationState*)user)->mold.sys.atom.count; }
-static size_t ops_run_frames(void* user) { return run_num_frames((ApplicationState*)user); }
-static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->file_list; }
+// The application and the system loaded into
+struct LoadTarget {
+    ApplicationState* app;
+    SystemContext*    sys;
+};
 
-LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
+static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
+    const LoadTarget* t = (const LoadTarget*)user;
+    return load_data(t->app, *t->sys, path, ls, role, opens_own_run);
+}
+static size_t ops_system_atoms(void* user) { return ((const LoadTarget*)user)->sys->data.sys.atom.count; }
+static size_t ops_run_frames(void* user) { return run_num_frames(((const LoadTarget*)user)->sys->data); }
+static const FileList* ops_files(void* user) { return &((const LoadTarget*)user)->sys->files; }
+
+LoadResult load_data_from_file(ApplicationState* state, SystemContext& sys, str_t filepath, const loader::LoaderState& load_state) {
+    LoadTarget target = {state, &sys};
     LoadOps ops = {};
-    ops.user = state;
+    ops.user = &target;
     ops.load = ops_load;
     ops.system_atoms = ops_system_atoms;
     ops.run_frames = ops_run_frames;
@@ -1769,7 +1786,7 @@ LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const lo
     return load_in_order(&state->files.pending, ops, filepath, load_state);
 }
 
-LoadResult load_data(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
+LoadResult load_data(ApplicationState* state, SystemContext& sys, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
     ASSERT(state);
 
     LoadResult result = LoadResult_Failed;
@@ -1779,8 +1796,8 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             // Neither the system nor the trajectory is touched - this file only adds to what is
             // already loaded, and the loader merges it into the system's attribute table. A
             // component picks it up from there, off the ViamdLoadData event below.
-            const str_t run = str_from_cstr(state->mold.run);
-            if (role == FileRole_Supplement && state->mold.sys.atom.count == 0) {
+            const str_t run = str_from_cstr(sys.data.run);
+            if (role == FileRole_Supplement && sys.data.sys.atom.count == 0) {
                 VIAMD_LOG_ERROR("'" STR_FMT "' adds to a system; load the system first", STR_ARG(path_to_file));
                 return LoadResult_Failed;
             }
@@ -1798,21 +1815,21 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             if (state->script.eval) script::eval_interrupt(state->script.eval);
             task_system::pool_wait_for_completion();
 
-            const size_t num_atoms = state->mold.sys.atom.count;
-            if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
+            const size_t num_atoms = sys.data.sys.atom.count;
+            if (loader::load_supplemental(&sys.data.sys, path_to_file, load_state, run)) {
                 // The contract of a supplement: it adds to the atoms, and never changes how many there are.
                 // What is kept by atom index (selections, user bonds, particle type edits, and all of it in a
                 // workspace) would silently apply to other atoms. The loaders check their file against the
                 // system before they change it; this is where one that does not would show.
-                ASSERT(state->mold.sys.atom.count == num_atoms);
-                if (state->mold.sys.atom.count != num_atoms) {
-                    VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
+                ASSERT(sys.data.sys.atom.count == num_atoms);
+                if (sys.data.sys.atom.count != num_atoms) {
+                    VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, sys.data.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&state->file_list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&sys.files, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
-                state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
                 if (role == FileRole_Series) {
@@ -1832,14 +1849,14 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             return LoadResult_Pending;
         } else if (role == FileRole_System) {
             interrupt_async_tasks(state);
-            free_trajectory_data(state);
-            free_system_data(state);
+            free_trajectory_data(state, sys);
+            free_system_data(state, sys);
 
             // sys.alloc and state.alloc are already the dataset arena - set at startup and put
             // back by free_system_data above. The loaded coordinates are the initial current state;
             // inference copies them into sys.reference, so the two stay independent.
-            ASSERT(state->mold.sys.alloc && state->mold.state.alloc == state->mold.sys.alloc);
-            if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
+            ASSERT(sys.data.sys.alloc && sys.data.state.alloc == sys.data.sys.alloc);
+            if (!loader::load(&sys.data.sys, &sys.data.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return LoadResult_Failed;
             }
@@ -1847,13 +1864,13 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&state->file_list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
-            state->file_list.atom_count = state->mold.sys.atom.count;
+            file_list_record(&sys.files, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
+            sys.files.atom_count = sys.data.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
             // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
             md_infer_flags_t flags = MD_UTIL_INFER_ALL;
-            if ((load_state.flags & LoaderFlag_Topology) && state->mold.sys.bond.count > 0) {
+            if ((load_state.flags & LoaderFlag_Topology) && sys.data.sys.bond.count > 0) {
                 // The file's bonds are the force field's; inferring would replace them with a guess.
                 // Structures and rings are still derived, from those bonds. A topology format that
                 // carried no bonds at all (an H5MD file without connectivity) has none to protect, and
@@ -1861,22 +1878,22 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                 flags &= ~MD_UTIL_INFER_BOND_BIT;
                 flags |= MD_UTIL_INFER_MOLECULE_BIT;
             }
-            if (!md_util_system_infer(&state->mold.sys, &state->mold.state, flags)) {
+            if (!md_util_system_infer(&sys.data.sys, &sys.data.state, flags)) {
                 VIAMD_LOG_ERROR("Nothing could be inferred for the data in '" STR_FMT "'; it is shown as loaded", STR_ARG(path_to_file));
             }
-            init_system_data(state);
+            init_system_data(state, sys);
 
             // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run as well. Here
             // rather than by the caller, so that the run is there for what handles ViamdLoadData below.
             if (opens_own_run) {
-                open_run(state, path_to_file, load_state);
+                open_run(state, sys, path_to_file, load_state);
             }
         } else if (role == FileRole_Trajectory) {
-            if (!state->mold.sys.atom.count) {
+            if (!sys.data.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return LoadResult_Failed;
             }
-            if (open_run(state, path_to_file, load_state)) {
+            if (open_run(state, sys, path_to_file, load_state)) {
                 result = LoadResult_Trajectory;
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             } else {
@@ -1897,6 +1914,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
 
         LoadDataPayload data = {
             .app_state = state,
+            .system = &sys,
             .loader_state = load_state,
             .path_to_file = path_to_file,
         };
@@ -2119,8 +2137,8 @@ static void workspace_reset(ApplicationState* data) {
     // and builds the system otherwise). A workspace that names no files leaves nothing loaded.
     if (data->mold.sys.atom.count > 0 || file_list_count(&data->file_list) > 0) {
         interrupt_async_tasks(data);
-        free_trajectory_data(data);
-        free_system_data(data);
+        free_trajectory_data(data, data->system_context);
+        free_system_data(data, data->system_context);
     }
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]
@@ -2477,7 +2495,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
             // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
             VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
         } else {
-            result = load_data(data, path, loader_state, in.role, in.opens_own_run);
+            result = load_data(data, data->system_context, path, loader_state, in.role, in.opens_own_run);
         }
 
         if (result == LoadResult_Failed) {
@@ -6423,7 +6441,7 @@ void file_queue_process(ApplicationState* state) {
                 state->load_dataset.show_window = true;
             } else {
                 loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                const LoadResult result = load_data_from_file(state, e.path, loader_state);
+                const LoadResult result = load_data_from_file(state, state->system_context, e.path, loader_state);
                 if (result == LoadResult_System || result == LoadResult_Trajectory) {
                     state->animation = {};
                     // @TODO @FIX: This should be captured and performed by the Event that signals when a new system is loaded.

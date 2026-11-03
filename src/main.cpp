@@ -2617,7 +2617,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                 load_state.flags |= LoaderFlag_ExplicitType;
             }
 
-            const LoadResult result = load_data_from_file(data, path, load_state);
+            const LoadResult result = load_data_from_file(data, data->system_context, path, load_state);
             if (result == LoadResult_System || result == LoadResult_Trajectory) {
                 if (result == LoadResult_System && !data->settings.keep_representations) {
                     remove_all_representations(data);

@@ -1901,6 +1901,7 @@ struct ViamdEventHandler : viamd::EventHandler {
 
 struct LoadDataPayload {
     ApplicationState* app_state;
+    SystemContext*    system;       // What was loaded into
     loader::LoaderState loader_state;
     str_t path_to_file;
 };
@@ -2276,24 +2277,34 @@ void interrupt_async_tasks(ApplicationState* state);
 // Dataset loading
 
 
-// Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
-// the run, a supplement adds to the system and a series to the run. opens_own_run: a system file of several
-// frames opens them as the run too. A file that loads is recorded in file_list.
-LoadResult load_data(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
+// Loads a file into the system sys in the given role (see file_list.h): FileRole_System replaces the system,
+// FileRole_Trajectory the run, a supplement adds to the system and a series to the run. opens_own_run: a system file
+// of several frames opens them as the run too. A file that loads is recorded in the system's files.
+LoadResult load_data(ApplicationState* app, SystemContext& sys, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
 
 // Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
 // give it (file_role), and a system file opens its own frames as the run. A topology without coordinates and its
 // coordinates come in either order (load_order.h).
-LoadResult load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
-void init_system_data(ApplicationState* app);
+LoadResult load_data_from_file(ApplicationState* app, SystemContext& sys, str_t filepath, const loader::LoaderState& load_state);
+
+// What follows a system just loaded into sys (load_data), and what goes with it before another replaces it. The
+// application's part of it (the view, the selection, the script's evaluation) is still of the one system shown.
+void init_system_data(ApplicationState* app, SystemContext& sys);
+void free_system_data(ApplicationState* app, SystemContext& sys);
 // Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
 // run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
-void init_trajectory_data(ApplicationState* app, str_t run_file, uint32_t traj_flags = 0);
+void init_trajectory_data(ApplicationState* app, SystemContext& sys, str_t run_file, uint32_t traj_flags = 0);
+void free_trajectory_data(ApplicationState* app, SystemContext& sys);
 
 // The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
 // unit, which is none when the file does not know time and the values are frame ordinals. NULL,
 // zero and empty without a trajectory.
+const md_attribute_t* run_time_axis(const SystemData& sys);
+size_t                run_num_frames(const SystemData& sys);
+const double*         run_frame_times(const SystemData& sys);
+md_unit_t             run_time_unit(const SystemData& sys);
+// Of the one system loaded (ApplicationState::mold)
 const md_attribute_t* run_time_axis(const ApplicationState* app);
 size_t                run_num_frames(const ApplicationState* app);
 const double*         run_frame_times(const ApplicationState* app);
@@ -2302,7 +2313,8 @@ md_unit_t             run_time_unit(const ApplicationState* app);
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of
 // its own (md_system_extract_begin) so the files stay open across them.
-bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);
+bool extract_frame(const SystemData& sys, int64_t frame, md_system_state_t* out);
+bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);   // of the one system loaded
 
 // Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
 // coordinates shown when there is no run. Inferred bonds are replaced, those of a file, a topology or a user are kept,
@@ -2358,9 +2370,11 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
-str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
+str_t run_attribute_path(char* buf, size_t cap, const SystemData& sys, str_t leaf);
+str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);   // of the one system loaded
 // The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
-const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);
+const md_attribute_t* run_attribute(const SystemData& sys, str_t leaf);
+const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);   // of the one system loaded
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
 // of the run at the displayed frame (secondary_structure_render), else the state's own assignment
