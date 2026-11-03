@@ -13,6 +13,10 @@
 // a single pair of a population (1 x n), by member, likewise, with its statistics, legend and fit line. The layers are
 // drawn bottom up, the first one on top.
 //
+// One plot is of one kind of AXES: the series on an axis of a layer are of one unit, periodic of one period or not (a
+// series unlike them is refused), and the layers shown are those whose axes are alike the selected layer's. The list
+// groups the layers by their axes, under a header that tells them; the others are dimmed until one of them is selected.
+//
 // The samples of a layer are gathered on the main thread when what they are of changes: the X series is sampled at its
 // own samples within the layer's frames, and the Y series at the same time (interpolated when it is sampled elsewhere).
 // Their Pearson correlation, and the least squares line through them, are found pair by pair, and their Spearman rank
@@ -21,10 +25,9 @@
 // Pearson's against the cosine and the sine of the angle, signed). Successive frames being alike, the samples are worth
 // fewer independent ones: their effective number (Bretherton et al. 1999, from the lag-1 autocorrelations of X and Y over
 // the times, members not counted apart) gives the 95 % interval of Pearson's r, and what is not told from no correlation
-// is dimmed. The pairing and these statistics are in correlation_core (tested on their own). Along an axis
-// whose series, in every layer shown, are periodic of one period, the axis is periodic: it pans around the circle, cut
-// where the user likes (its menu), as the other plots of such values are (plot_periodic.h). Otherwise periodic values
-// are cut at their seam. Distributions (script properties over the frames) are correlated with each other bin by bin,
+// is dimmed. The pairing and these statistics are in correlation_core (tested on their own). An axis of periodic
+// values is periodic: it pans around the circle, cut where the user likes (its menu), as the other plots of such values
+// are (plot_periodic.h). Distributions (script properties over the frames) are correlated with each other bin by bin,
 // over their common range, of the layer's frames. The density of the samples is estimated off the main thread
 // (density_map.h), over a bounded domain of their own extent (a period along a periodic axis, around which it wraps),
 // smoothed with a gaussian of a fraction of it.
@@ -39,7 +42,7 @@
 //   shift-drag / -click    selects the atoms the series of the points boxed are of (script properties), as the
 //                          Ramachandran plot selects residues; with the right button deselects; a right click on nothing
 //                          clears the selection
-//   double-click           fits the view (of the layers of the units of the axes; along a periodic axis, a whole turn)
+//   double-click           fits the view (along a periodic axis, a whole turn)
 //   a period dropped       from the timeline on the plot, a new layer of the selected one's series over it; on a
 //                          layer, its frames
 
@@ -290,7 +293,34 @@ struct Layer {
     std::vector<uint32_t>  member_order;
     std::vector<uint32_t>  member_off;
     std::vector<PairStats> member_stats;
+
+    // What its axes are (layer_axes_sig): the layers alike share the plot, 0 while an axis has no series (available)
+    uint64_t axes_sig = 0;
 };
+
+// What an axis is of: the unit of the values, and whether they are periodic, of which period. One plot shows one of each:
+// the series on an axis of a layer are alike, and the layers shown are those alike the selected one (the list groups them).
+static inline bool slot_periodic(const SlotInfo& s) { return !s.binned && series_periodic_valid(s.periodic); }
+static inline bool slots_alike(const SlotInfo& a, const SlotInfo& b) {
+    if (strcmp(a.unit, b.unit) != 0 || slot_periodic(a) != slot_periodic(b)) return false;
+    return !slot_periodic(a) || series_periodic_equal(a.periodic, b.periodic);
+}
+static inline uint64_t slot_axis_hash(const SlotInfo& s, uint64_t h) {
+    h = md_hash64(s.unit, strlen(s.unit), h);
+    if (slot_periodic(s)) {
+        const double p[2] = { s.periodic.beg, s.periodic.end };
+        h = md_hash64(p, sizeof(p), h ^ 0x9e37);
+    }
+    return h;
+}
+static inline uint64_t layer_axes_sig(const Layer& l) {
+    if (l.num_x == 0 || l.num_y == 0 || !l.x_info[0].ok || !l.y_info[0].ok) return 0;
+    return slot_axis_hash(l.y_info[0], slot_axis_hash(l.x_info[0], 0x51) ^ 0xa7) | 1;
+}
+// The unit of an axis as the list and the plot tell it: and a turn, of periodic values
+static inline void slot_axis_label(char* buf, size_t cap, const SlotInfo& s) {
+    snprintf(buf, cap, "%s%s", s.unit[0] ? s.unit : "no unit", slot_periodic(s) ? " " ICON_FA_ROTATE : "");
+}
 
 // What the contours split into, the legend lists and the fit lines are of: the pairs, or of a single pair of a population
 // of at most MAX_GROUPS members, its members
@@ -432,8 +462,11 @@ struct Correlation : viamd::EventHandler {
     float lag_frac = 0.3f;          // Of the height, the lag's plot
     int  lag_shown = 0;             // The max_lag its axis was fitted to
     ImPlotRect viewrect = ImPlotRect(0, 1, 0, 1);
-    // An axis of periodic values, when those of every layer shown on it are of one period (update_axis_views): it turns
-    // around the circle, linked to every other plot of them (plot_periodic.h). NULL for an axis of its own (viewrect).
+    // What the axes are of (layer_axes_sig): of the selected layer, or while it has none, as they were. The layers shown
+    // are those alike (layer_on_axes).
+    uint64_t active_sig = 0;
+    // An axis of periodic values (update_axis_views): it turns around the circle, linked to every other plot of them
+    // (plot_periodic.h). NULL for an axis of its own (viewrect).
     PeriodicView* axis_view[2] = {};
     std::vector<DensityMapDraw> draw_buf;   // Of render_canvas
     uint64_t axes_key = 0;          // Of what the axes are: the densities are over a periodic domain along those that are
@@ -830,6 +863,28 @@ struct Correlation : viamd::EventHandler {
         return true;
     }
 
+    // Why a series is not to go on an axis of a layer: unlike the series already on it (slots_alike). NULL when it may.
+    const char* axis_refusal(const Layer& l, int axis, const SeriesKey& dropped) {
+        const int n = axis == 0 ? l.num_x : l.num_y;
+        const SlotInfo* info = axis == 0 ? l.x_info : l.y_info;
+        if (n == 0 || !info[0].ok) return nullptr;
+        static SeriesTemporalView v;
+        static SeriesHistogramView hv;
+        SlotInfo s;
+        resolve_slot(&v, &hv, &s, plotted_key(dropped), l.frames == LayerFrames_Period ? l.period : 0);
+        if (!s.ok || slots_alike(s, info[0])) return nullptr;
+        static char buf[192];
+        char have[48], got[48];
+        slot_axis_label(have, sizeof(have), info[0]);
+        slot_axis_label(got, sizeof(got), s);
+        if (strcmp(have, got) == 0) {
+            snprintf(buf, sizeof(buf), "Of another period than the series on %s: put it on a layer of its own", axis == 0 ? "X" : "Y");
+        } else {
+            snprintf(buf, sizeof(buf), "In %s, the series on %s in %s: put it on a layer of its own", got, axis == 0 ? "X" : "Y", have);
+        }
+        return buf;
+    }
+
     // A payload of a series, from the timeline or the distributions
     static const SeriesDragPayload* series_payload(const ImGuiPayload* p) {
         if (!p || p->DataSize != (int)sizeof(SeriesDragPayload)) return nullptr;
@@ -1130,6 +1185,17 @@ struct Correlation : viamd::EventHandler {
             l.data_error = "pair as many X as Y, or one against several";
             return;
         }
+        // Of a workspace from before they had to be alike (drop_refusal)
+        for (int a = 0; a < 2; ++a) {
+            const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
+            const int n = a == 0 ? l.num_x : l.num_y;
+            for (int i = 1; i < n; ++i) {
+                if (info[0].ok && info[i].ok && !slots_alike(info[0], info[i])) {
+                    l.data_error = a == 0 ? "the series on X are of different units" : "the series on Y are of different units";
+                    return;
+                }
+            }
+        }
         int num_binned = 0;
         for (int i = 0; i < l.num_x; ++i) num_binned += l.x_info[i].binned;
         for (int i = 0; i < l.num_y; ++i) num_binned += l.y_info[i].binned;
@@ -1409,7 +1475,7 @@ struct Correlation : viamd::EventHandler {
     // The correlation of each pair of X at frame f against Y at frame f + lag, pooled over members (paired with
     // themselves), for lags of up to max_lag frames either way
     void update_lag(Layer& l) {
-        if (!show_lag || !l.visible || !layer_has_lag(l)) return;
+        if (!show_lag || !layer_on_axes(l) || !layer_has_lag(l)) return;
         const int L = CLAMP(max_lag, 1, MAX_LAG);
         const uint64_t key = md_hash64(&L, sizeof(L), l.data_hash) | 1;
         if (key == l.lag_key) return;
@@ -1482,24 +1548,49 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // Which axes are periodic: those along which every layer shown has values of one period, in one unit
+    // Whether a layer is on the plot: shown, and of what the axes are of
+    bool layer_on_axes(const Layer& l) const { return l.visible && l.axes_sig != 0 && l.axes_sig == active_sig; }
+
+    // A layer of what the axes are of: the selected one, else the first shown, else the first. NULL when there is none.
+    const Layer* active_layer() const {
+        if (active_sig == 0) return nullptr;
+        const Layer* sel = find_layer(selected_layer);
+        if (sel && sel->axes_sig == active_sig) return sel;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].axes_sig == active_sig && (pass == 1 || layers[i].visible)) return &layers[i];
+            }
+        }
+        return nullptr;
+    }
+
+    // What the axes are of: of the selected layer, or while it has none of its own, as they were, or failing that of the
+    // first layer shown that has some
+    void update_active_axes() {
+        for (int i = 0; i < num_layers; ++i) layers[i].axes_sig = layer_axes_sig(layers[i]);
+        const Layer* sel = find_layer(selected_layer);
+        if (sel && sel->axes_sig != 0) {
+            active_sig = sel->axes_sig;
+            return;
+        }
+        bool present = false;
+        for (int i = 0; i < num_layers; ++i) present |= active_sig != 0 && layers[i].axes_sig == active_sig;
+        if (present) return;
+        active_sig = 0;
+        for (int pass = 0; pass < 2 && !active_sig; ++pass) {
+            for (int i = 0; i < num_layers && !active_sig; ++i) {
+                if (layers[i].axes_sig != 0 && (pass == 1 || layers[i].visible)) active_sig = layers[i].axes_sig;
+            }
+        }
+    }
+
+    // Which axes are periodic: those whose values are, all of one period (as they are alike)
     void update_axis_views() {
+        const Layer* al = active_layer();
         uint64_t key = 0;
         for (int a = 0; a < 2; ++a) {
-            const SlotInfo* first = nullptr;
-            bool ok = true;
-            for (int i = 0; i < num_layers && ok; ++i) {
-                const Layer& l = layers[i];
-                if (!l.visible || !l.data_valid) continue;
-                const int n = a == 0 ? l.num_x : l.num_y;
-                const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
-                for (int k = 0; k < n && ok; ++k) {
-                    if (info[k].binned || !series_periodic_valid(info[k].periodic)) ok = false;
-                    else if (!first) first = &info[k];
-                    else if (!series_periodic_equal(info[k].periodic, first->periodic) || strcmp(info[k].unit, first->unit) != 0) ok = false;
-                }
-            }
-            axis_view[a] = ok && first ? periodic_view(first->periodic, first->unit) : nullptr;
+            const SlotInfo* info = al ? (a == 0 ? al->x_info : al->y_info) : nullptr;
+            axis_view[a] = info && slot_periodic(info[0]) ? periodic_view(info[0].periodic, info[0].unit) : nullptr;
             if (axis_view[a]) {
                 const double p[2] = { axis_view[a]->period.beg, axis_view[a]->period.end };
                 key = md_hash64(p, sizeof(p), key ^ (uint64_t)(a + 1));
@@ -1512,16 +1603,17 @@ struct Correlation : viamd::EventHandler {
         if (!app || !show_window) return;
         if (tree_dirty) apply_tree();
 
+        for (int i = 0; i < num_layers; ++i) gather(layers[i]);
+        update_active_axes();
+        update_axis_views();
         for (int i = 0; i < num_layers; ++i) {
-            gather(layers[i]);
             update_lag(layers[i]);
             layers[i].pair_colors_clash = pair_colors_clash(layers[i]);
         }
-        update_axis_views();
 
         for (int i = 0; i < num_layers; ++i) {
             Layer& l = layers[i];
-            if (!l.visible || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
+            if (!layer_on_axes(l) || !layer_draws_density(l) || !l.data_valid || md_array_size(l.sx) < 3) continue;
 
             const bool split = layer_splits(l);
             uint64_t h = md_hash64_combine(l.data_hash, system_generation);
@@ -1538,21 +1630,14 @@ struct Correlation : viamd::EventHandler {
             }
         }
 
-        // Fitted again when the series shown change
-        uint64_t fk = 0;
+        // Fitted again when the series shown change, and what the axes are of
+        uint64_t fk = active_sig;
         for (int i = 0; i < num_layers; ++i) {
             const Layer& l = layers[i];
-            if (!l.visible) continue;
+            if (!layer_on_axes(l)) continue;
             fk = md_hash64(l.xs, sizeof(SeriesKey) * l.num_x, fk ^ (uint64_t)l.num_x);
             fk = md_hash64(l.ys, sizeof(SeriesKey) * l.num_y, fk ^ ((uint64_t)l.num_y << 8));
             fk = md_hash64_combine(fk, l.data_valid);
-        }
-        // and when the units of the axes do (the layers fitted to are those of them)
-        if (const Layer* al = axes_layer()) {
-            for (int a = 0; a < 2; ++a) {
-                const char* u = layer_unit(*al, a);
-                fk = md_hash64(u, strlen(u), fk ^ (uint64_t)(a + 1));
-            }
         }
         if (fk != fit_key) {
             fit_key = fk;
@@ -1893,7 +1978,7 @@ struct Correlation : viamd::EventHandler {
         // Bottom up: the first layer is on top
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || l.opacity <= 0.0f) continue;
+            if (!layer_on_axes(l) || l.opacity <= 0.0f) continue;
             num_draws += layer_draw(draws + num_draws, l);
         }
         int w = 0, h = 0;
@@ -2043,7 +2128,7 @@ struct Correlation : viamd::EventHandler {
         bool any = false;
         for (int i = 0; i < num_layers; ++i) {
             const Layer& l = layers[i];
-            if (!l.visible || !l.data_valid) continue;
+            if (!layer_on_axes(l) || !l.data_valid) continue;
             const float* s = a == 0 ? l.sx : l.sy;
             const size_t n = md_array_size(a == 0 ? l.sx : l.sy);
             for (size_t k = 0; k < n; ++k) {
@@ -2066,7 +2151,7 @@ struct Correlation : viamd::EventHandler {
             // The layer on top has it, where it has a point at all
             for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
                 const Layer& l = layers[i];
-                if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+                if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
                 const float r = MAX(6.0f, l.point_size);
                 const float r2 = r * r;
                 const size_t n = md_array_size(l.sx);
@@ -2100,7 +2185,7 @@ struct Correlation : viamd::EventHandler {
                 std::vector<uint8_t> seen;
                 for (int i = 0; i < num_layers; ++i) {
                     const Layer& l = layers[i];
-                    if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+                    if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
                     size_t off[MAX_PAIRS + 1];
                     member_offsets(l, off);
                     seen.assign(off[l.num_pairs], 0);
@@ -2123,7 +2208,7 @@ struct Correlation : viamd::EventHandler {
         density_map_marks_begin(dl);
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+            if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
             const float r = l.point_size * 0.5f;
             const bool many = l.frames != LayerFrames_Current;   // Over frames: small squares, no outlines
             const size_t n = md_array_size(l.sx);
@@ -2139,7 +2224,7 @@ struct Correlation : viamd::EventHandler {
         const ImU32 ring = ImGui::ColorConvertFloat4ToU32(vec_cast(app->selection.color.highlight.outline));
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || !l.data_valid || !layer_draws_points(l) || l.frames == LayerFrames_Current) continue;
+            if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l) || l.frames == LayerFrames_Current) continue;
             const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
             const size_t n = md_array_size(l.sx);
             for (size_t k = 0; k < n; ++k) {
@@ -2156,7 +2241,7 @@ struct Correlation : viamd::EventHandler {
             std::vector<uint8_t> state;     // Of each member: 1 selected, 2 highlighted, 4 known
             for (int i = num_layers - 1; i >= 0; --i) {
                 const Layer& l = layers[i];
-                if (!l.visible || !l.data_valid || !layer_draws_points(l)) continue;
+                if (!layer_on_axes(l) || !l.data_valid || !layer_draws_points(l)) continue;
                 size_t off[MAX_PAIRS + 1];
                 member_offsets(l, off);
                 state.assign(off[l.num_pairs], 0);
@@ -2185,7 +2270,7 @@ struct Correlation : viamd::EventHandler {
         // The least squares line of each pair (or member), over the range of its X: in its colour where it has one
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || !l.data_valid || !l.show_fit) continue;
+            if (!layer_on_axes(l) || !l.data_valid || !l.show_fit) continue;
             const int ng = layer_num_groups(l);
             const bool own = ng > 1 && (layer_draws_points(l) ? l.point_coloring == PointColoring_Pair : layer_splits(l));
             for (int g = 0; g < ng; ++g) {
@@ -2246,50 +2331,30 @@ struct Correlation : viamd::EventHandler {
         }
     }
 
-    // The layer whose series name the axes: the selected one if it is shown, else the first shown with series
+    // The layer whose series name the axes: of what they are of, the selected one first, then those shown. Of none, the
+    // selected layer with a series on one axis only, being put together.
     const Layer* axes_layer() const {
-        const Layer* sel = find_layer(selected_layer);
-        if (sel && sel->visible && (sel->num_x > 0 || sel->num_y > 0)) return sel;
-        for (int i = 0; i < num_layers; ++i) {
-            if (layers[i].visible && (layers[i].num_x > 0 || layers[i].num_y > 0)) return &layers[i];
-        }
-        return sel;
+        if (const Layer* al = active_layer()) return al;
+        return find_layer(selected_layer);
     }
 
-    // The unit of the values along axis a of a layer: of its first series
-    static const char* layer_unit(const Layer& l, int a) {
-        const int n = a == 0 ? l.num_x : l.num_y;
-        const SlotInfo* info = a == 0 ? l.x_info : l.y_info;
-        return n > 0 ? info[0].unit : "";
-    }
-
-    // Whether the values of a layer are of the units the axes are of (those of the axes' layer)
-    bool layer_fits_axes(const Layer& l, const Layer* al) const {
-        if (!al) return true;
-        return strcmp(layer_unit(l, 0), layer_unit(*al, 0)) == 0 && strcmp(layer_unit(l, 1), layer_unit(*al, 1)) == 0;
-    }
-
-    // The view around the samples of the layers shown, of the units of the axes (others would squeeze them): of all
-    // layers shown where none of those has samples. Along a periodic axis, a whole turn of the circle, where it is cut.
+    // The view around the samples of the layers on the plot. Along a periodic axis, a whole turn of the circle, where it
+    // is cut.
     void fit_to_layers() {
         for (int a = 0; a < 2; ++a) {
             if (PeriodicView* v = axis_view[a]) v->max = v->min + periodic_view_length(*v);
         }
-        const Layer* al = axes_layer();
         bool any = false;
         double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-        for (int pass = 0; pass < 2 && !any; ++pass) {
-            for (int i = 0; i < num_layers; ++i) {
-                const Layer& l = layers[i];
-                if (!l.visible || !l.data_valid) continue;
-                if (pass == 0 && !layer_fits_axes(l, al)) continue;
-                if (!any) {
-                    x0 = l.x_min; x1 = l.x_max; y0 = l.y_min; y1 = l.y_max;
-                    any = true;
-                } else {
-                    x0 = MIN(x0, (double)l.x_min); x1 = MAX(x1, (double)l.x_max);
-                    y0 = MIN(y0, (double)l.y_min); y1 = MAX(y1, (double)l.y_max);
-                }
+        for (int i = 0; i < num_layers; ++i) {
+            const Layer& l = layers[i];
+            if (!layer_on_axes(l) || !l.data_valid) continue;
+            if (!any) {
+                x0 = l.x_min; x1 = l.x_max; y0 = l.y_min; y1 = l.y_max;
+                any = true;
+            } else {
+                x0 = MIN(x0, (double)l.x_min); x1 = MAX(x1, (double)l.x_max);
+                y0 = MIN(y0, (double)l.y_min); y1 = MAX(y1, (double)l.y_max);
             }
         }
         // Fitted once there are samples
@@ -2313,7 +2378,18 @@ struct Correlation : viamd::EventHandler {
         const SeriesDragPayload* sp = series_payload(payload);
         if (!sp) return;
         const char* reason = nullptr;
-        const bool ok = series_droppable(sp->key, &reason);
+        const bool droppable = series_droppable(sp->key, &reason);
+        // Onto the selected layer (drop_series): alike what is on the axis already
+        bool ok_axis[2] = { droppable, droppable };
+        const char* reasons[2] = { reason, reason };
+        if (droppable) {
+            if (Layer* sel = find_layer(selected_layer)) {
+                for (int a = 0; a < 2; ++a) {
+                    reasons[a] = axis_refusal(*sel, a, sp->key);
+                    ok_axis[a] = !reasons[a];
+                }
+            }
+        }
 
         const float band_h = CLAMP(size.y * 0.25f, 36.0f, 120.0f);
         const float band_w = CLAMP(size.x * 0.25f, 36.0f, 140.0f);
@@ -2325,9 +2401,12 @@ struct Correlation : viamd::EventHandler {
 
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
+        const char* hovered_reason = nullptr;
         for (int a = 0; a < 2; ++a) {
-            const bool inside = rects[a].Contains(ImGui::GetMousePos());
-            const ImVec4 c = ok ? ImVec4(0.35f, 0.75f, 1.0f, inside ? 0.30f : 0.12f) : ImVec4(1.0f, 0.4f, 0.4f, 0.12f);
+            const bool ok = ok_axis[a];
+            const bool inside = rects[a].Contains(ImGui::GetMousePos()) || ImPlot::IsAxisHovered(axes[a]);
+            if (inside && !ok) hovered_reason = reasons[a];
+            const ImVec4 c = ok ? ImVec4(0.35f, 0.75f, 1.0f, inside ? 0.30f : 0.12f) : ImVec4(1.0f, 0.4f, 0.4f, inside ? 0.25f : 0.12f);
             dl->AddRectFilled(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(c), 4.0f);
             dl->AddRect(rects[a].Min, rects[a].Max, ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.8f)), 4.0f, 0, 1.0f);
             char text[64];
@@ -2336,20 +2415,21 @@ struct Correlation : viamd::EventHandler {
             dl->AddText(ImVec2(rects[a].GetCenter().x - ts.x * 0.5f, rects[a].GetCenter().y - ts.y * 0.5f), IM_COL32(255, 255, 255, 230), text);
         }
         ImPlot::PopPlotClipRect();
-        if (!ok && reason) ImGui::SetTooltip("%s", reason);
+        if (hovered_reason) ImGui::SetTooltip("%s", hovered_reason);
+        else if (!droppable && reason) ImGui::SetTooltip("%s", reason);
 
         for (int a = 0; a < 2; ++a) {
             ImGui::PushID(a);
             bool open = ImGui::BeginDragDropTargetCustom(rects[a], ImGui::GetID("##series_band"));
             if (open) {
                 if (const SeriesDragPayload* dp = accept_series()) {
-                    if (ok) drop_series(a, dp->key);
+                    if (ok_axis[a]) drop_series(a, dp->key);
                 }
                 ImGui::EndDragDropTarget();
             }
             if (ImPlot::BeginDragDropTargetAxis(axes[a])) {
                 if (const SeriesDragPayload* dp = accept_series()) {
-                    if (ok) drop_series(a, dp->key);
+                    if (ok_axis[a]) drop_series(a, dp->key);
                 }
                 ImPlot::EndDragDropTarget();
             }
@@ -2456,7 +2536,7 @@ struct Correlation : viamd::EventHandler {
             bool busy = false;
             for (int i = 0; i < num_layers; ++i) {
                 const Layer& l = layers[i];
-                if (!l.visible || !l.data_valid) continue;
+                if (!layer_on_axes(l) || !l.data_valid) continue;
                 if (layer_draws_points(l)) stride = MAX(stride, l.point_stride);
                 busy |= layer_slow(l);
             }
@@ -2467,9 +2547,11 @@ struct Correlation : viamd::EventHandler {
 
         // Why there is nothing to see
         bool any = false;
-        for (int i = 0; i < num_layers; ++i) any |= layers[i].visible && layers[i].data_valid;
+        for (int i = 0; i < num_layers; ++i) any |= layer_on_axes(layers[i]) && layers[i].data_valid;
         if (!any) {
-            const char* text = num_layers == 0 ? "Add a layer with +" : al && al->data_error[0] ? al->data_error : "drop series on the X and Y axes";
+            const char* text = num_layers == 0 ? "Add a layer with +"
+                             : al && al->data_valid ? "nothing shown of these axes: show a layer of them"
+                             : al && al->data_error[0] ? al->data_error : "drop series on the X and Y axes";
             char buf[128];
             snprintf(buf, sizeof(buf), "%c%s", toupper(text[0]), text + 1);
             const ImVec2 ts = ImGui::CalcTextSize(buf);
@@ -2523,7 +2605,7 @@ struct Correlation : viamd::EventHandler {
         bool any_circular = false, any_linear = false;
         for (int i = 0; i < num_layers; ++i) {
             const Layer& l = layers[i];
-            if (!l.visible || !layer_has_lag(l)) continue;
+            if (!layer_on_axes(l) || !layer_has_lag(l)) continue;
             for (int p = 0; p < l.num_pairs; ++p) (l.pairs[p].circular ? any_circular : any_linear) = true;
         }
         ImPlot::SetupAxis(ImAxis_X1, "lag of Y behind X (frames)");
@@ -2550,7 +2632,7 @@ struct Correlation : viamd::EventHandler {
         bool lag_skipped = false;
         for (int i = num_layers - 1; i >= 0; --i) {
             const Layer& l = layers[i];
-            if (!l.visible || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            if (!layer_on_axes(l) || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
             lag_skipped |= l.lag_skipped;
             for (int p = 0; p < l.num_pairs; ++p) {
                 const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
@@ -2606,7 +2688,7 @@ struct Correlation : viamd::EventHandler {
         bool skipped = false;
         for (int i = 0; i < num_layers; ++i) {
             const Layer& l = layers[i];
-            if (!l.visible || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
+            if (!layer_on_axes(l) || !layer_has_lag(l) || l.lag_max != L || l.lag_r.size() != (size_t)l.num_pairs * (2 * L + 1)) continue;
             skipped |= l.lag_skipped;
             for (int p = 0; p < l.num_pairs; ++p) {
                 const float* row = l.lag_r.data() + (size_t)p * (2 * L + 1);
@@ -2793,6 +2875,57 @@ struct Correlation : viamd::EventHandler {
         RepresentationDrop move_drop = RepresentationDrop_Before;
     };
 
+    // Over the layers whose axes are of the same: what they are of, and the ones the plot shows marked. Clicked, those
+    // shown, by selecting the first of them.
+    void draw_axes_header(uint64_t sig) {
+        const Layer* first = nullptr;
+        int count = 0;
+        for (int i = 0; i < num_layers; ++i) {
+            if (layers[i].axes_sig != sig) continue;
+            if (!first) first = &layers[i];
+            count += 1;
+        }
+        if (!first) return;
+        const bool active = sig != 0 && sig == active_sig;
+        char text[128];
+        char tip[256];
+        if (sig == 0) {
+            snprintf(text, sizeof(text), "Incomplete");
+            snprintf(tip, sizeof(tip), "Layers without a series on each axis (available): not shown");
+        } else {
+            char x[48], y[48];
+            slot_axis_label(x, sizeof(x), first->x_info[0]);
+            slot_axis_label(y, sizeof(y), first->y_info[0]);
+            snprintf(text, sizeof(text), "%s  \xc3\x97  %s", x, y);
+            snprintf(tip, sizeof(tip), "X in %s%s, Y in %s%s: the layers below share the axes.%s",
+                     first->x_info[0].unit[0] ? first->x_info[0].unit : "no unit", slot_periodic(first->x_info[0]) ? " (periodic)" : "",
+                     first->y_info[0].unit[0] ? first->y_info[0].unit : "no unit", slot_periodic(first->y_info[0]) ? " (periodic)" : "",
+                     active ? " Shown." : " Click, or select one of them, to show them.");
+        }
+
+        const float h = ImGui::GetTextLineHeight() + 4.0f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImGui::Dummy(ImVec2(0, 2));
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + 2));
+        if (ImGui::InvisibleButton("##axes", ImVec2(w, h)) && sig != 0 && !active) selected_layer = first->id;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tip);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+        // Shown: marked along its edge, as the plot's
+        if (active) dl->AddRectFilled(r0, ImVec2(r0.x + 3, r1.y), ImGui::GetColorU32(ImGuiCol_CheckMark), 1.0f);
+        const ImU32 col = ImGui::GetColorU32(active ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        const float fs = ImGui::GetFontSize() * 0.85f;
+        const float ty = r0.y + (h - fs) * 0.5f;
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(r0.x + 8, ty), col, text);
+        char n[16];
+        snprintf(n, sizeof(n), "%d", count);
+        const ImVec2 ns = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, n);
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(r1.x - ns.x - 4, ty), ImGui::GetColorU32(ImGuiCol_TextDisabled), n);
+        dl->AddLine(ImVec2(r0.x, r1.y), ImVec2(r1.x, r1.y), ImGui::GetColorU32(ImGuiCol_Separator, 0.6f));
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, r1.y + 2));
+    }
+
     void draw_layer_row(Layer& l, RepresentationNode* const nodes[], size_t num_nodes, SidebarActions* act) {
         ImGui::PushID("layer");
         ImGui::PushID((int)l.id);
@@ -2855,24 +2988,28 @@ struct Correlation : viamd::EventHandler {
         ImGui::SetCursorScreenPos(ImVec2(row_min.x + pad, row_min.y + (row_h - ImGui::GetFrameHeight()) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
+        // Of other axes than the plot's: dim, whether shown or not
+        const bool on_plot = l.axes_sig != 0 && l.axes_sig == active_sig;
+        if (!on_plot) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         if (ImGui::Button(l.visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) {
             l.visible = !l.visible;
         }
+        if (!on_plot) ImGui::PopStyleColor();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
-        ImGui::SetItemTooltip(l.visible ? "Hide" : "Show");
+        ImGui::SetItemTooltip("%s%s", l.visible ? "Hide" : "Show", on_plot || l.axes_sig == 0 ? "" : " (of other axes than the plot's: select it to show them)");
 
         // The swatch: what it looks like
         const ImVec2 sw_min = ImVec2(row_min.x + pad + line_h + 8, row_min.y + (row_h - line_h) * 0.5f);
         const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
-        const float vis_alpha = l.visible ? 1.0f : 0.35f;
+        const float vis_alpha = l.visible && on_plot ? 1.0f : 0.35f;
         const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
         density_map_swatch(dl, sw_min, sw_max, kind, vec_cast(l.color), l.fill, l.colormap, vis_alpha);
 
         // The name, and below it what it holds
         char stats[160];
         layer_stats(stats, sizeof(stats), l);
-        const ImU32 text_col = ImGui::GetColorU32(l.visible ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        const ImU32 text_col = ImGui::GetColorU32(l.visible && on_plot ? ImGuiCol_Text : ImGuiCol_TextDisabled);
         // On the selection's colour the disabled one is too faint to read
         const ImU32 dim_col = selected ? ImGui::GetColorU32(ImGuiCol_Text, 0.7f) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
         const ImVec4 clip = ImVec4(text_col_min.x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
@@ -2984,7 +3121,8 @@ struct Correlation : viamd::EventHandler {
             if (const SeriesDragPayload* sp = series_payload(p)) {
                 const SeriesKey key = sp->key;
                 const char* reason = nullptr;
-                const bool ok = series_droppable(key, &reason);
+                bool ok = series_droppable(key, &reason);
+                if (ok && (reason = axis_refusal(l, axis, key)) != nullptr) ok = false;
                 if (!ok && reason) ImGui::SetTooltip("%s", reason);
                 if (p->IsDelivery() && ok) drop_series_on(l, axis, key);
             }
@@ -3156,7 +3294,29 @@ struct Correlation : viamd::EventHandler {
         {
             RepresentationNode* nodes[MAX_LAYERS];
             const size_t n = tree_nodes(nodes);
-            for (int i = 0; i < num_layers; ++i) draw_layer_row(layers[i], nodes, n, &act);
+            // Under what their axes are of, in the order of the first layer of each; those still without, last
+            uint64_t sigs[MAX_LAYERS + 1];
+            int num_sigs = 0;
+            bool incomplete = false;
+            for (int i = 0; i < num_layers; ++i) {
+                const uint64_t sig = layers[i].axes_sig;
+                if (sig == 0) {
+                    incomplete = true;
+                    continue;
+                }
+                bool seen = false;
+                for (int k = 0; k < num_sigs && !seen; ++k) seen = sigs[k] == sig;
+                if (!seen) sigs[num_sigs++] = sig;
+            }
+            if (incomplete) sigs[num_sigs++] = 0;
+            for (int k = 0; k < num_sigs; ++k) {
+                ImGui::PushID(k);
+                draw_axes_header(sigs[k]);
+                for (int i = 0; i < num_layers; ++i) {
+                    if (layers[i].axes_sig == sigs[k]) draw_layer_row(layers[i], nodes, n, &act);
+                }
+                ImGui::PopID();
+            }
         }
         if (num_layers == 0) {
             ImGui::TextDisabled("No layers: add one with +");
