@@ -3791,10 +3791,12 @@ void draw_representations_window(ApplicationState* state) {
     tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
                         MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 
-    // The system first: what is done to its coordinates and what it is shown as, then its representations. Closed, it
-    // lists none of them.
-    const bool system_open = draw_system_rows(state);
+    // The system first, and under it, one level in: what is done to its coordinates and what it is shown as, then its
+    // representations. Closed, it lists none of them.
+    const bool system_open = draw_system_header(state);
     if (system_open) {
+        ImGui::Indent();
+        draw_system_operations(state);
         if (tree.t.count == 0) {
             ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");
         }
@@ -3803,6 +3805,7 @@ void draw_representations_window(ApplicationState* state) {
         if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
         draw_tree_level(state, tree, 0, 0, &act);
         if (dim) ImGui::PopStyleVar();
+        ImGui::Unindent();
     }
 
     // The space below the rows: dropping there puts it last at the top level, and a right click adds

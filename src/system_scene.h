@@ -66,10 +66,13 @@ void system_label(char* buf, size_t cap, const ApplicationState& app);
 
 // ## UI
 
-// The rows of the system in the Representations window: its header (the system, shown or not, the operations to add
-// and the actions), and when it is open, its operations and its copies. Returns whether it is open: its
-// representations are listed under it then.
-bool draw_system_rows(ApplicationState* app);
+// The header of the system in the Representations window: the system, shown or not, its menu of the operations to add
+// and the actions. Returns whether it is open: what is the system's is listed under it then, indented, by the caller.
+bool draw_system_header(ApplicationState* app);
+
+// The rows of the operations the system has, in their order, and what it is shown as (its copies): first under its
+// header
+void draw_system_operations(ApplicationState* app);
 
 // The state of the tracking of bond changes in the frame shown, and its advanced settings: under the operation in the
 // window, and in the Operations menu

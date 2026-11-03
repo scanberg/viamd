@@ -498,7 +498,7 @@ static void draw_copies_row(ApplicationState* app) {
     ImGui::PopID();
 }
 
-bool draw_system_rows(ApplicationState* app) {
+bool draw_system_header(ApplicationState* app) {
     ASSERT(app);
     ImGui::PushID("system");
 
@@ -509,7 +509,8 @@ bool draw_system_rows(ApplicationState* app) {
     const float spacing = 2.0f;
     const float right_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 
-    // A band rather than a level: what is under it is not indented, as most of the time there is one system
+    // A band across the window. What is the system's is indented under it by the caller (draw_system_operations, then
+    // the representations), without the tree's own push: the two are drawn in different places.
     const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap |
                                      ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding;
     if (!app->system.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
@@ -542,25 +543,29 @@ bool draw_system_rows(ApplicationState* app) {
     }
     ImGui::SetItemTooltip("Show/Hide the system: all of its representations");
 
-    if (open) {
-        bool any = false;
-        for (const OperationInfo& info : operation_info) {
-            if (!system_has_operation(*app, info.op)) continue;
-            draw_operation_row(app, info);
-            any = true;
-        }
-        const ImVec2 before = ImGui::GetCursorScreenPos();
-        draw_copies_row(app);
-        any |= ImGui::GetCursorScreenPos().y != before.y;
-        if (any) {
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-        }
-    }
-
     ImGui::PopID();
     return open;
+}
+
+void draw_system_operations(ApplicationState* app) {
+    ASSERT(app);
+    ImGui::PushID("system");
+    bool any = false;
+    for (const OperationInfo& info : operation_info) {
+        if (!system_has_operation(*app, info.op)) continue;
+        draw_operation_row(app, info);
+        any = true;
+    }
+    const ImVec2 before = ImGui::GetCursorScreenPos();
+    draw_copies_row(app);
+    any |= ImGui::GetCursorScreenPos().y != before.y;
+    if (any) {
+        // What is done to the system and what it is shown as, apart from how it is drawn
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+    ImGui::PopID();
 }
 
 void draw_bond_tracking_details(ApplicationState* app) {
