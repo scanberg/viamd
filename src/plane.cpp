@@ -104,8 +104,19 @@ static void symmetric_eigen3(double A[3][3], double V[3][3]) {
     }
 }
 
-Plane plane_fit(const Plane& prev, const vec3_t* points, size_t count) {
-    if (!points || count == 0) return prev;
+// The unit vector in the span of a and b (orthonormal) nearest to v, or 0 when v is across both
+static vec3_t nearest_in_span(vec3_t v, vec3_t a, vec3_t b) {
+    const vec3_t p = vec3_add(vec3_mul1(a, vec3_dot(v, a)), vec3_mul1(b, vec3_dot(v, b)));
+    const float len = vec3_length(p);
+    return len > 1.0e-4f ? vec3_mul1(p, 1.0f / len) : vec3_zero();
+}
+
+Plane plane_fit(const Plane& prev, const vec3_t* points, size_t count, PlaneFitInfo* info) {
+    PlaneFitInfo fit = {};
+    if (!points || count == 0) {
+        if (info) *info = fit;
+        return prev;
+    }
     double c[3] = {0, 0, 0};
     for (size_t i = 0; i < count; ++i) {
         c[0] += points[i].x; c[1] += points[i].y; c[2] += points[i].z;
@@ -118,30 +129,45 @@ Plane plane_fit(const Plane& prev, const vec3_t* points, size_t count) {
     }
     const vec3_t centroid = vec3_set((float)c[0], (float)c[1], (float)c[2]);
     const double spread = A[0][0] + A[1][1] + A[2][2];   // sum of squared distances from the centroid
-    // all at one place (to 1e-4 A rms)
+    vec3_t n = prev.normal;
     if (spread <= 1.0e-8 * (double)count) {
-        return plane_from_point_normal(centroid, prev.normal);
-    }
-    double V[3][3];
-    symmetric_eigen3(A, V);
-    int order[3] = {0, 1, 2};   // by eigenvalue, largest first
-    for (int i = 0; i < 3; ++i) for (int j = i + 1; j < 3; ++j) if (A[order[j]][order[j]] > A[order[i]][order[i]]) { const int t = order[i]; order[i] = order[j]; order[j] = t; }
-    const double l0 = A[order[0]][order[0]], l1 = A[order[1]][order[1]];
-    const auto column = [&V](int k) { return vec3_set((float)V[0][k], (float)V[1][k], (float)V[2][k]); };
-    vec3_t n;
-    if (l1 <= 1.0e-6 * l0) {
-        // along a line (off it by under a thousandth of its spread along it): the plane through it nearest to prev
-        const vec3_t line = vec3_normalize(column(order[0]));
-        n = vec3_sub(prev.normal, vec3_mul1(line, vec3_dot(prev.normal, line)));
-        if (vec3_length(n) < 1.0e-4f) {
-            // prev is across the line: any plane through it is as near, one is taken
-            vec3_t u, v;
-            plane_frame(&u, &v, Plane{line, 0.0f}, vec3_set(1, 0, 0));
-            n = u;
-        }
+        // all at one place (to 1e-4 A rms)
+        fit.kind = PlaneFitKind::Point;
     } else {
-        n = column(order[2]);
+        double V[3][3];
+        symmetric_eigen3(A, V);
+        int order[3] = {0, 1, 2};   // by eigenvalue, largest first
+        for (int i = 0; i < 3; ++i) for (int j = i + 1; j < 3; ++j) if (A[order[j]][order[j]] > A[order[i]][order[i]]) { const int t = order[i]; order[i] = order[j]; order[j] = t; }
+        const double l0 = A[order[0]][order[0]], l1 = A[order[1]][order[1]], l2 = fmax(A[order[2]][order[2]], 0.0);
+        const auto column = [&V](int k) { return vec3_normalize(vec3_set((float)V[0][k], (float)V[1][k], (float)V[2][k])); };
+        const vec3_t e1 = column(order[1]), e2 = column(order[2]);
+        if (l1 <= 1.0e-6 * l0) {
+            // along a line (off it by under a thousandth of its spread along it): the plane through it nearest to prev
+            fit.kind = PlaneFitKind::Line;
+            n = nearest_in_span(prev.normal, e1, e2);
+            // prev across the line: any plane through it is as near, one is taken
+            if (vec3_length(n) == 0.0f) n = e2;
+        } else if (l2 > PLANE_FIT_LOOSE_RATIO * l0) {
+            fit.kind = PlaneFitKind::Kept;
+        } else if (l2 > PLANE_FIT_LOOSE_RATIO * l1) {
+            fit.kind = PlaneFitKind::Loose;
+            n = nearest_in_span(prev.normal, e1, e2);
+            // prev along the most spread direction: no nearest, the least-squares one
+            if (vec3_length(n) == 0.0f) n = e2;
+        } else {
+            fit.kind = PlaneFitKind::Fit;
+            n = e2;
+        }
     }
     if (vec3_dot(n, prev.normal) < 0.0f) n = vec3_mul1(n, -1.0f);
-    return plane_from_point_normal(centroid, n);
+    const Plane plane = plane_from_point_normal(centroid, n);
+    // the rms distance to the plane given
+    double sum = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+        const double dist = (double)plane_distance(plane, points[i]);
+        sum += dist * dist;
+    }
+    fit.rms = (float)sqrt(sum / (double)count);
+    if (info) *info = fit;
+    return plane;
 }

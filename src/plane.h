@@ -36,12 +36,35 @@ void plane_frame(vec3_t* u, vec3_t* v, const Plane& p, vec3_t right);
 // in order around it. Returns how many (0 when it misses the box).
 int plane_box_polygon(vec3_t out[6], const Plane& plane, const mat4_t& box_to_world);
 
+// How plane_fit placed the plane: what the points determined of it
+enum class PlaneFitKind {
+    None,       // no points: the plane as it was
+    Point,      // one point, or all at one place: moved through it, facing as it did
+    Line,       // along a line: the plane through the line nearest the previous one
+    Loose,      // the two least spread directions alike: the normal between them, nearest the previous one
+    Kept,       // spread alike every way (a tetrahedron, a blob): moved through the centroid, facing as it did
+    Fit,        // a plane: the least-squares one (exact for three points)
+};
+
+struct PlaneFitInfo {
+    PlaneFitKind kind = PlaneFitKind::None;
+    float rms = 0.0f;   // of the points' distances to the plane given
+};
+
+// The two smallest spreads of the points (eigenvalues of their scatter) closer than this, as a ratio, leave the normal
+// undetermined between their directions; all three closer than this, everywhere. At 0.5 the plane along the second
+// direction fits only twice as badly as along the first (as rms distance, 1.4 times).
+#define PLANE_FIT_LOOSE_RATIO 0.5
+
 // The plane through a set of points, turned as little from 'prev' as they allow, and on the same side (the normal
-// within 90 degrees of prev's, so what it cuts away stays on the side it was):
-// - points spread in two or more directions: the least-squares plane, through their centroid with the normal along
-//   the direction they vary least in (exact for three points not in a line);
+// within 90 degrees of prev's, so what it cuts away stays on the side it was). Always through their centroid; the
+// normal (PlaneFitKind):
+// - points spread in two directions much more than in the third: along the third, the least-squares plane, which
+//   minimises the sum of squared perpendicular distances (exact for three points not in a line);
 // - points along a line: the plane through the line nearest to prev (its normal: prev's without the part along the
 //   line);
-// - one point, or all at one place: prev moved through it.
+// - the two least spread directions alike (PLANE_FIT_LOOSE_RATIO): any normal between them fits about as well, and
+//   the one nearest prev's is taken, rather than one that turns with the smallest change in the points;
+// - spread alike in all three: prev's.
 // No points: prev.
-Plane plane_fit(const Plane& prev, const vec3_t* points, size_t count);
+Plane plane_fit(const Plane& prev, const vec3_t* points, size_t count, PlaneFitInfo* info = nullptr);

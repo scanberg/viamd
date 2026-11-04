@@ -37,10 +37,13 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
     return i;
 }
 
-bool es_plane_fit_selection(const ApplicationState* state, Plane* plane) {
+Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info) {
     const md_system_state_t& st = state->mold.state;
     const size_t count = md_bitmask_count(&state->selection.selection_mask);
-    if (count == 0 || !st.xyz) return false;
+    if (count == 0 || !st.xyz) {
+        if (info) *info = PlaneFitInfo{};
+        return plane;
+    }
     md_temp_scope_t temp = md_temp_begin();
     vec3_t* pts = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * count);
     size_t n = 0;
@@ -54,10 +57,9 @@ bool es_plane_fit_selection(const ApplicationState* state, Plane* plane) {
         md_util_min_image_vec3(pts + 1, n - 1, &st.unitcell);
         for (size_t i = 1; i < n; ++i) pts[i] = vec3_add(pts[i], pts[0]);
     }
-    const bool ok = n > 0;
-    if (ok) *plane = plane_fit(*plane, pts, n);
+    const Plane fitted = plane_fit(plane, pts, n, info);
     md_temp_end(temp);
-    return ok;
+    return fitted;
 }
 
 vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, int i) {

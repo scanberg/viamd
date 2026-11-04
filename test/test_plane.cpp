@@ -117,3 +117,47 @@ UTEST(plane, frame_follows_right_and_is_right_handed) {
     EXPECT_NEAR(1.0f, vec3_length(u), 1.0e-6f);
     EXPECT_NEAR(0.0f, u.x, 1.0e-6f);
 }
+
+UTEST(plane, fit_reports_how_well_the_points_determine_it) {
+    PlaneFitInfo info;
+    const vec3_t ring[6] = {{1, 0, 0}, {0.5f, 0.866f, 0}, {-0.5f, 0.866f, 0}, {-1, 0, 0}, {-0.5f, -0.866f, 0}, {0.5f, -0.866f, 0}};
+    plane_fit(Plane{}, ring, 6, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::Fit);
+    EXPECT_LT(info.rms, 1.0e-5f);
+
+    plane_fit(Plane{}, ring, 1, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::Point);
+    plane_fit(Plane{}, ring, 0, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::None);
+}
+
+UTEST(plane, fit_a_tetrahedron_keeps_the_normal) {
+    // spread alike every way (methane's hydrogens): no plane fits better than another, the normal is kept
+    const vec3_t tet[4] = {{1, 1, 1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1}};
+    const Plane prev = {vec3_normalize(vec3_set(0.3f, 0.4f, 0.87f)), 7.0f};
+    PlaneFitInfo info;
+    const Plane p = plane_fit(prev, tet, 4, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::Kept);
+    EXPECT_GT(vec3_dot(p.normal, prev.normal), 0.999999f);
+    EXPECT_LT(fabsf(p.d), 1.0e-5f);   // through the centroid, the origin
+}
+
+UTEST(plane, fit_a_loose_set_turns_as_little_as_it_allows) {
+    // long along x, alike along y and z: every normal in the yz plane fits as well, and the one nearest the previous
+    // normal is taken - not whichever of them the eigen solver gives, which turns with the smallest change
+    const vec3_t pts[6] = {{-3, 0, 0}, {3, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
+    const Plane prev = {vec3_normalize(vec3_set(0.5f, 0.6f, -0.8f)), 0.0f};
+    PlaneFitInfo info;
+    const Plane p = plane_fit(prev, pts, 6, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::Loose);
+    const vec3_t want = vec3_normalize(vec3_set(0.0f, 0.6f, -0.8f));
+    EXPECT_GT(vec3_dot(p.normal, want), 0.99999f);
+
+    // squashed along z, it is a plane again: the xy one, whatever the previous normal
+    vec3_t flat[6];
+    for (int i = 0; i < 6; ++i) flat[i] = vec3_set(pts[i].x, pts[i].y, pts[i].z * 0.5f);
+    const Plane q = plane_fit(prev, flat, 6, &info);
+    EXPECT_TRUE(info.kind == PlaneFitKind::Fit);
+    EXPECT_GT(fabsf(q.normal.z), 0.99999f);
+    EXPECT_LT(q.normal.z, 0.0f);   // on prev's side
+}

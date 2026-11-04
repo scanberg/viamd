@@ -13,6 +13,7 @@
 struct ApplicationState;
 struct ElectronicStructureRepresentation;
 struct Plane;
+struct PlaneFitInfo;
 
 
 // The box of a representation's volume in world space, the unit cube of its texture: false when it has none yet
@@ -30,8 +31,9 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
 
 // A plane put through the selected atoms (plane_fit: three exactly, more by least squares, turned as little as they
 // allow and kept on its side), at their positions in the frame shown, the nearest images of the first where the
-// system is periodic. False, and the plane left, when no atoms are selected.
-bool es_plane_fit_selection(const ApplicationState* state, Plane* plane);
+// system is periodic, and how (info, optional). The plane is returned, and left as it was in 'plane' with only
+// 'info' wanted (nullptr: it is set); kind None when no atoms are selected.
+Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info = nullptr);
 
 // The enabled planes of a representation in the space of its volume's texture ([0,1]^3), as n . x + d >= 0 for the
 // side kept: what the volume rendering clips to. Returns how many (at most ES_MAX_PLANES).

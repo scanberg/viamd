@@ -2594,13 +2594,30 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         ImGui::SameLine(0.0f, gap);
         ImGui::BeginDisabled(num_selected == 0);
         if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
-            changed |= es_plane_fit_selection(state, &plane);
+            PlaneFitInfo fit;
+            const Plane fitted = es_plane_fit_selection(state, plane, &fit);
+            if (fit.kind != PlaneFitKind::None) {
+                plane = fitted;
+                changed = true;
+            }
         }
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip(num_selected == 0 ? "Through the selected atoms: select some first" :
-                              num_selected == 1 ? "Through the selected atom, facing as it does" :
-                              num_selected == 2 ? "Through the two selected atoms, turned as little as that allows" :
-                                                  "Through the selected atoms: exactly for 3, the best fit for more\n(turned as little as they allow, keeping its side)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+            // what the selected atoms would make of it, found while the tooltip is up
+            PlaneFitInfo fit;
+            es_plane_fit_selection(state, plane, &fit);
+            switch (fit.kind) {
+            case PlaneFitKind::None:  ImGui::SetTooltip("Through the selected atoms: select some first"); break;
+            case PlaneFitKind::Point: ImGui::SetTooltip("Through the selected atom, facing as it does"); break;
+            case PlaneFitKind::Line:  ImGui::SetTooltip("The selected atoms are in a line: the plane through it nearest to this one"); break;
+            case PlaneFitKind::Kept:  ImGui::SetTooltip("The selected atoms are spread alike every way (rms %.2f Å off any plane):\n"
+                                                        "they set no direction, the plane only moves through their centre", fit.rms); break;
+            case PlaneFitKind::Loose: ImGui::SetTooltip("The selected atoms fit planes of a range of directions about as well:\n"
+                                                        "of those, the one nearest to this (rms %.2f Å)", fit.rms); break;
+            case PlaneFitKind::Fit:   ImGui::SetTooltip(num_selected == 3 ? "Through the 3 selected atoms" :
+                                                        "The best fit through the selected atoms (rms %.2f Å)", fit.rms); break;
+            }
+        }
         static const char* axes[3] = {"x", "y", "z"};
         for (int k = 0; k < 3; ++k) {
             ImGui::SameLine(0.0f, gap);
