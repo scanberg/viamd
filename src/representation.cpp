@@ -2558,6 +2558,7 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
     const vec3_t centre = vec3_set(c4.x, c4.y, c4.z);
     int remove = -1;
     const int count = MIN(es.num_planes, max_planes);
+    const size_t num_selected = md_bitmask_count(&state->selection.selection_mask);
     for (int i = 0; i < count; ++i) {
         Plane& plane = es.planes[i].plane;
         ImGui::PushID(i);
@@ -2590,6 +2591,16 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
             changed = true;
         }
         ImGui::SetItemTooltip("Face along the view, keeping what is behind it");
+        ImGui::SameLine(0.0f, gap);
+        ImGui::BeginDisabled(num_selected == 0);
+        if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
+            changed |= es_plane_fit_selection(state, &plane);
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(num_selected == 0 ? "Through the selected atoms: select some first" :
+                              num_selected == 1 ? "Through the selected atom, facing as it does" :
+                              num_selected == 2 ? "Through the two selected atoms, turned as little as that allows" :
+                                                  "Through the selected atoms: exactly for 3, the best fit for more\n(turned as little as they allow, keeping its side)");
         static const char* axes[3] = {"x", "y", "z"};
         for (int k = 0; k < 3; ++k) {
             ImGui::SameLine(0.0f, gap);

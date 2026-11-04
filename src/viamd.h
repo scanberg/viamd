@@ -7,6 +7,7 @@
 #include <core/md_array.h>
 
 #include <md_system.h>
+#include <plane.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
 #include <script_engine.h>
@@ -397,30 +398,6 @@ inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "High",
 };
 
-// A plane in space, n . x + d = 0 with n of unit length (world, Angstrom), as a vec4. As a cut it keeps the side n
-// points to, n . x + d >= 0; flipping it is negating all four. It has no position or turn within itself: what is laid
-// out on it (points, a gizmo) takes plane_frame's axes, and a gizmo sits where the plane cuts what it is drawn over.
-struct Plane {
-    vec3_t normal = {0, 0, 1};
-    float  d = 0.0f;
-};
-static_assert(sizeof(Plane) == sizeof(vec4_t), "a plane is a vec4");
-
-static inline vec4_t plane_vec4(const Plane& p) { return vec4_set(p.normal.x, p.normal.y, p.normal.z, p.d); }
-static inline float  plane_distance(const Plane& p, vec3_t x) { return vec3_dot(p.normal, x) + p.d; }
-static inline vec3_t plane_project(const Plane& p, vec3_t x) { return vec3_sub(x, vec3_mul1(p.normal, plane_distance(p, x))); }
-static inline void   plane_flip(Plane* p) { p->normal = vec3_mul1(p->normal, -1.0f); p->d = -p->d; }
-// The plane through 'point' facing 'normal' (any length but 0)
-static inline Plane  plane_from_point_normal(vec3_t point, vec3_t normal) {
-    Plane p;
-    p.normal = vec3_normalize(normal);
-    p.d = -vec3_dot(p.normal, point);
-    return p;
-}
-// Axes in the plane, u and v, with u x v = n: u is 'right' made perpendicular to n (world x, or else y, when 'right'
-// is too close to n for that), v = n x u. The turn of the plane about n is not the plane's: it is taken from what the
-// axes are for, such as the camera's right for a gizmo, so that they line up with the screen.
-void plane_frame(vec3_t* u, vec3_t* v, const Plane& p, vec3_t right);
 
 // How an electronic structure representation draws its field
 enum class ElectronicStructureDisplay {

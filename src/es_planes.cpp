@@ -12,72 +12,11 @@
 #include <math.h>
 #include <float.h>
 
-void plane_frame(vec3_t* u, vec3_t* v, const Plane& p, vec3_t right) {
-    const vec3_t n = p.normal;
-    // 'right' without its part along n; the next of x, y when it is (nearly) along n: of x and y one is always at least
-    // 45 degrees off n (n.x^2 + n.y^2 <= 1), so the last is never too short
-    const vec3_t candidates[3] = {right, vec3_set(1, 0, 0), vec3_set(0, 1, 0)};
-    vec3_t r = vec3_set(1, 0, 0);
-    for (int i = 0; i < 3; ++i) {
-        const float len = vec3_length(candidates[i]);
-        if (!(len > 0.0f)) continue;
-        const vec3_t c = vec3_mul1(candidates[i], 1.0f / len);
-        r = vec3_sub(c, vec3_mul1(n, vec3_dot(c, n)));
-        if (vec3_length(r) > 0.1f) break;
-    }
-    *u = vec3_normalize(r);
-    *v = vec3_cross(n, *u);
-}
-
 static inline vec3_t transform_point(const mat4_t& m, vec3_t p) {
     const vec4_t r = mat4_mul_vec4(m, vec4_set(p.x, p.y, p.z, 1.0f));
     return vec3_set(r.x, r.y, r.z);
 }
 
-int plane_box_polygon(vec3_t out[6], const Plane& plane, const mat4_t& box_to_world) {
-    vec3_t c[8];
-    float dist[8];
-    for (int i = 0; i < 8; ++i) {
-        c[i] = transform_point(box_to_world, vec3_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1)));
-        dist[i] = plane_distance(plane, c[i]);
-    }
-    // the 12 edges as pairs of corners that differ in one bit
-    static const int edge[12][2] = {{0,1},{2,3},{4,5},{6,7},{0,2},{1,3},{4,6},{5,7},{0,4},{1,5},{2,6},{3,7}};
-    vec3_t pts[12];
-    int n = 0;
-    for (int e = 0; e < 12; ++e) {
-        const float da = dist[edge[e][0]], db = dist[edge[e][1]];
-        if ((da > 0.0f) == (db > 0.0f)) continue;
-        const float t = da / (da - db);
-        pts[n++] = vec3_lerp(c[edge[e][0]], c[edge[e][1]], t);
-    }
-    if (n < 3) return 0;
-    // in order around their centre, by angle in the plane
-    vec3_t centre = vec3_zero();
-    for (int i = 0; i < n; ++i) centre = vec3_add(centre, pts[i]);
-    centre = vec3_mul1(centre, 1.0f / (float)n);
-    vec3_t u, v;
-    plane_frame(&u, &v, plane, vec3_set(1, 0, 0));
-    float ang[12];
-    for (int i = 0; i < n; ++i) {
-        const vec3_t d = vec3_sub(pts[i], centre);
-        ang[i] = atan2f(vec3_dot(d, v), vec3_dot(d, u));
-    }
-    for (int i = 1; i < n; ++i) {
-        for (int j = i; j > 0 && ang[j] < ang[j - 1]; --j) {
-            const float ta = ang[j]; ang[j] = ang[j - 1]; ang[j - 1] = ta;
-            const vec3_t tp = pts[j]; pts[j] = pts[j - 1]; pts[j - 1] = tp;
-        }
-    }
-    // an edge through a corner gives the corner twice
-    int m = 0;
-    for (int i = 0; i < n && m < 6; ++i) {
-        if (m > 0 && vec3_distance(pts[i], out[m - 1]) < 1.0e-5f) continue;
-        out[m++] = pts[i];
-    }
-    if (m > 1 && vec3_distance(out[0], out[m - 1]) < 1.0e-5f) --m;
-    return m >= 3 ? m : 0;
-}
 
 bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation& es) {
     if (!es.density_vol.tex_id) return false;
@@ -96,6 +35,29 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
     state->representation.gizmo.rep_id = rep_id;
     state->representation.gizmo.plane = i;
     return i;
+}
+
+bool es_plane_fit_selection(const ApplicationState* state, Plane* plane) {
+    const md_system_state_t& st = state->mold.state;
+    const size_t count = md_bitmask_count(&state->selection.selection_mask);
+    if (count == 0 || !st.xyz) return false;
+    md_temp_scope_t temp = md_temp_begin();
+    vec3_t* pts = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * count);
+    size_t n = 0;
+    md_bitset_iter_t it = md_bitmask_iter(&state->selection.selection_mask);
+    while (md_bitset_iter_next(&it) && n < count) {
+        if (it.idx < st.num_atoms) pts[n++] = st.xyz[it.idx];
+    }
+    if (n > 1 && md_unitcell_flags(&st.unitcell) != 0) {
+        // across the boundary: each the image nearest to the first
+        for (size_t i = 1; i < n; ++i) pts[i] = vec3_sub(pts[i], pts[0]);
+        md_util_min_image_vec3(pts + 1, n - 1, &st.unitcell);
+        for (size_t i = 1; i < n; ++i) pts[i] = vec3_add(pts[i], pts[0]);
+    }
+    const bool ok = n > 0;
+    if (ok) *plane = plane_fit(*plane, pts, n);
+    md_temp_end(temp);
+    return ok;
 }
 
 vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, int i) {

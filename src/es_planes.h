@@ -14,9 +14,6 @@ struct ApplicationState;
 struct ElectronicStructureRepresentation;
 struct Plane;
 
-// The polygon a plane cuts out of a box, the unit cube of 'box_to_world' (affine): up to 6 corners in world space,
-// in order around it. Returns how many (0 when it misses the box).
-int plane_box_polygon(vec3_t out[6], const Plane& plane, const mat4_t& box_to_world);
 
 // The box of a representation's volume in world space, the unit cube of its texture: false when it has none yet
 bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation& es);
@@ -30,6 +27,11 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
 // A plane through the middle of the representation's box, facing away from the camera: as a cut it removes the half
 // in front, showing the inside. Returns its index, or -1 when there is no room (ES_MAX_PLANES) or no box yet.
 int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es, uint32_t rep_id);
+
+// A plane put through the selected atoms (plane_fit: three exactly, more by least squares, turned as little as they
+// allow and kept on its side), at their positions in the frame shown, the nearest images of the first where the
+// system is periodic. False, and the plane left, when no atoms are selected.
+bool es_plane_fit_selection(const ApplicationState* state, Plane* plane);
 
 // The enabled planes of a representation in the space of its volume's texture ([0,1]^3), as n . x + d >= 0 for the
 // side kept: what the volume rendering clips to. Returns how many (at most ES_MAX_PLANES).

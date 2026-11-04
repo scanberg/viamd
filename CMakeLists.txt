@@ -207,6 +207,7 @@ set(SRC_FILES
     src/viamd.cpp
     src/iso_meshes.cpp
     src/es_planes.cpp
+    src/plane.cpp
 
     src/app_settings.h
     src/cartoon_glyphs.h
