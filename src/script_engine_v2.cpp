@@ -309,9 +309,7 @@ Eval* eval_create(const Eval* prev, const Program* prog, const EvalDesc& desc, m
     md_vial_eval_desc_t d = {};
     d.sys = desc.sys;
     d.run = desc.run;
-    d.num_threads = desc.num_threads;
-    d.parallel_for = desc.parallel_for;
-    d.parallel_user = desc.parallel_user;
+    d.executor = desc.executor;
     // What an earlier evaluation of v2 computed alike is taken over
     md_vial_eval_t* v = ve(prev) ? md_vial_eval_create_from(ve(prev), vp(prog), &d, alloc) : md_vial_eval_create(vp(prog), &d, alloc);
     if (!v) return nullptr;

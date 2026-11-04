@@ -659,8 +659,9 @@ static uint64_t field_data_work_per_point(const FieldData& d) {
 
 // The field at xyz[beg, end) into out, a few points at a time until cancel is set. A pool task's
 // interrupt is only looked at between the ranges it hands out, which can be a good part of the task.
-static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const FieldData& d, const std::atomic<bool>& cancel) {
-    for (uint32_t b = beg; b < end && !cancel.load(std::memory_order_relaxed); b += 8) {
+// On the pool, in a job: a cancel is looked at every few points, and waits for no more than that
+static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const FieldData& d) {
+    for (uint32_t b = beg; b < end && !task_system::cancelled(); b += 8) {
         const uint32_t e = MIN(b + 8, end);
         if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, d.charges);
         else if (d.ratio) ratio_evaluate(out + b, xyz + 3 * (size_t)b, e - b, d.ratio);
@@ -677,7 +678,6 @@ struct FieldBuild {
     size_t             num_state_atoms = 0;
     // made by the task
     FieldData          data;
-    bool               ran = false;     // an interrupted pool task never runs its function
     bool               ok = false;
     double             seconds = 0.0;
 };
@@ -727,7 +727,6 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
 
 // On a worker thread
 static void build_run(FieldBuild* b) {
-    b->ran = true;
     const md_tick_t t0 = md_tick_now();
     md_system_state_t state = {};
     state.num_atoms = b->num_state_atoms;
@@ -762,15 +761,14 @@ struct FieldSource {
     bool                  gpu_failed = false;
     uint64_t              failed_hash = 0;   // a source whose build failed: not tried again
     FieldBuild*           build = nullptr;   // under way
-    task_system::ID       task = task_system::INVALID_ID;
+    task_system::Job      task;              // of build: a cancelled one (a load) made nothing to be taken
     FieldBuild*           next = nullptr;    // asked for while it ran
 };
 
 static void source_start(FieldSource* fs, FieldBuild* b) {
     fs->build = b;
     // and the worker's temp arenas given back after: the charges of a protein's density read its orbitals there
-    fs->task  = task_system::create_pool_task(STR_LIT("##Surface field source"), [b]() { build_run(b); md_temp_trim(); });
-    task_system::enqueue_task(fs->task);
+    fs->task.start({}, [b]() { build_run(b); md_temp_trim(); });
 }
 
 // The data, and their copy on the device. Whatever reads them on the device must have ended.
@@ -817,15 +815,15 @@ static void source_request(FieldSource* fs, const SurfaceFieldDesc& desc) {
 // charges changed.
 static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream, const char* what) {
     bool changed = false;
-    if (fs->build && !task_system::task_is_running(fs->task)) {
+    if (fs->build && !fs->task.running()) {
         FieldBuild* b = fs->build;
         fs->build = nullptr;
-        fs->task  = task_system::INVALID_ID;
-        if (!b->ran && b->hash == wanted && !fs->next) {
-            source_start(fs, b);   // interrupted before it ran (interrupt_async_tasks): again
+        const bool made = fs->task.status() == task_system::Status::Completed;
+        if (!made && b->hash == wanted && !fs->next) {
+            source_start(fs, b);   // cancelled before it was done (a load): again
             return false;
         }
-        if (b->ran && b->hash == wanted) {
+        if (made && b->hash == wanted) {
             if (b->ok) {
                 source_drop_charges(fs, stream);
                 fs->data = b->data;
@@ -858,10 +856,9 @@ static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream
 // Waits for a build under way (a few seconds at most, and only when a field goes while it is made)
 static void source_free(FieldSource* fs, md_gpu_stream_t stream) {
     if (fs->build) {
-        task_system::task_wait_for(fs->task);
+        fs->task.wait();
         build_destroy(fs->build);
         fs->build = nullptr;
-        fs->task  = task_system::INVALID_ID;
     }
     build_destroy(fs->next);
     fs->next = nullptr;
@@ -946,8 +943,7 @@ struct SurfaceFieldWork {
     md_gpu_mem_t  rb = {};          // its readback
     md_gpu_sync_t rb_sync = {};
 #endif
-    task_system::ID cpu_task = task_system::INVALID_ID;
-    std::atomic<bool> cpu_cancel{false};   // looked at every few points: a cancel waits for no more than that
+    task_system::Job cpu_task;      // over cpu_xyz into cpu_out
     uint32_t* cpu_index = nullptr;
     float*    cpu_xyz = nullptr;
     double*   cpu_out = nullptr;
@@ -977,7 +973,6 @@ static void work_cpu_free(SurfaceFieldWork* w) {
     w->cpu_xyz = nullptr;
     w->cpu_out = nullptr;
     w->cpu_count = 0;
-    w->cpu_task = task_system::INVALID_ID;
 }
 
 // Stops the evaluation under way; what it has made is lost
@@ -992,10 +987,7 @@ static void work_cancel(SurfaceFieldWork* w) {
         w->rb = {};
     }
 #endif
-    if (w->cpu_task) {
-        w->cpu_cancel = true;
-        task_system::task_interrupt_and_wait_for(w->cpu_task);
-    }
+    w->cpu_task.cancel_and_wait();
     work_cpu_free(w);
     w->stage = SurfaceFieldWork::Idle;
     progress_clear(&w->progress);
@@ -1279,11 +1271,9 @@ static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     // A point of a QM density's potential is ~0.1-1 ms of work, of a few point charges microseconds
     const uint64_t work = field_data_work_per_point(w->cpu_data);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
-    w->cpu_cancel = false;
-    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field"), m, [w](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_data, w->cpu_cancel);
-    }, grain);
-    task_system::enqueue_task(w->cpu_task);
+    w->cpu_task.start_for({}, m, grain, [w](uint32_t beg, uint32_t end) {
+        evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_data);
+    });
     w->stage = SurfaceFieldWork::Cpu;
     return true;
 }
@@ -1512,8 +1502,14 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
         break;
 #endif
     case SurfaceFieldWork::Cpu: {
-        if (task_system::task_is_running(w->cpu_task)) {
-            progress_set(&w->progress, name, task_system::task_fraction_complete(w->cpu_task), false);
+        if (w->cpu_task.running()) {
+            progress_set(&w->progress, name, MAX(0.0f, w->cpu_task.progress()), false);
+            break;
+        }
+        if (w->cpu_task.status() == task_system::Status::Cancelled) {
+            // stopped part of the way (a load): what it holds is not the field's, so it is not taken
+            work_cpu_free(w);
+            w->stage = SurfaceFieldWork::Idle;
             break;
         }
         // the values for those voxels, as a field the size of the grid would be (merge reads got)
@@ -1711,8 +1707,7 @@ struct SurfaceFieldPointsWork {
     md_gto_int_gpu_job_t* job = nullptr;
     bool         ratio = false;         // gpu_out and rb hold both fields of an orbital ratio
 #endif
-    task_system::ID cpu_task = task_system::INVALID_ID;
-    std::atomic<bool> cpu_cancel{false};
+    task_system::Job cpu_task;
     double*   cpu_out = nullptr;
     bool      on_gpu = false;
 };
@@ -1733,11 +1728,7 @@ static void points_cancel(SurfaceFieldPointsWork* w) {
     w->gpu_xyz = {};
     w->ratio = false;
 #endif
-    if (w->cpu_task) {
-        w->cpu_cancel = true;
-        task_system::task_interrupt_and_wait_for(w->cpu_task);
-    }
-    w->cpu_task = task_system::INVALID_ID;
+    w->cpu_task.cancel_and_wait();
     free(w->cpu_out);
     w->cpu_out = nullptr;
     free(w->xyz);
@@ -1753,11 +1744,9 @@ static bool points_start_cpu(SurfaceFieldPointsWork* w) {
     const FieldData d = w->source.data;
     const uint64_t work = field_data_work_per_point(d);
     const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
-    w->cpu_cancel = false;
-    w->cpu_task = task_system::create_pool_task(STR_LIT("##Surface Field Points"), (uint32_t)w->count, [w, d](uint32_t beg, uint32_t end, uint32_t) {
-        evaluate_points_range(w->cpu_out, w->xyz, beg, end, d, w->cpu_cancel);
-    }, grain);
-    task_system::enqueue_task(w->cpu_task);
+    w->cpu_task.start_for({}, (uint32_t)w->count, grain, [w, d](uint32_t beg, uint32_t end) {
+        evaluate_points_range(w->cpu_out, w->xyz, beg, end, d);
+    });
     w->stage = SurfaceFieldPointsWork::Cpu;
     w->on_gpu = false;
     return true;
@@ -1928,12 +1917,14 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         break;
 #endif
     case SurfaceFieldPointsWork::Cpu:
-        if (task_system::task_is_running(w->cpu_task)) break;
-        w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
-        if (w->values) for (size_t i = 0; i < w->count; ++i) w->values[i] = (float)w->cpu_out[i];
+        if (w->cpu_task.running()) break;
+        // stopped part of the way (a load): what it holds is not the field's
+        if (w->cpu_task.status() == task_system::Status::Completed) {
+            w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
+            if (w->values) for (size_t i = 0; i < w->count; ++i) w->values[i] = (float)w->cpu_out[i];
+        }
         free(w->cpu_out);
         w->cpu_out = nullptr;
-        w->cpu_task = task_system::INVALID_ID;
         w->stage = w->values ? SurfaceFieldPointsWork::Done : SurfaceFieldPointsWork::Failed;
         break;
     default:
@@ -1951,7 +1942,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         break;
 #endif
     case SurfaceFieldPointsWork::Cpu:
-        progress_set(&w->progress, name, task_system::task_fraction_complete(w->cpu_task), false);
+        progress_set(&w->progress, name, MAX(0.0f, w->cpu_task.progress()), false);
         break;
     default:
         progress_clear(&w->progress);

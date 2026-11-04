@@ -964,6 +964,9 @@ struct Representation {
     bool enabled = true;            // its own switch: it is shown when every group around it is too (representation_shown)
 	bool needs_update = true;
     bool type_is_valid = false;
+    // Drawn as spheres for now: what its type draws (bonds, a backbone) is not there yet, while the system is inferred in
+    // the background (SystemInference)
+    bool sphere_fallback = false;
     bool filt_is_dirty = true;
     bool dynamic_evaluation = true; // follow the frame when what the filter picks depends on it ("auto-update")
 
@@ -1132,6 +1135,25 @@ struct ScriptVisJob;
 // grid any evaluation on the device can write, which is the largest compute_dim makes.
 inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 
+// What is derived from the core a loader gives (the bonds, what the residues are, the structures, the chemistry:
+// md_util_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
+// then the system is shown as loaded: its atoms, as spheres where a representation needs what is not there yet. One
+// system at a time: a load cancels the inference of the system before it.
+struct SystemInference {
+    task_system::Job    job;
+    md_system_t         work = {};              // The copy inferred on, in arena; its reference state the coordinates
+    md_allocator_i*     arena = nullptr;
+    md_array(md_allocator_i*) kept = nullptr;   // The arenas of what was put in place: arrays of the system now
+    md_infer_flags_t    flags = MD_UTIL_INFER_NONE;
+    uint64_t            base_version = 0;       // The topology version of the system the copy was made of
+    std::atomic<bool>   done{false};            // The copy is inferred: not cancelled half way
+    bool                pending = false;        // The system shows its core: inference is under way, or to be started again
+    bool                restart = false;        // Cancelled (the pool was interrupted) or of a topology since changed
+    // The default representations wait for it: a placeholder shows the atoms meanwhile, replaced unless it was changed
+    bool                defaults_pending = false;
+    char                placeholder_name[64] = "";
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -1277,6 +1299,7 @@ struct ApplicationState {
         md_gfx_handle_t     gfx_structure = {};
 #endif
         md_system_t         sys = {};
+        SystemInference     inference;
 
         // The actual interpolated state of the system.
         // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
@@ -1365,8 +1388,8 @@ struct ApplicationState {
 
     // --- ASYNC TASKS HANDLES ---
     struct {
-        task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID evaluate = task_system::INVALID_ID;
+        task_system::Job backbone_computations;
+        task_system::Job evaluate;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -1775,7 +1798,7 @@ struct ApplicationState {
         ScriptVisTarget vis_target = {};
         ScriptVisJob* vis_running = nullptr;
         ScriptVisJob* vis_result = nullptr;
-        task_system::ID vis_task = task_system::INVALID_ID;
+        task_system::Job vis_task;
         const script::Drawing* vis_shown = nullptr;
 
         // Controls current subindex being visualized (if array)
@@ -2258,6 +2281,17 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
 // and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
 // the reference of the topology (md_system_t::reference).
 bool recompute_bonds(ApplicationState* app, int64_t frame);
+
+// INFERENCE IN THE BACKGROUND (SystemInference)
+// Starts inferring what flags say on a copy of the system as it is now
+void system_inference_start(ApplicationState* app, md_infer_flags_t flags);
+// Once per frame: starts again what was cancelled, or was inferred from a topology which changed since
+void system_inference_update(ApplicationState* app);
+// Whether the system shows its core, what inference derives not there yet
+bool system_inference_pending(const ApplicationState& app);
+// Waits for it and puts it in place: before what changes the topology, or reads what is derived from it, at once
+// (a supplement, a workspace, an edit of the bonds)
+void system_inference_finish(ApplicationState* app);
 
 // To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
 // threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the

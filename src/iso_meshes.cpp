@@ -207,8 +207,7 @@ struct IsoFieldSpec {
 
 struct IsoBuild {
     enum Kind { Field, Set } kind = Field;
-    task_system::ID task = task_system::INVALID_ID;
-    bool      ran = false;       // an interrupted pool task never runs its function
+    task_system::Job task;       // a cancelled one (a load) made nothing to be taken
     bool      orphan = false;    // nobody wants what it makes
     md_tick_t t0 = 0;
     uint64_t  key = 0;
@@ -257,12 +256,16 @@ static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t*
 }
 
 static bool build_running(const IsoBuild* b) {
-    return b && task_system::task_is_running(b->task);
+    return b && b->task.running();
+}
+
+// It made what it was for: not cancelled before (or while) it ran
+static bool build_made(const IsoBuild* b) {
+    return b->task.status() == task_system::Status::Completed;
 }
 
 // On a worker thread
 static void build_run(IsoBuild* b) {
-    b->ran = true;
     IsoFieldGeometry g;
     g.sys = b->sys;
     g.atom_xyz = b->xyz;
@@ -286,8 +289,7 @@ static void build_run(IsoBuild* b) {
 static void build_start(IsoBuild* b) {
     // and the worker's temp arenas given back after: a density's orbitals are read there, hundreds of MB that a
     // pool thread would otherwise hold until it exits
-    b->task = task_system::create_pool_task(STR_LIT("##Isosurface mesh preparation"), [b]() { build_run(b); md_temp_trim(); });
-    task_system::enqueue_task(b->task);
+    b->task.start({}, [b]() { build_run(b); md_temp_trim(); });
 }
 
 static bool field_held(const md_gto_iso_field_t* f) {
@@ -299,26 +301,10 @@ static bool field_held(const md_gto_iso_field_t* f) {
     return false;
 }
 
-// Fields destroyed by pool tasks: a protein's density field is a few hundred MB in large blocks, tens of ms to
+// Fields destroyed on the pool: a protein's density field is a few hundred MB in large blocks, tens of ms to
 // give back, at the frame that takes the next one
-static task_system::ID g_destroys[64];
-static uint32_t        g_num_destroys = 0;
-
 static void field_destroy(md_gto_iso_field_t* field) {
-    for (uint32_t i = 0; i < g_num_destroys;) {
-        if (!task_system::task_is_running(g_destroys[i])) {
-            g_destroys[i] = g_destroys[--g_num_destroys];
-            continue;
-        }
-        ++i;
-    }
-    if (g_num_destroys == ARRAY_SIZE(g_destroys)) {
-        md_gto_iso_field_destroy(field);
-        return;
-    }
-    const task_system::ID task = task_system::create_pool_task(STR_LIT("##Isosurface field release"), [field]() { md_gto_iso_field_destroy(field); });
-    task_system::enqueue_task(task);
-    g_destroys[g_num_destroys++] = task;
+    task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
 void iso_field_release(md_gto_iso_field_t* field) {
@@ -329,7 +315,7 @@ void iso_field_release(md_gto_iso_field_t* field) {
     }
     if (field_held(field)) {
         // no room to defer it: the task is waited for, which is rare and only costs the time it has left
-        for (uint32_t i = 0; i < g_num_builds; ++i) task_system::task_wait_for(g_builds[i]->task);
+        for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->task.wait();
     }
     field_destroy(field);
 }
@@ -339,7 +325,7 @@ static void build_destroy(IsoBuild* b) {
     if (b->field) field_destroy(b->field);
 #if MD_ENABLE_GPU
     if (b->set) md_gto_iso_gpu_set_destroy(b->gl_stream, (md_gto_iso_gpu_set_t*)b->set);
-    if (b->stream) md_gpu_stream_destroy(b->stream);   // of a task that never ran: nothing on it
+    if (b->stream) md_gpu_stream_destroy(b->stream);   // of a task cancelled before it ran: nothing on it
 #endif
     free(b->xyz);
     delete b;
@@ -384,11 +370,11 @@ void iso_meshes_collect() {
 }
 
 void iso_meshes_shutdown(ApplicationState* state) {
-    for (uint32_t i = 0; i < g_num_builds; ++i) task_system::task_wait_for(g_builds[i]->task);
+    for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->task.wait();
     for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->orphan = true;
     builds_collect();
-    for (uint32_t i = 0; i < g_num_destroys; ++i) task_system::task_wait_for(g_destroys[i]);
-    g_num_destroys = 0;
+    // and the fields given back on the pool
+    task_system::wait_all();
     (void)state;
 }
 
@@ -503,7 +489,7 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
         if (build_running(b)) return 0;
         m->set_build = nullptr;
         build_remove(b);
-        if (b->key == m->fields_key && b->ran) {
+        if (b->key == m->fields_key && build_made(b)) {
             if (b->set) {
                 // its uploads are done: the task waited for them before it ended (destroying its stream)
                 m->gpu_set = b->set;
@@ -517,7 +503,7 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
         build_destroy(b);
         if (m->gpu_set) return 1;
         if (m->set_failed_key == m->fields_key) return -1;
-        // of other fields, or interrupted before it ran: one for these
+        // of other fields, or cancelled before it was done: one for these
     }
     IsoBuild* nb = build_new(IsoBuild::Set, m->fields_key, g.sys, g.atom_xyz, g.num_atoms);
     if (!nb) return -1;
@@ -638,10 +624,7 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
     md_gto_iso_cache_info_t info = {};
     md_gto_iso_cache_info(&info, cache);
     if (info.num_bricks > 0) {
-        task_system::ID task = task_system::create_pool_task(STR_LIT("Isosurface mesh corners"), info.num_bricks,
-            [cache](uint32_t beg, uint32_t end, uint32_t) { md_gto_iso_cache_evaluate(cache, beg, end - beg); }, 16);
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
+        task_system::parallel_for(info.num_bricks, 16, [cache](uint32_t beg, uint32_t end) { md_gto_iso_cache_evaluate(cache, beg, end - beg); });
     }
 
     slot->field = field;
@@ -953,11 +936,11 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     const IsoFieldSpec spec = field_spec_of(es);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
-        !(em.field_build->ran && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
+        !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
         IsoBuild* b = em.field_build;
         em.field_build = nullptr;
         build_remove(b);
-        if (b->ran && field_spec_equal(b->spec, spec)) {
+        if (build_made(b) && field_spec_equal(b->spec, spec)) {
             // in: the meshes of the old field go with their state on the device (their set holds it)
             iso_meshes_drop_fields(&em.meshes, state);
             iso_field_release(em.field);
@@ -977,7 +960,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
                 MD_LOG_DEBUG("Isosurface meshes: the field of '%s' made in %.1f ms (on a worker thread)", rep->name, md_tick_to_milliseconds(md_tick_now() - b->t0));
             }
         }
-        build_destroy(b);   // of another field, or interrupted before it ran: made again below
+        build_destroy(b);   // of another field, or cancelled before it was done: made again below
     }
     if (!em.field) {
         field_build_begin(em, state, field_key, spec);

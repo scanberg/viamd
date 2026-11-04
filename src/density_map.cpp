@@ -245,7 +245,9 @@ struct DensityMapJob {
     bool ok = false;
     DensityMapResult result;
 
-    task_system::ID bin_task = task_system::INVALID_ID;
+    // Bins the chunks and merges them on the pool, then hands the result over on the main thread, where the job
+    // ends itself (job_free)
+    task_system::Job task;
 };
 
 static void job_free(DensityMapJob* job) {
@@ -334,7 +336,7 @@ DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, f
     job->source = std::move(source);
     job->done = std::move(done);
 
-    const uint32_t max_chunks = (uint32_t)CLAMP(task_system::pool_num_threads(), (size_t)1, (size_t)MAX_CHUNKS);
+    const uint32_t max_chunks = (uint32_t)CLAMP(task_system::num_threads(), 1u, (uint32_t)MAX_CHUNKS);
     job->num_chunks = CLAMP(num_chunks, 1u, max_chunks);
     job->num_bufs = MAX(job->num_chunks, 2u);
     for (uint32_t i = 0; i < job->num_bufs; ++i) {
@@ -342,29 +344,24 @@ DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, f
         MEMSET(job->bins[i], 0, grid_bytes());
     }
 
-    task_system::ID bin_task = task_system::create_pool_task(label, job->num_chunks, [job](uint32_t beg, uint32_t end, uint32_t) {
-        for (uint32_t c = beg; c < end; ++c) job_bin_chunk(job, c);
-    });
-    task_system::ID finalize_task = task_system::create_pool_task(STR_LIT("##Density finalize"), [job]() {
+    job->task.start(label, [job]() {
+        task_system::parallel_for(job->num_chunks, 1, [job](uint32_t beg, uint32_t end) {
+            for (uint32_t c = beg; c < end; ++c) job_bin_chunk(job, c);
+        });
         job_finalize(job);
-    });
-    task_system::ID done_task = task_system::create_main_task(STR_LIT("##Density done"), [job]() {
-        const bool ok = job->ok && !job->cancel.load();
+    }, [job](task_system::Status status) {
+        const bool ok = status == task_system::Status::Completed && job->ok && !job->cancel.load();
         job->done(ok ? &job->result : nullptr, ok ? job->bins[0] : nullptr);
         job_free(job);
     });
-
-    job->bin_task = bin_task;
-    task_system::set_task_dependency(finalize_task, bin_task);
-    task_system::set_task_dependency(done_task, finalize_task);
-    task_system::enqueue_task(bin_task);
     return job;
 }
 
 void density_map_cancel(DensityMapJob* job, bool wait) {
     if (!job) return;
     job->cancel.store(1);
-    if (wait) task_system::task_interrupt_and_wait_for(job->bin_task);
+    job->task.cancel();
+    if (wait) job->task.wait();
 }
 
 // ## GL

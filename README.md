@@ -81,8 +81,6 @@ https://github.com/BalazsJako/ImGuiColorTextEdit
 
 https://github.com/skaslev/gl3w
 
-https://github.com/max0x7ba/atomic_queue
-
 https://github.com/mlabbe/nativefiledialog
 
 https://github.com/nothings/stb
