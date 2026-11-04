@@ -58,7 +58,7 @@ bool single_family(Families families);
 // any NCI cutoff.
 bool has_nci(Family family);
 
-// The scatter extraction, the same for every CP type, the reference map and the app's defaults: the regions grown
+// The earlier reference extraction, retained for reproducibility: the regions grown
 // from the CPs through s < reference_scatter_s within reference_radius, rho <= reference_rho_max, both signs of
 // lambda2; only their samples with s <= reference_scatter_s; each sample belonging to its nearest CP.
 constexpr double reference_scatter_s = 1.0;
@@ -70,12 +70,10 @@ constexpr double reference_radius = 2.7;   // Bohr
 struct Params;
 Params reference_params(std::span<const double> near_xyz, std::span<const double> other_xyz = {});
 
-// The surface isovalue is the main parameter; the scatter's s, rho and R default to the reference's extraction and may
-// be changed in the settings, at the cost of no longer matching the reference.
+// Live defaults for SCF densities. The density cutoff and CP-local radius are VIAMD scope choices.
 struct UniformDefaults {
-    double s_iso = 0.7;
-    // The scatter's s, rho and R default to the reference's, so the scatter plot covers what the reference map does
-    double scatter_s = reference_scatter_s;
+    double s_iso = 0.5;
+    double scatter_s = 2.0;
     double rho_max = reference_rho_max;
     double radius = reference_radius;
     double color_range = 0.03;

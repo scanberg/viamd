@@ -507,8 +507,8 @@ UTEST(nci_surface, uniform_defaults_and_mixed_membership) {
     EXPECT_EQ(nci_surface::reference_rho_max, 0.07);
     EXPECT_EQ(nci_surface::reference_radius, 2.7);
     const auto uniform = nci_surface::uniform_defaults();
-    EXPECT_EQ(uniform.s_iso, 0.7);
-    EXPECT_EQ(uniform.scatter_s, 1.0);
+    EXPECT_EQ(uniform.s_iso, 0.5);
+    EXPECT_EQ(uniform.scatter_s, 2.0);
     EXPECT_EQ(uniform.rho_max, 0.07);
     EXPECT_EQ(uniform.radius, 2.7);
     EXPECT_EQ(uniform.color_range, 0.03);

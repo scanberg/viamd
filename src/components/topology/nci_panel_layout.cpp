@@ -384,7 +384,7 @@ struct NciPanel {
         ImGui::SeparatorText("Plot guides");
         ImGui::Checkbox("Surface isovalue", &st.guide_surface);
         ImGui::Checkbox("Extraction cutoff", &st.guide_cutoff);
-        ImGui::Checkbox("Colour-range boundaries", &st.guide_colour_limits);
+        ImGui::Checkbox("Extraction density limits", &st.guide_density_limits);
         ImGui::TextDisabled("Guides beside the plot shows/hides these without changing your choices.");
 
         if (ImGui::Button("Reset to defaults")) {
@@ -392,7 +392,7 @@ struct NciPanel {
             st.type_outline_width = NciState::default_type_outline_width;
             st.point_size = NciState::default_point_size;
             st.show_type_styles = false;
-            st.guide_surface = st.guide_cutoff = st.guide_colour_limits = true;
+            st.guide_surface = st.guide_cutoff = st.guide_density_limits = true;
             const bool legend = st.scale.show_legend;
             st.scale = nci_default_scale();
             st.scale.show_legend = legend;
@@ -1345,7 +1345,7 @@ struct NciPanel {
         static float shown_plot_s = -1.0f;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
-        ImGui::SetItemTooltip("Show selected plot guides: surface isovalue, extraction cutoff and colour boundaries. "
+        ImGui::SetItemTooltip("Show selected plot guides: surface isovalue, extraction cutoff and density limits. "
                               "Choose guides in NCI settings. Drag the surface line to edit its isovalue.");
         const bool global = st.view == nci_surface::View::Overview && !st.classified_overview;
         if (global) {
@@ -1678,6 +1678,14 @@ struct NciPanel {
 
         NciSurface* active = st.layer_hidden ? nullptr : active_member();
         bool guide_hovered = false;
+        if (st.show_guides && st.guide_density_limits) {
+            const ImVec4 colour(0.75f, 0.75f, 0.75f, 0.85f);
+            const double limits[] = {-(double)st.uniform.rho_max, (double)st.uniform.rho_max};
+            ImPlot::SetNextLineStyle(colour, 1.0f);
+            ImPlot::PlotInfLines("##Density limits", limits, 2, ImPlotItemFlags_NoFit);
+            ImPlot::TagX(limits[0], colour, "\xCF\x81 = %.3g", limits[0]);
+            ImPlot::TagX(limits[1], colour, "\xCF\x81 = +%.3g", limits[1]);
+        }
         const bool surface_guide = st.show_guides && st.guide_surface && active && nci_scale_member(*active);
         const bool merged_guide = surface_guide && st.guide_cutoff &&
                                   std::abs(active->s_iso - st.uniform.scatter_s) < 1e-4f;
@@ -1695,7 +1703,6 @@ struct NciPanel {
             ImPlot::Annotation(limits.X.Max, cutoff, colour, ImVec2(-4, -4), true, "Cutoff s = %.3g", cutoff);
         }
         if (st.show_guides && active && nci_scale_member(*active)) {
-            const ColorScale scale = nci_effective_scale(st, *active);
             const ImVec4 col = guide_colour;
             double iso = active->s_iso;
             bool held = false, hovered_line = false;
@@ -1709,13 +1716,6 @@ struct NciPanel {
             if (st.guide_surface)
                 ImPlot::Annotation(right, st.uniform.s_iso, col, ImVec2(-4, -4), true,
                                    merged_guide ? "Surface / cutoff s = %.2f" : "Surface s = %.2f", st.uniform.s_iso);
-            if (st.guide_colour_limits) {
-                const double limits[] = {scale.range_beg, scale.range_end};
-                ImPlot::SetNextLineStyle(col, 1.0f);
-                ImPlot::PlotInfLines("##Colour limits", limits, 2);
-                ImPlot::TagX(scale.range_beg, col, "%.4g", scale.range_beg);
-                ImPlot::TagX(scale.range_end, col, "%.4g", scale.range_end);
-            }
         }
         if (hovered && !guide_hovered) {
             const int key = nci_layer_key(*hovered);

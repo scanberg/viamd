@@ -229,13 +229,13 @@ depends on grid resolution and thresholds and is not a unique physical
 partition. Regions without an anchor are excluded.
 
 Every CP-anchored layer, including Full system, defaults to the same extraction:
-**s ≤ 1.0, ρ ≤ 0.07, R = 2.7 Bohr**, both signs of λ2, connected regions and
+**s ≤ 2.0, ρ ≤ 0.07, R = 2.7 Bohr**, both signs of λ2, connected regions and
 nearest-CP ownership. There is no CP-adaptive mode or per-type radius. These
 extraction parameters can be adjusted under **Scatter region**; they change
 analysed samples, contours and scores, not just the display.
 
 The **NCI settings** (gear button) adjust the **surface isovalue**, resolution,
-opacity and colour scale. The surface isovalue defaults to **0.7** and can be
+opacity and colour scale. The surface isovalue defaults to **0.5** and can be
 lowered for a clearer surface; it does not change the scatter samples or reference.
 Below that isovalue points have strong, saturated colour; between it and the
 extraction cutoff they are pale, desaturated colour but remain analysed and
@@ -243,6 +243,19 @@ pickable. Above the extraction cutoff, up to the plot range, they are faint
 neutral grey and display-only. Raising **Scatter region -> s max** therefore
 moves newly included points out of grey context into analysis and picking;
 at s max = 2 no display-only tail remains. It does not raise the surface isovalue.
+
+For SCF densities such as VeloxChem output, s <= 2 for the scatter and a separate
+s = 0.5 surface are consistent with the starting values documented in the
+[NCIPLOT manual](https://github.com/aoterodelaroza/nciplot/blob/master/doc/nciplot-manual.pdf).
+These are practical settings, not physical interaction boundaries.
+VIAMD retains rho <= 0.07 as its adjustable extraction scope, not as a universal
+NCI convention. CP-connected regions, nearest-CP ownership and R = 2.7 Bohr are
+VIAMD spatial filters, not requirements of conventional NCI.
+Its category maps and 90% coverage scores are reference-based VIAMD descriptors,
+not interaction energies, interaction probabilities or validated quality scores.
+Standard NCI examines low-density, low-RDG features in the scatter and their
+real-space surfaces; see [Johnson et al. (2010)](https://doi.org/10.1021/ja100936w)
+and [Contreras-Garcia et al. (2011)](https://doi.org/10.1021/ct100641a).
 
 The NCI types come from the CP classification: a contact CP's type is its
 branch under Contacts in the CP tree. Hydrogen bonds (including ionic ones and salt bridges) and σ-hole bonds (halogen,
@@ -279,7 +292,8 @@ Points window is open, even with the CP search disabled. The shown layer's
 samples are plotted per interaction (a ring closed by π···π counts as a
 π interaction), and hovering a point identifies it. The legend is a centred row of
 chips under the plot. Click a point or an interaction's name to make it the
-active one for the surface-isovalue and colour-range guides. The extraction
+active one for the surface-isovalue guide. The extraction density guides mark
+exactly +/-rho max, independently of the automatic colour range. The extraction
 cutoff guide follows the shared Scatter region s max.
 Dragging the isovalue line edits the isovalue of every layer; the line is in
 the layer's colour. Each interaction always has the same colour (hydrogen
@@ -322,10 +336,10 @@ original/extended map selector.
 The extended reference is not clipped to the live extraction cutoff.
 The reference contains 18 whole-class maps and 88 refinements.
 Scores mean: of the layer's category samples in the selected extraction region
-(by default s <= 1, rho <= 0.07, R = 2.7 Bohr), what fraction is inside that
+(by default s <= 2, rho <= 0.07, R = 2.7 Bohr), what fraction is inside that
 category's extended-reference 90% contour?
 The 90% defines mass over the full reference domain; it is not an expected 90%
-score for the s <= 1 subset. Scores differ from those obtained with the earlier map.
+score for a density- or s-restricted subset. Scores differ from those obtained with the earlier map.
 Scatter-region warnings use the current reference limits, s <= 2, |rho| <= 0.1
 and R = 2.7 Bohr; tighter extraction cutoffs are not a reference mismatch.
 
@@ -365,8 +379,8 @@ toggles it. These outlines are independent of the category map's visibility,
 opacity and levels: hide **Reference** to see just the selected guides.
 The default scatter view spans **s = 0 to 2.0**. Double-click and the fit button
 restore the selected plot range. This is display only: the default live
-extraction cutoff remains **s <= 1.0**, rho <= 0.07 and R = 2.7 Bohr; the surface
-isovalue remains 0.7. Samples above the extraction cutoff are grey display-only
+extraction cutoff is **s <= 2.0**, rho <= 0.07 and R = 2.7 Bohr; the surface
+isovalue defaults to 0.5. If the extraction cutoff is lowered, samples above it are grey display-only
 points and never enter contours or comparison scores.
 Saved previews inherit their deepest shared chemical-environment name, such
 as **N–H···O** or **Br···O**, without the descriptive CP prefix or atom-environment
@@ -401,11 +415,13 @@ legend under the plot repeats the reference and the layers with their swatches;
 clicking one shows or hides it. **All samples** in the legend toggles the
 context cloud. **Guides** is the master show/hide switch for plot guides without
 changing individual choices. In **NCI settings -> Display -> Plot guides**,
-choose **Surface isovalue**, **Extraction cutoff**, and **Colour-range boundaries**
+choose **Surface isovalue**, **Extraction cutoff**, and **Extraction density limits**
 (all on by default). The solid surface guide reads **Surface s = 0.78**; the
-thin dashed cutoff reads **Cutoff s = 1** and follows the selected extraction
+thin dashed cutoff reads **Cutoff s = 2** by default and follows the selected extraction
 cutoff. When coincident, one line reads **Surface / cutoff s = 1.00**.
 Reference interaction guides remain independent.
+Density guides read **rho = -0.07** and **rho = +0.07** at the configured extraction
+limits, not the automatic colour-scale endpoints.
 On the right, ⤢ fits the view. NCI settings set the interaction line width
 (1 px by default) and point size (0.6 px by default).
 **Interaction isolines and areas** (off by default) adds
