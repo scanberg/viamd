@@ -7701,7 +7701,9 @@ struct QuantumChemistry : viamd::EventHandler {
                                 has_chemical_environments ? ImGuiTableColumnFlags_NoHide : ImGuiTableColumnFlags_Disabled,
                                 2.4f, CPColumn_Environment);
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_DefaultHide, 0.5f, CPColumn_Count);
-        ImGui::TableSetupColumn("Character", ImGuiTableColumnFlags_None, 0.8f, CPColumn_Character);
+        ImGui::TableSetupColumn("Character",
+                                cp.chemical_analysis_enabled ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_Disabled,
+                                0.8f, CPColumn_Character);
         ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending, 0.9f, CPColumn_Density);
         ImGui::TableSetupColumn("\xE2\x88\x87\xC2\xB2\xCF\x81", ImGuiTableColumnFlags_DefaultHide, 0.8f, CPColumn_Laplacian);
         ImGui::TableSetupColumn("\xCE\xB5", ImGuiTableColumnFlags_DefaultHide, 0.6f, CPColumn_Ellipticity);
@@ -7926,7 +7928,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const auto& info = critical_point_variable_info(cp.variable);
             ImGui::Text("%s %.4g %s", info.symbol, value, info.unit);
         }
-        if (row.character && i < cp.characters.size()) {
+        if (cp.chemical_analysis_enabled && row.character && i < cp.characters.size()) {
             ImGui::TextColored(critical_point_character_color(row.character), "%s",
                                critical_point_distribution::character_name((critical_point_distribution::Character)row.character));
             ImGui::TextWrapped("%s", cp.characters[i].reason.c_str());
@@ -7965,15 +7967,16 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::Checkbox("Show CPs", &cp.show_markers);
             ImGui::SetItemTooltip("Hide markers, paths and labels without changing selection, tables or NCI surfaces.");
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Chemical environments", &cp.chemical_analysis_enabled)) {
+                cp.distributions_dirty = true;
+                cp.values_dirty = true;
+            }
+            ImGui::SetItemTooltip("Classify chemical environments and compute chemistry-dependent descriptors. "
+                                  "CP search and NCI remain available when this is off.");
 
             if (ImGui::BeginPopup("##CP settings")) {
                 ImGui::SeparatorText("Search");
-                if (ImGui::Checkbox("Chemical analysis", &cp.chemical_analysis_enabled)) {
-                    cp.distributions_dirty = true;
-                    cp.values_dirty = true;
-                }
-                ImGui::SetItemTooltip("Classify chemical environments and compute chemistry-dependent descriptors. "
-                                      "CP search and NCI remain available when this is off.");
                 static const char* method_str[] = { "Analytic", "Volume" };
                 ImGui::SetNextItemWidth(6.5f * em);
                 if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {

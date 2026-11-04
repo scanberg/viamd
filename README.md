@@ -55,6 +55,9 @@ Disabling NCI stops its computations and hides surfaces without deleting saved
 layers or changing their settings. Each column has one settings button beside
 Enable. CP settings group Search, Appearance, Distributions / filters and Export;
 **Show CPs** stays beside the CP settings button for quick viewport toggling.
+**Chemical environments** is also directly accessible in the CP header.
+Turning it off hides both the Chemical environment and Character columns, and
+omits chemical character from point hover tooltips.
 NCI settings group Surface, Scatter / extraction and Display. Layer-specific
 controls and reference interaction guides remain in their inspectors.
 Scatter hover details show the source layer/family,
