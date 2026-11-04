@@ -1,0 +1,1730 @@
+#include <cstring>
+#include "critical_point_distribution_core.h"
+
+#include <core/md_log.h>
+#include <core/md_unit.h>
+#include <md_system.h>
+#include <md_topo.h>
+#include <md_util.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <functional>
+#include <map>
+#include <thread>
+#include <vector>
+
+namespace critical_point_distribution {
+
+static std::string element(const md_system_t& sys, size_t i) {
+    const str_t symbol = md_atomic_number_symbol(md_atom_atomic_number(&sys.atom, i));
+    return symbol.len ? std::string(symbol.ptr, symbol.len) : "Unknown element";
+}
+
+// The atom's first bonded neighbour, -1 without connectivity or bonds
+static int bonded_partner(const md_system_t& sys, size_t i) {
+    if (!sys.bond.conn.offset || i + 1 >= sys.bond.conn.offset_count) return -1;
+    for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        return (int)md_bond_iter_atom_index(&it);
+    }
+    return -1;
+}
+
+static std::string environment(const md_system_t& sys, size_t i) {
+    const auto z = md_atom_atomic_number(&sys.atom, i);
+    std::string label = element(sys, i);
+    if (z == 1) {
+        const int parent = bonded_partner(sys, i);
+        return parent >= 0 ? label + " (on " + element(sys, parent) + ")" : label;
+    }
+    if (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_AROMATIC) return label + " aromatic";
+    bool carbonyl = false, hydrogen = false;
+    for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const auto other_z = md_atom_atomic_number(&sys.atom, md_bond_iter_atom_index(&it));
+        hydrogen |= other_z == 1;
+        const auto flags = sys.bond.flags ? sys.bond.flags[md_bond_iter_bond_index(&it)] : MD_BOND_FLAG_NONE;
+        carbonyl |= md_bond_order(flags) == 2 && ((z == 6 && other_z == 8) || (z == 8 && other_z == 6));
+    }
+    if (carbonyl) return label + " carbonyl";
+    hydrogen |= sys.atom.hydrogen_count && sys.atom.hydrogen_count[i] > 0;
+    if ((z == 7 || z == 8) && hydrogen) return label + " (H-bearing)";
+    return label;
+}
+
+// Hill-order formula of the atoms: "C5N"
+static std::string formula(const md_system_t& sys, const int32_t* atoms, size_t size) {
+    std::vector<std::pair<std::string, int>> counts;
+    for (size_t k = 0; k < size; ++k) {
+        const std::string e = element(sys, atoms[k]);
+        auto it = std::find_if(counts.begin(), counts.end(), [&](const auto& c) { return c.first == e; });
+        if (it == counts.end()) counts.push_back({e, 1});
+        else it->second++;
+    }
+    // Hill order: C first, then the others alphabetically
+    std::sort(counts.begin(), counts.end(), [](const auto& a, const auto& b) {
+        if ((a.first == "C") != (b.first == "C")) return a.first == "C";
+        return a.first < b.first;
+    });
+    std::string result;
+    for (const auto& c : counts) result += c.first + (c.second > 1 ? std::to_string(c.second) : "");
+    return result;
+}
+
+// The ring's kind, size and composition: "Aromatic 6-ring C5N"
+static std::string ring_name(const md_system_t& sys, size_t ring) {
+    const md_ring_flags_t flags = md_ring_flags(&sys.ring, ring);
+    const size_t size = md_ring_size(&sys.ring, ring);
+    const std::string formula = critical_point_distribution::formula(sys, md_ring_atoms(&sys.ring, ring), size);
+    const char* kind = (flags & MD_RING_FLAG_AROMATIC) ? "Aromatic" : (flags & MD_RING_FLAG_SUGAR) ? "Sugar" : "Aliphatic";
+    return std::string(kind) + " " + std::to_string(size) + "-ring " + formula;
+}
+
+const char* kind_name(Kind kind) {
+    switch (kind) {
+    case Kind::Atom:       return "Atom";
+    case Kind::Bond:       return "Bond";
+    case Kind::Contact:    return "Contact";
+    case Kind::BondPath:   return "Bond path";
+    case Kind::Ring:       return "Ring";
+    case Kind::Cage:       return "Cage";
+    case Kind::NonNuclear: return "Non-nuclear attractor";
+    case Kind::Unassigned: return "Unassigned";
+    }
+    return "Unassigned";
+}
+
+std::string contact_environment_name(std::string_view interaction) {
+    std::string family = interaction.empty() ? "Other contacts" : std::string(interaction);
+    if (family == "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80") family = "\xCF\x80-stacking";
+    else if (family == "Agostic") family = "Agostic contacts";
+    else if (family == "Coordination") family = "Coordination contacts";
+    else if (family.ends_with(" bond") || family.ends_with(" contact") || family == "Salt bridge" || family == "Ion pair") family += "s";
+    return family;
+}
+
+std::string selection_environment_name(std::span<const std::vector<std::string>> paths) {
+    std::vector<std::string> common;
+    bool first = true;
+    for (const auto& path : paths) {
+        if (path.empty()) continue;
+        size_t size = path.size();
+        // NCI inspector paths may end with a detailed "Contact: ..." CP label.
+        for (Kind kind : {Kind::Atom, Kind::Bond, Kind::Contact, Kind::BondPath, Kind::Ring,
+                          Kind::Cage, Kind::NonNuclear}) {
+            if (path.back().starts_with(std::string(kind_name(kind)) + ": ")) {
+                --size;
+                break;
+            }
+        }
+        if (!size) continue;
+        if (first) {
+            common.assign(path.begin(), path.begin() + size);
+            first = false;
+        } else {
+            size_t depth = 0;
+            while (depth < common.size() && depth < size && common[depth] == path[depth]) ++depth;
+            common.resize(depth);
+        }
+    }
+    return common.empty() ? std::string{} : common.back();
+}
+
+std::vector<std::string> environment_path(const ChemicalLabel& label, const md_system_t& system) {
+    std::vector<std::string> path;
+    switch (label.kind) {
+    case Kind::Atom: path = {"Atoms"}; break;
+    case Kind::Bond: path = {"Bonds"}; break;
+    case Kind::Contact: {
+        path = {"Contacts", contact_environment_name(label.interaction)};
+        break;
+    }
+    case Kind::BondPath: path = {"Bond paths (connectivity unknown)"}; break;
+    case Kind::Ring:
+        path = {"Rings"};
+        if (label.group.starts_with("Aromatic ")) path.push_back("Aromatic rings");
+        else if (label.group.starts_with("Sugar ")) path.push_back("Sugar rings");
+        else if (label.group.starts_with("Aliphatic ")) path.push_back("Aliphatic rings");
+        else if (label.group.starts_with("Closed by ")) path.push_back("Contact-closed rings");
+        if (!label.group.empty()) path.push_back(label.group);
+        break;
+    case Kind::Cage:
+        path = {"Cages"};
+        if (!label.group.empty()) path.push_back(label.group);
+        break;
+    case Kind::NonNuclear: path = {"Non-nuclear attractors"}; break;
+    case Kind::Unassigned: return {"Unassigned"};
+    }
+    const auto valid_atom = [&](int i) { return i >= 0 && (size_t)i < system.atom.count; };
+    if (label.kind == Kind::Atom && valid_atom(label.atom[0])) {
+        path.push_back(element(system, label.atom[0]));
+    } else if ((label.kind == Kind::Bond || label.kind == Kind::Contact || label.kind == Kind::BondPath) &&
+               valid_atom(label.atom[0]) && valid_atom(label.atom[1])) {
+        int a = label.atom[0], b = label.atom[1];
+        if (label.kind == Kind::Contact && hydrogen_bond_class(label.interaction)) {
+            if (md_atom_atomic_number(&system.atom, b) == 1) std::swap(a, b);
+            const int donor = md_atom_atomic_number(&system.atom, a) == 1 ? bonded_partner(system, a) : -1;
+            if (valid_atom(donor)) {
+                path.push_back(element(system, donor) + "-H\xC2\xB7\xC2\xB7\xC2\xB7" + element(system, b));
+                return path;
+            }
+        }
+        std::string ea = element(system, a), eb = element(system, b);
+        if (ea > eb) std::swap(ea, eb);
+        path.push_back(ea + (label.kind == Kind::Contact ? "\xC2\xB7\xC2\xB7\xC2\xB7" :
+                            label.kind == Kind::Bond ? "-" : "~") + eb);
+    }
+    return path;
+}
+
+std::vector<EnvironmentTreeNode> environment_tree(std::span<const std::vector<std::string>> paths) {
+    std::vector<EnvironmentTreeNode> nodes(1);
+    for (size_t e = 0; e < paths.size(); ++e) {
+        const auto& path = paths[e];
+        if (path.empty()) continue;
+        uint32_t parent = 0;
+        nodes[parent].environments.push_back((uint32_t)e);
+        for (size_t depth = 0; depth < path.size(); ++depth) {
+            const bool leaf = depth + 1 == path.size();
+            uint32_t child = (uint32_t)nodes.size();
+            if (!leaf) {
+                for (uint32_t c : nodes[parent].children) {
+                    if (nodes[c].environment < 0 && nodes[c].name == path[depth]) {
+                        child = c;
+                        break;
+                    }
+                }
+            }
+            if (child == nodes.size()) {
+                nodes.push_back({path[depth], {}, {}, leaf ? (int)e : -1});
+                nodes[parent].children.push_back(child);
+            }
+            nodes[child].environments.push_back((uint32_t)e);
+            parent = child;
+        }
+    }
+    return nodes;
+}
+
+std::string display_name(const ChemicalLabel& label) {
+    if (label.kind == Kind::Unassigned) return label.group;
+    return std::string(kind_name(label.kind)) + ": " + label.group;
+}
+
+std::string display_name(const ChemicalLabel& label, int level) {
+    const int finer = std::min(level, (int)label.finer.size());
+    if (finer <= 0) return display_name(label);
+    const std::string& group = label.finer[finer - 1];
+    if (label.kind == Kind::Unassigned) return group;
+    return std::string(kind_name(label.kind)) + ": " + group;
+}
+
+int auto_detail_level(std::span<const ChemicalLabel> labels, std::span<const uint32_t> members, size_t max_groups) {
+    std::vector<std::string> names;
+    for (int level = detail_levels - 1; level > 0; --level) {
+        names.clear();
+        for (uint32_t i : members) {
+            if (i < labels.size()) names.push_back(display_name(labels[i], level));
+        }
+        std::sort(names.begin(), names.end());
+        if ((size_t)(std::unique(names.begin(), names.end()) - names.begin()) <= max_groups) return level;
+    }
+    return 0;
+}
+
+// The finest name a label has so far
+static const std::string& finest(const ChemicalLabel& label) { return label.finer.empty() ? label.group : label.finer.back(); }
+
+// Adds a finer name, unless it says nothing more than the last
+static void add_detail(ChemicalLabel& label, const std::string& name) {
+    if (!name.empty() && name != finest(label)) label.finer.push_back(name);
+}
+
+// The atoms bonded to atom i, as a formula ("C2H"); empty without connectivity
+static std::string neighbours(const md_system_t& sys, size_t i) {
+    if (!sys.bond.conn.offset || i + 1 >= sys.bond.conn.offset_count) return {};
+    std::vector<int32_t> atoms;
+    for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) atoms.push_back((int32_t)md_bond_iter_atom_index(&it));
+    return atoms.empty() ? std::string() : formula(sys, atoms.data(), atoms.size());
+}
+
+// The atom's environment with what it is bonded to: "C aromatic [C2H]"; a hydrogen by its parent: "H (on N [C2H])"
+static std::string atom_detail(const md_system_t& sys, size_t i) {
+    if (md_atom_atomic_number(&sys.atom, i) == 1) {
+        const int parent = bonded_partner(sys, i);
+        if (parent < 0) return environment(sys, i);
+        std::string p = environment(sys, parent);
+        const std::string implied = " (H-bearing)";
+        if (p.size() > implied.size() && p.compare(p.size() - implied.size(), implied.size(), implied) == 0) p.resize(p.size() - implied.size());
+        const std::string n = neighbours(sys, parent);
+        return "H (on " + p + (n.empty() ? "" : " [" + n + "]") + ")";
+    }
+    const std::string n = neighbours(sys, i);
+    return environment(sys, i) + (n.empty() ? "" : " [" + n + "]");
+}
+
+// The residues of the atoms by name: "in PHE", "between GLY and SER", "across DG\xC3\x974"; empty without residue names
+static std::string residue_context(const md_system_t& sys, std::span<const int> atoms) {
+    std::vector<md_residue_idx_t> residues;
+    for (int a : atoms) {
+        if (a < 0) return {};
+        const md_residue_idx_t r = md_system_residue_find_by_atom_idx(&sys, (size_t)a);
+        if (r < 0 || md_system_residue_name(&sys, r).len == 0) return {};
+        residues.push_back(r);
+    }
+    std::sort(residues.begin(), residues.end());
+    residues.erase(std::unique(residues.begin(), residues.end()), residues.end());
+    if (residues.empty()) return {};
+    std::vector<std::string> names;
+    for (md_residue_idx_t r : residues) {
+        const str_t name = md_system_residue_name(&sys, r);
+        names.push_back(std::string(name.ptr, name.len));
+    }
+    std::sort(names.begin(), names.end());
+    if (names.size() == 1) return "in " + names[0];
+    if (names.size() == 2) return "between " + names[0] + " and " + names[1];
+    std::string result = "across ";
+    for (size_t k = 0; k < names.size();) {
+        size_t n = 1;
+        while (k + n < names.size() && names[k + n] == names[k]) ++n;
+        result += (k ? ", " : "") + names[k] + (n > 1 ? "\xC3\x97" + std::to_string(n) : "");
+        k += n;
+    }
+    return result;
+}
+
+// Appends a residue context as the finest level
+static void add_residue_detail(ChemicalLabel& label, const md_system_t& sys, std::span<const int> atoms) {
+    const std::string context = residue_context(sys, atoms);
+    if (!context.empty()) add_detail(label, finest(label) + " " + context);
+}
+
+static double distance_squared(const Position& a, const Position& b) {
+    double sum = 0.0;
+    for (int k = 0; k < 3; ++k) sum += (a[k] - b[k]) * (a[k] - b[k]);
+    return sum;
+}
+
+double ellipticity(const double ev[3]) {
+    return ev[1] != 0.0 ? ev[0] / ev[1] - 1.0 : 0.0;
+}
+
+static double angle_degrees(const Position& a, const Position& vertex, const Position& b) {
+    double dot = 0.0, la = 0.0, lb = 0.0;
+    for (int k = 0; k < 3; ++k) {
+        const double u = a[k] - vertex[k], v = b[k] - vertex[k];
+        dot += u * v; la += u * u; lb += v * v;
+    }
+    if (la <= 0.0 || lb <= 0.0) return 0.0;
+    return std::acos(std::clamp(dot / std::sqrt(la * lb), -1.0, 1.0)) * 180.0 / 3.14159265358979323846;
+}
+
+static bool share_ring(const md_system_t& sys, int a, int b) {
+    for (size_t r = 0; r < md_ring_data_count(&sys.ring); ++r) {
+        const int32_t* atoms = md_ring_atoms(&sys.ring, r);
+        const size_t size = md_ring_size(&sys.ring, r);
+        bool has_a = false, has_b = false;
+        for (size_t k = 0; k < size; ++k) { has_a |= atoms[k] == a; has_b |= atoms[k] == b; }
+        if (has_a && has_b) return true;
+    }
+    return false;
+}
+
+// The net formal charge of the atom's charged group (md_chem's formal charges). A group is a cluster of bonded
+// formally charged atoms with its net charge, so the separated charges of a nitro group, an N-oxide or an ylide cancel
+// while a nitrate stays an anion. The atom takes the groups at the smallest bond distance, up to 3 bonds, where any is
+// found: a hydrogen of an ammonium sees its N(+), a carboxylate O its own or its partner's charge, while a
+// zwitterion's far end does not cancel the near one. 0 if none. An isolated metal is a cation and an isolated halogen
+// an anion when the file gives no charge.
+int group_charge(const md_system_t& sys, int atom) {
+    if (atom < 0 || (size_t)atom >= sys.atom.count) return 0;
+    const bool connectivity = sys.bond.conn.offset != nullptr && (size_t)atom + 1 < sys.bond.conn.offset_count;
+    const auto q = [&](int i) { return md_atom_formal_charge(&sys.atom, i); };
+    if (!connectivity || md_bond_conn_count(&sys.bond, atom) == 0) {
+        if (q(atom)) return q(atom);
+        const int n = (int)md_atom_atomic_number(&sys.atom, atom);
+        if (n == 3 || n == 11 || n == 19 || n == 37 || n == 55) return 1;
+        if (n == 4 || n == 12 || n == 20 || n == 38 || n == 56) return 2;
+        if (n == 9 || n == 17 || n == 35 || n == 53) return -1;
+        return 0;
+    }
+    // The net charge of the cluster of bonded charged atoms holding i
+    std::vector<int> counted;
+    const auto cluster = [&](int i) {
+        if (std::find(counted.begin(), counted.end(), i) != counted.end()) return 0;
+        int sum = 0;
+        std::vector<int> stack = {i};
+        counted.push_back(i);
+        while (!stack.empty()) {
+            const int k = stack.back();
+            stack.pop_back();
+            sum += q(k);
+            for (auto it = md_bond_iter(&sys.bond, k); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const int j = (int)md_bond_iter_atom_index(&it);
+                if (!q(j) || std::find(counted.begin(), counted.end(), j) != counted.end()) continue;
+                counted.push_back(j);
+                stack.push_back(j);
+            }
+        }
+        return sum;
+    };
+    std::vector<int> frontier = {atom}, seen = {atom};
+    for (int depth = 0; depth <= 3 && !frontier.empty(); ++depth) {
+        bool found = false;
+        int sum = 0;
+        for (int i : frontier) {
+            if (!q(i)) continue;
+            found = true;
+            sum += cluster(i);
+        }
+        if (found) return sum;
+        std::vector<int> next;
+        for (int i : frontier) {
+            for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const int j = (int)md_bond_iter_atom_index(&it);
+                if (std::find(seen.begin(), seen.end(), j) != seen.end()) continue;
+                seen.push_back(j);
+                next.push_back(j);
+            }
+        }
+        frontier = std::move(next);
+    }
+    return 0;
+}
+
+// The class of a contact bond path between atoms a and b, from elements, charges, connectivity and geometry, the
+// first rule that applies:
+//  - H···H: Dihydrogen bond (hydridic and protic H), else H···H.
+//  - H···Y (D-H the hydrogen's bond): Agostic (C-H···metal), Hydride bond (a hydridic H: on B/Al/Si/Ge or a metal),
+//    then with D-H···Y above 110 degrees (IUPAC 2011): Salt bridge (cationic donor group, anionic acceptor),
+//    Ionic hydrogen bond (one charged), Hydrogen bond, for D = N/O/F/S/Se/Cl/Br/I and an acceptor Y (N/O/F/P/S/Se/
+//    Cl/Br/I); Cation···π (a cationic group's H over a π system), X-H···π, C-H···π; C-H···X.
+//  - Triel bond: a trigonal B/Al/Ga towards a nucleophile.
+//  - A metal end: Metal···metal, Ion pair (with an anion), Cation···π, Coordination (to a lone-pair atom), else
+//    Metal contact.
+//  - σ-hole bonds (IUPAC 2013/2019: R-X···Y above 140 degrees, R bonded to X opposite Y; 160 and sp3 for carbon):
+//    Halogen···halogen (type I: both angles within 15 degrees), Halogen, Chalcogen, Pnictogen, Tetrel or Aerogen
+//    bond.
+//  - Cation···π, Anion···π: an atom of a charged group over a π system (aromatic, or sp2/sp carbon).
+//  - π-hole bond: a lone pair or anion over the π* of a C=O, C=S, N=O, S=O or P=O group, about perpendicular to the
+//    double bond (70-130 degrees; n→π* of carbonyls included).
+//  - π···π: atoms of two π systems (aromatic, conjugated substituents, sp2/sp atoms), not of one ring.
+//  - Lone pair···π: a lone-pair atom over an aromatic ring or sp2/sp carbon.
+//  - Ion pair: oppositely charged groups.
+//  - van der Waals contact otherwise.
+// A class names geometry, charges and topology only.
+static std::string contact_class(const md_system_t& sys, std::span<const Position> xyz, int a, int b, std::string& why) {
+    auto z = [&](int i) { return (int)md_atom_atomic_number(&sys.atom, i); };
+    auto hyb = [&](int i) { return md_atom_hybridization(&sys.atom, i); };
+    auto ring_aromatic = [&](int i) { return (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_AROMATIC) != 0; };
+    auto unsaturated = [&](int i) { return hyb(i) == MD_HYBRIDIZATION_SP2 || hyb(i) == MD_HYBRIDIZATION_SP; };
+    // Of an aromatic system: in an aromatic ring, or sp2/sp and bonded to one (exocyclic C=O, NH2 of a nucleobase)
+    auto aromatic = [&](int i) {
+        if (ring_aromatic(i)) return true;
+        if (z(i) == 1 || !unsaturated(i) || !sys.bond.conn.offset) return false;
+        for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            if (ring_aromatic((int)md_bond_iter_atom_index(&it))) return true;
+        }
+        return false;
+    };
+    // An atom of a π system: aromatic, or an sp2/sp B, C, N, O or S
+    auto pi_atom = [&](int i) {
+        const int n = z(i);
+        return aromatic(i) || ((n == 5 || n == 6 || n == 7 || n == 8 || n == 16) && unsaturated(i));
+    };
+    // A π face a cation, anion, lone pair or X-H can sit over: an aromatic atom or an sp2/sp carbon
+    auto pi_face = [&](int i) { return ring_aromatic(i) || aromatic(i) || (z(i) == 6 && unsaturated(i)); };
+    auto hydrogen_pi_face = [&](int i, int h) {
+        if (!pi_face(i)) return false;
+        if (!ring_aromatic(i) || z(i) == 6) return true;
+        // An aromatic heteroatom's in-plane lone pair is not its pi face. Use its two ring bonds
+        // to require an approach at least 30 degrees out of plane; do not constrain lone-pair...pi.
+        std::vector<int> neighbours;
+        for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int j = (int)md_bond_iter_atom_index(&it);
+            if (ring_aromatic(j) && share_ring(sys, i, j)) neighbours.push_back(j);
+        }
+        const Position d = {xyz[h][0] - xyz[i][0], xyz[h][1] - xyz[i][1], xyz[h][2] - xyz[i][2]};
+        for (size_t a = 0; a < neighbours.size(); ++a) {
+            for (size_t b = a + 1; b < neighbours.size(); ++b) {
+                Position u, v;
+                for (int k = 0; k < 3; ++k) {
+                    u[k] = xyz[neighbours[a]][k] - xyz[i][k];
+                    v[k] = xyz[neighbours[b]][k] - xyz[i][k];
+                }
+                const Position n = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+                double dot = 0.0, nn = 0.0, dd = 0.0;
+                for (int k = 0; k < 3; ++k) { dot += n[k] * d[k]; nn += n[k] * n[k]; dd += d[k] * d[k]; }
+                if (nn > 1.0e-12 && dd > 0.0) return dot * dot >= 0.25 * nn * dd;
+            }
+        }
+        return false;
+    };
+    auto acceptor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 15 || n == 16 || n == 17 || n == 34 || n == 35 || n == 53; };
+    auto donor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 16 || n == 17 || n == 34 || n == 35 || n == 53; };
+    auto halogen = [](int n) { return n == 17 || n == 35 || n == 53 || n == 85; };
+    auto chalcogen = [](int n) { return n == 16 || n == 34 || n == 52; };
+    auto pnictogen = [](int n) { return n == 15 || n == 33 || n == 51; };
+    auto tetrel = [](int n) { return n == 6 || n == 14 || n == 32 || n == 50 || n == 82; };
+    auto aerogen = [](int n) { return n == 18 || n == 36 || n == 54 || n == 86; };
+    auto triel = [](int n) { return n == 5 || n == 13 || n == 31; };
+    auto metal = [](int n) {
+        return n == 3 || n == 4 || n == 11 || n == 12 || n == 13 || (n >= 19 && n <= 31) || (n >= 37 && n <= 50) ||
+               (n >= 55 && n <= 84) || n >= 87;
+    };
+    // Below hydrogen in electronegativity: a hydrogen bonded to it is hydridic
+    auto hydridic_parent = [&](int n) { return n == 5 || n == 14 || n == 32 || metal(n); };
+    auto bonded_count = [&](int i) {
+        int count = 0;
+        if (!sys.bond.conn.offset || (size_t)i + 1 >= sys.bond.conn.offset_count) return 0;
+        for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) ++count;
+        return count;
+    };
+    // The lone pair of a terminal triple-bonded carbon: cyanide, carbon monoxide, isonitriles
+    auto carbon_lone_pair = [&](int i) { return z(i) == 6 && hyb(i) == MD_HYBRIDIZATION_SP && bonded_count(i) == 1; };
+    // A lone-pair donor: an acceptor element, a terminal C≡, or any anion
+    auto lone_pair = [&](int i) { return acceptor(z(i)) || carbon_lone_pair(i) || group_charge(sys, i) < 0; };
+    auto nucleophile = [&](int y) { return lone_pair(y) || pi_face(y) || pi_atom(y) || bonded_count(y) == 0; };
+    // The largest R-x...y angle over the atoms R bonded to x; -1 without bonds
+    auto sigma_angle = [&](int x, int y, int* opposite) {
+        double best = -1.0;
+        *opposite = -1;
+        if (!sys.bond.conn.offset) return best;
+        for (auto it = md_bond_iter(&sys.bond, x); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int r = (int)md_bond_iter_atom_index(&it);
+            const double angle = angle_degrees(xyz[r], xyz[x], xyz[y]);
+            if (angle > best) { best = angle; *opposite = r; }
+        }
+        return best;
+    };
+    // The O, S or N doubly bonded to x (a C=O, N=O, S=O, P=O or C=S π* acceptor), -1 if none
+    auto pi_star_partner = [&](int x) {
+        if (!sys.bond.conn.offset || ring_aromatic(x)) return -1;
+        const int n = z(x);
+        if (n != 6 && n != 7 && n != 15 && n != 16) return -1;
+        for (auto it = md_bond_iter(&sys.bond, x); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int o = (int)md_bond_iter_atom_index(&it);
+            const auto flags = sys.bond.flags ? sys.bond.flags[md_bond_iter_bond_index(&it)] : MD_BOND_FLAG_NONE;
+            const int order = md_bond_order(flags);
+            if ((z(o) == 8 || z(o) == 16) && (order == 2 || (unsaturated(x) && bonded_count(o) == 1))) return o;
+        }
+        return -1;
+    };
+    const int qa = group_charge(sys, a), qb = group_charge(sys, b);
+    char buf[200];
+
+    if (z(a) == 1 && z(b) == 1) {
+        // An unbonded hydrogen is a hydride (an ionic metal hydride is not perceived as bonded)
+        const int pa = bonded_partner(sys, a), pb = bonded_partner(sys, b);
+        for (int pass = 0; pass < 2; ++pass) {
+            const int hydride = pass ? pb : pa, proton = pass ? pa : pb;
+            if ((hydride < 0 || hydridic_parent(z(hydride))) && proton >= 0 && donor(z(proton))) {
+                snprintf(buf, sizeof(buf), "%s\xC2\xB7\xC2\xB7\xC2\xB7H-%s: a hydridic and a protic hydrogen.",
+                         hydride < 0 ? "H\xE2\x81\xBB" : (element(sys, hydride) + "-H").c_str(), element(sys, proton).c_str());
+                why = buf;
+                return "Dihydrogen bond";
+            }
+        }
+        why = "Both ends are hydrogens.";
+        return "H\xC2\xB7\xC2\xB7\xC2\xB7H";
+    }
+    if (z(a) == 1 || z(b) == 1) {
+        const int h = z(a) == 1 ? a : b, y = h == a ? b : a;
+        const int qh = h == a ? qa : qb, qy = h == a ? qb : qa;
+        const int parent = bonded_partner(sys, h);
+        if (parent < 0) {
+            if (metal(z(y))) { why = "H\xE2\x81\xBB\xC2\xB7\xC2\xB7\xC2\xB7" + element(sys, y) + ": an unbonded hydride and a metal."; return "Ion pair"; }
+            why = "The hydrogen has no bonded atom: a hydride.";
+            return "Hydride bond";
+        }
+        const std::string pe = element(sys, parent), ye = element(sys, y);
+        if (metal(z(y)) && z(parent) == 6) { why = "C-H\xC2\xB7\xC2\xB7\xC2\xB7" + ye + ": a C-H towards a metal."; return "Agostic"; }
+        if (hydridic_parent(z(parent))) { why = pe + "-H\xC2\xB7\xC2\xB7\xC2\xB7" + ye + ": a hydridic hydrogen."; return "Hydride bond"; }
+        const double angle = angle_degrees(xyz[parent], xyz[h], xyz[y]);
+        snprintf(buf, sizeof(buf), "%s-H\xC2\xB7\xC2\xB7\xC2\xB7%s angle %.0f degrees", pe.c_str(), ye.c_str(), angle);
+        why = buf;
+        if (metal(z(y))) { why += ", towards a metal."; return "Metal contact"; }
+        if (angle < 110.0) { why += " (below 110)."; return "van der Waals contact"; }
+        const bool polar = donor(z(parent));
+        if (polar && (acceptor(z(y)) || carbon_lone_pair(y))) {
+            snprintf(buf, sizeof(buf), "; donor group charge %+d, acceptor group charge %+d.", qh, qy);
+            why += buf;
+            if (qh > 0 && qy < 0) return "Salt bridge";
+            if (qh != 0 || qy != 0) return "Ionic hydrogen bond";
+            return "Hydrogen bond";
+        }
+        if (hydrogen_pi_face(y, h) && !carbon_lone_pair(y)) {
+            if (qh > 0) { why += ", from a cationic group."; return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
+            why += ".";
+            return z(parent) == 6 ? "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80" : "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+        }
+        why += ".";
+        if (acceptor(z(y)) || carbon_lone_pair(y) || qy < 0) return "C-H\xC2\xB7\xC2\xB7\xC2\xB7X";
+        return "van der Waals contact";
+    }
+    // Triel bonds: a trigonal B, Al or Ga (an empty p orbital) towards a nucleophile
+    for (int pass = 0; pass < 2; ++pass) {
+        const int x = pass ? b : a, y = pass ? a : b;
+        if (triel(z(x)) && bonded_count(x) == 3 && !metal(z(y)) && nucleophile(y)) {
+            why = element(sys, x) + " (trigonal) towards a " + element(sys, y) + " nucleophile.";
+            return "Triel bond";
+        }
+    }
+    // Metals and ions
+    for (int pass = 0; pass < 2; ++pass) {
+        const int m = pass ? b : a, y = pass ? a : b;
+        const int qm = pass ? qb : qa, qy = pass ? qa : qb;
+        if (!metal(z(m))) continue;
+        const std::string me = element(sys, m), ye = element(sys, y);
+        if (metal(z(y))) { why = me + "\xC2\xB7\xC2\xB7\xC2\xB7" + ye + ": two metals."; return "Metal\xC2\xB7\xC2\xB7\xC2\xB7metal"; }
+        if (qm > 0 && qy < 0) { why = me + "(+)\xC2\xB7\xC2\xB7\xC2\xB7" + ye + "(-): oppositely charged."; return "Ion pair"; }
+        if (pi_face(y)) { why = me + " over a \xCF\x80 system."; return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
+        if (lone_pair(y)) { why = me + " to a " + ye + " lone pair."; return "Coordination"; }
+        why = me + "\xC2\xB7\xC2\xB7\xC2\xB7" + ye + ": a metal end.";
+        return "Metal contact";
+    }
+    // Sigma-hole bonds: the donor x along the extension of a bond R-x, towards a nucleophile y (lone pair, π or anion)
+    {
+        auto sigma_donor = [&](int n) { return halogen(n) || chalcogen(n) || pnictogen(n) || tetrel(n) || aerogen(n); };
+        double angle[2] = {-1.0, -1.0};
+        int opposite[2] = {-1, -1};
+        for (int pass = 0; pass < 2; ++pass) {
+            const int x = pass ? b : a, y = pass ? a : b;
+            if (sigma_donor(z(x))) angle[pass] = sigma_angle(x, y, &opposite[pass]);
+        }
+        if (halogen(z(a)) && halogen(z(b)) && angle[0] >= 0.0 && angle[1] >= 0.0 && std::abs(angle[0] - angle[1]) < 15.0) {
+            snprintf(buf, sizeof(buf), "Symmetric R-X\xC2\xB7\xC2\xB7\xC2\xB7X-R angles %.0f and %.0f degrees (type I).", angle[0], angle[1]);
+            why = buf;
+            return "Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen";
+        }
+        const int pass = angle[1] > angle[0] ? 1 : 0;
+        const int x = pass ? b : a, y = pass ? a : b;
+        const double threshold = z(x) == 6 ? 160.0 : 140.0;
+        const bool sp3_carbon = z(x) != 6 || hyb(x) == MD_HYBRIDIZATION_SP3;
+        if (angle[pass] >= threshold && sp3_carbon && nucleophile(y) && opposite[pass] >= 0) {
+            snprintf(buf, sizeof(buf), "%s-%s\xC2\xB7\xC2\xB7\xC2\xB7%s angle %.0f degrees.", element(sys, opposite[pass]).c_str(),
+                     element(sys, x).c_str(), element(sys, y).c_str(), angle[pass]);
+            why = buf;
+            if (halogen(z(x))) return "Halogen bond";
+            if (chalcogen(z(x))) return "Chalcogen bond";
+            if (pnictogen(z(x))) return "Pnictogen bond";
+            if (aerogen(z(x))) return "Aerogen bond";
+            return "Tetrel bond";
+        }
+    }
+    // A charged group over a π system
+    for (int pass = 0; pass < 2; ++pass) {
+        const int x = pass ? b : a, y = pass ? a : b;
+        const int qx = pass ? qb : qa, qy = pass ? qa : qb;
+        if (qx == 0 || qy != 0 || !pi_face(y)) continue;
+        why = element(sys, x) + (qx > 0 ? " of a cationic" : " of an anionic") + " group over a \xCF\x80 system.";
+        return qx > 0 ? "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80" : "Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+    }
+    // A lone pair over a π* (C=O, N=O, S=O, P=O, C=S): n→π*, about perpendicular to the double bond
+    for (int pass = 0; pass < 2; ++pass) {
+        const int x = pass ? b : a, y = pass ? a : b;
+        const int o = pi_star_partner(x);
+        if (o < 0 || o == y || !lone_pair(y)) continue;
+        const double angle = angle_degrees(xyz[y], xyz[x], xyz[o]);
+        if (angle < 70.0 || angle > 130.0) continue;
+        snprintf(buf, sizeof(buf), "%s\xC2\xB7\xC2\xB7\xC2\xB7%s=%s angle %.0f degrees: a lone pair over a \xCF\x80*.", element(sys, y).c_str(),
+                 element(sys, x).c_str(), element(sys, o).c_str(), angle);
+        why = buf;
+        return "\xCF\x80-hole bond";
+    }
+    if (pi_atom(a) && pi_atom(b) && !share_ring(sys, a, b)) {
+        why = "Both ends belong to \xCF\x80 systems (aromatic rings, conjugated substituents or sp2/sp atoms), not to one ring.";
+        return "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+    }
+    // A lone pair over a π face
+    for (int pass = 0; pass < 2; ++pass) {
+        const int p = pass ? b : a, y = pass ? a : b;
+        if (!pi_face(p) || pi_atom(y) || !lone_pair(y)) continue;
+        why = "A " + element(sys, y) + " lone pair over a \xCF\x80 system.";
+        return "Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+    }
+    if (qa * qb < 0) {
+        snprintf(buf, sizeof(buf), "Oppositely charged groups (%+d, %+d).", qa, qb);
+        why = buf;
+        return "Ion pair";
+    }
+    why = "No class criterion is met: a close contact of " + element(sys, a) + " and " + element(sys, b) + ".";
+    return "van der Waals contact";
+}
+
+// Whether p, projected on the plane of the closed polygon, lies inside it; out_of_plane is its distance from it.
+static bool inside_polygon(const Position& p, const std::vector<Position>& polygon, double& out_of_plane, double& area) {
+    const size_t n = polygon.size();
+    Position c = {0, 0, 0}, normal = {0, 0, 0};
+    for (const auto& q : polygon) for (int k = 0; k < 3; ++k) c[k] += q[k] / n;
+    for (size_t i = 0; i < n; ++i) {
+        const Position& u = polygon[i];
+        const Position& v = polygon[(i + 1) % n];
+        normal[0] += (u[1] - v[1]) * (u[2] + v[2]);
+        normal[1] += (u[2] - v[2]) * (u[0] + v[0]);
+        normal[2] += (u[0] - v[0]) * (u[1] + v[1]);
+    }
+    const double length = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    if (length < 1e-9) return false;
+    area = 0.5 * length;
+    for (double& x : normal) x /= length;
+    // An orthonormal basis (e1, e2) of the plane
+    Position e1 = std::abs(normal[0]) < 0.9 ? Position{1, 0, 0} : Position{0, 1, 0};
+    double d = e1[0] * normal[0] + e1[1] * normal[1] + e1[2] * normal[2];
+    for (int k = 0; k < 3; ++k) e1[k] -= d * normal[k];
+    const double l1 = std::sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+    for (double& x : e1) x /= l1;
+    const Position e2 = {normal[1] * e1[2] - normal[2] * e1[1], normal[2] * e1[0] - normal[0] * e1[2], normal[0] * e1[1] - normal[1] * e1[0]};
+    auto project = [&](const Position& q, double& x, double& y) {
+        const double r[3] = {q[0] - c[0], q[1] - c[1], q[2] - c[2]};
+        x = r[0] * e1[0] + r[1] * e1[1] + r[2] * e1[2];
+        y = r[0] * e2[0] + r[1] * e2[1] + r[2] * e2[2];
+    };
+    out_of_plane = std::abs((p[0] - c[0]) * normal[0] + (p[1] - c[1]) * normal[1] + (p[2] - c[2]) * normal[2]);
+    double px, py;
+    project(p, px, py);
+    bool inside = false;
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        double xi, yi, xj, yj;
+        project(polygon[i], xi, yi);
+        project(polygon[j], xj, yj);
+        if ((yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}
+
+struct PathEdge {
+    int atom;
+    Kind kind;
+    uint32_t bcp;
+};
+
+// The simple cycles of 3 to max_size atoms of the bond-path graph among the candidate atoms, each once. False when
+// the search exceeds its step budget (dense contact networks), in which case nothing is concluded.
+static bool bond_path_cycles(const std::vector<std::vector<PathEdge>>& adjacency, const std::vector<int>& candidates,
+                             size_t max_size, std::vector<std::vector<int>>& cycles) {
+    std::vector<char> is_candidate(adjacency.size(), 0), on_path(adjacency.size(), 0);
+    for (int a : candidates) is_candidate[a] = 1;
+    std::vector<int> path;
+    size_t steps = 0;
+    const size_t budget = 200000;
+    bool complete = true;
+    for (int start : candidates) {
+        std::function<void(int)> visit = [&](int atom) {
+            if (++steps > budget) { complete = false; return; }
+            for (const PathEdge& e : adjacency[atom]) {
+                if (!complete) return;
+                if (e.atom == start && path.size() >= 3 && path[1] < path.back()) cycles.push_back(path);
+                if (e.atom <= start || !is_candidate[e.atom] || on_path[e.atom] || path.size() >= max_size) continue;
+                on_path[e.atom] = 1; path.push_back(e.atom);
+                visit(e.atom);
+                on_path[e.atom] = 0; path.pop_back();
+            }
+        };
+        path = {start};
+        on_path[start] = 1;
+        visit(start);
+        on_path[start] = 0;
+        if (!complete) return false;
+    }
+    return true;
+}
+
+// The closing contacts of a ring, most specific first: a contact ring or cage is grouped by, and belongs to the
+// interaction of, the first of them
+static const char* const closing_priority[] = {
+    "Salt bridge", "Ionic hydrogen bond", "Hydrogen bond", "Halogen bond", "Chalcogen bond", "Pnictogen bond",
+    "Tetrel bond", "Triel bond", "Aerogen bond", "Halogen\xC2\xB7\xC2\xB7\xC2\xB7halogen", "Coordination", "Ion pair",
+    "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Anion\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "\xCF\x80-hole bond",
+    "\xCF\x80\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Lone pair\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80",
+    "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80", "Dihydrogen bond", "Hydride bond", "Agostic", "Metal\xC2\xB7\xC2\xB7\xC2\xB7metal",
+    "Metal contact", "C-H\xC2\xB7\xC2\xB7\xC2\xB7X", "H\xC2\xB7\xC2\xB7\xC2\xB7H", "van der Waals contact"};
+static size_t closing_rank(const std::string& cls) {
+    for (size_t k = 0; k < sizeof(closing_priority) / sizeof(closing_priority[0]); ++k) if (cls == closing_priority[k]) return k;
+    return sizeof(closing_priority) / sizeof(closing_priority[0]);
+}
+
+static const char tied_ring_detail[] = "Equally small bond-path cycles of about the same area enclose it: ";
+
+bool ring_surface_may_decide(const ChemicalLabel& label) {
+    return label.kind == Kind::Unassigned && label.detail.rfind(tied_ring_detail, 0) == 0;
+}
+
+std::vector<ChemicalLabel> chemical_labels(const md_topo_extremum_graph_t& graph,
+                                         const md_system_t& system,
+                                         std::span<const Position> atoms_angstrom,
+                                         std::span<const std::vector<uint32_t>> ring_surfaces) {
+    std::vector<ChemicalLabel> labels(graph.num_vertices);
+    const double bohr_to_angstrom = md_unit_scale(md_unit_bohr_radius()) / md_unit_scale(md_unit_angstrom());
+    const size_t num_atoms = std::min(system.atom.count, atoms_angstrom.size());
+    auto position = [&](uint32_t i) {
+        const auto& v = graph.vertices[i];
+        const auto* d = graph.vertices_f64 ? graph.vertices_f64 + i : nullptr;
+        return Position{(d ? d->x : v.x) * bohr_to_angstrom, (d ? d->y : v.y) * bohr_to_angstrom, (d ? d->z : v.z) * bohr_to_angstrom};
+    };
+
+    // Rings whose atoms all have coordinates, by their centroids
+    std::vector<std::pair<size_t, Position>> rings;
+    for (size_t r = 0; r < md_ring_data_count(&system.ring); ++r) {
+        const int32_t* atoms = md_ring_atoms(&system.ring, r);
+        const size_t size = md_ring_size(&system.ring, r);
+        Position centroid = {0.0, 0.0, 0.0};
+        bool complete = size > 0;
+        for (size_t k = 0; k < size && complete; ++k) {
+            if (atoms[k] < 0 || (size_t)atoms[k] >= num_atoms) { complete = false; break; }
+            for (int c = 0; c < 3; ++c) centroid[c] += atoms_angstrom[atoms[k]][c] / size;
+        }
+        if (complete) rings.push_back({r, centroid});
+    }
+
+    std::vector<int> assigned_atom(system.atom.count, -1);
+    std::vector<int> assigned_ring(md_ring_data_count(&system.ring), -1);
+    // The atoms of each assigned ring CP, for its cage
+    std::vector<std::vector<int>> ring_atoms(graph.num_vertices);
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        auto& label = labels[i];
+        const int type = md_topo_vertex_type(&graph, i);
+        if (type == MD_TOPO_MINIMUM) {
+            label.group = "Cage CP (unassigned)";
+            label.detail = "Cage critical points are not assigned to a cage.";
+            continue;
+        }
+        if (type == MD_TOPO_JOIN_SADDLE) {
+            label.group = "Unassigned ring CP";
+            label.detail = "No unique perceived ring (3-7 atoms) with its centroid within 0.50 Angstrom.";
+            const Position p = position(i);
+            int match = -1;
+            bool ambiguous = false;
+            for (const auto& ring : rings) {
+                if (distance_squared(p, ring.second) <= 0.5 * 0.5) {
+                    ambiguous |= match >= 0;
+                    match = (int)ring.first;
+                }
+            }
+            if (match < 0 || ambiguous) continue;
+            if (assigned_ring[match] != -1) {
+                const int previous = assigned_ring[match];
+                if (previous >= 0) {
+                    labels[previous] = {Kind::Unassigned, "Unassigned ring CP", "Multiple ring CPs at the centroid of the same ring."};
+                }
+                assigned_ring[match] = -2;
+                label.detail = "Multiple ring CPs at the centroid of the same ring.";
+                continue;
+            }
+            assigned_ring[match] = (int)i;
+            ring_atoms[i].assign(md_ring_atoms(&system.ring, match), md_ring_atoms(&system.ring, match) + md_ring_size(&system.ring, match));
+            label.kind = Kind::Ring;
+            label.group = ring_name(system, match);
+            const int32_t* atoms = md_ring_atoms(&system.ring, match);
+            std::string list;
+            for (size_t k = 0; k < md_ring_size(&system.ring, match); ++k) list += (k ? ", " : "") + std::to_string(atoms[k] + 1);
+            label.detail = "Ring of atoms " + list + "; its centroid is the only one within 0.50 Angstrom.";
+            add_residue_detail(label, system, ring_atoms[i]);
+            continue;
+        }
+        if (type != MD_TOPO_MAXIMUM) continue;
+        const Position p = position(i);
+        int match = -1;
+        bool ambiguous = false;
+        for (size_t j = 0; j < num_atoms; ++j) {
+            if (distance_squared(p, atoms_angstrom[j]) <= 0.3 * 0.3) {
+                if (match >= 0) ambiguous = true;
+                match = (int)j;
+            }
+        }
+        label.group = "Unassigned attractor";
+        label.detail = "No unique nucleus within 0.30 Angstrom; may be non-nuclear or unresolved.";
+        if (match < 0 && num_atoms >= 2) {
+            // A non-nuclear attractor only when clearly away from every nucleus (0.30 to 0.50 Angstrom stays unresolved)
+            int first = -1, second = -1;
+            for (size_t j = 0; j < num_atoms; ++j) {
+                const double d = distance_squared(p, atoms_angstrom[j]);
+                if (first < 0 || d < distance_squared(p, atoms_angstrom[first])) { second = first; first = (int)j; }
+                else if (second < 0 || d < distance_squared(p, atoms_angstrom[second])) second = (int)j;
+            }
+            const double d1 = std::sqrt(distance_squared(p, atoms_angstrom[first]));
+            const double d2 = std::sqrt(distance_squared(p, atoms_angstrom[second]));
+            if (d1 > 0.5) {
+                std::string ea = element(system, first), eb = element(system, second);
+                if (ea > eb) std::swap(ea, eb);
+                char buf[160];
+                snprintf(buf, sizeof(buf), "Nearest nuclei: atom %d at %.2f Angstrom and atom %d at %.2f Angstrom.", first + 1, d1, second + 1, d2);
+                label.kind = Kind::NonNuclear;
+                label.group = "near " + ea + ", " + eb;
+                label.detail = buf;
+            }
+            continue;
+        }
+        if (match < 0 || ambiguous) continue;
+        // Multiple attractors near one nucleus are not multiple confident atom assignments.
+        if (assigned_atom[match] != -1) {
+            const int previous = assigned_atom[match];
+            if (previous >= 0) {
+                labels[previous] = {Kind::Unassigned, "Unassigned attractor", "Multiple attractors within 0.30 Angstrom of the same nucleus."};
+            }
+            assigned_atom[match] = -2;
+            label.detail = "Multiple attractors within 0.30 Angstrom of the same nucleus.";
+            continue;
+        }
+        assigned_atom[match] = (int)i;
+        label.kind = Kind::Atom;
+        label.atom[0] = match;
+        label.group = environment(system, match);
+        label.detail = "Atom " + std::to_string(match + 1) + " (" + label.group + "); unique nucleus within 0.30 Angstrom.";
+        add_detail(label, atom_detail(system, match));
+        const int self[1] = {match};
+        add_residue_detail(label, system, self);
+    }
+    std::vector<std::vector<uint32_t>> endpoints(graph.num_vertices);
+    for (uint32_t e = 0; e < graph.num_edges; ++e) {
+        const auto edge = graph.edges[e];
+        if (edge.from >= graph.num_vertices || edge.to >= graph.num_vertices) continue;
+        uint32_t bcp = edge.from, attractor = edge.to;
+        if (md_topo_vertex_type(&graph, bcp) == MD_TOPO_MAXIMUM) std::swap(bcp, attractor);
+        if (md_topo_vertex_type(&graph, bcp) != MD_TOPO_SPLIT_SADDLE ||
+            md_topo_vertex_type(&graph, attractor) != MD_TOPO_MAXIMUM) continue;
+        auto& ends = endpoints[bcp];
+        if (std::find(ends.begin(), ends.end(), attractor) == ends.end()) ends.push_back(attractor);
+    }
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        if (md_topo_vertex_type(&graph, i) != MD_TOPO_SPLIT_SADDLE) continue;
+        auto& label = labels[i];
+        label.group = "Unassigned BCP";
+        label.detail = "Requires two distinct bond-path attractors, each assigned to a nucleus.";
+        const auto& ends = endpoints[i];
+        if (ends.size() != 2) continue;
+        int a = labels[ends[0]].atom[0], b = labels[ends[1]].atom[0];
+        if (a < 0 || b < 0 || a == b) continue;
+        std::string ea = environment(system, a), eb = environment(system, b);
+        if (ea > eb) { std::swap(a, b); std::swap(ea, eb); }
+        const bool connectivity = system.bond.conn.offset != nullptr;
+        const bool bonded = connectivity && md_bond_find(&system.bond, a, b) >= 0;
+        label.kind = !connectivity ? Kind::BondPath : bonded ? Kind::Bond : Kind::Contact;
+        const char* relation = !connectivity ? "connectivity unknown" : bonded ? "bonded in the topology" : "not bonded in the topology";
+        label.atom[0] = a; label.atom[1] = b;
+        label.group = ea + (label.kind == Kind::Bond ? " \xE2\x80\x93 " : label.kind == Kind::Contact ? " \xC2\xB7\xC2\xB7\xC2\xB7 " : " ~ ") + eb;
+        label.detail = "Bond paths to atoms " + std::to_string(a + 1) + " and " + std::to_string(b + 1) +
+                       ", " + relation + ".";
+        if (label.kind == Kind::Contact && (size_t)std::max(a, b) < num_atoms) {
+            std::string why;
+            std::string cls = contact_class(system, atoms_angstrom, a, b, why);
+            label.interaction = cls;
+            const md_molecule_idx_t ma = md_system_molecule_find_by_atom_idx(&system, a);
+            const md_molecule_idx_t mb = md_system_molecule_find_by_atom_idx(&system, b);
+            if (ma >= 0 && mb >= 0) cls += ma == mb ? " (intramolecular)" : " (intermolecular)";
+            label.group = cls + ": " + label.group;
+            label.detail += " " + why;
+        }
+        {
+            const char* sep = label.kind == Kind::Bond ? " \xE2\x80\x93 " : label.kind == Kind::Contact ? " \xC2\xB7\xC2\xB7\xC2\xB7 " : " ~ ";
+            const std::string coarse = ea + sep + eb;
+            const std::string prefix = label.group.substr(0, label.group.size() - coarse.size());
+            std::string da = atom_detail(system, a), db = atom_detail(system, b);
+            if (ea == eb && da > db) std::swap(da, db);
+            add_detail(label, prefix + da + sep + db);
+            const int ends_atoms[2] = {a, b};
+            add_residue_detail(label, system, ends_atoms);
+        }
+        if (graph.vertices_f64) {
+            const double* ev = graph.vertices_f64[i].hessian_eigenvalues;
+            const double laplacian = ev[0] + ev[1] + ev[2];
+            char buf[160];
+            snprintf(buf, sizeof(buf), " Laplacian %.4g au (%s), ellipticity %.3f.", laplacian,
+                     laplacian < 0.0 ? "negative: shared-shell" : "positive: closed-shell", ellipticity(ev));
+            label.detail += buf;
+        }
+    }
+
+    // Ring CPs not at a perceived ring's centroid: inside the smallest cycle of bond paths (bonds and contacts) around
+    // them. Bond paths are taken as straight lines between the nuclei.
+    auto density = [&](uint32_t i) { return graph.vertices_f64 ? graph.vertices_f64[i].value : (double)graph.vertices[i].value; };
+    // One edge per pair of nuclei: of parallel bond paths, the densest BCP, which the density rule below should see
+    std::vector<std::vector<PathEdge>> adjacency(num_atoms);
+    auto add_edge = [&](int a, int b, Kind kind, uint32_t bcp) {
+        for (PathEdge& e : adjacency[a]) {
+            if (e.atom != b) continue;
+            if (density(bcp) > density(e.bcp)) e = {b, kind, bcp};
+            return;
+        }
+        adjacency[a].push_back({b, kind, bcp});
+    };
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        const auto& l = labels[i];
+        if (md_topo_vertex_type(&graph, i) != MD_TOPO_SPLIT_SADDLE || l.atom[0] < 0 || l.atom[1] < 0) continue;
+        if ((size_t)std::max(l.atom[0], l.atom[1]) >= num_atoms) continue;
+        add_edge(l.atom[0], l.atom[1], l.kind, i);
+        add_edge(l.atom[1], l.atom[0], l.kind, i);
+    }
+    auto edge = [&](int a, int b) {
+        for (const PathEdge& e : adjacency[a]) if (e.atom == b) return e;
+        return PathEdge{b, Kind::Unassigned, UINT32_MAX};
+    };
+    // Every enclosing cycle of every remaining ring CP is a candidate, scored by its size and the CP's distance from
+    // its plane (0.25 Angstrom counts as one atom). The best-scoring pairs are matched first and each cycle takes one
+    // ring CP, so a CP whose best cycle is taken falls back to its next one rather than both being dropped.
+    std::vector<std::vector<int>> cycle_atoms;
+    std::map<std::vector<int>, int> cycle_index;   // by sorted atoms
+    std::vector<char> cycle_claimed;
+    auto cycle_id = [&](const std::vector<int>& cycle) {
+        std::vector<int> key = cycle;
+        std::sort(key.begin(), key.end());
+        auto [it, inserted] = cycle_index.try_emplace(key, (int)cycle_atoms.size());
+        if (inserted) { cycle_atoms.push_back(cycle); cycle_claimed.push_back(0); }
+        return it->second;
+    };
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        if (md_topo_vertex_type(&graph, i) == MD_TOPO_JOIN_SADDLE && !ring_atoms[i].empty()) cycle_claimed[cycle_id(ring_atoms[i])] = 1;
+    }
+    struct Candidate { uint32_t rcp; int cycle; double offset, area, score; };
+    std::vector<Candidate> candidates;
+    std::vector<char> pending(graph.num_vertices, 0);
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        if (md_topo_vertex_type(&graph, i) != MD_TOPO_JOIN_SADDLE || labels[i].kind != Kind::Unassigned) continue;
+        if (labels[i].detail.rfind("Multiple", 0) == 0) continue;
+        const Position p = position(i);
+        // Rings of up to 10 bond paths first; only without one, the larger hydrogen-bonded rings of proteins, up to 14
+        bool thinner = false, crowded = false;
+        for (const auto [max_size, radius] : {std::pair<size_t, double>{10, 5.0}, {14, 6.0}}) {
+            std::vector<int> near;
+            for (size_t j = 0; j < num_atoms; ++j) {
+                if (!adjacency[j].empty() && distance_squared(p, atoms_angstrom[j]) <= radius * radius) near.push_back((int)j);
+            }
+            std::vector<std::vector<int>> cycles;
+            if (!bond_path_cycles(adjacency, near, max_size, cycles)) {
+                crowded = true;
+                break;
+            }
+            for (const auto& cycle : cycles) {
+                std::vector<Position> polygon;
+                for (int a : cycle) polygon.push_back(atoms_angstrom[a]);
+                double offset = 0.0, area = 0.0;
+                if (!inside_polygon(p, polygon, offset, area) || offset > 1.0) continue;
+                // On its ring's surface a ring CP is the density minimum: every bond path around it is denser at its BCP
+                bool denser = true;
+                for (size_t k = 0; k < cycle.size() && denser; ++k) {
+                    const PathEdge e = edge(cycle[k], cycle[(k + 1) % cycle.size()]);
+                    denser = e.bcp != UINT32_MAX && density(e.bcp) > density(i);
+                }
+                if (!denser) { thinner = true; continue; }
+                const int id = cycle_id(cycle);
+                if (cycle_claimed[id]) continue;
+                candidates.push_back({i, id, offset, area, (double)cycle.size() + offset / 0.25});
+                pending[i] = 1;
+            }
+            if (pending[i]) break;
+        }
+        labels[i].detail = crowded && !pending[i] ? "Too many bond-path cycles around it to decide its ring."
+                         : thinner ? "The cycles of 3-14 bond paths around it each have a BCP less dense than it, so none can be its ring."
+                         : "No cycle of 3-14 bond paths encloses it within 1.0 Angstrom of its plane.";
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        return a.score != b.score ? a.score < b.score : a.rcp < b.rcp;
+    });
+    std::vector<std::pair<int, double>> chosen(graph.num_vertices, {-1, 0.0});
+    std::vector<std::string> surface_note(graph.num_vertices);
+    auto atom_list = [](const std::vector<int>& atoms) {
+        std::string list;
+        for (int a : atoms) list += (list.empty() ? "" : ", ") + std::to_string(a + 1);
+        return list;
+    };
+    for (const Candidate& c : candidates) {
+        if (!pending[c.rcp] || cycle_claimed[c.cycle]) continue;
+        // Equally good cycles of the same size: one nested in another shares most of its path and detours around
+        // more, so the ring CP sits in the face of the smallest. Undecided when the two smallest are about as large.
+        std::vector<const Candidate*> rivals = {&c};
+        for (const Candidate& o : candidates) {
+            if (o.rcp != c.rcp || o.cycle == c.cycle || cycle_claimed[o.cycle]) continue;
+            if (cycle_atoms[o.cycle].size() == cycle_atoms[c.cycle].size() && std::abs(o.offset - c.offset) < 0.1) rivals.push_back(&o);
+        }
+        std::sort(rivals.begin(), rivals.end(), [](const Candidate* a, const Candidate* b) { return a->area < b->area; });
+        pending[c.rcp] = 0;
+        // A ring's face holds no other bond path: a cycle with another's atom inside it encloses that one
+        if (rivals.size() > 1) {
+            std::vector<const Candidate*> empty;
+            for (const Candidate* x : rivals) {
+                const std::vector<int>& own = cycle_atoms[x->cycle];
+                std::vector<Position> polygon;
+                for (int a : own) polygon.push_back(atoms_angstrom[a]);
+                bool holds = false;
+                for (const Candidate* y : rivals) {
+                    for (int a : cycle_atoms[y->cycle]) {
+                        if (holds || std::find(own.begin(), own.end(), a) != own.end()) continue;
+                        double off = 0.0, area = 0.0;
+                        holds = inside_polygon(atoms_angstrom[a], polygon, off, area) && off < 1.0;
+                    }
+                }
+                if (!holds) empty.push_back(x);
+            }
+            if (empty.size() == 1) rivals = empty;
+        }
+        // The ring surface of a ring CP ends at the nuclei of its ring: of the cycles, only one may hold all those it reaches.
+        // Its paths can stray to a neighbouring nucleus (the angles to some nuclei are very narrow), so the nuclei in no
+        // cycle are left out.
+        if (rivals.size() > 1 && rivals[1]->area < 1.15 * rivals[0]->area && c.rcp < ring_surfaces.size() && !ring_surfaces[c.rcp].empty()) {
+            auto holds = [&](const Candidate* x, int a) {
+                const std::vector<int>& own = cycle_atoms[x->cycle];
+                return std::find(own.begin(), own.end(), a) != own.end();
+            };
+            std::vector<int> reached;
+            for (uint32_t v : ring_surfaces[c.rcp]) {
+                if (v >= graph.num_vertices || labels[v].kind != Kind::Atom) continue;
+                const int a = labels[v].atom[0];
+                const bool in_cycle = std::any_of(rivals.begin(), rivals.end(), [&](const Candidate* x) { return holds(x, a); });
+                if (in_cycle && std::find(reached.begin(), reached.end(), a) == reached.end()) reached.push_back(a);
+            }
+            std::vector<const Candidate*> holding;
+            for (const Candidate* x : rivals) {
+                if (std::all_of(reached.begin(), reached.end(), [&](int a) { return holds(x, a); })) holding.push_back(x);
+            }
+            if (!reached.empty() && holding.size() == 1) {
+                surface_note[c.rcp] = " Of " + std::to_string(rivals.size()) + " equally small cycles around it, the only one with every nucleus its ring surface reaches (atoms " + atom_list(reached) + ").";
+                rivals = holding;
+            } else if (!reached.empty()) {
+                surface_note[c.rcp] = " Its ring surface reaches atoms " + atom_list(reached) + ", in more than one of them.";
+            }
+        }
+        if (rivals.size() > 1 && rivals[1]->area < 1.15 * rivals[0]->area) {
+            auto describe = [&](const Candidate& x) {
+                std::string list;
+                for (int a : cycle_atoms[x.cycle]) list += (list.empty() ? "" : ", ") + std::to_string(a + 1);
+                char buf[64];
+                snprintf(buf, sizeof(buf), " (%.2f Angstrom off, %.1f Angstrom\xC2\xB2)", x.offset, x.area);
+                return "atoms " + list + buf;
+            };
+            std::string text = tied_ring_detail;
+            for (size_t k = 0; k < rivals.size(); ++k) text += (k ? "; " : "") + describe(*rivals[k]);
+            labels[c.rcp].detail = text + "." + surface_note[c.rcp];
+            continue;
+        }
+        const Candidate& best = *rivals[0];
+        cycle_claimed[best.cycle] = 1;
+        chosen[best.rcp] = {best.cycle, best.offset};
+    }
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        if (chosen[i].first < 0) {
+            if (pending[i]) labels[i].detail = "Every bond-path cycle around it is taken by a nearer ring CP.";
+            continue;
+        }
+        const std::vector<int>& best = cycle_atoms[chosen[i].first];
+        const double best_offset = chosen[i].second;
+        int contacts = 0, unknown = 0;
+        uint32_t coalescing = UINT32_MAX;
+        std::vector<std::string> classes;
+        for (size_t k = 0; k < best.size(); ++k) {
+            const PathEdge e = edge(best[k], best[(k + 1) % best.size()]);
+            contacts += e.kind == Kind::Contact;
+            unknown += e.kind == Kind::BondPath;
+            if (e.kind == Kind::Contact && e.bcp != UINT32_MAX) {
+                const std::string& cls = labels[e.bcp].interaction.empty() ? std::string("van der Waals contact") : labels[e.bcp].interaction;
+                if (std::find(classes.begin(), classes.end(), cls) == classes.end()) classes.push_back(cls);
+            }
+            // A ring CP with nearly the density of a BCP on its ring is close to annihilating with it
+            if (e.bcp != UINT32_MAX && std::abs(density(e.bcp) - density(i)) <= 0.02 * std::abs(density(e.bcp))) coalescing = e.bcp;
+        }
+        // The ring is grouped by the most specific of its closing contacts; all of them are in its detail
+        std::sort(classes.begin(), classes.end(), [](const auto& a, const auto& b) { return closing_rank(a) < closing_rank(b); });
+        std::string closed_by;
+        for (const auto& cls : classes) closed_by += (closed_by.empty() ? "" : ", ") + cls;
+        const std::string size = std::to_string(best.size()) + "-ring";
+        const std::string atoms_formula = formula(system, best.data(), best.size());
+        auto& label = labels[i];
+        label.kind = Kind::Ring;
+        if (contacts && !classes.empty()) label.interaction = classes.front();
+        // Contact rings are named by what closes them; their sizes and compositions vary too much to group by
+        label.group = contacts ? "Closed by " + classes.front()
+                    : unknown ? "Bond-path " + size + " " + atoms_formula
+                    : "Bonded " + size + " " + atoms_formula;
+        std::string list;
+        for (size_t k = 0; k < best.size(); ++k) list += (k ? ", " : "") + std::to_string(best[k] + 1);
+        char buf[160];
+        snprintf(buf, sizeof(buf), "; %.2f Angstrom from its mean plane", best_offset);
+        label.detail = "Cycle of bond paths around it: atoms " + list + " (" + atoms_formula + ")" + buf;
+        if (contacts) label.detail += "; " + size + ", " + std::to_string(contacts) + (contacts == 1 ? " contact: " : " contacts: ") + closed_by + ".";
+        else label.detail += ".";
+        label.detail += surface_note[i];
+        if (contacts) add_detail(label, label.group + ", " + size + " " + atoms_formula);
+        add_residue_detail(label, system, best);
+        if (coalescing != UINT32_MAX) {
+            label.group += " (near-degenerate)";
+            for (auto& name : label.finer) name += " (near-degenerate)";
+            snprintf(buf, sizeof(buf), " Its density is within 2%% of BCP %u on the ring: the pair is close to annihilating.", coalescing);
+            label.detail += buf;
+        }
+        ring_atoms[i] = best;
+    }
+
+    // Cage CPs: the ring CPs whose paths end at them are the faces of the cage
+    std::vector<std::vector<uint32_t>> faces(graph.num_vertices);
+    for (uint32_t e = 0; e < graph.num_edges; ++e) {
+        uint32_t rcp = graph.edges[e].from, ccp = graph.edges[e].to;
+        if (rcp >= graph.num_vertices || ccp >= graph.num_vertices) continue;
+        if (md_topo_vertex_type(&graph, rcp) == MD_TOPO_MINIMUM) std::swap(rcp, ccp);
+        if (md_topo_vertex_type(&graph, rcp) != MD_TOPO_JOIN_SADDLE || md_topo_vertex_type(&graph, ccp) != MD_TOPO_MINIMUM) continue;
+        if (std::find(faces[ccp].begin(), faces[ccp].end(), rcp) == faces[ccp].end()) faces[ccp].push_back(rcp);
+    }
+    for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+        if (md_topo_vertex_type(&graph, i) != MD_TOPO_MINIMUM) continue;
+        const auto& f = faces[i];
+        if (f.size() < 3) {
+            labels[i].detail = "Cage critical points need ring-CP paths to at least 3 faces; " + std::to_string(f.size()) + " found.";
+            continue;
+        }
+        std::vector<int> atoms;
+        std::string list;
+        bool complete = true;
+        for (uint32_t r : f) {
+            if (labels[r].kind != Kind::Ring || ring_atoms[r].empty()) { complete = false; break; }
+            atoms.insert(atoms.end(), ring_atoms[r].begin(), ring_atoms[r].end());
+            list += (list.empty() ? "" : "; ") + labels[r].group;
+        }
+        if (!complete) {
+            labels[i].detail = "Not every ring CP whose path ends here is assigned to a ring.";
+            continue;
+        }
+        std::sort(atoms.begin(), atoms.end());
+        atoms.erase(std::unique(atoms.begin(), atoms.end()), atoms.end());
+        bool contact_face = false;
+        std::string interaction;
+        for (uint32_t r : f) {
+            contact_face |= labels[r].group.rfind("Closed by ", 0) == 0;
+            const std::string& cls = labels[r].interaction;
+            if (!cls.empty() && (interaction.empty() || closing_rank(cls) < closing_rank(interaction))) interaction = cls;
+        }
+        labels[i].kind = Kind::Cage;
+        labels[i].interaction = interaction;
+        labels[i].group = std::string(contact_face ? "Contact cage" : "Bonded cage") + ", " + std::to_string(f.size()) + " faces";
+        labels[i].detail = "Atoms " + formula(system, atoms.data(), atoms.size()) + "; faces: " + list + ".";
+        add_detail(labels[i], labels[i].group + " " + formula(system, atoms.data(), atoms.size()));
+        add_residue_detail(labels[i], system, atoms);
+    }
+    return labels;
+}
+
+bool within_focus(const Position& position_angstrom, std::span<const Position> centers_angstrom) {
+    for (const Position& center : centers_angstrom) {
+        if (distance_squared(position_angstrom, center) <= 3.0 * 3.0) return true;
+    }
+    return false;
+}
+
+bool Filter::accepts(double density) const {
+    if (!std::isfinite(density)) return false;
+    if (!enabled) return true;
+    for (const Range& range : ranges) {
+        if (density >= range.min && density <= range.max) return true;
+    }
+    return false;
+}
+
+Curve estimate(std::span<const double> density, std::span<const uint32_t> component, size_t component_count, bool allow_log,
+               double sample_min, double sample_max) {
+    Curve curve;
+    if (density.empty()) return curve;
+    for (double value : density) {
+        if (!std::isfinite(value)) {
+            MD_LOG_ERROR("Critical-point distribution: non-finite density");
+            return curve;
+        }
+    }
+    if (!component.empty()) {
+        if (component.size() != density.size()) {
+            MD_LOG_ERROR("Critical-point distribution: component count does not match density count");
+            return curve;
+        }
+        for (uint32_t c : component) {
+            if (c >= component_count) {
+                MD_LOG_ERROR("Critical-point distribution: component index out of range");
+                return curve;
+            }
+        }
+    }
+
+    std::vector<size_t> order(density.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return density[a] < density[b]; });
+    std::vector<double> values(density.size());
+    std::vector<uint32_t> member(density.size(), 0);
+    for (size_t i = 0; i < order.size(); ++i) {
+        values[i] = density[order[i]];
+        if (!component.empty()) member[i] = component[order[i]];
+    }
+    curve.components.assign(component.empty() ? 0 : component_count, {});
+    curve.logarithmic = allow_log && values.front() > 0.0;
+    if (curve.logarithmic) {
+        for (double& value : values) value = std::log10(value);
+    }
+
+    const size_t count = values.size();
+    const size_t neighbors = std::min(count - 1, std::min(size_t(32), std::max(size_t(2), size_t(std::sqrt(count)))));
+    const double fallback = curve.logarithmic ? 0.05 : std::max(std::abs(values.front()) * 0.05, 1.0e-12);
+    std::vector<double> bandwidth(count);
+    for (size_t i = 0; i < count; ++i) {
+        size_t lo = i, hi = i;
+        for (size_t k = 0; k < neighbors; ++k) {
+            if (lo > 0 && (hi + 1 == count || values[i] - values[lo - 1] < values[hi + 1] - values[i])) --lo;
+            else ++hi;
+        }
+        bandwidth[i] = std::max(values[i] - values[lo], values[hi] - values[i]) * 0.5;
+    }
+    const double max_bandwidth = std::max(*std::max_element(bandwidth.begin(), bandwidth.end()), fallback);
+    double begin = values.front() - 4.0 * max_bandwidth;
+    double end = values.back() + 4.0 * max_bandwidth;
+    if (sample_max > sample_min && (!curve.logarithmic || sample_min > 0.0)) {
+        begin = curve.logarithmic ? std::log10(sample_min) : sample_min;
+        end = curve.logarithmic ? std::log10(sample_max) : sample_max;
+    }
+    const double step = (end - begin) / (Curve::sample_count - 1);
+    // Keep even coincident samples resolved by the curve's sampling grid.
+    for (double& width : bandwidth) width = std::max(width, 2.0 * step);
+
+    constexpr double inv_sqrt_two_pi = 0.3989422804014327;
+    for (int j = 0; j < Curve::sample_count; ++j) {
+        const double x = begin + j * step;
+        curve.density[j] = curve.logarithmic ? std::pow(10.0, x) : x;
+        double sum = 0.0;
+        for (size_t i = 0; i < count; ++i) {
+            const double z = (x - values[i]) / bandwidth[i];
+            const double kernel = std::exp(-0.5 * z * z) / bandwidth[i];
+            sum += kernel;
+            if (!curve.components.empty()) curve.components[member[i]][j] += kernel * inv_sqrt_two_pi / count;
+        }
+        curve.probability[j] = sum * inv_sqrt_two_pi / count;
+    }
+    curve.valid = true;
+    return curve;
+}
+
+
+std::vector<Valley> valleys(const Curve& curve, double min_persistence) {
+    std::vector<Valley> result;
+    if (!curve.valid) return result;
+    const auto& p = curve.probability;
+    const int n = (int)p.size();
+    double top = 0.0;
+    for (double v : p) top = std::max(top, v);
+    if (!(top > 0.0)) return result;
+    // Superlevel sets from the top down: a sample joining two peaks is a valley, and the lower peak dies there
+    std::vector<int> order(n);
+    for (int k = 0; k < n; ++k) order[k] = k;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return p[a] > p[b]; });
+    std::vector<int> parent(n, -1);
+    std::vector<double> peak(n, 0.0);
+    std::function<int(int)> root = [&](int k) { return parent[k] == k ? k : parent[k] = root(parent[k]); };
+    for (int k : order) {
+        parent[k] = k;
+        peak[k] = p[k];
+        int joined = -1;
+        for (int nb : {k - 1, k + 1}) {
+            if (nb < 0 || nb >= n || parent[nb] < 0) continue;
+            const int r = root(nb);
+            if (joined < 0) {
+                parent[k] = r;
+                joined = r;
+                continue;
+            }
+            const int a = root(k);
+            if (a == r) continue;
+            const int younger = peak[a] < peak[r] ? a : r, elder = younger == a ? r : a;
+            const double persistence = (peak[younger] - p[k]) / top;
+            if (persistence >= min_persistence) result.push_back({curve.density[k], persistence});
+            parent[younger] = elder;
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const Valley& a, const Valley& b) { return a.density < b.density; });
+    return result;
+}
+
+std::vector<double> peak_cuts(std::span<const Valley> valleys, double view_min, double view_max, size_t max_peaks) {
+    std::vector<double> cuts;
+    if (max_peaks < 2) return cuts;
+    auto deepest = [&](auto&& accept) {
+        std::vector<Valley> chosen;
+        for (const Valley& v : valleys) if (accept(v)) chosen.push_back(v);
+        std::stable_sort(chosen.begin(), chosen.end(), [](const Valley& a, const Valley& b) { return a.persistence > b.persistence; });
+        if (chosen.size() > max_peaks - 1) chosen.resize(max_peaks - 1);
+        return chosen;
+    };
+    // Outside the view only the overview's cuts
+    for (const Valley& v : deepest([](const Valley&) { return true; })) {
+        if (v.density < view_min || v.density > view_max) cuts.push_back(v.density);
+    }
+    for (const Valley& v : deepest([&](const Valley& v) { return v.density >= view_min && v.density <= view_max; })) cuts.push_back(v.density);
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    return cuts;
+}
+
+std::vector<double> refine_cuts(std::span<const double> overview, std::span<const Valley> view_valleys,
+                                std::span<const double> sorted_values, double view_min, double view_max, size_t max_peaks) {
+    std::vector<double> cuts(overview.begin(), overview.end());
+    std::sort(cuts.begin(), cuts.end());
+    auto in_view = [&](double d) { return d >= view_min && d <= view_max; };
+    size_t peaks_in_view = 1;
+    for (double c : cuts) peaks_in_view += in_view(c);
+    std::vector<Valley> candidates;
+    for (const Valley& v : view_valleys) if (in_view(v.density)) candidates.push_back(v);
+    std::stable_sort(candidates.begin(), candidates.end(), [](const Valley& a, const Valley& b) { return a.persistence > b.persistence; });
+    auto rank = [&](double d) { return std::upper_bound(sorted_values.begin(), sorted_values.end(), d) - sorted_values.begin(); };
+    for (const Valley& v : candidates) {
+        if (peaks_in_view >= max_peaks) break;
+        // Both sides must keep CPs: the values between the neighbouring cuts and this one
+        const auto it = std::lower_bound(cuts.begin(), cuts.end(), v.density);
+        const auto r = rank(v.density);
+        const auto below = it == cuts.begin() ? 0 : rank(*(it - 1));
+        const auto above = it == cuts.end() ? (std::ptrdiff_t)sorted_values.size() : rank(*it);
+        if (r == below || r == above) continue;
+        cuts.insert(it, v.density);
+        ++peaks_in_view;
+    }
+    return cuts;
+}
+
+EnergyDensities energy_densities(double G, double laplacian) {
+    EnergyDensities e;
+    if (!std::isfinite(G) || !std::isfinite(laplacian)) return e;
+    e.G = G;
+    e.V = 0.25 * laplacian - 2.0 * G;
+    e.H = e.G + e.V;
+    e.ratio = G > 0.0 ? std::abs(e.V) / G : NAN;
+    return e;
+}
+
+double hydrogen_bond_energy(HBondFormula formula, double rho, double V) {
+    constexpr double kcal_per_hartree = 627.5094740631;
+    switch (formula) {
+    case HBondFormula::Emamian:  return std::isfinite(rho) ? -223.08 * rho + 0.7423 : NAN;
+    case HBondFormula::Espinosa: return std::isfinite(V) ? 0.5 * V * kcal_per_hartree : NAN;
+    }
+    return NAN;
+}
+
+bool hydrogen_bond_energy_applies(const ChemicalLabel& label) {
+    return label.kind == Kind::Contact && hydrogen_bond_class(label.interaction);
+}
+
+const char* character_name(Character character) {
+    switch (character) {
+    case Character::None:         return "";
+    case Character::Covalent:     return "Covalent";
+    case Character::StrongAttractive: return "Attractive (strong)";
+    case Character::Attractive:   return "Attractive";
+    case Character::Mixed:        return "Mixed";
+    case Character::Repulsive:    return "Repulsive";
+    case Character::WeakAttractive: return "Weak, attractive lean";
+    case Character::Weak:         return "Weak, no lean";
+    case Character::WeakRepulsive: return "Weak, repulsive lean";
+    case Character::Undetermined: return "Undetermined";
+    }
+    return "";
+}
+
+static constexpr double pi = 3.14159265358979323846;
+
+double reduced_density_gradient(double rho, const double grad[3]) {
+    if (!(rho > 0.0)) return NAN;
+    const double c = 2.0 * std::cbrt(3.0 * pi * pi);
+    return std::sqrt(grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2]) / (c * std::pow(rho, 4.0 / 3.0));
+}
+
+std::array<double, 3> symmetric_eigenvalues(const double h[6]) {
+    const double a = h[0], b = h[3], c = h[5], d = h[1], e = h[4], f = h[2];
+    const double p1 = d * d + e * e + f * f;
+    std::array<double, 3> l;
+    const double q = (a + b + c) / 3.0;
+    const double p2 = (a - q) * (a - q) + (b - q) * (b - q) + (c - q) * (c - q) + 2.0 * p1;
+    if (p2 <= 1e-300) return {q, q, q};
+    const double p = std::sqrt(p2 / 6.0);
+    // B = (A - q I) / p; r = det(B) / 2
+    const double ba = (a - q) / p, bb = (b - q) / p, bc = (c - q) / p, bd = d / p, be = e / p, bf = f / p;
+    const double r = 0.5 * (ba * (bb * bc - be * be) - bd * (bd * bc - be * bf) + bf * (bd * be - bb * bf));
+    const double phi = std::acos(std::clamp(r, -1.0, 1.0)) / 3.0;
+    l[2] = q + 2.0 * p * std::cos(phi);
+    l[0] = q + 2.0 * p * std::cos(phi + 2.0 * pi / 3.0);
+    l[1] = 3.0 * q - l[0] - l[2];
+    std::sort(l.begin(), l.end());
+    return l;
+}
+
+std::vector<NciContact> nci_contacts(std::span<const NciSite> sites, const DensityEvaluator& evaluate, const NciParams& params,
+                                     const PauliEvaluator& evaluate_pauli, const std::function<bool()>& cancelled) {
+    std::vector<NciContact> result(sites.size());
+    if (evaluate_pauli) for (auto& r : result) r.pauli.reason = "No eligible NCI region for Pauli sampling.";
+    auto fail = [&](const char* why) {
+        for (auto& r : result) {
+            if (r.character == Character::None) {
+                r.character = Character::Undetermined;
+                r.reason = why;
+            }
+            if (evaluate_pauli) r.pauli = {NAN, NAN, 0, why};
+        }
+        return result;
+    };
+    if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+    const int half = std::max(1, (int)std::floor(params.radius / params.step));
+    const int side = 2 * half + 1;
+    // Per site the grid cells inside the disk; samples[k] is cell cell_of[k] of site site_of[k]
+    std::vector<int> cell_of;
+    std::vector<uint32_t> site_of;
+    std::vector<double> xyz;
+    std::vector<uint8_t> active;   // still a candidate (not projected out of reach)
+    std::vector<size_t> first(sites.size() + 1, 0);
+    char buf[512];
+    for (size_t k = 0; k < sites.size(); ++k) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        first[k] = cell_of.size();
+        const NciSite& site = sites[k];
+        if (!(site.rho <= params.rho_max)) {
+            if (site.bonded) {
+                snprintf(buf, sizeof(buf), "\xCF\x81 at the BCP, %.3g au, is above NCI's range (%.2g au), between bonded atoms: a covalent bond.",
+                         site.rho, params.rho_max);
+            } else {
+                snprintf(buf, sizeof(buf), "\xCF\x81 at the BCP, %.3g au, is above NCI's range (%.2g au), between atoms not bonded: a strong attractive "
+                         "contact, as a short, strong hydrogen bond.", site.rho, params.rho_max);
+            }
+            result[k].character = site.bonded ? Character::Covalent : Character::StrongAttractive;
+            result[k].reason = buf;
+            if (evaluate_pauli) result[k].pauli.reason = "BCP density is outside the sampled NCI range.";
+            continue;
+        }
+        for (int i = 0; i < side; ++i) {
+            for (int j = 0; j < side; ++j) {
+                const double u = (i - half) * params.step, v = (j - half) * params.step;
+                if (u * u + v * v > params.radius * params.radius * (1.0 + 1e-9)) continue;
+                cell_of.push_back(i * side + j);
+                site_of.push_back((uint32_t)k);
+                for (int a = 0; a < 3; ++a) xyz.push_back(site.center[a] + u * site.axes[0][a] + v * site.axes[1][a]);
+                active.push_back(1);
+            }
+        }
+    }
+    first[sites.size()] = cell_of.size();
+    const size_t n = cell_of.size();
+    if (n == 0) return result;
+    std::vector<double> rho(n), grad(3 * n), hess(6 * n);
+    std::vector<double> offset(n, 0.0);
+    std::vector<size_t> dirty;
+    std::vector<double> batch_xyz, batch_rho, batch_grad, batch_hess;
+    // Onto the density minimum along the bond path: Newton on grad rho . e3
+    for (int it = 0; it <= params.projections; ++it) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        if (it == 0) {
+            if (!evaluate(xyz.data(), n, rho.data(), grad.data(), hess.data())) return fail("The density could not be evaluated.");
+        } else if (!dirty.empty()) {
+            batch_xyz.resize(3 * dirty.size());
+            batch_rho.resize(dirty.size());
+            batch_grad.resize(3 * dirty.size());
+            batch_hess.resize(6 * dirty.size());
+            for (size_t j = 0; j < dirty.size(); ++j) std::copy_n(&xyz[3 * dirty[j]], 3, &batch_xyz[3 * j]);
+            if (!evaluate(batch_xyz.data(), dirty.size(), batch_rho.data(), batch_grad.data(), batch_hess.data()))
+                return fail("The density could not be evaluated.");
+            for (size_t j = 0; j < dirty.size(); ++j) {
+                const size_t t = dirty[j];
+                rho[t] = batch_rho[j];
+                std::copy_n(&batch_grad[3 * j], 3, &grad[3 * t]);
+                std::copy_n(&batch_hess[6 * j], 6, &hess[6 * t]);
+            }
+        }
+        if (it == params.projections) break;
+        dirty.clear();
+        for (size_t t = 0; t < n; ++t) {
+            if ((t & 255) == 0 && cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+            if (!active[t]) continue;
+            const double* e = sites[site_of[t]].axes[2];
+            const double* h = &hess[6 * t];
+            const double g = grad[3 * t] * e[0] + grad[3 * t + 1] * e[1] + grad[3 * t + 2] * e[2];
+            const double he[3] = {h[0] * e[0] + h[1] * e[1] + h[2] * e[2], h[1] * e[0] + h[3] * e[1] + h[4] * e[2], h[2] * e[0] + h[4] * e[1] + h[5] * e[2]};
+            const double curvature = e[0] * he[0] + e[1] * he[1] + e[2] * he[2];
+            if (!std::isfinite(g) || !(curvature > 0.0)) continue;
+            const double dt = -g / curvature;
+            offset[t] += dt;
+            if (std::abs(offset[t]) > params.max_offset) { active[t] = 0; continue; }
+            bool moved = false;
+            for (int a = 0; a < 3; ++a) {
+                const double previous = xyz[3 * t + a];
+                xyz[3 * t + a] += dt * e[a];
+                moved |= xyz[3 * t + a] != previous;
+            }
+            if (moved) dirty.push_back(t);
+        }
+    }
+    const double area = params.step * params.step;
+    std::vector<int> slot(side * side);
+    std::vector<int> stack;
+    std::vector<size_t> pauli_sample;
+    for (size_t k = 0; k < sites.size(); ++k) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        if (result[k].character != Character::None) continue;
+        std::fill(slot.begin(), slot.end(), -1);
+        for (size_t t = first[k]; t < first[k + 1]; ++t) slot[cell_of[t]] = (int)t;
+        auto inside = [&](int t) {
+            if (t < 0 || !active[t] || !(rho[t] > 0.0) || rho[t] > params.rho_max) return false;
+            return reduced_density_gradient(rho[t], &grad[3 * t]) <= params.s_max;
+        };
+        NciContact& out = result[k];
+        out.attractive = out.repulsive = out.weak = out.weak_repulsive = 0.0;
+        out.repulsive_peak = 0.0;
+        std::vector<uint8_t> seen(side * side, 0);
+        const int centre = half * side + half;
+        stack.clear();
+        if (inside(slot[centre])) { stack.push_back(centre); seen[centre] = 1; }
+        while (!stack.empty()) {
+            const int c = stack.back();
+            stack.pop_back();
+            const int t = slot[c];
+            if (evaluate_pauli) pauli_sample.push_back((size_t)t);
+            const double l2 = symmetric_eigenvalues(&hess[6 * t])[1];
+            (rho[t] < params.rho_weak ? out.weak : l2 < 0.0 ? out.attractive : out.repulsive) += rho[t] * area;
+            if (rho[t] < params.rho_weak && l2 >= 0.0) out.weak_repulsive += rho[t] * area;
+            if (l2 >= 0.0) out.repulsive_peak = std::max(out.repulsive_peak, rho[t]);
+            ++out.samples;
+            const int i = c / side, j = c % side;
+            const int nb[4][2] = {{i - 1, j}, {i + 1, j}, {i, j - 1}, {i, j + 1}};
+            for (const auto& q : nb) {
+                if (q[0] < 0 || q[0] >= side || q[1] < 0 || q[1] >= side) continue;
+                const int cq = q[0] * side + q[1];
+                if (seen[cq] || !inside(slot[cq])) continue;
+                seen[cq] = 1;
+                stack.push_back(cq);
+            }
+        }
+        const double strong = out.attractive + out.repulsive;
+        if (out.samples == 0 || !(strong + out.weak > 0.0)) {
+            out.character = Character::Undetermined;
+            out.reason = "No NCI region was found around the BCP.";
+            continue;
+        }
+        if (strong > 0.0) out.share = out.repulsive / strong;
+        const int pct = (int)std::lround(100.0 * out.weak / (strong + out.weak));
+        if (out.weak >= strong) {
+            out.share = out.weak_repulsive / out.weak;
+            out.character = out.share < nci_weak_attractive_below ? Character::WeakAttractive
+                          : out.share >= nci_weak_repulsive_from  ? Character::WeakRepulsive : Character::Weak;
+            snprintf(buf, sizeof(buf), "%d%% of its NCI region's density (%zu samples) is below %.2g au, where \xCE\xBB\xE2\x82\x82 \xE2\x89\x88 0: a weak contact, "
+                     "mostly dispersion, which the density does not capture. %.0f%% of that density is where \xCE\xBB\xE2\x82\x82 > 0%s.",
+                     pct, out.samples, params.rho_weak, 100.0 * out.share,
+                     out.character == Character::Weak ? ": no clear lean" : out.character == Character::WeakAttractive ? ": an attractive lean" : ": a repulsive lean");
+        } else {
+            out.character = out.share >= nci_repulsive_from ? Character::Repulsive : out.share >= nci_mixed_from ? Character::Mixed : Character::Attractive;
+            snprintf(buf, sizeof(buf), "%.0f%% of its NCI region's density at \xCF\x81 \xE2\x89\xA5 %.2g au is where \xCE\xBB\xE2\x82\x82 > 0 (repulsive)",
+                     100.0 * out.share, params.rho_weak);
+            size_t len = strlen(buf);
+            if (out.repulsive > 0.0) len += snprintf(buf + len, sizeof(buf) - len, ", up to \xCF\x81 = %.3f au", out.repulsive_peak);
+            snprintf(buf + len, sizeof(buf) - len, "; %d%% of the region's density (%zu samples) is weaker.", pct, out.samples);
+        }
+        out.reason = buf;
+    }
+    if (!pauli_sample.empty()) {
+        if (cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+        std::vector<double> points;
+        points.reserve(3 * pauli_sample.size());
+        for (size_t t : pauli_sample) points.insert(points.end(), &xyz[3 * t], &xyz[3 * t + 3]);
+        std::vector<double> P(pauli_sample.size(), NAN), density(pauli_sample.size(), NAN);
+        if (!evaluate_pauli(points.data(), pauli_sample.size(), P.data(), density.data())) {
+            for (auto& r : result) if (r.samples) r.pauli.reason = "Pauli evaluation failed or was cancelled.";
+            return result;
+        }
+        std::vector<double> weight(sites.size()), sum(sites.size()), alpha_sum(sites.size());
+        const double tf = 0.3 * std::pow(3.0 * pi * pi, 2.0 / 3.0);
+        for (size_t i = 0; i < pauli_sample.size(); ++i) {
+            if ((i & 255) == 0 && cancelled && cancelled()) return fail("Contact analysis was cancelled.");
+            const size_t k = site_of[pauli_sample[i]];
+            const double rho_p = density[i];
+            if (!(rho_p > 0.0) || !std::isfinite(rho_p) || !std::isfinite(P[i])) continue;
+            const double alpha = P[i] / (tf * std::pow(rho_p, 5.0 / 3.0));
+            const double wp = rho_p * P[i], wa = rho_p * alpha;
+            if (!std::isfinite(alpha) || !std::isfinite(wp) || !std::isfinite(wa)) continue;
+            ++result[k].pauli.samples;
+            weight[k] += rho_p;
+            sum[k] += wp;
+            alpha_sum[k] += wa;
+        }
+        for (size_t k = 0; k < result.size(); ++k) {
+            auto& out = result[k];
+            if (!out.samples) continue;
+            if (out.pauli.samples != out.samples || !(weight[k] > 0.0) ||
+                !std::isfinite(weight[k]) || !std::isfinite(sum[k]) || !std::isfinite(alpha_sum[k])) {
+                out.pauli.reason = "Invalid Pauli samples; regional means are unavailable.";
+                continue;
+            }
+            out.pauli.mean = sum[k] / weight[k];
+            out.pauli.alpha = alpha_sum[k] / weight[k];
+            out.pauli.reason.clear();
+        }
+    }
+    return result;
+}
+
+std::vector<double> mulliken_populations(std::span<const double> S, std::span<const double* const> P, size_t num_ao,
+                                         std::span<const uint32_t> ao_atom, size_t num_atoms, const std::function<bool()>& cancelled) {
+    std::vector<double> result(num_atoms, NAN);
+    if (S.size() != num_ao * num_ao || ao_atom.size() != num_ao || P.empty()) return result;
+    std::vector<double> population(num_atoms, 0.0);
+    std::vector<bool> has(num_atoms, false);
+    for (size_t mu = 0; mu < num_ao; ++mu) {
+        if (cancelled && cancelled()) return result;
+        const uint32_t atom = ao_atom[mu];
+        if (atom >= num_atoms) continue;
+        double sum = 0.0;
+        for (const double* Ps : P) {
+            for (size_t k = 0; k < num_ao; ++k) sum += Ps[mu * num_ao + k] * S[k * num_ao + mu];
+        }
+        population[atom] += sum;
+        has[atom] = true;
+    }
+    for (size_t a = 0; a < num_atoms; ++a) if (has[a]) result[a] = population[a];
+    return result;
+}
+
+double approximate_interaction_energy(double qa, double qb, double bond_order, double distance_bohr) {
+    constexpr double kcal_per_hartree = 627.5094740631;
+    if (!std::isfinite(qa) || !std::isfinite(qb) || !std::isfinite(bond_order) || !(distance_bohr > 0.0)) return NAN;
+    return (qa * qb - 0.5 * bond_order) / distance_bohr * kcal_per_hartree;
+}
+
+std::vector<double> mayer_bond_orders(std::span<const double> S, std::span<const double* const> P, double w, size_t num_ao,
+                                      std::span<const uint32_t> ao_atom, std::span<const std::array<int, 2>> pairs,
+                                      const std::function<bool()>& cancelled) {
+    std::vector<double> result(pairs.size(), NAN);
+    if (S.size() != num_ao * num_ao || ao_atom.size() != num_ao || P.empty()) return result;
+    if (cancelled && cancelled()) return result;
+    std::map<int, std::vector<size_t>> aos;
+    for (size_t mu = 0; mu < num_ao; ++mu) aos[(int)ao_atom[mu]].push_back(mu);
+    auto dot = [&](const double* a, const double* b) {
+        double sum = 0.0;
+        for (size_t k = 0; k < num_ao; ++k) sum += a[k] * b[k];
+        return sum;
+    };
+    // (P S)_mu,nu = P row mu . S row nu, S being symmetric
+    auto bond_order = [&](size_t t) {
+        const auto ia = aos.find(pairs[t][0]), ib = aos.find(pairs[t][1]);
+        if (ia == aos.end() || ib == aos.end()) return;
+        double sum = 0.0;
+        for (const double* Ps : P) {
+            for (size_t mu : ia->second) {
+                if (cancelled && cancelled()) return;
+                for (size_t nu : ib->second) {
+                    sum += dot(Ps + mu * num_ao, S.data() + nu * num_ao) * dot(Ps + nu * num_ao, S.data() + mu * num_ao);
+                }
+            }
+        }
+        result[t] = w * sum;
+    };
+    const size_t threads = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency(), pairs.size()));
+    std::vector<std::thread> pool;
+    for (size_t k = 1; k < threads; ++k) {
+        pool.emplace_back([&, k] {
+            for (size_t t = k; t < pairs.size(); t += threads) {
+                if (cancelled && cancelled()) return;
+                bond_order(t);
+            }
+        });
+    }
+    for (size_t t = 0; t < pairs.size(); t += threads) {
+        if (cancelled && cancelled()) break;
+        bond_order(t);
+    }
+    for (auto& th : pool) th.join();
+    return result;
+}
+
+}
