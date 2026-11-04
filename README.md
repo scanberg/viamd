@@ -46,12 +46,12 @@ A series of videos is available on [youtube](https://youtube.com/playlist?list=P
 The critical-point search and chemical analysis are disabled by default.
 Check **Enabled** to start the CP search and **Chemical environments** to enable
 chemical classification and analysis.
-The Critical Points window has independent CP and NCI columns. The CP column
+The Topological Analysis window has independent CP and NCI columns. The CP column
 contains the density distributions, chemical-environment table and point list.
 The four CP category toggles sit above the plots. Compact hover tooltips on CP
 and environment rows replace the selected-point Details pane.
 Chemical analysis and NCI can each be disabled
-independently. The NCI scatter plot and its layer panel share the Critical Points
+independently. The NCI scatter plot and its layer panel share the Topological Analysis
 window; the layer list and selected-layer inspector are below the plot.
 Disabling NCI stops its computations and hides surfaces without deleting saved
 layers or changing their settings. Each column has one settings button beside

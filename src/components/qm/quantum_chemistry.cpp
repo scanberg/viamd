@@ -2000,7 +2000,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     if (ImGui::BeginMenu("Quantum Chemistry")) {
                         ImGui::Checkbox("Summary", &summary.show_window);
-                        ImGui::Checkbox("Critical Points", &critical_points.show_window);
+                        ImGui::Checkbox("Topological Analysis", &critical_points.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
                         if (num_excited > 0) {
@@ -6027,7 +6027,18 @@ struct QuantumChemistry : viamd::EventHandler {
             return;
         }
         ImGui::SetNextWindowSize({ 1100, 850 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Critical Points", &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        const char* window_name = "Topological Analysis###Critical Points";
+        const ImGuiID window_id = ImHashStr(window_name);
+        if (!ImGui::FindWindowSettingsByID(window_id)) {
+            if (const auto* old = ImGui::FindWindowSettingsByID(ImHashStr("Critical Points"))) {
+                // ### introduces a new hash, so migrate the old placement and docking explicitly.
+                const ImGuiWindowSettings previous = *old;
+                auto* settings = ImGui::CreateNewWindowSettings(window_name);
+                *settings = previous;
+                settings->ID = window_id;
+            }
+        }
+        if (ImGui::Begin(window_name, &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             draw_critical_points_window_contents(state);
         }
         ImGui::End();
