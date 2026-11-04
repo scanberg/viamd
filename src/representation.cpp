@@ -2087,9 +2087,13 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneCount"))) {
         int n;
         if (viamd::extract_int(n, arg)) rep->electronic_structure.num_planes = CLAMP(n, 0, ES_MAX_PLANES);
-    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeSigned"))) {
-        // the map was saved: keep it rather than setting one up for the field
-        if (viamd::extract_bool(rep->electronic_structure.volume.map_signed, arg)) rep->electronic_structure.volume.map_init = true;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeKind"))) {
+        // the map was saved, for a field of this kind: kept rather than set up for the field
+        int kind;
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Localization) {
+            rep->electronic_structure.volume.map_kind = kind;
+            rep->electronic_structure.volume.map_init = true;
+        }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeColormap"))) {
         viamd::extract_int(rep->electronic_structure.volume.map.colormap, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRange"))) {
@@ -2289,7 +2293,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
             if (es.volume.map_init) {
                 const float range[2] = { es.volume.map.range_beg, es.volume.map.range_end };
                 const float ramp[2]  = { es.volume.ramp_beg, es.volume.ramp_end };
-                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeSigned"),       es.volume.map_signed);
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeKind"),         es.volume.map_kind);
                 viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeColormap"),     es.volume.map.colormap);
                 viamd::write_flt_vec(state, STR_LIT("ElectronicStructureVolumeRange"),        range, 2);
                 viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeSymmetric"),    es.volume.map.symmetric);
@@ -2977,13 +2981,24 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                              "Isosurface: surfaces where it takes given values\n"
                              "Volume: the whole field, its values through a colour map and an opacity ramp, cut by planes\n"
                              "Plane: the field on a plane");
-        int display = (int)es.display;
-        if (ImGui::Combo("##display", &display, electronic_structure_display_str, (int)ElectronicStructureDisplay::Count)) {
-            es.display = (ElectronicStructureDisplay)display;
-            if (es.display == ElectronicStructureDisplay::Plane && es.num_planes == 0) {
-                es_planes_add(state, &es, rep.node.id);
+        if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
+            for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
+                const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
+                // ELF and LOL are about how they vary through space, which a surface of one value does not show
+                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
+                ImGui::BeginDisabled(disabled);
+                if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
+                    es.display = d;
+                    if (es.display == ElectronicStructureDisplay::Plane && es.num_planes == 0) {
+                        es_planes_add(state, &es, rep.node.id);
+                    }
+                    update_rep = true;
+                }
+                ImGui::EndDisabled();
+                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
+                if (es.display == d) ImGui::SetItemDefaultFocus();
             }
-            update_rep = true;
+            ImGui::EndCombo();
         }
         prop::section_end();
     }

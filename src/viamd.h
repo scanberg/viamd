@@ -158,6 +158,8 @@ enum class ElectronicStructureSource {
     TransitionDensity,
     ElectronDensity,
     DensityProperty,
+    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
+    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
     Count
 };
 
@@ -298,6 +300,8 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Transition Density",
     "Electron Density",
     "Density Property",
+    "Electron Localization (ELF)",
+    "Localized Orbital Locator (LOL)",
 };
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -306,6 +310,8 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
     ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
+    ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
+    ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -661,7 +667,7 @@ struct ElectronicStructureRepresentation {
         float ramp_end = 1.0f;
         float ramp_exponent = 1.0f;
         bool  map_init = false;        // the map was set up for a field (es_volume_map_update) ...
-        bool  map_signed = false;      // ... signed or not: set up again when that changes
+        int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
         uint32_t tf_tex = 0;           // the transfer function made of the above, and what it was made of
         uint64_t tf_hash = 0;
     } volume;
@@ -677,6 +683,20 @@ static inline bool electronic_structure_source_supported(ElectronicStructureSour
 
 static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
     return rep.source == ElectronicStructureSource::DensityProperty;
+}
+
+// What the values of a representation's field are, which its colour map is set up for (es_volume_map_update)
+enum class ElectronicStructureValueKind {
+    Density,        // >= 0, largest at the nuclei
+    Signed,         // an orbital, a difference: about 0
+    Localization,   // in [0, 1]: ELF, LOL
+};
+
+// ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
+// how it varies through space), so they are drawn as a volume or on a plane only.
+static inline bool electronic_structure_is_localization(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::ElectronLocalization ||
+           rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
@@ -712,6 +732,11 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
         return true;
     }
     return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+}
+
+static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
+    return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
 static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
@@ -848,6 +873,15 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         rep->spin = ElectronicStructureSpin::Total;
         rep->use_magnitude = false;
         break;
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
+        // of both spins together, and drawn only as a volume or on a plane
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        if (rep->display == ElectronicStructureDisplay::Isosurface) {
+            rep->display = ElectronicStructureDisplay::Volume;
+        }
+        break;
     case ElectronicStructureSource::DensityProperty:
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
@@ -941,6 +975,8 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     case ElectronicStructureSource::ElectronDensity:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     case ElectronicStructureSource::DensityProperty:
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
         ASSERT(false);

@@ -2,6 +2,7 @@
 #include <md_util.h>
 #include <md_dssp.h>
 #include <md_qm.h>
+#include <md_gto_iso.h>
 
 #include <atomic>
 #include <stdarg.h>
@@ -4002,6 +4003,192 @@ static bool es_attribute_exists(const md_system_t& sys, str_t path) {
 // Evaluates whatever the representation is currently pointed at into its own volume texture.
 // Everything it needs is an attribute on the system or a field of the representation; there is no
 // reader, no component and no event in the path, which is the whole point of the port.
+// ---------------------------------------------------------------------------
+// ELF and LOL over a grid
+// ---------------------------------------------------------------------------
+// Of each spin, the density rho_s with its gradient and the kinetic energy density tau_s (md_qm_kinetic_orbitals,
+// over the derivative basis), at the grid's points, then ELF or LOL point by point (md_qm_elf, md_qm_lol); one
+// density, the total, for a closed shell. On the GPU as md_qm.h describes it: the densities in one set over the
+// basis, evaluated with their gradients, the tau in one over the derivative basis, both at the AO cutoff 1e-8
+// (ELF is made of small differences in the tails); else by md_qm_elf_evaluate, in double on the CPU, slowly.
+//
+// Below ES_LOCALIZATION_RHO_MIN (both spins) both are 0: further out they are ratios of vanishing sums, which in a
+// gaussian basis take any value (ELF goes to 1 in the vacuum). 1e-4 is outside where any chemistry is (the 1e-3
+// isodensity is the usual molecular surface), and where the GPU's float is still within 2e-4 of double.
+#define ES_LOCALIZATION_RHO_MIN 1.0e-4
+#define ES_LOCALIZATION_CUTOFF_EXP 8
+#define ES_LOCALIZATION_CHUNK (1u << 18)
+
+// The densities and kinetic energy densities of the spins (one, the total, for a closed shell), as product fields
+struct LocalizationFields {
+    md_gto_basis_t      basis = {};
+    md_gto_basis_t      dbasis = {};    // the derivative basis
+    md_gto_iso_field_t* rho[2] = {};
+    md_gto_iso_field_t* tau[2] = {};
+    int                 num_spins = 0;  // 1: closed shell (the total density), 2: alpha and beta
+};
+
+static void localization_fields_free(LocalizationFields* f) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    for (int i = 0; i < 2; ++i) {
+        if (f->rho[i]) md_gto_iso_field_destroy(f->rho[i]);
+        if (f->tau[i]) md_gto_iso_field_destroy(f->tau[i]);
+    }
+    md_gto_basis_free(&f->basis, heap);
+    md_gto_basis_free(&f->dbasis, heap);
+    *f = LocalizationFields{};
+}
+
+static bool localization_fields_init(LocalizationFields* f, const md_system_t& sys, const float* atom_xyz) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    if (!md_gto_basis_extract_attributes(&f->basis, &sys.attributes, heap)) return false;
+
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density
+    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
+    size_t ana = 0, bna = 0;
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &sys, STR_LIT("orbital/alpha/density"), alloc);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &sys, STR_LIT("orbital/beta/density"), alloc);
+    if (an == 0 && bn == 0) return false;
+    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    // A spin without occupied orbitals has no density: it is left out, as md_qm_elf takes a spin of none
+    str_t paths[2];
+    int num = 0;
+    if (closed) {
+        paths[num++] = STR_LIT("orbital/total/density");
+    } else {
+        if (an) paths[num++] = STR_LIT("orbital/alpha/density");
+        if (bn) paths[num++] = STR_LIT("orbital/beta/density");
+    }
+    for (int i = 0; i < num; ++i) {
+        double *rr = nullptr, *rw = nullptr, *kr = nullptr, *kw = nullptr;
+        size_t rna = 0, kna = 0;
+        md_gto_basis_t dbasis = {};
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &sys, paths[i], alloc);
+        const size_t kn = rn ? md_qm_kinetic_orbitals(&kr, &kw, &kna, &dbasis, &sys, paths[i], heap) : 0;
+        if (!rn || !kn) return false;
+        if (i == 0) f->dbasis = dbasis; else md_gto_basis_free(&dbasis, heap);
+        f->rho[i] = md_gto_iso_field_create_products(&f->basis,  atom_xyz, 0, rr, nullptr, rw, rn, heap);
+        f->tau[i] = md_gto_iso_field_create_products(&f->dbasis, atom_xyz, 0, kr, nullptr, kw, kn, heap);
+        md_free(heap, kr, sizeof(double) * kn * kna);
+        md_free(heap, kw, sizeof(double) * kn);
+        if (!f->rho[i] || !f->tau[i]) return false;
+    }
+    // Not the spin form with one spin's terms twice: closed is what says num_spins = 1 means the total
+    f->num_spins = closed ? 1 : num;
+    return true;
+}
+
+static inline float localization_value(bool lol, int num_spins, const double rho[2], const double g2[2], const double tau[2]) {
+    if (num_spins == 1) {
+        return (float)(lol ? md_qm_lol_closed_shell(rho[0], tau[0], ES_LOCALIZATION_RHO_MIN)
+                           : md_qm_elf_closed_shell(rho[0], g2[0], tau[0], ES_LOCALIZATION_RHO_MIN));
+    }
+    return (float)(lol ? md_qm_lol(rho[0], tau[0], rho[1], tau[1], ES_LOCALIZATION_RHO_MIN)
+                       : md_qm_elf(rho[0], g2[0], tau[0], rho[1], g2[1], tau[1], ES_LOCALIZATION_RHO_MIN));
+}
+
+#if MD_ENABLE_GPU
+static bool localization_evaluate_gpu(float* out, const ApplicationState* state, const LocalizationFields& f, const float* atom_xyz,
+                                      const float* xyz, size_t count, bool lol) {
+    md_gpu_stream_t stream = state->gpu_stream;
+    md_allocator_i* heap = md_get_heap_allocator();
+    const uint32_t ns = (uint32_t)f.num_spins;
+    // Made with the switches at the cutoff: a set past 1024 functions (the derivative basis is twice the basis) has
+    // its density matrix in tiles of the AO pairs that meet at the switch's cutoff, and refuses a tighter one after.
+    // (A set another thread makes meanwhile is made at it too: tighter than it needs, and as right.)
+    md_gto_iso_gpu_switches_t sw, tight;
+    md_gto_iso_gpu_switches(&sw);
+    tight = sw;
+    tight.eval_eps_exp = ES_LOCALIZATION_CUTOFF_EXP;
+    md_gto_iso_gpu_switches_set(&tight);
+    md_gto_iso_gpu_set_t* set_rho = md_gto_iso_gpu_set_create(stream, &f.basis,  atom_xyz, 0, f.rho, ns, heap);
+    md_gto_iso_gpu_set_t* set_tau = md_gto_iso_gpu_set_create(stream, &f.dbasis, atom_xyz, 0, f.tau, ns, heap);
+    md_gto_iso_gpu_switches_set(&sw);
+    bool ok = set_rho && set_tau &&
+              md_gto_iso_gpu_set_cutoff(stream, set_rho, ES_LOCALIZATION_CUTOFF_EXP) &&
+              md_gto_iso_gpu_set_cutoff(stream, set_tau, ES_LOCALIZATION_CUTOFF_EXP);
+    const uint32_t fields[2] = {0, 1};
+    const size_t chunk = MIN(count, (size_t)ES_LOCALIZATION_CHUNK);
+    float* buf = ok ? (float*)malloc(sizeof(float) * chunk * ns * 5) : nullptr;   // rho, its gradient, tau
+    ok = ok && buf;
+    for (size_t beg = 0; ok && beg < count; beg += chunk) {
+        const size_t n = MIN(chunk, count - beg);
+        float* rho = buf;
+        float* grad = buf + ns * n;
+        float* tau = buf + 4 * ns * n;
+        ok = md_gto_iso_gpu_evaluate(stream, set_rho, fields, ns, xyz + 3 * beg, 0, n, rho, grad) &&
+             md_gto_iso_gpu_evaluate(stream, set_tau, fields, ns, xyz + 3 * beg, 0, n, tau, nullptr);
+        for (size_t i = 0; ok && i < n; ++i) {
+            double r[2] = {}, g2[2] = {}, t[2] = {};
+            for (uint32_t s = 0; s < ns; ++s) {
+                const float* g = grad + 3 * (s * n + i);
+                r[s]  = rho[s * n + i];
+                g2[s] = (double)g[0] * g[0] + (double)g[1] * g[1] + (double)g[2] * g[2];
+                t[s]  = tau[s * n + i];
+            }
+            out[beg + i] = localization_value(lol, f.num_spins, r, g2, t);
+        }
+    }
+    free(buf);
+    if (set_rho) md_gto_iso_gpu_set_destroy(stream, set_rho);
+    if (set_tau) md_gto_iso_gpu_set_destroy(stream, set_tau);
+    return ok;
+}
+#endif
+
+static bool localization_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool lol) {
+    const char* what = lol ? "LOL" : "ELF";
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t num_atoms = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state->mold.sys, state->mold.state);
+    if (!atom_pos) return false;
+    const float* atom_xyz = (const float*)atom_pos;   // bohr, packed
+
+    const size_t count = md_grid_num_points(&grid);
+    float* xyz = (float*)malloc(sizeof(float) * 3 * count);
+    float* out = (float*)malloc(sizeof(float) * count);
+    bool ok = xyz && out;
+    if (ok) md_grid_extract_points(xyz, &grid);   // bohr, in the order of the texture's texels
+
+    const md_tick_t t0 = md_tick_now();
+    bool done = false;
+#if MD_ENABLE_GPU
+    if (ok && state->gpu_device && state->gpu_stream) {
+        LocalizationFields f;
+        if (localization_fields_init(&f, state->mold.sys, atom_xyz)) {
+            done = localization_evaluate_gpu(out, state, f, atom_xyz, xyz, count, lol);
+        }
+        localization_fields_free(&f);
+        if (!done) MD_LOG_ERROR("%s: the GPU evaluation failed; evaluating on the CPU", what);
+    }
+#endif
+    if (ok && !done) {
+        double* val = (double*)malloc(sizeof(double) * MIN(count, (size_t)ES_LOCALIZATION_CHUNK));
+        ok = val != nullptr;
+        for (size_t beg = 0; ok && beg < count; beg += ES_LOCALIZATION_CHUNK) {
+            const size_t n = MIN((size_t)ES_LOCALIZATION_CHUNK, count - beg);
+            ok = md_qm_elf_evaluate(lol ? nullptr : val, lol ? val : nullptr, xyz + 3 * beg, n, 0, &state->mold.sys, atom_xyz, 0, ES_LOCALIZATION_RHO_MIN) == n;
+            for (size_t i = 0; ok && i < n; ++i) out[beg + i] = (float)val[i];
+        }
+        free(val);
+        done = ok;
+    }
+    if (done) {
+        gl::set_texture_3D_data(vol_tex, 0, out, GL_R32F);
+        volume::notify_data_changed(vol_tex);
+        MD_LOG_INFO("%s: %zu points in %.0f ms", what, count, md_tick_to_milliseconds(md_tick_now() - t0));
+    } else {
+        MD_LOG_ERROR("%s: could not be evaluated (are the orbitals and their occupations there?)", what);
+    }
+    free(xyz);
+    free(out);
+    return done;
+}
+
 static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep) {
     const ElectronicStructureRepresentation& es = rep->electronic_structure;
 
@@ -4053,6 +4240,10 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
         }
         return density_evaluate(state, tex_id, grid, attr->path, nullptr, MD_GTO_OP_SET, true);
     }
+    case ElectronicStructureSource::ElectronLocalization:
+        return localization_evaluate(state, tex_id, grid, false);
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
+        return localization_evaluate(state, tex_id, grid, true);
     default:
         MD_LOG_ERROR("Unknown electronic structure source");
         return false;
@@ -4740,28 +4931,46 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
 }
 
-// The colour map of a volume rendering, set up for the field when it is first drawn (or when the field's sign changes),
-// on a range set by hand from the isovalue, the value the field is significant at: the largest values are at the
-// nuclei, and a range to them (the automatic one) would put the rest of the field at the bottom of the ramp. A signed
-// field (an orbital, a difference) from -3 to 3 times it through a diverging map, the ramp on the magnitude from a
-// tenth of the range; a density from 0 to 10 times it through a sequential one.
+// The colour map of a volume rendering, set up for the field when it is first drawn (or when the kind of its values
+// changes), on a range set by hand: the automatic one, to the largest values, would put most of the field at the
+// bottom of the ramp. A signed field (an orbital, a difference) from -3 to 3 times the isovalue, the value it is
+// significant at, through a diverging map, the ramp on the magnitude from a tenth of the range; a density from 0
+// to 10 times it (its largest values are at the nuclei) through a sequential one; ELF and LOL over [0, 1], what they
+// span, the ramp from 1/2, the electron gas's value of ELF, so what shows is where the electrons are more localized.
 static void es_volume_map_update(ElectronicStructureRepresentation& es) {
-    const bool signed_field = electronic_structure_is_signed(es);
-    if (!es.volume.map_init || es.volume.map_signed != signed_field) {
-        ColorScale& m = es.volume.map;
-        m.symmetric = signed_field;
-        m.colormap = signed_field ? COLOR_SCALE_COLORMAP_RDBU : COLOR_SCALE_COLORMAP_VIRIDIS;
-        m.auto_range = false;
-        const float iso = (float)fabs(es.iso_value);
-        m.range_beg = signed_field ? -3.0f * iso : 0.0f;
-        m.range_end = signed_field ?  3.0f * iso : 10.0f * iso;
-        es.volume.ramp_beg = signed_field ? 0.1f : 0.0f;
-        es.volume.ramp_end = 1.0f;
-        es.volume.ramp_exponent = 1.0f;
-        es.volume.map_init = true;
-        es.volume.map_signed = signed_field;
+    const ElectronicStructureValueKind kind = electronic_structure_value_kind(es);
+    if (es.volume.map_init && es.volume.map_kind == (int)kind) return;
+    ColorScale& m = es.volume.map;
+    const float iso = (float)fabs(es.iso_value);
+    m.auto_range = false;
+    es.volume.ramp_end = 1.0f;
+    es.volume.ramp_exponent = 1.0f;
+    switch (kind) {
+    case ElectronicStructureValueKind::Signed:
+        m.symmetric = true;
+        m.colormap = COLOR_SCALE_COLORMAP_RDBU;
+        m.range_beg = -3.0f * iso;
+        m.range_end =  3.0f * iso;
+        es.volume.ramp_beg = 0.1f;
+        break;
+    case ElectronicStructureValueKind::Localization:
+        m.symmetric = false;
+        m.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+        m.range_beg = 0.0f;
+        m.range_end = 1.0f;
+        es.volume.ramp_beg = 0.5f;
+        break;
+    case ElectronicStructureValueKind::Density:
+    default:
+        m.symmetric = false;
+        m.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+        m.range_beg = 0.0f;
+        m.range_end = 10.0f * iso;
+        es.volume.ramp_beg = 0.0f;
+        break;
     }
-    // (its automatic range follows the volume where it is drawn, draw_representations_volumes)
+    es.volume.map_init = true;
+    es.volume.map_kind = (int)kind;
 }
 
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
@@ -4786,6 +4995,10 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom
     const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+    // ELF and LOL are not drawn as isosurfaces (a workspace may say otherwise)
+    if (electronic_structure_is_localization(es) && es.display == ElectronicStructureDisplay::Isosurface) {
+        es.display = ElectronicStructureDisplay::Volume;
+    }
     const bool iso_display = es.display == ElectronicStructureDisplay::Isosurface;
     // a volume rendering and a plane draw from (or over the box of) the volume, whatever renders the isosurfaces
     const bool needs_volume = !mesh_mode || !iso_display || es.coloring == SurfaceColoring::AtomColors;
@@ -4866,6 +5079,11 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     if (es_attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
     if (es_attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
     if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
+    // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose
+    // derivatives are within what is evaluated (no g functions)
+    if (es_attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
+        mask |= ElectronicStructureSourceFlag_ElectronLocalization | ElectronicStructureSourceFlag_LocalizedOrbitalLocator;
+    }
 
     return mask;
 }
