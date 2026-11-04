@@ -1141,12 +1141,11 @@ inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 // system at a time: a load cancels the inference of the system before it.
 struct SystemInference {
     task_system::Job    job;
-    md_system_t         work = {};              // The copy inferred on, in arena; its reference state the coordinates
+    md_util_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred in arena
     md_allocator_i*     arena = nullptr;
-    md_array(md_allocator_i*) kept = nullptr;   // The arenas of what was put in place: arrays of the system now
+    md_array(md_allocator_i*) kept = nullptr;   // The arenas of what was published: arrays of the system now
     md_infer_flags_t    flags = MD_UTIL_INFER_NONE;
-    uint64_t            base_version = 0;       // The topology version of the system the copy was made of
-    std::atomic<bool>   done{false};            // The copy is inferred: not cancelled half way
+    std::atomic<bool>   done{false};            // The work is inferred: not cancelled half way
     bool                pending = false;        // The system shows its core: inference is under way, or to be started again
     bool                restart = false;        // Cancelled (the pool was interrupted) or of a topology since changed
     // The default representations wait for it: a placeholder shows the atoms meanwhile, replaced unless it was changed
