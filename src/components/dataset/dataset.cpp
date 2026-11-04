@@ -830,7 +830,7 @@ struct Dataset : viamd::EventHandler {
                 app_state = nullptr;
                 break;
             case viamd::EventType_ViamdSystemInit: {
-                ApplicationState& state = *(ApplicationState*)e.payload;
+                ApplicationState& state = *((SystemContext*)e.payload)->app;
                 on_system_init(state);
                 break;
             }
@@ -1789,7 +1789,7 @@ struct Dataset : viamd::EventHandler {
         const md_attribute_t* axis = run_time_axis(&data);
         const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
         const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
-        return md_hash64(v, sizeof(v), md_hash64_str(str_from_cstr(data.mold.run), 0));
+        return md_hash64(v, sizeof(v), md_hash64_str(str_from_cstr(data.run.path), 0));
     }
 
     void compute_trajectory(ApplicationState& data) {

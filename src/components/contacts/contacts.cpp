@@ -158,7 +158,9 @@ struct Contacts : viamd::EventHandler {
                 ImGui::Checkbox("Contacts", &show_window);
                 break;
             case viamd::EventType_ViamdSystemInit:
-                // A new system: whatever was computed or loaded belongs to the old one
+            case viamd::EventType_ViamdSystemFree:
+                // A new system, or none: whatever was computed or loaded belongs to the old one, and the task reading
+                // it is stopped before it goes
                 if (task) task_system::task_interrupt_and_wait_for(task);
                 result = Result{};
                 break;
@@ -234,9 +236,11 @@ struct Contacts : viamd::EventHandler {
         }
         pending.groups.resize(off.size() - 1);
 
+        // The system it reads, taken now: what the application calls its system when the task runs need not be it
         busy = true;
-        task = task_system::create_pool_task(STR_LIT("Contacts"), [this]() {
-            const md_system_t& sys = app_state->mold.sys;
+        const SystemContext* sc = &app_state->system_context;
+        task = task_system::create_pool_task(STR_LIT("Contacts"), [this, sc]() {
+            const md_system_t& sys = sc->data.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;
             const md_tick_t t0 = md_tick_now();

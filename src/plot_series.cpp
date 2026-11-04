@@ -1461,9 +1461,9 @@ void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subpl
 
 size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationState* app) {
     ASSERT(app);
-    if (app->mold.run[0] == '\0') return 0;
+    if (app->run.path[0] == '\0') return 0;
     const md_attributes_t* table = &app->mold.sys.attributes;
-    const str_t run = str_from_cstr(app->mold.run);
+    const str_t run = str_from_cstr(app->run.path);
 
     size_t count = 0;
     for (md_attribute_iter_t it = md_attributes_iter(table, run); md_attributes_next(&it);) {
@@ -1488,7 +1488,7 @@ str_t system_series_group_source(const ApplicationState* app, str_t group) {
 void system_series_group_label(char* buf, size_t cap, const ApplicationState* app, str_t group) {
     ASSERT(buf && cap > 0);
     str_t rel = group;
-    const str_t run = str_from_cstr(app->mold.run);
+    const str_t run = str_from_cstr(app->run.path);
     if (!str_empty(run) && str_begins_with(group, run) && group.len > run.len + 1) {
         rel = str_substr(group, run.len + 1);
     }

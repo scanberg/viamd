@@ -152,13 +152,8 @@ void system_set_assembly(ApplicationState* app, int assembly) {
 }
 
 void system_label(char* buf, size_t cap, const ApplicationState& app) {
-    const FileEntry* file = file_list_system_file(&app.file_list);
-    str_t name = {};
-    if (file && extract_file(&name, str_from_cstr(file->path)) && !str_empty(name)) {
-        snprintf(buf, cap, STR_FMT, STR_ARG(name));
-    } else {
-        snprintf(buf, cap, "System");
-    }
+    const char* name = app.system_context.name;
+    snprintf(buf, cap, "%s", name[0] ? name : "System");
 }
 
 // A chain of an assembly: a copy of a polymer strand, a part of the instances it copies
@@ -730,11 +725,11 @@ void system_file_details(char* buf, size_t cap, const ApplicationState& app, con
         break;
     }
     case FileRole_Trajectory: {
-        const size_t num_frames = run_num_frames(sys.data);
-        const double* times = run_frame_times(sys.data);
-        if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(sys.data))) {
+        const size_t num_frames = run_num_frames(sys);
+        const double* times = run_frame_times(sys);
+        if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(sys))) {
             char unit_buf[32];
-            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(sys.data));
+            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(sys));
             snprintf(buf, cap, "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
         } else {
             snprintf(buf, cap, "%zu frames", num_frames);

@@ -934,10 +934,11 @@ struct Shapespace : viamd::EventHandler {
         e->coords = (vec2_t*)md_alloc(e->arena, sizeof(vec2_t) * n);
         for (size_t i = 0; i < n; ++i) e->coords[i] = { NAN, NAN };
 
+        // The system it reads, taken now: what the application calls its system when the task runs need not be it
         Evaluation* ev = e.get();
-        ApplicationState* state = app;
-        e->task = task_system::create_pool_task(STR_LIT("Shapespace"), (uint32_t)num_frames, [ev, state](uint32_t beg, uint32_t end, uint32_t) {
-            const md_system_t& sys = state->mold.sys;
+        const SystemContext* sc = &app->system_context;
+        e->task = task_system::create_pool_task(STR_LIT("Shapespace"), (uint32_t)num_frames, [ev, sc](uint32_t beg, uint32_t end, uint32_t) {
+            const md_system_t& sys = sc->data.sys;
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
             vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * ALIGN_TO(sys.atom.count, 8));
@@ -948,7 +949,7 @@ struct Shapespace : viamd::EventHandler {
             }
             // One context for the range, so the run's files stay open across its frames
             const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(sc->run.path), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
             if (!ex) {
                 // Nothing to read them from: done, without shapes
                 ev->frames_done.fetch_add(end - beg);

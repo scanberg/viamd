@@ -73,6 +73,7 @@ enum : EventPayloadType {
 	EventPayloadType_PickingHit					= HASH_STR_LIT("Payload Picking Hit"),
 	EventPayloadType_PickingTooltipTextRequest	= HASH_STR_LIT("Payload Picking Tooltip Text Request"),
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
+    EventPayloadType_System						= HASH_STR_LIT("Payload System"),		// SystemContext*: the system the event is about; its application is SystemContext::app
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),

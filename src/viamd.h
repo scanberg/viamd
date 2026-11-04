@@ -1157,39 +1157,11 @@ struct SystemData {
 
 		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
 
-    // "run/<name>": where the loaded trajectory, and everything sampled along it, lives in
-    // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
-    // frame axis is "<run>/time"; freeing the trajectory removes everything under the prefix.
-    char                run[128] = {0};
-
-    // Playback's extraction contexts, one per pool thread and indexed by the task system's thread
-    // number, so each keeps its own files open across the frames it loads. Made on first use,
-    // ended with the trajectory (free_trajectory_data), since the files they hold are its.
-    md_system_extract_t* frame_extract[64] = {};
-
-    FrameCache          frame_cache;
-
     // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
     float               bond_length_limit = 0.0f;
     uint64_t            bond_length_limit_version = 0;
 
-    // Computing the backbone angles and secondary structure over the frames of the run (viamd.cpp)
-    task_system::ID     backbone_computations = task_system::INVALID_ID;
-
     bool                interpolate_system_state = false;
-    // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
-    // interpolate_system_state skip redundant work when playback ticks without the displayed
-    // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
-    // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
-    // so the next call is never skipped by a stale match.
-    int64_t             last_interpolated_nearest_frame = -1;
-    // The (fractional) frame last interpolated, negative when there is none. A jump away from it
-    // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
-    double              last_interpolated_frame = -1.0;
-    // The stride of the frames the displayed state was last interpolated between (playback_stride).
-    // Starting or stopping playback changes it without changing the time, so it is compared
-    // against to know when the displayed state has to be made again.
-    int                 last_interpolated_stride = 1;
     uint32_t            dirty_gpu_buffers = 0;
     uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
     uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
@@ -1349,7 +1321,8 @@ struct SystemScene {
     } operations;
 };
 
-// THE DATA OVER THE FRAMES OF A SYSTEM'S RUN.
+
+// THE DATA OVER THE FRAMES OF A RUN.
 // Views onto the temporal attributes, plus the one array still owned here.
 //
 // 'stride' and 'count' are redundant with the attributes' own shape {frames, segments} and are
@@ -1378,29 +1351,81 @@ struct SystemTrajectoryData {
     } backbone_angles;
 };
 
+// A RUN OF A SYSTEM: a trajectory opened on it, and what is read and derived along its frames. Several runs of one
+// system (an ensemble, a continuation) share its topology and its attribute table, each under a prefix of its own.
+// viamd opens one run per system so far (SystemContext::run); time and what is sampled along it belong here, not to
+// the system, so that several runs need nothing moved again.
+struct SystemRun {
+    // "run/<name>": where the trajectory, and everything sampled along it, lives in the system's
+    // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
+    // frame axis is "<path>/time"; freeing the trajectory removes everything under the prefix.
+    // Unique within its system (run_path_from_file).
+    char                path[128] = {0};
+
+    // Playback's extraction contexts, one per pool thread and indexed by the task system's thread
+    // number, so each keeps its own files open across the frames it loads. Made on first use,
+    // ended with the trajectory (free_trajectory_data), since the files they hold are its.
+    md_system_extract_t* frame_extract[64] = {};
+
+    FrameCache          frame_cache;
+
+    // Computing the backbone angles and secondary structure over the frames of the run (viamd.cpp)
+    task_system::ID     backbone_computations = task_system::INVALID_ID;
+
+    // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
+    // interpolate_system_state skip redundant work when playback ticks without the displayed
+    // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
+    // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
+    // so the next call is never skipped by a stale match.
+    int64_t             last_interpolated_nearest_frame = -1;
+    // The (fractional) frame last interpolated, negative when there is none. A jump away from it
+    // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
+    double              last_interpolated_frame = -1.0;
+    // The stride of the frames the displayed state was last interpolated between (playback_stride).
+    // Starting or stopping playback changes it without changing the time, so it is compared
+    // against to know when the displayed state has to be made again.
+    int                 last_interpolated_stride = 1;
+
+    SystemTrajectoryData trajectory_data;
+};
+
+// The most systems held at once. A hard limit, so that what is kept per system and atom (picking, selection) has a
+// fixed budget.
+constexpr size_t SYSTEM_MAX = 8;
+
 // A SYSTEM, as viamd holds it: what is had of each one loaded, apart from what the application has once.
 //
-// viamd loads one system, and ApplicationState holds it (system_context) together with references to its parts under
-// the names the code has always used for them (mold, system, representation, trajectory_data, file_list). Those names
-// are the transition: a place that works on a system is given the system it works on (a SystemContext, or the part it
-// needs) instead of reaching it through the application, one place at a time, and the references go when nothing uses
-// them. Once that is done for what loads a system, several can be held.
+// ApplicationState holds the systems (systems, at most SYSTEM_MAX). The first is held in place (system_context), with
+// references to its parts under the names the code has always used for them (mold, system, representation, run,
+// trajectory_data, file_list). Those names are the transition: a place that works on a system is given the system it
+// works on (a SystemContext, or the part it needs) instead of reaching it through the application, one place at a
+// time, and the references go when nothing uses them. viamd loads one system so far.
 //
 // What is not here yet, though it is of a system, and why:
 //   selection             the masks are over the atoms of a system, but the selection as the user sees it - what is
 //                         selected, hovered - spans the viewport, which will show several
 //   picking ranges        reserved per domain for the one system; several need a range per system and domain
-//   timeline.x_values     the times of a run, of which a system can have several
+//   timeline.x_values     the times of a run, in the unit the timeline shows: moved with the global time axis
 //   script                one script for all systems, evaluated per system: decided with the script rewrite
+struct ApplicationState;
 struct SystemContext {
+    // Its id, by which a workspace and what refers to it name it ([System] Id, System=), never reused while viamd
+    // runs; and its name, which the script and the windows show it by: the stem of the file that built it, until the
+    // user names it. Empty while nothing is loaded.
+    uint32_t              id = 0;
+    char                  name[64] = "";
+
+    // The application it is of: what the events about it (SystemEventPayload) reach the rest of viamd through
+    ApplicationState*     app = nullptr;
+
     // The files the system is built from, in the order they were loaded (see file_list.h). Kept by
     // load_data_from_file, and by what frees the data they loaded (free_system_data, free_trajectory_data). A
     // workspace stores this list and loads it again in the same order.
     FileList              files;
     SystemData            data;
+    SystemRun             run;      // The one run so far: its path is empty without a trajectory
     SystemScene           scene;
     SystemRepresentations representation;
-    SystemTrajectoryData  trajectory_data;
 };
 
 struct ApplicationState {
@@ -1518,14 +1543,22 @@ struct ApplicationState {
         md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
     } gl;
 
-    // --- THE SYSTEM ---
-    // The one system loaded (SystemContext), and its parts under the names the code knows them by (see SystemContext)
+    // --- THE SYSTEMS ---
+    // The first system (SystemContext), held in place, and its parts under the names the code knows them by (see
+    // SystemContext). It is there whether or not anything is loaded into it.
     SystemContext system_context = {};
     SystemData&            mold            = system_context.data;
     SystemScene&           system          = system_context.scene;
     SystemRepresentations& representation  = system_context.representation;
-    SystemTrajectoryData&  trajectory_data = system_context.trajectory_data;
+    SystemRun&             run             = system_context.run;
+    SystemTrajectoryData&  trajectory_data = system_context.run.trajectory_data;
     FileList&              file_list       = system_context.files;
+
+    // Every system, in the order the Scene window lists them, the first being system_context. Not owned past the
+    // first: what adds one allocates it (none does yet).
+    SystemContext* systems[SYSTEM_MAX] = { &system_context };
+    size_t         num_systems = 1;
+    uint32_t       next_system_id = 1;      // The first is 0, as a workspace before several systems names it
 
     // The script property hovered in any view of it (a plot, the script editor), by identifier. A copy,
     // not a view: the identifiers live in the script IR, which is rebuilt when the script recompiles,
@@ -2303,10 +2336,10 @@ void free_trajectory_data(ApplicationState* app, SystemContext& sys);
 // The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
 // unit, which is none when the file does not know time and the values are frame ordinals. NULL,
 // zero and empty without a trajectory.
-const md_attribute_t* run_time_axis(const SystemData& sys);
-size_t                run_num_frames(const SystemData& sys);
-const double*         run_frame_times(const SystemData& sys);
-md_unit_t             run_time_unit(const SystemData& sys);
+const md_attribute_t* run_time_axis(const SystemContext& sys);
+size_t                run_num_frames(const SystemContext& sys);
+const double*         run_frame_times(const SystemContext& sys);
+md_unit_t             run_time_unit(const SystemContext& sys);
 // Of the one system loaded (ApplicationState::mold)
 const md_attribute_t* run_time_axis(const ApplicationState* app);
 size_t                run_num_frames(const ApplicationState* app);
@@ -2316,7 +2349,7 @@ md_unit_t             run_time_unit(const ApplicationState* app);
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of
 // its own (md_system_extract_begin) so the files stay open across them.
-bool extract_frame(const SystemData& sys, int64_t frame, md_system_state_t* out);
+bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out);
 bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);   // of the one system loaded
 
 // Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
@@ -2373,10 +2406,10 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
-str_t run_attribute_path(char* buf, size_t cap, const SystemData& sys, str_t leaf);
+str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, str_t leaf);
 str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);   // of the one system loaded
 // The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
-const md_attribute_t* run_attribute(const SystemData& sys, str_t leaf);
+const md_attribute_t* run_attribute(const SystemContext& sys, str_t leaf);
 const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);   // of the one system loaded
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy

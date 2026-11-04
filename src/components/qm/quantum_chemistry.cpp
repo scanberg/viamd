@@ -1631,8 +1631,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
-                ApplicationState& state = *(ApplicationState*)e.payload;
+                ASSERT(e.payload_type == viamd::EventPayloadType_System);
+                ApplicationState& state = *((SystemContext*)e.payload)->app;
 
                 // Nothing below reads the reader any more - the QM atom domain and the dipole both
                 // come out of the table - so the gate is whether there are QM atoms to re-gather.
@@ -4608,7 +4608,7 @@ struct QuantumChemistry : viamd::EventHandler {
             state.mold.state.xyz[idx].y = (float)coords[i].y;
             state.mold.state.xyz[idx].z = (float)coords[i].z;
         }
-		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
+		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
         state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
     }
 
@@ -7004,7 +7004,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             vib.coord_modified = true;
 
                             if (vib.displace_aos) {
-                                viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
+                                viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
                                 size_t num_reps = md_array_size(state.representation.reps);
                                 for (size_t i = 0; i < num_reps; ++i) {
                                     if (state.representation.reps[i].type == RepresentationType::ElectronicStructure) {
@@ -7025,7 +7025,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             state.mold.state.xyz[idx].y = (float)atom_coord[i].y;
                             state.mold.state.xyz[idx].z = (float)atom_coord[i].z;
                         }
-                        viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
+                        viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
                         state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         vib.coord_modified = false;
                     }

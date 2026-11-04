@@ -727,6 +727,7 @@ int main(int argc, char** argv) {
     md_log_register(&notification_logger);
 
     ApplicationState state;
+    state.system_context.app = &state;
     ViamdEventHandler event_handler(&state);
 
     state.allocator.persistent = persistent_alloc;
@@ -1199,7 +1200,7 @@ int main(int argc, char** argv) {
 
         // The stride only applies while playing: starting or stopping playback, like changing the stride, changes
         // the frames the displayed state is made from without changing the time. Stopped, it is the trajectory's own.
-        if (playback_stride(&state) != state.mold.last_interpolated_stride) {
+        if (playback_stride(&state) != state.run.last_interpolated_stride) {
             state.mold.interpolate_system_state = true;
             state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
         }
@@ -1210,7 +1211,7 @@ int main(int argc, char** argv) {
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(&state);
                 POP_CPU_SECTION()
-                viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
+                viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
             }
         }
 
@@ -1293,7 +1294,7 @@ int main(int argc, char** argv) {
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
                     // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, str_from_cstr(state.mold.run)});
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, str_from_cstr(state.run.path)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -1369,7 +1370,7 @@ int main(int argc, char** argv) {
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.mold.run),
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.run.path),
                                                         .num_threads = task_system::pool_num_threads(), .parallel_for = pool_parallel_for };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
@@ -1422,12 +1423,12 @@ int main(int argc, char** argv) {
                             if (script::eval_whole(eval)) {
                                 // v2: one call evaluates every pending frame, spreading them over the pool itself
                                 state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), [&state, ir, eval]() {
-                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), nullptr, 0);
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.run.path), nullptr, 0);
                                 });
                             } else {
                                 state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
+                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.run.path), frames + beg, end - beg);
                                 });
                             }
 
@@ -5972,7 +5973,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             .sys = &data.mold.sys,
             .state = volume.placed ? &state : &data.mold.state,
             .eval = data.script.eval,
-            .run = str_from_cstr(data.mold.run),
+            .run = str_from_cstr(data.run.path),
         };
         // The structures of the volume exported: of an array, those of its member
         result = script::draw_ref(&vis, vis_ref, (int)volume.member, ctx, script::DRAW_ATOMS | script::DRAW_SDF);
@@ -6618,7 +6619,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
                         // Many frames: one context for all of them, so the run's files stay open.
                         const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-                        md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+                        md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->run.path), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
                         defer { md_system_extract_end(ex); };
 
                         for (size_t f = 0; f < num_frames; ++f) {
