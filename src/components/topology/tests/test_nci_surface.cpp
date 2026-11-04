@@ -1151,7 +1151,7 @@ UTEST(nci_surface, reference_refinements_cover_every_category) {
     EXPECT_TRUE(nh_o);
 }
 
-UTEST(nci_surface, extended_reference_is_separate_display_context) {
+UTEST(nci_surface, extended_reference_domain_and_guides) {
     const auto& original = nci_surface::reference_data();
     const auto& extended = nci_surface::extended_reference_data();
     EXPECT_NEAR(original.rho_extent, 0.07f, 1e-6f);
@@ -1192,4 +1192,30 @@ UTEST(nci_surface, extended_reference_is_separate_display_context) {
         refined[sub.category] = true;
     }
     for (bool available : refined) EXPECT_TRUE(available);
+}
+
+UTEST(nci_surface, extracted_subset_scores_against_extended_contour) {
+    const auto& map = nci_surface::extended_reference_map();
+    const auto& old = nci_surface::builtin_reference_map();
+    bool differs = false;
+    for (size_t c = 0; c < nci_surface::reference_category_count; ++c) {
+        nci_surface::Scatter samples;
+        size_t expected_inside = 0;
+        for (int y = 0; y < 24; ++y) for (int x = 0; x < 48; ++x) {
+            const float rho = -0.07f + 0.14f * (x + 0.5f) / 48;
+            const float s = (y + 0.5f) / 24;
+            samples.signed_rho.push_back(rho);
+            samples.s.push_back(s);
+            const bool inside = nci_surface::reference_level(map, c, rho, s) >= 2;
+            expected_inside += inside;
+            differs |= inside != (nci_surface::reference_level(old, c, rho, s) >= 2);
+        }
+        // A display-only tail must not enter the score.
+        samples.tail.signed_rho.push_back(0.0f);
+        samples.tail.s.push_back(1.5f);
+        const auto counts = nci_surface::reference_counts(samples, map, c);
+        EXPECT_EQ(counts.inside, expected_inside);
+        EXPECT_EQ(counts.inside + counts.outside, samples.s.size());
+    }
+    EXPECT_TRUE(differs);
 }

@@ -323,8 +323,7 @@ struct NciPanel {
         ImGui::SliderFloat("##NCI plot s", &st.uniform.plot_s, 0.2f, nci_surface::scatter_s_max, "%.2f");
         editing |= ImGui::IsItemActive();
         if (prop::section("Scatter region", false)) {
-            // Beyond the reference's s and rho the reference has no data; any other R pools different samples. A
-            // tighter s or rho is applied to the reference too, so it needs no warning.
+            // Tighter extraction cutoffs select a subset; the reference itself stays unchanged.
             const auto warn = [](bool beyond, const char* text) {
                 if (!beyond) return;
                 prop::row("");
@@ -340,14 +339,14 @@ struct NciPanel {
             ImGui::SliderFloat("##NCI scatter s", &st.uniform.scatter_s, 0.2f, nci_surface::scatter_s_max, "%.2f");
             editing |= ImGui::IsItemActive();
             st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
-            warn(st.uniform.scatter_s > nci_surface::reference_scatter_s + 1e-4,
-                 "Beyond the comparison reference (s <= 1): layer contours and comparison scores use different regions.");
+            warn(st.uniform.scatter_s > nci_surface::extended_reference_data().s_max + 1e-4,
+                 "Beyond the reference (s <= 2): no reference data above it.");
             prop::row("\xCF\x81 max", "Samples denser than this are out, both signs of lambda2. Also bounds the surface.");
             ImGui::SetNextItemWidth(prop::control_width());
             ImGui::SliderFloat("##NCI scatter rho", &st.uniform.rho_max, 0.01f, 0.15f, "%.3f au");
             editing |= ImGui::IsItemActive();
-            warn(st.uniform.rho_max > nci_surface::reference_rho_max + 1e-6,
-                 "Beyond the comparison reference (\xCF\x81 <= 0.07): comparison scores retain the original region.");
+            warn(st.uniform.rho_max > nci_surface::extended_reference_data().rho_extent + 1e-6,
+                 "Beyond the reference (|rho| <= 0.1): no reference data outside it.");
             prop::row("R", "Distance from the CPs the regions may reach. Also bounds the surface.");
             ImGui::SetNextItemWidth(prop::control_width());
             ImGui::SliderFloat("##NCI scatter R", &st.uniform.radius, 1.0f, 5.0f, "%.1f Bohr");
@@ -355,14 +354,14 @@ struct NciPanel {
             warn(std::abs(st.uniform.radius - nci_surface::reference_radius) > 1e-4,
                  "The reference used R = 2.7 Bohr: points and contours are not aligned with it.");
             prop::row("");
-            if (ImGui::Button("Reset to reference")) {
+            if (ImGui::Button("Reset extraction defaults")) {
                 const NciUniformSettings defaults = nci_uniform_default_settings();
                 st.uniform.scatter_s = defaults.scatter_s;
                 st.uniform.rho_max = defaults.rho_max;
                 st.uniform.radius = defaults.radius;
                 st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
             }
-            prop::hint("Inside/outside counts always use reference-aligned samples.");
+            prop::hint("Scores compare samples at s <= 1, rho <= 0.07, R = 2.7 against the extended reference.");
             prop::section_end();
         }
         prop::hint("Uniform connected regions, both signs of lambda2, nearest-CP ownership.");
@@ -410,10 +409,10 @@ struct NciPanel {
         ImVec2 swatch_min, swatch_max;
         ImVec2 text;
         ImVec4 clip;
-        bool hovered = false, clicked = false;
+        bool hovered = false, clicked = false, context_clicked = false, remove = false;
     };
     // The row's selectable and its eye; the caller draws the swatch and text into the frame
-    RowFrame begin_row(bool selected, bool* visible, const char* eye_tooltip) {
+    RowFrame begin_row(bool selected, bool* visible, const char* eye_tooltip, const LayerRow* saved = nullptr) {
         RowFrame r;
         r.line_h = ImGui::GetTextLineHeight();
         r.h = r.line_h * 2.0f + 8.0f;
@@ -423,17 +422,29 @@ struct NciPanel {
         r.clicked = ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowOverlap, ImVec2(r.w, r.h));
         r.hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay) &&
                     !ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+        r.context_clicked = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem) &&
+                            ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+        if (saved) layer_tree_drag_source({NCI_LAYER_LIST_ID, (uint32_t)saved->key, false}, saved->label);
         const float pad = 4.0f;
-        ImGui::SetCursorScreenPos(ImVec2(r.min.x + pad, r.min.y + (r.h - ImGui::GetFrameHeight()) * 0.5f));
+        float controls_x = r.min.x + pad;
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));
+        if (saved) {
+            ImGui::SetCursorScreenPos(ImVec2(controls_x, r.min.y + (r.h - ImGui::GetFrameHeight()) * 0.5f));
+            r.remove = ImGui::Button(ICON_FA_TRASH_CAN "##delete");
+            ImGui::SetItemTooltip("Delete layer");
+            controls_x += ImGui::GetItemRectSize().x + 4.0f;
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) r.clicked = r.hovered = false;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(controls_x, r.min.y + (r.h - ImGui::GetFrameHeight()) * 0.5f));
         if (ImGui::Button(*visible ? ICON_FA_EYE "##vis" : ICON_FA_EYE_SLASH "##vis")) *visible = !*visible;
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) r.clicked = r.hovered = false;
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
         ImGui::SetItemTooltip("%s", eye_tooltip);
-        r.swatch_min = ImVec2(r.min.x + pad + r.line_h + 8, r.min.y + (r.h - r.line_h) * 0.5f);
+        r.swatch_min = ImVec2(controls_x + r.line_h + 8, r.min.y + (r.h - r.line_h) * 0.5f);
         r.swatch_max = ImVec2(r.swatch_min.x + r.line_h, r.swatch_min.y + r.line_h);
-        r.text = ImVec2(r.min.x + pad + r.line_h + 6 + r.line_h + 6, r.min.y + 4);
+        r.text = ImVec2(controls_x + r.line_h + 6 + r.line_h + 6, r.min.y + 4);
         r.clip = ImVec4(r.text.x, r.min.y, r.min.x + r.w - pad, r.min.y + r.h);
         return r;
     }
@@ -482,7 +493,9 @@ struct NciPanel {
         const bool in_viewport = st.selected_layer == row.key && !st.layer_hidden;
         NciScatterLayer& style = scatter_style(row.key);
         const RowFrame r = begin_row(selected, &style.visible,
-                                     style.visible ? "Hide it in the scatter plot" : "Show it in the scatter plot");
+                                     style.visible ? "Hide it in the scatter plot" : "Show it in the scatter plot",
+                                     saved ? &row : nullptr);
+        if (r.remove) st.pending_delete = row.key;
         // A click selects it, shown in the viewport (one layer at a time); clicking the one shown hides it there
         if (r.clicked) {
             if (selected && in_viewport) {
@@ -493,14 +506,14 @@ struct NciPanel {
             critical_point_environment_selection.clear();
             update_critical_point_list_scope(row.key);
         }
-        if (saved) {
+        if (saved && !r.remove) {
             const ImRect rect(r.min, ImVec2(r.min.x + r.w, r.min.y + r.h));
-            layer_tree_drag_source({NCI_LAYER_LIST_ID, (uint32_t)row.key, false}, row.label);
             if (layer_tree_drop_target(rect, r.min.x, {NCI_LAYER_LIST_ID, (uint32_t)row.key, false},
                                        false, nodes, node_count, move_src, move_drop))
                 dropped = true;
         }
-        if (ImGui::BeginPopupContextItem("##layer menu")) {
+        if (r.context_clicked) ImGui::OpenPopup("##layer menu");
+        if (ImGui::BeginPopup("##layer menu")) {
             if (ImGui::MenuItem(in_viewport ? "Hide in the viewport" : "Show in the viewport")) {
                 if (in_viewport) {
                     st.layer_hidden = true;
@@ -532,7 +545,7 @@ struct NciPanel {
         const RegionStats stats = region_stats(row.members);
         char expected[64] = "";
         if (stats.inside + stats.outside)
-            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% in comparison", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
+            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% in reference", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
         char detail[256];
         if (progress >= 0.0f) snprintf(detail, sizeof(detail), "%s \xC2\xB7 computing %.0f %%", types.c_str(), 100.0f * progress);
         else if (in_viewport) snprintf(detail, sizeof(detail), "%s \xC2\xB7 %zu triangles%s", types.c_str(), triangles, expected);
@@ -565,8 +578,7 @@ struct NciPanel {
         int calculations = 0;
         for (const auto& c : map.categories) calculations += c.valid ? c.systems : 0;
         char detail[128];
-        snprintf(detail, sizeof(detail), "%s \xC2\xB7 H-bonds, rings, \xCF\x80, other",
-                 st.reference.extended ? "Extended (s <= 2)" : "Comparison (s <= 1)");
+        snprintf(detail, sizeof(detail), "s <= 2, |rho| <= 0.1 \xC2\xB7 H-bonds, rings, \xCF\x80, other");
         row_text(r, "Reference", detail, st.reference.visible, selected);
         if (r.hovered) {
             ImGui::BeginTooltip();
@@ -574,8 +586,8 @@ struct NciPanel {
             ImGui::TextDisabled("Built in, independent of the loaded system, as the Ramachandran reference: per CP category,\n"
                                 "the pooled (sign(lambda2)rho, s) density of reference extractions (s <= %.1f, rho <= %.2f,\n"
                                 "%.1f Bohr from a CP, each sample to its nearest CP) over many calculations, each weighing\n"
-                                "the same. Comparison scores always use the original reference's %.0f %% area.",
-                                st.reference.extended ? 2.0 : nci_surface::reference_scatter_s,
+                                "the same. Scores compare the extracted s <= 1 samples against its %.0f %% area.",
+                                2.0,
                                 display_reference_data().rho_extent, nci_surface::reference_radius,
                                 100.0f * nci_surface::reference_inside_fraction);
             if (*display_reference_data().source) ImGui::TextDisabled("%s", display_reference_data().source);
@@ -738,24 +750,8 @@ struct NciPanel {
         ImGui::PushID("##reference inspector");
         prop::row("name");
         ImGui::TextUnformatted("Reference");
-        prop::row("map", "The extended map and guides provide context up to s = 2 and |rho| = 0.1. "
-                         "Comparison scores always retain the original s <= 1, |rho| <= 0.07 reference.");
-        const char* maps[] = {"Comparison (s <= 1)", "Extended (s <= 2)"};
-        int source = r.extended ? 1 : 0;
-        if (ImGui::Combo("##reference source", &source, maps, 2)) {
-            const auto& old_map = display_reference_map();
-            const auto& new_map = source ? nci_surface::extended_reference_map() : nci_surface::builtin_reference_map();
-            std::vector<uint8_t> guides(new_map.subfamilies.size(), 0);
-            for (size_t i = 0; i < old_map.subfamilies.size() && i < r.guides.size(); ++i) {
-                for (size_t j = 0; j < new_map.subfamilies.size(); ++j) {
-                    if (old_map.subfamilies[i].category == new_map.subfamilies[j].category &&
-                        strcmp(old_map.subfamilies[i].name, new_map.subfamilies[j].name) == 0)
-                        guides[j] = r.guides[i];
-                }
-            }
-            r.guides = std::move(guides);
-            r.extended = source != 0;
-        }
+        prop::row("domain");
+        ImGui::TextUnformatted("s <= 2, |rho| <= 0.1, R = 2.7 Bohr");
         prop::row("style", "Dominant: per point the densest category, more opaque at each deeper level.\n"
                            "Combined: the categories' colours mixed where they overlap, more opaque towards each core.");
         {
@@ -779,7 +775,7 @@ struct NciPanel {
             ImGui::SliderFloat("##line_width", &r.line_width, 0.5f, 6.0f, "%.1f px");
         }
         draw_levels(r.levels, &r.num_levels, "The areas enclose these fractions of each category's volume (highest density regions)");
-        prop::hint("Comparison scores use the original reference's %.0f %% area, independently of this display",
+        prop::hint("Scores: fraction of extracted s <= 1 samples inside this reference's %.0f %% area",
                    100.0f * nci_surface::reference_inside_fraction);
         ImGui::PopID();
         prop::end();
@@ -1043,9 +1039,8 @@ struct NciPanel {
         return out;
     }
 
-    // Whether (rho, s) lies inside some category's outermost drawn reference level, within the scatter's s and rho
+    // Whether (rho, s) lies inside some category's outermost drawn reference level.
     bool reference_inside(float rho, float s) {
-        if (!st.reference.extended && (std::abs(rho) > st.uniform.rho_max || s > st.uniform.scatter_s)) return false;
         const nci_surface::ReferenceMap& map = reference_map();
         for (size_t c = 0; c < nci_surface::reference_category_count; ++c)
             if (nci_surface::reference_level(map, c, rho, s) > 0) return true;
@@ -1090,7 +1085,7 @@ struct NciPanel {
 
     // Each member's category samples (extracted with the reference settings) against their category's reference
     static RegionStats region_stats(const std::vector<NciSurface*>& members) {
-        const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
+        const nci_surface::ReferenceMap& map = nci_surface::extended_reference_map();
         RegionStats stats;
         for (const NciSurface* n : members) {
             if (!n->have_key || n->cancelled || n->failed || n->reference_failed) continue;
@@ -1110,7 +1105,7 @@ struct NciPanel {
         if (stats.inside + stats.outside == 0) return;
         if (!ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) return;
         ImGui::TableSetupColumn("");
-        ImGui::TableSetupColumn("in comparison reference (90 %)");
+        ImGui::TableSetupColumn("in reference (90 %)");
         ImGui::TableHeadersRow();
         for (size_t f = 0; f < stats.by_type.size(); ++f) {
             const auto& c = stats.by_type[f];
@@ -1229,18 +1224,17 @@ struct NciPanel {
     static float level_alpha(int levels) { return 1.0f - powf(0.2f, 1.0f / (float)MAX(1, levels)); }
 
     const nci_surface::ReferenceData& display_reference_data() const {
-        return st.reference.extended ? nci_surface::extended_reference_data() : nci_surface::reference_data();
+        return nci_surface::extended_reference_data();
     }
 
     const nci_surface::ReferenceMap& display_reference_map() const {
-        return st.reference.extended ? nci_surface::extended_reference_map() : nci_surface::builtin_reference_map();
+        return nci_surface::extended_reference_map();
     }
 
     // The selected display reference at the inspector's levels.
     const nci_surface::ReferenceMap& reference_map() {
         const std::vector<float> levels = clean_levels(st.reference.levels, st.reference.num_levels);
         uint64_t key = md_hash64(levels.data(), levels.size() * sizeof(float), 0) | 1;
-        key = md_hash64(&st.reference.extended, sizeof(st.reference.extended), key) | 1;
         if (key != st.reference_map_key) {
             st.reference_map_key = key;
             st.reference_texture_key = 0;
@@ -1343,7 +1337,6 @@ struct NciPanel {
     void draw_scatter() {
         static bool fit_view = false;
         static float shown_plot_s = -1.0f;
-        static bool shown_extended = true;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
         ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it for every interaction.");
@@ -1496,9 +1489,8 @@ struct NciPanel {
             } else line_widths.back() += style.ItemSpacing.x + w;
         }
         const float legend_h = line_widths.size() * ImGui::GetFrameHeightWithSpacing();
-        const bool reset_view = fit_view || shown_plot_s != st.uniform.plot_s || shown_extended != st.reference.extended;
+        const bool reset_view = fit_view || shown_plot_s != st.uniform.plot_s;
         shown_plot_s = st.uniform.plot_s;
-        shown_extended = st.reference.extended;
         if (reset_view) ImPlot::SetNextAxisToFit(ImAxis_X1);
         fit_view = false;
         const bool plot_open = ImPlot::BeginPlot("##NCI scatter", ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y - legend_h)),
@@ -1583,11 +1575,11 @@ struct NciPanel {
             ImPlot::PopPlotClipRect();
         };
 
-        // The extended reference is display context, independent of extraction limits.
+        // The reference domain is independent of extraction limits.
         ImPlot::PushPlotClipRect();
         {
-            const float rho = st.reference.extended ? reference.rho_extent : st.uniform.rho_max;
-            const float s = st.reference.extended ? nci_surface::scatter_s_max : st.uniform.scatter_s;
+            const float rho = reference.rho_extent;
+            const float s = nci_surface::scatter_s_max;
             const ImVec2 lo = ImPlot::PlotToPixels(-rho, 0.0);
             const ImVec2 hi = ImPlot::PlotToPixels(rho, s);
             ImGui::PushClipRect(ImVec2(MIN(lo.x, hi.x), MIN(lo.y, hi.y)), ImVec2(MAX(lo.x, hi.x), MAX(lo.y, hi.y) + 1.0f), true);

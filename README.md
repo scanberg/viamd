@@ -286,7 +286,8 @@ name and a line of detail; clicking a row selects it, and its properties are
 set in the inspector below the list. The **Full system** is the CP reference:
 like any layer, it can stay drawn under the shown layer. A **Reference** row
 above the layers shows the built-in reference map, independent of the loaded
-system: per CP category (hydrogen bonds, rings, π interactions, other), the pooled
+system. The earlier reference, documented below for provenance, was per CP category
+(hydrogen bonds, rings, π interactions, other), the pooled
 (sign(λ2)ρ, s) density of uniform reference extractions (s ≤ 1.0 as a hard cut,
 ρ ≤ 0.07, R = 2.7 Bohr around every CP, both signs of λ2, each sample to its
 nearest NCI CP) over 910 VeloxChem calculations (B3LYP-D4/def2-SVP), each
@@ -297,25 +298,27 @@ are left out); the IHB100 ionic hydrogen bonds; 29 hand-built systems for the
 rarer classes (cation···π, anion···π, lone pair···π, tetrel, π-hole and
 dihydrogen bonds, coordination, ion pairs); and 48 larger test calculations
 (protein, G-quadruplex, cages, helicenes, etc.), which add the strained
-intramolecular contacts small dimers lack. The same rule applies to every CP, so
-the reference matches what the scatter plot of a system shows; contacts denser
-than ρ = 0.07 at the bond (the strongest ionic hydrogen bonds) fall outside it,
+intramolecular contacts small dimers lack. The same rule applies to every CP;
+contacts denser than ρ = 0.07 at the bond (the strongest ionic hydrogen bonds) fell outside that earlier map,
 and the 2.7 Bohr sphere also holds the tails of nearby covalent density, the
 diagonal wings at |ρ| > 0.03.
 
 ![Built-in reference map per category, and all categories together](docs/images/nci/reference_categories.png)
-This original map is retained as **Comparison (s <= 1)**. All inside/outside
-scores continue to use it, regardless of which reference is displayed.
-
-The default display is now **Extended (s <= 2)**: a separately recomputed map
+The figure above documents the earlier reference. The application now uses one
+extended reference for maps, guides and inside/outside scores: a recomputed map
 over **0 <= s <= 2.0**, **-0.1 <= sign(lambda2)rho <= 0.1 au**, using the same
 910 calculations, R = 2.7 Bohr, CP ownership, classifications and system weighting.
 Its larger sampled region changes its normalized density and 50/90/98% contours;
-it provides context, not a replacement for the original comparison scores.
-The Reference inspector's **map** selector switches between the two datasets.
-Interaction guides follow the displayed dataset, preserving selections by name.
+it replaces the earlier reference for comparison scores too. There is no
+original/extended map selector.
 The extended reference is not clipped to the live extraction cutoff.
-Both references contain 18 whole-class maps and 88 refinements.
+The reference contains 18 whole-class maps and 88 refinements.
+Scores mean: of the layer's category samples extracted at s <= 1, rho <= 0.07,
+R = 2.7 Bohr, what fraction is inside that category's extended-reference 90% contour?
+The 90% defines mass over the full reference domain; it is not an expected 90%
+score for the s <= 1 subset. Scores differ from those obtained with the earlier map.
+Scatter-region warnings use the current reference limits, s <= 2, |rho| <= 0.1
+and R = 2.7 Bohr; tighter extraction cutoffs are not a reference mismatch.
 
 ![Original and extended reference maps](docs/images/nci/reference_extended_comparison.png)
 
@@ -361,8 +364,8 @@ as **N–H···O** or **Br···O**, without the descriptive CP prefix or atom-
 annotations. Ring and cage selections likewise use their chemical subtype.
 Mixed selections fall back
 to a shared branch or a combined name.
-Each layer row reports the share of its category samples inside the original
-comparison reference's 90 % area, whatever map or levels are drawn, by category in its tooltip and
+Each layer row reports the share of its category samples inside the extended
+reference's 90 % area, whatever levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one
 system's weight, and `subfamily_regions.py` for the subfamilies, then
@@ -379,7 +382,9 @@ per level; **Heatmap**: the density of its samples), colour, opacity, fill and
 lines, line width and levels (90 % by default). Points always take the colour
 scale of their surface in the viewport, so a colour means the same density in
 both; layers are told apart by their contours. Only the layer shown in the
-viewport plots points. The Delete key or a row's context menu removes a saved
+viewport plots points. A trash-can button at the left of each saved layer card
+deletes it without a confirmation dialog. It does not select the card or toggle
+another layer's visibility. The Delete key or a row's right-click menu also removes a saved
 layer. Clicking one of the shown layer's points makes its interaction the
 active one for the guides; clicking it again hides them. Layers not shown in
 the viewport are drawn from their last computation, under the shown one. The

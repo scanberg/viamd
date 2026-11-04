@@ -142,7 +142,7 @@ struct ReferenceData {
     std::span<const ReferenceSubfamilyData> subfamilies = {};
 };
 const ReferenceData& reference_data();
-// Extended display reference; comparison scores continue to use reference_data().
+// Current reference for display, guides and scores; reference_data() retains the earlier archived map.
 const ReferenceData& extended_reference_data();
 
 // The default reference levels, as the Ramachandran layers': the highest-density areas holding these fractions of a

@@ -145,7 +145,6 @@ struct NciTypeStyle {
 enum class NciReferenceStyle : uint8_t { Dominant, Combined, Count };
 struct NciReferenceLayer {
     bool visible = true;
-    bool extended = true;
     NciReferenceStyle style = NciReferenceStyle::Combined;
     float opacity = 0.6f;
     bool fill = true;
