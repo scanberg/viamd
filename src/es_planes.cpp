@@ -200,6 +200,11 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
     const ImVec2 mouse = ImGui::GetMousePos();
     const bool canvas_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
+    // Something else has the mouse (the view being turned, a slider being dragged): what started first keeps it, so the
+    // planes neither take it nor pick, though the mouse passes over them. ActiveId is that of the frame before here,
+    // as the view's surface is submitted after this.
+    const bool mouse_taken = ImGui::GetActiveID() != 0 && !gizmo_drag.active;
+
     auto& sel = state->representation.gizmo;
     Representation* target = gizmo_target(state, sel.rep_id, sel.plane);
     if (!target) {
@@ -290,7 +295,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         }
         const bool changed = ImGuizmo::Manipulate(&view.elem[0][0], &proj.elem[0][0], op, ImGuizmo::LOCAL, &frame.elem[0][0]);
         const bool using_it = ImGuizmo::IsUsing();
-        capture = using_it || ImGuizmo::IsOver();
+        capture = using_it || (ImGuizmo::IsOver() && !mouse_taken);
         gizmo_over_last = capture;
         ImGuizmo::PopID();
         if (changed) {
@@ -305,7 +310,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
     }
 
     // A click on an outline picks its plane
-    if (!capture && canvas_hovered && hover_plane >= 0) {
+    if (!capture && !mouse_taken && canvas_hovered && hover_plane >= 0) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             sel.rep_id = hover_rep;
