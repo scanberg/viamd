@@ -434,6 +434,32 @@ static std::string contact_class(const md_system_t& sys, std::span<const Positio
     };
     // A π face a cation, anion, lone pair or X-H can sit over: an aromatic atom or an sp2/sp carbon
     auto pi_face = [&](int i) { return ring_aromatic(i) || aromatic(i) || (z(i) == 6 && unsaturated(i)); };
+    auto hydrogen_pi_face = [&](int i, int h) {
+        if (!pi_face(i)) return false;
+        if (!ring_aromatic(i) || z(i) == 6) return true;
+        // An aromatic heteroatom's in-plane lone pair is not its pi face. Use its two ring bonds
+        // to require an approach at least 30 degrees out of plane; do not constrain lone-pair...pi.
+        std::vector<int> neighbours;
+        for (auto it = md_bond_iter(&sys.bond, i); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+            const int j = (int)md_bond_iter_atom_index(&it);
+            if (ring_aromatic(j) && share_ring(sys, i, j)) neighbours.push_back(j);
+        }
+        const Position d = {xyz[h][0] - xyz[i][0], xyz[h][1] - xyz[i][1], xyz[h][2] - xyz[i][2]};
+        for (size_t a = 0; a < neighbours.size(); ++a) {
+            for (size_t b = a + 1; b < neighbours.size(); ++b) {
+                Position u, v;
+                for (int k = 0; k < 3; ++k) {
+                    u[k] = xyz[neighbours[a]][k] - xyz[i][k];
+                    v[k] = xyz[neighbours[b]][k] - xyz[i][k];
+                }
+                const Position n = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+                double dot = 0.0, nn = 0.0, dd = 0.0;
+                for (int k = 0; k < 3; ++k) { dot += n[k] * d[k]; nn += n[k] * n[k]; dd += d[k] * d[k]; }
+                if (nn > 1.0e-12 && dd > 0.0) return dot * dot >= 0.25 * nn * dd;
+            }
+        }
+        return false;
+    };
     auto acceptor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 15 || n == 16 || n == 17 || n == 34 || n == 35 || n == 53; };
     auto donor = [](int n) { return n == 7 || n == 8 || n == 9 || n == 16 || n == 17 || n == 34 || n == 35 || n == 53; };
     auto halogen = [](int n) { return n == 17 || n == 35 || n == 53 || n == 85; };
@@ -527,7 +553,7 @@ static std::string contact_class(const md_system_t& sys, std::span<const Positio
             if (qh != 0 || qy != 0) return "Ionic hydrogen bond";
             return "Hydrogen bond";
         }
-        if (pi_face(y) && !carbon_lone_pair(y)) {
+        if (hydrogen_pi_face(y, h) && !carbon_lone_pair(y)) {
             if (qh > 0) { why += ", from a cationic group."; return "Cation\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80"; }
             why += ".";
             return z(parent) == 6 ? "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80" : "X-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";

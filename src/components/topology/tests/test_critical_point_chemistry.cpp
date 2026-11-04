@@ -442,6 +442,34 @@ static std::string interaction(Scene& s, int x, int y) {
     return s.labels()[contact].interaction;
 }
 
+UTEST(critical_point_chemistry, aromatic_n_hydrogen_pi_face_is_directional) {
+    for (double degrees : {0.0, 29.0, 31.0, 90.0}) {
+        for (bool rotated : {false, true}) {
+            Scene s;
+            const auto position = [&](double x, double y, double z) -> Position {
+                return rotated ? Position{z + 4.0, x - 2.0, y + 1.0} : Position{x, y, z};
+            };
+            const auto ar = MD_ATOM_FLAG_AROMATIC;
+            const int32_t ring[] = {
+                s.atom(7, position(0, 0, 0), ar), s.atom(6, position(1, 1, 0), ar),
+                s.atom(6, position(2, 1, 0), ar), s.atom(6, position(3, 0, 0), ar),
+                s.atom(6, position(2, -1, 0), ar), s.atom(6, position(1, -1, 0), ar)};
+            md_allocator_i* alloc = md_get_heap_allocator();
+            md_ring_data_push(&s.sys.ring, ring, 6, MD_RING_FLAG_AROMATIC, alloc);
+            const double angle = degrees * 3.14159265358979323846 / 180.0;
+            const int h = s.atom(1, position(-2.4 * std::cos(angle), 0, 2.4 * std::sin(angle)));
+            const int c = s.atom(6, position(-3.5 * std::cos(angle), 0, 3.5 * std::sin(angle)));
+            for (int i = 0; i < 6; ++i) s.bond(ring[i], ring[(i + 1) % 6]);
+            s.bond(c, h);
+            const char* expected = degrees < 30.0 ? "C-H\xC2\xB7\xC2\xB7\xC2\xB7X" :
+                                                   "C-H\xC2\xB7\xC2\xB7\xC2\xB7\xCF\x80";
+            EXPECT_STREQ(expected, interaction(s, h, ring[0]).c_str());
+            EXPECT_STREQ(expected, interaction(s, ring[0], h).c_str());
+            md_ring_data_free(&s.sys.ring, alloc);
+        }
+    }
+}
+
 UTEST(critical_point_chemistry, charged_metal_and_pi_hole_contact_classes) {
     const md_atom_flags_t ar = MD_ATOM_FLAG_AROMATIC;
     const md_atom_flags_t sp2 = md_atom_flags_set_hybridization(MD_ATOM_FLAG_NONE, MD_HYBRIDIZATION_SP2);

@@ -128,7 +128,9 @@ def style_axes(ax, rho_extent: float, s_max: float):
 
 def save_pair(fig, out: Path, stem: str, dpi: int = 300):
     fig.savefig(out / f"{stem}.png", dpi=dpi, bbox_inches="tight", facecolor="white")
-    fig.savefig(out / f"{stem}.svg", bbox_inches="tight", facecolor="white")
+    svg = out / f"{stem}.svg"
+    fig.savefig(svg, bbox_inches="tight", facecolor="white")
+    svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n")
     plt.close(fig)
 
 
@@ -235,8 +237,8 @@ def main() -> int:
     for category in CATEGORIES:
         plot_guide_sheet(args.out, category, guides, xc, yc, rho_extent, s_max)
     n_guides = sum(len(entries) for entries in guides.values())
-    if n_guides != 106:
-        raise ValueError(f"expected all 106 supported guides (18 broad + 88 fine); found {n_guides}")
+    if n_guides != 107:
+        raise ValueError(f"expected all 107 supported guides (18 broad + 89 fine); found {n_guides}")
     print(json.dumps({
         "category_systems": {c: int(summary["categories"][c]["systems"]) for c in CATEGORIES},
         "guide_counts": {c: len(guides[c]) for c in CATEGORIES},

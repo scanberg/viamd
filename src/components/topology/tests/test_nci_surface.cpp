@@ -1177,7 +1177,11 @@ UTEST(nci_surface, extended_reference_domain_and_guides) {
     ASSERT_TRUE(map.valid);
     ASSERT_TRUE(comparison.valid);
     EXPECT_NEAR(comparison.rho_extent, 0.07f, 1e-6f);
-    ASSERT_EQ(map.subfamilies.size(), (size_t)106);
+    ASSERT_EQ(map.subfamilies.size(), (size_t)107);
+    EXPECT_EQ(extended.systems[0], 111);
+    EXPECT_EQ(extended.systems[1], 330);
+    EXPECT_EQ(extended.systems[2], 69);
+    EXPECT_EQ(extended.systems[3], 331);
     std::array<bool, nci_surface::reference_category_count> refined = {};
     for (size_t c = 0; c < nci_surface::reference_category_count; ++c) {
         ASSERT_TRUE(map.categories[c].valid);

@@ -18,6 +18,7 @@
 #include <md_topo.h>
 #include <md_util.h>
 #include <md_vlx.h>
+#include <md_xyz.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
@@ -31,6 +32,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,6 +63,7 @@ struct SettingSet {
 
 struct Options {
     std::string input, prefix;
+    std::string contacts;
     std::vector<SettingSet> sets;
     double spacing = 0.2;     // Bohr, the panel's Medium
     size_t max_samples = 64u << 20;
@@ -70,6 +74,9 @@ void usage() {
     fprintf(stderr,
             "usage: viamd_nci_reference [--spacing BOHR] [--max-samples N] [--rho-min AU] [--settings TAG:S:RHO[:R] ...]\n"
             "                           INPUT.h5 OUTPUT_PREFIX\n"
+            "       viamd_nci_reference --contacts PAIRS.txt INPUT.xyz OUTPUT_PREFIX\n"
+            "Contact audit mode reads zero-based atom pairs (one pair per line), treats XYZ as complete QM nuclei,\n"
+            "and writes OUTPUT_PREFIX-contacts.csv. It does not infer a topological graph or recompute CPs.\n"
             "Writes OUTPUT_PREFIX-density.csv and OUTPUT_PREFIX-anchors.csv: the NCI category references of the\n"
             "calculation, as VIAMD's NCI export writes them; OUTPUT_PREFIX-cp-density.csv, the same per CP;\n"
             "OUTPUT_PREFIX-samples.bin, raw samples with their CP; and OUTPUT_PREFIX.xyz. --spacing defaults to 0.2 Bohr (Medium).\n"
@@ -93,6 +100,10 @@ bool parse(Options* o, int argc, char** argv) {
         if (a == "--spacing") { if (!value(&o->spacing)) return false; }
         else if (a == "--rho-min") { if (!value(&o->rho_min)) return false; }
         else if (a == "--max-samples") { if (!value(&v)) return false; o->max_samples = (size_t)v; }
+        else if (a == "--contacts") {
+            if (i + 1 >= argc) return false;
+            o->contacts = argv[++i];
+        }
         else if (a == "--settings") {
             if (i + 1 >= argc) return false;
             const std::string spec = argv[++i];
@@ -152,6 +163,65 @@ bool write_file(const std::string& path, const std::string& text) {
     if (!f) return false;
     const bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
     return fclose(f) == 0 && ok;
+}
+
+bool audit_contacts(const Options& opt, const md_system_t& sys, const md_system_state_t& state) {
+    std::ifstream input(opt.contacts);
+    if (!input) { fprintf(stderr, "%s: cannot read atom pairs\n", opt.contacts.c_str()); return false; }
+    std::vector<critical_point_distribution::Position> atoms(state.num_atoms);
+    std::vector<md_topo_vert_t> vertices(state.num_atoms);
+    std::vector<md_topo_critical_point_type_t> types(state.num_atoms, MD_TOPO_MAXIMUM);
+    for (size_t i = 0; i < state.num_atoms; ++i) {
+        atoms[i] = {state.xyz[i].x, state.xyz[i].y, state.xyz[i].z};
+        vertices[i].x = (float)(state.xyz[i].x * angstrom_to_bohr);
+        vertices[i].y = (float)(state.xyz[i].y * angstrom_to_bohr);
+        vertices[i].z = (float)(state.xyz[i].z * angstrom_to_bohr);
+    }
+    std::vector<md_topo_edge_t> edges;
+    std::vector<std::pair<int, int>> pairs;
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        int a, b;
+        std::string extra;
+        if (!(row >> a >> b) || (row >> extra) || a < 0 || b < 0 || a == b ||
+            (size_t)a >= state.num_atoms || (size_t)b >= state.num_atoms) {
+            fprintf(stderr, "%s: invalid atom pair on line %zu\n", opt.contacts.c_str(), pairs.size() + 1);
+            return false;
+        }
+        const uint32_t cp = (uint32_t)vertices.size();
+        md_topo_vert_t v = {};
+        v.x = (vertices[a].x + vertices[b].x) * 0.5f;
+        v.y = (vertices[a].y + vertices[b].y) * 0.5f;
+        v.z = (vertices[a].z + vertices[b].z) * 0.5f;
+        vertices.push_back(v);
+        types.push_back(MD_TOPO_SPLIT_SADDLE);
+        edges.push_back({cp, (uint32_t)a});
+        edges.push_back({cp, (uint32_t)b});
+        pairs.emplace_back(a, b);
+    }
+    if (input.bad()) { fprintf(stderr, "%s: atom-pair read failed\n", opt.contacts.c_str()); return false; }
+    md_topo_extremum_graph_t graph = {};
+    graph.vertices = vertices.data();
+    graph.types = types.data();
+    graph.num_vertices = (uint32_t)vertices.size();
+    graph.edges = edges.data();
+    graph.num_edges = (uint32_t)edges.size();
+    const auto labels = critical_point_distribution::chemical_labels(graph, sys, atoms);
+    std::string out;
+    csv_row(out, {"atom_a", "atom_b", "kind", "interaction", "group", "detail", "charge_a", "charge_b", "finer_1", "finer_2", "finer_3"});
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        const auto [a, b] = pairs[i];
+        const auto& label = labels[state.num_atoms + i];
+        const auto finer = [&](size_t k) { return k < label.finer.size() ? label.finer[k] : std::string(); };
+        csv_row(out, {std::to_string(a), std::to_string(b), critical_point_distribution::kind_name(label.kind),
+                      label.interaction, label.group, label.detail,
+                      std::to_string(critical_point_distribution::group_charge(sys, a)),
+                      std::to_string(critical_point_distribution::group_charge(sys, b)), finer(0), finer(1), finer(2)});
+    }
+    const std::string path = opt.prefix + "-contacts.csv";
+    if (!write_file(path, out)) { fprintf(stderr, "%s: cannot write contact audit\n", path.c_str()); return false; }
+    return true;
 }
 
 // The basis atoms' positions in Bohr: through the QM atom map when the file has one
@@ -234,12 +304,25 @@ int main(int argc, char** argv) {
     md_system_state_t state = {};
     sys.alloc = alloc;
     state.alloc = alloc;
-    if (!md_vlx_system_init_from_file(&sys, &state, str_from_cstr(opt.input.c_str()))) {
+    if (!opt.contacts.empty()) {
+        if (!md_xyz_system_init_from_file(&sys, &state, str_from_cstr(opt.input.c_str()), MD_XYZ_OPTION_NONE)) {
+            fprintf(stderr, "%s: cannot read XYZ geometry\n", opt.input.c_str());
+            return 1;
+        }
+        for (size_t i = 0; i < sys.atom.count; ++i) sys.atom.flags[i] |= MD_ATOM_FLAG_QM;
+    } else if (!md_vlx_system_init_from_file(&sys, &state, str_from_cstr(opt.input.c_str()))) {
         fprintf(stderr, "%s: not a VeloxChem file this build can read\n", opt.input.c_str());
         return 1;
     }
-    if (!md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL))
+    if (!md_util_system_infer(&sys, &state, MD_UTIL_INFER_ALL)) {
         fprintf(stderr, "%s: nothing could be inferred; labels use the bare atoms\n", opt.input.c_str());
+        if (!opt.contacts.empty()) return 1;
+    }
+    if (!opt.contacts.empty()) {
+        const bool ok = audit_contacts(opt, sys, state);
+        md_arena_allocator_destroy(alloc);
+        return ok ? 0 : 1;
+    }
 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, alloc)) {

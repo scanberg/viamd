@@ -1,7 +1,8 @@
 # Topological Analysis
 
 > Requires the development `CP` branch. This page describes the implementation at
-> VIAMD revision `34bea06e` (4 November 2026), not a released upstream version.
+> VIAMD revision `8a9337cf` plus the chemistry/reference corrections of
+> 4 November 2026, not a released upstream version.
 > Standalone wiki-page draft. Wiki assembly and publication take place after merge.
 
 Use **Windows > Quantum Chemistry > Topological Analysis** to explore the
@@ -265,7 +266,7 @@ guides and comparison scores; there is no original/extended selector.
 
 Expand **Interaction guides**, then **Add interaction guide...** to browse
 by category or search by chemical name. A broad class offers **Whole class**
-and finer supported maps. The reference contains **18 broad maps and 88
+and finer supported maps. The reference contains **18 broad maps and 89
 refinements**, including donor/acceptor, intra/intermolecular, ring and
 element-pair subdivisions. Guides require at least five supporting pooled
 systems. Recognized classes without sufficient data are listed separately,

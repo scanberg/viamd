@@ -8,6 +8,8 @@ regions are experimentally validated interaction energies.
 
 Implementation baseline: VIAMD `34bea06e` and mdlib
 `544c1b225be5eb18a332051690d4d59150b9f9ae`, 4 November 2026.
+This account includes the subsequent branch documentation at `8a9337cf`
+and the uncommitted chemistry/reference corrections described below.
 The [user guide](topological-analysis-wiki.md) is a standalone wiki-page draft
 kept in this branch; it is not integrated into the published wiki.
 
@@ -217,6 +219,23 @@ single physical mechanism. The classifier's labels are heuristics over the
 available molecular topology and charges; they are not inferred from the
 reference map or from an energy decomposition.
 
+The chemistry correction of 4 November 2026 treats QM atoms as a complete
+nuclear geometry: a hydrogen-free cyanide fragment must not acquire an
+implicit hydrogen. Its terminal triple-bonded carbon carries the anionic
+lone pair; the nearby-group charge therefore classifies neutral-donor
+contacts to either cyanide end as ionic hydrogen bonds. Classical structures
+with missing hydrogens retain their existing implicit-hydrogen rules.
+
+For hydrogen approaches to an aromatic heteroatom, a pi-face assignment
+requires at least 30 degrees out of its local ring plane (the normal from
+two ring bonds). In-plane C-H approaches instead become C-H···X, with the
+nitrogen/oxygen/etc. endpoint retained in the detailed label. This is a
+classification convention, not a density or energy threshold. It does not
+change the separate lone-pair···pi rule: the reviewed SH250 236 furan contact
+remains lone pair···pi. Regression tests include both pyridine dimers,
+HS-368, ammonia/cyanide, ammonium/methylazide, this furan control, and
+rotated approaches on either side of the angular cutoff.
+
 The classifier's contact classes map to the four broad reference categories
 as follows:
 
@@ -242,38 +261,39 @@ The 18 broad maps are:
 
 | Category | Broad guide — systems |
 |---|---|
-| Hydrogen bonds | Hydrogen bonds — 46; Ionic hydrogen bonds — 66 |
+| Hydrogen bonds | Hydrogen bonds — 30; Ionic hydrogen bonds — 82 |
 | Rings | Aliphatic rings — 30; Aromatic rings — 212; Contact-closed rings — 240 |
-| π interactions | C–H···π — 31; Cation···π — 7; Lone pair···π — 9; X–H···π — 7; π-stacking — 21 |
-| Other | C–H···X — 130; Cage — 51; Chalcogen bonds — 76; Halogen bonds — 64; H···H — 34; Pnictogen bonds — 68; Tetrel bonds — 5; van der Waals contacts — 54 |
+| π interactions | C–H···π — 25; Cation···π — 7; Lone pair···π — 9; X–H···π — 7; π-stacking — 21 |
+| Other | C–H···X — 135; Cage — 51; Chalcogen bonds — 76; Halogen bonds — 64; H···H — 34; Pnictogen bonds — 68; Tetrel bonds — 5; van der Waals contacts — 54 |
 
-Each broad map is refined into one or more level-2 maps. The 88 fine maps are
+Each broad map is refined into one or more level-2 maps. The 89 fine maps are
 listed below with their supporting systems. A dash separates entries; counts
 are the map-specific number of distinct pooled groups, not CP counts.
 
-* **Hydrogen bonds (8):** Hydrogen bonds—N–H···C, intermolecular (5);
-  N–H···N, intermolecular (10); N–H···O, intermolecular (10);
-  O–H···N, intermolecular (9); O–H···O, intermolecular (10).
-  Ionic hydrogen bonds—N–H···N, intermolecular (16);
+* **Hydrogen bonds (7):** Hydrogen bonds—N–H···O, intermolecular (10);
+  O–H···N, intermolecular (6); O–H···O, intermolecular (10).
+  Ionic hydrogen bonds—N–H···C, intermolecular (9);
+  N–H···N, intermolecular (22);
   N–H···O, intermolecular (30); O–H···O, intermolecular (16).
 * **Rings (46):** Aliphatic 5-ring C4Se (5), C5 (8), and 6-ring C6 (5).
   Aromatic 5-ring C3N2 (11), C3NS (7), C3NSe (9), C4N (12), C4O (29),
   C4S (9); aromatic 6-ring C4N2 (47), C5N (48), C6 (87).
-  Contact-closed rings: by C–H···X—5-ring (8), 6-ring (6), 7-ring (12),
-  8-ring (5); by C–H···π—4-ring (6), 5-ring (6), 6-ring (15), 7-ring (8),
+  Contact-closed rings: by C–H···X—5-ring (8), 6-ring (8), 7-ring (12),
+  8-ring (5); by C–H···π—4-ring (6), 5-ring (6), 6-ring (13), 7-ring (8),
   8-ring (8); by chalcogen bond—4-ring (12), 5-ring (16); by halogen
-  bond—5-ring (12); by hydrogen bond—6-ring (10), 8-ring (7); by H···H—
+  bond—5-ring (12); by hydrogen bond—6-ring (9), 8-ring (7); by H···H—
   5-ring (10), 5-ring C2H3 (6), 6-ring (16), 6-ring C4H2 (5), 7-ring (8);
-  by ionic hydrogen bond—6-ring (15), 7-ring (15), 8-ring (6); by
+  by ionic hydrogen bond—6-ring (16), 7-ring (15), 8-ring (6); by
   pnictogen bond—4-ring (10), 5-ring (8), 6-ring (20), 7-ring (17); by
   van der Waals contact—5-ring (13), 5-ring F2P2S (6), 6-ring (5); by
   π···π—4-ring (8), 5-ring (9), 6-ring (13), 7-ring (6), 8-ring (10).
 * **π interactions (5):** C–H···π—C···H, intermolecular (19), and
-  H···N, intermolecular (10); X–H···π—C···H, intermolecular (7);
+  H···N, intermolecular (7); X–H···π—C···H, intermolecular (7);
   π-stacking—C···C, intermolecular (13), and C···N, intermolecular (7).
-* **Other (29):** C–H···X—Br···H, intermolecular (8); Cl···H,
+* **Other (31):** C–H···X—Br···H, intermolecular (8); Cl···H,
   intermolecular (8); F···H, intermolecular (21); H···N, intermolecular
-  (36); H···O, intermolecular (49). Cage—Bonded cage (5); Contact cage
+  (39); H···O, intermolecular (49); H···S, intermolecular (5);
+  H···Se, intermolecular (5). Cage—Bonded cage (5); Contact cage
   (47). Chalcogen bonds—N···S, intermolecular (16); N···Se,
   intermolecular (22); O···S, intermolecular (15); O···Se, intermolecular
   (22). Halogen bonds—Br···N, intermolecular (7); Br···O, intermolecular
@@ -286,7 +306,7 @@ are the map-specific number of distinct pooled groups, not CP counts.
   (12); F···O, intermolecular (5); H···O, intramolecular (5).
 
 Only maps represented in at least five pooled groups are baked. The full
-classifier recognizes more labels than these 106 supported maps; absence from
+classifier recognizes more labels than these 107 supported maps; absence from
 the guide catalogue means insufficient support under this threshold, not an
 impossible interaction or a negative classification. The fine maps are nested
 within their broad class and are alternative refinements, not additional
@@ -535,23 +555,23 @@ voxels, or total interaction volume.
 A category's support count is the number of unique pooled groups with
 non-zero density for that category. Categories overlap: one complex may
 contribute to several category maps, so category counts are not intended to
-sum to 910. The archived extended maps report:
+sum to 910. The chemistry-corrected extended maps report:
 
 | Category | Distinct pooled groups with map support |
 |---|---:|
 | Hydrogen bonds | 111 |
 | Rings | 330 |
-| π interactions | 75 |
-| Other | 330 |
+| π interactions | 69 |
+| Other | 331 |
 
-The audited export has 6,277 CP anchors, 11,985,087 category-density rows,
+The corrected export has 6,277 CP anchors, 11,970,600 category-density rows,
 and 30,322,074 per-CP density-bin rows. Twenty-three calculations have no
 category density rows and 21 have no NCI anchors; empty cases do not count
 toward a category's support. These records are successful exports, not
 evidence that every intended motif was found or that every system contributes
 to every category.
 
-The 18 broad and 88 fine maps are CP-classification-guided pools from the same
+The 18 broad and 89 fine maps are CP-classification-guided pools from the same
 910 source calculations. A guide's support count is the number of distinct
 pooled groups with nonzero volume for that class (at least five by the bake
 threshold). For a class within an export, per-CP densities are first summed
@@ -668,7 +688,20 @@ passing the category-density CSVs, the group expression `^(\d\d_[^_]+)_`,
 and minimum support 5. The archived `pool_extended.py` records the exact
 argument construction and separately generates both refinement levels.
 Keep the manifest and verify the resulting 910 exports, category supports
-111/330/75/330 and 18+88 map counts before replacing a baked reference.
+111/330/69/331 and 18+89 map counts before replacing a baked reference.
+
+The original archive remains immutable. The subsequent chemistry correction
+is preserved beside it in `chemistry-validation/corrected-reference/`,
+with `refresh_reference.py` recording contact-audit, SCF/export and pooling
+steps. All 2,625 contact endpoints were checked through the production
+classifier; 42 calculations with changed classes or charge metadata were
+fully regenerated (41 small SCF jobs and the existing HS-368 wavefunction).
+Their graph-derived ring/cage labels and density exports replace the old
+exports during pooling; the other 868 exports are reused unchanged.
+There are 25 C-H···pi to C-H···X corrections and 16 neutral to ionic H-bond
+corrections, plus charge-metadata repairs. Anchor and per-CP-bin counts
+remain unchanged. Reuse does not imply a new independent certification of
+the other calculations' separatrices.
 
 The extended C++ output is generated explicitly, rather than overwriting the
 legacy file:
@@ -699,7 +732,7 @@ python3 docs/topological-analysis/plot_reference.py \
 ```
 
 The script validates matching grid metadata, nonnegative finite map fields,
-and the expected **106 = 18 broad + 88 fine** guide count. It emits PNG and
+and the expected **107 = 18 broad + 89 fine** guide count. It emits PNG and
 SVG for the category panel, combined panel, and one complete support-labelled
 guide contact sheet per category:
 
@@ -707,13 +740,13 @@ guide contact sheet per category:
   ([SVG](images/topological-analysis/reference_categories.svg))
 * [Combined category density/contour map](images/topological-analysis/reference_combined.png)
   ([SVG](images/topological-analysis/reference_combined.svg))
-* [Hydrogen-bond guides (10)](images/topological-analysis/guides_hydrogen_bonds.png)
+* [Hydrogen-bond guides (9)](images/topological-analysis/guides_hydrogen_bonds.png)
   ([SVG](images/topological-analysis/guides_hydrogen_bonds.svg))
 * [Ring guides (49)](images/topological-analysis/guides_rings.png)
   ([SVG](images/topological-analysis/guides_rings.svg))
 * [π-interaction guides (10)](images/topological-analysis/guides_pi_interactions.png)
   ([SVG](images/topological-analysis/guides_pi_interactions.svg))
-* [Other guides (37)](images/topological-analysis/guides_other.png)
+* [Other guides (39)](images/topological-analysis/guides_other.png)
   ([SVG](images/topological-analysis/guides_other.svg))
 
 All map panels share the archive's signed-rho and `s` axes. The large guide
@@ -826,10 +859,11 @@ generations, including exports, pooled arrays, scripts and logs. Historical
 absolute paths inside manifests identify original locations; they are not
 claims that cleaned Desktop folders still exist.
 
-The compact sibling `current-reference/` exposes the current `regions/`,
+The compact sibling `current-reference/` exposes the original `regions/`,
 `subfamilies/`, pipeline snapshot, manifest and reports without extracting
-the full archive. For figure generation, substitute that directory for
-`/path/to/v3-extended` in the command above. The archive is local preservation,
+the full archive. For the chemistry-corrected figures, substitute
+`chemistry-validation/corrected-reference/` for `/path/to/v3-extended`
+in the command above. The archive is local preservation,
 not a public research-data deposit; a publication should deposit a licensed,
 versioned dataset with source-input checksums and a persistent identifier.
 
@@ -838,9 +872,11 @@ compared member-by-member with them using GNU tar and its SHA-256 verified.
 Original VeloxTest calculations and unrelated Desktop files were not removed.
 
 The implementation baseline had successful application/test builds and
-213 passing tests before this documentation phase. The figure script has
-been rerun against the preserved current maps and all 106 guide panels
-verified. All 110 fields (four categories plus 106 guides) were compared with
+213 passing tests before the documentation phase. After the chemistry
+correction, the application and reference exporter build successfully,
+all 220 VIAMD tests and all 22 mdlib chemistry tests pass. The figure script
+has been rerun against the corrected maps and all 107 guide panels
+verified. All 111 fields (four categories plus 107 guides) were compared with
 the baked C++ arrays and matched within their six-significant-figure rounding.
 Image decoding, local documentation links and visible x-tick label bounding
 boxes were checked. This is not a new GUI interaction test, cross-platform
