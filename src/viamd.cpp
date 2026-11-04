@@ -1784,11 +1784,11 @@ LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const lo
 
 // ### INFERENCE IN THE BACKGROUND ###
 //
-// The copy is made on the main thread, of the system as it is (the coordinates shown become its reference state), and
-// inferred on a worker with its loops on the pool. Nothing else reads or writes it. Put in place, the copy's arrays
-// become the system's (its arena is kept with the system, freed with it); the attribute table and the force field stay
-// the system's own, as only those may have changed meanwhile (a run opened) without changing the topology. A copy of a
-// topology which changed meanwhile (a supplement, an edit) is dropped and made again.
+// The work (md_util_system_infer_prepare) shares the core of the system, which nothing writes until it is published or
+// discarded, and has of its own what inference writes and the coordinates shown when it was made, which become the
+// system's reference state. It is inferred on a worker with its loops on the pool. Published, its arrays become the
+// system's (its arena is kept with the system, freed with it); the system keeps its core, its attribute table and its
+// force field. The work of a topology which changed meanwhile (a supplement, an edit) is dropped and made again.
 
 static void inference_discard_work(SystemInference& inf) {
     if (inf.arena) {
@@ -1812,21 +1812,14 @@ void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
     }
 
     inf.arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    inf.work = {};
-    inf.work.alloc = inf.arena;
-    md_system_copy(&inf.work, &sys);
-    inf.work.reference.alloc = inf.arena;
-    md_system_state_copy(&inf.work.reference, &app->mold.state);
-    // The formal charges the file gives, which chemistry starts from: the one attribute inference reads
-    if (const md_attribute_t* q = md_attributes_find(&sys.attributes, STR_LIT("atom/formal_charge"))) {
-        const float* values = (const float*)md_attribute_view(q, MD_ATTRIBUTE_TYPE_F32, 1, 1);
-        if (values && md_attribute_slice_count(q, md_attribute_slice_all()) == sys.atom.count) {
-            md_attributes_publish_atom_column(&inf.work.attributes, STR_LIT("atom/formal_charge"), md_unit_none(), 1, values, sys.atom.count);
-        }
+    if (!md_util_system_infer_prepare(&inf.work, &sys, &app->mold.state, inf.arena)) {
+        VIAMD_LOG_ERROR("Could not prepare the inference of the structure of the system");
+        inference_discard_work(inf);
+        inf.pending = false;
+        return;
     }
 
     inf.flags = flags;
-    inf.base_version = sys.topology_version;
     inf.done = false;
     inf.pending = true;
     inf.restart = false;
@@ -1834,7 +1827,7 @@ void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
     SystemInference* p = &inf;
     inf.job.start(STR_LIT("Inferring structure"),
         [p]() {
-            md_util_system_infer(&p->work, &p->work.reference, p->flags, task_system::executor());
+            md_util_system_infer_run(&p->work, p->flags, task_system::executor());
             // Bond inference leaves its scratch committed in this thread's arenas (it rewinds them, which keeps the
             // pages): given back, as this was large and is done
             md_temp_trim();
@@ -1875,20 +1868,14 @@ static void system_inferred_refresh(ApplicationState* app) {
     app->script.time_since_last_change = 1.0e9;
 }
 
-// The copy in place of the system: the main thread, nothing else running which reads the system
-static void inference_publish(ApplicationState* app) {
+// The work published: the main thread, nothing else running which reads the system. False when the topology changed
+// since the work was made of it, and then nothing is done.
+static bool inference_publish(ApplicationState* app) {
     SystemInference& inf = app->mold.inference;
     md_system_t& sys = app->mold.sys;
 
-    md_attributes_t attributes = sys.attributes;
-    md_nb_forcefield_t* nonbonded = sys.nonbonded;
-    md_allocator_i* alloc = sys.alloc;
-    sys = inf.work;
-    sys.attributes = attributes;
-    sys.nonbonded  = nonbonded;
-    sys.alloc      = alloc;
     // A version of its own: what was derived from the core is stale
-    md_system_topology_changed(&sys);
+    if (!md_util_system_infer_publish(&sys, &inf.work)) return false;
 
     md_array_push(inf.kept, inf.arena, app->allocator.persistent);
     inf.arena = nullptr;
@@ -1916,12 +1903,13 @@ static void inference_publish(ApplicationState* app) {
     }
     md_temp_trim();
     VIAMD_LOG_INFO("The structure of the system is inferred: %zu bonds, %zu molecules", sys.bond.count, md_system_molecule_count(&sys));
+    return true;
 }
 
 static void system_inference_on_main(ApplicationState* app, task_system::Status status) {
     SystemInference& inf = app->mold.inference;
     if (!inf.pending) return;
-    if (status == task_system::Status::Completed && inf.done && app->mold.sys.topology_version == inf.base_version) {
+    if (status == task_system::Status::Completed && inf.done && app->mold.sys.topology_version == inf.work.base_version) {
         if (app->script.eval) script::eval_interrupt(app->script.eval);
         task_system::wait_all();
         inference_publish(app);
@@ -1944,9 +1932,7 @@ void system_inference_finish(ApplicationState* app) {
     inf.job.wait();
     if (app->script.eval) script::eval_interrupt(app->script.eval);
     task_system::wait_all();
-    if (inf.done && app->mold.sys.topology_version == inf.base_version) {
-        inference_publish(app);
-    } else {
+    if (!(inf.done && inference_publish(app))) {
         // Inferred on the system itself, here and now
         inf.job.cancel_and_wait();
         inference_discard_work(inf);
@@ -2043,8 +2029,12 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             ASSERT(state->mold.sys.alloc && state->mold.state.alloc == state->mold.sys.alloc);
             if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
+                md_temp_trim();
                 return LoadResult_Failed;
             }
+            // A loader's scratch is in this thread's temp arenas (its read buffer, what it holds per block), which keep
+            // their pages once rewound: given back, as a load is large and is done
+            md_temp_trim();
             result = LoadResult_System;
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
