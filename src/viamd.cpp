@@ -2029,8 +2029,12 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             ASSERT(state->mold.sys.alloc && state->mold.state.alloc == state->mold.sys.alloc);
             if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
+                md_temp_trim();
                 return LoadResult_Failed;
             }
+            // A loader's scratch is in this thread's temp arenas (its read buffer, what it holds per block), which keep
+            // their pages once rewound: given back, as a load is large and is done
+            md_temp_trim();
             result = LoadResult_System;
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
