@@ -861,6 +861,7 @@ void system_remove(SystemContext& sys) {
     // What was of it: its representations, its operations and what it was shown as
     remove_all_representations(sys);
     sys.scene.visible = true;
+    sys.scene.placement = mat4_ident();
     system_reset_operations(sys);
     sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
     sys.scene.assembly = -1;
@@ -881,6 +882,10 @@ void system_scene_serialize(viamd::serialization_state_t& state, const SystemCon
     viamd::write_section_header(state, STR_LIT("SystemScene"));
     viamd::write_int(state, STR_LIT("System"), (int)sys.id);
     viamd::write_bool(state, STR_LIT("Visible"), s.visible);
+    if (!mat4_equal(s.placement, mat4_ident())) {
+        // Column major
+        viamd::write_flt_vec(state, STR_LIT("Placement"), &s.placement.elem[0][0], 16);
+    }
 
     // The operations: on or off, and their settings
     viamd::write_bool(state, STR_LIT("Recenter"), op.recenter);
@@ -913,6 +918,10 @@ bool system_scene_read_entry(SystemContext& sys, str_t ident, str_t arg) {
 
     if (str_eq(ident, STR_LIT("Visible"))) {
         viamd::extract_bool(s.visible, arg);
+    } else if (str_eq(ident, STR_LIT("Placement"))) {
+        // Column major
+        mat4_t M;
+        if (viamd::extract_flt_vec(&M.elem[0][0], 16, arg)) s.placement = M;
     } else if (str_eq(ident, STR_LIT("Operations"))) {
         // The operations a system had, of a workspace written while they were added and removed: every system has
         // them all now, on or off by their own entries

@@ -6792,7 +6792,7 @@ void reset_view_scene(ViewTransform* transform, const ApplicationState& app, flo
         if (sc.scene.visible && sc.data.state.num_atoms > 0) shown[num_shown++] = &sc;
     }
     if (num_shown == 0) return;
-    if (num_shown == 1) {
+    if (num_shown == 1 && mat4_equal(shown[0]->scene.placement, mat4_ident())) {
         const SystemContext& sc = *shown[0];
         const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
         reset_view(transform, sc.data.state, &visible, fov_y, region, &sc.data.sys, sc.scene.assembly);
@@ -6828,7 +6828,8 @@ void reset_view_scene(ViewTransform* transform, const ApplicationState& app, flo
         for (size_t a = 0; a < st.num_atoms; ++a) {
             if (!all && !md_bitset_test(visible, a)) continue;
             if (k++ % stride) continue;
-            md_array_push(xyz, st.xyz[a], md_temp_allocator(temp));
+            // Where the system is placed
+            md_array_push(xyz, mat4_mul_vec3(sc.scene.placement, st.xyz[a], 1.0f), md_temp_allocator(temp));
         }
     }
     const size_t n = md_array_size(xyz);
@@ -7156,6 +7157,11 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                         if (dst_xyzw) {
                             md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &sc.data.sys, &sc.data.state);
+                            // Where the system is placed
+                            for (size_t i = 0; i < popcount; ++i) {
+                                const vec3_t p = mat4_mul_vec3(sc.scene.placement, vec3_from_vec4(dst_xyzw[i]), 1.0f);
+                                dst_xyzw[i] = vec4_from_vec3(p, dst_xyzw[i].w);
+                            }
                         }
                     }
                 }

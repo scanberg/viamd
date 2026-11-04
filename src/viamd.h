@@ -1260,7 +1260,19 @@ struct SystemScene {
     // (centering, wrapping, making whole) are not applied while one is shown.
     int assembly = -1;
 
+    // Where the system is placed in the world: a rigid transform of its coordinates as they are drawn, identity for as
+    // the files have them (overlaid on the others). Of the view only: the coordinates themselves (SystemData::state),
+    // which the script measures and the operations write, are not moved by it - unlike centering. Side by side, and
+    // superposed on another system by a fit of a selection of each, are placements. Applied wherever the system's
+    // coordinates meet the world: its draws (as a model matrix, under its copies), the box and dipoles drawn of it,
+    // region selection, framing; not yet to the isosurfaces of its electronic structure (of the first system alone).
+    mat4_t placement = MD_MAT4_IDENT_INIT;
+
     // DERIVED, NOT SAVED: the copies drawn of what is above, made from it every frame (update_view_param)
+
+    // The placement as drawn in this frame and in the one before, so that a system being moved shows as moving
+    mat4_t placement_curr = MD_MAT4_IDENT_INIT;
+    mat4_t placement_prev = MD_MAT4_IDENT_INIT;
 
     // The copies of the system the representations with periodic_images are drawn in, by instancing (md_gl_copies_t):
     // its own first, then its periodic images (periodic_images), none without a cell or images, or with an assembly

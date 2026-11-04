@@ -1051,9 +1051,10 @@ int main(int argc, char** argv) {
                         // When removing, only consider currently selected atoms as candidates for region selection
                         candidate_mask = md_bitmask_view(&selection);
                     }
+                    // As it is drawn: where it is placed
                     point_set_region_mask_compute(&highlight,
                         sc.data.state.xyz, sc.data.state.num_atoms,
-                        &candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
+                        &candidate_mask, world_to_clip * sc.scene.placement, event.region_min, event.region_max, event.surface_size);
 
                     grow_mask_by_selection_granularity(&highlight, state.selection.granularity, sc.data.sys);
                     if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
@@ -1782,9 +1783,11 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.prev = param.matrix.curr;
     param.jitter.prev = param.jitter.curr;
 
-    // The copies of each system
+    // The copies of each system, and where it is placed
     for (size_t i = 0; i < data->num_systems; ++i) {
         SystemContext& sc = *data->systems[i];
+        sc.scene.placement_prev = sc.scene.placement_curr;
+        sc.scene.placement_curr = sc.scene.placement;
         // Its periodic images, as of this frame and the last: as many as before, or they did not move
         md_array(mat4_t)& curr = sc.scene.periodic_transforms;
         md_array(mat4_t)& prev = sc.scene.periodic_transforms_prev;
@@ -7594,7 +7597,7 @@ static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
     const size_t num_cells = rep.periodic_images ? MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
         const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
-        const vec4_t center = vec4_from_vec3(cell_center + t, 1.0f);
+        const vec4_t center = vec4_from_vec3(mat4_mul_vec3(sys.scene.placement_curr, cell_center + t, 1.0f), 1.0f);
         bool out_of_view = false;
         for (int p = 0; p < 6 && !out_of_view; ++p) {
             out_of_view = vec4_dot(plane[p], center) < -cell_radius;
@@ -7606,8 +7609,9 @@ static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
                 if (i & bit) continue;
                 const int j = i | bit;
                 const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[k] : color;
-                const vec3_t p0 = corner[i] + t;
-                const vec3_t p1 = corner[j] + t;
+                // Where the system is placed
+                const vec3_t p0 = mat4_mul_vec3(sys.scene.placement_curr, corner[i] + t, 1.0f);
+                const vec3_t p1 = mat4_mul_vec3(sys.scene.placement_curr, corner[j] + t, 1.0f);
                 if (rep.box.thickness > 0.0f) {
                     const vec3_t mid  = (p0 + p1) * 0.5f;
                     const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
@@ -7740,6 +7744,12 @@ static void draw_representations_opaque(SystemContext& sys) {
 
                         uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
 
+                        // Where the system is placed
+                        const mat4_t& P = sys.scene.placement_curr;
+                        cyl_beg   = mat4_mul_vec3(P, cyl_beg, 1.0f);
+                        cyl_end   = mat4_mul_vec3(P, cyl_end, 1.0f);
+                        arrow_end = mat4_mul_vec3(P, arrow_end, 1.0f);
+
                         immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
                         immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
                     }
@@ -7753,6 +7763,9 @@ static void draw_representations_opaque(SystemContext& sys) {
 
         const float max_bond_length = bond_length_limit(sys);
 
+        // Where the system is placed, as its model matrix (SystemScene::placement)
+        const mat4_t view      = state->view.param.matrix.curr.view * sys.scene.placement_curr;
+        const mat4_t prev_view = state->view.param.matrix.prev.view * sys.scene.placement_prev;
         md_gl_draw_args_t args = {
             .shaders = state->gl.shaders,
             .draw_operations = {
@@ -7760,10 +7773,10 @@ static void draw_representations_opaque(SystemContext& sys) {
                 .ops = draw_ops,
             },
             .view_transform = {
-                .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
+                .view_matrix = &view.elem[0][0],
                 .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
                 // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
+                .prev_view_matrix = &prev_view.elem[0][0],
                 .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
             },
             .picking_offset = gl_picking_offset(sys),
@@ -8056,7 +8069,9 @@ static void draw_representations_marks(SystemContext& sys) {
 
     const float max_bond_length = bond_length_limit(sys);
 
-    // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still
+    // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still. Where
+    // the system is placed, as its model matrix.
+    const mat4_t view = data->view.param.matrix.curr.view * sys.scene.placement_curr;
     md_gl_draw_args_t args = {
         .shaders = data->gl.shaders_marks,
         .draw_operations = {
@@ -8064,7 +8079,7 @@ static void draw_representations_marks(SystemContext& sys) {
             .ops = draw_ops,
         },
         .view_transform = {
-            .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
+            .view_matrix = &view.elem[0][0],
             .proj_matrix = &data->view.param.matrix.curr.proj_no_jitter.elem[0][0],
         },
         .picking_offset = gl_picking_offset(sys),
