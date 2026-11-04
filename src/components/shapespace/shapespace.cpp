@@ -353,15 +353,18 @@ struct Shapespace : viamd::EventHandler {
                 ImGui::Checkbox("Shapespace", &show_window);
                 break;
             case viamd::EventType_ViamdSystemInit:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdSystemFree:
             case viamd::EventType_ViamdTrajectoryFree:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // What the evaluations read goes with it
                 release_all(true);
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdLoadData: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // A system or a run loaded in place of the one there: a run of another file may have as many frames
                 // as the one before, and is opened without a SystemInit or SystemFree (the tasks reading the old one
                 // were interrupted and waited for already)
@@ -373,6 +376,7 @@ struct Shapespace : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // Coordinates written in place (a QM optimization step, a vibration), the frame the same
                 state_generation += 1;
                 break;

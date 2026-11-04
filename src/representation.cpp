@@ -930,7 +930,9 @@ static void update_representation(SystemContext& sc, Representation* rep) {
         rep->type_is_valid = representation_particle_type_valid(sc, rep->type);
         break;
     case RepresentationType::ElectronicStructure:
-        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
+        // Evaluated from the quantum chemistry of the first system alone, until it is per system (the GPU data and the
+        // evaluations are of the first): of another, nothing is drawn rather than the first's orbitals on its atoms
+        rep->type_is_valid = &sc == &state->system_context && electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
         if (rep->type_is_valid) {
             // what it waits for without blocking, asked again next frame
             again = !electronic_structure_representation_update(state, rep, colors);
@@ -1705,7 +1707,8 @@ void create_default_representations(SystemContext& sc) {
     size_t num_coarse_grained = 0;
     // Any electronic structure, not orbitals in particular: a file can carry density properties and
     // no SCF block, and its density properties are as much something to show as orbitals would be.
-    const bool electronic_structure_present = es_source_mask(sc.data.sys) != 0;
+    // Only the first system's quantum chemistry is evaluated so far (update_representation)
+    const bool electronic_structure_present = &sc == &state->system_context && es_source_mask(sc.data.sys) != 0;
 
 
     if (sc.data.sys.atom.count > 3'000'000) {
@@ -2144,16 +2147,35 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     return true;
 }
 
-static void deserialize_representation(SystemContext& sys, viamd::deserialization_state_t& state) {
+// The entries of one section, read before what they are for is made: the system it is of is one of them (System=)
+struct SectionEntries {
+    md_array(str_t) ident = 0;
+    md_array(str_t) arg = 0;
+    int system = -1;    // The id it names, -1 for none
+};
+
+static void read_section_entries(SectionEntries* out, viamd::deserialization_state_t& state, md_allocator_i* alloc) {
     str_t ident, arg;
+    while (viamd::next_entry(ident, arg, state)) {
+        if (str_eq(ident, STR_LIT("System"))) {
+            viamd::extract_int(out->system, arg);
+            continue;
+        }
+        md_array_push(out->ident, ident, alloc);
+        md_array_push(out->arg, arg, alloc);
+    }
+}
+
+static void deserialize_representation(SystemContext& sys, const SectionEntries& entries) {
     if (!representation_can_add(sys)) {
         // Beyond as many as a system has: its entries are passed over
         VIAMD_LOG_ERROR("Workspace: more representations than a system has (at most %zu); the rest are left out", REPRESENTATION_MAX);
-        while (viamd::next_entry(ident, arg, state)) {}
         return;
     }
     Representation* rep = create_representation(sys);
-    while (viamd::next_entry(ident, arg, state)) {
+    for (size_t i = 0; i < md_array_size(entries.ident); ++i) {
+        const str_t ident = entries.ident[i];
+        const str_t arg = entries.arg[i];
         if (str_eq(ident, STR_LIT("Group"))) {
             // By the id of a [RepresentationGroup] before it. One that names nothing leaves it at the top level.
             int group = 0;
@@ -2289,19 +2311,21 @@ void representation_write_entries(viamd::serialization_state_t& state, const Sys
 
 static void serialize_representation(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep) {
     viamd::write_section_header(state, STR_LIT("Representation"));
+    viamd::write_int(state, STR_LIT("System"), (int)sys.id);
     if (find_representation_group(sys, rep.node.parent)) {
         viamd::write_int(state, STR_LIT("Group"), rep.node.parent);
     }
     representation_write_entries(state, sys, rep);
 }
 
-static void deserialize_group(SystemContext& sys, viamd::deserialization_state_t& state) {
+static void deserialize_group(SystemContext& sys, const SectionEntries& entries) {
     ApplicationState* data = sys.app;
     RepresentationGroup group = {};
     int id = 0;
     int parent = 0;
-    str_t ident, arg;
-    while (viamd::next_entry(ident, arg, state)) {
+    for (size_t i = 0; i < md_array_size(entries.ident); ++i) {
+        const str_t ident = entries.ident[i];
+        const str_t arg = entries.arg[i];
         if (str_eq(ident, STR_LIT("Id"))) {
             viamd::extract_int(id, arg);
         } else if (str_eq(ident, STR_LIT("Group"))) {
@@ -2336,6 +2360,7 @@ static void deserialize_group(SystemContext& sys, viamd::deserialization_state_t
 
 static void serialize_group(viamd::serialization_state_t& state, const SystemContext& sys, const RepresentationGroup& group) {
     viamd::write_section_header(state, STR_LIT("RepresentationGroup"));
+    viamd::write_int(state, STR_LIT("System"), (int)sys.id);
     viamd::write_int(state, STR_LIT("Id"), group.node.id);
     if (find_representation_group(sys, group.node.parent)) {
         viamd::write_int(state, STR_LIT("Group"), group.node.parent);
@@ -2372,16 +2397,21 @@ void representations_serialize(viamd::serialization_state_t& state, const System
     md_temp_end(temp);
 }
 
-bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state) {
-    if (str_eq(section, STR_LIT("Representation"))) {
-        deserialize_representation(app->system_context, state);
-        return true;
-    }
-    if (str_eq(section, STR_LIT("RepresentationGroup"))) {
-        deserialize_group(app->system_context, state);
-        return true;
-    }
-    return false;
+bool representations_deserialize(str_t section, viamd::deserialization_state_t& state, WorkspaceSystemFn system_of, void* user) {
+    const bool rep = str_eq(section, STR_LIT("Representation"));
+    const bool group = str_eq(section, STR_LIT("RepresentationGroup"));
+    if (!rep && !group) return false;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    SectionEntries entries = {};
+    read_section_entries(&entries, state, md_temp_allocator(temp));
+    // Of a system the workspace does not load: left out
+    SystemContext* sys = system_of(user, entries.system);
+    if (!sys) return true;
+    if (rep) deserialize_representation(*sys, entries);
+    else     deserialize_group(*sys, entries);
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -2941,6 +2971,7 @@ static bool draw_representations_window_electronic_structure(SystemContext& sys,
 struct NodeRef {
     uint32_t id = 0;        // 0 for none
     bool group = false;
+    uint32_t system = SYSTEM_ID_NONE;   // The id of the system it is of: dragged, it is dropped within that one only
 };
 
 // What the window does to the tree. Applied once all of it has been drawn: while the rows are drawn the
@@ -3114,7 +3145,7 @@ static void draw_drop_target(const SystemContext& sys, NodeRef node, bool open, 
         const float t = (ImGui::GetMousePos().y - row.Min.y) / MAX(row.GetHeight(), 1.0f);
         const RepresentationDrop drop = drop_zone(t, node.group, open);
 
-        if (representation_can_move(sys, src.group, src.id, node.group, node.id, drop)) {
+        if (src.system == sys.id && representation_can_move(sys, src.group, src.id, node.group, node.id, drop)) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImU32 col = ImGui::GetColorU32(ImGuiCol_DragDropTarget);
             switch (drop) {
@@ -3633,7 +3664,7 @@ static RowLayout row_begin() {
 }
 
 static void draw_representation_row(SystemContext& sys, const WindowTree& tree, Representation& rep, WindowActions* act) {
-    const NodeRef node = {rep.node.id, false};
+    const NodeRef node = {rep.node.id, false, sys.id};
     ImGui::PushID("rep");
     ImGui::PushID((int)rep.node.id);
 
@@ -3727,7 +3758,7 @@ static void draw_group_filter(SystemContext& sys, RepresentationGroup& group) {
 }
 
 static void draw_group_row(SystemContext& sys, const WindowTree& tree, RepresentationGroup& group, size_t depth, WindowActions* act) {
-    const NodeRef node = {group.node.id, true};
+    const NodeRef node = {group.node.id, true, sys.id};
     ImGui::PushID("group");
     ImGui::PushID((int)group.node.id);
 
@@ -3873,6 +3904,47 @@ static void draw_representations_section(SystemContext& sys, const WindowTree& t
     if (dim) ImGui::PopStyleVar();
 }
 
+// One system in the window: its header and, under it, one level in: its files, what is done to its coordinates and
+// what it is shown as, then its representations. Closed, it lists none of them. The changes to it, in act, are applied
+// once the window is drawn.
+static void draw_system_in_window(SystemContext& sys, const WindowTree& tree, WindowActions* act, bool* remove) {
+    if (draw_system_header(sys, remove)) {
+        ImGui::Indent();
+        draw_system_files(sys);
+        draw_system_operations(sys);
+        draw_representations_section(sys, tree, act);
+        ImGui::Unindent();
+    }
+}
+
+// The space below the rows of the last system listed: dropping there puts it last at its top level, and a right click
+// adds to it
+static void draw_below_rows(SystemContext& sys, WindowActions* act) {
+    const ImVec2 rest = {MAX(ImGui::GetContentRegionAvail().x, 1.0f), MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
+    ImGui::InvisibleButton("##below", rest);
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
+            NodeRef src;
+            MEMCPY(&src, payload->Data, sizeof(src));
+            if (src.system == sys.id && representation_can_move(sys, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
+                const ImVec2 min = ImGui::GetItemRectMin();
+                ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+                if (payload->IsDelivery()) {
+                    act->move.node   = src;
+                    act->move.target = NodeRef{};
+                    act->move.drop   = RepresentationDrop_IntoLast;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    if (ImGui::BeginPopupContextItem("##below_menu")) {
+        draw_tree_menu(sys, NodeRef{}, act);
+        ImGui::EndPopup();
+    }
+}
+
 void draw_representations_window(ApplicationState* state) {
     if (!state->show_representation_window) return;
 
@@ -3884,78 +3956,66 @@ void draw_representations_window(ApplicationState* state) {
         return;
     }
 
-    WindowActions act;
+    // Every system, in its order, each with what is changed of it. The arrays are only read while the rows are drawn
+    // - every change to them waits in its actions - so the nodes gathered here hold until the end.
+    struct Listed {
+        SystemContext* sys;
+        WindowTree tree;
+        WindowActions act;
+        bool remove;
+    };
+    Listed listed[SYSTEM_MAX];
+    size_t num_listed = 0;
+    const float button_size = ImGui::GetFontSize() + 3.0f * 2;
+    const float handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
+                               MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
+    for (size_t i = 0; i < state->num_systems; ++i) {
+        SystemContext& sys = *state->systems[i];
+        // An empty system is not listed, but for representations which are there (a workspace whose files did not
+        // load): still listed, to be removed or kept for the next
+        const bool loaded = system_loaded(sys);
+        if (!loaded && md_array_size(sys.representation.reps) == 0 && md_array_size(sys.representation.groups) == 0) continue;
+        Listed& l = listed[num_listed++];
+        l.sys = &sys;
+        l.tree.t = tree_nodes(sys, state->allocator.frame);
+        l.tree.button_size = button_size;
+        l.tree.button_spacing = 2.0f;
+        l.tree.handle_width = handle_width;
+        l.act = WindowActions{};
+        l.remove = false;
+    }
 
-    // The arrays are only read while the rows are drawn - every change to them waits in 'act' - so the
-    // nodes gathered here hold until the end
-    WindowTree tree;
-    tree.t = tree_nodes(state->system_context, state->allocator.frame);
-    tree.button_size = ImGui::GetFontSize() + 3.0f * 2;
-    tree.button_spacing = 2.0f;
-    tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
-                        MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
-
-    // The system, and under it, one level in: its files, what is done to its coordinates and what it is shown as,
-    // then its representations. Closed, it lists none of them. Without a system, representations which are there (a
-    // workspace whose files did not load) are still listed, to be removed or kept for the next.
-    const bool has_system = state->mold.sys.atom.count > 0 || file_list_count(&state->file_list) > 0;
-    bool reps_listed = false;
-    bool remove_system = false;
-    if (has_system) {
-        if (draw_system_header(state->system_context, &remove_system)) {
-            ImGui::Indent();
-            draw_system_files(state->system_context);
-            draw_system_operations(state->system_context);
-            draw_representations_section(state->system_context, tree, &act);
-            ImGui::Unindent();
-            reps_listed = true;
-        }
-    } else {
+    if (system_count(*state) == 0) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         ImGui::TextWrapped("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
         ImGui::PopStyleColor();
-        if (tree.t.count > 0) {
+    }
+    for (size_t i = 0; i < num_listed; ++i) {
+        Listed& l = listed[i];
+        ImGui::PushID((int)l.sys->id);
+        if (system_loaded(*l.sys)) {
+            draw_system_in_window(*l.sys, l.tree, &l.act, &l.remove);
+        } else {
             ImGui::Spacing();
-            draw_representations_section(state->system_context, tree, &act);
-            reps_listed = true;
+            draw_representations_section(*l.sys, l.tree, &l.act);
         }
-    }
-
-    // The space below the rows: dropping there puts it last at the top level, and a right click adds
-    if (reps_listed) {
-    const ImVec2 rest = {MAX(ImGui::GetContentRegionAvail().x, 1.0f), MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
-    ImGui::InvisibleButton("##below", rest);
-    if (ImGui::BeginDragDropTarget()) {
-        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
-        if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
-            NodeRef src;
-            MEMCPY(&src, payload->Data, sizeof(src));
-            if (representation_can_move(state->system_context, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
-                const ImVec2 min = ImGui::GetItemRectMin();
-                ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
-                if (payload->IsDelivery()) {
-                    act.move.node   = src;
-                    act.move.target = NodeRef{};
-                    act.move.drop   = RepresentationDrop_IntoLast;
-                }
-            }
-        }
-        ImGui::EndDragDropTarget();
-    }
-    if (ImGui::BeginPopupContextItem("##below_menu")) {
-        draw_tree_menu(state->system_context, NodeRef{}, &act);
-        ImGui::EndPopup();
-    }
+        if (i + 1 == num_listed) draw_below_rows(*l.sys, &l.act);
+        ImGui::PopID();
     }
 
     ImGui::End();
 
-    if (remove_system) {
-        // The rows were drawn from what it held; nothing else is done to them
-        system_remove(state->system_context);
-        return;
+    for (size_t i = 0; i < num_listed; ++i) {
+        Listed& l = listed[i];
+        if (l.remove) {
+            // The rows were drawn from what it held; nothing else is done to them. Taken out of the list, but for the
+            // first, which stays empty for the next to be loaded into.
+            system_remove(*l.sys);
+            system_release(state, l.sys);
+            continue;
+        }
+        apply_window_actions(*l.sys, l.act);
     }
-    apply_window_actions(state->system_context, act);
 }
 
 // The legends of the representations that colour by a value: the field of an isosurface, or the

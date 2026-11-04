@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #include <file_list.h>
 #include <serialization_utils.h>
@@ -135,7 +135,8 @@ struct Read {
     WorkspaceFiles files = {};
     SystemPlan plan = {};
     md_allocator_i* alloc = md_get_heap_allocator();
-    Read(str_t text, str_t folder, size_t max_runs = 1) {
+    // Of the system with the id system_id, the first the workspace names by default
+    Read(str_t text, str_t folder, size_t max_runs = 1, int system_id = -1) {
         viamd::deserialization_state_t d = {};
         d.filename = STR_LIT("test.via");
         d.text = text;
@@ -143,7 +144,8 @@ struct Read {
         while (viamd::next_section_header(section, d)) {
             workspace_files_read(&files, d, folder, alloc);
         }
-        workspace_files_plan(&plan, &files, max_runs, alloc);
+        if (system_id < 0) system_id = md_array_size(files.systems) ? files.systems[0].id : 0;
+        workspace_files_plan(&plan, &files, system_id, max_runs, alloc);
     }
     ~Read() {
         md_array_free(files.systems, alloc); md_array_free(files.runs, alloc); md_array_free(files.inputs, alloc);
@@ -225,7 +227,7 @@ UTEST(viamd_file_list, workspace_round_trip) {
     EXPECT_TRUE(r.plan.inputs[1].entry.explicit_type);
     EXPECT_EQ(LoaderType_LAMMPSDATA, r.plan.inputs[1].entry.type);
     EXPECT_STREQ("atom-ID atom-type x y z", r.plan.inputs[1].entry.arg);
-    EXPECT_EQ(0u, r.plan.skipped_systems + r.plan.skipped_runs + r.plan.skipped_inputs);
+    EXPECT_EQ(0u, r.plan.skipped_runs + r.plan.skipped_inputs);
 }
 
 UTEST(viamd_file_list, the_order_of_the_sections_does_not_matter) {
@@ -241,7 +243,7 @@ UTEST(viamd_file_list, the_order_of_the_sections_does_not_matter) {
     { const std::string got_ = r.str(); EXPECT_STREQ("a.top:System:-1 a.gro:Supplement:-1 b.edr:Trajectory:0 a.xtc:Series:0", got_.c_str()); }
 }
 
-UTEST(viamd_file_list, more_than_this_build_loads_is_counted_and_left_out) {
+UTEST(viamd_file_list, each_system_is_planned_on_its_own) {
     const str_t text = STR_LIT(
         "[System]\nId=0\n[System]\nId=1\n"
         "[Run]\nId=0\nSystem=0\n[Run]\nId=1\nSystem=0\n[Run]\nId=2\nSystem=1\n"
@@ -255,9 +257,18 @@ UTEST(viamd_file_list, more_than_this_build_loads_is_counted_and_left_out) {
         "[Input]\nPath=/d/none.xtc\n");
     Read one(text, STR_LIT("/"));
     { const std::string got_ = one.str(); EXPECT_STREQ("a.gro:System:-1 rep1.xtc:Trajectory:0", got_.c_str()); }
-    EXPECT_EQ(1u, one.plan.skipped_systems);
     EXPECT_EQ(1u, one.plan.skipped_runs);      // of the first system
     EXPECT_EQ(3u, one.plan.skipped_inputs);    // dangling, both owners, none
+
+    // The second system, with its own files and run; what belongs nowhere was counted with the first
+    Read second(text, STR_LIT("/"), 1, 1);
+    { const std::string got_ = second.str(); EXPECT_STREQ("b.gro:System:-1 b.xtc:Trajectory:0", got_.c_str()); }
+    EXPECT_EQ(0u, second.plan.skipped_runs);
+    EXPECT_EQ(0u, second.plan.skipped_inputs);
+
+    // A system the workspace does not name has no files
+    Read none(text, STR_LIT("/"), 1, 7);
+    EXPECT_EQ(0u, md_array_size(none.plan.inputs));
 
     // A build that opens several runs takes them in order
     Read two(text, STR_LIT("/"), 4);

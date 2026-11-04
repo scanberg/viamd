@@ -1591,6 +1591,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdLoadData: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                  ASSERT(e.payload_type == viamd::EventPayloadType_LoadData);
                  LoadDataPayload& payload = *(LoadDataPayload*)e.payload;
                  ApplicationState& state = *payload.app_state;
@@ -1614,6 +1615,7 @@ struct QuantumChemistry : viamd::EventHandler {
                  break;
             }
             case viamd::EventType_ViamdSystemFree: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 reset_data();
                 break;
             }
@@ -1631,6 +1633,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 ASSERT(e.payload_type == viamd::EventPayloadType_System);
                 ApplicationState& state = *((SystemContext*)e.payload)->app;
 

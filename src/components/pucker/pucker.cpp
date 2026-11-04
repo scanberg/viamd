@@ -181,6 +181,7 @@ struct Pucker : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 rows.clear();
                 shown.clear();
                 names.clear();
@@ -189,6 +190,7 @@ struct Pucker : viamd::EventHandler {
                 dirty = true;
                 break;
             case viamd::EventType_ViamdSystemStateChanged:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 dirty = true;
                 break;
             case viamd::EventType_ViamdSerialize: {

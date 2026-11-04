@@ -34,6 +34,7 @@
 #include <file_list.h>
 #include <load_order.h>
 #include <event.h>
+#include <viamd_event.h>
 #include <plot_series.h>
 #include <timeline_periods.h>
 #include <filter_input.h>
@@ -370,6 +371,9 @@ struct LoadDatasetWindowState {
     bool atom_format_valid = false;
     int  loader_idx = 0;
     int  atom_format_idx = 0;
+    // Where it goes: into the system with this id, or into a new one (asked when several are loaded)
+    uint32_t system = SYSTEM_ID_NONE;
+    bool new_system = false;
 };
 
 // Hint flags for operations to be performed for the files
@@ -377,6 +381,7 @@ enum {
     FileFlags_None = 0,
     FileFlags_ShowDialogue = 1,
     FileFlags_DisableCacheWrite = 4,
+    FileFlags_NewSystem = 8,        // Into a system of its own, added for it
 };
 
 typedef uint32_t FileFlags;
@@ -450,6 +455,7 @@ struct FileQueue {
         str_t path;
         FileFlags flags;
         int prio;
+        uint32_t system;    // The id of the system it is loaded into, SYSTEM_ID_NONE for where it goes (file_queue_process)
     };
     Entry arr[8] = {};
     uint32_t head = 0;
@@ -458,10 +464,17 @@ struct FileQueue {
     // We use a ring alloc here to do a deep copy of the paths within the added entries
     // Because its a ring alloc, there is no need to free entries
     md_allocator_i* ring = NULL;
+
+    // The system the last file went into, which those queued with it go into too (a topology and its trajectory,
+    // dropped together), but for another structure, which goes into a system of its own: until the queue is empty.
+    // last_pending: it was half of a system (LoadResult_Pending), which the next completes.
+    uint32_t last_system = SYSTEM_ID_NONE;
+    bool     last_pending = false;
 };
 
 struct SingleSelectionSequence {
     int32_t idx[4] = {-1, -1, -1, -1};
+    uint32_t system = SYSTEM_ID_NONE;   // The id of the system the atoms are of: a pick in another starts it over
 };
 
 struct Selection {
@@ -1171,6 +1184,7 @@ struct SystemData {
 
     bool                interpolate_system_state = false;
     uint32_t            dirty_gpu_buffers = 0;
+    uint64_t            flags_hash = 0;             // what the atom flags uploaded were made of (main): its visibility, selection, highlight
     uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
     uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
                                                     // alone: the image of the scene depends on them only through the
@@ -1972,6 +1986,16 @@ struct LoadDataPayload {
     str_t path_to_file;
 };
 
+// Whether a system event (its payload EventPayloadType_System, or EventPayloadType_LoadData) is of the first system
+// (ApplicationState::system_context). What is not per system yet (the components, the System window) acts on that one
+// alone, and leaves the events of the others be.
+static inline bool event_of_first_system(const viamd::Event& e) {
+    const SystemContext* sys = nullptr;
+    if (e.payload_type == viamd::EventPayloadType_System) sys = (const SystemContext*)e.payload;
+    else if (e.payload_type == viamd::EventPayloadType_LoadData && e.payload) sys = ((const LoadDataPayload*)e.payload)->system;
+    return sys && sys->app && sys == &sys->app->system_context;
+}
+
 // A picking tooltip, gathered from every handler that recognises the hit and drawn as one window: a title names what
 // is under the cursor, then rows give one property each, drawn as two aligned columns (key, value). Handlers add to it
 // with tooltip_title and tooltip_row; a title after rows begins a new section. What goes in one: PICKING TOOLTIP in
@@ -2372,6 +2396,10 @@ bool system_loaded(const SystemContext& sys);
 // id. NULL when SYSTEM_MAX are loaded.
 SystemContext* system_add(ApplicationState* app);
 
+// A new, empty system allocated with a new id, listed last, whether the first is empty or not (a workspace's systems):
+// NULL when SYSTEM_MAX are held
+SystemContext* system_alloc(ApplicationState* app);
+
 // Takes the system, which has been unloaded (system_remove), out of the list and frees it; the first only stays empty
 void system_release(ApplicationState* app, SystemContext* sys);
 
@@ -2479,6 +2507,11 @@ int playback_stride(const ApplicationState* app);
 
 // Workspace
 // See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
+
+// The system a section of a workspace being read is of, by the id the workspace names it by (System=; -1 where the
+// section names none, which is of the first system). NULL for one it does not load: the section is left out.
+typedef SystemContext* (*WorkspaceSystemFn)(void* user, int id);
+
 void load_workspace(ApplicationState* app, str_t file);
 // True when the whole file was written; it is then the current workspace (files.workspace)
 bool save_workspace(ApplicationState* app, str_t file);
@@ -2946,33 +2979,34 @@ const PickingSpace* picking_handler_find_space(const PickingHandler& handler, ui
 // Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
 // out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
 // Reserves 'count' consecutive indices for a domain. 'key' names what they index for a domain whose
-// objects are not the system's own arrays; see PickingRange. Fails once the space is full.
-bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key = 0);
+// objects are not the system's own arrays; see PickingRange. 'system' is the id of the system whose objects they are,
+// which a hit in the range is of. Fails once the space is full.
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key = 0, uint32_t system = SYSTEM_ID_NONE);
 
-// The range a keyed object was given this frame, or NULL when it was not reserved one.
-const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key);
+// The range a keyed object of the system was given this frame, or NULL when it was not reserved one.
+const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key, uint32_t system = SYSTEM_ID_NONE);
 
 // The picking offsets for drawing the system with md_gl, one per reserved range. Every md_gl_draw of the system takes
 // them from here: a base left at 0 makes that kind write into the atom range and pick as the wrong atoms.
-static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& state) {
+static inline md_gl_picking_offset_t gl_picking_offset(const SystemContext& sys) {
     return {
-        .atom_base     = state.system_context.picking.atom.beg,
-        .bond_base     = state.system_context.picking.bond.beg,
-        .backbone_base = state.system_context.picking.backbone.beg,
-        .ring_base     = state.system_context.picking.ring.beg,
-        .gap_base      = state.system_context.picking.gap.beg,
+        .atom_base     = sys.picking.atom.beg,
+        .bond_base     = sys.picking.bond.beg,
+        .backbone_base = sys.picking.backbone.beg,
+        .ring_base     = sys.picking.ring.beg,
+        .gap_base      = sys.picking.gap.beg,
     };
 }
 
 // The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
 // their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points,
 // their slabs their index after those (cartoon_glyphs_picked_point)
-static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
+static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const SystemContext& sys) {
     return {
-        .atom_base     = state.system_context.picking.glyph.beg,
-        .bond_base     = state.system_context.picking.glyph.beg,
-        .backbone_base = state.system_context.picking.glyph.beg + state.mold.cartoon_glyphs.num_points,
-        .ring_base     = state.system_context.picking.glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
+        .atom_base     = sys.picking.glyph.beg,
+        .bond_base     = sys.picking.glyph.beg,
+        .backbone_base = sys.picking.glyph.beg + sys.data.cartoon_glyphs.num_points,
+        .ring_base     = sys.picking.glyph.beg + sys.data.cartoon_glyphs.num_points + sys.data.cartoon_glyphs.num_tube_points,
     };
 }
 
@@ -3125,7 +3159,14 @@ void point_set_region_mask_compute(
 // File Queue
 bool file_queue_empty(const FileQueue* queue);
 bool file_queue_full(const FileQueue* queue);
-void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None);
+// Queues a file to be loaded: into the system with the id 'system', or where file_queue_process puts it
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None, uint32_t system = SYSTEM_ID_NONE);
+
+// Loads a file the user opened (from the menu, the load dialog, dropped on the window) into the system target, or into a
+// new one when target is NULL, in the role its loader gives it (load_data_from_file); and what follows: a system new
+// there shown with the default representations, every system framed. A new system that nothing was loaded into is
+// taken out again.
+LoadResult load_file_into(ApplicationState* app, SystemContext* target, str_t path, const loader::LoaderState& load_state);
 
 FileQueue::Entry file_queue_front(const FileQueue* queue);
 FileQueue::Entry file_queue_pop(FileQueue* queue);
@@ -3141,6 +3182,14 @@ static inline void reset_view(ViewTransform* transform, const md_system_state_t&
     const md_bitset_t members = md_bitmask_view(mask);
     reset_view(transform, state, &members, fov_y, region, sys, assembly);
 }
+
+// The system whose cell the world is drawn in: the first loaded (the world is translated so that the center of its cell
+// is at the origin, SystemData::unitcell_transform), the first held when none is. The others are drawn in the same
+// frame, in their own coordinates: overlaid as the files have them.
+const SystemContext& scene_frame_system(const ApplicationState& app);
+
+// A good view of every system shown (their visible atoms), as reset_view of the one when only one is
+void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, const ViewRegion& region = {});
 
 // ASSEMBLIES (system.assembly). The groups of assembly asm_idx are [a.group_offset[asm_idx], a.group_offset[asm_idx + 1]),
 // and the instances and operators of group g those assembly_group gives, pointers into the arrays of a. Both read from the

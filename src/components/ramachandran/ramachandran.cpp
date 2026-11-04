@@ -410,12 +410,14 @@ struct Ramachandran : viamd::EventHandler {
                 }
                 break;
             case viamd::EventType_ViamdSystemInit:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // Classified again, whatever its topology's version says
                 seg_type_key = 0;
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdSystemFree:
             case viamd::EventType_ViamdTrajectoryFree:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // What the densities were of is gone: nothing of it is shown again, even where the next system's
                 // attributes happen to have the same versions
                 cancel_all_jobs(true);

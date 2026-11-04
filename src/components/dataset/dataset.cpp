@@ -830,6 +830,7 @@ struct Dataset : viamd::EventHandler {
                 app_state = nullptr;
                 break;
             case viamd::EventType_ViamdSystemInit: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 ApplicationState& state = *((SystemContext*)e.payload)->app;
                 on_system_init(state);
                 break;

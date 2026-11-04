@@ -1,4 +1,4 @@
-#include <file_list.h>
+﻿#include <file_list.h>
 #include <serialization_utils.h>
 
 #include <core/md_allocator.h>
@@ -338,7 +338,7 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
     return false;
 }
 
-void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t max_runs, md_allocator_i* alloc) {
+void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, int system_id, size_t max_runs, md_allocator_i* alloc) {
     ASSERT(plan);
     ASSERT(files);
     *plan = {};
@@ -348,9 +348,12 @@ void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t 
         plan->skipped_inputs = md_array_size(files->inputs);
         return;
     }
-    const WorkspaceFiles::System& sys = files->systems[0];
+    size_t sys_idx = 0;
+    while (sys_idx < num_systems && files->systems[sys_idx].id != system_id) ++sys_idx;
+    if (sys_idx == num_systems) return;
+    const WorkspaceFiles::System& sys = files->systems[sys_idx];
+    const bool first = sys_idx == 0;
     plan->atom_count = sys.atom_count;
-    plan->skipped_systems = num_systems - 1;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     defer { md_temp_end(temp); };
@@ -399,8 +402,8 @@ void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t 
         }
     }
 
-    // What belongs nowhere the workspace names: a dangling id, both owners or none
-    for (size_t i = 0; i < md_array_size(files->inputs); ++i) {
+    // What belongs nowhere the workspace names: a dangling id, both owners or none. Counted once, with the first.
+    for (size_t i = 0; i < md_array_size(files->inputs) && first; ++i) {
         if (!owned(files->inputs[i])) {
             plan->skipped_inputs += 1;
         }

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <loader.h>
 
@@ -143,11 +143,11 @@ struct SystemPlan {
     md_array(Input)  inputs = 0;
     size_t           atom_count = 0;            // As stored, 0 when not
     md_array(size_t) frame_counts = 0;          // Per run, as stored, 0 when not
-    size_t skipped_systems = 0;                 // Named, but not loaded: more than this build loads
     size_t skipped_runs = 0;
     size_t skipped_inputs = 0;                  // Belonging to no system or run the workspace names
 };
 
-// The plan for the first system the workspace names, with at most max_runs of its runs. What is left out is
-// counted in the plan, so that it can be reported.
-void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t max_runs, struct md_allocator_i* alloc);
+// The plan for the system the workspace names by system_id, with at most max_runs of its runs. What of it is left out is
+// counted in the plan, so that it can be reported; what belongs to no system the workspace names is counted with its
+// first system's (skipped_inputs).
+void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, int system_id, size_t max_runs, struct md_allocator_i* alloc);

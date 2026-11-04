@@ -1703,7 +1703,7 @@ struct DensityVolume : viamd::EventHandler {
                         .view_matrix = &world_to_view.elem[0][0],
                         .proj_matrix = &view_to_clip.elem[0][0],
                     },
-                    .picking_offset = gl_picking_offset(*state),
+                    .picking_offset = gl_picking_offset(state->system_context),
                 };
                 if (md_array_size(draw_ops) > 0) {
                     md_gl_draw(&draw_args);
@@ -1711,7 +1711,7 @@ struct DensityVolume : viamd::EventHandler {
                 // The glyphs, picked as those of the main view are
                 if (md_array_size(glyph_ops) > 0) {
                     draw_args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-                    draw_args.picking_offset = gl_picking_offset_glyphs(*state);
+                    draw_args.picking_offset = gl_picking_offset_glyphs(state->system_context);
                     md_gl_draw(&draw_args);
                 }
 
@@ -1926,10 +1926,12 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemInit: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 dirty_rep = true;
                 break;
             }
             case viamd::EventType_ViamdSystemFree: {
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // What the representations hold is of the molecule that goes; their settings stay
                 release_all_rep_resources();
                 clear_structures();

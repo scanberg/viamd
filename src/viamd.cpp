@@ -1296,7 +1296,8 @@ void free_trajectory_data(ApplicationState* state, SystemContext& sys) {
     // The run, and with it the files it was opened from and the series loaded along it
     file_list_drop_runs(&sys.files);
 
-    md_array_free(state->timeline.x_values,  state->allocator.persistent);
+    // The timeline is of the first system's run, until there is one time for every run
+    if (&sys == &state->system_context) md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
     // on only mean something within one table, and the next one may be allocated where this was.
     series_cache_free(state);
@@ -1367,22 +1368,25 @@ void init_trajectory_data(ApplicationState* data, SystemContext& sys, str_t run_
 
         // The timeline carries time in the unit the user asked to see it in. Everything downstream
         // reads x_values and view_range, so this is the one place the conversion happens; a later
-        // change to the preference is picked up by update_timeline_time_unit in main.cpp.
-        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(sys));
-        data->timeline.time_scale    = time_scl;
-        data->timeline.units_version = display_units::version();
+        // change to the preference is picked up by update_timeline_time_unit in main.cpp. It is of the first
+        // system's run, until there is one time for every run: another's leaves it, and the time shown, as they are.
+        if (&sys == &data->system_context) {
+            const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(sys));
+            data->timeline.time_scale    = time_scl;
+            data->timeline.units_version = display_units::version();
 
-        double min_time = frame_times[0] * time_scl;
-        double max_time = frame_times[num_frames - 1] * time_scl;
+            double min_time = frame_times[0] * time_scl;
+            double max_time = frame_times[num_frames - 1] * time_scl;
 
-        data->timeline.view_range = {min_time, max_time};
+            data->timeline.view_range = {min_time, max_time};
 
-        md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
-        for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
+            md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
+            for (size_t i = 0; i < num_frames; ++i) {
+                data->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
+            }
+
+            data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         }
-
-        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
         extract_frame(sys, frame_idx, &sys.data.state);
@@ -1655,16 +1659,19 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
         const float max_cell_ext = vec3_reduce_max(cell_ext);
         const float max_aabb_ext = vec3_reduce_max(vec3_sub(aabb_max, aabb_min));
 
-        // Calculate a default view transform to use later as a reset target
-        ViewTransform default_view = {};
-        reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
-
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
-        data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
+        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, MAX(max_cell_ext, max_aabb_ext) * 10.0f);
 
-        data->view.target = default_view;
-        data->view.camera = default_view;
+        // The view goes to the system when it is the only one: one beside others is framed with them where it was
+        // loaded from (load_file_into)
+        if (system_count(*data) <= 1) {
+            ViewTransform default_view = {};
+            reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
+            data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
+            data->view.target = default_view;
+            data->view.camera = default_view;
+        }
         
 
 #if EXPERIMENTAL_GFX_API
@@ -1688,8 +1695,8 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
     data->script.compile_ir = true;
 
     // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
-    // shown: the state a representation of them starts at
-    es_nto_ready(data, 0);
+    // shown: the state a representation of them starts at. Of the first system, whose quantum chemistry is evaluated.
+    if (&sys == &data->system_context) es_nto_ready(data, 0);
 }
 
 void free_system_data(ApplicationState* data, SystemContext& sys) {
@@ -1730,18 +1737,25 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     MEMSET(sys.run.frame_cache.states, 0, sizeof(sys.run.frame_cache.states));
     clear_frame_cache(&sys.run.frame_cache);
 
-    md_bitmask_clear(&data->system_context.selection.selection_mask);
-    md_bitmask_clear(&data->system_context.selection.highlight_mask);
-    // Computed for this system
-    script_vis_reset(data);
+    md_bitmask_clear(&sys.selection.selection_mask);
+    md_bitmask_clear(&sys.selection.highlight_mask);
+    if (data->selection.single_selection_sequence.system == sys.id) {
+        single_selection_sequence_clear(&data->selection.single_selection_sequence);
+    }
 
-    // The tasks were waited for above: with the fields cleared, nothing uses any IR
-    data->script.ir = nullptr;
-    data->script.eval_ir = nullptr;
-    script_ir_collect(data);
-    if (data->script.eval) {
-        script::eval_free(data->script.eval);
-        data->script.eval = nullptr;
+    // The script is compiled against the first system and evaluated in it (until it is per system): what it computed
+    // goes with that one alone
+    if (&sys == &data->system_context) {
+        script_vis_reset(data);
+
+        // The tasks were waited for above: with the fields cleared, nothing uses any IR
+        data->script.ir = nullptr;
+        data->script.eval_ir = nullptr;
+        script_ir_collect(data);
+        if (data->script.eval) {
+            script::eval_free(data->script.eval);
+            data->script.eval = nullptr;
+        }
     }
 
     sys.name[0] = '\0';
@@ -1807,6 +1821,11 @@ SystemContext* system_add(ApplicationState* app) {
         if (app->num_systems > 1) first->id = app->next_system_id++;
         return first;
     }
+    return system_alloc(app);
+}
+
+SystemContext* system_alloc(ApplicationState* app) {
+    ASSERT(app);
     if (app->num_systems >= SYSTEM_MAX) return nullptr;
     SystemContext* sys = new SystemContext();
     system_context_init(sys, app);
@@ -2146,7 +2165,9 @@ bool bond_origins_parse(uint32_t* out, str_t str) {
 // [Input]). A version newer than the reader's is read for what the reader knows.
 // 3: the operations, the periodic images and the assembly are the system's ([SystemScene]), no longer in [Operations]
 // and [RenderSettings], which are still read
-static const int WORKSPACE_VERSION = 3;
+// 4: several systems; what is of one names it by its id (System=, the first entry of [Representation],
+// [RepresentationGroup], [UserBonds], before each Mask of [ActiveSelection]). A section that names none is the first's.
+static const int WORKSPACE_VERSION = 4;
 
 struct WorkspaceWindow {
     char  name[32];
@@ -2219,17 +2240,29 @@ struct WorkspacePending {
     bool          has_camera;
     ViewTransform camera;
 
-    md_array(md_atom_pair_t)  user_bonds;
-    md_array(md_bond_flags_t) user_bond_flags;    // [user_bonds] Origin user, and the kind when one was given
+    // The systems it loads, by the ids it names them by ([System] Id), and what refers to the atoms of each: kept until
+    // its files are loaded. In the order the workspace names them, which the Scene window lists them in; the first is
+    // loaded into the first system held (system_context), the others into systems of their own.
+    struct System {
+        int            id;
+        SystemContext* sys;
 
-    bool has_selection_mask;
-    md_bitset_t selection_mask;
+        md_array(md_atom_pair_t)  user_bonds;
+        md_array(md_bond_flags_t) user_bond_flags;    // [user_bonds] Origin user, and the kind when one was given
 
-    bool has_recenter_target;
-    md_bitset_t recenter_target;
+        bool has_selection_mask;
+        md_bitset_t selection_mask;
 
-    // The id of the assembly shown, of the system the files hold (system.assembly)
-    char assembly_id[8];
+        bool has_recenter_target;
+        md_bitset_t recenter_target;
+
+        // The id of the assembly shown (system.assembly)
+        char assembly_id[8];
+    } systems[SYSTEM_MAX];
+    size_t num_systems;
+    bool   systems_mapped;      // Every system the files named before the first section that refers to one
+    size_t skipped_systems;     // Named, but beyond SYSTEM_MAX
+    ApplicationState* app;
 
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in. The
     // filter is how a workspace from before the timeline's periods held it, and becomes one of them:
@@ -2252,17 +2285,18 @@ struct WorkspacePending {
 
 static void workspace_reset(ApplicationState* data) {
     remove_all_selections(data);
-    remove_all_representations(data->system_context);
     data->editor.SetText("");
     data->files.workspace[0] = '\0';
 
     // The workspace's files are loaded onto nothing, as they were when they were first loaded: what a file
     // is to the system can depend on what is there (a VeloxChem file of the loaded atoms supplements them,
-    // and builds the system otherwise). A workspace that names no files leaves nothing loaded.
-    if (data->mold.sys.atom.count > 0 || file_list_count(&data->file_list) > 0) {
-        interrupt_async_tasks(data);
-        free_trajectory_data(data, data->system_context);
-        free_system_data(data, data->system_context);
+    // and builds the system otherwise). A workspace that names no files leaves nothing loaded. Every system goes:
+    // the first is emptied, which the workspace's first is loaded into, the others are taken out.
+    interrupt_async_tasks(data);
+    for (size_t i = data->num_systems; i-- > 0;) {
+        SystemContext* sc = data->systems[i];
+        system_remove(*sc);
+        system_release(data, sc);
     }
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]
@@ -2291,16 +2325,9 @@ static void workspace_reset(ApplicationState* data) {
     }
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
-    data->system.periodic_images[0] = data->system.periodic_images[1] = data->system.periodic_images[2] = 0;
-    data->system.assembly = -1;
 
     data->selection.granularity = SelectionGranularity::Atom;
-    md_bitmask_clear(&data->system_context.selection.selection_mask);
     single_selection_sequence_clear(&data->selection.single_selection_sequence);
-
-    // The system as a new one is shown: as it is, with every operation off
-    data->system.visible = true;
-    system_reset_operations(data->system_context);
 }
 
 // A mask by the atoms it holds. Base64 now; a workspace written before that holds the raw bytes,
@@ -2312,6 +2339,51 @@ static bool deserialize_mask(md_bitset_t* mask, str_t arg, md_allocator_i* alloc
     str_t raw;
     viamd::extract_str(raw, arg);
     return !str_empty(raw) && md_bitset_deserialize(mask, raw.ptr, raw.len, alloc);
+}
+
+// The system of the workspace with the id, made when first asked for; -1 for the first. NULL for one it does not name, or
+// one beyond as many as are held. A workspace that names none (no files) has the first, which its sections are of.
+static WorkspacePending::System* workspace_system(WorkspacePending* p, int id) {
+    ApplicationState* app = p->app;
+    const size_t named = md_array_size(p->files.systems);
+    auto add = [p, app](int ws_id) -> WorkspacePending::System* {
+        if (p->num_systems == SYSTEM_MAX) {
+            p->skipped_systems += 1;
+            return nullptr;
+        }
+        SystemContext* sys = p->num_systems == 0 ? &app->system_context : system_alloc(app);
+        if (!sys) {
+            p->skipped_systems += 1;
+            return nullptr;
+        }
+        WorkspacePending::System& s = p->systems[p->num_systems++];
+        s = {};
+        s.id = ws_id;
+        s.sys = sys;
+        s.selection_mask = md_bitset_empty_set();
+        s.recenter_target = md_bitset_empty_set();
+        return &s;
+    };
+    // The systems named so far, in their order, the first time: the [System] sections come before what refers to them
+    if (!p->systems_mapped) {
+        p->systems_mapped = true;
+        for (size_t i = 0; i < named; ++i) add(p->files.systems[i].id);
+        if (named == 0) add(0);
+    }
+    if (id < 0) return p->num_systems > 0 ? &p->systems[0] : nullptr;
+    for (size_t i = 0; i < p->num_systems; ++i) {
+        if (p->systems[i].id == id) return &p->systems[i];
+    }
+    // Named after what refers to it (a workspace edited by hand), or not at all
+    for (size_t i = 0; i < named; ++i) {
+        if (p->files.systems[i].id == id) return add(id);
+    }
+    return nullptr;
+}
+
+static SystemContext* workspace_system_fn(void* user, int id) {
+    WorkspacePending::System* s = workspace_system((WorkspacePending*)user, id);
+    return s ? s->sys : nullptr;
 }
 
 void load_workspace(ApplicationState* data, str_t filename) {
@@ -2337,8 +2409,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // ## 2. Read
     WorkspacePending pending = {};
-    pending.selection_mask = md_bitset_empty_set();
-    pending.recenter_target = md_bitset_empty_set();
+    pending.app = data;
 
     str_t folder = {};
     extract_folder_path(&folder, filename);
@@ -2428,15 +2499,18 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 else if (str_eq(ident, STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
                 else if (str_eq(ident, STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
                 else if (str_eq(ident, STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
+                // DEPRECATED here: the first system's, before they were each system's ([SystemScene])
                 else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
                     float n[3];
-                    if (viamd::extract_flt_vec(n, 3, arg)) {
-                        for (int k = 0; k < 3; ++k) data->system.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+                    WorkspacePending::System* ws = workspace_system(&pending, -1);
+                    if (ws && viamd::extract_flt_vec(n, 3, arg)) {
+                        for (int k = 0; k < 3; ++k) ws->sys->scene.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
                     }
                 }
                 else if (str_eq(ident, STR_LIT("Assembly"))) {
                     str_t id = {};
-                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
+                    WorkspacePending::System* ws = workspace_system(&pending, -1);
+                    if (ws && viamd::extract_str(id, arg)) str_copy_to_char_buf(ws->assembly_id, sizeof(ws->assembly_id), id);
                 }
                 else if (str_eq(ident, STR_LIT("SimulationBoxEnabled"))) viamd::extract_bool(pending.box_enabled, arg);
                 else if (str_eq(ident, STR_LIT("SimulationBoxColor")))   viamd::extract_vec4(pending.box_color, arg);
@@ -2461,41 +2535,48 @@ void load_workspace(ApplicationState* data, str_t filename) {
             pending.has_camera = has_position && has_orientation && has_distance;
         } else if (str_eq(section, STR_LIT("Operations"))) {
             // Of a workspace written before [SystemScene]: the operations, all of them the one system's
+            WorkspacePending::System* ws = workspace_system(&pending, -1);
             while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("RecenterTarget"))) pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
-                else system_scene_read_entry(data->system_context, ident, arg);
+                if (!ws) continue;
+                if (str_eq(ident, STR_LIT("RecenterTarget"))) ws->has_recenter_target = deserialize_mask(&ws->recenter_target, arg, temp_alloc);
+                else system_scene_read_entry(*ws->sys, ident, arg);
             }
         } else if (str_eq(section, STR_LIT("SystemScene"))) {
-            // Of the system loaded, the first the files name (workspace_files_plan); of another, left out
-            const int loaded_id = md_array_size(pending.files.systems) > 0 ? pending.files.systems[0].id : 0;
-            bool ours = true;
+            // Of the system it names first (System=): of one the workspace does not load, left out
+            WorkspacePending::System* ws = workspace_system(&pending, -1);
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("System"))) {
-                    int id = 0;
-                    ours = viamd::extract_int(id, arg) && id == loaded_id;
-                } else if (!ours) {
+                    int id = -1;
+                    ws = viamd::extract_int(id, arg) ? workspace_system(&pending, id) : nullptr;
+                } else if (!ws) {
                     continue;
                 } else if (str_eq(ident, STR_LIT("RecenterTarget"))) {
-                    pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
+                    ws->has_recenter_target = deserialize_mask(&ws->recenter_target, arg, temp_alloc);
                 } else if (str_eq(ident, STR_LIT("Assembly"))) {
                     str_t id = {};
-                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
+                    if (viamd::extract_str(id, arg)) str_copy_to_char_buf(ws->assembly_id, sizeof(ws->assembly_id), id);
                 } else {
-                    system_scene_read_entry(data->system_context, ident, arg);
+                    system_scene_read_entry(*ws->sys, ident, arg);
                 }
             }
-        } else if (representations_deserialize(data, section, state)) {
+        } else if (representations_deserialize(section, state, workspace_system_fn, &pending)) {
         } else if (str_eq(section, STR_LIT("UserBonds"))) {
-            // Each bond its atoms, and the kind it was given after them, if one was
+            // Each bond its atoms, and the kind it was given after them, if one was; of the system it names first
+            WorkspacePending::System* ws = workspace_system(&pending, -1);
             bool last_taken = false;
             while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("atoms"))) {
+                if (str_eq(ident, STR_LIT("System"))) {
+                    int id = -1;
+                    ws = viamd::extract_int(id, arg) ? workspace_system(&pending, id) : nullptr;
+                } else if (!ws) {
+                    continue;
+                } else if (str_eq(ident, STR_LIT("atoms"))) {
                     int atom_indices[2] = {-1, -1};
                     last_taken = viamd::extract_int_vec(atom_indices, 2, arg) && atom_indices[0] >= 0 && atom_indices[1] >= 0;
                     if (last_taken) {
                         md_atom_pair_t pair = { atom_indices[0], atom_indices[1] };
-                        md_array_push(pending.user_bonds, pair, temp_alloc);
-                        md_array_push(pending.user_bond_flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), temp_alloc);
+                        md_array_push(ws->user_bonds, pair, temp_alloc);
+                        md_array_push(ws->user_bond_flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), temp_alloc);
                     }
                 } else if (str_eq(ident, STR_LIT("kind")) && last_taken) {
                     str_t str;
@@ -2505,7 +2586,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                         VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as an interaction");
                         kind = (md_bond_flags_t)MD_BOND_KIND_INTERACTION;
                     }
-                    md_bond_flags_t* flags = md_array_last(pending.user_bond_flags);
+                    md_bond_flags_t* flags = md_array_last(ws->user_bond_flags);
                     *flags = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
                 }
             }
@@ -2538,11 +2619,16 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 create_selection(data, label, mask);
             }
         } else if (str_eq(section, STR_LIT("ActiveSelection"))) {
+            // How it is selected, and what is selected of the system it names (System=), the first when it names none
+            WorkspacePending::System* ws = workspace_system(&pending, -1);
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Granularity"))) {
                     viamd::extract_enum(data->selection.granularity, arg, (int)SelectionGranularity::Count);
-                } else if (str_eq(ident, STR_LIT("Mask"))) {
-                    pending.has_selection_mask = deserialize_mask(&pending.selection_mask, arg, temp_alloc);
+                } else if (str_eq(ident, STR_LIT("System"))) {
+                    int id = -1;
+                    ws = viamd::extract_int(id, arg) ? workspace_system(&pending, id) : nullptr;
+                } else if (str_eq(ident, STR_LIT("Mask")) && ws) {
+                    ws->has_selection_mask = deserialize_mask(&ws->selection_mask, arg, temp_alloc);
                 }
             }
         } else if (str_eq(section, STR_LIT("Windows"))) {
@@ -2569,8 +2655,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
 
     // The box as it was drawn: lines of a pixel, of its colour
-    if (pending.box_enabled) {
-        if (Representation* box = create_representation(data->system_context, RepresentationType::SimulationBox)) {
+    WorkspacePending::System* first_ws = workspace_system(&pending, -1);
+    if (pending.box_enabled && first_ws) {
+        if (Representation* box = create_representation(*first_ws->sys, RepresentationType::SimulationBox)) {
             snprintf(box->name, sizeof(box->name), "box");
             if (pending.box_color.w > 0.0f) box->box.color = pending.box_color;
             box->box.thickness = 0.0f;
@@ -2580,159 +2667,178 @@ void load_workspace(ApplicationState* data, str_t filename) {
     // ## 3. Load the files, then apply what refers to them
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
 
-    // The system's own files in order, then those of its run: a run is opened on the complete system. This
-    // build loads one system with one run; what the workspace names beyond that is reported and left out.
-    SystemPlan plan;
-    workspace_files_plan(&plan, &pending.files, 1, temp_alloc);
-    if (plan.skipped_systems) VIAMD_LOG_ERROR("Workspace: names %zu systems; this build of viamd loads the first", plan.skipped_systems + 1);
-    if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of the system; this build of viamd loads the first", plan.skipped_runs + 1);
-    if (plan.skipped_inputs)  VIAMD_LOG_ERROR("Workspace: %zu files belong to no system or run it names, and are left out", plan.skipped_inputs);
-
-    for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
-        const SystemPlan::Input& in = plan.inputs[i];
-        const str_t path = str_from_cstr(in.entry.path);
-
-        // The role is the file's place; the loader is the one stored, or the one the file tells
-        loader::LoaderState loader_state = {};
-        if (in.entry.explicit_type) {
-            loader_state.type  = in.entry.type;
-            loader_state.flags = loader::type_flags(in.entry.type) | LoaderFlag_ExplicitType;
-        } else {
-            loader::init(&loader_state, path, &data->mold.sys);
-        }
-        if (in.entry.arg[0] != '\0') {
-            loader_state.arg = in.entry.arg;
-        }
-        if (in.entry.coordinates[0] != '\0') {
-            loader_state.coordinates = in.entry.coordinates;
-        }
-
-        LoadResult result = LoadResult_Failed;
-        if (!md_path_is_valid(path)) {
-            VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
-        } else if (in.entry.coordinates[0] != '\0' && !md_path_is_valid(str_from_cstr(in.entry.coordinates))) {
-            VIAMD_LOG_ERROR("Workspace: the coordinates '%s' of '%s' are not there", in.entry.coordinates, in.entry.path);
-        } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
-            // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
-            VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
-        } else {
-            result = load_data(data, data->system_context, path, loader_state, in.role, in.opens_own_run);
-        }
-
-        if (result == LoadResult_Failed) {
-            // Kept in its place, so that saving the workspace does not drop it: a file that was moved is found
-            // again by putting it back, not by building the workspace again
-            FileEntry missing = in.entry;
-            missing.type    = loader_state.type;
-            missing.missing = true;
-            file_list_record(&data->file_list, missing, in.role, data->allocator.persistent);
-        }
+    // Every system the workspace names, also those no section refers to
+    workspace_system(&pending, -1);
+    if (pending.skipped_systems) {
+        VIAMD_LOG_ERROR("Workspace: names %zu systems; at most %zu are loaded at once, the rest are left out", pending.num_systems + pending.skipped_systems, SYSTEM_MAX);
     }
 
-    // What the workspace was saved with stays the reference while the files are missing, so that a save keeps it
-    FileList& list = data->file_list;
-    if (list.atom_count == 0) {
-        list.atom_count = plan.atom_count;
-    }
-    for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(plan.frame_counts); ++r) {
-        if (list.runs[r].frame_count == 0) list.runs[r].frame_count = plan.frame_counts[r];
-    }
+    // Each system: its own files in order, then those of its run, a run being opened on the complete system. This
+    // build loads one run per system; what the workspace names beyond that is reported and left out.
+    for (size_t k = 0; k < pending.num_systems; ++k) {
+        WorkspacePending::System& ws = pending.systems[k];
+        SystemContext& sc = *ws.sys;
+        const bool first = k == 0;
 
-    const size_t num_atoms  = data->mold.sys.atom.count;
-    const size_t num_frames = run_num_frames(data->system_context);
+        SystemPlan plan;
+        workspace_files_plan(&plan, &pending.files, ws.id, 1, temp_alloc);
+        if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of a system; this build of viamd loads the first", plan.skipped_runs + 1);
+        if (plan.skipped_inputs)  VIAMD_LOG_ERROR("Workspace: %zu files belong to no system or run it names, and are left out", plan.skipped_inputs);
 
-    // The counts the workspace was saved with. When the files no longer have them, what it keeps by atom index
-    // or by frame would land on other atoms and other frames, and is left out instead.
-    const bool   atoms_as_saved  = plan.atom_count == 0 || plan.atom_count == num_atoms;
-    const size_t saved_frames    = md_array_size(plan.frame_counts) ? plan.frame_counts[0] : 0;
-    const bool   frames_as_saved = saved_frames == 0 || saved_frames == num_frames;
-    if (num_atoms > 0 && !atoms_as_saved) {
-        VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections and bonds are left out", num_atoms, plan.atom_count);
-        remove_all_selections(data);
-    }
-    if (num_frames > 0 && !frames_as_saved) {
-        VIAMD_LOG_ERROR("Workspace: the trajectory has %zu frames, but had %zu when the workspace was saved; its frame and timeline ranges are left out", num_frames, saved_frames);
-    }
+        for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
+            const SystemPlan::Input& in = plan.inputs[i];
+            const str_t path = str_from_cstr(in.entry.path);
 
-    if (pending.has_frame && num_frames > 0 && frames_as_saved) {
-        data->animation.frame = CLAMP(pending.frame, 0.0, (double)(num_frames - 1));
-    }
-
-    // Loading a trajectory sets the filter and the view to all of it; the workspace's come after
-    if (num_frames > 0 && frames_as_saved) {
-        const double last = (double)(num_frames - 1);
-        // A workspace from before the periods: its filter becomes a period, over which what was shown over the
-        // filter is shown
-        if (!pending.has_periods && pending.filter_enabled) {
-            TimelinePeriod* r = nullptr;
-            if (pending.temporal_window_enabled) {
-                const double  extent = pending.temporal_window_extent > 0.0 ? pending.temporal_window_extent : 10.0;
-                const int32_t half = (int32_t)round(extent * 0.5);
-                r = timeline_periods_add(&data->timeline.periods, "Filter", -half, half, true);
+            // The role is the file's place; the loader is the one stored, or the one the file tells
+            loader::LoaderState loader_state = {};
+            if (in.entry.explicit_type) {
+                loader_state.type  = in.entry.type;
+                loader_state.flags = loader::type_flags(in.entry.type) | LoaderFlag_ExplicitType;
             } else {
-                const double beg = pending.has_filter_range ? CLAMP(pending.filter_beg_frame, 0.0, last) : 0.0;
-                const double end = pending.has_filter_range ? CLAMP(pending.filter_end_frame, beg, last) : last;
-                r = timeline_periods_add(&data->timeline.periods, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
+                loader::init(&loader_state, path, &sc.data.sys);
             }
-            if (r) data->timeline.periods.legacy_filter_id = r->id;
-        }
-        if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
-            data->timeline.view_range.beg_x = workspace_frame_to_time(data, CLAMP(pending.view_beg_frame, 0.0, last));
-            data->timeline.view_range.end_x = workspace_frame_to_time(data, CLAMP(pending.view_end_frame, 0.0, last));
-        }
-    }
+            if (in.entry.arg[0] != '\0') {
+                loader_state.arg = in.entry.arg;
+            }
+            if (in.entry.coordinates[0] != '\0') {
+                loader_state.coordinates = in.entry.coordinates;
+            }
 
-    // Masks of atoms that are not there are dropped rather than applied to whatever holds those indices now
-    auto mask_fits = [num_atoms, atoms_as_saved](const md_bitset_t* mask) {
-        return num_atoms > 0 && atoms_as_saved && (md_bitset_empty(*mask) || mask->end <= num_atoms);
-    };
-    if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
-        md_bitmask_assign(&data->system_context.selection.selection_mask, pending.selection_mask);
-    }
-    if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
-        md_bitset_assign(&data->system.operations.selection_mask, pending.recenter_target, data->allocator.persistent);
-        recenter_update_target_data(data->system_context);
-    }
+            LoadResult result = LoadResult_Failed;
+            if (!md_path_is_valid(path)) {
+                VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
+            } else if (in.entry.coordinates[0] != '\0' && !md_path_is_valid(str_from_cstr(in.entry.coordinates))) {
+                VIAMD_LOG_ERROR("Workspace: the coordinates '%s' of '%s' are not there", in.entry.coordinates, in.entry.path);
+            } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
+                // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
+                VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
+            } else {
+                result = load_data(data, sc, path, loader_state, in.role, in.opens_own_run);
+            }
 
-    const size_t num_user_bonds = atoms_as_saved ? md_array_size(pending.user_bonds) : 0;
-    if (num_user_bonds > 0) {
-        md_system_t& sys = data->mold.sys;
-        system_bonds_edit_begin(data->system_context);
-        bool graph = false;
-        for (size_t i = 0; i < num_user_bonds; ++i) {
-            const md_atom_pair_t& pair = pending.user_bonds[i];
-            if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms && pair.idx[0] != pair.idx[1]) {
-                const md_bond_flags_t flags = pending.user_bond_flags[i];
-                graph |= !md_bond_is_noncovalent(flags);
-                md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], flags);
-                // The next one finds this one, should the workspace have it twice
-                if (!md_bond_is_noncovalent(flags)) md_system_bond_build_connectivity(&sys);
+            if (result == LoadResult_Failed) {
+                // Kept in its place, so that saving the workspace does not drop it: a file that was moved is found
+                // again by putting it back, not by building the workspace again
+                FileEntry missing = in.entry;
+                missing.type    = loader_state.type;
+                missing.missing = true;
+                file_list_record(&sc.files, missing, in.role, data->allocator.persistent);
             }
         }
-        if (graph) {
-            md_util_system_infer_coordination(&sys);
+
+        // What the workspace was saved with stays the reference while the files are missing, so that a save keeps it
+        FileList& list = sc.files;
+        if (list.atom_count == 0) {
+            list.atom_count = plan.atom_count;
         }
-        system_bonds_changed(data->system_context, graph);
+        for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(plan.frame_counts); ++r) {
+            if (list.runs[r].frame_count == 0) list.runs[r].frame_count = plan.frame_counts[r];
+        }
+
+        const size_t num_atoms  = sc.data.sys.atom.count;
+        const size_t num_frames = run_num_frames(sc);
+
+        // The counts the workspace was saved with. When the files no longer have them, what it keeps by atom index
+        // or by frame would land on other atoms and other frames, and is left out instead.
+        const bool   atoms_as_saved  = plan.atom_count == 0 || plan.atom_count == num_atoms;
+        const size_t saved_frames    = md_array_size(plan.frame_counts) ? plan.frame_counts[0] : 0;
+        const bool   frames_as_saved = saved_frames == 0 || saved_frames == num_frames;
+        if (num_atoms > 0 && !atoms_as_saved) {
+            VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections and bonds are left out", num_atoms, plan.atom_count);
+            // The stored selections are of the first system's atoms (names of the script)
+            if (first) remove_all_selections(data);
+        }
+        if (num_frames > 0 && !frames_as_saved) {
+            VIAMD_LOG_ERROR("Workspace: the trajectory has %zu frames, but had %zu when the workspace was saved; its frame and timeline ranges are left out", num_frames, saved_frames);
+        }
+
+        // The time and the timeline are in the frames of the first system's run, until there is one time for all
+        if (first && pending.has_frame && num_frames > 0 && frames_as_saved) {
+            data->animation.frame = CLAMP(pending.frame, 0.0, (double)(num_frames - 1));
+        }
+
+        // Loading a trajectory sets the filter and the view to all of it; the workspace's come after
+        if (first && num_frames > 0 && frames_as_saved) {
+            const double last = (double)(num_frames - 1);
+            // A workspace from before the periods: its filter becomes a period, over which what was shown over the
+            // filter is shown
+            if (!pending.has_periods && pending.filter_enabled) {
+                TimelinePeriod* r = nullptr;
+                if (pending.temporal_window_enabled) {
+                    const double  extent = pending.temporal_window_extent > 0.0 ? pending.temporal_window_extent : 10.0;
+                    const int32_t half = (int32_t)round(extent * 0.5);
+                    r = timeline_periods_add(&data->timeline.periods, "Filter", -half, half, true);
+                } else {
+                    const double beg = pending.has_filter_range ? CLAMP(pending.filter_beg_frame, 0.0, last) : 0.0;
+                    const double end = pending.has_filter_range ? CLAMP(pending.filter_end_frame, beg, last) : last;
+                    r = timeline_periods_add(&data->timeline.periods, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
+                }
+                if (r) data->timeline.periods.legacy_filter_id = r->id;
+            }
+            if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
+                data->timeline.view_range.beg_x = workspace_frame_to_time(data, CLAMP(pending.view_beg_frame, 0.0, last));
+                data->timeline.view_range.end_x = workspace_frame_to_time(data, CLAMP(pending.view_end_frame, 0.0, last));
+            }
+        }
+
+        // Masks of atoms that are not there are dropped rather than applied to whatever holds those indices now
+        auto mask_fits = [num_atoms, atoms_as_saved](const md_bitset_t* mask) {
+            return num_atoms > 0 && atoms_as_saved && (md_bitset_empty(*mask) || mask->end <= num_atoms);
+        };
+        if (ws.has_selection_mask && mask_fits(&ws.selection_mask)) {
+            md_bitmask_assign(&sc.selection.selection_mask, ws.selection_mask);
+        }
+        if (ws.has_recenter_target && mask_fits(&ws.recenter_target)) {
+            md_bitset_assign(&sc.scene.operations.selection_mask, ws.recenter_target, data->allocator.persistent);
+            recenter_update_target_data(sc);
+        }
+
+        const size_t num_user_bonds = atoms_as_saved ? md_array_size(ws.user_bonds) : 0;
+        if (num_user_bonds > 0) {
+            md_system_t& sys = sc.data.sys;
+            system_bonds_edit_begin(sc);
+            bool graph = false;
+            for (size_t i = 0; i < num_user_bonds; ++i) {
+                const md_atom_pair_t& pair = ws.user_bonds[i];
+                if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms && pair.idx[0] != pair.idx[1]) {
+                    const md_bond_flags_t flags = ws.user_bond_flags[i];
+                    graph |= !md_bond_is_noncovalent(flags);
+                    md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], flags);
+                    // The next one finds this one, should the workspace have it twice
+                    if (!md_bond_is_noncovalent(flags)) md_system_bond_build_connectivity(&sys);
+                }
+            }
+            if (graph) {
+                md_util_system_infer_coordination(&sys);
+            }
+            system_bonds_changed(sc, graph);
+        }
+
+        // The assembly shown, by its id in the files loaded
+        if (ws.assembly_id[0]) {
+            const md_assembly_data_t& a = sc.data.sys.assembly;
+            for (size_t i = 0; i < a.count; ++i) {
+                if (str_eq(md_assembly_id(&a, i), str_from_cstr(ws.assembly_id))) sc.scene.assembly = (int)i;
+            }
+            if (sc.scene.assembly < 0) {
+                VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", ws.assembly_id);
+            }
+        }
     }
 
-    // The assembly shown, by its id in the files loaded
-    if (pending.assembly_id[0]) {
-        const md_assembly_data_t& a = data->mold.sys.assembly;
-        for (size_t i = 0; i < a.count; ++i) {
-            if (str_eq(md_assembly_id(&a, i), str_from_cstr(pending.assembly_id))) data->system.assembly = (int)i;
-        }
-        if (data->system.assembly < 0) {
-            VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", pending.assembly_id);
+    // A system it names with no files at all is not one: taken out (the first stays, empty)
+    for (size_t k = pending.num_systems; k-- > 0;) {
+        SystemContext* sc = pending.systems[k].sys;
+        if (!system_loaded(*sc)) {
+            remove_all_representations(*sc);
+            system_release(data, sc);
         }
     }
 
-    // The camera flies in: from the whole system to where the workspace looked from. Without a
-    // stored camera, both are the whole system (or the assembly shown).
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->system.assembly);
-    if (data->system.assembly >= 0) {
-        // Room to zoom out to all of the assembly
-        data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
-    }
+    // The camera flies in: from every system to where the workspace looked from. Without a stored camera, both are
+    // every system (or the assembly shown, of one).
+    reset_view_scene(&data->view.camera, *data, data->view.camera.fov_y, data->view.region);
+    data->view.trackball_param.max_distance = MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
     // What was shown over the timeline filter, before there were periods, is shown over the period the filter followed.
@@ -2779,10 +2885,16 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_section_header(state, STR_LIT("Workspace"));
     viamd::write_int(state, STR_LIT("Version"), WORKSPACE_VERSION);
 
-    // The system, its run and their files, missing ones too: what could not be loaded is still what the
-    // workspace is of. Its id is the one every section which refers to the system uses.
-    if (file_list_count(&app_state->file_list) > 0) {
-        file_list_serialize(state, &app_state->file_list, 0, 0);
+    // The systems, their runs and their files, missing ones too: what could not be loaded is still what the
+    // workspace is of. A system's id is the one every section which refers to it uses.
+    {
+        int next_run_id = 0;
+        for (size_t i = 0; i < app_state->num_systems; ++i) {
+            const SystemContext& sc = *app_state->systems[i];
+            if (file_list_count(&sc.files) > 0) {
+                next_run_id = file_list_serialize(state, &sc.files, (int)sc.id, next_run_id);
+            }
+        }
     }
 
     viamd::write_section_header(state, STR_LIT("Animation"));
@@ -2841,10 +2953,13 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
     viamd::write_flt(state,  STR_LIT("FovY"), app_state->view.camera.fov_y);
 
-    // The system as the scene shows it, of the system the files above give the id 0
-    system_scene_serialize(state, app_state->system_context);
-
-    representations_serialize(state, app_state->system_context);
+    // Each system as the scene shows it, and its representations
+    for (size_t i = 0; i < app_state->num_systems; ++i) {
+        const SystemContext& sc = *app_state->systems[i];
+        if (!system_loaded(sc)) continue;
+        system_scene_serialize(state, sc);
+        representations_serialize(state, sc);
+    }
 
     {
         std::string text = app_state->editor.GetText();
@@ -2861,26 +2976,35 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bitset(state, STR_LIT("Mask"), &sel.atom_mask);
     }
 
+    // How it is selected, then what is selected of each system
     viamd::write_section_header(state, STR_LIT("ActiveSelection"));
     viamd::write_int(state, STR_LIT("Granularity"), (int)app_state->selection.granularity);
-    const md_bitset_t selection = md_bitmask_view(&app_state->system_context.selection.selection_mask);
-    if (!md_bitset_empty(selection)) {
-        viamd::write_bitset(state, STR_LIT("Mask"), &selection);
+    for (size_t k = 0; k < app_state->num_systems; ++k) {
+        const SystemContext& sc = *app_state->systems[k];
+        const md_bitset_t selection = md_bitmask_view(&sc.selection.selection_mask);
+        if (system_loaded(sc) && !md_bitset_empty(selection)) {
+            viamd::write_int(state, STR_LIT("System"), (int)sc.id);
+            viamd::write_bitset(state, STR_LIT("Mask"), &selection);
+        }
     }
 
-    // Save user defined bonds, of the graph and non-covalent, with the kind they were given
-    bool has_user_bonds = false;
-    const md_bond_data_t& bonds = app_state->mold.sys.bond;
-    for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
-        const md_bond_flags_t flags = bonds.flags[i];
-        if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-            if (!has_user_bonds) {
-                viamd::write_section_header(state, STR_LIT("UserBonds"));
-                has_user_bonds = true;
-            }
-            viamd::write_int_vec(state, STR_LIT("atoms"), bonds.pairs[i].idx, 2);
-            if (flags & MD_BOND_FLAG_KIND_GIVEN) {
-                viamd::write_str(state, STR_LIT("kind"), str_from_cstr(bond_kind_str(flags)));
+    // Save user defined bonds, of the graph and non-covalent, with the kind they were given: of each system
+    for (size_t k = 0; k < app_state->num_systems; ++k) {
+        const SystemContext& sc = *app_state->systems[k];
+        bool has_user_bonds = false;
+        const md_bond_data_t& bonds = sc.data.sys.bond;
+        for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
+            const md_bond_flags_t flags = bonds.flags[i];
+            if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
+                if (!has_user_bonds) {
+                    viamd::write_section_header(state, STR_LIT("UserBonds"));
+                    viamd::write_int(state, STR_LIT("System"), (int)sc.id);
+                    has_user_bonds = true;
+                }
+                viamd::write_int_vec(state, STR_LIT("atoms"), bonds.pairs[i].idx, 2);
+                if (flags & MD_BOND_FLAG_KIND_GIVEN) {
+                    viamd::write_str(state, STR_LIT("kind"), str_from_cstr(bond_kind_str(flags)));
+                }
             }
         }
     }
@@ -6018,7 +6142,7 @@ bool picked_bond(const SystemContext& sc, size_t idx, md_atom_pair_t* pair, md_b
     return false;
 }
 
-bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key) {
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key, uint32_t system) {
     ASSERT(space);
 
     if (count > 0 && space->num_ranges < ARRAY_SIZE(space->ranges)) {
@@ -6028,6 +6152,7 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
         curr_range->beg = prev_range ? prev_range->end : 0;
         curr_range->end = curr_range->beg + (uint32_t)count;
         curr_range->key = key;
+        curr_range->system = system;
         if (out_range) {
             MEMCPY(out_range, curr_range, sizeof(PickingRange));
         }
@@ -6150,9 +6275,9 @@ bool picking_surface_submit_readback(
     return true;
 }
 
-const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key) {
+const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key, uint32_t system) {
     for (size_t i = 0; i < space.num_ranges; ++i) {
-        if (space.ranges[i].domain == domain && space.ranges[i].key == key) {
+        if (space.ranges[i].domain == domain && space.ranges[i].key == key && space.ranges[i].system == system) {
             return &space.ranges[i];
         }
     }
@@ -6223,6 +6348,7 @@ bool picking_surface_poll_hit(
     out_hit->source = surface->source;
     out_hit->domain = range.domain;
     out_hit->key = range.key;
+    out_hit->system = range.system;
     out_hit->frame_idx = slot.submitted_frame_idx;
     out_hit->raw_idx = raw_idx;
     out_hit->local_idx = raw_idx - range.beg;
@@ -6482,7 +6608,7 @@ bool file_queue_full(const FileQueue* queue) {
     return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
 }
 
-void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags, uint32_t system) {
     ASSERT(queue);
     ASSERT(!file_queue_full(queue));
     int prio = 5;
@@ -6517,7 +6643,7 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
     }
 
     uint32_t i = queue->head;
-    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
+    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio, system};
     queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
 
     // Sort queue based on prio
@@ -6542,47 +6668,173 @@ FileQueue::Entry file_queue_pop(FileQueue* queue) {
     return front;
 }
 
+LoadResult load_file_into(ApplicationState* app, SystemContext* target, str_t path, const loader::LoaderState& load_state) {
+    ASSERT(app);
+    SystemContext* sys = target ? target : system_add(app);
+    if (!sys) {
+        VIAMD_LOG_ERROR("'" STR_FMT "' is not loaded: at most %zu systems are loaded at once", STR_ARG(path), SYSTEM_MAX);
+        return LoadResult_Failed;
+    }
+    const bool fresh = !system_loaded(*sys);
+    const LoadResult result = load_data_from_file(app, *sys, path, load_state);
+    if (!system_loaded(*sys) && result != LoadResult_Pending) {
+        // Nothing went into it (a trajectory with no system to open on, a file that did not load): not listed
+        if (fresh) system_release(app, sys);
+        return result;
+    }
+    app->file_queue.last_system = sys->id;
+    app->file_queue.last_pending = result == LoadResult_Pending;
+
+    if (result == LoadResult_System) {
+        // A system new there is shown as a new one is; a system loaded again keeps its representations if asked to
+        if (fresh || !app->settings.keep_representations) {
+            remove_all_representations(*sys);
+            create_default_representations(*sys);
+        }
+        recompute_atom_visibility_mask(*sys);
+        sys->data.interpolate_system_state = true;
+        sys->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+    }
+    if (result == LoadResult_System || result == LoadResult_Trajectory) {
+        app->animation.frame = 0.0;
+        app->animation.mode = PlaybackMode::Stopped;
+        reset_view_scene(&app->view.target, *app, app->view.camera.fov_y, app->view.region);
+    }
+    return result;
+}
+
 void file_queue_process(ApplicationState* state) {
     ASSERT(state);
-    if (!file_queue_empty(&state->file_queue) && !state->load_dataset.show_window) {
-        FileQueue::Entry e = file_queue_pop(&state->file_queue);
+    if (state->load_dataset.show_window) return;
+    if (file_queue_empty(&state->file_queue)) {
+        // What is queued next is loaded on its own
+        state->file_queue.last_system = SYSTEM_ID_NONE;
+        state->file_queue.last_pending = false;
+        return;
+    }
+    FileQueue::Entry e = file_queue_pop(&state->file_queue);
 
-        str_t ext;
-        extract_ext(&ext, e.path);
+    str_t ext;
+    extract_ext(&ext, e.path);
 
-        if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-            load_workspace(state, e.path);
-        } else {
-            loader::LoaderState loader_state = {};
-            loader::init(&loader_state, e.path, &state->mold.sys);
-                
-            if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
-                state->load_dataset = LoadDatasetWindowState();
-                str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
-                state->load_dataset.path_changed = true;
-                state->load_dataset.show_window = true;
-            } else {
-                loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                const LoadResult result = load_data_from_file(state, state->system_context, e.path, loader_state);
-                if (result == LoadResult_System || result == LoadResult_Trajectory) {
-                    state->animation = {};
-                    // @TODO @FIX: This should be captured and performed by the Event that signals when a new system is loaded.
-                    if (result == LoadResult_System) {
-                        md_bitmask_clear(&state->representation.visibility_mask);
+    if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
+        load_workspace(state, e.path);
+        return;
+    }
 
-                        if (!state->settings.keep_representations) {
-                            remove_all_representations(state->system_context);
-                            create_default_representations(state->system_context);
-                        }
-                        recompute_atom_visibility_mask(state->system_context);
-                        state->mold.interpolate_system_state = true;
-                        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, state->view.region);
-                    }
-                }
+    // Where it goes: the system it was opened into, a new one, the one the file before it went into, the one loaded;
+    // with several and none of these, it is asked (the load dialog)
+    SystemContext* target = nullptr;
+    bool resolved = true;
+    if (e.flags & FileFlags_NewSystem) {
+        target = nullptr;
+    } else if (e.system != SYSTEM_ID_NONE) {
+        target = system_find(state, e.system);
+        if (!target) {
+            VIAMD_LOG_ERROR("'" STR_FMT "' is not loaded: the system it was opened into is gone", STR_ARG(e.path));
+            return;
+        }
+    } else if (SystemContext* last = system_find(state, state->file_queue.last_system)) {
+        // With the file before it: into its system, but for a structure of its own (two dropped together are two
+        // systems), unless the one before was half of a system that this one completes
+        loader::LoaderState with_last = {};
+        loader::init(&with_last, e.path, &last->data.sys);
+        const bool structure = (with_last.flags & LoaderFlag_System) && !state->file_queue.last_pending;
+        target = structure ? nullptr : last;
+    } else {
+        const size_t n = system_count(*state);
+        if (n == 1) {
+            for (size_t i = 0; i < state->num_systems && !target; ++i) {
+                if (system_loaded(*state->systems[i])) target = state->systems[i];
             }
+        } else if (n > 1) {
+            resolved = false;
         }
     }
+
+    // What the file is can depend on the system it goes into (a VeloxChem file of its atoms supplements them)
+    loader::LoaderState loader_state = {};
+    loader::init(&loader_state, e.path, target ? &target->data.sys : nullptr);
+
+    if (!resolved || (e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
+        state->load_dataset = LoadDatasetWindowState();
+        str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
+        state->load_dataset.path_changed = true;
+        state->load_dataset.show_window = true;
+        if (target) {
+            state->load_dataset.system = target->id;
+        } else if (!resolved && !(loader_state.flags & LoaderFlag_System)) {
+            // What adds to a system: to the first, unless another is picked
+            state->load_dataset.system = scene_frame_system(*state).id;
+        } else {
+            state->load_dataset.new_system = true;
+        }
+        return;
+    }
+
+    loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
+    load_file_into(state, target, e.path, loader_state);
+}
+
+const SystemContext& scene_frame_system(const ApplicationState& app) {
+    for (size_t i = 0; i < app.num_systems; ++i) {
+        if (system_loaded(*app.systems[i])) return *app.systems[i];
+    }
+    return app.system_context;
+}
+
+void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, const ViewRegion& region) {
+    ASSERT(transform);
+    const SystemContext* shown[SYSTEM_MAX];
+    size_t num_shown = 0;
+    for (size_t i = 0; i < app.num_systems; ++i) {
+        const SystemContext& sc = *app.systems[i];
+        if (sc.scene.visible && sc.data.state.num_atoms > 0) shown[num_shown++] = &sc;
+    }
+    if (num_shown == 0) return;
+    if (num_shown == 1) {
+        const SystemContext& sc = *shown[0];
+        const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
+        reset_view(transform, sc.data.state, &visible, fov_y, region, &sc.data.sys, sc.scene.assembly);
+        if (&sc != &scene_frame_system(app)) {
+            // Its cell is not the frame of the world: reset_view placed it as if it were
+            const vec3_t own   = mat4_mul_vec3(sc.data.unitcell_transform, vec3_set1(0.0f), 1.0f);
+            const vec3_t world = mat4_mul_vec3(scene_frame_system(app).data.unitcell_transform, vec3_set1(0.0f), 1.0f);
+            transform->position = transform->position - own + world;
+        }
+        return;
+    }
+
+    // The visible atoms of every system shown, as they are drawn: in their own coordinates, in the frame of the
+    // world. Of large systems every k-th, at most about a million in all.
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t total = 0;
+    for (size_t i = 0; i < num_shown; ++i) {
+        const md_bitset_t visible = md_bitmask_view(&shown[i]->representation.visibility_mask);
+        const size_t n = md_bitset_count(visible);
+        total += n ? n : shown[i]->data.state.num_atoms;
+    }
+    const size_t max_points = 1000000;
+    const size_t stride = MAX((size_t)1, DIV_UP(total, max_points));
+    md_array(vec3_t) xyz = 0;
+    md_array_ensure(xyz, MIN(total, max_points) + num_shown, md_temp_allocator(temp));
+    for (size_t i = 0; i < num_shown; ++i) {
+        const SystemContext& sc = *shown[i];
+        const md_system_state_t& st = sc.data.state;
+        const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
+        const bool all = md_bitset_count(visible) == 0;
+        size_t k = 0;
+        for (size_t a = 0; a < st.num_atoms; ++a) {
+            if (!all && !md_bitset_test(visible, a)) continue;
+            if (k++ % stride) continue;
+            md_array_push(xyz, st.xyz[a], md_temp_allocator(temp));
+        }
+    }
+    const size_t n = md_array_size(xyz);
+    if (n == 0) return;
+    *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+    transform->position = mat4_mul_vec3(scene_frame_system(app).data.unitcell_transform, transform->position, 1.0f);
 }
 
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
@@ -6752,33 +7004,41 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         case viamd::EventType_ViamdPickingRangeReserve: {
 			ASSERT(event.payload_type == viamd::EventPayloadType_PickingSpace);
 			PickingSpace* space = (PickingSpace*)event.payload;
-            size_t num_atoms = state->mold.sys.atom.count;
-            // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
-            // frame that is is not settled yet: as many as have formed in any frame are reserved for.
-            const md_bond_delta_t* delta = bond_tracking_delta(state->system_context);
-            size_t num_bonds = state->mold.sys.bond.count + (delta ? MAX(delta->num_formed, state->system.operations.bond_tracking.formed_capacity) : 0);
-            picking_range_reserve(&state->system_context.picking.atom, space, PickingDomain_Atom, num_atoms);
-            picking_range_reserve(&state->system_context.picking.bond, space, PickingDomain_Bond, num_bonds);
-            // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
-            picking_range_reserve(&state->system_context.picking.backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
-            // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
-            // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
-            const size_t num_frame_rings = delta ? state->system.operations.bond_tracking.ring_capacity : 0;
-            picking_range_reserve(&state->system_context.picking.ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
-            // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
-            // one per control point of its tubes after them (cartoon_glyphs_picked_point)
-            picking_range_reserve(&state->system_context.picking.glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
-            // One index per residue, which the gap over a break after it writes: only those are drawn
-            picking_range_reserve(&state->system_context.picking.gap, space, PickingDomain_ChainGap, state->mold.sys.residue.count);
+            // Every system its own ranges, in the order listed: a hit names the system by the range it is in
+            for (size_t s = 0; s < state->num_systems; ++s) {
+                SystemContext& sc = *state->systems[s];
+                sc.picking = {};
+                if (!system_loaded(sc)) continue;
+                const md_system_t& sys = sc.data.sys;
+                const uint32_t id = sc.id;
+                const auto& bt = sc.scene.operations.bond_tracking;
+                // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
+                // frame that is is not settled yet: as many as have formed in any frame are reserved for.
+                const md_bond_delta_t* delta = bond_tracking_delta(sc);
+                const size_t num_bonds = sys.bond.count + (delta ? MAX(delta->num_formed, bt.formed_capacity) : 0);
+                picking_range_reserve(&sc.picking.atom, space, PickingDomain_Atom, sys.atom.count, 0, id);
+                picking_range_reserve(&sc.picking.bond, space, PickingDomain_Bond, num_bonds, 0, id);
+                // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
+                picking_range_reserve(&sc.picking.backbone, space, PickingDomain_BackboneSegment, sys.protein_backbone.segment.count, 0, id);
+                // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn),
+                // then the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
+                const size_t num_frame_rings = delta ? bt.ring_capacity : 0;
+                picking_range_reserve(&sc.picking.ring, space, PickingDomain_Ring, md_ring_data_count(&sys.ring) + num_frame_rings, 0, id);
+                // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules
+                // write, and one per control point of its tubes after them (cartoon_glyphs_picked_point)
+                picking_range_reserve(&sc.picking.glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(sc.data.cartoon_glyphs), 0, id);
+                // One index per residue, which the gap over a break after it writes: only those are drawn
+                picking_range_reserve(&sc.picking.gap, space, PickingDomain_ChainGap, sys.residue.count, 0, id);
 
-            // One range per dipole group, keyed by the group's vector attribute, sized by that
-            // attribute's own shape. An index within a range is then the element index inside the
-            // group, so a hit carries the whole identity and nobody has to reproduce a flat
-            // ordering over every (group, element) pair to speak about one dipole.
-            DipoleGroup groups[16];
-            const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
-            for (size_t j = 0; j < num_groups; ++j) {
-                picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key);
+                // One range per dipole group, keyed by the group's vector attribute, sized by that attribute's own
+                // shape. An index within a range is then the element index inside the group, so a hit carries the
+                // whole identity and nobody has to reproduce a flat ordering over every (group, element) pair to
+                // speak about one dipole.
+                DipoleGroup groups[16];
+                const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), sys), ARRAY_SIZE(groups));
+                for (size_t j = 0; j < num_groups; ++j) {
+                    picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key, id);
+                }
             }
             break;
         }
@@ -6790,10 +7050,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 case InteractionSurfaceEventKind::Hover:
                     draw_picking_tooltip_window(surf->hit, *state);
 					[[fallthrough]];
-                case InteractionSurfaceEventKind::Click:
-                    // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
-                    md_bitmask_clear(&state->system_context.selection.highlight_mask);
-                    picking_hit_mask_set(&state->system_context.selection.highlight_mask, state->system_context, surf->hit, state->selection.granularity);
+                case InteractionSurfaceEventKind::Click: {
+                    // The highlight is of what is under the cursor: of the system hit, none of the others'. It is the
+                    // intermediate mask of what a click selects, too.
+                    SystemContext* hit_sys = picking_hit_system(state, surf->hit);
+                    for (size_t k = 0; k < state->num_systems; ++k) md_bitmask_clear(&state->systems[k]->selection.highlight_mask);
+                    if (hit_sys) picking_hit_mask_set(&hit_sys->selection.highlight_mask, *hit_sys, surf->hit, state->selection.granularity);
 
                     // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
                     if (surf->kind == InteractionSurfaceEventKind::Click && surf->selection_mode != InteractionSelectionMode::None) {
@@ -6801,39 +7063,49 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         // and is what the context menu turns into script suggestions. Only a real click advances
                         // it: a Hover event always carries selection_mode None, so doing this above would reset
                         // the sequence to the atom under the cursor on every frame the mouse crosses the molecule.
-                        if (surf->hit.domain == PickingDomain_Atom) {
+                        // Its atoms are of one system: a pick in another starts it over.
+                        SingleSelectionSequence& seq = state->selection.single_selection_sequence;
+                        if (hit_sys && surf->hit.domain == PickingDomain_Atom) {
                             int32_t atom_idx = surf->hit.local_idx;
-                            if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
+                            if (atom_idx >= 0 && (size_t)atom_idx < hit_sys->data.sys.atom.count) {
+                                if (seq.system != hit_sys->id) {
+                                    single_selection_sequence_clear(&seq);
+                                    seq.system = hit_sys->id;
+                                }
                                 if (surf->selection_mode == InteractionSelectionMode::Append) {
-                                    single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
+                                    single_selection_sequence_push_idx(&seq, atom_idx);
                                 }
                                 else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                                    single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
+                                    single_selection_sequence_pop_idx(&seq, atom_idx);
                                 }
                             }
                         }
 
-                        if (picking_domain_resolves_to_atoms(surf->hit.domain)) {
+                        if (hit_sys && picking_domain_resolves_to_atoms(surf->hit.domain)) {
+                            md_bitmask_t& sel = hit_sys->selection.selection_mask;
+                            const md_bitset_t hl = md_bitmask_view(&hit_sys->selection.highlight_mask);
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
-                                md_bitmask_or(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
+                                md_bitmask_or(&sel, hl);
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitmask_andnot(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
+                                md_bitmask_andnot(&sel, hl);
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                md_bitmask_clear(&state->system_context.selection.selection_mask);
-                                md_bitmask_or(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
+                                // What is selected is what was clicked, in whichever system
+                                for (size_t k = 0; k < state->num_systems; ++k) md_bitmask_clear(&state->systems[k]->selection.selection_mask);
+                                md_bitmask_or(&sel, hl);
                             }
                         }
                         else if (surf->hit.domain == 0) {
                             // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
                             if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitmask_clear(&state->system_context.selection.selection_mask);
-                                single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                                for (size_t k = 0; k < state->num_systems; ++k) md_bitmask_clear(&state->systems[k]->selection.selection_mask);
+                                single_selection_sequence_clear(&seq);
                             }
                         }
                     }
                     break;
+                }
                 case InteractionSurfaceEventKind::RegionSelect:
                     break;
                 case InteractionSurfaceEventKind::ContextMenu:
@@ -6847,31 +7119,44 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         case viamd::EventType_ViamdPickingTooltipTextRequest: {
             ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
-            fill_picking_tooltip(req, state->system_context, req->hit);
+            if (const SystemContext* hit_sys = picking_hit_system(*state, req->hit)) {
+                // Which system it is of, when there are several to tell apart
+                if (system_count(*state) > 1) {
+                    char label[64];
+                    system_label(label, sizeof(label), *hit_sys);
+                    tooltip_title(req, "%s", label);
+                }
+                fill_picking_tooltip(req, *hit_sys, req->hit);
+            }
             break;
         }
         case viamd::EventType_ViamdViewFit: {
             ASSERT(event.payload_type == viamd::EventPayloadType_ViewFitRequest);
             ViewFitRequest* req = (ViewFitRequest*)event.payload;
             if (req) {
-                const md_bitmask_t* m = nullptr;
-                switch (req->round) {
-                case ViewFitRound_Highlight:
-                    m = &state->system_context.selection.highlight_mask; break;
-                case ViewFitRound_Selection:
-                    m = &state->system_context.selection.selection_mask; break;
-                case ViewFitRound_Visible:
-                    m = &state->representation.visibility_mask; break;
-                default:
-                    break;
-                }
+                // Of every system shown, in its own coordinates: they are drawn in one frame (scene_frame_system)
+                for (size_t k = 0; k < state->num_systems; ++k) {
+                    const SystemContext& sc = *state->systems[k];
+                    if (!sc.scene.visible) continue;
+                    const md_bitmask_t* m = nullptr;
+                    switch (req->round) {
+                    case ViewFitRound_Highlight:
+                        m = &sc.selection.highlight_mask; break;
+                    case ViewFitRound_Selection:
+                        m = &sc.selection.selection_mask; break;
+                    case ViewFitRound_Visible:
+                        m = &sc.representation.visibility_mask; break;
+                    default:
+                        break;
+                    }
 
-                const md_bitset_t bf = m ? md_bitmask_view(m) : md_bitset_empty_set();
-                size_t popcount = md_bitset_count(bf);
-                if (popcount > 0) {
-                    vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
-                    if (dst_xyzw) {
-                        md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &state->mold.sys, &state->mold.state);
+                    const md_bitset_t bf = m ? md_bitmask_view(m) : md_bitset_empty_set();
+                    size_t popcount = md_bitset_count(bf);
+                    if (popcount > 0) {
+                        vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
+                        if (dst_xyzw) {
+                            md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &sc.data.sys, &sc.data.state);
+                        }
                     }
                 }
             }

@@ -159,6 +159,7 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:
+                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // A new system, or none: whatever was computed or loaded belongs to the old one, and the task reading
                 // it is stopped before it goes
                 if (task) task_system::task_interrupt_and_wait_for(task);

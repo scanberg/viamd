@@ -240,11 +240,22 @@ static void draw_system_menu(SystemContext& sys, bool* remove_request) {
     }
 
     ImGui::Separator();
+    if (ImGui::MenuItem(ICON_FA_FILE_CIRCLE_PLUS " Add File...")) {
+        char path[1024] = "";
+        if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Open)) {
+            file_queue_push(&app->file_queue, str_from_cstr(path), FileFlags_None, sys.id);
+        }
+    }
+    ImGui::SetItemTooltip("Load a file into this system: a trajectory becomes its run, energies or a topology add to it,\n"
+                          "a structure replaces it");
     if (bool* show = workspace_window_flag("System")) {
-        if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details")) {
+        // The System window is of the first system until it has a system picker of its own
+        const bool first = &sys == &app->system_context;
+        if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details", nullptr, false, first)) {
             *show = true;
         }
-        ImGui::SetItemTooltip("The System window: its files in full, what it is made of, its trajectory and series,\nits atom and residue types");
+        if (first) ImGui::SetItemTooltip("The System window: its files in full, what it is made of, its trajectory and series,\nits atom and residue types");
+        else       ImGui::SetItemTooltip("The System window shows the first system only, so far");
     }
     if (ImGui::MenuItem(ICON_FA_TRASH_CAN " Remove system...")) {
         *remove_request = true;
@@ -840,9 +851,12 @@ void draw_system_files(SystemContext& sc) {
 void system_remove(SystemContext& sys) {
     ApplicationState* app = sys.app;
     ASSERT(app);
-    interrupt_async_tasks(app);
-    free_trajectory_data(app, sys);
-    free_system_data(app, sys);
+    // Its data, when it has any: an empty system (the first, before anything is loaded) has nothing to free
+    if (system_loaded(sys) || sys.run.path[0]) {
+        interrupt_async_tasks(app);
+        free_trajectory_data(app, sys);
+        free_system_data(app, sys);
+    }
 
     // What was of it: its representations, its operations and what it was shown as
     remove_all_representations(sys);

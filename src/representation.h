@@ -177,14 +177,15 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContex
 
 // --- Workspace ---
 
-// [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it
+// [RepresentationGroup] and [Representation] sections of the system, which each names by its id (System=), depth first:
+// a group before what is within it
 void representations_serialize(viamd::serialization_state_t& state, const SystemContext& sys);
 // The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
 // when it is not one of them
 void representation_write_entries(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep);
 bool representation_read_entry(Representation* rep, str_t ident, str_t arg);
 // True when the section was one of the above, which it has then read
-bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state);
+bool representations_deserialize(str_t section, viamd::deserialization_state_t& state, WorkspaceSystemFn system_of, void* user);
 
 // --- UI ---
 
