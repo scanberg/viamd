@@ -418,10 +418,14 @@ changing individual choices. In **NCI settings -> Display -> Plot guides**,
 choose **Surface isovalue**, **Extraction cutoff**, and **Extraction density limits**
 (all on by default). The solid surface guide reads **Surface s = 0.78**; the
 thin dashed cutoff reads **Cutoff s = 2** by default and follows the selected extraction
-cutoff. When coincident, one line reads **Surface / cutoff s = 1.00**.
+cutoff. Drag it to change the analysed region, just as with Scatter region s max.
+Lowering it below the surface isovalue lowers the surface too.
+When coincident, one line reads **Surface / cutoff s = 1.00**; dragging that line
+edits the cutoff. The surface remains independently adjustable in Settings.
 Reference interaction guides remain independent.
 Density guides read **rho = -0.07** and **rho = +0.07** at the configured extraction
-limits, not the automatic colour-scale endpoints.
+limits, not the automatic colour-scale endpoints. Their labels sit inside the
+plot above the inset x-axis labels. Both axes use VIAMD's shared inset-axis style.
 On the right, ⤢ fits the view. NCI settings set the interaction line width
 (1 px by default) and point size (0.6 px by default).
 **Interaction isolines and areas** (off by default) adds

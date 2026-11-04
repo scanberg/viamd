@@ -384,6 +384,8 @@ struct NciPanel {
         ImGui::SeparatorText("Plot guides");
         ImGui::Checkbox("Surface isovalue", &st.guide_surface);
         ImGui::Checkbox("Extraction cutoff", &st.guide_cutoff);
+        ImGui::SetItemTooltip("Drag the dashed s-cutoff line to change the analysed region. "
+                              "Lowering it below the surface also lowers the surface isovalue.");
         ImGui::Checkbox("Extraction density limits", &st.guide_density_limits);
         ImGui::TextDisabled("Guides beside the plot shows/hides these without changing your choices.");
 
@@ -1346,7 +1348,7 @@ struct NciPanel {
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
         ImGui::SetItemTooltip("Show selected plot guides: surface isovalue, extraction cutoff and density limits. "
-                              "Choose guides in NCI settings. Drag the surface line to edit its isovalue.");
+                              "Choose guides in NCI settings. Drag the surface or s-cutoff line to edit its value.");
         const bool global = st.view == nci_surface::View::Overview && !st.classified_overview;
         if (global) {
             ImGui::SameLine();
@@ -1503,7 +1505,8 @@ struct NciPanel {
         const bool plot_open = ImPlot::BeginPlot("##NCI scatter", ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y - legend_h)),
                                                  ImPlotFlags_NoLegend);
         if (!plot_open) return;
-        ImPlot::SetupAxes("sign(\xCE\xBB\xE2\x82\x82)\xCF\x81 [bohr^-3]", "s");
+        ImPlot::SetupAxes("sign(\xCE\xBB\xE2\x82\x82)\xCF\x81 [bohr^-3]", "s",
+                          ImPlot::InsetAxisFlags, ImPlot::InsetAxisFlags);
         const nci_surface::ReferenceMap& reference = reference_map();
         float rho_extent = context.rho_max;
         if (reference.valid) rho_extent = MAX(rho_extent, reference.rho_extent);
@@ -1683,35 +1686,54 @@ struct NciPanel {
             const double limits[] = {-(double)st.uniform.rho_max, (double)st.uniform.rho_max};
             ImPlot::SetNextLineStyle(colour, 1.0f);
             ImPlot::PlotInfLines("##Density limits", limits, 2, ImPlotItemFlags_NoFit);
-            ImPlot::TagX(limits[0], colour, "\xCF\x81 = %.3g", limits[0]);
-            ImPlot::TagX(limits[1], colour, "\xCF\x81 = +%.3g", limits[1]);
+            const auto view = ImPlot::GetPlotLimits();
+            const double label_y = view.Y.Min + 0.12 * view.Y.Size();
+            ImPlot::Annotation(limits[0], label_y, colour, ImVec2(4, -4), true, "\xCF\x81 = %.3g", limits[0]);
+            ImPlot::Annotation(limits[1], label_y, colour, ImVec2(-4, -4), true, "\xCF\x81 = +%.3g", limits[1]);
         }
         const bool surface_guide = st.show_guides && st.guide_surface && active && nci_scale_member(*active);
         const bool merged_guide = surface_guide && st.guide_cutoff &&
                                   std::abs(active->s_iso - st.uniform.scatter_s) < 1e-4f;
-        if (st.show_guides && st.guide_cutoff && !merged_guide) {
+        if (st.show_guides && st.guide_cutoff) {
             const ImPlotRect limits = ImPlot::GetPlotLimits();
-            const double cutoff = st.uniform.scatter_s;
+            double cutoff = st.uniform.scatter_s;
             const ImVec4 colour(0.75f, 0.75f, 0.75f, 0.85f);
+            bool held = false, hovered_line = false;
+            const ImVec4 invisible(colour.x, colour.y, colour.z, 0.0f);
+            if (ImPlot::DragLineY(2, &cutoff, invisible, 1.0f, ImPlotDragToolFlags_NoFit,
+                                 nullptr, &hovered_line, &held)) {
+                st.uniform.scatter_s = (float)std::clamp(cutoff, 0.2, (double)nci_surface::scatter_s_max);
+                st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
+            }
+            cutoff = st.uniform.scatter_s;
+            st.settings_editing |= held;
+            guide_hovered |= hovered_line || held;
             const ImVec2 left = ImPlot::PlotToPixels(limits.X.Min, cutoff);
             const ImVec2 right = ImPlot::PlotToPixels(limits.X.Max, cutoff);
             ImPlot::PushPlotClipRect();
-            for (float x = left.x; x < right.x; x += 10.0f)
+            for (float x = left.x; !merged_guide && x < right.x; x += 10.0f)
                 ImPlot::GetPlotDrawList()->AddLine(ImVec2(x, left.y), ImVec2(std::min(x + 5.0f, right.x), right.y),
                                                   ImGui::ColorConvertFloat4ToU32(colour), 1.0f);
             ImPlot::PopPlotClipRect();
-            ImPlot::Annotation(limits.X.Max, cutoff, colour, ImVec2(-4, -4), true, "Cutoff s = %.3g", cutoff);
+            if (!merged_guide)
+                ImPlot::Annotation(limits.X.Max, cutoff, colour, ImVec2(-4, -4), true, "Cutoff s = %.3g", cutoff);
         }
         if (st.show_guides && active && nci_scale_member(*active)) {
             const ImVec4 col = guide_colour;
-            double iso = active->s_iso;
+            double iso = st.uniform.s_iso;
             bool held = false, hovered_line = false;
-            if (st.guide_surface &&
+            if (st.guide_surface && !merged_guide &&
                 ImPlot::DragLineY(1, &iso, col, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered_line, &held)) {
                 st.uniform.s_iso = (float)std::clamp(iso, 0.1, (double)st.uniform.scatter_s);
             }
             st.settings_editing |= held;
-            guide_hovered = hovered_line || held;
+            guide_hovered |= hovered_line || held;
+            if (merged_guide) {
+                const double value = st.uniform.s_iso;
+                ImPlot::SetNextLineStyle(col, 2.0f);
+                ImPlot::PlotInfLines("##Surface cutoff", &value, 1,
+                                     ImPlotInfLinesFlags_Horizontal | ImPlotItemFlags_NoFit);
+            }
             const double right = ImPlot::GetPlotLimits().X.Max;
             if (st.guide_surface)
                 ImPlot::Annotation(right, st.uniform.s_iso, col, ImVec2(-4, -4), true,
@@ -1743,6 +1765,7 @@ struct NciPanel {
                 ImGui::EndTooltip();
             }
         }
+        ImPlot::DrawInsetAxes();
         ImPlot::EndPlot();
 
         const float left = ImGui::GetCursorPosX();
