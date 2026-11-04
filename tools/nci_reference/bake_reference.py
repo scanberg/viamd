@@ -46,6 +46,7 @@ def main():
     ap.add_argument("out", nargs="?", default=DEFAULT_OUT)
     ap.add_argument("--source", default="", help="provenance text stored with the map")
     ap.add_argument("--subfamilies", default=None, help="subfamily_regions.py output directory")
+    ap.add_argument("--extended", action="store_true", help="emit extended_reference_data instead of reference_data")
     args = ap.parse_args()
 
     with open(os.path.join(args.regions, "summary.json")) as f:
@@ -116,7 +117,7 @@ def main():
     lines += [
         "}  // namespace",
         "",
-        "const ReferenceData& reference_data() {",
+        f"const ReferenceData& {'extended_reference_data' if args.extended else 'reference_data'}() {{",
         "    static const ReferenceData data = {",
         f"        {bins}, {float(summary['rho_extent'])!r}f, {float(summary['s_max'])!r}f,",
         "        {" + ", ".join(c_string(c) for c in CATEGORIES) + "},",

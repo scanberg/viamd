@@ -287,7 +287,7 @@ above the layers shows the built-in reference map, independent of the loaded
 system: per CP category (hydrogen bonds, rings, π interactions, other), the pooled
 (sign(λ2)ρ, s) density of uniform reference extractions (s ≤ 1.0 as a hard cut,
 ρ ≤ 0.07, R = 2.7 Bohr around every CP, both signs of λ2, each sample to its
-nearest NCI CP) over 1010 VeloxChem calculations (B3LYP-D4/def2-SVP), each
+nearest NCI CP) over 910 VeloxChem calculations (B3LYP-D4/def2-SVP), each
 system weighing the same: the S66 dimers at their eight S66x8 separations (each
 dimer weighs one system); the SH250 σ-hole set (halogen, chalcogen and pnictogen
 bonds; its 45 dimers with I, Te or Sb, which need effective core potentials,
@@ -302,6 +302,27 @@ and the 2.7 Bohr sphere also holds the tails of nearby covalent density, the
 diagonal wings at |ρ| > 0.03.
 
 ![Built-in reference map per category, and all categories together](docs/images/nci/reference_categories.png)
+This original map is retained as **Comparison (s <= 1)**. All inside/outside
+scores continue to use it, regardless of which reference is displayed.
+
+The default display is now **Extended (s <= 2)**: a separately recomputed map
+over **0 <= s <= 2.0**, **-0.1 <= sign(lambda2)rho <= 0.1 au**, using the same
+910 calculations, R = 2.7 Bohr, CP ownership, classifications and system weighting.
+Its larger sampled region changes its normalized density and 50/90/98% contours;
+it provides context, not a replacement for the original comparison scores.
+The Reference inspector's **map** selector switches between the two datasets.
+Interaction guides follow the displayed dataset, preserving selections by name.
+The extended reference is not clipped to the live extraction cutoff.
+Both references contain 18 whole-class maps and 88 refinements.
+
+![Original and extended reference maps](docs/images/nci/reference_extended_comparison.png)
+
+The extended run verified all 910 exports, including per-CP densities, anchors,
+chemical metadata and reservoir samples. Its 862 regenerated wavefunctions and
+calculation intermediates were removed after successful export; source datasets,
+geometries and reusable exports were preserved. Unsupported ECP systems remain
+excluded as in the original reference.
+
 Its inspector sets the style (**Combined**, default: the categories' colours
 mixed where they overlap, more opaque towards each core; **Dominant**: per point
 the densest category, more opaque at each deeper level; switching
@@ -328,19 +349,23 @@ Only selected guides stay in the inspector, with visibility and remove controls;
 a shade of its category's colour, and has a `Ref:` legend entry whose swatch
 toggles it. These outlines are independent of the category map's visibility,
 opacity and levels: hide **Reference** to see just the selected guides.
-The default scatter view spans **s = 0 to 1.1**, leaving headroom above the
-cutoff. Double-click and the fit button restore that range, not s = 2.
+The default scatter view spans **s = 0 to 2.0**. Double-click and the fit button
+restore the selected plot range. This is display only: the default live
+extraction cutoff remains **s <= 1.0**, rho <= 0.07 and R = 2.7 Bohr; the surface
+isovalue remains 0.7. Samples above the extraction cutoff are grey display-only
+points and never enter contours or comparison scores.
 Saved previews inherit their deepest shared chemical-environment name, such
 as **N–H···O** or **Br···O**, without the descriptive CP prefix or atom-environment
 annotations. Ring and cage selections likewise use their chemical subtype.
 Mixed selections fall back
 to a shared branch or a combined name.
-Each layer row reports the share of its category samples inside their
-category's 90 % area, whatever levels are drawn, by category in its tooltip and
+Each layer row reports the share of its category samples inside the original
+comparison reference's 90 % area, whatever map or levels are drawn, by category in its tooltip and
 inspector. The map is generated with `tools/nci_reference` (`run_batch.py`, then
 `nci_reference_regions.py`, whose `--group` makes several exports share one
 system's weight, and `subfamily_regions.py` for the subfamilies, then
-`bake_reference.py --subfamilies`); `validate_regions.py` reports how
+`bake_reference.py --subfamilies`; `--extended` emits the separate extended
+data function); `validate_regions.py` reports how
 much of a test set's volume falls inside a map, and `plot_regions.py` draws
 the figures here. Other wave functions may shift it.
 

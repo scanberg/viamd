@@ -142,6 +142,8 @@ struct ReferenceData {
     std::span<const ReferenceSubfamilyData> subfamilies = {};
 };
 const ReferenceData& reference_data();
+// Extended display reference; comparison scores continue to use reference_data().
+const ReferenceData& extended_reference_data();
 
 // The default reference levels, as the Ramachandran layers': the highest-density areas holding these fractions of a
 // category's volume, increasing (the core first)
@@ -178,6 +180,7 @@ struct ReferenceMap {
 bool build_reference_map(ReferenceMap* out, const ReferenceData& data, std::span<const float> fractions);
 // The built-in data at the default fractions
 const ReferenceMap& builtin_reference_map();
+const ReferenceMap& extended_reference_map();
 // How deep a point lies in a category: the number of its levels the point is inside, 0 outside the outermost
 int reference_level(const ReferenceMap& map, size_t category, float signed_rho, float s);
 // Which category a point most likely belongs to: each category's share of the categories' reference densities there,

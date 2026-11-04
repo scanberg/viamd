@@ -15,7 +15,7 @@ namespace topology {
 NciUniformSettings nci_uniform_default_settings() {
     const nci_surface::UniformDefaults defaults = nci_surface::uniform_defaults();
     return {(float)defaults.s_iso, (float)defaults.scatter_s, (float)defaults.rho_max, (float)defaults.radius,
-            (float)defaults.scatter_s};
+            nci_surface::scatter_s_max};
 }
 
 ColorScale nci_default_scale() {

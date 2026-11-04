@@ -341,13 +341,13 @@ struct NciPanel {
             editing |= ImGui::IsItemActive();
             st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
             warn(st.uniform.scatter_s > nci_surface::reference_scatter_s + 1e-4,
-                 "Beyond the reference (s <= 1): no reference above it, and layer contours are not comparable.");
+                 "Beyond the comparison reference (s <= 1): layer contours and comparison scores use different regions.");
             prop::row("\xCF\x81 max", "Samples denser than this are out, both signs of lambda2. Also bounds the surface.");
             ImGui::SetNextItemWidth(prop::control_width());
             ImGui::SliderFloat("##NCI scatter rho", &st.uniform.rho_max, 0.01f, 0.15f, "%.3f au");
             editing |= ImGui::IsItemActive();
             warn(st.uniform.rho_max > nci_surface::reference_rho_max + 1e-6,
-                 "Beyond the reference (\xCF\x81 <= 0.07): no reference outside it.");
+                 "Beyond the comparison reference (\xCF\x81 <= 0.07): comparison scores retain the original region.");
             prop::row("R", "Distance from the CPs the regions may reach. Also bounds the surface.");
             ImGui::SetNextItemWidth(prop::control_width());
             ImGui::SliderFloat("##NCI scatter R", &st.uniform.radius, 1.0f, 5.0f, "%.1f Bohr");
@@ -532,7 +532,7 @@ struct NciPanel {
         const RegionStats stats = region_stats(row.members);
         char expected[64] = "";
         if (stats.inside + stats.outside)
-            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% in reference", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
+            snprintf(expected, sizeof(expected), " \xC2\xB7 %.0f %% in comparison", 100.0 * (double)stats.inside / (double)(stats.inside + stats.outside));
         char detail[256];
         if (progress >= 0.0f) snprintf(detail, sizeof(detail), "%s \xC2\xB7 computing %.0f %%", types.c_str(), 100.0f * progress);
         else if (in_viewport) snprintf(detail, sizeof(detail), "%s \xC2\xB7 %zu triangles%s", types.c_str(), triangles, expected);
@@ -561,12 +561,12 @@ struct NciPanel {
                                                           : "Show the reference in the scatter plot");
         if (r.clicked) st.reference_selected = true;
         reference_swatch(ImGui::GetWindowDrawList(), r.swatch_min, r.swatch_max, st.reference.visible ? 1.0f : 0.35f);
-        const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
+        const nci_surface::ReferenceMap& map = display_reference_map();
         int calculations = 0;
         for (const auto& c : map.categories) calculations += c.valid ? c.systems : 0;
         char detail[128];
-        snprintf(detail, sizeof(detail), "H-bonds, rings, \xCF\x80, other \xC2\xB7 %s",
-                 st.reference.style == NciReferenceStyle::Combined ? "combined" : "dominant");
+        snprintf(detail, sizeof(detail), "%s \xC2\xB7 H-bonds, rings, \xCF\x80, other",
+                 st.reference.extended ? "Extended (s <= 2)" : "Comparison (s <= 1)");
         row_text(r, "Reference", detail, st.reference.visible, selected);
         if (r.hovered) {
             ImGui::BeginTooltip();
@@ -574,10 +574,11 @@ struct NciPanel {
             ImGui::TextDisabled("Built in, independent of the loaded system, as the Ramachandran reference: per CP category,\n"
                                 "the pooled (sign(lambda2)rho, s) density of reference extractions (s <= %.1f, rho <= %.2f,\n"
                                 "%.1f Bohr from a CP, each sample to its nearest CP) over many calculations, each weighing\n"
-                                "the same. A sample is in the reference inside its category's %.0f %% area.",
-                                nci_surface::reference_scatter_s, nci_surface::reference_rho_max, nci_surface::reference_radius,
+                                "the same. Comparison scores always use the original reference's %.0f %% area.",
+                                st.reference.extended ? 2.0 : nci_surface::reference_scatter_s,
+                                display_reference_data().rho_extent, nci_surface::reference_radius,
                                 100.0f * nci_surface::reference_inside_fraction);
-            if (*nci_surface::reference_data().source) ImGui::TextDisabled("%s", nci_surface::reference_data().source);
+            if (*display_reference_data().source) ImGui::TextDisabled("%s", display_reference_data().source);
             if (ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) {
                 ImGui::TableSetupColumn("");
                 ImGui::TableSetupColumn("Calculations");
@@ -737,6 +738,24 @@ struct NciPanel {
         ImGui::PushID("##reference inspector");
         prop::row("name");
         ImGui::TextUnformatted("Reference");
+        prop::row("map", "The extended map and guides provide context up to s = 2 and |rho| = 0.1. "
+                         "Comparison scores always retain the original s <= 1, |rho| <= 0.07 reference.");
+        const char* maps[] = {"Comparison (s <= 1)", "Extended (s <= 2)"};
+        int source = r.extended ? 1 : 0;
+        if (ImGui::Combo("##reference source", &source, maps, 2)) {
+            const auto& old_map = display_reference_map();
+            const auto& new_map = source ? nci_surface::extended_reference_map() : nci_surface::builtin_reference_map();
+            std::vector<uint8_t> guides(new_map.subfamilies.size(), 0);
+            for (size_t i = 0; i < old_map.subfamilies.size() && i < r.guides.size(); ++i) {
+                for (size_t j = 0; j < new_map.subfamilies.size(); ++j) {
+                    if (old_map.subfamilies[i].category == new_map.subfamilies[j].category &&
+                        strcmp(old_map.subfamilies[i].name, new_map.subfamilies[j].name) == 0)
+                        guides[j] = r.guides[i];
+                }
+            }
+            r.guides = std::move(guides);
+            r.extended = source != 0;
+        }
         prop::row("style", "Dominant: per point the densest category, more opaque at each deeper level.\n"
                            "Combined: the categories' colours mixed where they overlap, more opaque towards each core.");
         {
@@ -760,7 +779,7 @@ struct NciPanel {
             ImGui::SliderFloat("##line_width", &r.line_width, 0.5f, 6.0f, "%.1f px");
         }
         draw_levels(r.levels, &r.num_levels, "The areas enclose these fractions of each category's volume (highest density regions)");
-        prop::hint("A sample is in the reference inside its category's %.0f %% area, whatever levels are drawn",
+        prop::hint("Comparison scores use the original reference's %.0f %% area, independently of this display",
                    100.0f * nci_surface::reference_inside_fraction);
         ImGui::PopID();
         prop::end();
@@ -786,7 +805,7 @@ struct NciPanel {
     }
 
     void draw_reference_subfamilies() {
-        const nci_surface::ReferenceMap& map = nci_surface::builtin_reference_map();
+        const nci_surface::ReferenceMap& map = display_reference_map();
         if (map.subfamilies.empty()) return;
         st.reference.guides.resize(map.subfamilies.size(), 0);
         if (!ImGui::CollapsingHeader("Interaction guides")) return;
@@ -1026,7 +1045,7 @@ struct NciPanel {
 
     // Whether (rho, s) lies inside some category's outermost drawn reference level, within the scatter's s and rho
     bool reference_inside(float rho, float s) {
-        if (std::abs(rho) > st.uniform.rho_max || s > st.uniform.scatter_s) return false;
+        if (!st.reference.extended && (std::abs(rho) > st.uniform.rho_max || s > st.uniform.scatter_s)) return false;
         const nci_surface::ReferenceMap& map = reference_map();
         for (size_t c = 0; c < nci_surface::reference_category_count; ++c)
             if (nci_surface::reference_level(map, c, rho, s) > 0) return true;
@@ -1091,7 +1110,7 @@ struct NciPanel {
         if (stats.inside + stats.outside == 0) return;
         if (!ImGui::BeginTable("##regions", 2, ImGuiTableFlags_SizingFixedFit)) return;
         ImGui::TableSetupColumn("");
-        ImGui::TableSetupColumn("in reference (90 %)");
+        ImGui::TableSetupColumn("in comparison reference (90 %)");
         ImGui::TableHeadersRow();
         for (size_t f = 0; f < stats.by_type.size(); ++f) {
             const auto& c = stats.by_type[f];
@@ -1209,14 +1228,23 @@ struct NciPanel {
     // Per level, as the Ramachandran fills stacked from the outermost: n of them reach 0.8 at the core
     static float level_alpha(int levels) { return 1.0f - powf(0.2f, 1.0f / (float)MAX(1, levels)); }
 
-    // The reference at the inspector's levels, rebuilt when they change
+    const nci_surface::ReferenceData& display_reference_data() const {
+        return st.reference.extended ? nci_surface::extended_reference_data() : nci_surface::reference_data();
+    }
+
+    const nci_surface::ReferenceMap& display_reference_map() const {
+        return st.reference.extended ? nci_surface::extended_reference_map() : nci_surface::builtin_reference_map();
+    }
+
+    // The selected display reference at the inspector's levels.
     const nci_surface::ReferenceMap& reference_map() {
         const std::vector<float> levels = clean_levels(st.reference.levels, st.reference.num_levels);
         uint64_t key = md_hash64(levels.data(), levels.size() * sizeof(float), 0) | 1;
+        key = md_hash64(&st.reference.extended, sizeof(st.reference.extended), key) | 1;
         if (key != st.reference_map_key) {
             st.reference_map_key = key;
             st.reference_texture_key = 0;
-            if (levels.empty() || !nci_surface::build_reference_map(&st.reference_map, nci_surface::reference_data(), levels))
+            if (levels.empty() || !nci_surface::build_reference_map(&st.reference_map, display_reference_data(), levels))
                 st.reference_map = {};
         }
         return st.reference_map;
@@ -1315,6 +1343,7 @@ struct NciPanel {
     void draw_scatter() {
         static bool fit_view = false;
         static float shown_plot_s = -1.0f;
+        static bool shown_extended = true;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
         ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it for every interaction.");
@@ -1413,7 +1442,7 @@ struct NciPanel {
         std::vector<LegendEntry> legend;
         legend.push_back({"Reference", ImVec4(0.85f, 0.85f, 0.85f, 1.0f), LegendEntry::Reference, 0,
                           nci_surface::Family::Count, nullptr, st.reference.visible, !st.reference.visible});
-        const auto& guide_map = nci_surface::builtin_reference_map();
+        const auto& guide_map = display_reference_map();
         st.reference.guides.resize(guide_map.subfamilies.size(), 0);
         for (size_t i = 0; i < guide_map.subfamilies.size(); ++i) {
             if (!st.reference.guides[i]) continue;
@@ -1467,8 +1496,9 @@ struct NciPanel {
             } else line_widths.back() += style.ItemSpacing.x + w;
         }
         const float legend_h = line_widths.size() * ImGui::GetFrameHeightWithSpacing();
-        const bool reset_view = fit_view || shown_plot_s != st.uniform.plot_s;
+        const bool reset_view = fit_view || shown_plot_s != st.uniform.plot_s || shown_extended != st.reference.extended;
         shown_plot_s = st.uniform.plot_s;
+        shown_extended = st.reference.extended;
         if (reset_view) ImPlot::SetNextAxisToFit(ImAxis_X1);
         fit_view = false;
         const bool plot_open = ImPlot::BeginPlot("##NCI scatter", ImVec2(-1, MAX(1.0f, ImGui::GetContentRegionAvail().y - legend_h)),
@@ -1553,12 +1583,13 @@ struct NciPanel {
             ImPlot::PopPlotClipRect();
         };
 
-        // The reference is independent of the loaded system, the displayed layers and their legend visibility. A tighter
-        // scatter s or rho than the reference's cuts the reference the same way.
+        // The extended reference is display context, independent of extraction limits.
         ImPlot::PushPlotClipRect();
         {
-            const ImVec2 lo = ImPlot::PlotToPixels(-st.uniform.rho_max, 0.0);
-            const ImVec2 hi = ImPlot::PlotToPixels(st.uniform.rho_max, st.uniform.scatter_s);
+            const float rho = st.reference.extended ? reference.rho_extent : st.uniform.rho_max;
+            const float s = st.reference.extended ? nci_surface::scatter_s_max : st.uniform.scatter_s;
+            const ImVec2 lo = ImPlot::PlotToPixels(-rho, 0.0);
+            const ImVec2 hi = ImPlot::PlotToPixels(rho, s);
             ImGui::PushClipRect(ImVec2(MIN(lo.x, hi.x), MIN(lo.y, hi.y)), ImVec2(MAX(lo.x, hi.x), MAX(lo.y, hi.y) + 1.0f), true);
         }
         if (st.reference.visible && reference.valid) {

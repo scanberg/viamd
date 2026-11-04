@@ -564,6 +564,15 @@ const ReferenceMap& builtin_reference_map() {
     return map;
 }
 
+const ReferenceMap& extended_reference_map() {
+    static const ReferenceMap map = [] {
+        ReferenceMap m;
+        build_reference_map(&m, extended_reference_data(), reference_default_fractions);
+        return m;
+    }();
+    return map;
+}
+
 int reference_level(const ReferenceMap& map, size_t category, float signed_rho, float s) {
     if (!map.valid || category >= reference_category_count) return 0;
     const ReferenceCategory& c = map.categories[category];

@@ -7,6 +7,7 @@ add_executable(viamd_nci_reference
     ${CMAKE_CURRENT_SOURCE_DIR}/nci_reference.cpp
     ${_topology}/nci_surface_core.cpp
     ${_topology}/nci_reference_data_core.cpp
+    ${_topology}/nci_reference_extended_data_core.cpp
     ${_topology}/critical_point_distribution_core.cpp
 )
 target_compile_features(viamd_nci_reference PRIVATE cxx_std_20)

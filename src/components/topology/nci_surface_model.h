@@ -99,7 +99,7 @@ struct NciUniformSettings {
     float rho_max = (float)nci_surface::reference_rho_max;
     float radius = (float)nci_surface::reference_radius;
     // Display only: the scatter plot's s range; above scatter_s its points are grey
-    float plot_s = (float)nci_surface::reference_scatter_s;
+    float plot_s = nci_surface::scatter_s_max;
 };
 
 // The grid spacing a resolution asks for, Bohr; large boxes are sampled more coarsely (see NciSurface::grid)
@@ -145,6 +145,7 @@ struct NciTypeStyle {
 enum class NciReferenceStyle : uint8_t { Dominant, Combined, Count };
 struct NciReferenceLayer {
     bool visible = true;
+    bool extended = true;
     NciReferenceStyle style = NciReferenceStyle::Combined;
     float opacity = 0.6f;
     bool fill = true;

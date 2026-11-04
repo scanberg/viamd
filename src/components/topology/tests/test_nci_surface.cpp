@@ -1150,3 +1150,46 @@ UTEST(nci_surface, reference_refinements_cover_every_category) {
     for (bool available : refined) EXPECT_TRUE(available);
     EXPECT_TRUE(nh_o);
 }
+
+UTEST(nci_surface, extended_reference_is_separate_display_context) {
+    const auto& original = nci_surface::reference_data();
+    const auto& extended = nci_surface::extended_reference_data();
+    EXPECT_NEAR(original.rho_extent, 0.07f, 1e-6f);
+    EXPECT_NEAR(extended.rho_extent, 0.1f, 1e-6f);
+    EXPECT_NEAR(extended.s_max, 2.0f, 1e-6f);
+    EXPECT_NEAR(nci_surface::reference_scatter_s, 1.0, 1e-6);
+    EXPECT_NEAR(nci_surface::reference_rho_max, 0.07, 1e-6);
+    const auto& map = nci_surface::extended_reference_map();
+    const auto& comparison = nci_surface::builtin_reference_map();
+    ASSERT_TRUE(map.valid);
+    ASSERT_TRUE(comparison.valid);
+    EXPECT_NEAR(comparison.rho_extent, 0.07f, 1e-6f);
+    ASSERT_EQ(map.subfamilies.size(), (size_t)106);
+    std::array<bool, nci_surface::reference_category_count> refined = {};
+    for (size_t c = 0; c < nci_surface::reference_category_count; ++c) {
+        ASSERT_TRUE(map.categories[c].valid);
+        double mass = 0.0, above_one = 0.0;
+        for (int y = 0; y < extended.bins; ++y) {
+            for (int x = 0; x < extended.bins; ++x) {
+                const float v = extended.fields[c][x + extended.bins * y];
+                EXPECT_TRUE(std::isfinite(v) && v >= 0.0f);
+                mass += v;
+                if (y >= extended.bins / 2) above_one += v;
+            }
+        }
+        EXPECT_NEAR(mass, 1.0, 1e-5);
+        EXPECT_GT(above_one, 0.0);
+    }
+    for (const auto& sub : map.subfamilies) {
+        ASSERT_TRUE(sub.valid);
+        EXPECT_FALSE(sub.isolines[1].empty());
+        if (!sub.parent[0]) continue;
+        bool parent_found = false;
+        for (const auto& parent : map.subfamilies)
+            parent_found |= parent.category == sub.category && !parent.parent[0] &&
+                            std::string_view(parent.name) == sub.parent;
+        EXPECT_TRUE(parent_found);
+        refined[sub.category] = true;
+    }
+    for (bool available : refined) EXPECT_TRUE(available);
+}
