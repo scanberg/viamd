@@ -1296,8 +1296,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
-        bool enabled = true;
-        bool chemical_analysis_enabled = true;
+        bool enabled = false;
+        bool chemical_analysis_enabled = false;
 
         // How they are found. Analytic searches the GTO density itself and proves what it reports
         // (md_topo_compute_extremum_graph_gto); Volume samples the density onto a grid first and can

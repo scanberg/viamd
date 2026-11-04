@@ -43,7 +43,9 @@ Documentation about VIAMD is available on the github [wiki](https://github.com/s
 A series of videos is available on [youtube](https://youtube.com/playlist?list=PLNx9MpJY8ffr9CeK7WefdOnuGRw_E5rSj&si=VatBHEwiL7jWyhPK).
 
 ### Critical-point density distributions
-The critical-point search is enabled by default; uncheck Enabled to stop it.
+The critical-point search and chemical analysis are disabled by default.
+Check **Enabled** to start the CP search and **Chemical environments** to enable
+chemical classification and analysis.
 The Critical Points window has independent CP and NCI columns. The CP column
 contains the density distributions, chemical-environment table and point list.
 The four CP category toggles sit above the plots. Compact hover tooltips on CP
