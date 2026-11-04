@@ -22,6 +22,8 @@
 
 #include <string.h>
 
+#include "density_volume_core.h"
+
 constexpr uint64_t interaction_surface_density_vol = HASH_STR_LIT64("interaction surface density volume");
 
 enum LegendColorMapMode_ {
@@ -57,10 +59,10 @@ struct DensityVolumeRep {
     bool     built_cartoon = false;               // With the glyphs of a Cartoon
 };
 
-// An empty filter, or 'all', picks all of a structure: nothing to evaluate
+// An empty filter, or 'all' (v1's) or 'particles' (VIAL's), picks all of a structure: nothing to evaluate
 static bool filter_is_all(const char* text) {
     str_t s = str_trim(str_from_cstr(text));
-    return str_empty(s) || str_eq(s, STR_LIT("all"));
+    return str_empty(s) || str_eq(s, STR_LIT("all")) || str_eq(s, STR_LIT("particles"));
 }
 
 struct DensityVolume : viamd::EventHandler {
@@ -113,6 +115,32 @@ struct DensityVolume : viamd::EventHandler {
 
     vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
     float resolution_scale = 2.0f;
+    // v2's volumes are absolute densities: shown divided by the bulk density, where the script gives one, they read
+    // as how many times bulk, 1 being bulk
+    bool relative_to_bulk = false;
+    double volume_bulk = NAN;
+
+    // Compared with a volume from a cube file: another run's, or another system's, such as a mutant's against its wild
+    // type's (density_volume_core.h). Its reference structure is placed on this one's by what the two have in common,
+    // and it is sampled at this volume's voxels.
+    enum CompareShow { CompareShow_This = 0, CompareShow_Difference, CompareShow_Other };
+    struct {
+        char    path[1024] = "";
+        bool    load = false;                 // path to be read
+        density_volume::Cube cube = {};
+        bool    loaded = false;
+        uint64_t generation = 0;              // of the cube: another read
+        int     show = CompareShow_This;
+        // Placed and sampled for what is shown, keyed by it (compare_key)
+        uint64_t key = 0;
+        bool    placed = false;
+        bool    same_frame = false;           // Placed as it is: neither has a structure to place it by
+        density_volume::Alignment al = {};
+        double  covered = 0;
+        float*  sampled = nullptr;            // the other at this volume's voxels
+        size_t  sampled_count = 0;
+        char    err[256] = "";
+    } cmp;
 
     vec4_t clip_volume_color = {1,0,0,1};
     vec4_t bounding_box_color = {0,0,0,1};
@@ -319,7 +347,7 @@ struct DensityVolume : viamd::EventHandler {
 
         // Within each structure what the filter picks, the structure its context. The first that fails says why.
         const bool all = filter_is_all(rep.filter.text);
-        md_filter_result_t failure = {};
+        script::FilterResult failure = {};
         bool failed = false;
         bool dynamic = false;
         md_bitset_t picked_all = md_bitset_empty_set();
@@ -327,10 +355,10 @@ struct DensityVolume : viamd::EventHandler {
         for (size_t i = 0; i < made; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
-                md_filter_context_t ctx = filter_context(state);
+                script::FilterCtx ctx = filter_context(state);
                 ctx.atoms = &structures[i];
                 md_bitset_t out = md_bitset_empty_set();
-                filter_evaluate(&rep.filter, &out, ctx, frame);
+                filter_evaluate(&rep.filter, &out, state->script.language, ctx, frame);
                 dynamic |= rep.filter.result.is_dynamic;
                 if (rep.filter.result.success) {
                     picked = out;
@@ -373,7 +401,7 @@ struct DensityVolume : viamd::EventHandler {
         } else if (made == 0) {
             // No structure to evaluate it within: whether it is valid at all, within the whole system
             md_bitset_t out = md_bitset_empty_set();
-            filter_evaluate(&rep.filter, &out, filter_context(state), frame);
+            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state), frame);
         } else if (failed) {
             rep.filter.result = failure;
             rep.filter.result.is_dynamic = dynamic;
@@ -484,6 +512,8 @@ struct DensityVolume : viamd::EventHandler {
         clip_volume_color = {1,0,0,1};
         bounding_box_color = {0,0,0,1};
         show_bounding_box = true;
+        relative_to_bulk = false;
+        compare_clear();
         show_reference_structures = true;
         show_reference_ensemble = false;
         show_coordinate_system_widget = true;
@@ -532,6 +562,11 @@ struct DensityVolume : viamd::EventHandler {
         viamd::write_vec4(state, STR_LIT("ClipVolumeColor"), clip_volume_color);
         viamd::write_vec4(state, STR_LIT("BoundingBoxColor"), bounding_box_color);
         viamd::write_bool(state, STR_LIT("ShowBoundingBox"), show_bounding_box);
+        viamd::write_bool(state, STR_LIT("RelativeToBulk"), relative_to_bulk);
+        if (cmp.path[0]) {
+            viamd::write_str(state, STR_LIT("CompareFile"), str_from_cstr(cmp.path));
+            viamd::write_int(state, STR_LIT("CompareShow"), cmp.show);
+        }
         viamd::write_bool(state, STR_LIT("ShowReferenceStructures"), show_reference_structures);
         viamd::write_bool(state, STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
         viamd::write_flt (state, STR_LIT("EnsembleFade"), ensemble_fade);
@@ -605,6 +640,17 @@ struct DensityVolume : viamd::EventHandler {
                 viamd::extract_vec4(bounding_box_color, arg);
             } else if (str_eq_cstr(ident, "ShowBoundingBox")) {
                 viamd::extract_bool(show_bounding_box, arg);
+            } else if (str_eq_cstr(ident, "RelativeToBulk")) {
+                viamd::extract_bool(relative_to_bulk, arg);
+            } else if (str_eq_cstr(ident, "CompareFile")) {
+                str_t f;
+                if (viamd::extract_str(f, arg)) {
+                    str_copy_to_char_buf(cmp.path, sizeof(cmp.path), f);
+                    cmp.load = true;
+                }
+            } else if (str_eq_cstr(ident, "CompareShow")) {
+                viamd::extract_int(cmp.show, arg);
+                cmp.show = CLAMP(cmp.show, 0, (int)CompareShow_Other);
             } else if (str_eq_cstr(ident, "ShowReferenceStructures")) {
                 viamd::extract_bool(show_reference_structures, arg);
             } else if (str_eq_cstr(ident, "ShowReferenceEnsemble")) {
@@ -699,7 +745,7 @@ struct DensityVolume : viamd::EventHandler {
         volume_state = resolved ? vol_view.state : SeriesState{};
         volume_count = resolved ? vol_view.count : 0;
         str_copy_to_char_buf(volume_label, sizeof(volume_label), str_from_cstr(vol_view.label));
-        const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
+        const script::Ref vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
         static SeriesKey s_volume_key = {};
@@ -717,8 +763,8 @@ struct DensityVolume : viamd::EventHandler {
         show_density_volume = selected;
 
         static uint64_t s_script_fingerprint = 0;
-        if (s_script_fingerprint != md_script_ir_fingerprint(state->script.eval_ir)) {
-            s_script_fingerprint = md_script_ir_fingerprint(state->script.eval_ir);
+        if (s_script_fingerprint != script::fingerprint(state->script.eval_ir)) {
+            s_script_fingerprint = script::fingerprint(state->script.eval_ir);
             dirty_vol = true;
             dirty_rep = true;
         }
@@ -746,24 +792,59 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_rep) {
-            if (vol_data && !md_script_vis_ref_empty(vis_ref)) {
+            if (vol_data && !script::ref_empty(vis_ref)) {
                 dirty_rep = false;
                 bool result = false;
-                md_script_vis_t vis = {};
+                script::Drawing vis = {};
 
-                if (md_script_ir_valid(state->script.eval_ir)) {
-                    md_script_vis_init(&vis, state->allocator.frame);
-                    md_script_vis_ctx_t ctx = {
-                        .ir = state->script.eval_ir,
+                if (script::valid(state->script.eval_ir)) {
+                    script::drawing_init(&vis, state->allocator.frame);
+                    // The run: v2 places an sdf's structures by fitting them onto its reference, frame 0 of the run
+                    script::DrawCtx ctx = {
+                        .prog = state->script.eval_ir,
                         .sys = &state->mold.sys,
-                        .state = &state->mold.state
+                        .state = &state->mold.state,
+                        .eval = state->script.eval,
+                        .run = str_from_cstr(state->mold.run),
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
-                    result = md_script_vis_eval_ref(&vis, vis_ref, (int)vol_view.member, &ctx, MD_SCRIPT_VISUALIZE_SDF);
+                    result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
                 }
 
+                // Where the voxels are, as the script published it (v2), whether or not it has structures to draw
+                {
+                    if (vol_view.placed) {
+                        // Where the voxels are, as the script published it: the texture's u runs along the data's
+                        // innermost axis, w along its outermost
+                        const vec3_t a0 = vec3_mul1(vol_view.basis[2], (float)vol_dim[2]);
+                        const vec3_t a1 = vec3_mul1(vol_view.basis[1], (float)vol_dim[1]);
+                        const vec3_t a2 = vec3_mul1(vol_view.basis[0], (float)vol_dim[0]);
+                        model_mat = mat4_ident();
+                        model_mat.col[0] = vec4_from_vec3(a0, 0.0f);
+                        model_mat.col[1] = vec4_from_vec3(a1, 0.0f);
+                        model_mat.col[2] = vec4_from_vec3(a2, 0.0f);
+                        model_mat.col[3] = vec4_from_vec3(vol_view.origin, 1.0f);
+                        voxel_spacing = vec3_t{vec3_length(vol_view.basis[2]), vec3_length(vol_view.basis[1]), vec3_length(vol_view.basis[0])};
+                        vec3_t lo = vol_view.origin, hi = vol_view.origin;
+                        for (int c = 1; c < 8; ++c) {
+                            vec3_t p = vol_view.origin;
+                            if (c & 1) p = vec3_add(p, a0);
+                            if (c & 2) p = vec3_add(p, a1);
+                            if (c & 4) p = vec3_add(p, a2);
+                            lo = vec3_min(lo, p);
+                            hi = vec3_max(hi, p);
+                        }
+                        default_view = compute_optimal_view((lo + hi) * 0.5f, (hi - lo) * 0.5f);
+                        if (view_pending) {
+                            view_pending = false;
+                            target = default_view;
+                            camera = default_view;
+                        }
+                    }
+                }
                 if (result) {
-                    if (vis.sdf.extent) {
+                    if (!vol_view.placed && vis.sdf.extent) {
+                        // v1: a cube of half extent extent
                         const float s = vis.sdf.extent;
                         vec3_t min_aabb = vec3_set1(-s);
                         vec3_t max_aabb = vec3_set1( s);
@@ -786,18 +867,193 @@ struct DensityVolume : viamd::EventHandler {
 
         update_reps(state, frame_changed);
 
+        volume_bulk = resolved ? vol_view.bulk : NAN;
+        if (cmp.load) {
+            cmp.load = false;
+            compare_read();
+        }
+        if (cmp.loaded && vol_data) {
+            const uint64_t key = compare_key(state, vol_view);
+            if (key != cmp.key) {
+                cmp.key = key;
+                compare_place(state, vol_view, temp_arena);
+                dirty_vol = true;
+            }
+        }
         if (dirty_vol) {
             if (vol_data) {
                 dirty_vol = false;
-                if (!volume_texture.id) {
-                    int dim[3] = { (int)vol_dim[0], (int)vol_dim[1], (int)vol_dim[2] };
+                // Its innermost axis is the texture's width; v2's volumes differ in size, so the texture follows
+                int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
+                if (!volume_texture.id || MEMCMP(volume_texture.dim, dim, sizeof(dim)) != 0) {
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
-                gl::set_texture_3D_data(volume_texture.id, 0, vol_data, GL_R32F);
+                const size_t n = (size_t)dim[0] * dim[1] * dim[2];
+                const bool compared = cmp.placed && cmp.show != CompareShow_This && cmp.sampled_count == n;
+                // Relative to bulk: each by its own bulk density; the other's from its file, which has it when viamd
+                // wrote it. Without it, both as they are.
+                const bool rel = relative_to_bulk && volume_bulk > 0.0 && (!compared || cmp.cube.bulk > 0.0);
+                const float s_this  = rel ? (float)(1.0 / volume_bulk) : 1.0f;
+                const float s_other = rel && compared ? (float)(1.0 / cmp.cube.bulk) : 1.0f;
+                const float* data = vol_data;
+                if (compared || s_this != 1.0f) {
+                    float* out = (float*)md_alloc(temp_arena, n * sizeof(float));
+                    if (!compared) {
+                        for (size_t i = 0; i < n; ++i) out[i] = vol_data[i] * s_this;
+                    } else if (cmp.show == CompareShow_Difference) {
+                        for (size_t i = 0; i < n; ++i) out[i] = vol_data[i] * s_this - cmp.sampled[i] * s_other;
+                    } else {
+                        for (size_t i = 0; i < n; ++i) out[i] = cmp.sampled[i] * s_other;
+                    }
+                    data = out;
+                }
+                gl::set_texture_3D_data(volume_texture.id, 0, data, GL_R32F);
                 volume::notify_data_changed(volume_texture.id);
             }
         }
+    }
+
+    // ## Comparing
+
+    void compare_clear() {
+        density_volume::cube_free(&cmp.cube);
+        if (cmp.sampled) md_free(md_get_heap_allocator(), cmp.sampled, cmp.sampled_count * sizeof(float));
+        const int show = cmp.show;
+        cmp = {};
+        cmp.show = show;
+        dirty_vol = true;
+    }
+
+    void compare_read() {
+        char path[sizeof(cmp.path)];
+        MEMCPY(path, cmp.path, sizeof(path));
+        compare_clear();
+        MEMCPY(cmp.path, path, sizeof(path));
+        if (!path[0]) return;
+        cmp.loaded = density_volume::cube_read(&cmp.cube, str_from_cstr(path), md_get_heap_allocator(), cmp.err, sizeof(cmp.err));
+        cmp.generation += 1;
+        cmp.key = 0;
+    }
+
+    // What placing and sampling the other depends on: this volume (which, its data, its grid) and the cube
+    uint64_t compare_key(const ApplicationState* state, const SeriesVolumeView& v) {
+        uint64_t h = md_hash64(&volume_key, sizeof(volume_key), cmp.generation + 1);
+        h = md_hash64(&v.member, sizeof(v.member), h);
+        h = md_hash64(&v.version, sizeof(v.version), h);
+        h = md_hash64(v.dim, sizeof(v.dim), h);
+        h = md_hash64(&v.origin, sizeof(v.origin), h);
+        h = md_hash64(v.basis, sizeof(v.basis), h);
+        const uint64_t fp = script::fingerprint(state->script.eval_ir);
+        h = md_hash64(&fp, sizeof(fp), h);
+        return h ? h : 1;
+    }
+
+    // The other placed on this volume by the two reference structures, this one's at frame 0 as the volume is made,
+    // and sampled at this volume's voxels
+    void compare_place(ApplicationState* state, const SeriesVolumeView& v, md_allocator_i* temp) {
+        cmp.placed = false;
+        cmp.same_frame = false;
+        cmp.err[0] = 0;
+        if (!v.placed) {
+            snprintf(cmp.err, sizeof(cmp.err), "only VIAL's volumes say where their voxels are");
+            return;
+        }
+        // This volume's first structure where the volume is made: frame 0, in the volume's frame
+        md_system_state_t st0 = {.alloc = temp};
+        md_system_state_init(&st0, state->mold.sys.atom.count);
+        md_array(int32_t) atoms = nullptr;
+        vec3_t* xyz = nullptr;
+        if (script::valid(state->script.eval_ir) && extract_frame(state, 0, &st0)) {
+            script::Drawing vis = {};
+            script::drawing_init(&vis, temp);
+            script::DrawCtx ctx = {
+                .prog = state->script.eval_ir,
+                .sys = &state->mold.sys,
+                .state = &st0,
+                .eval = state->script.eval,
+                .run = str_from_cstr(state->mold.run),
+            };
+            if (script::draw_ref(&vis, v.vis_ref, (int)v.member, ctx, script::DRAW_SDF) && md_array_size(vis.sdf.structures) > 0 &&
+                md_array_size(vis.sdf.matrices) > 0) {
+                const mat4_t M = vis.sdf.matrices[0];
+                xyz = (vec3_t*)md_alloc(temp, st0.num_atoms * sizeof(vec3_t));
+                MEMCPY(xyz, st0.xyz, st0.num_atoms * sizeof(vec3_t));
+                md_bitset_iter_t it = md_bitset_iter(vis.sdf.structures[0]);
+                while (md_bitset_iter_next(&it)) {
+                    md_array_push(atoms, (int32_t)it.idx, temp);
+                    xyz[it.idx] = mat4_mul_vec3(M, xyz[it.idx], 1.0f);
+                }
+            }
+        }
+        if (md_array_size(atoms) == 0 && cmp.cube.num_atoms == 0) {
+            // Two densities of the run's frame (density()): as they are
+            cmp.al = density_volume::Alignment{};
+            cmp.same_frame = true;
+        } else if (!density_volume::align(&cmp.al, &state->mold.sys, atoms, md_array_size(atoms), xyz, cmp.cube, temp, cmp.err, sizeof(cmp.err))) {
+            return;
+        }
+        const size_t n = (size_t)v.dim[0] * v.dim[1] * v.dim[2];
+        if (cmp.sampled_count != n) {
+            if (cmp.sampled) md_free(md_get_heap_allocator(), cmp.sampled, cmp.sampled_count * sizeof(float));
+            cmp.sampled = (float*)md_alloc(md_get_heap_allocator(), n * sizeof(float));
+            cmp.sampled_count = n;
+        }
+        density_volume::Grid to;
+        MEMCPY(to.dim, v.dim, sizeof(to.dim));
+        to.origin = v.origin;
+        MEMCPY(to.basis, v.basis, sizeof(to.basis));
+        cmp.covered = density_volume::resample(cmp.sampled, to, cmp.cube.grid, cmp.al);
+        cmp.placed = true;
+    }
+
+    void draw_section_compare(ApplicationState* state) {
+        if (!prop::section("Compare")) return;
+        prop::row("with", "A volume exported from another run or system (File > Export > Gaussian Cube): placed on this one by what their reference structures have in common");
+        {
+            const str_t name = cmp.path[0] ? str_from_cstr(cmp.path) : str_t{};
+            const char* base = cmp.path;
+            for (const char* c = cmp.path; *c; ++c) if (*c == '/' || *c == '\\') base = c + 1;
+            const float w = prop::control_width();
+            const float bw = ImGui::GetFrameHeight();
+            if (ImGui::Button(name.len ? base : "Open a cube file...", ImVec2(cmp.path[0] ? w - bw - ImGui::GetStyle().ItemSpacing.x : w, 0))) {
+                char buf[sizeof(cmp.path)] = "";
+                if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, STR_LIT("cube"))) {
+                    MEMCPY(cmp.path, buf, sizeof(buf));
+                    cmp.load = true;
+                }
+            }
+            if (cmp.path[0]) {
+                ImGui::SetItemTooltip("%s", cmp.path);
+                ImGui::SameLine();
+                if (ImGui::Button("x##compare_clear", ImVec2(bw, 0))) {
+                    compare_clear();
+                }
+                ImGui::SetItemTooltip("Compare with nothing");
+            }
+        }
+        if (cmp.loaded) {
+            const char* modes[] = {"this", "this \xE2\x88\x92 other", "other"};
+            prop::row("show", "This volume, the difference, or the other sampled at this one's voxels; set a colormap and range around 0 for the difference");
+            if (ImGui::Combo("##compare_show", &cmp.show, modes, IM_ARRAYSIZE(modes))) dirty_vol = true;
+            if (cmp.placed) {
+                if (cmp.same_frame) {
+                    prop::hint("Neither has a structure: placed as it is, in the same frame");
+                } else {
+                    prop::hint("Placed by %zu of %zu heavy atoms (the other has %zu), %.2f \xC3\x85 apart%s; covers %.0f%% of this volume",
+                               cmp.al.matched, cmp.al.this_heavy, cmp.al.other_heavy, cmp.al.rmsd,
+                               cmp.al.incomplete ? ", the search gave up" : "", 100.0 * cmp.covered);
+                }
+                if (relative_to_bulk && volume_bulk > 0.0 && cmp.show != CompareShow_This && !(cmp.cube.bulk > 0.0)) {
+                    prop::hint("The other's file has no bulk density: both are shown as they are");
+                }
+            }
+        }
+        if (cmp.err[0]) {
+            prop::hint("%s", cmp.err);
+        }
+        (void)state;
+        prop::section_end();
     }
 
     // ## Settings
@@ -806,7 +1062,7 @@ struct DensityVolume : viamd::EventHandler {
     void draw_volume_choices(ApplicationState* state) {
         int candidate_count = 0;
         auto list = [&](uint32_t period) {
-            series_for_each_script_property(state, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& over_all) {
+            series_for_each_script_property(state, SeriesSource_Script, script::OUTPUT_VOLUME, [&](const SeriesKey& over_all) {
                 SeriesKey key = over_all;
                 key.period = period;
                 char label[96];
@@ -825,7 +1081,7 @@ struct DensityVolume : viamd::EventHandler {
                 }
                 if (ImGui::IsItemHovered()) {
                     const str_t ident = series_script_ident(key);
-                    script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                    script_visualize_ref(state, script::output_ref(state->script.eval_ir, ident), -1, script::DRAW_DEFAULT);
                     script_set_hovered_property(state, ident);
                 }
                 ImGui::PopID();
@@ -855,7 +1111,7 @@ struct DensityVolume : viamd::EventHandler {
         }
         if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
             // Whose volume it is: the reference structures of that one
-            script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), (int)volume_member, MD_SCRIPT_VISUALIZE_DEFAULT);
+            script_visualize_ref(state, script::output_ref(state->script.eval_ir, ident), (int)volume_member, script::DRAW_DEFAULT);
             script_set_hovered_property(state, ident);
         }
     }
@@ -874,6 +1130,10 @@ struct DensityVolume : viamd::EventHandler {
         if (volume_count > 1) {
             prop::row("volume", "Of the array of volumes, the one shown");
             draw_member_slider(state, -FLT_MIN);
+        }
+        if (volume_bulk > 0.0) {
+            prop::row("relative to bulk", "The density divided by the same particles' density over the unit cell: 1 is bulk, 2 twice it");
+            if (ImGui::Checkbox("##relative_to_bulk", &relative_to_bulk)) dirty_vol = true;
         }
         if (volume_key.path[0] != '\0' && volume_state.status != SeriesStatus_Current) {
             char tip[256];
@@ -1055,11 +1315,11 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             // Completed within the first structure, as each is evaluated within its own
-            md_filter_context_t ctx = filter_context(state);
+            script::FilterCtx ctx = filter_context(state);
             if (md_array_size(structures) > 0) ctx.atoms = &structures[0];
             prop::row("filter", "Evaluated within each reference structure: all is the structure, residue(1) its first residue.\n"
                                 "'out' reaches outside of it, as in a script: within(5, out resname(\"LIG\")).");
-            if (filter_input("##filter", &rep.filter, ctx, 0, nullptr, "all: the whole structure")) {
+            if (filter_input("##filter", &rep.filter, state->script.language, ctx, 0, nullptr, "all: the whole structure")) {
                 r.dirty = true;
             }
 
@@ -1124,6 +1384,7 @@ struct DensityVolume : viamd::EventHandler {
     void draw_panel(ApplicationState* state) {
         prop::begin("density_volume");
         draw_section_volume(state);
+        draw_section_compare(state);
         draw_section_rendering();
         draw_section_structures(state);
         draw_section_clipping();
@@ -1660,6 +1921,7 @@ struct DensityVolume : viamd::EventHandler {
             case viamd::EventType_ViamdShutdown: {
                 // Cleanup component. The GPU side goes with md_gl.
                 clear_structures();
+                compare_clear();
                 md_arena_allocator_destroy(arena);
                 break;
             }

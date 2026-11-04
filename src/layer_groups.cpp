@@ -40,9 +40,9 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
         md_bitset_assign(&g->atoms, md_bitmask_view(&app->selection.selection_mask), heap);
         if (want_sets && !md_bitset_empty(g->atoms)) md_array_push(g->sets, md_bitset_copy(g->atoms, heap), heap);
     } else if (g->filter.text[0]) {
-        g->valid = filter_evaluate(&g->filter, &g->atoms, filter_context(app), heap);
+        g->valid = filter_evaluate(&g->filter, &g->atoms, app->script.language, filter_context(app), heap);
         if (g->valid && want_sets) {
-            g->valid = filter_evaluate_sets(&g->filter, &g->sets, filter_context(app), heap);
+            g->valid = filter_evaluate_sets(&g->filter, &g->sets, app->script.language, filter_context(app), heap);
         }
     } else {
         md_bitset_free(&g->atoms, heap);
@@ -67,8 +67,8 @@ void layer_group_free(LayerGroup* g) {
     g->hash = 0;
 }
 
-md_filter_context_t layer_group_filter_context(const ApplicationState* app, const LayerGroup* g) {
-    md_filter_context_t ctx = filter_context(app);
+script::FilterCtx layer_group_filter_context(const ApplicationState* app, const LayerGroup* g) {
+    script::FilterCtx ctx = filter_context(app);
     if (g && layer_group_has_context(*g)) ctx.atoms = &g->atoms;
     return ctx;
 }
@@ -317,7 +317,7 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
         ImGui::BeginDisabled(g.follow_selection);
         const bool invalid = !g.follow_selection && !g.valid && g.filter.text[0];
         if (invalid) ImGui::PushInvalid();
-        if (filter_input("##filter", &g.filter, filter_context(app), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
+        if (filter_input("##filter", &g.filter, app->script.language, filter_context(app), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
             changed = true;
         }
         if (invalid) ImGui::PopInvalid();

@@ -34,7 +34,6 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <md_util.h>
-#include <md_filter.h>
 
 #include <viamd_event.h>
 #include <viamd.h>
@@ -788,7 +787,9 @@ struct Shapespace : viamd::EventHandler {
         uint32_t group = 0;
         if (LayerGroup* g = add_group(LAYER_TREE_LAST)) {
             snprintf(g->name, sizeof(g->name), "System");
-            snprintf(g->filter.text, sizeof(g->filter.text), "all");
+            // Everything, as one structure, in the language of the workspace
+            const bool v2 = app && app->script.language == script::Language::V2;
+            snprintf(g->filter.text, sizeof(g->filter.text), "%s", v2 ? "particles" : "all");
             group = g->node.id;
         }
         if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points, -1, group)) {
@@ -888,7 +889,7 @@ struct Shapespace : viamd::EventHandler {
             md_array_push(l.structures, md_bitset_range(0, (uint32_t)num_atoms), heap);
             l.structs_valid = true;
         } else {
-            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, layer_group_filter_context(app, in_context ? g : nullptr), heap) &&
+            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), heap) &&
                               md_array_size(l.structures) > 0;
         }
         uint64_t h = 0x5A9E;
@@ -2178,7 +2179,7 @@ struct Shapespace : viamd::EventHandler {
             } else {
                 snprintf(none, sizeof(none), "all atoms, as one");
             }
-            filter_input("##filter", &l.filter, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, none);
+            filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, none);
             if (invalid) ImGui::PopInvalid();
             if (ImGui::IsItemHovered() && l.structs_valid) {
                 highlights_now = true;

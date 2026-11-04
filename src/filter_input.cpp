@@ -14,18 +14,18 @@
 #include <string_view>
 #include <vector>
 
-bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, const md_filter_context_t& ctx, md_allocator_i* alloc) {
-    filter->result = md_filter(atoms, str_from_cstr(filter->text), &ctx, alloc);
+bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
+    filter->result = script::filter(lang, atoms, str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
-bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, const md_filter_context_t& ctx, md_allocator_i* alloc) {
-    filter->result = md_filter_sets(sets, str_from_cstr(filter->text), &ctx, alloc);
+bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
+    filter->result = script::filter_sets(lang, sets, str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
-bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, const md_filter_context_t& ctx, md_allocator_i* alloc) {
-    filter->result = md_filter_bonds(bonds, str_from_cstr(filter->text), &ctx, alloc);
+bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
+    filter->result = script::filter_bonds(lang, bonds, str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
@@ -34,7 +34,7 @@ namespace {
 struct Suggestion {
     std::string label;
     std::string text;       // what replaces the range of the text
-    md_script_completion_kind_t kind;
+    script::CompletionKind kind;
     bool fits;              // of the type expected where it goes
 };
 
@@ -61,28 +61,28 @@ Completions comp;
 const int MAX_SUGGESTIONS = 50;
 const int MAX_ROWS = 10;
 
-const char* kind_name(md_script_completion_kind_t kind) {
+const char* kind_name(script::CompletionKind kind) {
     switch (kind) {
-    case MD_SCRIPT_COMPLETION_VALUE:     return "value";
-    case MD_SCRIPT_COMPLETION_PARAMETER: return "parameter";
-    case MD_SCRIPT_COMPLETION_VARIABLE:  return "variable";
-    case MD_SCRIPT_COMPLETION_PROCEDURE: return "procedure";
-    case MD_SCRIPT_COMPLETION_CONSTANT:  return "constant";
-    case MD_SCRIPT_COMPLETION_KEYWORD:   return "keyword";
-    default:                             return "";
+    case script::CompletionKind::Value:     return "value";
+    case script::CompletionKind::Parameter: return "parameter";
+    case script::CompletionKind::Variable:  return "variable";
+    case script::CompletionKind::Procedure: return "procedure";
+    case script::CompletionKind::Constant:  return "constant";
+    case script::CompletionKind::Keyword:   return "keyword";
+    default:                                return "";
     }
 }
 
 // What can be written at the cursor of text, matched against what has been typed of it and ranked. Shown when asked
 // for, or while a name or a string is being typed; not when nothing matches or what has been typed is complete.
-void suggest(const char* text, int len, int cursor, const md_filter_context_t& ctx, bool asked) {
+void suggest(const char* text, int len, int cursor, script::Language lang, const script::FilterCtx& ctx, bool asked) {
     comp.items.clear();
     md_temp_scope_t temp = md_temp_begin();
-    const md_script_completions_t c = md_filter_complete(str_t{text, (size_t)len}, cursor, &ctx, md_temp_allocator(temp));
+    const script::Completions c = script::filter_complete(lang, str_t{text, (size_t)len}, cursor, ctx, md_temp_allocator(temp));
     const std::string_view typed(c.prefix.ptr, c.prefix.len);
 
     struct Match {
-        const md_script_completion_t* item;
+        const script::Completion* item;
         int score;
     };
     std::vector<Match> matches;
@@ -94,7 +94,7 @@ void suggest(const char* text, int len, int cursor, const md_filter_context_t& c
         return script_editor::completion_before(*a.item, a.score, *b.item, b.score, typed);
     });
     for (size_t i = 0; i < matches.size() && i < (size_t)MAX_SUGGESTIONS; ++i) {
-        const md_script_completion_t& item = *matches[i].item;
+        const script::Completion& item = *matches[i].item;
         comp.items.push_back({std::string(item.label.ptr, item.label.len), std::string(item.text.ptr, item.text.len), item.kind, item.fits});
     }
     comp.range_beg = c.range.beg;
@@ -121,7 +121,8 @@ void take(ImGuiInputTextCallbackData* data, int index) {
 }
 
 struct CallbackData {
-    const md_filter_context_t* ctx;
+    script::Language lang;
+    const script::FilterCtx* ctx;
 };
 
 // One event per frame: Tab, Up or Down, an edit, or else the one of every frame
@@ -139,7 +140,7 @@ int callback(ImGuiInputTextCallbackData* data) {
         }
         if (comp.ask) {
             comp.ask = false;
-            suggest(data->Buf, data->BufTextLen, data->CursorPos, *cb->ctx, true);
+            suggest(data->Buf, data->BufTextLen, data->CursorPos, cb->lang, *cb->ctx, true);
         }
         // The cursor left what the suggestions are for
         if (comp.open && (data->CursorPos < comp.range_beg || data->CursorPos > comp.range_end)) {
@@ -147,13 +148,13 @@ int callback(ImGuiInputTextCallbackData* data) {
         }
         break;
     case ImGuiInputTextFlags_CallbackEdit:
-        suggest(data->Buf, data->BufTextLen, data->CursorPos, *cb->ctx, false);
+        suggest(data->Buf, data->BufTextLen, data->CursorPos, cb->lang, *cb->ctx, false);
         break;
     case ImGuiInputTextFlags_CallbackCompletion:
         if (comp.open && !comp.items.empty()) {
             take(data, comp.selected);
         } else {
-            suggest(data->Buf, data->BufTextLen, data->CursorPos, *cb->ctx, true);
+            suggest(data->Buf, data->BufTextLen, data->CursorPos, cb->lang, *cb->ctx, true);
         }
         break;
     case ImGuiInputTextFlags_CallbackHistory:
@@ -231,7 +232,7 @@ int draw_list(ImGuiID id, const char* text) {
 }
 
 // The part of the text an error is about, underlined in the input that was just submitted
-void underline(ImGuiID id, const char* text, md_script_range_marker_t range) {
+void underline(ImGuiID id, const char* text, script::Range range) {
     const int len = (int)strlen(text);
     const int beg = ImClamp(range.beg, 0, len);
     const int end = ImClamp(range.end, beg, len);
@@ -253,7 +254,7 @@ bool filter_completions_open() {
     return comp.open && ImGui::GetActiveID() == comp.id;
 }
 
-bool filter_input(const char* label, AtomFilter* filter, const md_filter_context_t& ctx, ImGuiInputTextFlags flags, bool* confirmed, const char* hint) {
+bool filter_input(const char* label, AtomFilter* filter, script::Language lang, const script::FilterCtx& ctx, ImGuiInputTextFlags flags, bool* confirmed, const char* hint) {
     const ImGuiID id = ImGui::GetID(label);
     const bool active = ImGui::GetActiveID() == id;
     if (active && comp.id != id) {
@@ -290,7 +291,7 @@ bool filter_input(const char* label, AtomFilter* filter, const md_filter_context
 
     // Red until it evaluates, but not while it is empty
     const bool invalid = !filter->result.success && filter->text[0] != '\0';
-    CallbackData data = {&ctx};
+    CallbackData data = {lang, &ctx};
     const ImGuiInputTextFlags input_flags = (flags & ~ImGuiInputTextFlags_EnterReturnsTrue) |
         (confirmed ? ImGuiInputTextFlags_EnterReturnsTrue : 0) |
         ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_CallbackEdit |

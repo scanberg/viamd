@@ -1,0 +1,6 @@
+# The centre of mass of the protein per frame, three values
+# data: 1ALA-560ns.pdb
+=== v1
+c = com(protein());
+=== vial
+c = protein.com

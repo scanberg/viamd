@@ -831,7 +831,9 @@ struct Ramachandran : viamd::EventHandler {
         uint32_t group = 0;
         if (LayerGroup* g = add_group(LAYER_TREE_LAST)) {
             snprintf(g->name, sizeof(g->name), "Residues");
-            snprintf(g->filter.text, sizeof(g->filter.text), "all");
+            // Everything, in the language of the workspace
+            const bool v2 = app && app->script.language == script::Language::V2;
+            snprintf(g->filter.text, sizeof(g->filter.text), "%s", v2 ? "particles" : "all");
             group = g->node.id;
         }
         Layer* cur = add_layer(LayerSource_System, LayerFrames_Current, LayerStyle_Points, -1, group);
@@ -1030,7 +1032,7 @@ struct Ramachandran : viamd::EventHandler {
                 atoms = l.atoms;
             }
         } else if (evaluate) {
-            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, layer_group_filter_context(app, in_context ? g : nullptr), heap);
+            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), heap);
             atoms = l.atoms;
         } else if (in_context) {
             atoms = g->atoms;
@@ -2589,7 +2591,7 @@ struct Ramachandran : viamd::EventHandler {
                 } else {
                     snprintf(none, sizeof(none), "all residues");
                 }
-                if (filter_input("##filter", &l.filter, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
+                if (filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
                     l.segs_key = 0;
                 }
                 if (invalid) ImGui::PopInvalid();

@@ -4,7 +4,7 @@
 // How the settings of a thing are laid out (the properties of a representation): rows of a label in a column on the
 // left and its control filling the rest, gathered in sections whose headers fold.
 //
-// The label column is one for a whole grid, however many panels draw into it (every representation and group of the
+// The label column is one for a whole grid, however many panels draw into it (every representation of the
 // Representations window): it ends where the furthest reaching label any of them drew the frame before ended, in the
 // window, so the controls line up across sections, panels and depths of indentation, and no label is cut. It is
 // kept in the window's state storage under the grid's name.

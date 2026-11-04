@@ -64,7 +64,7 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
 void layer_group_free(LayerGroup* g);
 
 // What is within g is evaluated in: the system as shown, and g's atoms when it has a subset. g may be NULL.
-md_filter_context_t layer_group_filter_context(const ApplicationState* app, const LayerGroup* g);
+script::FilterCtx layer_group_filter_context(const ApplicationState* app, const LayerGroup* g);
 
 // Its name, or what it is of
 void layer_group_label(char* buf, size_t cap, const LayerGroup& g);

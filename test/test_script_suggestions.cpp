@@ -9,8 +9,7 @@
 #include <md_mmcif.h>
 #include <md_xyz.h>
 #include <md_tpr.h>
-#include <md_filter.h>
-#include <md_script.h>
+#include <script_engine.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
 
@@ -50,10 +49,10 @@ void unload(Loaded* l) {
 }
 
 md_bitset_t select(const Loaded& l, const char* expr) {
-    md_filter_context_t ctx = {};
+    script::FilterCtx ctx = {};
     ctx.sys = &l.sys;
     md_bitset_t sel = {};
-    if (!md_filter(&sel, str_from_cstr(expr), &ctx, l.alloc).success) return {};
+    if (!script::filter(script::Language::V1, &sel, str_from_cstr(expr), ctx, l.alloc).success) return {};
     return sel;
 }
 
@@ -63,12 +62,11 @@ int32_t atom(const Loaded& l, const char* expr) {
     return md_bitset_count(s) == 1 ? (int32_t)s.beg : -1;
 }
 
-bool compiles(const Loaded& l, str_t src) {
-    md_script_ir_t* ir = md_script_ir_create(l.alloc);
-    md_script_ir_compile_from_source(ir, src, &l.sys, nullptr);
-    const bool ok = md_script_ir_valid(ir);
-    if (!ok) md_script_ir_write_diagnostics(md_writer_stdout(), ir);
-    md_script_ir_free(ir);
+bool compiles(const Loaded& l, str_t src, script::Language lang = script::Language::V1) {
+    script::Program* ir = script::compile(lang, src, script::CompileDesc{&l.sys}, l.alloc);
+    const bool ok = script::valid(ir);
+    if (!ok) script::write_diagnostics(md_writer_stdout(), ir);
+    script::program_free(ir);
     return ok;
 }
 
@@ -81,14 +79,15 @@ bool printable(str_t s) {
     return true;
 }
 
-// "sel1 = <expr>;" -> <expr>
-str_t rhs(str_t line, str_t ident) {
+// "sel1 = <expr>;" -> <expr>; VIAL's lines end without the semicolon
+str_t rhs(str_t line, str_t ident, script::Language lang = script::Language::V1) {
     const size_t pre = ident.len + 3;
-    if (line.len <= pre + 1 || !str_eq(str_substr(line, 0, ident.len), ident) || !str_eq(str_substr(line, ident.len, 3), STR_LIT(" = ")) ||
-        line.ptr[line.len - 1] != ';') {
+    const size_t post = lang == script::Language::V1 ? 1 : 0;
+    if (line.len <= pre + post || !str_eq(str_substr(line, 0, ident.len), ident) || !str_eq(str_substr(line, ident.len, 3), STR_LIT(" = ")) ||
+        (post && line.ptr[line.len - 1] != ';') || (!post && line.ptr[line.len - 1] == ';')) {
         return {};
     }
-    return str_substr(line, pre, line.len - pre - 1);
+    return str_substr(line, pre, line.len - pre - post);
 }
 
 bool contains(const md_array(ScriptSuggestion) s, const char* text) {
@@ -113,15 +112,15 @@ void print(const md_array(ScriptSuggestion) s) {
 }
 
 // Every line assigns to the name, compiles, and picks exactly the selection
-bool all_pick(const Loaded& l, md_bitset_t sel, const md_array(ScriptSuggestion) s) {
+bool all_pick(const Loaded& l, md_bitset_t sel, const md_array(ScriptSuggestion) s, script::Language lang = script::Language::V1) {
     const str_t ident = STR_LIT("sel1");
     for (size_t i = 0; i < md_array_size(s); ++i) {
-        const str_t expr = rhs(s[i].text, ident);
+        const str_t expr = rhs(s[i].text, ident, lang);
         md_bitset_t got = {};
-        md_filter_context_t ctx = {};
+        script::FilterCtx ctx = {};
         ctx.sys = &l.sys;
-        const bool ok = !str_empty(expr) && printable(s[i].text) && compiles(l, s[i].text) &&
-            md_filter(&got, expr, &ctx, l.alloc).success && md_bitset_equal(got, sel);
+        const bool ok = !str_empty(expr) && printable(s[i].text) && compiles(l, s[i].text, lang) &&
+            script::filter(lang, &got, expr, ctx, l.alloc).success && md_bitset_equal(got, sel);
         if (!ok) {
             printf("  does not pick the selection: " STR_FMT "\n", STR_ARG(s[i].text));
             return false;
@@ -130,17 +129,17 @@ bool all_pick(const Loaded& l, md_bitset_t sel, const md_array(ScriptSuggestion)
     return true;
 }
 
-md_array(ScriptSuggestion) suggest(const Loaded& l, md_bitset_t sel) {
-    return script_suggest_selection(STR_LIT("sel1"), sel, l.sys, l.alloc);
+md_array(ScriptSuggestion) suggest(const Loaded& l, md_bitset_t sel, script::Language lang = script::Language::V1) {
+    return script_suggest_selection(lang, STR_LIT("sel1"), sel, l.sys, l.alloc);
 }
 
-md_array(ScriptSuggestion) measure(const Loaded& l, std::initializer_list<const char*> picks) {
+md_array(ScriptSuggestion) measure(const Loaded& l, std::initializer_list<const char*> picks, script::Language lang = script::Language::V1) {
     int32_t atoms[8];
     size_t n = 0;
     for (const char* p : picks) {
         if (n < ARRAY_SIZE(atoms)) atoms[n++] = atom(l, p);
     }
-    return script_suggest_measurement(STR_LIT("m1"), atoms, n, l.sys, l.alloc);
+    return script_suggest_measurement(lang, STR_LIT("m1"), atoms, n, l.sys, l.alloc);
 }
 
 }  // namespace
@@ -607,5 +606,224 @@ UTEST(script_suggestions, measurement_across_residues) {
     EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)"})));
     EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(1)"})));
     EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(2)", "atom(3)", "atom(4)", "atom(5)"})));
+    unload(&l);
+}
+
+// ### VIAL ###
+// The same promises in a VIAL workspace: the lines are VIAL, and are checked as VIAL
+
+static const script::Language V2 = script::Language::V2;
+
+UTEST(script_suggestions, vial_every_line_picks_the_selection) {
+    const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "2or2.cif", "nucl-dna.gro", "dppc64.pdb", "c60.pdb", "tryptophan.xyz", "1fez.cif", "tubulin-A-B.pdb"};
+    const char* exprs[] = {
+        "all()", "atom(1)", "atom(1:7)", "atom({3, 9, 27})", "residue(1)", "residue(2:4)", "chain(1)", "molecule(2)",
+        "molecule(2:4)", "atom(2:3) in residue(2)", "element(\"C\")", "element(\"O\")", "protein()", "water()", "nucleic()",
+        "backbone()", "not element(\"H\") and residue(1:3)", "residue(3) or atom(1)", "lipid()", "ion()",
+        "atom(1:5:400)", "name(\"CA\")", "within(5, atom(1))",
+    };
+    size_t offered = 0, tried = 0;
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        Loaded l;
+        ASSERT_TRUE(load(&l, files[f]));
+        for (size_t e = 0; e < ARRAY_SIZE(exprs); ++e) {
+            const md_bitset_t sel = select(l, exprs[e]);
+            if (md_bitset_empty(sel)) continue;
+            md_array(ScriptSuggestion) s = suggest(l, sel, V2);
+            ++tried;
+            offered += md_array_size(s) > 0;
+            if (!all_pick(l, sel, s, V2)) {
+                printf("  %s: %s\n", files[f], exprs[e]);
+                print(s);
+                EXPECT_TRUE(false);
+            }
+        }
+        unload(&l);
+    }
+    // Positions list anything, so only a selection too scattered for a line goes without
+    printf("  VIAL: %zu of %zu selections offered\n", offered, tried);
+    EXPECT_GE(offered * 10, tried * 9);
+}
+
+UTEST(script_suggestions, vial_every_line_picks_a_random_selection) {
+    const char* files[] = {"1k4r.pdb", "npt.gro", "1LAF.pdb", "8g7u.cif", "nucl-dna.gro", "dppc64.pdb", "tubulin-A-B.pdb"};
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    auto next = [&rng](uint32_t n) {
+        rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+        return (uint32_t)(rng % n);
+    };
+    size_t offered = 0;
+    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+        Loaded l;
+        ASSERT_TRUE(load(&l, files[f]));
+        const md_system_t& sys = l.sys;
+        for (int iter = 0; iter < 40; ++iter) {
+            md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, l.alloc);
+            const int parts = 1 + (int)next(4);
+            for (int p = 0; p < parts; ++p) {
+                const uint32_t c = next((uint32_t)sys.residue.count);
+                const md_urange_t r = md_system_residue_atom_range(&sys, c);
+                switch (next(4)) {
+                case 0: md_bitmask_set_range(&mask, r.beg, r.end); break;
+                case 1: md_bitmask_set_bit(&mask, r.beg + next(r.end - r.beg)); break;
+                case 2: {
+                    const md_urange_t r2 = md_system_residue_atom_range(&sys, MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
+                    md_bitmask_set_range(&mask, r.beg, r2.end);
+                } break;
+                default: {
+                    const uint32_t k = next(r.end - r.beg);
+                    for (uint32_t i = 0; i < 4 && c + i < sys.residue.count; ++i) {
+                        const md_urange_t ri = md_system_residue_atom_range(&sys, c + i);
+                        if (ri.beg + k < ri.end) md_bitmask_set_bit(&mask, ri.beg + k);
+                    }
+                } break;
+                }
+            }
+            const md_bitset_t sel = md_bitset_copy(md_bitmask_view(&mask), l.alloc);
+            md_array(ScriptSuggestion) s = suggest(l, sel, V2);
+            offered += md_array_size(s) > 0;
+            if (!all_pick(l, sel, s, V2)) {
+                printf("  %s, selection %d\n", files[f], iter);
+                print(s);
+                EXPECT_TRUE(false);
+            }
+        }
+        unload(&l);
+    }
+    EXPECT_EQ(ARRAY_SIZE(files) * 40, offered);
+}
+
+// What the particles are comes first: a predefined set, then keywords
+UTEST(script_suggestions, vial_what_the_particles_are) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "tubulin-A-B.pdb"));
+    md_bitset_t sel = select(l, "water()");
+    md_array(ScriptSuggestion) s = suggest(l, sel, V2);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s, V2));
+    EXPECT_TRUE(md_array_size(s) > 0 && str_eq_cstr(s[0].text, "sel1 = water"));
+    unload(&l);
+
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    sel = select(l, "name(\"CA\") and chain(\"A\")");
+    s = suggest(l, sel, V2);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s, V2));
+    EXPECT_TRUE(contains(s, "sel1 = particle(chain='A', name='CA')"));
+    EXPECT_FALSE(any_contains(s, "protein and"));     // says nothing that particle(chain='A', name='CA') does not
+
+    sel = select(l, "residue(2:4)");
+    s = suggest(l, sel, V2);
+    print(s);
+    EXPECT_TRUE(all_pick(l, sel, s, V2));
+    EXPECT_TRUE(any_contains(s, "resid=2..4"));
+    EXPECT_TRUE(any_contains(s, "particle["));
+
+    sel = select(l, "all()");
+    s = suggest(l, sel, V2);
+    EXPECT_TRUE(md_array_size(s) > 0 && str_eq_cstr(s[0].text, "sel1 = particle"));
+    unload(&l);
+}
+
+// By chemistry: the canonical SMILES of a selection, the same text for every copy of it, and a line where the places
+// with that chemistry are the selection
+UTEST(script_suggestions, vial_smiles_of_the_selection) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "tubulin-A-B.pdb"));
+    const md_system_t& sys = l.sys;
+    md_bitset_t gtp = select(l, "resname(\"GTP\")");
+    md_bitset_t gdp = select(l, "resname(\"GDP\")");
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    const str_t a = script_selection_smiles(gtp, sys, alloc);
+    const str_t b = script_selection_smiles(gdp, sys, alloc);
+    printf("    GTP %.*s\n    GDP %.*s\n", (int)a.len, a.ptr, (int)b.len, b.ptr);
+    EXPECT_FALSE(str_empty(a));
+    EXPECT_FALSE(str_eq(a, b));
+    EXPECT_EQ(0, (int)a.ptr[a.len]);     // zero terminated, for the clipboard
+    // Each copy reads the same
+    md_bitset_t gtp1 = select(l, "resname(\"GTP\") and chain(\"A\")");
+    if (!md_bitset_empty(gtp1) && !md_bitset_equal(gtp1, gtp)) EXPECT_TRUE(str_eq(a, script_selection_smiles(gtp1, sys, alloc)));
+
+    // Every GTP is the selection: the line picks it
+    md_array(ScriptSuggestion) s = suggest(l, gtp, V2);
+    print(s);
+    EXPECT_TRUE(all_pick(l, gtp, s, V2));
+    EXPECT_TRUE(any_contains(s, "sel1 = smiles('"));
+
+    // A methyl is everywhere: no line, but the text
+    EXPECT_FALSE(str_empty(script_selection_smiles(select(l, "atom(2)"), sys, alloc)));
+    s = suggest(l, select(l, "atom(2)"), V2);
+    EXPECT_FALSE(any_contains(s, "smiles("));
+    md_arena_allocator_destroy(alloc);
+    unload(&l);
+}
+
+// Names a residue holds twice: positions within it, stacked; and in every residue of the name, where each has the same
+// particles in the same order
+UTEST(script_suggestions, vial_measurement_by_position) {
+    const char* pdb =
+        "HETATM    1  C   LIG A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C   LIG A   1       1.500   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  O   LIG A   1       2.200   1.200   0.000  1.00  0.00           O\n"
+        "HETATM    4  C   LIG A   2      10.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    5  C   LIG A   2      11.500   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    6  O   LIG A   2      12.200   1.200   0.000  1.00  0.00           O\n"
+        "END\n";
+    const char* file = "vial_dup_names.pdb";
+    FILE* f = fopen(file, "wb");
+    ASSERT_TRUE(f != NULL);
+    fputs(pdb, f);
+    fclose(f);
+    Loaded l;
+    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    l.sys = {.alloc = l.alloc};
+    md_system_state_t st = {.alloc = l.alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, str_from_cstr(file), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE));
+    md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL);
+    const int32_t atoms[3] = {1, 0, 2};
+    md_array(ScriptSuggestion) s = script_suggest_measurement(V2, STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
+    print(s);
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=1)[[1, 0, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('LIG').particle[[1, 0, 2]])"));
+    EXPECT_FALSE(any_contains(s, "['C'"));
+    // Across residues: a name it holds twice by its position, the other by name
+    const int32_t two[2] = {1, 5};
+    md_array(ScriptSuggestion) t = script_suggest_measurement(V2, STR_LIT("m1"), two, 2, l.sys, l.alloc);
+    print(t);
+    EXPECT_TRUE(contains(t, "m1 = distance(particle(chain='A', resid=1)[1], particle(chain='A', resid=2)['O'])"));
+    unload(&l);
+    remove(file);
+}
+
+UTEST(script_suggestions, vial_measurement) {
+    Loaded l;
+    ASSERT_TRUE(load(&l, "1k4r.pdb"));
+    md_array(ScriptSuggestion) s = measure(l, {"name(\"N\") in residue(5)", "name(\"CA\") in residue(5)", "name(\"C\") in residue(5)"}, V2);
+    print(s);
+    for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle[30], particle[31], particle[32])"));
+    // Within one residue, written once, with its particles stacked by name
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        size_t loc;
+        const bool every = str_find_str(&loc, s[i].text, STR_LIT("residue("));
+        EXPECT_TRUE(every == str_begins_with(s[i].hint, STR_LIT("One value for each of the 51 HIS")));
+    }
+    // And by position within it, as v1's angle(1,2,3) in residue(5), in it and in each HIS
+    EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[[0, 1, 2]])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS').particle[[0, 1, 2]])"));
+    // And by the chemistry around it, wherever it occurs, the atoms tagged in the order picked
+    EXPECT_TRUE(any_contains(s, "m1 = angle(smiles_atoms('"));
+    EXPECT_TRUE(any_contains(s, "[N:1]"));
+
+    // Across residues: not in every residue of a name
+    md_array(ScriptSuggestion) t = measure(l, {"name(\"CA\") in residue(5)", "name(\"CA\") in residue(404)"}, V2);
+    print(t);
+    for (size_t i = 0; i < md_array_size(t); ++i) EXPECT_TRUE(compiles(l, t[i].text, V2));
+    EXPECT_TRUE(contains(t, "m1 = distance(particle(chain='A', resid=5)['CA'], particle(chain='B', resid=9)['CA'])"));
+    EXPECT_FALSE(any_contains(t, "residue("));
+    EXPECT_EQ(0u, (unsigned)md_array_size(measure(l, {"atom(1)", "atom(1)"}, V2)));
     unload(&l);
 }

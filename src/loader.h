@@ -20,6 +20,8 @@ enum LoaderFlag_ {
     LoaderFlag_Topology = 256, // The format supplies a complete topology: its bonds are not to be inferred
     LoaderFlag_Temporal = 512, // Supplemental data sampled along a trajectory: it joins the trajectory's run, so that has to be loaded first
     LoaderFlag_ExplicitType = 1024, // The loader was chosen by the user rather than told from the file: a workspace has to store it
+    LoaderFlag_NeedsCoordinates = 2048, // A topology without coordinates (Amber prmtop, PSF): the system is built when its coordinates are there
+    LoaderFlag_Coordinates = 4096,  // Coordinates without atoms (a restart, NAMD binary coordinates): they are for a topology
 };
 
 enum LoaderType_ {
@@ -49,6 +51,12 @@ enum LoaderType_ {
     LoaderType_XVG,     // xmgrace columns (GROMACS analysis output), a series along the loaded trajectory
     LoaderType_CSV,     // comma separated columns, a series along the loaded trajectory
     LoaderType_ASE_TRAJ, // ASE trajectory (.traj): a system and its trajectory in one file
+    LoaderType_AMBER_PRMTOP,    // Amber topology (.prmtop / .parm7, CHAMBER too): atoms and bonds, no coordinates
+    LoaderType_AMBER_RESTART,   // Amber restart (.rst7 / .inpcrd / .ncrst), ASCII or NetCDF: coordinates for a topology
+    LoaderType_AMBER_NETCDF,    // Amber NetCDF trajectory (.nc)
+    LoaderType_AMBER_ENERGY,    // Amber mdout or mden energies, a series along the loaded trajectory
+    LoaderType_PSF,             // CHARMM / NAMD topology (.psf): atoms and bonds, no coordinates
+    LoaderType_NAMD_COOR,       // NAMD binary coordinates (.coor): coordinates for a topology
     LoaderType_COUNT
 };
 
@@ -62,6 +70,9 @@ namespace loader {
         // An argument for the loader, as text so that a workspace can store it with the file: the
         // LAMMPS atom format. Not owned: it has to outlive the load.
         const char* arg   = 0;
+        // For a topology without coordinates (LoaderFlag_NeedsCoordinates): the file its coordinates are read from,
+        // a restart, a structure file of the same atoms or a trajectory (its first frame). Not owned.
+        const char* coordinates = 0;
         LoaderFlags flags = LoaderFlag_None;
     };
 
@@ -88,6 +99,17 @@ namespace loader {
     // frames are in - the structure file itself for a multi model PDB or a multi frame XYZ. False for
     // a format that does not publish runs yet, and for a file with a single frame.
     bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags);
+
+    // A topology without coordinates is loaded (load above) with the coordinates its LoaderState names. These are the
+    // pieces of that, for the application which puts the two together in whatever order they come.
+    //
+    // The atom count of a topology, a coordinate file or a trajectory (DCD, XTC, TRR, Amber NetCDF), as its header says;
+    // 0 when the format does not say up front.
+    size_t atom_count(str_t filepath, const LoaderState& state);
+
+    // The coordinates for the atoms of sys from filepath: a restart, NAMD binary coordinates, a structure file of as
+    // many atoms, or the first frame of a trajectory. The file must hold as many atoms as sys. out_state->alloc set.
+    bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t filepath);
 
     // To help enlist supported loader type
     str_t       type_name(LoaderType type);

@@ -6,7 +6,7 @@
 #include <atomic>
 #include <stdarg.h>
 
-#include <md_filter.h>
+#include <script_engine.h>
 
 #include <core/md_log.h>
 #include <core/md_writer.h>
@@ -14,6 +14,7 @@
 
 #include <viamd.h>
 #include <representation.h>
+#include <script_editor.h>
 #include <viamd_event.h>
 #include <event.h>
 #include <loader.h>
@@ -960,7 +961,7 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state) {
     task_system::pool_interrupt_running_tasks();
 
-    if (state->script.eval) md_script_eval_interrupt(state->script.eval);
+    if (state->script.eval) script::eval_interrupt(state->script.eval);
 
     task_system::pool_wait_for_completion();
 }
@@ -1286,10 +1287,10 @@ void free_trajectory_data(ApplicationState* state) {
     series_cache_free(state);
 
     // The evaluation is of this run. Another run may have as many frames, and taking over from an evaluation of
-    // this one (md_script_eval_create_from) would carry its values over to the other: the next one starts afresh.
+    // this one (script::eval_create) would carry its values over to the other: the next one starts afresh.
     // The tasks which use it were stopped by the caller.
     if (state->script.eval) {
-        md_script_eval_free(state->script.eval);
+        script::eval_free(state->script.eval);
         state->script.eval = nullptr;
     }
 
@@ -1721,22 +1722,13 @@ void free_system_data(ApplicationState* data) {
     data->script.eval_ir = nullptr;
     script_ir_collect(data);
     if (data->script.eval) {
-        md_script_eval_free(data->script.eval);
+        script::eval_free(data->script.eval);
         data->script.eval = nullptr;
     }
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-// The entry a loaded file takes in files.list
-static FileEntry file_entry(str_t path, const loader::LoaderState& load_state) {
-    FileEntry e = {};
-    str_copy_to_char_buf(e.path, sizeof(e.path), path);
-    e.type = load_state.type;
-    e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
-    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
-    return e;
-}
 
 // Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
 // False when the file holds no frames to make a run of, which is not an error for a structure file.
@@ -1752,16 +1744,28 @@ static bool open_run(ApplicationState* state, str_t path, const loader::LoaderSt
     if (num_frames == 0) {
         return false;
     }
-    file_list_record(&state->files.list, file_entry(path, load_state), FileRole_Trajectory, state->allocator.persistent);
+    file_list_record(&state->files.list, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(state->files.list.runs)->frame_count = num_frames;
     return true;
 }
 
+// ## A topology and its coordinates, in either order (load_order.h): what loading is, for it
+
+static LoadResult ops_load(void* user, str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
+    return load_data((ApplicationState*)user, path, ls, role, opens_own_run);
+}
+static size_t ops_system_atoms(void* user) { return ((ApplicationState*)user)->mold.sys.atom.count; }
+static size_t ops_run_frames(void* user) { return run_num_frames((ApplicationState*)user); }
+static const FileList* ops_files(void* user) { return &((ApplicationState*)user)->files.list; }
+
 LoadResult load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
-    // On its own the role follows from the loader flags, and a structure file opens its own frames as the run:
-    // a multi model PDB or an XYZ trajectory is a system and a run in one file
-    const FileRole role = file_role(load_state.flags);
-    return load_data(state, filepath, load_state, role, role == FileRole_System);
+    LoadOps ops = {};
+    ops.user = state;
+    ops.load = ops_load;
+    ops.system_atoms = ops_system_atoms;
+    ops.run_frames = ops_run_frames;
+    ops.files = ops_files;
+    return load_in_order(&state->files.pending, ops, filepath, load_state);
 }
 
 LoadResult load_data(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
@@ -1790,7 +1794,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             // below and they would start over anyway; the rest are left to FINISH rather than
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
-            if (state->script.eval) md_script_eval_interrupt(state->script.eval);
+            if (state->script.eval) script::eval_interrupt(state->script.eval);
             task_system::pool_wait_for_completion();
 
             const size_t num_atoms = state->mold.sys.atom.count;
@@ -1804,7 +1808,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                     VIAMD_LOG_ERROR("'" STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", STR_ARG(path_to_file), num_atoms, state->mold.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
@@ -1812,6 +1816,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
                 state->script.compile_ir = true;
                 if (role == FileRole_Series) {
                     const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
+                                       (load_state.type == LoaderType_AMBER_ENERGY) ? "amber_energy/<term>" :
                                        (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
                     VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; plot it from System > Series, or read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
                 } else {
@@ -1820,6 +1825,10 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
+        } else if (role == FileRole_System && (load_state.flags & LoaderFlag_NeedsCoordinates) && !(load_state.coordinates && load_state.coordinates[0])) {
+            state->files.pending.topology = file_entry_from(path_to_file, load_state);
+            VIAMD_LOG_INFO("'" STR_FMT "' is a topology without coordinates; it waits for a restart, a structure file or a trajectory of its atoms", STR_ARG(path_to_file));
+            return LoadResult_Pending;
         } else if (role == FileRole_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
@@ -1837,7 +1846,7 @@ LoadResult load_data(ApplicationState* state, str_t filepath, const loader::Load
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&state->files.list, file_entry(path_to_file, load_state), role, state->allocator.persistent);
+            file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
             state->files.list.atom_count = state->mold.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
@@ -2370,13 +2379,19 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 }
             }
         } else if (str_eq(section, STR_LIT("Script"))) {
+            // A workspace without the key is v1, as every workspace was before v2
+            script::Language lang = script::Language::V1;
             while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Text"))) {
+                if (str_eq(ident, STR_LIT("Language"))) {
+                    str_t str;
+                    if (viamd::extract_str(str, arg) && str_eq(str, STR_LIT("VIAL"))) lang = script::Language::V2;
+                } else if (str_eq(ident, STR_LIT("Text"))) {
                     str_t str;
                     viamd::extract_str(str, arg);
                     data->editor.SetText(std::string(str.ptr, str.len));
                 }
             }
+            script_set_language(data, lang);
         } else if (str_eq(section, STR_LIT("Selection"))) {
             str_t label = {};
             md_bitset_t mask = {};
@@ -2456,10 +2471,15 @@ void load_workspace(ApplicationState* data, str_t filename) {
         if (in.entry.arg[0] != '\0') {
             loader_state.arg = in.entry.arg;
         }
+        if (in.entry.coordinates[0] != '\0') {
+            loader_state.coordinates = in.entry.coordinates;
+        }
 
         LoadResult result = LoadResult_Failed;
         if (!md_path_is_valid(path)) {
             VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
+        } else if (in.entry.coordinates[0] != '\0' && !md_path_is_valid(str_from_cstr(in.entry.coordinates))) {
+            VIAMD_LOG_ERROR("Workspace: the coordinates '%s' of '%s' are not there", in.entry.coordinates, in.entry.path);
         } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
             // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
             VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
@@ -2720,6 +2740,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     {
         std::string text = app_state->editor.GetText();
         viamd::write_section_header(state, STR_LIT("Script"));
+        // Written for v2 alone, so a v1 workspace is as it was
+        if (app_state->script.language == script::Language::V2) viamd::write_str(state, STR_LIT("Language"), STR_LIT("VIAL"));
         viamd::write_str(state, STR_LIT("Text"), str_t{text.c_str(), text.size()});
     }
 
@@ -5395,7 +5417,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    filter_evaluate(&query.filter, &query.mask, filter_context(state), state->allocator.persistent);
+    filter_evaluate(&query.filter, &query.mask, state->script.language, filter_context(state), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }
@@ -5675,7 +5697,7 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
 
 void system_bonds_edit_begin(ApplicationState* app) {
     ASSERT(app);
-    if (app->script.eval) md_script_eval_interrupt(app->script.eval);
+    if (app->script.eval) script::eval_interrupt(app->script.eval);
     task_system::pool_wait_for_completion();
 }
 
@@ -5690,7 +5712,7 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_util_system_infer_rings(&sys);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-    // The properties of a script are of the topology they were evaluated with (md_script_ir_compile), and the bond sets
+    // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
     // it holds are indices of the bonds there were. Compiled in this frame, before the representations which name them
     // are evaluated, rather than once the delay for typing has passed.
     app->script.compile_ir = true;
@@ -5786,7 +5808,7 @@ void bond_tracking_update(ApplicationState* app) {
     }
     if (bt.scope_dirty) {
         if (has_scope) {
-            filter_evaluate(&bt.scope, &bt.scope_mask, filter_context(app), app->allocator.persistent);
+            filter_evaluate(&bt.scope, &bt.scope_mask, app->script.language, filter_context(app), app->allocator.persistent);
         } else {
             md_bitset_free(&bt.scope_mask, app->allocator.persistent);
             bt.scope.result = {};
@@ -6350,10 +6372,15 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
     int prio = 5;
 
 
-    str_t ext;
-    if (extract_ext(&ext, path)) {
-        LoaderType type = loader::type_from_ext(ext);
-        LoaderFlags loader_flags = loader::type_flags(type);
+    str_t ext = {};
+    extract_ext(&ext, path);
+    loader::LoaderState detected = {};
+    if (!str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
+        // By the contents where the extension does not tell (Amber's mdout, prmtop and inpcrd have none)
+        loader::init(&detected, path, nullptr);
+    }
+    if (str_eq(ext, WORKSPACE_FILE_EXTENSION) || detected.type != LoaderType_Undefined) {
+        LoaderFlags loader_flags = detected.flags;
         if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
@@ -6361,8 +6388,9 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
         } else if (loader_flags & LoaderFlag_Temporal) {
             // Joins the trajectory's run, so it goes after the trajectory when both are dropped
             prio = 4;
-        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
-            // A supplemental file (a topology) needs the system in place, same as a trajectory
+        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental | LoaderFlag_Coordinates)) {
+            // A supplemental file (a topology) needs the system in place, same as a trajectory; coordinates are
+            // for a topology, which is a system file
             prio = 3;
         } else {
             flags |= FileFlags_ShowDialogue;
@@ -6763,25 +6791,33 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
     }
 }
 
-md_script_ir_t* script_ir_create(ApplicationState* state) {
+script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc) {
     ASSERT(state);
-    md_script_ir_t* ir = md_script_ir_create(state->allocator.persistent);
+    script::Program* ir = script::compile(state->script.language, src, desc, state->allocator.persistent);
     md_array_push(state->script.all_irs, ir, state->allocator.persistent);
     return ir;
+}
+
+void script_set_language(ApplicationState* state, script::Language lang) {
+    ASSERT(state);
+    if (state->script.language == lang) return;
+    state->script.language = lang;
+    state->editor.SetLanguage(script_editor::language(lang));
+    script_editor::enable_autocomplete(state->editor, lang, &state->mold.sys);
+    state->script.compile_ir = true;
+    state->script.time_since_last_change = 1.0e9;     // now, not after the pause that follows an edit
+    flag_all_representations_as_dirty(state);
 }
 
 void script_ir_collect(ApplicationState* state) {
     ASSERT(state);
 
-    // A running task may be on an IR the fields have since moved on from
-    if (task_system::task_is_running(state->tasks.evaluate) || task_system::task_is_running(state->script.vis_task)) {
-        return;
-    }
-
+    // Freed once neither field points at it and no task holds it: a long evaluation keeps the IR it runs on, not every
+    // IR compiled while it runs
     for (size_t i = 0; i < md_array_size(state->script.all_irs);) {
-        md_script_ir_t* ir = state->script.all_irs[i];
-        if (ir != state->script.ir && ir != state->script.eval_ir) {
-            md_script_ir_free(ir);
+        script::Program* ir = state->script.all_irs[i];
+        if (ir != state->script.ir && ir != state->script.eval_ir && script::program_users(ir) == 0) {
+            script::program_free(ir);
             md_array_swap_back_and_pop(state->script.all_irs, i);
         } else {
             ++i;
@@ -6789,14 +6825,14 @@ void script_ir_collect(ApplicationState* state) {
     }
 }
 
-const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref) {
+const script::Program* script_ir_of(const ApplicationState* state, script::Ref ref) {
     ASSERT(state);
-    if (md_script_vis_ref_valid(state->script.ir, ref))      return state->script.ir;
-    if (md_script_vis_ref_valid(state->script.eval_ir, ref)) return state->script.eval_ir;
+    if (script::ref_valid(state->script.ir, ref))      return state->script.ir;
+    if (script::ref_valid(state->script.eval_ir, ref)) return state->script.eval_ir;
     return nullptr;
 }
 
-void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags) {
+void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, uint32_t flags) {
     ASSERT(state);
     // Resolved in the IR which made it: an editor token and a plotted property may come from different ones
     if (!script_ir_of(state, ref)) {
@@ -6810,7 +6846,7 @@ void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int 
     t.flags  = flags;
 }
 
-void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
+void script_visualize_str(ApplicationState* state, str_t str, uint32_t flags) {
     ASSERT(state);
     if (str_empty(str)) {
         return;
@@ -6823,47 +6859,53 @@ void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
 }
 
 // A visualization computed off the main thread. Everything it reads is its own or outlives it: a copy of the
-// atoms' state, the IR (not freed while the task runs, see script_ir_collect), the system (which stays until the
+// atoms' state, the IR (retained until the job is freed, see script_ir_collect), the system (which stays until the
 // pool has finished, see interrupt_async_tasks). Everything it makes is in its arena.
 struct ScriptVisJob {
     uint64_t key = 0;               // what it is of: the target, and the IR the target is resolved in
     uint64_t state_key = 0;         // where the atoms were
     md_allocator_i* arena = nullptr;
     ScriptVisTarget target = {};    // str in the arena
-    const md_script_ir_t* ir = nullptr;
+    const script::Program* ir = nullptr;
     const md_system_t* sys = nullptr;
+    str_t run = {};                 // the run v2 reads frames of (at(), an sdf's reference), in the arena
     md_system_state_t state = {};
-    md_script_vis_t vis = {};
-    str_t value_text = {};          // Ref: what the value is where the atoms were (md_script_vis_value_text), in the arena
+    script::Drawing vis = {};
+    str_t value_text = {};          // Ref: what the value is where the atoms were (script::value_text), in the arena
+    double value_scale = 1.0;       // Ref: into the display unit of its unit, as the mark's text shows it
     bool ok = false;
 };
 
 static void vis_job_free(ScriptVisJob* job) {
     if (job) {
+        script::program_release(job->ir);     // held from dispatch: its result is keyed by it
         md_arena_allocator_destroy(job->arena);
         delete job;
     }
 }
 
 // The IR a target is resolved in: the one which made the reference, or the script being edited for an expression
-static const md_script_ir_t* vis_target_ir(const ApplicationState* state, const ScriptVisTarget& t) {
+static const script::Program* vis_target_ir(const ApplicationState* state, const ScriptVisTarget& t) {
     return t.kind == ScriptVisTarget::Ref ? script_ir_of(state, t.ref) : state->script.ir;
 }
 
 static uint64_t vis_target_key(const ApplicationState* state, const ScriptVisTarget& t) {
-    const md_script_ir_t* ir = vis_target_ir(state, t);
+    const script::Program* ir = vis_target_ir(state, t);
     const uintptr_t ir_ptr = (uintptr_t)ir;
-    const uint64_t fingerprint = md_script_ir_fingerprint(ir);
+    const uint64_t fingerprint = script::fingerprint(ir);
     uint64_t h = md_hash64(&t.kind, sizeof(t.kind), 0);
     h = md_hash64(&t.subidx, sizeof(t.subidx), h);
     h = md_hash64(&t.flags, sizeof(t.flags), h);
-    h = md_hash64(&t.ref.ir_id, sizeof(t.ref.ir_id), h);
-    h = md_hash64(&t.ref.node_idx, sizeof(t.ref.node_idx), h);
+    h = md_hash64(&t.ref.program, sizeof(t.ref.program), h);
+    h = md_hash64(&t.ref.node, sizeof(t.ref.node), h);
     if (t.kind == ScriptVisTarget::Str) {
         h = md_hash64(t.str.ptr, t.str.len, h);
     }
     h = md_hash64(&ir_ptr, sizeof(ir_ptr), h);
     h = md_hash64(&fingerprint, sizeof(fingerprint), h);
+    // The value's text is in the display units
+    const uint64_t units = display_units::version();
+    h = md_hash64(&units, sizeof(units), h);
     return h;
 }
 
@@ -6884,7 +6926,7 @@ static uint64_t vis_state_key(const md_system_state_t& st) {
 
 static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t state_key) {
     const ScriptVisTarget& t = state->script.vis_target;
-    const md_script_ir_t* ir = vis_target_ir(state, t);
+    const script::Program* ir = vis_target_ir(state, t);
     if (t.kind == ScriptVisTarget::Ref && !ir) {
         return;
     }
@@ -6896,24 +6938,39 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->target = t;
     job->target.str = str_copy(t.str, job->arena);
     job->ir = ir;
+    script::program_retain(ir);
     job->sys = &state->mold.sys;
+    job->run = str_copy(str_from_cstr(state->mold.run), job->arena);
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
-    md_script_vis_init(&job->vis, job->arena);
+    script::drawing_init(&job->vis, job->arena);
+    if (t.kind == ScriptVisTarget::Ref) {
+        // The value in the unit its mark shows it in
+        const size_t nm = script::num_marks(ir);
+        const script::Mark* mk = script::marks(ir);
+        for (size_t i = 0; i < nm; ++i) {
+            if (mk[i].ref.program == t.ref.program && mk[i].ref.node == t.ref.node && !md_unit_is_none(mk[i].unit)) {
+                job->value_scale = display_units::factor(nullptr, mk[i].unit);
+                break;
+            }
+        }
+    }
 
     const task_system::ID task = task_system::create_pool_task(STR_LIT("##Visualize script"), [job]() {
-        md_script_vis_ctx_t ctx = {
-            .ir    = job->ir,
+        script::DrawCtx ctx = {
+            .prog  = job->ir,
             .sys   = job->sys,
             .state = &job->state,
+            .run   = job->run,
         };
+        ctx.value_scale = job->value_scale;
         const ScriptVisTarget& tgt = job->target;
         job->ok = (tgt.kind == ScriptVisTarget::Ref)
-            ? md_script_vis_eval_ref(&job->vis, tgt.ref, tgt.subidx, &ctx, tgt.flags)
-            : md_script_vis_eval_string(&job->vis, tgt.str, &ctx, tgt.flags);
+            ? script::draw_ref(&job->vis, tgt.ref, tgt.subidx, ctx, tgt.flags)
+            : script::draw_text(&job->vis, tgt.str, ctx, tgt.flags);
         if (job->ok && tgt.kind == ScriptVisTarget::Ref) {
             char buf[2048];
-            const size_t len = md_script_vis_value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, &ctx);
+            const size_t len = script::value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, ctx);
             if (len) {
                 job->value_text = str_copy({buf, len}, job->arena);
             }

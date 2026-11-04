@@ -1,0 +1,6 @@
+# A distance within each residue per frame
+# data: 1ALA-560ns.pdb
+=== v1
+dd = distance(name("N"), name("C")) in residue(:);
+=== vial
+dd = distance(residue and particle(name='N'), residue and particle(name='C'))

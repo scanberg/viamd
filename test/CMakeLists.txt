@@ -16,11 +16,17 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/representation_tree.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/file_list.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/load_order.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/gfx/camera_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/cartoon_glyphs.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/color_utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v1.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v2.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions_vial.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/display_units.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it
@@ -66,6 +72,7 @@ target_compile_features(viamd_test PRIVATE cxx_std_20)
 # that dispatch are themselves tested against.
 target_compile_definitions(viamd_test PRIVATE UTEST_USE_OLD_QPC
     VIAMD_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/test_data"
+    VIAMD_SCRIPT_PAIRS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/script_pairs"
     VIAMD_ASE_TRAJ_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/unittest/ase_traj_data"
     ${VIAMD_DEFINES} ${MD_DEFINES})
 target_compile_options(viamd_test PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)

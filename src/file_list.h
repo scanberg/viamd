@@ -28,7 +28,7 @@ struct deserialization_state_t;
 //
 //     [System]            Id, AtomCount
 //     [Run]               Id, System, FrameCount
-//     [Input]             System or Run, Path, Loader (when chosen), Argument (when any)
+//     [Input]             System or Run, Path, Loader (when chosen), Argument (when any), Coordinates (when any)
 //
 // Ids are local to the file: written densely at each save, and only resolved within it. Every section which
 // refers to a system or a run does so by these ids. AtomCount and FrameCount tell whether the files are still
@@ -47,6 +47,10 @@ enum FileRole {
     FileRole_Series,      // Joins a run, sampled along it: every later file of a run
 };
 
+// A topology without coordinates (an Amber prmtop, a PSF) builds the system together with the file its coordinates
+// are read from - a restart, a structure file or a trajectory - and the two are one entry: the topology, naming its
+// coordinates. They are loaded together again from it.
+//
 // The role a file loaded on its own takes (dropped, or opened from the menu), from its loader flags: what can
 // supplement the loaded system does (a VeloxChem file of the same atoms), else what can build one does, and a
 // trajectory only otherwise.
@@ -57,6 +61,7 @@ struct FileEntry {
     LoaderType type = LoaderType_Undefined;     // The loader the file was read with
     bool       explicit_type = false;           // The loader was chosen by the user rather than told from the file
     char       arg[256] = "";                   // The loader's argument (the LAMMPS atom format), empty when none
+    char       coordinates[1024] = "";          // For a topology without coordinates: the file they were read from (canonical)
     int        run = -1;                        // The run it belongs to (index into FileList::runs), -1 for the system's own
     bool       missing = false;                 // Named by a workspace but not loaded: kept, so a save does not drop it
 };
@@ -76,6 +81,9 @@ static inline const FileEntry* file_list_get(const FileList* list, size_t i)    
 
 void file_list_free (FileList* list, struct md_allocator_i* alloc);
 void file_list_clear(FileList* list);
+
+// The entry a file loaded with load_state takes
+FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state);
 
 // The role of entry i, from its place: first of the system, later in the system, first of its run, later in it
 FileRole file_list_role(const FileList* list, size_t i);
