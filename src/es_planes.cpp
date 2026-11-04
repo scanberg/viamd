@@ -12,20 +12,21 @@
 #include <math.h>
 #include <float.h>
 
-void plane_frame(vec3_t* u, vec3_t* v, const Plane& p) {
-    // the shortest turn from z to n: about z x n by acos(n.z)
+void plane_frame(vec3_t* u, vec3_t* v, const Plane& p, vec3_t right) {
     const vec3_t n = p.normal;
-    const vec3_t z = vec3_set(0, 0, 1);
-    const vec3_t axis = vec3_cross(z, n);
-    const float s = vec3_length(axis);
-    quat_t q = quat_ident();
-    if (s > 1.0e-6f) {
-        q = quat_axis_angle(vec3_mul1(axis, 1.0f / s), atan2f(s, n.z));
-    } else if (n.z < 0.0f) {
-        q = quat_axis_angle(vec3_set(1, 0, 0), 3.14159265f);
+    // 'right' without its part along n; the next of x, y when it is (nearly) along n: of x and y one is always at least
+    // 45 degrees off n (n.x^2 + n.y^2 <= 1), so the last is never too short
+    const vec3_t candidates[3] = {right, vec3_set(1, 0, 0), vec3_set(0, 1, 0)};
+    vec3_t r = vec3_set(1, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        const float len = vec3_length(candidates[i]);
+        if (!(len > 0.0f)) continue;
+        const vec3_t c = vec3_mul1(candidates[i], 1.0f / len);
+        r = vec3_sub(c, vec3_mul1(n, vec3_dot(c, n)));
+        if (vec3_length(r) > 0.1f) break;
     }
-    *u = quat_mul_vec3(q, vec3_set(1, 0, 0));
-    *v = quat_mul_vec3(q, vec3_set(0, 1, 0));
+    *u = vec3_normalize(r);
+    *v = vec3_cross(n, *u);
 }
 
 static inline vec3_t transform_point(const mat4_t& m, vec3_t p) {
@@ -56,7 +57,7 @@ int plane_box_polygon(vec3_t out[6], const Plane& plane, const mat4_t& box_to_wo
     for (int i = 0; i < n; ++i) centre = vec3_add(centre, pts[i]);
     centre = vec3_mul1(centre, 1.0f / (float)n);
     vec3_t u, v;
-    plane_frame(&u, &v, plane);
+    plane_frame(&u, &v, plane, vec3_set(1, 0, 0));
     float ang[12];
     for (int i = 0; i < n; ++i) {
         const vec3_t d = vec3_sub(pts[i], centre);
@@ -264,8 +265,9 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         if (gizmo_drag.active && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane) {
             frame = gizmo_drag.frame;
         } else {
+            // its rings along the screen: the first axis in the plane is the camera's right as near as the plane allows
             vec3_t u, v;
-            plane_frame(&u, &v, plane);
+            plane_frame(&u, &v, plane, quat_mul_vec3(state->view.camera.orientation, vec3_set(1, 0, 0)));
             const vec3_t n = plane.normal;
             const vec3_t o = plane_project(plane, gizmo_centre);
             frame = mat4_ident();

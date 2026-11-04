@@ -417,9 +417,10 @@ static inline Plane  plane_from_point_normal(vec3_t point, vec3_t normal) {
     p.d = -vec3_dot(p.normal, point);
     return p;
 }
-// Axes in the plane, u and v, with u x v = n: the shortest turn from z to n applied to x and y. Smooth in n except
-// where n is close to -z, where they turn quickly about n (the plane is the same).
-void plane_frame(vec3_t* u, vec3_t* v, const Plane& p);
+// Axes in the plane, u and v, with u x v = n: u is 'right' made perpendicular to n (world x, or else y, when 'right'
+// is too close to n for that), v = n x u. The turn of the plane about n is not the plane's: it is taken from what the
+// axes are for, such as the camera's right for a gizmo, so that they line up with the screen.
+void plane_frame(vec3_t* u, vec3_t* v, const Plane& p, vec3_t right);
 
 // How an electronic structure representation draws its field
 enum class ElectronicStructureDisplay {
