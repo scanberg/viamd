@@ -33,8 +33,7 @@ NciSurfaceJob* nci_surface_job_start(std::shared_ptr<const std::vector<float>> r
             job->done.store(true, std::memory_order_release);
             return;
         }
-        // One extraction with the reference's uniform parameters over all the surface's CPs, each sample to its
-        // nearest CP of the system; then a slice per CP type
+        // Slice the selected extraction region by category, retaining nearest-CP ownership.
         std::vector<double> anchors;
         std::vector<uint8_t> anchor_family;
         for (size_t family = 0; family < category_anchors.size(); ++family) {
@@ -45,7 +44,10 @@ NciSurfaceJob* nci_surface_job_start(std::shared_ptr<const std::vector<float>> r
             job->done.store(true, std::memory_order_release);
             return;
         }
-        const nci_surface::Params reference = nci_surface::reference_params(anchors, job->competitors);
+        nci_surface::Params reference = job->params;
+        reference.near_xyz = anchors;
+        reference.display_s = 0.0;
+        reference.surface = false;
         const auto same = [](double a, double b) { return std::abs(a - b) < 1e-6; };
         const bool same_scope = same(job->params.scatter_s > 0.0 ? job->params.scatter_s : job->params.s_iso, reference.scatter_s) &&
             same(job->params.rho_max, reference.rho_max) && same(job->params.near_radius, reference.near_radius) &&

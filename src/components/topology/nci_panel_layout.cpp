@@ -361,7 +361,7 @@ struct NciPanel {
                 st.uniform.radius = defaults.radius;
                 st.uniform.s_iso = MIN(st.uniform.s_iso, st.uniform.scatter_s);
             }
-            prop::hint("Scores compare samples at s <= 1, rho <= 0.07, R = 2.7 against the extended reference.");
+            prop::hint("Scores use the selected extraction region, excluding grey display-only points.");
             prop::section_end();
         }
         prop::hint("Uniform connected regions, both signs of lambda2, nearest-CP ownership.");
@@ -381,12 +381,18 @@ struct NciPanel {
         color_scale_draw_controls(&st.scale, st.span, md_unit_pow(md_unit_bohr_radius(), -3), "shown layer",
                                   "the 1st to 99th percentile of the shown layer", true);
         prop::end();
+        ImGui::SeparatorText("Plot guides");
+        ImGui::Checkbox("Surface isovalue", &st.guide_surface);
+        ImGui::Checkbox("Extraction cutoff", &st.guide_cutoff);
+        ImGui::Checkbox("Colour-range boundaries", &st.guide_colour_limits);
+        ImGui::TextDisabled("Guides beside the plot shows/hides these without changing your choices.");
 
         if (ImGui::Button("Reset to defaults")) {
             st.uniform = nci_uniform_default_settings();
             st.type_outline_width = NciState::default_type_outline_width;
             st.point_size = NciState::default_point_size;
             st.show_type_styles = false;
+            st.guide_surface = st.guide_cutoff = st.guide_colour_limits = true;
             const bool legend = st.scale.show_legend;
             st.scale = nci_default_scale();
             st.scale.show_legend = legend;
@@ -586,7 +592,7 @@ struct NciPanel {
             ImGui::TextDisabled("Built in, independent of the loaded system, as the Ramachandran reference: per CP category,\n"
                                 "the pooled (sign(lambda2)rho, s) density of reference extractions (s <= %.1f, rho <= %.2f,\n"
                                 "%.1f Bohr from a CP, each sample to its nearest CP) over many calculations, each weighing\n"
-                                "the same. Scores compare the extracted s <= 1 samples against its %.0f %% area.",
+                                "the same. Scores compare the selected extraction region against its %.0f %% area.",
                                 2.0,
                                 display_reference_data().rho_extent, nci_surface::reference_radius,
                                 100.0f * nci_surface::reference_inside_fraction);
@@ -775,7 +781,7 @@ struct NciPanel {
             ImGui::SliderFloat("##line_width", &r.line_width, 0.5f, 6.0f, "%.1f px");
         }
         draw_levels(r.levels, &r.num_levels, "The areas enclose these fractions of each category's volume (highest density regions)");
-        prop::hint("Scores: fraction of extracted s <= 1 samples inside this reference's %.0f %% area",
+        prop::hint("Scores: fraction of extracted samples inside this reference's %.0f %% area",
                    100.0f * nci_surface::reference_inside_fraction);
         ImGui::PopID();
         prop::end();
@@ -1083,7 +1089,7 @@ struct NciPanel {
             ImGui::TextDisabled("Subfamilies split their category's share, each weighing the same");
     }
 
-    // Each member's category samples (extracted with the reference settings) against their category's reference
+    // Each member's category samples from the selected extraction region against the reference.
     static RegionStats region_stats(const std::vector<NciSurface*>& members) {
         const nci_surface::ReferenceMap& map = nci_surface::extended_reference_map();
         RegionStats stats;
@@ -1339,7 +1345,8 @@ struct NciPanel {
         static float shown_plot_s = -1.0f;
         NciSurface& context = st.context;
         ImGui::Checkbox("Guides", &st.show_guides);
-        ImGui::SetItemTooltip("The isovalue and the colour range. Drag the isovalue line to edit it for every interaction.");
+        ImGui::SetItemTooltip("Show selected plot guides: surface isovalue, extraction cutoff and colour boundaries. "
+                              "Choose guides in NCI settings. Drag the surface line to edit its isovalue.");
         const bool global = st.view == nci_surface::View::Overview && !st.classified_overview;
         if (global) {
             ImGui::SameLine();
@@ -1549,20 +1556,19 @@ struct NciPanel {
                 const bool tail = b < colour_bins;
                 const bool faded = b < 2 * colour_bins;
                 const size_t c = b % colour_bins;
-                ImVec4 colour = neutral ? ImVec4(0.8f, 0.8f, 0.8f, faded ? 0.12f : 0.25f)
+                ImVec4 colour = neutral ? ImVec4(0.8f, 0.8f, 0.8f, tail ? 0.08f : faded ? 0.18f : 0.35f)
                                         : ImPlot::SampleColormap((float)c / (float)(colour_bins - 1), scale.colormap);
                 if (!neutral) {
-                    colour.w = 0.7f;
+                    colour.w = 0.95f;
                     if (tail) {
-                        colour = ImVec4(0.6f, 0.6f, 0.6f, 0.3f);
+                        colour = ImVec4(0.5f, 0.5f, 0.5f, 0.16f);
                     } else if (faded) {
-                        const float grey = 0.3f * colour.x + 0.59f * colour.y + 0.11f * colour.z;
-                        constexpr float keep = 0.15f;
-                        colour = ImVec4(grey + keep * (colour.x - grey), grey + keep * (colour.y - grey),
-                                        grey + keep * (colour.z - grey), 0.45f);
+                        constexpr float keep = 0.3f;
+                        colour = ImVec4(0.85f + keep * (colour.x - 0.85f), 0.85f + keep * (colour.y - 0.85f),
+                                        0.85f + keep * (colour.z - 0.85f), 0.55f);
                     }
                 }
-                plot_bin(n, b, tail, bins[b], colour, neutral ? 1.0f : st.point_size);
+                plot_bin(n, b, tail, bins[b], colour, st.point_size);
             }
         };
         if (st.show_context_samples && surface_ready(context)) plot(context, !global);
@@ -1672,23 +1678,44 @@ struct NciPanel {
 
         NciSurface* active = st.layer_hidden ? nullptr : active_member();
         bool guide_hovered = false;
+        const bool surface_guide = st.show_guides && st.guide_surface && active && nci_scale_member(*active);
+        const bool merged_guide = surface_guide && st.guide_cutoff &&
+                                  std::abs(active->s_iso - st.uniform.scatter_s) < 1e-4f;
+        if (st.show_guides && st.guide_cutoff && !merged_guide) {
+            const ImPlotRect limits = ImPlot::GetPlotLimits();
+            const double cutoff = st.uniform.scatter_s;
+            const ImVec4 colour(0.75f, 0.75f, 0.75f, 0.85f);
+            const ImVec2 left = ImPlot::PlotToPixels(limits.X.Min, cutoff);
+            const ImVec2 right = ImPlot::PlotToPixels(limits.X.Max, cutoff);
+            ImPlot::PushPlotClipRect();
+            for (float x = left.x; x < right.x; x += 10.0f)
+                ImPlot::GetPlotDrawList()->AddLine(ImVec2(x, left.y), ImVec2(std::min(x + 5.0f, right.x), right.y),
+                                                  ImGui::ColorConvertFloat4ToU32(colour), 1.0f);
+            ImPlot::PopPlotClipRect();
+            ImPlot::Annotation(limits.X.Max, cutoff, colour, ImVec2(-4, -4), true, "Cutoff s = %.3g", cutoff);
+        }
         if (st.show_guides && active && nci_scale_member(*active)) {
             const ColorScale scale = nci_effective_scale(st, *active);
             const ImVec4 col = guide_colour;
             double iso = active->s_iso;
             bool held = false, hovered_line = false;
-            if (ImPlot::DragLineY(1, &iso, col, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered_line, &held)) {
+            if (st.guide_surface &&
+                ImPlot::DragLineY(1, &iso, col, 2.0f, ImPlotDragToolFlags_NoFit, nullptr, &hovered_line, &held)) {
                 st.uniform.s_iso = (float)std::clamp(iso, 0.1, (double)st.uniform.scatter_s);
             }
             st.settings_editing |= held;
             guide_hovered = hovered_line || held;
-            const double limits[] = {scale.range_beg, scale.range_end};
-            ImPlot::SetNextLineStyle(col, 1.0f);
-            ImPlot::PlotInfLines("##Colour limits", limits, 2);
             const double right = ImPlot::GetPlotLimits().X.Max;
-            ImPlot::Annotation(right, active->s_iso, col, ImVec2(-4, -4), true, "surface isovalue: s=%.2f", active->s_iso);
-            ImPlot::TagX(scale.range_beg, col, "%.4g", scale.range_beg);
-            ImPlot::TagX(scale.range_end, col, "%.4g", scale.range_end);
+            if (st.guide_surface)
+                ImPlot::Annotation(right, st.uniform.s_iso, col, ImVec2(-4, -4), true,
+                                   merged_guide ? "Surface / cutoff s = %.2f" : "Surface s = %.2f", st.uniform.s_iso);
+            if (st.guide_colour_limits) {
+                const double limits[] = {scale.range_beg, scale.range_end};
+                ImPlot::SetNextLineStyle(col, 1.0f);
+                ImPlot::PlotInfLines("##Colour limits", limits, 2);
+                ImPlot::TagX(scale.range_beg, col, "%.4g", scale.range_beg);
+                ImPlot::TagX(scale.range_end, col, "%.4g", scale.range_end);
+            }
         }
         if (hovered && !guide_hovered) {
             const int key = nci_layer_key(*hovered);

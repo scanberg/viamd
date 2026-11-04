@@ -126,7 +126,7 @@ struct NciScatterLayer {
     float opacity = 1.0f;
     bool fill = false;
     bool lines = true;
-    float line_width = 3.0f;
+    float line_width = 2.0f;
     int num_levels = 1;
     float levels[nci_max_levels] = {0.9f};   // fractions enclosed, increasing
 };
@@ -199,6 +199,9 @@ struct NciState {
     int pending_delete = 0;
     std::vector<int> layer_order;   // saved layers only
     bool show_guides = true;
+    bool guide_surface = true;
+    bool guide_cutoff = true;
+    bool guide_colour_limits = true;
     // The built-in reference map of H-bonds, rings, pi stacking and the combined Other category, the map at its
     // levels and its fill texture, each with the key of what they were made from
     NciReferenceLayer reference;
@@ -216,7 +219,7 @@ struct NciState {
     // Interactions toggled in the legend when shown: their isolines and areas
     std::array<NciTypeStyle, nci_surface::family_count> type_styles = {};
     // Scatter plot look, in pixels: a layer's outline (thick), its interactions' outlines (thin), the samples
-    static constexpr float default_type_outline_width = 1.5f, default_point_size = 1.8f;
+    static constexpr float default_type_outline_width = 1.0f, default_point_size = 0.6f;
     float type_outline_width = default_type_outline_width;
     float point_size = default_point_size;
     bool capacity_reported = false;

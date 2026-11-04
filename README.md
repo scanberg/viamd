@@ -228,14 +228,21 @@ near anchor CPs; a uniform 2.7 Bohr radius cap limits their extent. This segment
 depends on grid resolution and thresholds and is not a unique physical
 partition. Regions without an anchor are excluded.
 
-Every CP-anchored layer, including Full system, uses the reference extraction:
+Every CP-anchored layer, including Full system, defaults to the same extraction:
 **s ≤ 1.0, ρ ≤ 0.07, R = 2.7 Bohr**, both signs of λ2, connected regions and
 nearest-CP ownership. There is no CP-adaptive mode or per-type radius. These
-extraction parameters are fixed, not display controls.
+extraction parameters can be adjusted under **Scatter region**; they change
+analysed samples, contours and scores, not just the display.
 
 The **NCI settings** (gear button) adjust the **surface isovalue**, resolution,
 opacity and colour scale. The surface isovalue defaults to **0.7** and can be
 lowered for a clearer surface; it does not change the scatter samples or reference.
+Below that isovalue points have strong, saturated colour; between it and the
+extraction cutoff they are pale, desaturated colour but remain analysed and
+pickable. Above the extraction cutoff, up to the plot range, they are faint
+neutral grey and display-only. Raising **Scatter region -> s max** therefore
+moves newly included points out of grey context into analysis and picking;
+at s max = 2 no display-only tail remains. It does not raise the surface isovalue.
 
 The NCI types come from the CP classification: a contact CP's type is its
 branch under Contacts in the CP tree. Hydrogen bonds (including ionic ones and salt bridges) and σ-hole bonds (halogen,
@@ -272,7 +279,8 @@ Points window is open, even with the CP search disabled. The shown layer's
 samples are plotted per interaction (a ring closed by π···π counts as a
 π interaction), and hovering a point identifies it. The legend is a centred row of
 chips under the plot. Click a point or an interaction's name to make it the
-active one for the guides: the isovalue and colour-range lines.
+active one for the surface-isovalue and colour-range guides. The extraction
+cutoff guide follows the shared Scatter region s max.
 Dragging the isovalue line edits the isovalue of every layer; the line is in
 the layer's colour. Each interaction always has the same colour (hydrogen
 bonds blue, π interactions red, rings green, σ-hole bonds purple, other contacts
@@ -313,8 +321,9 @@ it replaces the earlier reference for comparison scores too. There is no
 original/extended map selector.
 The extended reference is not clipped to the live extraction cutoff.
 The reference contains 18 whole-class maps and 88 refinements.
-Scores mean: of the layer's category samples extracted at s <= 1, rho <= 0.07,
-R = 2.7 Bohr, what fraction is inside that category's extended-reference 90% contour?
+Scores mean: of the layer's category samples in the selected extraction region
+(by default s <= 1, rho <= 0.07, R = 2.7 Bohr), what fraction is inside that
+category's extended-reference 90% contour?
 The 90% defines mass over the full reference domain; it is not an expected 90%
 score for the s <= 1 subset. Scores differ from those obtained with the earlier map.
 Scatter-region warnings use the current reference limits, s <= 2, |rho| <= 0.1
@@ -379,7 +388,7 @@ the figures here. Other wave functions may shift it.
 A layer's inspector sets its name (saved layers), style (**Contours**: the
 outline of all its samples together at each level, optionally filled, stacked
 per level; **Heatmap**: the density of its samples), colour, opacity, fill and
-lines, line width and levels (90 % by default). Points always take the colour
+lines, line width (2 px by default) and levels (90 % by default). Points always take the colour
 scale of their surface in the viewport, so a colour means the same density in
 both; layers are told apart by their contours. Only the layer shown in the
 viewport plots points. A trash-can button at the left of each saved layer card
@@ -390,9 +399,16 @@ active one for the guides; clicking it again hides them. Layers not shown in
 the viewport are drawn from their last computation, under the shown one. The
 legend under the plot repeats the reference and the layers with their swatches;
 clicking one shows or hides it. **All samples** in the legend toggles the
-context cloud. **Guides** also toggles the isovalue and colour-range lines; on
-the right, ⤢ fits the view and the gear sets the interaction line width and the
-point size, and **Interaction isolines and areas** (off by default) adds
+context cloud. **Guides** is the master show/hide switch for plot guides without
+changing individual choices. In **NCI settings -> Display -> Plot guides**,
+choose **Surface isovalue**, **Extraction cutoff**, and **Colour-range boundaries**
+(all on by default). The solid surface guide reads **Surface s = 0.78**; the
+thin dashed cutoff reads **Cutoff s = 1** and follows the selected extraction
+cutoff. When coincident, one line reads **Surface / cutoff s = 1.00**.
+Reference interaction guides remain independent.
+On the right, ⤢ fits the view. NCI settings set the interaction line width
+(1 px by default) and point size (0.6 px by default).
+**Interaction isolines and areas** (off by default) adds
 per-interaction isolines and areas in every layer, with a legend square each:
 click it to toggle, right-click for its isolines and area or those of all
 interactions, click its name to make it the active one for the guides.

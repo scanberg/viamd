@@ -127176,7 +127176,7 @@ const ReferenceData& extended_reference_data() {
         {"Hydrogen bonds", "Rings", "\xCF" "\x80" " interactions", "Other"},
         {111, 330, 75, 330},
         {field_0, field_1, field_2, field_3},
-        "v3 extended: 910 calculations: VeloxTest (48), S66x8 (528, one weight per dimer), SH250 (205), IHB100 (100), hand-built (29); B3LYP-D4/def2-SVP; s <= 2.0, rho <= 0.1, R 2.7 Bohr, both lambda2 signs, nearest-CP ownership. Display only; comparison scores retain v2.",
+        "v3 extended: 910 calculations: VeloxTest (48), S66x8 (528, one weight per dimer), SH250 (205), IHB100 (100), hand-built (29); B3LYP-D4/def2-SVP; s <= 2.0, rho <= 0.1, R 2.7 Bohr, both lambda2 signs, nearest-CP ownership. Shared reference for maps, guides and comparison scores.",
         subfamilies,
     };
     return data;

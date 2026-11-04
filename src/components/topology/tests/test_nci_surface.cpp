@@ -906,6 +906,19 @@ UTEST(nci_surface, display_tail_leaves_the_reference_scatter_untouched) {
         EXPECT_GT(s, (float)nci_surface::reference_scatter_s);
         EXPECT_LE(s, nci_surface::scatter_s_max);
     }
+    params.scatter_s = nci_surface::scatter_s_max;
+    nci_surface::Scatter expanded;
+    ASSERT_TRUE(nci_surface::extract(&mesh, rho.data(), g, params, nullptr, nullptr, &expanded));
+    EXPECT_TRUE(expanded.tail.s.empty());
+    EXPECT_GT(expanded.eligible_count, tailed.eligible_count);
+    EXPECT_GT(expanded.density.total_volume, tailed.density.total_volume);
+    size_t analysed_above_one = 0;
+    for (float s : expanded.s) analysed_above_one += s > 1.0f;
+    EXPECT_GT(analysed_above_one, (size_t)0);
+    for (size_t c = 0; c < nci_surface::reference_category_count; ++c) {
+        const auto counts = nci_surface::reference_counts(expanded, nci_surface::extended_reference_map(), c);
+        EXPECT_EQ(counts.inside + counts.outside, expanded.s.size());
+    }
 }
 
 UTEST(nci_surface, nearest_anchor_partitions_the_scatter) {
