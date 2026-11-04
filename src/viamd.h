@@ -397,6 +397,46 @@ inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "High",
 };
 
+// A plane in space, n . x + d = 0 with n of unit length (world, Angstrom), as a vec4. As a cut it keeps the side n
+// points to, n . x + d >= 0; flipping it is negating all four. It has no position or turn within itself: what is laid
+// out on it (points, a gizmo) takes plane_frame's axes, and a gizmo sits where the plane cuts what it is drawn over.
+struct Plane {
+    vec3_t normal = {0, 0, 1};
+    float  d = 0.0f;
+};
+static_assert(sizeof(Plane) == sizeof(vec4_t), "a plane is a vec4");
+
+static inline vec4_t plane_vec4(const Plane& p) { return vec4_set(p.normal.x, p.normal.y, p.normal.z, p.d); }
+static inline float  plane_distance(const Plane& p, vec3_t x) { return vec3_dot(p.normal, x) + p.d; }
+static inline vec3_t plane_project(const Plane& p, vec3_t x) { return vec3_sub(x, vec3_mul1(p.normal, plane_distance(p, x))); }
+static inline void   plane_flip(Plane* p) { p->normal = vec3_mul1(p->normal, -1.0f); p->d = -p->d; }
+// The plane through 'point' facing 'normal' (any length but 0)
+static inline Plane  plane_from_point_normal(vec3_t point, vec3_t normal) {
+    Plane p;
+    p.normal = vec3_normalize(normal);
+    p.d = -vec3_dot(p.normal, point);
+    return p;
+}
+// Axes in the plane, u and v, with u x v = n: the shortest turn from z to n applied to x and y. Smooth in n except
+// where n is close to -z, where they turn quickly about n (the plane is the same).
+void plane_frame(vec3_t* u, vec3_t* v, const Plane& p);
+
+// How an electronic structure representation draws its field
+enum class ElectronicStructureDisplay {
+    Isosurface,     // surfaces where the field takes given values
+    Volume,         // direct volume rendering through a colour map and an alpha ramp, cut by planes
+    Plane,          // the field on a plane, evaluated at points over it
+    Count
+};
+
+inline const char* electronic_structure_display_str[(int)ElectronicStructureDisplay::Count] = {
+    "Isosurface",
+    "Volume",
+    "Plane",
+};
+
+#define ES_MAX_PLANES 8
+
 // Samples per Angstrom for each VolumeResolution. Beside the enum, because a value per enumerator
 // is part of what the enum MEANS and a second table elsewhere is how the two drift apart.
 inline const double volume_resolution_samples_per_angstrom[(int)VolumeResolution::Count] = {
@@ -623,6 +663,30 @@ struct ElectronicStructureRepresentation {
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
+
+    ElectronicStructureDisplay display = ElectronicStructureDisplay::Isosurface;
+
+    // Volume: the planes that cut it (what is drawn is the box of the volume on the kept side of every enabled
+    // one). Plane: planes[0] is the plane drawn. Edited in the view with a gizmo (es_planes.h).
+    struct {
+        Plane plane = {};
+        bool  enabled = true;
+    } planes[ES_MAX_PLANES];
+    int num_planes = 0;
+
+    // Volume: the colour of a value is the colour map's over the range, its opacity a ramp over [ramp_beg, ramp_end]
+    // (fractions of the range; for a symmetric range, of the magnitude) rising to 'opacity' with 'ramp_exponent'
+    struct {
+        ColorScale map = {};
+        float opacity = 0.1f;          // the opacity of a slab 1/150 of the volume thick at the top of the ramp
+        float ramp_beg = 0.0f;
+        float ramp_end = 1.0f;
+        float ramp_exponent = 1.0f;
+        bool  map_init = false;        // the map was set up for a field (es_volume_map_update) ...
+        bool  map_signed = false;      // ... signed or not: set up again when that changes
+        uint32_t tf_tex = 0;           // the transfer function made of the above, and what it was made of
+        uint64_t tf_hash = 0;
+    } volume;
 };
 
 static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {
@@ -1611,6 +1675,11 @@ struct ApplicationState {
         bool atom_visibility_mask_dirty = false;
         uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
         bool show_window = false;
+        // The plane the gizmo in the view edits: of the representation of this id (its node id), at this index
+        struct {
+            uint32_t rep_id = 0;
+            int      plane = -1;
+        } gizmo;
     } representation;
 
     struct {

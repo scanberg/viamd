@@ -4740,6 +4740,30 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
 }
 
+// The colour map of a volume rendering, set up for the field when it is first drawn (or when the field's sign changes),
+// on a range set by hand from the isovalue, the value the field is significant at: the largest values are at the
+// nuclei, and a range to them (the automatic one) would put the rest of the field at the bottom of the ramp. A signed
+// field (an orbital, a difference) from -3 to 3 times it through a diverging map, the ramp on the magnitude from a
+// tenth of the range; a density from 0 to 10 times it through a sequential one.
+static void es_volume_map_update(ElectronicStructureRepresentation& es) {
+    const bool signed_field = electronic_structure_is_signed(es);
+    if (!es.volume.map_init || es.volume.map_signed != signed_field) {
+        ColorScale& m = es.volume.map;
+        m.symmetric = signed_field;
+        m.colormap = signed_field ? COLOR_SCALE_COLORMAP_RDBU : COLOR_SCALE_COLORMAP_VIRIDIS;
+        m.auto_range = false;
+        const float iso = (float)fabs(es.iso_value);
+        m.range_beg = signed_field ? -3.0f * iso : 0.0f;
+        m.range_end = signed_field ?  3.0f * iso : 10.0f * iso;
+        es.volume.ramp_beg = signed_field ? 0.1f : 0.0f;
+        es.volume.ramp_end = 1.0f;
+        es.volume.ramp_exponent = 1.0f;
+        es.volume.map_init = true;
+        es.volume.map_signed = signed_field;
+    }
+    // (its automatic range follows the volume where it is drawn, draw_representations_volumes)
+}
+
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
 // exactly those inputs - the frame included, since the geometry moves the grid.
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
@@ -4762,7 +4786,9 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom
     const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-    const bool needs_volume = !mesh_mode || es.coloring == SurfaceColoring::AtomColors;
+    const bool iso_display = es.display == ElectronicStructureDisplay::Isosurface;
+    // a volume rendering and a plane draw from (or over the box of) the volume, whatever renders the isosurfaces
+    const bool needs_volume = !mesh_mode || !iso_display || es.coloring == SurfaceColoring::AtomColors;
     vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
 
     bool done = true;
@@ -4796,14 +4822,18 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
         }
     }
 
-    if (es.coloring == SurfaceColoring::AtomColors) {
+    if (es.display != ElectronicStructureDisplay::Isosurface) {
+        es_volume_map_update(es);
+    }
+
+    if (iso_display && es.coloring == SurfaceColoring::AtomColors) {
         uint64_t col_hash = md_hash64(&es.gaussian_splatting_power, sizeof(es.gaussian_splatting_power), (int)rep->color_mapping);
         col_hash = md_hash64_combine(col_hash, es.vol_hash);
         if (col_hash != es.col_hash) {
             es.col_hash = col_hash;
             electronic_structure_color_volume_update(state, rep, atom_colors);
         }
-    } else if (es.coloring == SurfaceColoring::Field && !mesh_mode) {
+    } else if (iso_display && es.coloring == SurfaceColoring::Field && !mesh_mode) {
         done &= electronic_structure_field_update(state, rep);
     }
     return done;

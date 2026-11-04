@@ -118,6 +118,7 @@ add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
+add_subdirectory(ext/imguizmo)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 add_subdirectory(ext/md4c)
@@ -205,6 +206,7 @@ set(SRC_FILES
     src/timeline_periods_ui.cpp
     src/viamd.cpp
     src/iso_meshes.cpp
+    src/es_planes.cpp
 
     src/app_settings.h
     src/cartoon_glyphs.h
@@ -459,6 +461,7 @@ target_link_libraries(viamd
     enkiTS
     ImGuiColorTextEdit
     implot
+    imguizmo
     atomic_queue
     imgui_notify
     imgui_md

@@ -178,10 +178,28 @@ struct DvrRenderDesc {
         float min_value = 0.0f;
         float max_value = 1.0f;
     } tf;
+
+    // Up to 8 planes the volume is cut by, in its model space ([0,1]^3): n . x + d >= 0 is kept (x, y, z: n, w: d)
+    struct {
+        int count = 0;
+        const vec4_t* equations = NULL;
+    } planes;
+
+    // The transfer function's colours decoded from sRGB to linear radiance: for an HDR target (the isosurfaces')
+    bool linear_output = false;
+    // The volume on the first plane instead of through it (planes.equations[0], which must be given): where each ray
+    // meets the plane inside the clip box and in front of the depth, the transfer function's colour of the value
+    // there, opaque. The other planes are not used.
+    bool slice = false;
 };
 
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)
 void render_dvr(const DvrRenderDesc& desc);
+
+// The smallest and largest value of a volume, from the coarse min/max grid the isosurface renderer keeps (made if it
+// is not there, or its texels changed since: notify_data_changed): a read back of a few thousand texels. False when
+// it cannot be made.
+bool value_range(uint32_t volume_texture, float* out_min, float* out_max);
 
 
 }  // namespace volume

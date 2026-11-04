@@ -74,8 +74,13 @@ struct DvrUniformData {
     vec2_t inv_res;
     float  time;
     float  use_depth;
+    vec4_t planes[8];
+    int    num_planes;
+    float  linear_out;
+    float  slice;
+    float  pad;
 };
-static_assert(sizeof(DvrUniformData) == 64 + 3 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -182,6 +187,9 @@ struct BlockGrid {
     int      block_dim[3] = {};
     int      block_size = 0;
     uint64_t last_used = 0;
+    float    range_min = 0.0f;      // value_range: what minmax was read back as, for range_version
+    float    range_max = 0.0f;
+    uint64_t range_version = 0;
 };
 
 static struct {
@@ -1181,6 +1189,44 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
 // Direct volume rendering
 // -----------------------------------------------------------------------------
 
+bool value_range(uint32_t volume_texture, float* out_min, float* out_max) {
+    if (!volume_texture || !out_min || !out_max) return false;
+    const SavedState saved = save_state();
+    int dim[3] = {0, 0, 0};
+    glBindTexture(GL_TEXTURE_3D, volume_texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &dim[0]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &dim[1]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &dim[2]);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    bool ok = false;
+    BlockGrid* g = (dim[0] > 0 && dim[1] > 0 && dim[2] > 0) ? (BlockGrid*)block_grid_update(volume_texture, dim) : NULL;
+    if (g && g->minmax) {
+        if (g->range_version != g->built_version) {
+            const int bs = g->block_size;
+            const size_t n = (size_t)DIV_UP(dim[0], bs) * (size_t)DIV_UP(dim[1], bs) * (size_t)DIV_UP(dim[2], bs);
+            md_temp_scope_t temp = md_temp_begin();
+            float* mm = (float*)md_temp_alloc(temp, sizeof(float) * 2 * n);
+            glBindTexture(GL_TEXTURE_3D, g->minmax);
+            glGetTexImage(GL_TEXTURE_3D, 0, GL_RG, GL_FLOAT, mm);
+            glBindTexture(GL_TEXTURE_3D, 0);
+            float lo = FLT_MAX, hi = -FLT_MAX;
+            for (size_t i = 0; i < n; ++i) {
+                lo = MIN(lo, mm[2 * i]);
+                hi = MAX(hi, mm[2 * i + 1]);
+            }
+            md_temp_end(temp);
+            g->range_min = lo;
+            g->range_max = hi;
+            g->range_version = g->built_version;
+        }
+        *out_min = g->range_min;
+        *out_max = g->range_max;
+        ok = *out_min <= *out_max;
+    }
+    restore_state(saved);
+    return ok;
+}
+
 void render_dvr(const DvrRenderDesc& desc) {
     if (!desc.texture.density_volume || !desc.texture.transfer_function || !gl.program.dvr ||
         desc.render_target.width == 0 || desc.render_target.height == 0) {
@@ -1203,6 +1249,10 @@ void render_dvr(const DvrRenderDesc& desc) {
     data.inv_res    = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.time       = time;
     data.use_depth  = desc.render_target.depth ? 1.0f : 0.0f;
+    data.num_planes = desc.planes.equations ? CLAMP(desc.planes.count, 0, 8) : 0;
+    for (int i = 0; i < data.num_planes; ++i) data.planes[i] = desc.planes.equations[i];
+    data.linear_out = desc.linear_output ? 1.0f : 0.0f;
+    data.slice      = desc.slice ? 1.0f : 0.0f;
 
     const SavedState saved = save_state();
 
