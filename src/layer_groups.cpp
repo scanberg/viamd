@@ -21,7 +21,7 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
 
     uint64_t key = md_hash64_combine(generation, (g->follow_selection ? 1 : 2) | (want_sets ? 4 : 0));
     if (g->follow_selection) {
-        key = md_hash64_combine(key, md_bitset_hash64(md_bitmask_view(&app->selection.selection_mask), 0));
+        key = md_hash64_combine(key, md_bitset_hash64(md_bitmask_view(&app->system_context.selection.selection_mask), 0));
     } else if (g->filter.text[0]) {
         key = md_hash64_combine(key, md_hash64(g->filter.text, strlen(g->filter.text), app->script.ir_fingerprint));
         key = md_hash64_combine(key, app->mold.sys.topology_version);
@@ -37,12 +37,12 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
     g->valid = true;
 
     if (g->follow_selection) {
-        md_bitset_assign(&g->atoms, md_bitmask_view(&app->selection.selection_mask), heap);
+        md_bitset_assign(&g->atoms, md_bitmask_view(&app->system_context.selection.selection_mask), heap);
         if (want_sets && !md_bitset_empty(g->atoms)) md_array_push(g->sets, md_bitset_copy(g->atoms, heap), heap);
     } else if (g->filter.text[0]) {
-        g->valid = filter_evaluate(&g->filter, &g->atoms, app->script.language, filter_context(app), heap);
+        g->valid = filter_evaluate(&g->filter, &g->atoms, app->script.language, filter_context(app->system_context), heap);
         if (g->valid && want_sets) {
-            g->valid = filter_evaluate_sets(&g->filter, &g->sets, app->script.language, filter_context(app), heap);
+            g->valid = filter_evaluate_sets(&g->filter, &g->sets, app->script.language, filter_context(app->system_context), heap);
         }
     } else {
         md_bitset_free(&g->atoms, heap);
@@ -68,7 +68,7 @@ void layer_group_free(LayerGroup* g) {
 }
 
 script::FilterCtx layer_group_filter_context(const ApplicationState* app, const LayerGroup* g) {
-    script::FilterCtx ctx = filter_context(app);
+    script::FilterCtx ctx = filter_context(app->system_context);
     if (g && layer_group_has_context(*g)) ctx.atoms = &g->atoms;
     return ctx;
 }
@@ -317,7 +317,7 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
         ImGui::BeginDisabled(g.follow_selection);
         const bool invalid = !g.follow_selection && !g.valid && g.filter.text[0];
         if (invalid) ImGui::PushInvalid();
-        if (filter_input("##filter", &g.filter, app->script.language, filter_context(app), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
+        if (filter_input("##filter", &g.filter, app->script.language, filter_context(app->system_context), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
             changed = true;
         }
         if (invalid) ImGui::PopInvalid();

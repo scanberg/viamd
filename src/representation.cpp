@@ -39,18 +39,18 @@ struct TreeNodes {
 
 // Reading the tree does not change it, which is all the const_cast is for: the tree functions take the same
 // array of nodes whether they move them or not
-static TreeNodes tree_nodes(const ApplicationState& app, md_allocator_i* alloc) {
-    const size_t num_reps   = md_array_size(app.representation.reps);
-    const size_t num_groups = md_array_size(app.representation.groups);
+static TreeNodes tree_nodes(const SystemContext& sys, md_allocator_i* alloc) {
+    const size_t num_reps   = md_array_size(sys.representation.reps);
+    const size_t num_groups = md_array_size(sys.representation.groups);
     TreeNodes t;
     t.count = num_reps + num_groups;
     t.num_reps = num_reps;
     t.nodes = (RepresentationNode**)md_alloc(alloc, sizeof(RepresentationNode*) * MAX(t.count, (size_t)1));
     for (size_t i = 0; i < num_reps; ++i) {
-        t.nodes[i] = const_cast<RepresentationNode*>(&app.representation.reps[i].node);
+        t.nodes[i] = const_cast<RepresentationNode*>(&sys.representation.reps[i].node);
     }
     for (size_t i = 0; i < num_groups; ++i) {
-        t.nodes[num_reps + i] = const_cast<RepresentationNode*>(&app.representation.groups[i].node);
+        t.nodes[num_reps + i] = const_cast<RepresentationNode*>(&sys.representation.groups[i].node);
     }
     return t;
 }
@@ -72,44 +72,44 @@ static void sort_by_order(T* items, size_t count) {
 }
 
 // Pointers into the arrays do not survive this: the items are moved to their places
-static void tree_normalize(ApplicationState* app) {
+static void tree_normalize(SystemContext& sys) {
     md_temp_scope_t temp = md_temp_begin();
-    TreeNodes t = tree_nodes(*app, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     representation_tree_normalize(t.nodes, t.count);
     md_temp_end(temp);
 
-    sort_by_order(app->representation.reps,   md_array_size(app->representation.reps));
-    sort_by_order(app->representation.groups, md_array_size(app->representation.groups));
+    sort_by_order(sys.representation.reps,   md_array_size(sys.representation.reps));
+    sort_by_order(sys.representation.groups, md_array_size(sys.representation.groups));
 }
 
-static int find_rep_idx(const ApplicationState& app, uint32_t id) {
-    for (size_t i = 0; i < md_array_size(app.representation.reps); ++i) {
-        if (app.representation.reps[i].node.id == id) return (int)i;
+static int find_rep_idx(const SystemContext& sys, uint32_t id) {
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        if (sys.representation.reps[i].node.id == id) return (int)i;
     }
     return -1;
 }
 
-static int find_group_idx(const ApplicationState& app, uint32_t id) {
+static int find_group_idx(const SystemContext& sys, uint32_t id) {
     if (id == 0) return -1;
-    for (size_t i = 0; i < md_array_size(app.representation.groups); ++i) {
-        if (app.representation.groups[i].node.id == id) return (int)i;
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        if (sys.representation.groups[i].node.id == id) return (int)i;
     }
     return -1;
 }
 
-Representation* find_representation(ApplicationState* app, uint32_t id) {
-    const int i = find_rep_idx(*app, id);
-    return i >= 0 ? &app->representation.reps[i] : nullptr;
+Representation* find_representation(SystemContext& sys, uint32_t id) {
+    const int i = find_rep_idx(sys, id);
+    return i >= 0 ? &sys.representation.reps[i] : nullptr;
 }
 
-RepresentationGroup* find_representation_group(ApplicationState* app, uint32_t id) {
-    const int i = find_group_idx(*app, id);
-    return i >= 0 ? &app->representation.groups[i] : nullptr;
+RepresentationGroup* find_representation_group(SystemContext& sys, uint32_t id) {
+    const int i = find_group_idx(sys, id);
+    return i >= 0 ? &sys.representation.groups[i] : nullptr;
 }
 
-const RepresentationGroup* find_representation_group(const ApplicationState& app, uint32_t id) {
-    const int i = find_group_idx(app, id);
-    return i >= 0 ? &app.representation.groups[i] : nullptr;
+const RepresentationGroup* find_representation_group(const SystemContext& sys, uint32_t id) {
+    const int i = find_group_idx(sys, id);
+    return i >= 0 ? &sys.representation.groups[i] : nullptr;
 }
 
 static bool group_has_filter(const RepresentationGroup& g) {
@@ -118,10 +118,10 @@ static bool group_has_filter(const RepresentationGroup& g) {
 
 // Whether every group from 'parent' outwards is enabled. A parent that names no group is the top level,
 // as it is to the tree.
-static bool groups_enabled(const ApplicationState& app, uint32_t parent) {
-    const size_t num_groups = md_array_size(app.representation.groups);
+static bool groups_enabled(const SystemContext& sys, uint32_t parent) {
+    const size_t num_groups = md_array_size(sys.representation.groups);
     for (size_t steps = 0; parent != 0 && steps <= num_groups; ++steps) {
-        const RepresentationGroup* g = find_representation_group(app, parent);
+        const RepresentationGroup* g = find_representation_group(sys, parent);
         if (!g) break;
         if (!g->enabled) return false;
         parent = g->node.parent;
@@ -129,19 +129,19 @@ static bool groups_enabled(const ApplicationState& app, uint32_t parent) {
     return true;
 }
 
-bool representation_shown(const ApplicationState& app, const Representation& rep) {
-    return app.system.visible && rep.enabled && groups_enabled(app, rep.node.parent);
+bool representation_shown(const SystemContext& sys, const Representation& rep) {
+    return sys.scene.visible && rep.enabled && groups_enabled(sys, rep.node.parent);
 }
 
-bool representation_group_shown(const ApplicationState& app, const RepresentationGroup& group) {
-    return app.system.visible && group.enabled && groups_enabled(app, group.node.parent);
+bool representation_group_shown(const SystemContext& sys, const RepresentationGroup& group) {
+    return sys.scene.visible && group.enabled && groups_enabled(sys, group.node.parent);
 }
 
-RepresentationContext representation_context(const ApplicationState& app, uint32_t parent) {
+RepresentationContext representation_context(const SystemContext& sys, uint32_t parent) {
     RepresentationContext ctx;
-    const size_t num_groups = md_array_size(app.representation.groups);
+    const size_t num_groups = md_array_size(sys.representation.groups);
     for (size_t steps = 0; parent != 0 && steps <= num_groups; ++steps) {
-        const RepresentationGroup* g = find_representation_group(app, parent);
+        const RepresentationGroup* g = find_representation_group(sys, parent);
         if (!g) break;
         if (group_has_filter(*g)) {
             // The innermost one is all it takes: its own filter was evaluated within the context around it,
@@ -157,47 +157,47 @@ RepresentationContext representation_context(const ApplicationState& app, uint32
     return ctx;
 }
 
-bool representation_is_dynamic(const ApplicationState& app, const Representation& rep) {
+bool representation_is_dynamic(const SystemContext& sys, const Representation& rep) {
     // The result has the context's in it as of the last evaluation; the context is asked as well for one that has
     // come to depend on the frame since, which flags what is within it for evaluation anyway
-    return rep.filter.result.is_dynamic || representation_context(app, rep.node.parent).dynamic;
+    return rep.filter.result.is_dynamic || representation_context(sys, rep.node.parent).dynamic;
 }
 
-script::FilterCtx representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx) {
-    script::FilterCtx fctx = filter_context(&app);
+script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx) {
+    script::FilterCtx fctx = filter_context(sys);
     fctx.atoms = ctx.atoms;
     return fctx;
 }
 
 // Everything within a group is evaluated in a context that just changed, or may have: the groups' contexts
 // and the representations' atoms. For a representation it is just itself.
-static void flag_within_as_dirty(ApplicationState* app, bool group, uint32_t id) {
+static void flag_within_as_dirty(SystemContext& sys, bool group, uint32_t id) {
     if (!group) {
-        if (Representation* rep = find_representation(app, id)) flag_representation_as_dirty(rep);
-        app->representation.atom_visibility_mask_dirty = true;
+        if (Representation* rep = find_representation(sys, id)) flag_representation_as_dirty(rep);
+        sys.representation.atom_visibility_mask_dirty = true;
         return;
     }
 
     md_temp_scope_t temp = md_temp_begin();
-    TreeNodes t = tree_nodes(*app, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     for (size_t k = 0; k < t.count; ++k) {
         const RepresentationNode* node = t.nodes[k];
         const bool self = node->group && node->id == id;
         if (!self && !representation_tree_is_within(t.nodes, t.count, k, id)) continue;
         if (k < t.num_reps) {
-            flag_representation_as_dirty(&app->representation.reps[k]);
+            flag_representation_as_dirty(&sys.representation.reps[k]);
         } else {
-            app->representation.groups[k - t.num_reps].filt_is_dirty = true;
+            sys.representation.groups[k - t.num_reps].filt_is_dirty = true;
         }
     }
     md_temp_end(temp);
-    app->representation.atom_visibility_mask_dirty = true;
+    sys.representation.atom_visibility_mask_dirty = true;
 }
 
 // The ids of what is within the group, representations and groups apart, in window order
-static void collect_within(md_array(uint32_t)* rep_ids, md_array(uint32_t)* group_ids, const ApplicationState& app, uint32_t id, md_allocator_i* alloc) {
+static void collect_within(md_array(uint32_t)* rep_ids, md_array(uint32_t)* group_ids, const SystemContext& sys, uint32_t id, md_allocator_i* alloc) {
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    TreeNodes t = tree_nodes(app, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     for (size_t k = 0; k < t.count; ++k) {
         if (!representation_tree_is_within(t.nodes, t.count, k, id)) continue;
         if (k < t.num_reps) {
@@ -209,9 +209,9 @@ static void collect_within(md_array(uint32_t)* rep_ids, md_array(uint32_t)* grou
     md_temp_end(temp);
 }
 
-bool representation_can_move(const ApplicationState& app, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop) {
+bool representation_can_move(const SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop) {
     md_temp_scope_t temp = md_temp_begin();
-    TreeNodes t = tree_nodes(app, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     const int idx    = representation_tree_find(t.nodes, t.count, group, id);
     const int target = target_id ? representation_tree_find(t.nodes, t.count, target_group, target_id) : -1;
     const bool ok = idx >= 0 && (target_id == 0 || target >= 0) && representation_tree_can_move(t.nodes, t.count, (size_t)idx, target, drop);
@@ -219,9 +219,9 @@ bool representation_can_move(const ApplicationState& app, bool group, uint32_t i
     return ok;
 }
 
-bool representation_move(ApplicationState* app, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop) {
+bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop) {
     md_temp_scope_t temp = md_temp_begin();
-    TreeNodes t = tree_nodes(*app, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     const int idx    = representation_tree_find(t.nodes, t.count, group, id);
     const int target = target_id ? representation_tree_find(t.nodes, t.count, target_group, target_id) : -1;
     bool moved = false;
@@ -235,12 +235,12 @@ bool representation_move(ApplicationState* app, bool group, uint32_t id, bool ta
 
     if (!moved) return false;
 
-    sort_by_order(app->representation.reps,   md_array_size(app->representation.reps));
-    sort_by_order(app->representation.groups, md_array_size(app->representation.groups));
+    sort_by_order(sys.representation.reps,   md_array_size(sys.representation.reps));
+    sort_by_order(sys.representation.groups, md_array_size(sys.representation.groups));
 
     // Into another group is into another context, and maybe out of sight. Among its siblings it is neither.
     if (old_parent != new_parent) {
-        flag_within_as_dirty(app, group, id);
+        flag_within_as_dirty(sys, group, id);
     }
     return true;
 }
@@ -249,14 +249,15 @@ bool representation_move(ApplicationState* app, bool group, uint32_t id, bool ta
 // Representations
 // ---------------------------------------------------------------------------------------------------------
 
-static void init_representation(ApplicationState* state, Representation* rep) {
+static void init_representation(SystemContext& sys, Representation* rep) {
+    ApplicationState* state = sys.app;
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(sys.data.sys.atom.count);
 #endif
-    rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
+    rep->md_rep = md_gl_rep_create(sys.data.gl_mol);
     // Of the glyphs of the system loaded now: one of a system before it goes
     md_gl_rep_destroy(rep->glyph_rep);
-    rep->glyph_rep = cartoon_glyphs_rep_create(state->mold.cartoon_glyphs);
+    rep->glyph_rep = cartoon_glyphs_rep_create(sys.data.cartoon_glyphs);
     rep->atom_mask = md_bitset_empty_set();
 
     // Default to the first per atom field the system offers, if it offers any - unless the
@@ -264,10 +265,10 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // when a system is loaded, which is AFTER a workspace's representations were read, and for a
     // clone: neither may lose the attribute it was coloured by, or how. There is no list to consult:
     // the attribute table is the list.
-    if (!md_attributes_get(&state->mold.sys.attributes, rep->atom_attribute.key)) {
+    if (!md_attributes_get(&sys.data.sys.attributes, rep->atom_attribute.key)) {
         md_attribute_id_t first_attribute = MD_ATTRIBUTE_INVALID;
-        if (atom_attribute_query(&first_attribute, 1, state->mold.sys) > 0) {
-            atom_attribute_select(&rep->atom_attribute, first_attribute, state->mold.sys);
+        if (atom_attribute_query(&first_attribute, 1, sys.data.sys) > 0) {
+            atom_attribute_select(&rep->atom_attribute, first_attribute, sys.data.sys);
         }
     }
 
@@ -295,21 +296,22 @@ static void clear_owned(Representation* rep) {
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
 // once it has placed all it is copying. Returns its id.
-static uint32_t push_copy(ApplicationState* state, const Representation& src, uint32_t parent, int32_t order) {
+static uint32_t push_copy(SystemContext& sys, const Representation& src, uint32_t parent, int32_t order) {
+    ApplicationState* state = sys.app;
     // A copy first: src may well be an element of the array the push is about to grow
     Representation copy = src;
     clear_owned(&copy);
-    copy.node.id     = state->representation.next_rep_id++;
+    copy.node.id     = sys.representation.next_rep_id++;
     copy.node.parent = parent;
     copy.node.order  = order;
     copy.node.group  = false;
-    md_array_push(state->representation.reps, copy, state->allocator.persistent);
-    init_representation(state, md_array_last(state->representation.reps));
+    md_array_push(sys.representation.reps, copy, state->allocator.persistent);
+    init_representation(sys, md_array_last(sys.representation.reps));
     return copy.node.id;
 }
 
-bool representation_can_add(const ApplicationState& app, size_t count) {
-    return md_array_size(app.representation.reps) + count <= REPRESENTATION_MAX;
+bool representation_can_add(const SystemContext& sys, size_t count) {
+    return md_array_size(sys.representation.reps) + count <= REPRESENTATION_MAX;
 }
 
 // Said when one is not made for the limit
@@ -317,15 +319,16 @@ static void log_representation_limit() {
     VIAMD_LOG_ERROR("A system has at most %zu representations; remove one to make another", REPRESENTATION_MAX);
 }
 
-Representation* create_representation(ApplicationState* state, RepresentationType type, ColorMapping color_mapping, str_t filter, uint32_t group) {
+Representation* create_representation(SystemContext& sys, RepresentationType type, ColorMapping color_mapping, str_t filter, uint32_t group) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
-    if (!representation_can_add(*state)) {
+    if (!representation_can_add(sys)) {
         log_representation_limit();
         return nullptr;
     }
-    md_array_push(state->representation.reps, Representation(), state->allocator.persistent);
-    Representation* rep = md_array_last(state->representation.reps);
-    rep->node.id     = state->representation.next_rep_id++;
+    md_array_push(sys.representation.reps, Representation(), state->allocator.persistent);
+    Representation* rep = md_array_last(sys.representation.reps);
+    rep->node.id     = sys.representation.next_rep_id++;
     rep->node.parent = group;
     rep->node.order  = INT32_MAX;   // the last in its group
     rep->type = type;
@@ -336,38 +339,38 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     // Opens on the HOMO, derived from the occupations rather than handed over by whoever loaded
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
     OrbitalFrontier frontier = {};
-    es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
+    es_orbital_frontier(&frontier, sys.data.sys, es_path::alpha_occupation);
     rep->electronic_structure.orbital_idx = MAX(frontier.homo_idx, 0);
-    init_representation(state, rep);
+    init_representation(sys, rep);
 
     const uint32_t id = rep->node.id;
-    tree_normalize(state);
-    return find_representation(state, id);
+    tree_normalize(sys);
+    return find_representation(sys, id);
 }
 
-Representation* clone_representation(ApplicationState* state, const Representation& rep) {
-    ASSERT(state);
-    if (!representation_can_add(*state)) {
+Representation* clone_representation(SystemContext& sys, const Representation& rep) {
+    if (!representation_can_add(sys)) {
         log_representation_limit();
         return nullptr;
     }
     // Taken before anything moves: rep may be an element of the array
     const Representation src = rep;
-    tree_normalize(state);
+    tree_normalize(sys);
     // Just after the original, which is the original's order + 1 once normalized. One that is not in the
     // array goes last.
-    const Representation* orig = find_representation(state, src.node.id);
-    const uint32_t id = orig ? push_copy(state, src, orig->node.parent, orig->node.order + 1)
-                             : push_copy(state, src, src.node.parent, INT32_MAX);
-    tree_normalize(state);
-    state->representation.atom_visibility_mask_dirty = true;
-    return find_representation(state, id);
+    const Representation* orig = find_representation(sys, src.node.id);
+    const uint32_t id = orig ? push_copy(sys, src, orig->node.parent, orig->node.order + 1)
+                             : push_copy(sys, src, src.node.parent, INT32_MAX);
+    tree_normalize(sys);
+    sys.representation.atom_visibility_mask_dirty = true;
+    return find_representation(sys, id);
 }
 
-void remove_representation(ApplicationState* state, size_t idx) {
+void remove_representation(SystemContext& sys, size_t idx) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
-    ASSERT(idx < md_array_size(state->representation.reps));
-    auto& rep = state->representation.reps[idx];
+    ASSERT(idx < md_array_size(sys.representation.reps));
+    auto& rep = sys.representation.reps[idx];
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_array_free(rep.bond_pairs, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
@@ -381,77 +384,79 @@ void remove_representation(ApplicationState* state, size_t idx) {
     electronic_structure_mesh_free(state, &rep.electronic_structure);
 
     // In order: the array is the order of the window
-    const size_t count = md_array_size(state->representation.reps);
+    const size_t count = md_array_size(sys.representation.reps);
     for (size_t i = idx; i + 1 < count; ++i) {
-        state->representation.reps[i] = state->representation.reps[i + 1];
+        sys.representation.reps[i] = sys.representation.reps[i + 1];
     }
-    md_array_pop(state->representation.reps);
-    recompute_atom_visibility_mask(state);
+    md_array_pop(sys.representation.reps);
+    recompute_atom_visibility_mask(sys);
 }
 
-static void free_group(ApplicationState* state, size_t idx) {
-    ASSERT(idx < md_array_size(state->representation.groups));
-    md_bitset_free(&state->representation.groups[idx].atom_mask, state->allocator.persistent);
-    const size_t count = md_array_size(state->representation.groups);
+static void free_group(SystemContext& sys, size_t idx) {
+    ApplicationState* state = sys.app;
+    ASSERT(idx < md_array_size(sys.representation.groups));
+    md_bitset_free(&sys.representation.groups[idx].atom_mask, state->allocator.persistent);
+    const size_t count = md_array_size(sys.representation.groups);
     for (size_t i = idx; i + 1 < count; ++i) {
-        state->representation.groups[i] = state->representation.groups[i + 1];
+        sys.representation.groups[i] = sys.representation.groups[i + 1];
     }
-    md_array_pop(state->representation.groups);
+    md_array_pop(sys.representation.groups);
 }
 
-void remove_all_representations(ApplicationState* state) {
-    while (md_array_size(state->representation.reps) > 0) {
-        remove_representation(state, md_array_size(state->representation.reps) - 1);
+void remove_all_representations(SystemContext& sys) {
+    while (md_array_size(sys.representation.reps) > 0) {
+        remove_representation(sys, md_array_size(sys.representation.reps) - 1);
     }
-    while (md_array_size(state->representation.groups) > 0) {
-        free_group(state, md_array_size(state->representation.groups) - 1);
+    while (md_array_size(sys.representation.groups) > 0) {
+        free_group(sys, md_array_size(sys.representation.groups) - 1);
     }
 }
 
-void recompute_atom_visibility_mask(ApplicationState* state) {
-    ASSERT(state);
-    auto& mask = state->representation.visibility_mask;
+void recompute_atom_visibility_mask(SystemContext& sys) {
+    auto& mask = sys.representation.visibility_mask;
 
     md_bitmask_clear(&mask);
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        const Representation& rep = state->representation.reps[i];
-        if (!representation_shown(*state, rep)) continue;
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        const Representation& rep = sys.representation.reps[i];
+        if (!representation_shown(sys, rep)) continue;
         md_bitmask_or(&mask, rep.atom_mask);
     }
-    state->representation.visibility_mask_hash = md_bitset_hash64(md_bitmask_view(&mask), 0);
+    sys.representation.visibility_mask_hash = md_bitset_hash64(md_bitmask_view(&mask), 0);
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------------------------------------
 
-RepresentationGroup* create_representation_group(ApplicationState* state, str_t name, uint32_t parent) {
+RepresentationGroup* create_representation_group(SystemContext& sys, str_t name, uint32_t parent) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
     RepresentationGroup group = {};
-    group.node.id     = state->representation.next_group_id++;
+    group.node.id     = sys.representation.next_group_id++;
     group.node.parent = parent;
     group.node.order  = INT32_MAX;
     group.node.group  = true;
     str_copy_to_char_buf(group.name, sizeof(group.name), str_empty(name) ? STR_LIT("group") : name);
-    md_array_push(state->representation.groups, group, state->allocator.persistent);
-    tree_normalize(state);
-    return find_representation_group(state, group.node.id);
+    md_array_push(sys.representation.groups, group, state->allocator.persistent);
+    tree_normalize(sys);
+    return find_representation_group(sys, group.node.id);
 }
 
-size_t representation_group_rep_count(const ApplicationState& app, uint32_t id) {
+size_t representation_group_rep_count(const SystemContext& sys, uint32_t id) {
     md_temp_scope_t temp = md_temp_begin();
     md_array(uint32_t) rep_ids = 0;
     md_array(uint32_t) group_ids = 0;
-    collect_within(&rep_ids, &group_ids, app, id, md_temp_allocator(temp));
+    collect_within(&rep_ids, &group_ids, sys, id, md_temp_allocator(temp));
     const size_t n = md_array_size(rep_ids);
     md_temp_end(temp);
     return n;
 }
 
-void clone_representation_group(ApplicationState* state, uint32_t id) {
+void clone_representation_group(SystemContext& sys, uint32_t id) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
-    tree_normalize(state);
-    const RepresentationGroup* orig = find_representation_group(state, id);
+    tree_normalize(sys);
+    const RepresentationGroup* orig = find_representation_group(sys, id);
     if (!orig) return;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -459,10 +464,10 @@ void clone_representation_group(ApplicationState* state, uint32_t id) {
 
     md_array(uint32_t) rep_ids = 0;
     md_array(uint32_t) group_ids = 0;
-    collect_within(&rep_ids, &group_ids, *state, id, alloc);
+    collect_within(&rep_ids, &group_ids, sys, id, alloc);
 
     // All of it or none: a copy without some of what it held would not be a copy
-    if (!representation_can_add(*state, md_array_size(rep_ids))) {
+    if (!representation_can_add(sys, md_array_size(rep_ids))) {
         log_representation_limit();
         md_temp_end(temp);
         return;
@@ -485,10 +490,10 @@ void clone_representation_group(ApplicationState* state, uint32_t id) {
     };
 
     for (size_t i = 0; i < num_groups; ++i) {
-        new_ids[i] = state->representation.next_group_id++;
+        new_ids[i] = sys.representation.next_group_id++;
     }
     for (size_t i = 0; i < num_groups; ++i) {
-        const RepresentationGroup* src = find_representation_group(state, old_ids[i]);
+        const RepresentationGroup* src = find_representation_group(sys, old_ids[i]);
         if (!src) continue;
         RepresentationGroup copy = *src;
         copy.atom_mask = {};            // its own, evaluated again
@@ -499,98 +504,97 @@ void clone_representation_group(ApplicationState* state, uint32_t id) {
         } else {
             copy.node.parent = map_parent(src->node.parent);
         }
-        md_array_push(state->representation.groups, copy, state->allocator.persistent);
+        md_array_push(sys.representation.groups, copy, state->allocator.persistent);
     }
     for (size_t i = 0; i < md_array_size(rep_ids); ++i) {
-        const Representation* src = find_representation(state, rep_ids[i]);
+        const Representation* src = find_representation(sys, rep_ids[i]);
         if (!src) continue;
-        push_copy(state, *src, map_parent(src->node.parent), src->node.order);
+        push_copy(sys, *src, map_parent(src->node.parent), src->node.order);
     }
 
     md_temp_end(temp);
-    tree_normalize(state);
-    state->representation.atom_visibility_mask_dirty = true;
+    tree_normalize(sys);
+    sys.representation.atom_visibility_mask_dirty = true;
 }
 
-void remove_representation_group(ApplicationState* state, uint32_t id) {
-    ASSERT(state);
+void remove_representation_group(SystemContext& sys, uint32_t id) {
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     md_array(uint32_t) rep_ids = 0;
     md_array(uint32_t) group_ids = 0;
-    collect_within(&rep_ids, &group_ids, *state, id, alloc);
+    collect_within(&rep_ids, &group_ids, sys, id, alloc);
     md_array_push(group_ids, id, alloc);
 
     for (size_t i = 0; i < md_array_size(rep_ids); ++i) {
-        const int idx = find_rep_idx(*state, rep_ids[i]);
-        if (idx >= 0) remove_representation(state, (size_t)idx);
+        const int idx = find_rep_idx(sys, rep_ids[i]);
+        if (idx >= 0) remove_representation(sys, (size_t)idx);
     }
     for (size_t i = 0; i < md_array_size(group_ids); ++i) {
-        const int idx = find_group_idx(*state, group_ids[i]);
-        if (idx >= 0) free_group(state, (size_t)idx);
+        const int idx = find_group_idx(sys, group_ids[i]);
+        if (idx >= 0) free_group(sys, (size_t)idx);
     }
 
     md_temp_end(temp);
-    tree_normalize(state);
-    recompute_atom_visibility_mask(state);
+    tree_normalize(sys);
+    recompute_atom_visibility_mask(sys);
 }
 
-void ungroup_representation_group(ApplicationState* state, uint32_t id) {
-    ASSERT(state);
+void ungroup_representation_group(SystemContext& sys, uint32_t id) {
     // Normalized, everything within the group is numbered between the group and its next sibling: given the
     // group's parent, what it holds sorts exactly into its place
-    tree_normalize(state);
-    const RepresentationGroup* g = find_representation_group(state, id);
+    tree_normalize(sys);
+    const RepresentationGroup* g = find_representation_group(sys, id);
     if (!g) return;
     const uint32_t parent = g->node.parent;
 
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        Representation& rep = sys.representation.reps[i];
         if (rep.node.parent != id) continue;
         rep.node.parent = parent;
-        flag_within_as_dirty(state, false, rep.node.id);
+        flag_within_as_dirty(sys, false, rep.node.id);
     }
-    for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
-        RepresentationGroup& child = state->representation.groups[i];
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        RepresentationGroup& child = sys.representation.groups[i];
         if (child.node.parent != id) continue;
         child.node.parent = parent;
-        flag_within_as_dirty(state, true, child.node.id);
+        flag_within_as_dirty(sys, true, child.node.id);
     }
 
-    const int idx = find_group_idx(*state, id);
-    if (idx >= 0) free_group(state, (size_t)idx);
-    tree_normalize(state);
-    state->representation.atom_visibility_mask_dirty = true;
+    const int idx = find_group_idx(sys, id);
+    if (idx >= 0) free_group(sys, (size_t)idx);
+    tree_normalize(sys);
+    sys.representation.atom_visibility_mask_dirty = true;
 }
 
 // A new group in the place of a representation or a group, which goes into it
-static void wrap_in_group(ApplicationState* state, bool group, uint32_t id) {
-    tree_normalize(state);
+static void wrap_in_group(SystemContext& sys, bool group, uint32_t id) {
+    ApplicationState* state = sys.app;
+    tree_normalize(sys);
     const RepresentationNode* node = nullptr;
     if (group) {
-        if (const RepresentationGroup* g = find_representation_group(state, id)) node = &g->node;
+        if (const RepresentationGroup* g = find_representation_group(sys, id)) node = &g->node;
     } else {
-        if (const Representation* r = find_representation(state, id)) node = &r->node;
+        if (const Representation* r = find_representation(sys, id)) node = &r->node;
     }
     if (!node) return;
 
     RepresentationGroup wrapper = {};
-    wrapper.node.id     = state->representation.next_group_id++;
+    wrapper.node.id     = sys.representation.next_group_id++;
     wrapper.node.parent = node->parent;
     wrapper.node.order  = node->order - 1;
     wrapper.node.group  = true;
     snprintf(wrapper.name, sizeof(wrapper.name), "group");
-    md_array_push(state->representation.groups, wrapper, state->allocator.persistent);
+    md_array_push(sys.representation.groups, wrapper, state->allocator.persistent);
 
     // The push may have moved the groups: the node is looked up again
     if (group) {
-        if (RepresentationGroup* g = find_representation_group(state, id)) g->node.parent = wrapper.node.id;
+        if (RepresentationGroup* g = find_representation_group(sys, id)) g->node.parent = wrapper.node.id;
     } else {
-        if (Representation* r = find_representation(state, id)) r->node.parent = wrapper.node.id;
+        if (Representation* r = find_representation(sys, id)) r->node.parent = wrapper.node.id;
     }
     // A group without a filter changes no context
-    tree_normalize(state);
+    tree_normalize(sys);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -598,14 +602,15 @@ static void wrap_in_group(ApplicationState* state, bool group, uint32_t id) {
 // ---------------------------------------------------------------------------------------------------------
 
 // The context of a group: its own filter evaluated within the context it is in, which comes first
-static void update_group(ApplicationState* state, size_t idx, size_t depth) {
-    RepresentationGroup* g = &state->representation.groups[idx];
+static void update_group(SystemContext& sys, size_t idx, size_t depth) {
+    ApplicationState* state = sys.app;
+    RepresentationGroup* g = &sys.representation.groups[idx];
     if (!g->filt_is_dirty) return;
-    if (depth > md_array_size(state->representation.groups)) return;    // A cycle; the tree breaks those
+    if (depth > md_array_size(sys.representation.groups)) return;    // A cycle; the tree breaks those
 
-    const int parent_idx = find_group_idx(*state, g->node.parent);
+    const int parent_idx = find_group_idx(sys, g->node.parent);
     if (parent_idx >= 0) {
-        update_group(state, (size_t)parent_idx, depth + 1);
+        update_group(sys, (size_t)parent_idx, depth + 1);
     }
 
     if (!group_has_filter(*g)) {
@@ -614,9 +619,9 @@ static void update_group(ApplicationState* state, size_t idx, size_t depth) {
         g->filter.result.success = true;
     } else {
         // Without a system there is nothing to evaluate against; it is done once there is one
-        if (state->mold.sys.atom.count == 0) return;
+        if (sys.data.sys.atom.count == 0) return;
 
-        const RepresentationContext ctx = representation_context(*state, g->node.parent);
+        const RepresentationContext ctx = representation_context(sys, g->node.parent);
         if (!ctx.valid) {
             md_bitset_free(&g->atom_mask, state->allocator.persistent);
             g->filter.result = {};
@@ -624,7 +629,7 @@ static void update_group(ApplicationState* state, size_t idx, size_t depth) {
             g->filter.result.is_dynamic = ctx.dynamic;
             snprintf(g->filter.result.error, sizeof(g->filter.result.error), "The filter of the group '%s' it is in is not valid", ctx.group ? ctx.group->name : "");
         } else {
-            filter_evaluate(&g->filter, &g->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
+            filter_evaluate(&g->filter, &g->atom_mask, state->script.language, representation_filter_context(sys, ctx), state->allocator.persistent);
             g->filter.result.is_dynamic |= ctx.dynamic;
         }
     }
@@ -643,15 +648,15 @@ bool representation_uses_atom_colors(const Representation& rep) {
     }
 }
 
-bool representation_particle_type_valid(const ApplicationState& state, RepresentationType type) {
-    const md_system_t& sys = state.mold.sys;
+bool representation_particle_type_valid(const SystemContext& sc, RepresentationType type) {
+    const md_system_t& sys = sc.data.sys;
     switch (type) {
     case RepresentationType::SpaceFill:     return sys.atom.count > 0;
     case RepresentationType::Licorice:      return sys.bond.count > 0;
     case RepresentationType::BallAndStick:  return sys.atom.count > 0;
     case RepresentationType::Ribbons:       return sys.protein_backbone.range.count > 0;
     // Proteins, and the lipids and nucleic acids of the glyphs
-    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(state.mold.cartoon_glyphs);
+    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(sc.data.cartoon_glyphs);
     default:                                return false;
     }
 }
@@ -710,12 +715,12 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
 }
 
 // The draws of the glyphs of a Cartoon (see representation.h)
-void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
-    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
+void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc) {
+    if (!cartoon_glyphs_valid(sys.data.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !sys.data.cartoon_glyphs.positions_valid) return;
     const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
 
     // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
-    if (state.mold.cartoon_glyphs.num_spheres > 0) {
+    if (sys.data.cartoon_glyphs.num_spheres > 0) {
         md_gl_draw_op_t spheres = {
             .type = MD_GL_REP_SPACE_FILL,
             .args = {},
@@ -726,7 +731,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         md_array_push(*ops, spheres, alloc);
     }
 
-    if (state.mold.cartoon_glyphs.num_tubes > 0) {
+    if (sys.data.cartoon_glyphs.num_tubes > 0) {
         md_gl_draw_op_t tubes = {
             .type = MD_GL_REP_TUBES,
             .args = {},
@@ -739,7 +744,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         md_array_push(*ops, tubes, alloc);
     }
 
-    if (state.mold.cartoon_glyphs.num_slabs > 0) {
+    if (sys.data.cartoon_glyphs.num_slabs > 0) {
         md_gl_draw_op_t slabs = {
             .type = MD_GL_REP_SLABS,
             .args = {},
@@ -756,8 +761,9 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
 
 // The colours of all atoms of the system for a representation which colours by atom, by its colour mapping, then towards
 // its tint and saturation (see representation.h)
-void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationState* state, Representation* rep, const md_bitset_t* shown) {
-    const md_system_t& sys = state->mold.sys;
+void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContext& sc, Representation* rep, const md_bitset_t* shown) {
+    ApplicationState* state = sc.app;
+    const md_system_t& sys = sc.data.sys;
     md_allocator_i* frame_alloc = state->allocator.frame;
     const size_t bytes = num_atoms * sizeof(uint32_t);
 
@@ -798,7 +804,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             .helix = convert_color(rep->secondary_structure.color_helix),
             .sheet = convert_color(rep->secondary_structure.color_sheet),
         };
-        color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state), palette);
+        color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(sc), palette);
         break;
     }
     case ColorMapping::Attribute: {
@@ -855,15 +861,16 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
     }
 }
 
-static void update_representation(ApplicationState* state, Representation* rep) {
+static void update_representation(SystemContext& sc, Representation* rep) {
+    ApplicationState* state = sc.app;
     ASSERT(state);
     ASSERT(rep);
 
     // A hidden one keeps what needs doing for when it is shown again
     if (!rep->needs_update) return;
-    if (!representation_shown(*state, *rep)) return;
+    if (!representation_shown(sc, *rep)) return;
 
-    const auto& sys = state->mold.sys;
+    const auto& sys = sc.data.sys;
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
@@ -877,16 +884,16 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
         // The atoms first: the colours are applied through them, and a colour scale's range can
         // follow the values of exactly the atoms shown
-        if (rep->dynamic_evaluation && representation_is_dynamic(*state, *rep)) {
+        if (rep->dynamic_evaluation && representation_is_dynamic(sc, *rep)) {
             rep->filt_is_dirty = true;
         }
         if (rep->filt_is_dirty) {
             // Within the context of the groups it is in. A context that is not valid leaves nothing to
             // evaluate within, which is what an invalid filter of its own leaves too.
-            const RepresentationContext ctx = representation_context(*state, rep->node.parent);
+            const RepresentationContext ctx = representation_context(sc, rep->node.parent);
             if (ctx.valid && rep->type == RepresentationType::Bonds) {
                 // The bonds, and the atoms at their ends: those are what is coloured, and shown
-                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
+                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, state->script.language, representation_filter_context(sc, ctx), state->allocator.persistent);
                 md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
                 for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
                     md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
@@ -896,7 +903,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 rep->atom_mask = md_bitmask_extract(&ends, state->allocator.persistent);
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else if (ctx.valid) {
-                filter_evaluate(&rep->filter, &rep->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
+                filter_evaluate(&rep->filter, &rep->atom_mask, state->script.language, representation_filter_context(sc, ctx), state->allocator.persistent);
                 // What it picks follows the frame if the context it picks within does
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else {
@@ -907,11 +914,11 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 snprintf(rep->filter.result.error, sizeof(rep->filter.result.error), "The filter of the group '%s', the context of this one, is not valid", ctx.group ? ctx.group->name : "");
             }
             rep->filt_is_dirty = false;
-            state->representation.atom_visibility_mask_dirty = true;
+            sc.representation.atom_visibility_mask_dirty = true;
         }
 
         // Of the atoms shown, for a colour scale which spans their values
-        representation_atom_colors(colors, num_atoms, state, rep, rep->filter.result.success ? &rep->atom_mask : nullptr);
+        representation_atom_colors(colors, num_atoms, sc, rep, rep->filter.result.success ? &rep->atom_mask : nullptr);
     }
 
     switch (rep->type) {
@@ -920,7 +927,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::BallAndStick:
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
-        rep->type_is_valid = representation_particle_type_valid(*state, rep->type);
+        rep->type_is_valid = representation_particle_type_valid(sc, rep->type);
         break;
     case RepresentationType::ElectronicStructure:
         rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
@@ -930,10 +937,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         }
         break;
     case RepresentationType::DipoleMoment:
-        rep->type_is_valid = md_attributes_get(&state->mold.sys.attributes, rep->dipole.dipole_key) != NULL;
+        rep->type_is_valid = md_attributes_get(&sc.data.sys.attributes, rep->dipole.dipole_key) != NULL;
         break;
     case RepresentationType::SimulationBox:
-        rep->type_is_valid = md_unitcell_flags(&state->mold.state.unitcell) != 0;
+        rep->type_is_valid = md_unitcell_flags(&sc.data.state.unitcell) != 0;
         break;
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
@@ -946,14 +953,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     if (colors) {
         if (rep->filter.result.success) {
             filter_colors(colors, num_atoms, rep->atom_mask);
-            state->representation.atom_visibility_mask_dirty = true;
+            sc.representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
-            representation_set_weak_bonds(state, rep);
+            representation_set_weak_bonds(sc, rep);
             rep->glyphs_shown = false;
             if (rep->type == RepresentationType::Cartoon) {
-                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
+                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(sc.data.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
             }
-            state->representation.gl_version += 1;
+            sc.representation.gl_version += 1;
 
 #if EXPERIMENTAL_GFX_API
             md_gfx_rep_attr_t attributes = {};
@@ -967,10 +974,11 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     rep->needs_update = again;
 }
 
-void representation_set_weak_bonds(ApplicationState* state, Representation* rep) {
+void representation_set_weak_bonds(SystemContext& sc, Representation* rep) {
+    ApplicationState* state = sc.app;
     ASSERT(state && rep);
     if (!rep->md_rep.id) return;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = sc.data.sys;
 
     const md_atom_pair_t* pairs = nullptr;
     size_t count = 0;
@@ -997,7 +1005,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
 #define WEAK_BOND_DASH_LENGTH 2.0f
 #define WEAK_BOND_GAP_LENGTH  1.5f
 
-void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
+void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc) {
     ASSERT(ops);
     md_gl_draw_op_t op = {
         .type = MD_GL_REP_WEAK_BONDS,
@@ -1007,7 +1015,7 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
     bool dashed = true;
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         // The non-covalent bonds of the system among its atoms, thinner than its sticks, in their colours
-        if (!rep.noncovalent_bonds || state.mold.sys.bond.noncovalent_count == 0) return;
+        if (!rep.noncovalent_bonds || sys.data.sys.bond.noncovalent_count == 0) return;
         const md_gl_draw_op_t sticks = representation_draw_op(rep);
         const bool licorice = rep.type == RepresentationType::Licorice;
         op.args.weak_bonds.radius = 0.5f * 0.2f * (licorice ? rep.scale.x : rep.scale.y);
@@ -1039,33 +1047,34 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
     md_array_push(*ops, op, alloc);
 }
 
-void update_all_representations(ApplicationState* state) {
+void update_all_representations(SystemContext& sys) {
     // The contexts first, so that every representation is evaluated within an up to date one. Hidden groups
     // wait: what is within them is hidden too, and nothing evaluated there would be seen.
-    for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
-        if (representation_group_shown(*state, state->representation.groups[i])) {
-            update_group(state, i, 0);
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        if (representation_group_shown(sys, sys.representation.groups[i])) {
+            update_group(sys, i, 0);
         }
     }
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation* rep = &state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        Representation* rep = &sys.representation.reps[i];
         // The field it is coloured by is evaluated over frames, shown or not
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
-        update_representation(state, rep);
+        update_representation(sys, rep);
     }
 }
 
-void init_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        init_representation(state, &state->representation.reps[i]);
+void init_all_representations(SystemContext& sys) {
+    ApplicationState* state = sys.app;
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        init_representation(sys, &sys.representation.reps[i]);
     }
     // The contexts were selections of the system that was there before
-    for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
-        RepresentationGroup& g = state->representation.groups[i];
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        RepresentationGroup& g = sys.representation.groups[i];
         md_bitset_free(&g.atom_mask, state->allocator.persistent);
         g.filt_is_dirty = true;
     }
-    tree_normalize(state);
+    tree_normalize(sys);
 }
 
 void flag_representation_as_dirty(Representation* rep) {
@@ -1075,8 +1084,8 @@ void flag_representation_as_dirty(Representation* rep) {
     rep->electronic_structure.vol_hash = 0;
 }
 
-bool representation_can_show_bond(const ApplicationState& app, const Representation& rep) {
-    return rep.type == RepresentationType::Bonds && representation_context(app, rep.node.parent).atoms == nullptr;
+bool representation_can_show_bond(const SystemContext& sys, const Representation& rep) {
+    return rep.type == RepresentationType::Bonds && representation_context(sys, rep.node.parent).atoms == nullptr;
 }
 
 bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair) {
@@ -1087,7 +1096,8 @@ bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair) {
     return false;
 }
 
-bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into) {
+bool representation_show_bond(SystemContext& sys, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
     char expr[64];
     snprintf(expr, sizeof(expr), "bond(%d, %d)", pair.idx[0] + 1, pair.idx[1] + 1);
@@ -1105,7 +1115,7 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
 
     // Distinct from what draws the bond already: one colour, dashed as a weak bond is, and a stick over that of a
     // licorice (whose non-covalent bonds are half as thick as its sticks)
-    Representation* rep = create_representation(app, RepresentationType::Bonds, ColorMapping::Uniform, str_from_cstr(expr));
+    Representation* rep = create_representation(sys, RepresentationType::Bonds, ColorMapping::Uniform, str_from_cstr(expr));
     if (!rep) return false;
     const bool noncovalent = md_bond_is_noncovalent(flags);
     snprintf(rep->name, sizeof(rep->name), "bond %d-%d", pair.idx[0] + 1, pair.idx[1] + 1);
@@ -1326,8 +1336,8 @@ size_t target_same_name(md_bitmask_t* mask, size_t atom, const md_system_t& sys)
 
 // What a target can be shown as, and what it is suggested to be shown as: by what it is, and not as something which
 // draws most of it already, which a new one of the same type would only coincide with
-void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
-    const md_system_t& sys = app.mold.sys;
+void target_suggest(RepresentationTarget* t, const SystemContext& sc) {
+    const md_system_t& sys = sc.data.sys;
     const md_bitset_t atoms = t->atoms;
     const size_t num_atoms = md_bitset_count(atoms);
 
@@ -1340,15 +1350,15 @@ void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
         num_backbone += ca >= 0 && md_bitset_test(atoms, (uint32_t)ca);
     }
     size_t num_glyphs = 0;
-    const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
     if (cartoon_glyphs_valid(glyphs)) {
         for (uint32_t i = 0; i < glyphs.num_points; ++i) {
             const int32_t a = glyphs.point_color_atom[i];
             num_glyphs += a >= 0 && md_bitset_test(atoms, (uint32_t)a);
         }
     }
-    t->ribbons = num_backbone > 0 && representation_particle_type_valid(app, RepresentationType::Ribbons);
-    t->cartoon = (num_backbone > 0 || num_glyphs > 0) && representation_particle_type_valid(app, RepresentationType::Cartoon);
+    t->ribbons = num_backbone > 0 && representation_particle_type_valid(sc, RepresentationType::Ribbons);
+    t->cartoon = (num_backbone > 0 || num_glyphs > 0) && representation_particle_type_valid(sc, RepresentationType::Cartoon);
 
     // Mostly of a polymer: the residues of a protein or a nucleic acid
     size_t num_polymer_atoms = 0;
@@ -1389,9 +1399,9 @@ void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
     // The types which draw most of it already
     bool drawn[(int)RepresentationType::Count] = {};
     md_temp_scope_t temp = md_temp_begin();
-    for (size_t i = 0; i < md_array_size(app.representation.reps); ++i) {
-        const Representation& rep = app.representation.reps[i];
-        if ((int)rep.type > (int)RepresentationType::Cartoon || !representation_shown(app, rep)) continue;
+    for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
+        const Representation& rep = sc.representation.reps[i];
+        if ((int)rep.type > (int)RepresentationType::Cartoon || !representation_shown(sc, rep)) continue;
         if (drawn[(int)rep.type]) continue;
         const md_bitset_t both = md_bitset_and(rep.atom_mask, atoms, md_temp_allocator(temp));
         drawn[(int)rep.type] = 2 * md_bitset_count(both) > num_atoms;
@@ -1403,7 +1413,7 @@ void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
     bool found = false;
     for (int pass = 0; pass < 2 && !found; ++pass) {
         for (size_t i = 0; i < num_prefs; ++i) {
-            if ((pass == 1 || !drawn[(int)prefs[i]]) && representation_target_can_show(app, *t, prefs[i])) {
+            if ((pass == 1 || !drawn[(int)prefs[i]]) && representation_target_can_show(sc, *t, prefs[i])) {
                 t->suggested_type = prefs[i];
                 found = true;
                 break;
@@ -1416,11 +1426,11 @@ void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
 }
 
 // Done with the mask: its atoms the target's, a single atom none
-bool target_finish(RepresentationTarget* t, md_bitmask_t* mask, const ApplicationState& app) {
+bool target_finish(RepresentationTarget* t, md_bitmask_t* mask, const SystemContext& sys) {
     const bool ok = md_bitmask_count(mask) > 1;
     if (ok) {
         t->atoms = md_bitmask_extract(mask, md_get_heap_allocator());
-        target_suggest(t, app);
+        target_suggest(t, sys);
     }
     md_bitmask_free(mask);
     return ok;
@@ -1428,12 +1438,13 @@ bool target_finish(RepresentationTarget* t, md_bitmask_t* mask, const Applicatio
 
 }  // namespace
 
-bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const ApplicationState& app, const PickingHit& hit) {
+bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const SystemContext& sc, const PickingHit& hit) {
+    const ApplicationState& app = *sc.app;
     ASSERT(target);
     representation_target_free(target);
     if (all) representation_target_free(all);
 
-    const md_system_t& sys = app.mold.sys;
+    const md_system_t& sys = sc.data.sys;
     if (sys.atom.count == 0) return false;
 
     // The atoms the hit stands for, and whether it is of a cartoon (a strand rather than a residue of it)
@@ -1453,7 +1464,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         md_atom_pair_t pair;
         md_bond_flags_t flags;
         bool formed;
-        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+        if (picked_bond(sc, hit.local_idx, &pair, &flags, &formed)) {
             push(pair.idx[0]);
             push(pair.idx[1]);
         }
@@ -1461,7 +1472,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         const int32_t* ring_atoms = nullptr;
         size_t ring_count = 0;
         md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
-        if (picked_ring(app, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
+        if (picked_ring(sc, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
             for (size_t i = 0; i < ring_count; ++i) push(ring_atoms[i]);
         }
     } else if (hit.domain == PickingDomain_BackboneSegment) {
@@ -1473,7 +1484,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
             else push(bb.segment.atoms[hit.local_idx].ca);
         }
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+        const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
         const uint32_t point = cartoon_glyphs_picked_point(glyphs, hit.local_idx);
         if (point < glyphs.num_points) {
             cartoon = true;
@@ -1535,13 +1546,13 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         if (num > 1 && res >= 0) {
             const str_t name = md_system_residue_name(&sys, (size_t)res);
             snprintf(same.label, sizeof(same.label), "all " STR_FMT, STR_ARG(name));
-            same_ok = target_finish(&same, &same_mask, app);
+            same_ok = target_finish(&same, &same_mask, sc);
         } else {
             md_bitmask_free(&same_mask);
         }
     }
 
-    bool ok = target_finish(target, &mask, app);
+    bool ok = target_finish(target, &mask, sc);
     if (ok && same_ok && md_bitset_equal(target->atoms, same.atoms)) {
         // The only one of its name: it is all of them
         representation_target_free(&same);
@@ -1562,14 +1573,14 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
     return ok;
 }
 
-bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app) {
+bool representation_target_from_selection(RepresentationTarget* target, const SystemContext& sys) {
     ASSERT(target);
     representation_target_free(target);
-    if (md_bitmask_count(&app.selection.selection_mask) < 2) return false;
-    target->atoms = md_bitmask_extract(&app.selection.selection_mask, md_get_heap_allocator());
+    if (md_bitmask_count(&sys.selection.selection_mask) < 2) return false;
+    target->atoms = md_bitmask_extract(&sys.selection.selection_mask, md_get_heap_allocator());
     snprintf(target->label, sizeof(target->label), "selection");
     target->selection = true;
-    target_suggest(target, app);
+    target_suggest(target, sys);
     return true;
 }
 
@@ -1579,26 +1590,27 @@ void representation_target_free(RepresentationTarget* target) {
     *target = RepresentationTarget{};
 }
 
-bool representation_target_can_show(const ApplicationState& app, const RepresentationTarget& target, RepresentationType type) {
+bool representation_target_can_show(const SystemContext& sys, const RepresentationTarget& target, RepresentationType type) {
     switch (type) {
     case RepresentationType::SpaceFill:
     case RepresentationType::Licorice:
     case RepresentationType::BallAndStick:
-        return representation_particle_type_valid(app, type);
+        return representation_particle_type_valid(sys, type);
     case RepresentationType::Ribbons: return target.ribbons;
     case RepresentationType::Cartoon: return target.cartoon;
     default: return false;
     }
 }
 
-Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type) {
+Representation* create_representation_of_target(SystemContext& sys, const RepresentationTarget& target, RepresentationType type) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
     if (md_bitset_empty(target.atoms)) return nullptr;
 
     // The most telling way of writing it which fits
     md_temp_scope_t temp = md_temp_begin();
     char filter[sizeof(AtomFilter::text)] = "";
-    const md_array(ScriptSuggestion) suggestions = script_suggest_selection(app->script.language, STR_LIT("x"), target.atoms, app->mold.sys, md_temp_allocator(temp));
+    const md_array(ScriptSuggestion) suggestions = script_suggest_selection(app->script.language, STR_LIT("x"), target.atoms, sys.data.sys, md_temp_allocator(temp));
     for (size_t i = 0; i < md_array_size(suggestions); ++i) {
         str_t expr = suggestions[i].text;
         if (!str_begins_with(expr, STR_LIT("x = "))) continue;
@@ -1621,7 +1633,7 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
         color = target.suggested_type == RepresentationType::Cartoon ? target.suggested_color
               : (target.ribbons ? ColorMapping::SecondaryStructure : ColorMapping::ResType);
     }
-    Representation* rep = create_representation(app, type, color, str_from_cstr(filter));
+    Representation* rep = create_representation(sys, type, color, str_from_cstr(filter));
     if (!rep) return nullptr;
     // A selection by the expression, where that is short enough to read as a name
     if (target.selection && strlen(filter) < 32) {
@@ -1634,31 +1646,29 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
     return rep;
 }
 
-void flag_all_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
-    for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
-        state->representation.groups[i].filt_is_dirty = true;
+void flag_all_representations_as_dirty(SystemContext& sys) {
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        sys.representation.groups[i].filt_is_dirty = true;
     }
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        flag_representation_as_dirty(&state->representation.reps[i]);
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        flag_representation_as_dirty(&sys.representation.reps[i]);
     }
 }
 
-void flag_dynamic_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
+void flag_dynamic_representations_as_dirty(SystemContext& sys) {
     // A context that follows the frame is evaluated again; what is within it decides for itself whether to
     // follow, by its own auto-update
-    for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
-        RepresentationGroup& g = state->representation.groups[i];
-        if (g.filter.result.is_dynamic && representation_group_shown(*state, g)) {
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        RepresentationGroup& g = sys.representation.groups[i];
+        if (g.filter.result.is_dynamic && representation_group_shown(sys, g)) {
             g.filt_is_dirty = true;
         }
     }
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
-        if (!representation_shown(*state, rep)) continue;
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        Representation& rep = sys.representation.reps[i];
+        if (!representation_shown(sys, rep)) continue;
 
-        const bool atoms_follow  = rep.dynamic_evaluation && representation_is_dynamic(*state, rep);
+        const bool atoms_follow  = rep.dynamic_evaluation && representation_is_dynamic(sys, rep);
         // The volume of an electronic structure is evaluated around the atoms where they are; it is
         // evaluated again only if the frame actually moved them (vol_hash)
         const bool colors_follow = rep.color_mapping == ColorMapping::SecondaryStructure ||
@@ -1682,7 +1692,8 @@ static size_t num_nucleotides_on_backbone(const md_system_t& sys) {
 }
 
 // What a system starts out shown with: by what is in it
-void create_default_representations(ApplicationState* state) {
+void create_default_representations(SystemContext& sc) {
+    ApplicationState* state = sc.app;
     bool amino_acid_present = false;
     bool nucleic_present = false;
     bool lipid_present = false;
@@ -1694,26 +1705,26 @@ void create_default_representations(ApplicationState* state) {
     size_t num_coarse_grained = 0;
     // Any electronic structure, not orbitals in particular: a file can carry density properties and
     // no SCF block, and its density properties are as much something to show as orbitals would be.
-    const bool electronic_structure_present = es_source_mask(state->mold.sys) != 0;
+    const bool electronic_structure_present = es_source_mask(sc.data.sys) != 0;
 
 
-    if (state->mold.sys.atom.count > 3'000'000) {
+    if (sc.data.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type);
+        Representation* rep = create_representation(sc, RepresentationType::SpaceFill, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
-    if (state->mold.sys.residue.count == 0) {
+    if (sc.data.sys.residue.count == 0) {
         // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type);
+        Representation* rep = create_representation(sc, RepresentationType::BallAndStick, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
     // What is present, by what the residues are. The selections of the representations below are by the same.
-    for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
-        switch (md_system_residue_kind(&state->mold.sys, i)) {
+    for (size_t i = 0; i < sc.data.sys.residue.count; ++i) {
+        switch (md_system_residue_kind(&sc.data.sys, i)) {
         case MD_RESIDUE_KIND_AMINO_ACID: amino_acid_present = true; break;
         case MD_RESIDUE_KIND_NUCLEOTIDE: nucleic_present = true; num_nucleotides += 1; break;
         case MD_RESIDUE_KIND_ION:          ion_present = true;        break;
@@ -1722,46 +1733,46 @@ void create_default_representations(ApplicationState* state) {
         default:                           ligand_present = true;     break;
         }
     }
-    for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
-        num_coarse_grained += md_atom_particle_kind(&state->mold.sys.atom, i) == MD_PARTICLE_BEAD;
+    for (size_t i = 0; i < sc.data.sys.atom.count; ++i) {
+        num_coarse_grained += md_atom_particle_kind(&sc.data.sys.atom, i) == MD_PARTICLE_BEAD;
     }
 
     // Lipids are shown as their cartoon where their heads and tails are known (the atoms of 'head or tail'), and the
     // rest of them (lipids by name whose anatomy is not known, as without bonds) as ligands
     if (lipid_present) {
-        const md_lipid_data_t& lipids = state->mold.sys.lipid;
+        const md_lipid_data_t& lipids = sc.data.sys.lipid;
         size_t num_lipid_residues = 0;
         size_t num_known = 0;
-        for (size_t i = 0; i < state->mold.sys.residue.count; ++i) {
-            num_lipid_residues += md_system_residue_kind(&state->mold.sys, i) == MD_RESIDUE_KIND_LIPID;
+        for (size_t i = 0; i < sc.data.sys.residue.count; ++i) {
+            num_lipid_residues += md_system_residue_kind(&sc.data.sys, i) == MD_RESIDUE_KIND_LIPID;
         }
         for (size_t i = 0; i < lipids.count; ++i) {
             if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_lipid_residue_count(&lipids, i);
         }
-        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_residues) ligand_present = true;
     }
     if (lipid_cartoon) {
-        Representation* lip = create_representation(state, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("lipid"));
+        Representation* lip = create_representation(sc, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("lipid"));
         snprintf(lip->name, sizeof(lip->name), "lipid");
     }
 
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
     // element to, should not take the protein, ligand and water representations from the rest.
-    if (2 * num_coarse_grained > state->mold.sys.atom.count) {
+    if (2 * num_coarse_grained > sc.data.sys.atom.count) {
         // Proteins of beads have a trace backbone and its secondary structure (CG-DSSP): a cartoon. So do nucleic acids
         // of beads where every nucleotide is on a backbone, their bases with the rings of ideal ones. The water as a
         // representation of its own, hidden unless there is nothing else, as for atoms: the water beads of a solvated
         // membrane are most of it. The rest as beads.
-        const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
-        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
-        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        const bool protein_trace = amino_acid_present && sc.data.sys.protein_backbone.segment.count > 0;
+        const size_t num_on_backbone = num_nucleotides_on_backbone(sc.data.sys);
+        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
         if (protein_trace) {
-            Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
+            Representation* prot = create_representation(sc, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
         }
         if (nucleic_cartoon) {
-            Representation* nucl = create_representation(state, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("nucleic"));
+            Representation* nucl = create_representation(sc, RepresentationType::Cartoon, ColorMapping::ResType, STR_LIT("nucleic"));
             snprintf(nucl->name, sizeof(nucl->name), "nucleic");
         }
         const char* shown[4];
@@ -1780,10 +1791,10 @@ void create_default_representations(ApplicationState* state) {
             }
             snprintf(rest + len, sizeof(rest) - len, ")");
         }
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, str_from_cstr(rest));
+        Representation* rep = create_representation(sc, RepresentationType::SpaceFill, ColorMapping::Type, str_from_cstr(rest));
         snprintf(rep->name, sizeof(rep->name), "default");
         if (water_present) {
-            Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
+            Representation* water = create_representation(sc, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
             snprintf(water->name, sizeof(water->name), "water");
             water->enabled = !amino_acid_present && !nucleic_present && !ligand_present && !lipid_present;
         }
@@ -1795,7 +1806,7 @@ void create_default_representations(ApplicationState* state) {
         ColorMapping color = ColorMapping::SecondaryStructure;
 
         // Several strands are told apart by color; a short single strand (or none: free amino acids) is shown atom by atom
-        const md_system_t& sys = state->mold.sys;
+        const md_system_t& sys = sc.data.sys;
         size_t num_chains = 0;
         size_t chain_res_count = 0;
         for (size_t i = 0; i < md_system_part_count(&sys); ++i) {
@@ -1814,19 +1825,19 @@ void create_default_representations(ApplicationState* state) {
             color = ColorMapping::Type;
         }
 
-        Representation* prot = create_representation(state, type, color, STR_LIT("protein"));
+        Representation* prot = create_representation(sc, type, color, STR_LIT("protein"));
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
         // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
         // shows nothing of a nucleotide off a backbone
-        const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
-        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
-        Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::ResType : ColorMapping::Type, STR_LIT("nucleic"));
+        const size_t num_on_backbone = num_nucleotides_on_backbone(sc.data.sys);
+        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
+        Representation* nucl = create_representation(sc, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::ResType : ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
+        Representation* ion = create_representation(sc, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
@@ -1835,11 +1846,11 @@ void create_default_representations(ApplicationState* state) {
         const str_t filter = !lipid_cartoon ? STR_LIT("not (protein or nucleic or water or ion)")
                            : v2 ? STR_LIT("not (protein or nucleic or water or ion or particle(head) or particle(tail))")
                                 : STR_LIT("not (protein or nucleic or water or ion or head or tail)");
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, filter);
+        Representation* ligand = create_representation(sc, RepresentationType::BallAndStick, ColorMapping::Type, filter);
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
+        Representation* water = create_representation(sc, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -1850,17 +1861,17 @@ void create_default_representations(ApplicationState* state) {
 
 done:
     // The cell, where there is one, hidden: there to be shown, for the coarse grained and the large too
-    if (md_unitcell_flags(&state->mold.state.unitcell) != 0) {
-        Representation* box = create_representation(state, RepresentationType::SimulationBox);
+    if (md_unitcell_flags(&sc.data.state.unitcell) != 0) {
+        Representation* box = create_representation(sc, RepresentationType::SimulationBox);
         snprintf(box->name, sizeof(box->name), "box");
         box->enabled = false;
     }
 
     if (electronic_structure_present) {
-        Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
+        Representation* rep = create_representation(sc, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
-        electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
+        electronic_structure_select_available_source(&rep->electronic_structure, sc.data.sys);
 
 
 		// ONE representation, for the ground state moment. A group each meant a VeloxChem file with
@@ -1869,16 +1880,16 @@ done:
 		// The ground state is what a dipole means to someone who has not said otherwise; the rest
 		// are a representation away, and the index slider covers the excited states within each.
 		DipoleGroup groups[16];
-		size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+		size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), sc.data.sys), ARRAY_SIZE(groups));
         for (size_t i = 0; i < num_groups; ++i) {
             // The group name is the identity here, the same string the path spells.
             if (!str_eq(groups[i].label, STR_LIT("ground_state"))) continue;
 
             vec3_t vec = {0, 0, 0};
-            if (!dipole_moment_read(&vec, nullptr, state->mold.sys, groups[i].key, 0)) continue;
+            if (!dipole_moment_read(&vec, nullptr, sc.data.sys, groups[i].key, 0)) continue;
             if (vec3_length(vec) <= 1e-3f) continue;
 
-            Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
+            Representation* dipole_rep = create_representation(sc, RepresentationType::DipoleMoment);
             dipole_rep->dipole.dipole_key   = groups[i].key;
             dipole_rep->dipole.dipole_index = 0;
 
@@ -1891,7 +1902,7 @@ done:
         }
     }
 
-    recompute_atom_visibility_mask(state);
+    recompute_atom_visibility_mask(sc);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -2133,20 +2144,20 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     return true;
 }
 
-static void deserialize_representation(ApplicationState* data, viamd::deserialization_state_t& state) {
+static void deserialize_representation(SystemContext& sys, viamd::deserialization_state_t& state) {
     str_t ident, arg;
-    if (!representation_can_add(*data)) {
+    if (!representation_can_add(sys)) {
         // Beyond as many as a system has: its entries are passed over
         VIAMD_LOG_ERROR("Workspace: more representations than a system has (at most %zu); the rest are left out", REPRESENTATION_MAX);
         while (viamd::next_entry(ident, arg, state)) {}
         return;
     }
-    Representation* rep = create_representation(data);
+    Representation* rep = create_representation(sys);
     while (viamd::next_entry(ident, arg, state)) {
         if (str_eq(ident, STR_LIT("Group"))) {
             // By the id of a [RepresentationGroup] before it. One that names nothing leaves it at the top level.
             int group = 0;
-            if (viamd::extract_int(group, arg) && group > 0 && find_representation_group(data, (uint32_t)group)) {
+            if (viamd::extract_int(group, arg) && group > 0 && find_representation_group(sys, (uint32_t)group)) {
                 rep->node.parent = (uint32_t)group;
             }
         } else {
@@ -2154,11 +2165,11 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
         }
     }
     // Last in the group it says it is in: the sections are in the order of the window
-    tree_normalize(data);
+    tree_normalize(sys);
 }
 
-void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
-    const md_attributes_t* attributes = &app_state->mold.sys.attributes;
+void representation_write_entries(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep) {
+    const md_attributes_t* attributes = &sys.data.sys.attributes;
 
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
     viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filter.text));
@@ -2276,15 +2287,16 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     }
 }
 
-static void serialize_representation(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
+static void serialize_representation(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep) {
     viamd::write_section_header(state, STR_LIT("Representation"));
-    if (find_representation_group(*app_state, rep.node.parent)) {
+    if (find_representation_group(sys, rep.node.parent)) {
         viamd::write_int(state, STR_LIT("Group"), rep.node.parent);
     }
-    representation_write_entries(state, app_state, rep);
+    representation_write_entries(state, sys, rep);
 }
 
-static void deserialize_group(ApplicationState* data, viamd::deserialization_state_t& state) {
+static void deserialize_group(SystemContext& sys, viamd::deserialization_state_t& state) {
+    ApplicationState* data = sys.app;
     RepresentationGroup group = {};
     int id = 0;
     int parent = 0;
@@ -2305,27 +2317,27 @@ static void deserialize_group(ApplicationState* data, viamd::deserialization_sta
 
     // The id it was saved with is what the sections after it refer to it by, so it is kept - unless another
     // group already has it, which only a workspace edited by hand can make happen
-    if (id > 0 && !find_representation_group(data, (uint32_t)id)) {
+    if (id > 0 && !find_representation_group(sys, (uint32_t)id)) {
         group.node.id = (uint32_t)id;
-        data->representation.next_group_id = MAX(data->representation.next_group_id, (uint32_t)id + 1);
+        sys.representation.next_group_id = MAX(sys.representation.next_group_id, (uint32_t)id + 1);
     } else {
-        group.node.id = data->representation.next_group_id++;
+        group.node.id = sys.representation.next_group_id++;
     }
     // A group comes before what is within it, so the group it is in has been read already
-    if (parent > 0 && find_representation_group(data, (uint32_t)parent)) {
+    if (parent > 0 && find_representation_group(sys, (uint32_t)parent)) {
         group.node.parent = (uint32_t)parent;
     }
     group.node.order = INT32_MAX;
     group.node.group = true;
     group.filt_is_dirty = true;
-    md_array_push(data->representation.groups, group, data->allocator.persistent);
-    tree_normalize(data);
+    md_array_push(sys.representation.groups, group, data->allocator.persistent);
+    tree_normalize(sys);
 }
 
-static void serialize_group(viamd::serialization_state_t& state, const ApplicationState* app, const RepresentationGroup& group) {
+static void serialize_group(viamd::serialization_state_t& state, const SystemContext& sys, const RepresentationGroup& group) {
     viamd::write_section_header(state, STR_LIT("RepresentationGroup"));
     viamd::write_int(state, STR_LIT("Id"), group.node.id);
-    if (find_representation_group(*app, group.node.parent)) {
+    if (find_representation_group(sys, group.node.parent)) {
         viamd::write_int(state, STR_LIT("Group"), group.node.parent);
     }
     viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(group.name));
@@ -2335,7 +2347,7 @@ static void serialize_group(viamd::serialization_state_t& state, const Applicati
 
 // Depth first, the order of the window: a group is written before what is within it, which is what reading
 // it back relies on
-static void serialize_level(viamd::serialization_state_t& state, const ApplicationState* app, const TreeNodes& t, uint32_t parent, size_t depth) {
+static void serialize_level(viamd::serialization_state_t& state, const SystemContext& sys, const TreeNodes& t, uint32_t parent, size_t depth) {
     if (depth > t.count) return;
     md_temp_scope_t temp = md_temp_begin();
     int* kids = (int*)md_temp_alloc(temp, sizeof(int) * MAX(t.count, (size_t)1));
@@ -2343,30 +2355,30 @@ static void serialize_level(viamd::serialization_state_t& state, const Applicati
     for (size_t i = 0; i < n; ++i) {
         const size_t k = (size_t)kids[i];
         if (k < t.num_reps) {
-            serialize_representation(state, app, app->representation.reps[k]);
+            serialize_representation(state, sys, sys.representation.reps[k]);
         } else {
-            const RepresentationGroup& group = app->representation.groups[k - t.num_reps];
-            serialize_group(state, app, group);
-            serialize_level(state, app, t, group.node.id, depth + 1);
+            const RepresentationGroup& group = sys.representation.groups[k - t.num_reps];
+            serialize_group(state, sys, group);
+            serialize_level(state, sys, t, group.node.id, depth + 1);
         }
     }
     md_temp_end(temp);
 }
 
-void representations_serialize(viamd::serialization_state_t& state, const ApplicationState* app) {
+void representations_serialize(viamd::serialization_state_t& state, const SystemContext& sys) {
     md_temp_scope_t temp = md_temp_begin();
-    const TreeNodes t = tree_nodes(*app, md_temp_allocator(temp));
-    serialize_level(state, app, t, 0, 0);
+    const TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
+    serialize_level(state, sys, t, 0, 0);
     md_temp_end(temp);
 }
 
 bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state) {
     if (str_eq(section, STR_LIT("Representation"))) {
-        deserialize_representation(app, state);
+        deserialize_representation(app->system_context, state);
         return true;
     }
     if (str_eq(section, STR_LIT("RepresentationGroup"))) {
-        deserialize_group(app, state);
+        deserialize_group(app->system_context, state);
         return true;
     }
     return false;
@@ -2509,7 +2521,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
 
 // The properties of an electronic structure representation: what the volume is of (Source), the surfaces drawn from
 // it (Surface) and how they are coloured (Color)
-static bool draw_representations_window_electronic_structure(ApplicationState* state, Representation& rep) {
+static bool draw_representations_window_electronic_structure(SystemContext& sys, Representation& rep) {
+    ApplicationState* state = sys.app;
     ElectronicStructureRepresentation& es = rep.electronic_structure;
 
     // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
@@ -2526,7 +2539,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
     bool update_rep = false;
     const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-    const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
+    const ElectronicStructureSourceFlags source_mask = es_source_mask(sys.data.sys);
 
     if (prop::section("Source")) {
         prop::row("source");
@@ -2555,7 +2568,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // Gathered here rather than kept in a list somewhere: it is a handful of entries borrowed
             // from the attribute table, and a stored copy would be one more thing to invalidate on load.
             DensityProperty density_props[64];
-            const int num_density_props = (int)MIN(density_properties_gather(density_props, ARRAY_SIZE(density_props), state->mold.sys), ARRAY_SIZE(density_props));
+            const int num_density_props = (int)MIN(density_properties_gather(density_props, ARRAY_SIZE(density_props), sys.data.sys), ARRAY_SIZE(density_props));
             if (num_density_props > 0) {
                 // A key that names nothing in the current list - a fresh representation, or a workspace
                 // saved against a file whose properties differ - falls back to the first one rather
@@ -2604,7 +2617,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // restricted file too, because beta is published there as an alias of alpha and the fan-in
             // only checked that the column existed - so the selector appeared and toggled between two
             // names for one datum.
-            const bool has_beta = es_has_distinct_beta_orbitals(state->mold.sys);
+            const bool has_beta = es_has_distinct_beta_orbitals(sys.data.sys);
             if (es.source == ElectronicStructureSource::MolecularOrbital) {
                 if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
                     es.spin = ElectronicStructureSpin::Alpha;
@@ -2677,18 +2690,18 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             //
             // Formatted here rather than read out of a precomputed list: it is an index, an energy and
             // two markers, and a copy of it would be one more thing to keep in step with the table.
-            const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
+            const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(sys.data.sys);
 
             size_t num_orbitals = 0;
             OrbitalFrontier frontier = {};
-            if (es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0) {
-                es_orbital_frontier(&frontier, state->mold.sys, use_beta ? es_path::beta_occupation : es_path::alpha_occupation);
+            if (es_orbital_extent(sys.data.sys, &num_orbitals, nullptr) && num_orbitals > 0) {
+                es_orbital_frontier(&frontier, sys.data.sys, use_beta ? es_path::beta_occupation : es_path::alpha_occupation);
 
                 // Energies alongside the index, so the list can be read as an orbital diagram. A column
                 // that does not span the orbital set is not one to index with, so it is dropped whole
                 // rather than bounds checked per row - the list then falls back to bare indices.
                 size_t num_energies = 0;
-                const double* energy = es_orbital_energies(&num_energies, state->mold.sys, use_beta ? es_path::beta_energy : es_path::alpha_energy);
+                const double* energy = es_orbital_energies(&num_energies, sys.data.sys, use_beta ? es_path::beta_energy : es_path::alpha_energy);
                 if (num_energies != num_orbitals) energy = nullptr;
 
                 // The UI font is monospaced (Dejavu Sans Mono), so a fixed field width per column is all
@@ -2740,7 +2753,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         }
 
         if (electronic_structure_uses_excited_state_idx(es)) {
-            const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
+            const int num_excited_states = (int)es_excited_state_count(sys.data.sys);
             if (num_excited_states > 0) {
                 es.excited_state_idx = CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
                 char preview[16];
@@ -2770,7 +2783,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
                     const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
-                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
+                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), sys.data.sys,
                                                                             (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
                     if (!nto_ready) {
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
@@ -2888,9 +2901,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
     if (prop::section("Color")) {
         const bool density_property = electronic_structure_is_density_property(es);
-        update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
+        update_rep |= draw_surface_coloring(es, sys.data.sys, !density_property, mesh_mode);
         if (es.coloring == SurfaceColoring::AtomColors) {
-            update_rep |= draw_representation_coloring(state, rep);
+            update_rep |= draw_representation_coloring(sys, rep);
         }
 
         // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
@@ -2956,47 +2969,47 @@ struct WindowTree {
     float handle_width = 0.0f;  // The same on every row, whatever its icon, so that the names line up
 };
 
-static void apply_window_actions(ApplicationState* state, const WindowActions& act) {
+static void apply_window_actions(SystemContext& sys, const WindowActions& act) {
     if (act.remove_all) {
-        remove_all_representations(state);
+        remove_all_representations(sys);
         return;
     }
     if (act.move.node.id) {
-        representation_move(state, act.move.node.group, act.move.node.id, act.move.target.group, act.move.target.id, act.move.drop);
+        representation_move(sys, act.move.node.group, act.move.node.id, act.move.target.group, act.move.target.id, act.move.drop);
     }
     if (act.clone.id) {
         if (act.clone.group) {
-            clone_representation_group(state, act.clone.id);
-        } else if (const Representation* rep = find_representation(state, act.clone.id)) {
-            clone_representation(state, *rep);
+            clone_representation_group(sys, act.clone.id);
+        } else if (const Representation* rep = find_representation(sys, act.clone.id)) {
+            clone_representation(sys, *rep);
         }
     }
     if (act.remove.id) {
         if (act.remove.group) {
-            remove_representation_group(state, act.remove.id);
+            remove_representation_group(sys, act.remove.id);
         } else {
-            const int idx = find_rep_idx(*state, act.remove.id);
-            if (idx >= 0) remove_representation(state, (size_t)idx);
+            const int idx = find_rep_idx(sys, act.remove.id);
+            if (idx >= 0) remove_representation(sys, (size_t)idx);
         }
     }
     if (act.wrap.id) {
-        wrap_in_group(state, act.wrap.group, act.wrap.id);
+        wrap_in_group(sys, act.wrap.group, act.wrap.id);
     }
     if (act.ungroup) {
-        ungroup_representation_group(state, act.ungroup);
+        ungroup_representation_group(sys, act.ungroup);
     }
     if (act.add_representation) {
-        create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT(""), act.add_into);
+        create_representation(sys, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT(""), act.add_into);
     }
     if (act.add_group) {
-        create_representation_group(state, STR_LIT("group"), act.add_into);
+        create_representation_group(sys, STR_LIT("group"), act.add_into);
     }
 }
 
 // The menu of a row, or of the empty space below them (node.id 0)
 // Whether node can be duplicated: the representations it adds fit (REPRESENTATION_MAX)
-static bool can_duplicate(const ApplicationState& state, NodeRef node) {
-    return representation_can_add(state, node.group ? representation_group_rep_count(state, node.id) : 1);
+static bool can_duplicate(const SystemContext& sys, NodeRef node) {
+    return representation_can_add(sys, node.group ? representation_group_rep_count(sys, node.id) : 1);
 }
 
 static const char* limit_tip() {
@@ -3005,10 +3018,10 @@ static const char* limit_tip() {
     return buf;
 }
 
-static void draw_tree_menu(const ApplicationState& state, NodeRef node, WindowActions* act) {
+static void draw_tree_menu(const SystemContext& sys, NodeRef node, WindowActions* act) {
     const bool group = node.id && node.group;
     if (node.id == 0 || group) {
-        if (ImGui::MenuItem(ICON_FA_PLUS " Add representation", nullptr, false, representation_can_add(state))) {
+        if (ImGui::MenuItem(ICON_FA_PLUS " Add representation", nullptr, false, representation_can_add(sys))) {
             act->add_representation = true;
             act->add_into = group ? node.id : 0;
         }
@@ -3031,10 +3044,10 @@ static void draw_tree_menu(const ApplicationState& state, NodeRef node, WindowAc
         ImGui::SetItemTooltip("Remove the group and keep what is in it, in its place");
     }
     ImGui::Separator();
-    if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, can_duplicate(state, node))) {
+    if (ImGui::MenuItem(ICON_FA_COPY " Duplicate", nullptr, false, can_duplicate(sys, node))) {
         act->clone = node;
     }
-    if (!can_duplicate(state, node)) ImGui::SetItemTooltip("%s", limit_tip());
+    if (!can_duplicate(sys, node)) ImGui::SetItemTooltip("%s", limit_tip());
     if (ImGui::MenuItem(ICON_FA_XMARK " Remove")) {
         act->remove = node;
     }
@@ -3090,7 +3103,7 @@ static RepresentationDrop drop_zone(float t, bool group, bool open) {
 
 // The whole row as a place to drop on. x0 is where the row's content starts, which is where a line
 // placing something beside it starts too.
-static void draw_drop_target(const ApplicationState& state, NodeRef node, bool open, const ImRect& row, float x0, WindowActions* act) {
+static void draw_drop_target(const SystemContext& sys, NodeRef node, bool open, const ImRect& row, float x0, WindowActions* act) {
     if (!ImGui::BeginDragDropTargetCustom(row, ImGui::GetID("##drop"))) return;
 
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
@@ -3101,7 +3114,7 @@ static void draw_drop_target(const ApplicationState& state, NodeRef node, bool o
         const float t = (ImGui::GetMousePos().y - row.Min.y) / MAX(row.GetHeight(), 1.0f);
         const RepresentationDrop drop = drop_zone(t, node.group, open);
 
-        if (representation_can_move(state, src.group, src.id, node.group, node.id, drop)) {
+        if (representation_can_move(sys, src.group, src.id, node.group, node.id, drop)) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImU32 col = ImGui::GetColorU32(ImGuiCol_DragDropTarget);
             switch (drop) {
@@ -3131,19 +3144,19 @@ static void draw_drop_target(const ApplicationState& state, NodeRef node, bool o
 // What was hidden missed what happened meanwhile - the frame changing, above all - as hidden representations
 // are not updated. Brought up to date, but not evaluated again for nothing: an electronic structure's volume
 // is evaluated again only if the frame did change (vol_hash).
-static void refresh_shown_again(ApplicationState* state, NodeRef node) {
+static void refresh_shown_again(SystemContext& sys, NodeRef node) {
     md_temp_scope_t temp = md_temp_begin();
-    TreeNodes t = tree_nodes(*state, md_temp_allocator(temp));
+    TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     for (size_t k = 0; k < t.count; ++k) {
         const bool self = t.nodes[k]->group == node.group && t.nodes[k]->id == node.id;
         if (!self && !(node.group && representation_tree_is_within(t.nodes, t.count, k, node.id))) continue;
         if (k < t.num_reps) {
-            Representation& rep = state->representation.reps[k];
+            Representation& rep = sys.representation.reps[k];
             rep.needs_update = true;
             // Not one whose auto-update is off: what it picks was left where it is on purpose
-            if (rep.dynamic_evaluation && representation_is_dynamic(*state, rep)) rep.filt_is_dirty = true;
+            if (rep.dynamic_evaluation && representation_is_dynamic(sys, rep)) rep.filt_is_dirty = true;
         } else {
-            RepresentationGroup& g = state->representation.groups[k - t.num_reps];
+            RepresentationGroup& g = sys.representation.groups[k - t.num_reps];
             if (g.filter.result.is_dynamic) g.filt_is_dirty = true;
         }
     }
@@ -3151,20 +3164,20 @@ static void refresh_shown_again(ApplicationState* state, NodeRef node) {
 }
 
 // The buttons at the end of a row: show/hide, duplicate, remove. Placed from the right edge.
-static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_x, NodeRef node, ApplicationState* state, WindowActions* act) {
+static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_x, NodeRef node, SystemContext& sys, WindowActions* act) {
     const ImVec2 btn_size = {tree.button_size, tree.button_size};
     const float total = (tree.button_size + tree.button_spacing) * 3;
     ImGui::SameLine(right_x - total, tree.button_spacing);
     if (ImGui::Button(*enabled ? ICON_FA_EYE : ICON_FA_EYE_SLASH, btn_size)) {
         *enabled = !*enabled;
-        state->representation.atom_visibility_mask_dirty = true;
+        sys.representation.atom_visibility_mask_dirty = true;
         if (*enabled) {
-            refresh_shown_again(state, node);
+            refresh_shown_again(sys, node);
         }
     }
     ImGui::SetItemTooltip(node.group ? "Show/Hide the group and everything in it" : "Show/Hide");
     ImGui::SameLine(0, tree.button_spacing);
-    const bool duplicable = can_duplicate(*state, node);
+    const bool duplicable = can_duplicate(sys, node);
     ImGui::BeginDisabled(!duplicable);
     if (ImGui::Button(ICON_FA_COPY, btn_size)) {
         act->clone = node;
@@ -3182,12 +3195,12 @@ static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_
     ImGui::SetItemTooltip(node.group ? "Remove the group and everything in it" : "Remove");
 }
 
-static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act);
+static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act);
 
 // How the atoms of a representation are coloured, as rows of its Color section: the mapping and what it takes - a
 // colour, an attribute through a colour scale, the colours of the secondary structures - and for sticks the bonds.
 // Also what an electronic structure coloured by its atoms takes its colours from.
-bool draw_representation_coloring(ApplicationState* state, Representation& rep) {
+bool draw_representation_coloring(SystemContext& sys, Representation& rep) {
     bool update_rep = false;
 
     prop::row("coloring");
@@ -3202,7 +3215,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
     }
     if (rep.color_mapping == ColorMapping::ResType) {
         ImGui::SetItemTooltip("The colors of the residue types, set in the Residue Types of the System window");
-    } else if ((rep.color_mapping == ColorMapping::ChainId || rep.color_mapping == ColorMapping::ChainIndex) && md_system_chain_count(&state->mold.sys) == 0) {
+    } else if ((rep.color_mapping == ColorMapping::ChainId || rep.color_mapping == ColorMapping::ChainIndex) && md_system_chain_count(&sys.data.sys) == 0) {
         ImGui::SetItemTooltip("The data gives no chain ids, so the system has no chains: Part Index tells its strands apart");
     } else if (rep.color_mapping == ColorMapping::PartIndex) {
         ImGui::SetItemTooltip("One color per part: each strand of a polymer, each ligand, each water");
@@ -3215,15 +3228,15 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
         // The list of per atom fields IS the system's attribute table under atom/.
         // Queried here rather than cached anywhere, so it cannot disagree with the data.
         md_attribute_id_t prop_ids[64];
-        size_t num_props = MIN(atom_attribute_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
+        size_t num_props = MIN(atom_attribute_query(prop_ids, ARRAY_SIZE(prop_ids), sys.data.sys), ARRAY_SIZE(prop_ids));
 
-        const md_attributes_t& attributes = state->mold.sys.attributes;
+        const md_attributes_t& attributes = sys.data.sys.attributes;
         const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
 
         // A key the table no longer holds - a reload which dropped that field - falls
         // back to the first available rather than leaving the representation blank.
         if (!selected_prop && num_props > 0) {
-            atom_attribute_select(&rep.atom_attribute, prop_ids[0], state->mold.sys);
+            atom_attribute_select(&rep.atom_attribute, prop_ids[0], sys.data.sys);
             selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
             update_rep = true;
         }
@@ -3236,7 +3249,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
                     if (!attr) continue;
                     bool selected = prop_ids[i] == rep.atom_attribute.key;
                     if (ImGui::Selectable(atom_attribute_label(attr).ptr, selected)) {
-                        atom_attribute_select(&rep.atom_attribute, prop_ids[i], state->mold.sys);
+                        atom_attribute_select(&rep.atom_attribute, prop_ids[i], sys.data.sys);
                         update_rep = true;
                     }
                 }
@@ -3329,7 +3342,7 @@ static bool system_has_elastic_bonds(const md_system_t& sys) {
 }
 
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
-bool draw_representation_geometry(ApplicationState* state, Representation& rep) {
+bool draw_representation_geometry(SystemContext& sys, Representation& rep) {
     bool update_rep = false;
     const char* scale_fmt = (const char*)u8"%.2f×";
     switch (rep.type) {
@@ -3366,18 +3379,18 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         update_rep |= ImGui::SliderFloat("##sheet", &rep.scale[1], 0.1f, 3.f, scale_fmt);
         prop::row("helix");
         update_rep |= ImGui::SliderFloat("##helix", &rep.scale[2], 0.1f, 3.f, scale_fmt);
-        if (cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
+        if (cartoon_glyphs_valid(sys.data.cartoon_glyphs)) {
             prop::row("lipid, nucleic", "Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
             update_rep |= ImGui::SliderFloat("##lipid_nucleic", &rep.scale[3], 0.1f, 3.f, scale_fmt);
-            if (state->mold.sys.nucleic_backbone.range.count > 0) {
+            if (sys.data.sys.nucleic_backbone.range.count > 0) {
                 prop::row("nucleic backbone", "Radius of the band along the backbone of the nucleic acids: half its thickness, its width stays (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_backbone", &rep.nucleic_band_radius, 0.1f, 1.5f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (state->mold.cartoon_glyphs.num_slabs > 0) {
+            if (sys.data.cartoon_glyphs.num_slabs > 0) {
                 prop::row("nucleic rings", "Radius of the rims of the sugar and base rings, and of the stick from each sugar to its base (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_rings", &rep.nucleic_ring_radius, 0.1f, 1.0f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (state->mold.cartoon_glyphs.num_split_heads > 0) {
+            if (sys.data.cartoon_glyphs.num_split_heads > 0) {
                 prop::row("two head spheres", "The head of a phospholipid as two spheres, split at its phosphate: the head group with the phosphate, and the backbone the tails hang off");
                 update_rep |= ImGui::Checkbox("##two_head_spheres", &rep.two_head_spheres);
             }
@@ -3389,18 +3402,18 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     // Shown where the system has a break to draw it over
     const bool gaps = rep.type == RepresentationType::Cartoon || rep.type == RepresentationType::Ribbons ||
                       rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick;
-    if (gaps && system_has_chain_breaks(state->mold.sys)) {
+    if (gaps && system_has_chain_breaks(sys.data.sys)) {
         prop::row("chain gaps", "A dashed line over each break of a chain, where residues are missing (or its pieces are not bonded)");
         update_rep |= ImGui::Checkbox("##chain_gaps", &rep.chain_gaps);
     }
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
-        if (state->mold.sys.bond.noncovalent_count > 0) {
+        if (sys.data.sys.bond.noncovalent_count > 0) {
             prop::row("non-covalent bonds", "The non-covalent bonds of the system among its atoms (hydrogen bonds and interactions a file gives or a user marks), dashed and thinner than the sticks. Off to leave them to a Bonds representation");
             update_rep |= ImGui::Checkbox("##noncovalent_bonds", &rep.noncovalent_bonds);
         }
-        if (system_has_elastic_bonds(state->mold.sys)) {
+        if (system_has_elastic_bonds(sys.data.sys)) {
             prop::row("elastic bonds", "The springs of the force field which are not bonds of the molecules: the elastic network of a coarse grained protein or nucleic acid, restraints. Drawn as plain bonds when shown");
             update_rep |= ImGui::Checkbox("##elastic_bonds", &rep.elastic_bonds);
         }
@@ -3408,7 +3421,7 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
-bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
+bool draw_representation_type(SystemContext& sys, Representation& rep, bool atoms_only) {
     bool update_rep = false;
     // @TODO: Only display the representations which can be used for the current dataset
     prop::row("type");
@@ -3419,13 +3432,13 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
             if (i == (int)RepresentationType::ElectronicStructure) {
                 // Enlisted when the system carries ANY electronic structure source - orbitals are
                 // one, and a file without an SCF block can still carry density properties
-                if (es_source_mask(state->mold.sys) == 0) continue;
+                if (es_source_mask(sys.data.sys) == 0) continue;
             }
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
                 if (rep.type == RepresentationType::ElectronicStructure) {
                     // The default source is orbitals, which this system may not have
-                    electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
+                    electronic_structure_select_available_source(&rep.electronic_structure, sys.data.sys);
                 }
                 update_rep = true;
             }
@@ -3438,23 +3451,24 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
 
 // The properties of a representation, below its row when it is open: what it is and what it shows on rows of their
 // own, then its sections. Returns whether it needs updating.
-static bool draw_representation_properties(ApplicationState* state, Representation& rep) {
+static bool draw_representation_properties(SystemContext& sys, Representation& rep) {
+    ApplicationState* state = sys.app;
     bool update_rep = false;
     prop::begin("representation");
 
-    update_rep |= draw_representation_type(state, rep, false);
+    update_rep |= draw_representation_type(sys, rep, false);
 
     // Of what md_gl draws and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
     const bool bonds = rep.type == RepresentationType::Bonds;
     const bool periodic = ((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox || bonds) &&
-                          md_unitcell_flags(&state->mold.state.unitcell) != 0;
+                          md_unitcell_flags(&sys.data.state.unitcell) != 0;
     const bool atoms = RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon;
 
     if (atoms || bonds) {
         // Completed within the context it is evaluated in: what is not there would not match. Either takes atoms or
         // bonds, the one as the other: the atoms of bonds, the bonds among atoms.
-        const RepresentationContext ctx = representation_context(*state, rep.node.parent);
-        const script::FilterCtx fctx = representation_filter_context(*state, ctx);
+        const RepresentationContext ctx = representation_context(sys, rep.node.parent);
+        const script::FilterCtx fctx = representation_filter_context(sys, ctx);
         prop::row("filter");
         if (filter_input("##filter", &rep.filter, state->script.language, fctx, 0, nullptr, bonds ? "all bonds (or bonds, or atoms: the bonds among them)" : "all (or atoms, or bonds: their atoms)")) {
             rep.filt_is_dirty = true;
@@ -3477,7 +3491,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
 
     // Shown only where there is something to follow; the choice is kept either way, so that it holds
     // again for a filter edited back into depending on the frame
-    if (representation_uses_atom_colors(rep) && (representation_is_dynamic(*state, rep) || rep.color_mapping == ColorMapping::Attribute)) {
+    if (representation_uses_atom_colors(rep) && (representation_is_dynamic(sys, rep) || rep.color_mapping == ColorMapping::Attribute)) {
         prop::row("auto-update", "Evaluate the filter and the colours again as the frame changes");
         update_rep |= ImGui::Checkbox("##auto_update", &rep.dynamic_evaluation);
         if (!rep.dynamic_evaluation) {
@@ -3491,7 +3505,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
 
     switch (rep.type) {
     case RepresentationType::ElectronicStructure:
-        update_rep |= draw_representations_window_electronic_structure(state, rep);
+        update_rep |= draw_representations_window_electronic_structure(sys, rep);
         break;
     case RepresentationType::DipoleMoment:
         if (prop::section("Dipole")) {
@@ -3499,13 +3513,13 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             // moment per excited state is then picked apart by the index widget below, rather
             // than flattening every (group, element) pair into one list nobody can scan.
             DipoleGroup groups[16];
-            const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+            const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), sys.data.sys), ARRAY_SIZE(groups));
 
             // Asked of the key the representation holds, not searched for in the list: a key
             // that names nothing - a workspace pointed at a file without that group - simply
             // leaves the preview empty and the index widget away.
             DipoleGroup selected = {};
-            const bool has_selection = dipole_group_from_key(&selected, state->mold.sys, rep.dipole.dipole_key);
+            const bool has_selection = dipole_group_from_key(&selected, sys.data.sys, rep.dipole.dipole_key);
 
             // A group can come back shorter than it was (fewer excited states), which would
             // otherwise leave the representation pointing past its end.
@@ -3587,11 +3601,11 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         break;
     default:
         if (prop::section("Color")) {
-            update_rep |= draw_representation_coloring(state, rep);
+            update_rep |= draw_representation_coloring(sys, rep);
             prop::section_end();
         }
         if (prop::section("Geometry", false)) {
-            update_rep |= draw_representation_geometry(state, rep);
+            update_rep |= draw_representation_geometry(sys, rep);
             prop::section_end();
         }
         break;
@@ -3618,7 +3632,7 @@ static RowLayout row_begin() {
     return r;
 }
 
-static void draw_representation_row(ApplicationState* state, const WindowTree& tree, Representation& rep, WindowActions* act) {
+static void draw_representation_row(SystemContext& sys, const WindowTree& tree, Representation& rep, WindowActions* act) {
     const NodeRef node = {rep.node.id, false};
     ImGui::PushID("rep");
     ImGui::PushID((int)rep.node.id);
@@ -3652,21 +3666,21 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
         ImGui::SetItemTooltip("%s", rep.filter.result.error);
     }
 
-    draw_row_buttons(tree, &rep.enabled, row.right_x, node, state, act);
+    draw_row_buttons(tree, &rep.enabled, row.right_x, node, sys, act);
 
     const ImRect row_rect = {row.min, {row.right_screen, ImGui::GetItemRectMax().y}};
-    draw_drop_target(*state, node, open, row_rect, row.min.x, act);
+    draw_drop_target(sys, node, open, row_rect, row.min.x, act);
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::IsWindowHovered() && row_rect.Contains(ImGui::GetMousePos())) {
         ImGui::OpenPopup("##menu");
     }
     if (ImGui::BeginPopup("##menu")) {
-        draw_tree_menu(*state, node, act);
+        draw_tree_menu(sys, node, act);
         ImGui::EndPopup();
     }
 
     if (open) {
-        if (draw_representation_properties(state, rep)) {
+        if (draw_representation_properties(sys, rep)) {
             flag_representation_as_dirty(&rep);
         }
         ImGui::Spacing();
@@ -3681,14 +3695,15 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
 // representations: that column follows the widest label drawn, so opening a representation within the group
 // would move the group's context along with it. Its own, per group, keeps it where it is whatever is open.
 // Completed within the context the group is in, as it is evaluated.
-static void draw_group_filter(ApplicationState* state, RepresentationGroup& group) {
+static void draw_group_filter(SystemContext& sys, RepresentationGroup& group) {
+    ApplicationState* state = sys.app;
     char grid[32];
     snprintf(grid, sizeof(grid), "group_context_%u", group.node.id);
     prop::begin(grid);
     prop::row("context");
 
-    const RepresentationContext outer = representation_context(*state, group.node.parent);
-    const bool edited = filter_input("##context", &group.filter, state->script.language, representation_filter_context(*state, outer), 0, nullptr, "none: what is within sees the whole system");
+    const RepresentationContext outer = representation_context(sys, group.node.parent);
+    const bool edited = filter_input("##context", &group.filter, state->script.language, representation_filter_context(sys, outer), 0, nullptr, "none: what is within sees the whole system");
 
     // An error is filter_input's to say
     const bool has_filter = group_has_filter(group);
@@ -3707,11 +3722,11 @@ static void draw_group_filter(ApplicationState* state, RepresentationGroup& grou
     prop::end();
 
     if (edited) {
-        flag_within_as_dirty(state, true, group.node.id);
+        flag_within_as_dirty(sys, true, group.node.id);
     }
 }
 
-static void draw_group_row(ApplicationState* state, const WindowTree& tree, RepresentationGroup& group, size_t depth, WindowActions* act) {
+static void draw_group_row(SystemContext& sys, const WindowTree& tree, RepresentationGroup& group, size_t depth, WindowActions* act) {
     const NodeRef node = {group.node.id, true};
     ImGui::PushID("group");
     ImGui::PushID((int)group.node.id);
@@ -3748,26 +3763,26 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
     ImGui::SetNextItemWidth(MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
     ImGui::InputText("##name", group.name, sizeof(group.name));
 
-    draw_row_buttons(tree, &group.enabled, row.right_x, node, state, act);
+    draw_row_buttons(tree, &group.enabled, row.right_x, node, sys, act);
 
     const ImRect row_rect = {row.min, {row.right_screen, ImGui::GetItemRectMax().y}};
-    draw_drop_target(*state, node, open, row_rect, row.min.x, act);
+    draw_drop_target(sys, node, open, row_rect, row.min.x, act);
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::IsWindowHovered() && row_rect.Contains(ImGui::GetMousePos())) {
         ImGui::OpenPopup("##menu");
     }
     if (ImGui::BeginPopup("##menu")) {
-        draw_tree_menu(*state, node, act);
+        draw_tree_menu(sys, node, act);
         ImGui::EndPopup();
     }
 
     if (open) {
-        draw_group_filter(state, group);
+        draw_group_filter(sys, group);
 
         // What is within a hidden group is drawn dimmed: it is hidden too, whatever its own eye says
         const bool dim = !group.enabled;
         if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-        draw_tree_level(state, tree, group.node.id, depth + 1, act);
+        draw_tree_level(sys, tree, group.node.id, depth + 1, act);
         if (dim) ImGui::PopStyleVar();
 
         ImGui::TreePop();
@@ -3777,7 +3792,8 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
     ImGui::PopID();
 }
 
-static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act) {
+static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act) {
+    ApplicationState* state = sys.app;
     const TreeNodes& t = tree.t;
     if (depth > t.count) return;    // A cycle; the tree breaks those when it is normalized
 
@@ -3786,15 +3802,15 @@ static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uin
     for (size_t i = 0; i < n; ++i) {
         const size_t k = (size_t)kids[i];
         if (k < t.num_reps) {
-            draw_representation_row(state, tree, state->representation.reps[k], act);
+            draw_representation_row(sys, tree, sys.representation.reps[k], act);
         } else {
-            draw_group_row(state, tree, state->representation.groups[k - t.num_reps], depth, act);
+            draw_group_row(sys, tree, sys.representation.groups[k - t.num_reps], depth, act);
         }
     }
 }
 
 // The representations of a system: a heading with what adds to them and removes them all, then their tree
-static void draw_representations_section(ApplicationState* state, const WindowTree& tree, WindowActions* act) {
+static void draw_representations_section(SystemContext& sys, const WindowTree& tree, WindowActions* act) {
     ImGui::PushID("representations");
     const float btn = tree.button_size;
     const float spacing = tree.button_spacing;
@@ -3803,7 +3819,7 @@ static void draw_representations_section(ApplicationState* state, const WindowTr
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Representations");
     // How many of as many as it can have, once that comes near
-    const size_t num_reps = md_array_size(state->representation.reps);
+    const size_t num_reps = md_array_size(sys.representation.reps);
     if (num_reps + 4 >= REPRESENTATION_MAX) {
         ImGui::SameLine();
         if (num_reps >= REPRESENTATION_MAX) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%zu / %zu", num_reps, REPRESENTATION_MAX);
@@ -3818,16 +3834,16 @@ static void draw_representations_section(ApplicationState* state, const WindowTr
     ImGui::SetItemTooltip("Add a group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
     ImGui::SameLine(0, spacing);
-    ImGui::BeginDisabled(!representation_can_add(*state));
+    ImGui::BeginDisabled(!representation_can_add(sys));
     if (ImGui::Button(ICON_FA_PLUS, {btn, btn})) {
         act->add_representation = true;
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("%s", representation_can_add(*state) ? "Add a representation" : limit_tip());
+    ImGui::SetItemTooltip("%s", representation_can_add(sys) ? "Add a representation" : limit_tip());
 
     // Removing them all, behind a question: it cannot be taken back
     ImGui::SameLine(0, spacing);
-    ImGui::BeginDisabled(md_array_size(state->representation.reps) == 0 && md_array_size(state->representation.groups) == 0);
+    ImGui::BeginDisabled(md_array_size(sys.representation.reps) == 0 && md_array_size(sys.representation.groups) == 0);
     if (ImGui::Button(ICON_FA_TRASH_CAN, {btn, btn})) {
         ImGui::OpenPopup("##remove_all");
     }
@@ -3851,9 +3867,9 @@ static void draw_representations_section(ApplicationState* state, const WindowTr
         ImGui::TextDisabled("None yet. Add one with " ICON_FA_PLUS ".");
     }
     // What is within a hidden system is drawn dimmed: it is hidden too, whatever its own eye says
-    const bool dim = !state->system.visible;
+    const bool dim = !sys.scene.visible;
     if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-    draw_tree_level(state, tree, 0, 0, act);
+    draw_tree_level(sys, tree, 0, 0, act);
     if (dim) ImGui::PopStyleVar();
 }
 
@@ -3873,7 +3889,7 @@ void draw_representations_window(ApplicationState* state) {
     // The arrays are only read while the rows are drawn - every change to them waits in 'act' - so the
     // nodes gathered here hold until the end
     WindowTree tree;
-    tree.t = tree_nodes(*state, state->allocator.frame);
+    tree.t = tree_nodes(state->system_context, state->allocator.frame);
     tree.button_size = ImGui::GetFontSize() + 3.0f * 2;
     tree.button_spacing = 2.0f;
     tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
@@ -3886,11 +3902,11 @@ void draw_representations_window(ApplicationState* state) {
     bool reps_listed = false;
     bool remove_system = false;
     if (has_system) {
-        if (draw_system_header(state, &remove_system)) {
+        if (draw_system_header(state->system_context, &remove_system)) {
             ImGui::Indent();
-            draw_system_files(state);
-            draw_system_operations(state);
-            draw_representations_section(state, tree, &act);
+            draw_system_files(state->system_context);
+            draw_system_operations(state->system_context);
+            draw_representations_section(state->system_context, tree, &act);
             ImGui::Unindent();
             reps_listed = true;
         }
@@ -3900,7 +3916,7 @@ void draw_representations_window(ApplicationState* state) {
         ImGui::PopStyleColor();
         if (tree.t.count > 0) {
             ImGui::Spacing();
-            draw_representations_section(state, tree, &act);
+            draw_representations_section(state->system_context, tree, &act);
             reps_listed = true;
         }
     }
@@ -3914,7 +3930,7 @@ void draw_representations_window(ApplicationState* state) {
         if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
             NodeRef src;
             MEMCPY(&src, payload->Data, sizeof(src));
-            if (representation_can_move(*state, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
+            if (representation_can_move(state->system_context, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
                 const ImVec2 min = ImGui::GetItemRectMin();
                 ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
                 if (payload->IsDelivery()) {
@@ -3927,7 +3943,7 @@ void draw_representations_window(ApplicationState* state) {
         ImGui::EndDragDropTarget();
     }
     if (ImGui::BeginPopupContextItem("##below_menu")) {
-        draw_tree_menu(*state, NodeRef{}, &act);
+        draw_tree_menu(state->system_context, NodeRef{}, &act);
         ImGui::EndPopup();
     }
     }
@@ -3936,10 +3952,10 @@ void draw_representations_window(ApplicationState* state) {
 
     if (remove_system) {
         // The rows were drawn from what it held; nothing else is done to them
-        system_remove(state, state->system_context);
+        system_remove(state->system_context);
         return;
     }
-    apply_window_actions(state, act);
+    apply_window_actions(state->system_context, act);
 }
 
 // The legends of the representations that colour by a value: the field of an isosurface, or the
@@ -3953,7 +3969,7 @@ void draw_representation_legends(ApplicationState& state) {
         Representation& rep = state.representation.reps[i];
         // The value under the cursor of a legend is of this frame only: none unless its legend is drawn and hovered
         rep.electronic_structure.field_isolines.hover = false;
-        if (!representation_shown(state, rep)) continue;
+        if (!representation_shown(state.system_context, rep)) continue;
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
@@ -3972,4 +3988,18 @@ void draw_representation_legends(ApplicationState& state) {
             color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)rep.node.id, slot++);
         }
     }
+}
+
+// ## Of every system
+
+void update_all_representations(ApplicationState* app) {
+    for (size_t i = 0; i < app->num_systems; ++i) update_all_representations(*app->systems[i]);
+}
+
+void flag_all_representations_as_dirty(ApplicationState* app) {
+    for (size_t i = 0; i < app->num_systems; ++i) flag_all_representations_as_dirty(*app->systems[i]);
+}
+
+void flag_dynamic_representations_as_dirty(ApplicationState* app) {
+    for (size_t i = 0; i < app->num_systems; ++i) flag_dynamic_representations_as_dirty(*app->systems[i]);
 }

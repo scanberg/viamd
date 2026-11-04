@@ -266,7 +266,7 @@ struct Pucker : viamd::EventHandler {
         if (size != Size_Any && row.r.size != 4 + size) return false;
         if (only_selected) {
             for (int k = 0; k < row.r.size; ++k) {
-                if (!md_bitmask_test_bit(&app_state->selection.selection_mask, (uint32_t)row.r.atoms[k])) return false;
+                if (!md_bitmask_test_bit(&app_state->system_context.selection.selection_mask, (uint32_t)row.r.atoms[k])) return false;
             }
         }
         return true;
@@ -274,7 +274,7 @@ struct Pucker : viamd::EventHandler {
 
     void update_shown() {
         uint64_t key = (uint64_t)kind | ((uint64_t)size << 4) | ((uint64_t)only_selected << 8);
-        if (only_selected) key ^= md_bitset_hash64(md_bitmask_view(&app_state->selection.selection_mask), 0) << 9;
+        if (only_selected) key ^= md_bitset_hash64(md_bitmask_view(&app_state->system_context.selection.selection_mask), 0) << 9;
         if (!shown_dirty && key == shown_key) return;
         shown_key = key;
         shown_dirty = false;
@@ -294,7 +294,7 @@ struct Pucker : viamd::EventHandler {
     }
 
     bool is_highlighted(const Row& row) const {
-        const md_bitmask_t* mask = &app_state->selection.highlight_mask;
+        const md_bitmask_t* mask = &app_state->system_context.selection.highlight_mask;
         for (int k = 0; k < row.r.size; ++k) {
             if (md_bitmask_test_bit(mask, (uint32_t)row.r.atoms[k])) return true;
         }
@@ -344,7 +344,7 @@ struct Pucker : viamd::EventHandler {
     void draw_window() {
         if (!show_window || !app_state) {
             if (highlighting && app_state) {
-                md_bitmask_clear(&app_state->selection.highlight_mask);
+                md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
                 highlighting = false;
             }
             return;
@@ -395,11 +395,11 @@ struct Pucker : viamd::EventHandler {
 
         if (hovered >= 0 && hovered < (int)rows.size()) {
             const Row& row = rows[hovered];
-            md_bitmask_clear(&app_state->selection.highlight_mask);
-            for (int k = 0; k < row.r.size; ++k) md_bitmask_set_bit(&app_state->selection.highlight_mask, (uint32_t)row.r.atoms[k]);
+            md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
+            for (int k = 0; k < row.r.size; ++k) md_bitmask_set_bit(&app_state->system_context.selection.highlight_mask, (uint32_t)row.r.atoms[k]);
             highlighting = true;
         } else if (highlighting) {
-            md_bitmask_clear(&app_state->selection.highlight_mask);
+            md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
             highlighting = false;
         }
     }

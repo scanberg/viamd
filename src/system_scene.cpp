@@ -1,4 +1,4 @@
-#include <system_scene.h>
+﻿#include <system_scene.h>
 
 #include <viamd.h>
 #include <representation.h>
@@ -65,8 +65,8 @@ const char* system_operation_name(SystemOperation op) {
 }
 
 // The flag that turns it on and off
-static bool* enabled_flag(ApplicationState* app, SystemOperation op) {
-    auto& o = app->system.operations;
+static bool* enabled_flag(SystemContext& sys, SystemOperation op) {
+    auto& o = sys.scene.operations;
     switch (op) {
     case SystemOperation_Center:     return &o.recenter;
     case SystemOperation_Wrap:       return &o.apply_pbc;
@@ -77,8 +77,8 @@ static bool* enabled_flag(ApplicationState* app, SystemOperation op) {
     return &o.recenter;
 }
 
-bool system_operation_enabled(const ApplicationState& app, SystemOperation op) {
-    const auto& o = app.system.operations;
+bool system_operation_enabled(const SystemContext& sys, SystemOperation op) {
+    const auto& o = sys.scene.operations;
     switch (op) {
     case SystemOperation_Center:     return o.recenter;
     case SystemOperation_Wrap:       return o.apply_pbc;
@@ -89,31 +89,30 @@ bool system_operation_enabled(const ApplicationState& app, SystemOperation op) {
 }
 
 
-void system_apply_now(ApplicationState* app, bool center, bool wrap, bool make_whole) {
-    ASSERT(app);
+void system_apply_now(SystemContext& sys, bool center, bool wrap, bool make_whole) {
     // Its operators place the coordinates as the file gives them (system.assembly)
-    if (app->system.assembly >= 0) return;
-    if (apply_state_operations(app, center, wrap, make_whole)) {
-        app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+    if (sys.scene.assembly >= 0) return;
+    if (apply_state_operations(sys, center, wrap, make_whole)) {
+        sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
     }
 }
 
-void system_set_operation_enabled(ApplicationState* app, SystemOperation op, bool enabled) {
-    ASSERT(app);
-    auto& o = app->system.operations;
-    *enabled_flag(app, op) = enabled;
+void system_set_operation_enabled(SystemContext& sys, SystemOperation op, bool enabled) {
+    auto& o = sys.scene.operations;
+    *enabled_flag(sys, op) = enabled;
 
     if (op == SystemOperation_TrackBonds) {
         o.bond_tracking.scope_dirty = true;
     } else if (enabled) {
         // The frame shown as every frame will be: all that is on, in its order, the one turned on with it
-        system_apply_now(app, o.recenter, o.apply_pbc, o.unwrap_structures);
+        system_apply_now(sys, o.recenter, o.apply_pbc, o.unwrap_structures);
     }
 }
 
-void system_reset_operations(ApplicationState* app) {
+void system_reset_operations(SystemContext& sys) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
-    auto& o = app->system.operations;
+    auto& o = sys.scene.operations;
     o.recenter = false;
     o.fixate_orientation = false;
     o.recenter_query.enabled = false;
@@ -121,7 +120,7 @@ void system_reset_operations(ApplicationState* app) {
     o.recenter_query.filter.result = {};
     md_bitset_free(&o.selection_mask, app->allocator.persistent);
     o.selection_mask = md_bitset_empty_set();
-    recenter_mark_query_dirty(app);
+    recenter_mark_query_dirty(sys);
 
     o.apply_pbc = false;
     o.unwrap_structures = false;
@@ -139,20 +138,21 @@ void system_reset_operations(ApplicationState* app) {
 // Copies and naming
 // ---------------------------------------------------------------------------------------------------------
 
-void system_set_assembly(ApplicationState* app, int assembly) {
+void system_set_assembly(SystemContext& sys, int assembly) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
-    if (assembly == app->system.assembly) return;
+    if (assembly == sys.scene.assembly) return;
     // Its copies at once (they are set every frame, update_view_param), and what is shown changes its extent: the
     // view frames it
-    app->system.assembly = assembly;
-    assembly_transforms(&app->view.assembly_transforms, &app->view.assembly_copy_offset, app->mold.sys, assembly, app->allocator.persistent);
-    reset_view(&app->view.target, app->mold.state, &app->representation.visibility_mask, app->view.camera.fov_y, app->view.region, &app->mold.sys, assembly);
+    sys.scene.assembly = assembly;
+    assembly_transforms(&sys.scene.assembly_transforms, &sys.scene.assembly_copy_offset, sys.data.sys, assembly, app->allocator.persistent);
+    reset_view(&app->view.target, sys.data.state, &sys.representation.visibility_mask, app->view.camera.fov_y, app->view.region, &sys.data.sys, assembly);
     // Room to zoom out to all of it
     app->view.trackball_param.max_distance = MAX(app->view.trackball_param.max_distance, app->view.target.distance * 10.0f);
 }
 
-void system_label(char* buf, size_t cap, const ApplicationState& app) {
-    const char* name = app.system_context.name;
+void system_label(char* buf, size_t cap, const SystemContext& sys) {
+    const char* name = sys.name;
     snprintf(buf, cap, "%s", name[0] ? name : "System");
 }
 
@@ -192,44 +192,45 @@ static float row_button_size() {
 }
 
 // The representations were not updated while the system was hidden; brought up to what they show now
-static void refresh_representations(ApplicationState* app) {
-    for (size_t i = 0; i < md_array_size(app->representation.reps); ++i) {
-        app->representation.reps[i].needs_update = true;
+static void refresh_representations(SystemContext& sys) {
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        sys.representation.reps[i].needs_update = true;
     }
-    flag_dynamic_representations_as_dirty(app);
+    flag_dynamic_representations_as_dirty(sys);
 }
 
 // The system's menu, of its header's right click and of its ⋮ button: what is done once, the details, removing it
-static void draw_system_menu(ApplicationState* app, bool* remove_request) {
-    const bool assembly_shown = app->system.assembly >= 0;
-    const bool has_cell = md_unitcell_flags(&app->mold.state.unitcell) != 0;
+static void draw_system_menu(SystemContext& sys, bool* remove_request) {
+    ApplicationState* app = sys.app;
+    const bool assembly_shown = sys.scene.assembly >= 0;
+    const bool has_cell = md_unitcell_flags(&sys.data.state.unitcell) != 0;
 
     ImGui::TextDisabled("Now, to the frame shown");
 
-    const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
+    const md_bitset_t& target_mask = recenter_get_active_target_mask(sys);
     const bool target = !md_bitset_empty(target_mask);
     if (ImGui::MenuItem(ICON_FA_CROSSHAIRS " Center target", nullptr, false, target && !assembly_shown)) {
-        system_apply_now(app, true, false, false);
+        system_apply_now(sys, true, false, false);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         if (target) {
-            md_bitmask_assign(&app->selection.highlight_mask, target_mask);
+            md_bitmask_assign(&sys.selection.highlight_mask, target_mask);
             ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
         } else {
             ImGui::SetTooltip("There is nothing to center on yet: give the Center operation a target (Operations)");
         }
     }
     if (ImGui::MenuItem(ICON_FA_CUBE " Wrap into box", nullptr, false, has_cell && !assembly_shown)) {
-        system_apply_now(app, false, true, false);
+        system_apply_now(sys, false, true, false);
     }
     ImGui::SetItemTooltip("Move every atom that is outside the periodic box back in through the opposite side");
     if (ImGui::MenuItem(ICON_FA_PUZZLE_PIECE " Make whole", nullptr, false, !assembly_shown)) {
-        system_apply_now(app, false, false, true);
+        system_apply_now(sys, false, false, true);
     }
     ImGui::SetItemTooltip("Join molecules that are split across the periodic box boundary");
     if (ImGui::MenuItem(ICON_FA_ARROWS_ROTATE " Recompute bonds")) {
         // The whole frame nearest the animation time, or the coordinates shown when there is no run
-        recompute_bonds(app, (int64_t)(app->animation.frame + 0.5));
+        recompute_bonds(sys, (int64_t)(app->animation.frame + 0.5));
     }
     ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame, for when\n"
                           "the file's bonds are wrong or a reaction should be the topology from here on.\n"
@@ -251,15 +252,16 @@ static void draw_system_menu(ApplicationState* app, bool* remove_request) {
     ImGui::SetItemTooltip("Unload the system, its files, operations and representations");
 }
 
-static void draw_bond_tracking_details(ApplicationState* app);
+static void draw_bond_tracking_details(SystemContext& sys);
 
 // The settings of an operation, under its row
-static void draw_operation_properties(ApplicationState* app, SystemOperation op) {
-    auto& o = app->system.operations;
+static void draw_operation_properties(SystemContext& sys, SystemOperation op) {
+    ApplicationState* app = sys.app;
+    auto& o = sys.scene.operations;
     prop::begin("system_operation");
     switch (op) {
     case SystemOperation_Center: {
-        const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
+        const md_bitset_t& target_mask = recenter_get_active_target_mask(sys);
 
         prop::row("target", "What is centered: the atoms set from a selection, or those a query picks\n"
                             "(evaluated again in every frame when it depends on it)");
@@ -269,22 +271,22 @@ static void draw_operation_properties(ApplicationState* app, SystemOperation op)
         if (ImGui::RadioButton("query", by_query)) by_query = true;
         if (by_query != o.recenter_query.enabled) {
             o.recenter_query.enabled = by_query;
-            if (o.recenter) system_apply_now(app, true, o.apply_pbc, o.unwrap_structures);
+            if (o.recenter) system_apply_now(sys, true, o.apply_pbc, o.unwrap_structures);
         }
 
         if (o.recenter_query.enabled) {
             prop::row("query");
-            if (filter_input("##recenter-query", &o.recenter_query.filter, app->script.language, filter_context(app))) {
-                recenter_mark_query_dirty(app);
+            if (filter_input("##recenter-query", &o.recenter_query.filter, app->script.language, filter_context(sys))) {
+                recenter_mark_query_dirty(sys);
             }
         } else {
             prop::row("atoms");
-            const size_t num_selected = md_bitmask_count(&app->selection.selection_mask);
+            const size_t num_selected = md_bitmask_count(&sys.selection.selection_mask);
             ImGui::BeginDisabled(num_selected == 0);
             if (ImGui::SmallButton("set from selection")) {
-                md_bitset_assign(&o.selection_mask, md_bitmask_view(&app->selection.selection_mask), app->allocator.persistent);
-                recenter_update_target_data(app);
-                if (o.recenter) system_apply_now(app, true, o.apply_pbc, o.unwrap_structures);
+                md_bitset_assign(&o.selection_mask, md_bitmask_view(&sys.selection.selection_mask), app->allocator.persistent);
+                recenter_update_target_data(sys);
+                if (o.recenter) system_apply_now(sys, true, o.apply_pbc, o.unwrap_structures);
             }
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -297,7 +299,7 @@ static void draw_operation_properties(ApplicationState* app, SystemOperation op)
         }
         // The target where it is: highlighted while its rows are hovered
         if (ImGui::IsItemHovered() && !md_bitset_empty(target_mask)) {
-            md_bitmask_assign(&app->selection.highlight_mask, target_mask);
+            md_bitmask_assign(&sys.selection.highlight_mask, target_mask);
         }
 
         prop::row("keep orientation", "Also turn everything so the target keeps the orientation it has in the first frame.\n"
@@ -305,7 +307,7 @@ static void draw_operation_properties(ApplicationState* app, SystemOperation op)
                                       "and the box turns with it.");
         if (ImGui::Checkbox("##keep-orientation", &o.fixate_orientation) && o.recenter) {
             // Takes effect on the frame shown, not the next one
-            system_apply_now(app, true, o.apply_pbc, o.unwrap_structures);
+            system_apply_now(sys, true, o.apply_pbc, o.unwrap_structures);
         }
         break;
     }
@@ -313,12 +315,12 @@ static void draw_operation_properties(ApplicationState* app, SystemOperation op)
         auto& bt = o.bond_tracking;
         prop::row("scope", "Where bonds are tracked: the bonds with an atom among those it picks.\n"
                            "Empty for every atom; a smaller scope is faster.");
-        if (filter_input("##track-bonds-scope", &bt.scope, app->script.language, filter_context(app), 0, nullptr, "all atoms")) {
+        if (filter_input("##track-bonds-scope", &bt.scope, app->script.language, filter_context(sys), 0, nullptr, "all atoms")) {
             bt.scope_dirty = true;
         }
         prop::end();
         if (bt.enabled) {
-            draw_bond_tracking_details(app);
+            draw_bond_tracking_details(sys);
         }
         return;
     }
@@ -333,12 +335,12 @@ static bool operation_has_properties(SystemOperation op) {
 }
 
 // The row of an operation: its icon, its name (open for its settings, if it has any), and on or off
-static void draw_operation_row(ApplicationState* app, const OperationInfo& info) {
+static void draw_operation_row(SystemContext& sys, const OperationInfo& info) {
     ImGui::PushID(info.key);
 
-    const bool assembly_shown = app->system.assembly >= 0;
+    const bool assembly_shown = sys.scene.assembly >= 0;
     const bool inactive = info.moves_atoms && assembly_shown;
-    const bool enabled = system_operation_enabled(*app, info.op);
+    const bool enabled = system_operation_enabled(sys, info.op);
 
     const float btn = row_button_size();
     const float spacing = 0.0f;
@@ -375,14 +377,14 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
     bool on = enabled;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pad, pad));
     if (ImGui::Checkbox("##on", &on)) {
-        system_set_operation_enabled(app, info.op, on);
+        system_set_operation_enabled(sys, info.op, on);
     }
     ImGui::PopStyleVar();
     ImGui::SetItemTooltip(enabled ? "On: applied in every frame. Off keeps its settings." : "Off, its settings kept. On: applied in every frame.");
 
     if (open) {
         if (inactive) ImGui::BeginDisabled();
-        draw_operation_properties(app, info.op);
+        draw_operation_properties(sys, info.op);
         if (inactive) ImGui::EndDisabled();
         ImGui::Spacing();
         ImGui::TreePop();
@@ -393,16 +395,16 @@ static void draw_operation_row(ApplicationState* app, const OperationInfo& info)
 
 // What the system is shown as: as it is, in its periodic images, or as one of its assemblies. One row, as a system is
 // shown as one of them; none when it can only be shown as it is.
-static void draw_copies_row(ApplicationState* app) {
-    const md_system_t& sys = app->mold.sys;
-    const bool has_cell = md_unitcell_flags(&app->mold.state.unitcell) != 0;
+static void draw_copies_row(SystemContext& sc) {
+    const md_system_t& sys = sc.data.sys;
+    const bool has_cell = md_unitcell_flags(&sc.data.state.unitcell) != 0;
     const size_t num_assemblies = sys.assembly.count;
     if (!has_cell && num_assemblies == 0) return;
 
     ImGui::PushID("copies");
-    int* n = app->system.periodic_images;
-    const bool images = app->system.assembly < 0 && (n[0] | n[1] | n[2]) != 0;
-    const bool shown = images || app->system.assembly >= 0;
+    int* n = sc.scene.periodic_images;
+    const bool images = sc.scene.assembly < 0 && (n[0] | n[1] | n[2]) != 0;
+    const bool shown = images || sc.scene.assembly >= 0;
 
     const float btn = row_button_size();
     const ImVec2 min = ImGui::GetCursorScreenPos();
@@ -422,28 +424,28 @@ static void draw_copies_row(ApplicationState* app) {
     ImGui::SameLine();
 
     char preview[64] = "Coordinates as they are";
-    if (app->system.assembly >= 0 && (size_t)app->system.assembly < num_assemblies) {
-        const str_t id = md_assembly_id(&sys.assembly, (size_t)app->system.assembly);
-        snprintf(preview, sizeof(preview), "Assembly " STR_FMT " (%zu chains)", STR_ARG(id), assembly_num_chains(sys, (size_t)app->system.assembly));
+    if (sc.scene.assembly >= 0 && (size_t)sc.scene.assembly < num_assemblies) {
+        const str_t id = md_assembly_id(&sys.assembly, (size_t)sc.scene.assembly);
+        snprintf(preview, sizeof(preview), "Assembly " STR_FMT " (%zu chains)", STR_ARG(id), assembly_num_chains(sys, (size_t)sc.scene.assembly));
     } else if (images) {
         snprintf(preview, sizeof(preview), "Periodic images");
     }
     ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x, 1.0f));
     if (ImGui::BeginCombo("##shown_as", preview)) {
         if (ImGui::Selectable("Coordinates as they are", !shown)) {
-            system_set_assembly(app, -1);
+            system_set_assembly(sc, -1);
             n[0] = n[1] = n[2] = 0;
         }
         if (has_cell && ImGui::Selectable("Periodic images", images)) {
-            system_set_assembly(app, -1);
+            system_set_assembly(sc, -1);
             if ((n[0] | n[1] | n[2]) == 0) n[0] = n[1] = n[2] = 1;
         }
         for (size_t k = 0; k < num_assemblies; ++k) {
             char label[64];
             const str_t id = md_assembly_id(&sys.assembly, k);
             snprintf(label, sizeof(label), "Assembly " STR_FMT " (%zu chains)##%zu", STR_ARG(id), assembly_num_chains(sys, k), k);
-            if (ImGui::Selectable(label, app->system.assembly == (int)k)) {
-                system_set_assembly(app, (int)k);
+            if (ImGui::Selectable(label, sc.scene.assembly == (int)k)) {
+                system_set_assembly(sc, (int)k);
             }
         }
         ImGui::EndCombo();
@@ -461,12 +463,11 @@ static void draw_copies_row(ApplicationState* app) {
     ImGui::PopID();
 }
 
-bool draw_system_header(ApplicationState* app, bool* remove) {
-    ASSERT(app);
+bool draw_system_header(SystemContext& sys, bool* remove) {
     ImGui::PushID("system");
 
     char label[128];
-    system_label(label, sizeof(label), *app);
+    system_label(label, sizeof(label), sys);
 
     const float btn = row_button_size();
     const float spacing = 2.0f;
@@ -476,26 +477,26 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
     // the representations), without the tree's own push: the two are drawn in different places.
     const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap |
                                      ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding;
-    if (!app->system.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    if (!sys.scene.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     const bool open = ImGui::TreeNodeEx("##system", flags, ICON_FA_ATOM "  %s", label);
-    if (!app->system.visible) ImGui::PopStyleColor();
+    if (!sys.scene.visible) ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("The system, %zu atoms: the operations on its coordinates, what it is shown as, its representations.\n"
                           "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": apply an operation to the frame shown now, recompute the bonds, the details.",
-                          (size_t)app->mold.sys.atom.count);
+                          (size_t)sys.data.sys.atom.count);
     }
     bool remove_request = false;
     if (ImGui::BeginPopupContextItem("##system_menu_rc")) {
-        draw_system_menu(app, &remove_request);
+        draw_system_menu(sys, &remove_request);
         ImGui::EndPopup();
     }
 
     // As the rows of the representations: show/hide, more, remove
     ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
-    if (ImGui::Button(app->system.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
-        app->system.visible = !app->system.visible;
-        app->representation.atom_visibility_mask_dirty = true;
-        if (app->system.visible) refresh_representations(app);
+    if (ImGui::Button(sys.scene.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
+        sys.scene.visible = !sys.scene.visible;
+        sys.representation.atom_visibility_mask_dirty = true;
+        if (sys.scene.visible) refresh_representations(sys);
     }
     ImGui::SetItemTooltip("Show/Hide the system: all of its representations");
     ImGui::SameLine(0, spacing);
@@ -504,7 +505,7 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
     }
     ImGui::SetItemTooltip("Apply an operation to the frame shown now, recompute the bonds, the details");
     if (ImGui::BeginPopup("##system_menu")) {
-        draw_system_menu(app, &remove_request);
+        draw_system_menu(sys, &remove_request);
         ImGui::EndPopup();
     }
     ImGui::SameLine(0, spacing);
@@ -538,8 +539,7 @@ bool draw_system_header(ApplicationState* app, bool* remove) {
     return open;
 }
 
-void draw_system_operations(ApplicationState* app) {
-    ASSERT(app);
+void draw_system_operations(SystemContext& sys) {
     ImGui::PushID("system");
 
     // One row, folded by default, that says which are on: all of them, opted into, under it
@@ -547,9 +547,9 @@ void draw_system_operations(ApplicationState* app) {
     int len = 0;
     bool inactive = false;
     for (const OperationInfo& info : operation_info) {
-        if (!system_operation_enabled(*app, info.op)) continue;
+        if (!system_operation_enabled(sys, info.op)) continue;
         len += snprintf(on + len, sizeof(on) - len, "%s%s", len ? ", " : "", info.name);
-        inactive |= info.moves_atoms && app->system.assembly >= 0;
+        inactive |= info.moves_atoms && sys.scene.assembly >= 0;
     }
 
     const float btn = row_button_size();
@@ -575,12 +575,12 @@ void draw_system_operations(ApplicationState* app) {
 
     if (open) {
         for (const OperationInfo& info : operation_info) {
-            draw_operation_row(app, info);
+            draw_operation_row(sys, info);
         }
         ImGui::TreePop();
     }
 
-    draw_copies_row(app);
+    draw_copies_row(sys);
 
     // What is done to the system and what it is shown as, apart from how it is drawn
     ImGui::Spacing();
@@ -590,27 +590,28 @@ void draw_system_operations(ApplicationState* app) {
 }
 
 // The state of the tracking of bond changes in the frame shown, and its advanced settings, under the operation
-static void draw_bond_tracking_details(ApplicationState* app) {
+static void draw_bond_tracking_details(SystemContext& sys) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
-    auto& tracking = app->system.operations.bond_tracking;
+    auto& tracking = sys.scene.operations.bond_tracking;
 
-    const md_bond_delta_t* delta = bond_tracking_delta(app);
+    const md_bond_delta_t* delta = bond_tracking_delta(sys);
     if (delta) {
         const size_t num_broken = md_bitset_count(delta->broken);
         ImGui::Text("%zu formed, %zu broken in this frame (%.1f ms)", delta->num_formed, num_broken, tracking.time_ms);
         if (ImGui::IsItemHovered()) {
             // The atoms of the bonds that changed
-            md_bitmask_clear(&app->selection.highlight_mask);
+            md_bitmask_clear(&sys.selection.highlight_mask);
             for (size_t i = 0; i < delta->num_formed; ++i) {
-                md_bitmask_set_bit(&app->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[0]);
-                md_bitmask_set_bit(&app->selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[1]);
+                md_bitmask_set_bit(&sys.selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[0]);
+                md_bitmask_set_bit(&sys.selection.highlight_mask, (uint32_t)delta->formed_pair[i].idx[1]);
             }
             md_bitset_iter_t it = md_bitset_iter(delta->broken);
             while (md_bitset_iter_next(&it)) {
-                if (it.idx >= app->mold.sys.bond.count) break;
-                const md_atom_pair_t p = app->mold.sys.bond.pairs[it.idx];
-                md_bitmask_set_bit(&app->selection.highlight_mask, (uint32_t)p.idx[0]);
-                md_bitmask_set_bit(&app->selection.highlight_mask, (uint32_t)p.idx[1]);
+                if (it.idx >= sys.data.sys.bond.count) break;
+                const md_atom_pair_t p = sys.data.sys.bond.pairs[it.idx];
+                md_bitmask_set_bit(&sys.selection.highlight_mask, (uint32_t)p.idx[0]);
+                md_bitmask_set_bit(&sys.selection.highlight_mask, (uint32_t)p.idx[1]);
             }
             ImGui::SetTooltip("The bonds formed are drawn as sticks and the broken ones are not drawn.\n"
                               "Their atoms are highlighted.");
@@ -706,7 +707,7 @@ static const char* file_role_icon(const FileEntry& e, FileRole role) {
     }
 }
 
-void system_file_details(char* buf, size_t cap, const ApplicationState& app, const SystemContext& sys, size_t i) {
+void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t i) {
     ASSERT(buf && cap > 0);
     buf[0] = '\0';
     const FileList* list = &sys.files;
@@ -739,11 +740,11 @@ void system_file_details(char* buf, size_t cap, const ApplicationState& app, con
     case FileRole_Series: {
         // The group the file published, which names its source. The series are of the one system loaded.
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &app), ARRAY_SIZE(groups));
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), sys), ARRAY_SIZE(groups));
         const str_t path = str_from_cstr(e->path);
         for (size_t g = 0; g < num_groups; ++g) {
-            if (str_eq(system_series_group_source(&app, groups[g]), path)) {
-                snprintf(buf, cap, "%zu series", system_series_members(nullptr, 0, &app, groups[g]));
+            if (str_eq(system_series_group_source(sys, groups[g]), path)) {
+                snprintf(buf, cap, "%zu series", system_series_members(nullptr, 0, sys, groups[g]));
                 break;
             }
         }
@@ -757,9 +758,8 @@ void system_file_details(char* buf, size_t cap, const ApplicationState& app, con
     }
 }
 
-void draw_system_files(ApplicationState* app) {
-    ASSERT(app);
-    const SystemContext& sys = app->system_context;
+void draw_system_files(SystemContext& sc) {
+    const SystemContext& sys = sc;
     const FileList* list = &sys.files;
     const size_t num_files = file_list_count(list);
     if (num_files == 0) return;
@@ -823,7 +823,7 @@ void draw_system_files(ApplicationState* app) {
                 ImGui::EndPopup();
             }
             char details[128];
-            system_file_details(details, sizeof(details), *app, sys, i);
+            system_file_details(details, sizeof(details), sc, i);
             if (details[0]) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", details);
@@ -837,35 +837,35 @@ void draw_system_files(ApplicationState* app) {
     ImGui::PopID();
 }
 
-void system_remove(ApplicationState* app, SystemContext& sys) {
+void system_remove(SystemContext& sys) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
     interrupt_async_tasks(app);
     free_trajectory_data(app, sys);
     free_system_data(app, sys);
 
     // What was of it: its representations, its operations and what it was shown as
-    remove_all_representations(app);
+    remove_all_representations(sys);
     sys.scene.visible = true;
-    system_reset_operations(app);
+    system_reset_operations(sys);
     sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
     sys.scene.assembly = -1;
-    md_array_shrink(app->view.assembly_transforms, 0);
-    md_array_shrink(app->view.assembly_copy_offset, 0);
-    app->representation.atom_visibility_mask_dirty = true;
-    app->animation.frame = 0.0;
+    md_array_shrink(sys.scene.assembly_transforms, 0);
+    md_array_shrink(sys.scene.assembly_copy_offset, 0);
+    sys.representation.atom_visibility_mask_dirty = true;
+    if (system_count(*app) == 0) app->animation.frame = 0.0;
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------------------------------------
 
-void system_scene_serialize(viamd::serialization_state_t& state, const ApplicationState* app, int system_id) {
-    ASSERT(app);
-    const auto& s = app->system;
+void system_scene_serialize(viamd::serialization_state_t& state, const SystemContext& sys) {
+    const auto& s = sys.scene;
     const auto& op = s.operations;
 
     viamd::write_section_header(state, STR_LIT("SystemScene"));
-    viamd::write_int(state, STR_LIT("System"), system_id);
+    viamd::write_int(state, STR_LIT("System"), (int)sys.id);
     viamd::write_bool(state, STR_LIT("Visible"), s.visible);
 
     // The operations: on or off, and their settings
@@ -888,14 +888,13 @@ void system_scene_serialize(viamd::serialization_state_t& state, const Applicati
     if ((s.periodic_images[0] | s.periodic_images[1] | s.periodic_images[2]) != 0) {
         viamd::write_int_vec(state, STR_LIT("PeriodicImages"), s.periodic_images, 3);
     }
-    if (s.assembly >= 0 && (size_t)s.assembly < app->mold.sys.assembly.count) {
-        viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&app->mold.sys.assembly, (size_t)s.assembly));
+    if (s.assembly >= 0 && (size_t)s.assembly < sys.data.sys.assembly.count) {
+        viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&sys.data.sys.assembly, (size_t)s.assembly));
     }
 }
 
-bool system_scene_read_entry(ApplicationState* app, str_t ident, str_t arg) {
-    ASSERT(app);
-    auto& s = app->system;
+bool system_scene_read_entry(SystemContext& sys, str_t ident, str_t arg) {
+    auto& s = sys.scene;
     auto& op = s.operations;
 
     if (str_eq(ident, STR_LIT("Visible"))) {
@@ -928,7 +927,7 @@ bool system_scene_read_entry(ApplicationState* app, str_t ident, str_t arg) {
         viamd::extract_bool(op.recenter_query.enabled, arg);
     } else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
         viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
-        recenter_mark_query_dirty(app);
+        recenter_mark_query_dirty(sys);
     } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
         // Integers; a workspace written before [SystemScene] had them as floats ([RenderSettings])
         float n[3];

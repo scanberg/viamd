@@ -429,7 +429,7 @@ struct Contacts : viamd::EventHandler {
         }
 
         if (hovered_group >= 0 && hovered_group < (int)res.groups.size()) {
-            md_bitmask_t* mask = &app_state->selection.highlight_mask;
+            md_bitmask_t* mask = &app_state->system_context.selection.highlight_mask;
             md_bitmask_clear(mask);
             for (uint32_t k = res.group_off[hovered_group]; k < res.group_off[hovered_group + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
         }

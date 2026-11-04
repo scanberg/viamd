@@ -903,7 +903,7 @@ struct Shapespace : viamd::EventHandler {
             l.eval.reset();
             return;
         }
-        const size_t num_frames = run_num_frames(app);
+        const size_t num_frames = run_num_frames(app->system_context);
         if (num_frames == 0) {
             l.eval.reset();
             return;
@@ -1011,7 +1011,7 @@ struct Shapespace : viamd::EventHandler {
 
     // The frames [beg, end) of the layer, false when it covers none
     bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
-        const int num_frames = (int)run_num_frames(app);
+        const int num_frames = (int)run_num_frames(app->system_context);
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
@@ -1039,7 +1039,7 @@ struct Shapespace : viamd::EventHandler {
 
     // A density over frames, with frames to find it over
     bool layer_draws_density(const Layer& l) const {
-        return l.style != LayerStyle_Points && l.frames != LayerFrames_Current && run_num_frames(app) >= 2;
+        return l.style != LayerStyle_Points && l.frames != LayerFrames_Current && run_num_frames(app->system_context) >= 2;
     }
 
     void update() {
@@ -1063,7 +1063,7 @@ struct Shapespace : viamd::EventHandler {
             Layer& l = layers[i];
             update_structures(l);
             if (!layer_shown(l)) continue;
-            if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
+            if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
                 update_current(l);
             }
             update_evaluation(l);
@@ -1354,7 +1354,7 @@ struct Shapespace : viamd::EventHandler {
         }
         const size_t n = md_array_size(l.structures);
         const char* what = n == 1 ? "structure" : "structures";
-        if (l.frames != LayerFrames_Current && run_num_frames(app) >= 2) {
+        if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) >= 2) {
             if (l.eval && !l.eval->complete()) {
                 snprintf(buf, cap, "%zu %s \xc2\xb7 %u%% evaluated", n, what, (uint32_t)(100.0 * l.eval->frames_done.load() / MAX((size_t)1, l.eval->num_frames)));
                 return;
@@ -1424,7 +1424,7 @@ struct Shapespace : viamd::EventHandler {
 
     bool point_source(PointSource* ps, Layer& l) const {
         if (l.style != LayerStyle_Points || !l.structs_valid) return false;
-        if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
+        if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
             if (md_array_size(l.current_coords) == 0) return false;
             ps->coords = l.current_coords;
             ps->stride = 1;
@@ -1510,8 +1510,8 @@ struct Shapespace : viamd::EventHandler {
 
     void draw_points(bool hovered) {
         plot_drawn = true;
-        md_bitmask_t* selection_mask = &app->selection.selection_mask;
-        md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
+        md_bitmask_t* selection_mask = &app->system_context.selection.selection_mask;
+        md_bitmask_t* highlight_mask = &app->system_context.selection.highlight_mask;
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
         const ImVec2 pos = ImPlot::GetPlotPos();
@@ -1988,8 +1988,8 @@ struct Shapespace : viamd::EventHandler {
         // Hovering a layer lights its structures up
         if (row_hovered && l.structs_valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->selection.highlight_mask);
-            for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->selection.highlight_mask, l.structures[i]);
+            md_bitmask_clear(&app->system_context.selection.highlight_mask);
+            for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->system_context.selection.highlight_mask, l.structures[i]);
         }
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -2066,8 +2066,8 @@ struct Shapespace : viamd::EventHandler {
         // Its structures lit up
         if (row.hovered && context && g.valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->selection.highlight_mask);
-            md_bitmask_or(&app->selection.highlight_mask, g.atoms);
+            md_bitmask_clear(&app->system_context.selection.highlight_mask);
+            md_bitmask_or(&app->system_context.selection.highlight_mask, g.atoms);
         }
 
         ImGui::PushID("group_drop");
@@ -2184,8 +2184,8 @@ struct Shapespace : viamd::EventHandler {
             if (invalid) ImGui::PopInvalid();
             if (ImGui::IsItemHovered() && l.structs_valid) {
                 highlights_now = true;
-                md_bitmask_clear(&app->selection.highlight_mask);
-                for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->selection.highlight_mask, l.structures[i]);
+                md_bitmask_clear(&app->system_context.selection.highlight_mask);
+                for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->system_context.selection.highlight_mask, l.structures[i]);
             }
             if (l.filter.result.is_dynamic && l.frames != LayerFrames_Current) {
                 prop::hint("Depends on the coordinates: taken in the frame it was evaluated in");
@@ -2217,7 +2217,7 @@ struct Shapespace : viamd::EventHandler {
                 }
                 ImGui::EndCombo();
             }
-            if (l.frames != LayerFrames_Current && run_num_frames(app) < 2) {
+            if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) {
                 prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
             }
         }
@@ -2366,7 +2366,7 @@ struct Shapespace : viamd::EventHandler {
             box.click_layer = -1;
             box.click_structure = -1;
         }
-        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->system_context.selection.highlight_mask);
         owns_highlight = highlights_now;
     }
 

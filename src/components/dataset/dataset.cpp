@@ -875,9 +875,9 @@ struct Dataset : viamd::EventHandler {
             // Shift + click on element header to select all particle types that use this element
             // Since the hover should already contain the correct selection we can just copy it to the filter mask to achieve this
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
             } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
             }
         }
     }
@@ -1073,7 +1073,7 @@ struct Dataset : viamd::EventHandler {
             row.missing = e.missing;
 
             if (!e.missing) {
-                system_file_details(row.details, sizeof(row.details), data, data.system_context, i);
+                system_file_details(row.details, sizeof(row.details), data.system_context, i);
             }
             file_row(row);
         }
@@ -1362,7 +1362,7 @@ struct Dataset : viamd::EventHandler {
 
     static void highlight_row(ApplicationState& data, const Composition& c, size_t row_idx) {
         const md_system_t& sys = data.mold.sys;
-        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
         md_bitmask_clear(hb);
         const TypeRow& row = c.rows[row_idx];
         if (row.type < 0) {
@@ -1382,7 +1382,7 @@ struct Dataset : viamd::EventHandler {
 
     static void highlight_molecule(ApplicationState& data, uint32_t mol_idx) {
         const md_molecule_t mol = md_system_molecule(&data.mold.sys, mol_idx);
-        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
         md_bitmask_clear(hb);
         for (size_t i = 0; i < mol.count; ++i) md_bitmask_set_bit(hb, (uint32_t)mol.atom_idx[i]);
     }
@@ -1480,7 +1480,7 @@ struct Dataset : viamd::EventHandler {
                 const str_t full = md_system_residue_name(&sys, res_idx);
                 ImGui::SetTooltip(STR_FMT " %d", STR_ARG(full), md_system_residue_seq_id(&sys, res_idx));
                 const md_urange_t atoms = md_system_residue_atom_range(&sys, res_idx);
-                md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
+                md_bitmask_assign(&data.system_context.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
                 handle_item_click(data);
             }
         }
@@ -1703,7 +1703,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu atoms have no element", c.atoms_without_element);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Their element could not be told from the file: they are drawn as unknown and\nhave no radius or colour of their own. Set it under Atom Types.");
-                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t a = 0; a < sys.atom.count; ++a) {
                     if (atom_without_element(sys, a)) md_bitmask_set_bit(hb, (uint32_t)a);
@@ -1716,7 +1716,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu residues are named like %s but their backbone was not found", count, what);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their atom names may not follow the usual convention.");
-                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t i = 0; i < sys.residue.count; ++i) {
                     const md_residue_flags_t f = md_system_residue_flags(&sys, i);
@@ -1738,7 +1738,7 @@ struct Dataset : viamd::EventHandler {
         if (c.bonds_user > 0) {
             ImGui::TextDisabled(ICON_FA_CIRCLE_INFO " %zu bonds were added by you", c.bonds_user);
             if (ImGui::IsItemHovered()) {
-                md_bitmask_t* hb = &data.selection.highlight_mask;
+                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
                     if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
@@ -1786,8 +1786,8 @@ struct Dataset : viamd::EventHandler {
     } traj;
 
     uint64_t trajectory_key(const ApplicationState& data) {
-        const md_attribute_t* axis = run_time_axis(&data);
-        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
+        const md_attribute_t* axis = run_time_axis(data.system_context);
+        const md_attribute_t* cell = run_attribute(data.system_context, STR_LIT("unitcell"));
         const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
         return md_hash64(v, sizeof(v), md_hash64_str(str_from_cstr(data.run.path), 0));
     }
@@ -1796,10 +1796,10 @@ struct Dataset : viamd::EventHandler {
         traj = TrajectoryInfo{};
         traj.key = trajectory_key(data);
         const md_attributes_t* attrs = &data.mold.sys.attributes;
-        const size_t n = run_num_frames(&data);
-        const double* t = run_frame_times(&data);
+        const size_t n = run_num_frames(data.system_context);
+        const double* t = run_frame_times(data.system_context);
         traj.num_frames = n;
-        traj.has_time = n > 0 && t && !md_unit_is_none(run_time_unit(&data));
+        traj.has_time = n > 0 && t && !md_unit_is_none(run_time_unit(data.system_context));
         if (n > 0 && t) {
             traj.t0 = t[0];
             traj.t1 = t[n - 1];
@@ -1815,12 +1815,12 @@ struct Dataset : viamd::EventHandler {
             if (n < 2) traj.dt_min = traj.dt_max = 0;
         }
 
-        traj.has_velocity = run_attribute(&data, STR_LIT("atom/velocity")) != nullptr;
-        traj.has_force    = run_attribute(&data, STR_LIT("atom/force")) != nullptr;
+        traj.has_velocity = run_attribute(data.system_context, STR_LIT("atom/velocity")) != nullptr;
+        traj.has_force    = run_attribute(data.system_context, STR_LIT("atom/force")) != nullptr;
 
         // Sections with an axis of their own: "<run>/trr/<name>/time"
         char buf[256];
-        const str_t trr = run_attribute_path(buf, sizeof(buf), &data, STR_LIT("trr"));
+        const str_t trr = run_attribute_path(buf, sizeof(buf), data.system_context, STR_LIT("trr"));
         if (!str_empty(trr)) {
             int len = 0;
             for (md_attribute_iter_t it = md_attributes_iter_children(attrs, trr); md_attributes_next(&it);) {
@@ -1833,7 +1833,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         // The box, frame by frame
-        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
+        const md_attribute_t* cell = run_attribute(data.system_context, STR_LIT("unitcell"));
         if (cell && cell->data && md_attribute_element_count(&cell->format) == n * 9 && n > 0) {
             md_temp_scope_t temp = md_temp_begin();
             float* m = md_temp_alloc_array(temp, float, n * 9);
@@ -1857,14 +1857,14 @@ struct Dataset : viamd::EventHandler {
     }
 
     void draw_trajectory(ApplicationState& data) {
-        if (run_num_frames(&data) == 0) return;
+        if (run_num_frames(data.system_context) == 0) return;
         if (!ImGui::CollapsingHeader("Trajectory", ImGuiTreeNodeFlags_DefaultOpen)) return;
         if (traj.key != trajectory_key(data)) {
             compute_trajectory(data);
         }
 
         char tu[32] = "";
-        const double ts = display_units::factor_print(tu, sizeof(tu), run_time_unit(&data));
+        const double ts = display_units::factor_print(tu, sizeof(tu), run_time_unit(data.system_context));
         const ImVec4 warn = ImVec4(1.0f, 0.75f, 0.2f, 1.0f);
 
         if (traj.has_time) {
@@ -1915,7 +1915,7 @@ struct Dataset : viamd::EventHandler {
 
         const double frame = data.animation.frame;
         const size_t fi = (size_t)CLAMP(frame + 0.5, 0.0, (double)(traj.num_frames - 1));
-        const double* t = run_frame_times(&data);
+        const double* t = run_frame_times(data.system_context);
         if (traj.has_time && t) {
             ImGui::Text("Showing frame %zu, %.6g %s", fi, t[fi] * ts, tu);
         } else {
@@ -1924,7 +1924,7 @@ struct Dataset : viamd::EventHandler {
 
         // What was loaded along the frames, and how it lines up with them
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data.system_context), ARRAY_SIZE(groups));
         for (size_t g = 0; g < num_groups; ++g) {
             const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], STR_LIT("time"));
             char label[256];
@@ -1935,8 +1935,8 @@ struct Dataset : viamd::EventHandler {
             }
             const size_t m = axis->format.shape[0];
             double ends[2] = {0, 0};
-            md_attribute_extract_f64(&ends[0], 1, axis, md_attribute_slice_1(0),                  run_time_unit(&data));
-            md_attribute_extract_f64(&ends[1], 1, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(&data));
+            md_attribute_extract_f64(&ends[0], 1, axis, md_attribute_slice_1(0),                  run_time_unit(data.system_context));
+            md_attribute_extract_f64(&ends[1], 1, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(data.system_context));
             const double every = m > 1 ? (ends[1] - ends[0]) / (double)(m - 1) : 0.0;
             const bool covers = traj.has_time && ends[0] <= traj.t0 + 1e-6 * fabs(traj.t1 - traj.t0) && ends[1] >= traj.t1 - 1e-6 * fabs(traj.t1 - traj.t0);
             ImGui::TextDisabled("%s: every %.4g %s, %s", label, every * ts, tu,
@@ -1965,7 +1965,7 @@ struct Dataset : viamd::EventHandler {
     // it, attr("edr/potential").
     void draw_series(ApplicationState& data) {
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data.system_context), ARRAY_SIZE(groups));
         if (num_groups == 0) return;
 
         if (!ImGui::CollapsingHeader("Series", ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -1980,9 +1980,9 @@ struct Dataset : viamd::EventHandler {
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
 
-            const size_t num = system_series_members(nullptr, 0, &data, groups[g]);
+            const size_t num = system_series_members(nullptr, 0, data.system_context, groups[g]);
             str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
-            system_series_members(paths, num, &data, groups[g]);
+            system_series_members(paths, num, data.system_context, groups[g]);
 
             char group_label[256];
             system_series_group_label(group_label, sizeof(group_label), &data, groups[g]);
@@ -2665,7 +2665,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         if (ImGui::IsWindowHovered()) {
-            md_bitmask_clear(&data.selection.highlight_mask);
+            md_bitmask_clear(&data.system_context.selection.highlight_mask);
         }
 
         md_temp_scope_t temp = md_temp_begin();
@@ -2704,8 +2704,8 @@ struct Dataset : viamd::EventHandler {
                     ImGui::PopStyleVar();
 
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem)) {
-                        md_bitmask_clear(&data.selection.highlight_mask);
-                        md_bitmask_set_indices(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                        md_bitmask_clear(&data.system_context.selection.highlight_mask);
+                        md_bitmask_set_indices(&data.system_context.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                         handle_item_click(data);
                         // Shift + right click is taken by deselect
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -2791,7 +2791,7 @@ struct Dataset : viamd::EventHandler {
 
         const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
         if (table_res.hovered) {
-            md_bitmask_t* hb = &data.selection.highlight_mask;
+            md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
             md_bitmask_clear(hb);
             for (size_t i = 0; i < num_types; ++i) {
                 const DatasetItem& item = particle_types[i];
@@ -2883,7 +2883,7 @@ struct Dataset : viamd::EventHandler {
 
     void highlight_res_type(ApplicationState& data, size_t i) {
         const md_system_t& sys = data.mold.sys;
-        md_bitmask_t* hb = &data.selection.highlight_mask;
+        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
         md_bitmask_clear(hb);
         const ResidueTypeItem& item = res_types[i];
         for (size_t k = 0; k < md_array_size(item.res_indices); ++k) {
@@ -3074,7 +3074,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         if (ImGui::IsWindowHovered()) {
-            md_bitmask_clear(&data.selection.highlight_mask);
+            md_bitmask_clear(&data.system_context.selection.highlight_mask);
         }
 
         md_temp_scope_t temp = md_temp_begin();
@@ -3343,7 +3343,7 @@ struct Dataset : viamd::EventHandler {
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered()) {
                     // The atoms of the residue types which follow these defaults
-                    md_bitmask_t* hb = &data.selection.highlight_mask;
+                    md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
                     md_bitmask_clear(hb);
                     for (size_t i = 0; i < num_types; ++i) {
                         if (!res_types[i].use_defaults || md_residue_type_monomer(&type, i) != m) continue;
@@ -3402,7 +3402,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(560, 700), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::IsWindowHovered()) {
-                md_bitmask_clear(&data.selection.highlight_mask);
+                md_bitmask_clear(&data.system_context.selection.highlight_mask);
             }
             if (ImGui::BeginTabBar("##system_tabs")) {
                 if (ImGui::BeginTabItem("Overview")) {

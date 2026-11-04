@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // What the plotting windows (Timelines, Distributions), the property export and the density
 // volume show: series of values, named by the PATH of an attribute.
@@ -47,6 +47,7 @@
 #define VOLUME_SERIES_DND       "VOLUME_SERIES"     // a script volume, for the density volume
 
 struct ApplicationState;
+struct SystemContext;
 struct md_attribute_t;
 struct md_attributes_t;
 
@@ -231,12 +232,12 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
 // "source" string beside its members ("<run>/edr", "<run>/xvg/energy"). Paths are views into the
 // system's table.
 
-size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationState* app);
-str_t  system_series_group_source(const ApplicationState* app, str_t group);
+size_t system_series_groups(str_t out_groups[], size_t cap, const SystemContext& sys);
+str_t  system_series_group_source(const SystemContext& sys, str_t group);
 // "edr  (md.edr)": the group below the run and the name of the file
 void   system_series_group_label(char* buf, size_t cap, const ApplicationState* app, str_t group);
 // The plottable members of a group: temporal, numeric, resident, not an axis. Returns the total.
-size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationState* app, str_t group);
+size_t system_series_members(str_t out_paths[], size_t cap, const SystemContext& sys, str_t group);
 
 // ## What a series can be shown as
 

@@ -1004,7 +1004,7 @@ struct Ramachandran : viamd::EventHandler {
         if (in_context) key = md_hash64_combine(key, g->hash);
         bool evaluate = false;
         if (l.follow_selection) {
-            const md_bitset_t sel = md_bitmask_view(&app->selection.selection_mask);
+            const md_bitset_t sel = md_bitmask_view(&app->system_context.selection.selection_mask);
             key = md_hash64_combine(key, md_bitset_hash64(sel, 0));
         } else if (l.filter.text[0] != '\0') {
             evaluate = true;
@@ -1025,7 +1025,7 @@ struct Ramachandran : viamd::EventHandler {
             // Nothing within a group whose filter does not evaluate
             l.segs_valid = false;
         } else if (l.follow_selection) {
-            atoms = md_bitmask_view(&app->selection.selection_mask);
+            atoms = md_bitmask_view(&app->system_context.selection.selection_mask);
             if (in_context) {
                 md_bitset_free(&l.atoms, heap);
                 l.atoms = md_bitset_and(atoms, g->atoms, heap);
@@ -1062,7 +1062,7 @@ struct Ramachandran : viamd::EventHandler {
 
     // The frames [beg, end) of the layer, false when it covers none
     bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
-        const int num_frames = (int)run_num_frames(app);
+        const int num_frames = (int)run_num_frames(app->system_context);
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
@@ -1098,7 +1098,7 @@ struct Ramachandran : viamd::EventHandler {
     bool layer_draws_density(const Layer& l) const {
         if (l.source != LayerSource_System || l.style == LayerStyle_Points) return false;
         // Of a single structure, the frames are the frame: points say it better than a smoothing of them
-        if (l.frames != LayerFrames_Current && run_num_frames(app) < 2) return false;
+        if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) return false;
         return true;
     }
 
@@ -1109,7 +1109,7 @@ struct Ramachandran : viamd::EventHandler {
 
         char path_buf[256];
         const uint64_t angle_version = md_attributes_version(&app->mold.sys.attributes,
-            md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), app, STR_LIT("backbone/angle"))));
+            md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), app->system_context, STR_LIT("backbone/angle"))));
         const bool available = angles_available();
 
         if (tree_dirty) apply_tree();
@@ -1546,7 +1546,7 @@ struct Ramachandran : viamd::EventHandler {
         if (num_segs == 0) return false;
 
         // The frame shown, or the only one there is
-        if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
+        if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
             ps->base = md_util_state_backbone_angles(&app->mold.state, &app->mold.sys);
             if (!ps->base || md_array_size(seg_type) != app->mold.sys.protein_backbone.segment.count) return false;
             ps->stride = 0;
@@ -1647,14 +1647,14 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void apply_to_selection(const md_bitmask_t* atoms, SelectionOperator op) {
-        modify_field(&app->selection.selection_mask, md_bitmask_view(atoms), op);
+        modify_field(&app->system_context.selection.selection_mask, md_bitmask_view(atoms), op);
     }
 
     // The points of the visible layers in the plot: hovered and boxed, then drawn
     void draw_points(int panel, bool hovered) {
         const md_system_t& sys = app->mold.sys;
-        md_bitmask_t* selection_mask = &app->selection.selection_mask;
-        md_bitmask_t* highlight_mask = &app->selection.highlight_mask;
+        md_bitmask_t* selection_mask = &app->system_context.selection.selection_mask;
+        md_bitmask_t* highlight_mask = &app->system_context.selection.highlight_mask;
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
         const ImVec2 pos = ImPlot::GetPlotPos();
@@ -2432,8 +2432,8 @@ struct Ramachandran : viamd::EventHandler {
         // Its subset lit up
         if (row.hovered && context && g.valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->selection.highlight_mask);
-            md_bitmask_or(&app->selection.highlight_mask, g.atoms);
+            md_bitmask_clear(&app->system_context.selection.highlight_mask);
+            md_bitmask_or(&app->system_context.selection.highlight_mask, g.atoms);
         }
 
         ImGui::PushID("group_drop");
@@ -2634,7 +2634,7 @@ struct Ramachandran : viamd::EventHandler {
                     if (ps.count == 0) ImGui::TextDisabled("Mark periods in the timeline to use them here");
                     ImGui::EndCombo();
                 }
-                if (l.frames != LayerFrames_Current && run_num_frames(app) < 2) {
+                if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) {
                     prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
                 }
             }
@@ -2782,7 +2782,7 @@ struct Ramachandran : viamd::EventHandler {
     void draw() {
         highlights_now = false;
         draw_window();
-        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->selection.highlight_mask);
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->system_context.selection.highlight_mask);
         owns_highlight = highlights_now;
     }
 

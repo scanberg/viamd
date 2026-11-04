@@ -1121,7 +1121,7 @@ struct QuantumChemistry : viamd::EventHandler {
         bool   region_add    = true;
         ImVec2 region_start  = {0, 0};
 
-        // ATOM selection is NOT held here. It lives in state.selection.selection_mask, and this
+        // ATOM selection is NOT held here. It lives in state.system_context.selection.selection_mask, and this
         // window reads it every frame - so a selection made in the 3D view, by a script, or in any
         // other window shows up here, and one made here shows up everywhere else. A private copy
         // would be a second source of truth that silently drifts from the first.
@@ -2943,7 +2943,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < md_array_size(nto->atom_group_idx); atom_i++) {
                         if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
-                            md_bitmask_set_bit(&state->selection.highlight_mask, (uint32_t)atom_i);
+                            md_bitmask_set_bit(&state->system_context.selection.highlight_mask, (uint32_t)atom_i);
                         }
                     }
                 }
@@ -4454,7 +4454,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // which is what VeloxChem plots anyway.
             peaks_y[i] = (xps.weight_by_contribution && tbl.contribution) ? tbl.contribution[e] : 1.0;
             const int32_t atom = xps_atom_index(qm, tbl.atom_index ? tbl.atom_index[e] : -1, state);
-            peaks_selected[i]  = (atom >= 0) && md_bitmask_test_bit(&state.selection.selection_mask, (uint64_t)atom);
+            peaks_selected[i]  = (atom >= 0) && md_bitmask_test_bit(&state.system_context.selection.selection_mask, (uint64_t)atom);
         }
 
         // ---- Energy range ------------------------------------------------------------------------
@@ -4528,9 +4528,9 @@ struct QuantumChemistry : viamd::EventHandler {
             // moving off a peak but staying inside the plot drops the highlight rather than leaving
             // the last atom lit up.
             if (plot_hovered) {
-                md_bitmask_clear(&state.selection.highlight_mask);
+                md_bitmask_clear(&state.system_context.selection.highlight_mask);
                 if (hov_atom >= 0) {
-                    md_bitmask_or(&state.selection.highlight_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                    md_bitmask_or(&state.system_context.selection.highlight_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                 }
             }
 
@@ -4573,16 +4573,16 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (hov_atom >= 0) {
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                            md_bitmask_clear(&state.selection.selection_mask);
+                            md_bitmask_clear(&state.system_context.selection.selection_mask);
                         }
-                        md_bitmask_or(&state.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                        md_bitmask_or(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                     else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                        md_bitmask_andnot(&state.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                        md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                 }
                 else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                    md_bitmask_clear(&state.selection.selection_mask);
+                    md_bitmask_clear(&state.system_context.selection.selection_mask);
                 }
             }
 
@@ -5738,8 +5738,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     for (size_t row_n = 0; row_n < num_atoms; row_n++) {
 
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        bool is_sel = md_bitmask_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                        bool is_hov = md_bitmask_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
+                        bool is_sel = md_bitmask_test_bit(&state.system_context.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                        bool is_hov = md_bitmask_test_bit(&state.system_context.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
@@ -5755,17 +5755,17 @@ struct QuantumChemistry : viamd::EventHandler {
                         ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + 1)) {
                             if (state.mold.sys.atom.count > row_n) {
-                                md_bitmask_clear(&state.selection.highlight_mask);
-                                md_bitmask_or(&state.selection.highlight_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                                md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                                md_bitmask_or(&state.system_context.selection.highlight_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 item_hovered = true;
 
                                 //Selection
                                 if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitmask_or(&state.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                                    md_bitmask_or(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                                 //Deselect
                                 else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitmask_andnot(&state.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                                    md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                             }
                         }
@@ -5792,7 +5792,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     if (!item_hovered && ImGui::IsWindowHovered()) {
                         //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                        md_bitmask_clear(&state.selection.highlight_mask);
+                        md_bitmask_clear(&state.system_context.selection.highlight_mask);
                     }
 
                     ImGui::PopStyleColor(2);
@@ -8584,7 +8584,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
                             {
-                                md_bitmask_t* hb = &state.selection.highlight_mask;
+                                md_bitmask_t* hb = &state.system_context.selection.highlight_mask;
                                 md_bitmask_clear(hb);
                                 for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                     if (nto.atom_group_idx[j] == (uint32_t)row_n) {
@@ -8596,11 +8596,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                             //Selection
                             if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                                md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                             }
                             //Deselect
                             else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                                md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                             }
                         }
                     }
@@ -8849,26 +8849,26 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
                             open_context_menu = true;
                         } else if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
-                            const md_bitset_t selected = md_bitmask_view(&state.selection.selection_mask);
+                            const md_bitset_t selected = md_bitmask_view(&state.system_context.selection.selection_mask);
                             const md_bitset_t* candidate_mask = nullptr;
                             if (event.selection_mode == InteractionSelectionMode::Remove) {
                                 // When removing, only consider currently selected atoms as candidates for region selection
                                 candidate_mask = &selected;
                             }
-                            point_set_region_mask_compute(&state.selection.highlight_mask,
+                            point_set_region_mask_compute(&state.system_context.selection.highlight_mask,
                                 state.mold.state.xyz, state.mold.state.num_atoms,
                                 candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
 
-                            grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
+                            grow_mask_by_selection_granularity(&state.system_context.selection.highlight_mask, state.selection.granularity, state.mold.sys);
                             if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                                 // Merge highlight into selection
                                 if (event.selection_mode == InteractionSelectionMode::Append) {
-                                    md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                                    md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                                 }
                                 else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                                    md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                                    md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                                 }
-                                md_bitmask_clear(&state.selection.highlight_mask);
+                                md_bitmask_clear(&state.system_context.selection.highlight_mask);
                             }
                         } else {
                             viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
@@ -9131,7 +9131,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
                     // The marks of the selection and the highlight, put over each panel as it is presented
-                    const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+                    const bool draw_marks = !md_bitmask_empty(&state.system_context.selection.selection_mask) || !md_bitmask_empty(&state.system_context.selection.highlight_mask);
                     if (draw_marks) {
                         PUSH_GPU_SECTION("Marks")
                         gbuffer_marks_begin(&gbuf);
@@ -9325,7 +9325,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
-                md_bitmask_clear(&state.selection.highlight_mask);
+                md_bitmask_clear(&state.system_context.selection.highlight_mask);
             }
         }
         ImGui::End();
@@ -9335,7 +9335,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-			size_t count = md_bitmask_count(&state.selection.selection_mask);
+			size_t count = md_bitmask_count(&state.system_context.selection.selection_mask);
 			if (count == 0) {
                 ImGui::Text("No atoms selected");
             } else {
@@ -9344,7 +9344,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::MenuItem(nto.group.label[i])) {
                             for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                 //Is the atom selected?
-                                if (md_bitmask_test_bit(&state.selection.selection_mask, j)) {
+                                if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, j)) {
                                     //If so, set its group to the selected group index
                                     nto.atom_group_idx[j] = (uint32_t)i;
                                 }
@@ -9358,7 +9358,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         //Create a new group and add an item to it
                         uint32_t group_idx = (uint32_t)(nto.group.count++);
                         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
-                            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
+                            if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, i)) {
                                 //If so, set its group to the selected group index
                                 nto.atom_group_idx[i] = group_idx;
                             }
@@ -10395,7 +10395,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
         if (group_idx >= nto.group.count) return;
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
+            if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, i)) {
                 nto.atom_group_idx[i] = group_idx;
             }
         }
@@ -10448,14 +10448,14 @@ struct QuantumChemistry : viamd::EventHandler {
 
         const md_bitset_t mask = flow_node_atom_mask(cut_idx, md_temp_allocator(temp));
         if (selected) {
-            md_bitmask_or(&state.selection.selection_mask, mask);
+            md_bitmask_or(&state.system_context.selection.selection_mask, mask);
         } else {
-            md_bitmask_andnot(&state.selection.selection_mask, mask);
+            md_bitmask_andnot(&state.system_context.selection.selection_mask, mask);
         }
     }
 
     void flow_clear_selection(ApplicationState& state) {
-        md_bitmask_clear(&state.selection.selection_mask);
+        md_bitmask_clear(&state.system_context.selection.selection_mask);
         md_array_shrink(flow.selected_orbital_keys, 0);
     }
 
@@ -10760,8 +10760,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (size_t a = 0; a < num_atoms; ++a) {
                 const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
-                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, a);
-                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, a);
+                const bool sel = md_bitmask_test_bit(&state.system_context.selection.selection_mask, a);
+                const bool hi  = md_bitmask_test_bit(&state.system_context.selection.highlight_mask, a);
                 group_total[g] += 1;
                 group_sel[g]   += sel ? 1 : 0;
                 group_hi[g]    += hi  ? 1 : 0;
@@ -10778,8 +10778,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     const uint32_t index = flow_key_index(n->key);
                     if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
                         if (index < num_atoms) {
-                            if (md_bitmask_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
-                            if (md_bitmask_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
+                            if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, index)) st |= FlowNodeState_Selected;
+                            if (md_bitmask_test_bit(&state.system_context.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
                         }
                     } else if (index < MAX_NTO_GROUPS && group_total[index] > 0) {
                         // A group is only "selected" when all of it is. Anything less is partial -
@@ -10883,9 +10883,9 @@ struct QuantumChemistry : viamd::EventHandler {
                             md_array(uint32_t) nodes = 0;
                             flow_nodes_in_region(&nodes, view, rect_min, rect_max, ralloc);
 
-                            md_bitmask_clear(&state.selection.highlight_mask);
+                            md_bitmask_clear(&state.system_context.selection.highlight_mask);
                             for (size_t i = 0; i < md_array_size(nodes); ++i) {
-                                md_bitmask_or(&state.selection.highlight_mask, flow_node_atom_mask(nodes[i], ralloc));
+                                md_bitmask_or(&state.system_context.selection.highlight_mask, flow_node_atom_mask(nodes[i], ralloc));
                             }
                         }
                     } else {
@@ -10920,7 +10920,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (ImGui::BeginPopup("##flow_context")) {
-                const size_t num_selected = md_bitmask_count(&state.selection.selection_mask);
+                const size_t num_selected = md_bitmask_count(&state.system_context.selection.selection_mask);
                 if (num_selected == 0) {
                     ImGui::TextDisabled("No atoms selected");
                     ImGui::Separator();
@@ -10983,7 +10983,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // is open it owns the preview, or the node under the cursor would keep overwriting
                 // what the band is about to do.
                 if (!region_preview) {
-                    md_bitmask_assign(&state.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
+                    md_bitmask_assign(&state.system_context.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
                 }
 
                 // Double click opens or closes a node - including an "Others", which opens by
@@ -11010,7 +11010,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // the highlight mask is stale. Cleared only under those two conditions: clearing it
                 // unconditionally would stamp on the 3D viewport's own hover.
                 if (!region_preview) {
-                    md_bitmask_clear(&state.selection.highlight_mask);
+                    md_bitmask_clear(&state.system_context.selection.highlight_mask);
                 }
 
                 // Empty space: double click reframes. A button for this would occupy toolbar room

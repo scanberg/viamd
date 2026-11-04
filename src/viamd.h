@@ -79,6 +79,9 @@ inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 428729131
 
 #define INVALID_PICKING_IDX (~0U)
 
+// The id of no system (SystemContext::id): of a picking range or a hit that is of none
+#define SYSTEM_ID_NONE (~0U)
+
 constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
 constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
@@ -1043,14 +1046,16 @@ struct PickingRange {
     uint32_t beg = 0;
     uint32_t end = 0;
     uint64_t key = 0;
+    uint32_t system = SYSTEM_ID_NONE;   // The id of the system whose objects it indexes, none for what is of no system
 };
 
-// Sized for atoms, bonds and one range per keyed object. A VeloxChem file publishes four dipole
-// groups today (ground state plus the electric, magnetic and velocity transition sets); reserving
-// past the end fails rather than aliasing, which costs those objects their picking, nothing else.
+// Sized for the domains of every system (atoms, bonds, ...: six each, for at most SYSTEM_MAX) and one range per keyed
+// object. A VeloxChem file publishes four dipole groups today (ground state plus the electric, magnetic and velocity
+// transition sets); reserving past the end fails rather than aliasing, which costs those objects their picking,
+// nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[16] = {};
+    PickingRange ranges[96] = {};
 };
 
 struct PickingReadbackSlot {
@@ -1091,6 +1096,9 @@ struct PickingHit {
     // not use one) and 'local_idx' is the offset within that range. For a dipole that is exactly
     // (group attribute, element) - the identity, carried through, with nothing to reconstruct.
     uint64_t key = 0;
+
+    // The id of the system it is of (picking_hit_system), SYSTEM_ID_NONE for what is of no system or no hit
+    uint32_t system = SYSTEM_ID_NONE;
 
     uint32_t frame_idx = 0;    uint32_t raw_idx = INVALID_PICKING_IDX;
     uint32_t local_idx = 0;
@@ -1237,6 +1245,28 @@ struct SystemScene {
     // and select as. The operators place the coordinates as the file gives them, so the operations which move them
     // (centering, wrapping, making whole) are not applied while one is shown.
     int assembly = -1;
+
+    // DERIVED, NOT SAVED: the copies drawn of what is above, made from it every frame (update_view_param)
+
+    // The copies of the system the representations with periodic_images are drawn in, by instancing (md_gl_copies_t):
+    // its own first, then its periodic images (periodic_images), none without a cell or images, or with an assembly
+    // shown. As of this frame and as of the last, so that an image which moves with the cell (a trajectory of changing
+    // cells) shows as moving.
+    md_array(mat4_t) periodic_transforms      = 0;
+    md_array(mat4_t) periodic_transforms_prev = 0;
+
+    // Of the assembly shown: the transforms of its copies, group by group, those of group g
+    // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
+    md_array(mat4_t)   assembly_transforms  = 0;
+    md_array(uint32_t) assembly_copy_offset = 0;
+
+    // Of the assembly shown, the instances of each group as a subset of the molecule (md_gl_subset_t), which its
+    // copies draw, and the subset of the cartoon glyphs which that makes. A group of all instances has none (0): the
+    // whole molecule. Made when another assembly is shown, or the system is loaded again (assembly_subsets_update).
+    md_array(md_gl_subset_t) assembly_subsets       = 0;
+    md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
+    int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
+    uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
 
     // The operations on its coordinates (SystemOperation), each turned on or off by its own flag, which keeps its
     // settings while it is off
@@ -1389,6 +1419,26 @@ struct SystemRun {
     SystemTrajectoryData trajectory_data;
 };
 
+// WHAT IS SELECTED AND HIGHLIGHTED OF A SYSTEM, over its atoms. What the user selects spans the viewport, so the
+// selection is the union of every system's; how it is selected (granularity, the windows) is the application's
+// (ApplicationState::selection). Edited in place, every frame for the highlight: over any atom index, in the persistent
+// allocator (system_context_init), so that they need no resizing when the system is loaded again.
+struct SystemSelection {
+    md_bitmask_t selection_mask {};
+    md_bitmask_t highlight_mask {};
+};
+
+// THE PICKING RANGES OF A SYSTEM, reserved for it in every frame (EventType_ViamdPickingRangeReserve), one per domain
+// its representations write: an index within one is the object of the system it names
+struct SystemPicking {
+    PickingRange atom {};       // atoms
+    PickingRange bond {};       // bonds: of the graph, then those formed in the frame shown (picked_bond)
+    PickingRange backbone {};   // protein backbone segments (cartoon, ribbons)
+    PickingRange ring {};       // rings (circles of aromatic rings)
+    PickingRange glyph {};      // the points of the cartoon of lipids and nucleic acids
+    PickingRange gap {};        // the gaps of the chains, one index per residue
+};
+
 // The most systems held at once. A hard limit, so that what is kept per system and atom (picking, selection) has a
 // fixed budget.
 constexpr size_t SYSTEM_MAX = 8;
@@ -1399,12 +1449,15 @@ constexpr size_t SYSTEM_MAX = 8;
 // references to its parts under the names the code has always used for them (mold, system, representation, run,
 // trajectory_data, file_list). Those names are the transition: a place that works on a system is given the system it
 // works on (a SystemContext, or the part it needs) instead of reaching it through the application, one place at a
-// time, and the references go when nothing uses them. viamd loads one system so far.
+// time, and the references go when nothing uses them. What has not been given its system yet works on the first,
+// through those names or through system_context.
+//
+// The others are allocated when added (system_add) and freed when removed (system_release), so that what captures one
+// (a task, a cache) can hold its address. The first stays in place, empty when it is removed while others are loaded,
+// and is the one the next system added is loaded into: no system is listed, drawn or saved while it is empty
+// (system_loaded).
 //
 // What is not here yet, though it is of a system, and why:
-//   selection             the masks are over the atoms of a system, but the selection as the user sees it - what is
-//                         selected, hovered - spans the viewport, which will show several
-//   picking ranges        reserved per domain for the one system; several need a range per system and domain
 //   timeline.x_values     the times of a run, in the unit the timeline shows: moved with the global time axis
 //   script                one script for all systems, evaluated per system: decided with the script rewrite
 struct ApplicationState;
@@ -1426,6 +1479,8 @@ struct SystemContext {
     SystemRun             run;      // The one run so far: its path is empty without a trajectory
     SystemScene           scene;
     SystemRepresentations representation;
+    SystemSelection       selection;
+    SystemPicking         picking;
 };
 
 struct ApplicationState {
@@ -1509,25 +1564,7 @@ struct ApplicationState {
         ViewRegion region = {};
         vec2_t shift = {0, 0};
 
-        // The copies of the scene the representations with periodic_images are drawn in, by instancing (md_gl_copies_t):
-        // its own first, then the periodic images of the system (system.periodic_images), none without a cell or images,
-        // or with an assembly shown. As of this frame and as of the last, so that an image which moves with the cell (a
-        // trajectory of changing cells) shows as moving. Set by update_view_param.
-        md_array(mat4_t) periodic_transforms      = 0;
-        md_array(mat4_t) periodic_transforms_prev = 0;
-
-        // Of the assembly shown (system.assembly), set by update_view_param: the transforms of its copies, group by group, those of group g
-        // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
-        md_array(mat4_t)   assembly_transforms  = 0;
-        md_array(uint32_t) assembly_copy_offset = 0;
-
-        // Of the assembly shown, the instances of each group as a subset of the molecule (md_gl_subset_t), which its
-        // copies draw, and the subset of the cartoon glyphs which that makes. A group of all instances has none (0): the
-        // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
-        md_array(md_gl_subset_t) assembly_subsets       = 0;
-        md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
-        int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
-        uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
+        // The copies each system is drawn in are its own (SystemScene)
     } view;
 
     struct {
@@ -1581,10 +1618,8 @@ struct ApplicationState {
         SelectionGranularity granularity = SelectionGranularity::Atom;
         SingleSelectionSequence single_selection_sequence;
 
-        // Edited in place, every frame for the highlight: masks over the atoms, in the persistent allocator
-        // (initialized at startup, see main). Everything else here holds sets, replaced whole.
-        md_bitmask_t selection_mask {};
-        md_bitmask_t highlight_mask {};
+        // The masks of what is selected and highlighted are each system's (SystemContext::selection). Everything here
+        // holds sets, replaced whole, but for the masks of the windows (query, grow), edited in place.
         Selection* stored_selections = NULL;
 
         // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
@@ -1660,12 +1695,7 @@ struct ApplicationState {
     // --- PICKING ---
     PickingSurface picking_surface {};      // Surface for main viewport picking
 
-    PickingRange   picking_range_atom {};   // Reserved picking range for atoms
-    PickingRange   picking_range_bond {};   // Reserved picking range for bonds
-    PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
-    PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
-    PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
-    PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
+    // The ranges reserved for each system are its own (SystemContext::picking)
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -2324,9 +2354,37 @@ LoadResult load_data(ApplicationState* app, SystemContext& sys, str_t filepath, 
 LoadResult load_data_from_file(ApplicationState* app, SystemContext& sys, str_t filepath, const loader::LoaderState& load_state);
 
 // What follows a system just loaded into sys (load_data), and what goes with it before another replaces it. The
-// application's part of it (the view, the selection, the script's evaluation) is still of the one system shown.
+// application's part of it that is not yet per system (the script's evaluation) is of the first system.
 void init_system_data(ApplicationState* app, SystemContext& sys);
 void free_system_data(ApplicationState* app, SystemContext& sys);
+
+// ## The systems (ApplicationState::systems)
+
+// What a system holds from the start, empty or not: its arena and its masks. Once, before it is first loaded into; and
+// what that made freed again (system_context_destroy) once it is unloaded and nothing uses it.
+void system_context_init(SystemContext* sys, ApplicationState* app);
+void system_context_destroy(SystemContext* sys);
+
+// Whether anything is loaded into it: atoms, or files (which may be missing). An empty system is not listed or drawn.
+bool system_loaded(const SystemContext& sys);
+
+// A new, empty system to load into, listed last: the first's place when that is empty, else one allocated with a new
+// id. NULL when SYSTEM_MAX are loaded.
+SystemContext* system_add(ApplicationState* app);
+
+// Takes the system, which has been unloaded (system_remove), out of the list and frees it; the first only stays empty
+void system_release(ApplicationState* app, SystemContext* sys);
+
+// The system with the id, NULL when there is none
+SystemContext* system_find(ApplicationState* app, uint32_t id);
+const SystemContext* system_find(const ApplicationState& app, uint32_t id);
+
+// How many are loaded (system_loaded)
+size_t system_count(const ApplicationState& app);
+
+// The system a hit is of (PickingHit::system), NULL for a hit of none or of a system since removed
+SystemContext* picking_hit_system(ApplicationState* app, const PickingHit& hit);
+const SystemContext* picking_hit_system(const ApplicationState& app, const PickingHit& hit);
 // Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
 // run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
@@ -2340,23 +2398,17 @@ const md_attribute_t* run_time_axis(const SystemContext& sys);
 size_t                run_num_frames(const SystemContext& sys);
 const double*         run_frame_times(const SystemContext& sys);
 md_unit_t             run_time_unit(const SystemContext& sys);
-// Of the one system loaded (ApplicationState::mold)
-const md_attribute_t* run_time_axis(const ApplicationState* app);
-size_t                run_num_frames(const ApplicationState* app);
-const double*         run_frame_times(const ApplicationState* app);
-md_unit_t             run_time_unit(const ApplicationState* app);
 
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of
 // its own (md_system_extract_begin) so the files stay open across them.
 bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out);
-bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);   // of the one system loaded
 
 // Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
 // coordinates shown when there is no run. Inferred bonds are replaced, those of a file, a topology or a user are kept,
 // and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
 // the reference of the topology (md_system_t::reference).
-bool recompute_bonds(ApplicationState* app, int64_t frame);
+bool recompute_bonds(SystemContext& sys, int64_t frame);
 
 // An identifier the script does not use yet: base, or base with a number after it (main.cpp)
 str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc);
@@ -2364,12 +2416,12 @@ str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocat
 // To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
 // threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the
 // pool finish.
-void system_bonds_edit_begin(ApplicationState* app);
+void system_bonds_edit_begin(SystemContext& sys);
 
 // What follows the bonds of the system, after they changed (created, removed, inferred again): what is drawn of them,
 // the script (whose properties are of the topology) and the representations. graph_edited when bonds of the graph were
 // added or removed by hand: its connectivity, the structures and the rings are built again.
-void system_bonds_changed(ApplicationState* app, bool graph_edited);
+void system_bonds_changed(SystemContext& sys, bool graph_edited);
 
 // The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
 // bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.
@@ -2381,47 +2433,45 @@ bool        bond_origins_parse(uint32_t* out, str_t str);
 
 // Brings the bond changes tracked (operations.bond_tracking) up to date with the frame shown, the topology, the scope
 // and the parameters. Once a frame, before the bonds are uploaded.
-void bond_tracking_update(ApplicationState* app);
+void bond_tracking_update(SystemContext& sys);
 
 // The bond changes drawn, those of the frame shown: NULL when they are not tracked
-const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app);
+const md_bond_delta_t* bond_tracking_delta(const SystemContext& sys);
 // The chemistry of the frame shown where its bonds changed: NULL when the changes are not tracked
-const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app);
+const md_chem_delta_t* bond_tracking_chem(const SystemContext& sys);
 
 // What an atom is in the frame shown, its chemistry tracked (bond_tracking_chem) or that of the system: the flags,
 // formal charge and hydrogens of the atom
-md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, int* formal_charge, int* hydrogen_count);
+md_atom_flags_t frame_atom_flags(const SystemContext& sys, size_t atom_idx, int* formal_charge, int* hydrogen_count);
 
 // The atoms and flags of ring idx of the ring picking domain: a ring of the system, or one of the frame's chemistry
 // after them. False when there is none.
-bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags);
+bool picked_ring(const SystemContext& sys, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags);
 
 // The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
 // come after them as they are drawn (formed is set for those)
-bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
+bool picked_bond(const SystemContext& sys, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
 
 // Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights, and what clicking it
 // selects (the atoms of a bond, the residue of a cartoon segment, ...)
-void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const PickingHit& hit, SelectionGranularity granularity);
+void picking_hit_mask_set(md_bitmask_t* mask, const SystemContext& sys, const PickingHit& hit, SelectionGranularity granularity);
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
 str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, str_t leaf);
-str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);   // of the one system loaded
 // The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
 const md_attribute_t* run_attribute(const SystemContext& sys, str_t leaf);
-const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);   // of the one system loaded
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
 // of the run at the displayed frame (secondary_structure_render), else the state's own assignment
 // (md_util_state_secondary_structure). For presentation; NULL when there is neither.
-const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app);
+const md_secondary_structure_t* displayed_secondary_structure(const SystemContext& sys);
 
 // Frame cache operations
-void clear_system_frame_cache(ApplicationState* app);
+void clear_system_frame_cache(SystemContext& sys);
 
 // Interpolate state
-void interpolate_system_state(ApplicationState* app);
+void interpolate_system_state(SystemContext& sys);
 
 // The stride of the frames the displayed state is interpolated between: animation.stride while playing,
 // every frame otherwise.
@@ -2441,10 +2491,10 @@ void workspace_register_window(const char* name, bool* show);
 bool* workspace_window_flag(const char* name);
 
 // Selections
-// What filters are evaluated and completed against: the system as it is shown, and the names of the script in the editor
-static inline script::FilterCtx filter_context(const ApplicationState* app) {
-    return script::FilterCtx{&app->mold.sys, &app->mold.state, app->script.ir};
-}
+// What filters are evaluated and completed against: the system as it is shown, its run (which attr() reads), and the
+// names of the script in the editor. The script is compiled against the first system (system_context) alone until it
+// is per system, so its names are of that one: another system's filters see none of them.
+script::FilterCtx filter_context(const SystemContext& sys);
 
 // The selection keeps its own copy of atom_mask
 Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_mask = {});
@@ -2552,7 +2602,7 @@ static inline bool atom_attribute_value_absent(float v) {
 // own basis/ attributes, and grows the device coefficient scratch to fit. Returns false when the
 // system publishes no basis, which is the normal case rather than a failure.
 bool system_gpu_data_update(ApplicationState* state, double cutoff);
-void system_gpu_data_free(ApplicationState* state);
+void system_gpu_data_free(SystemContext& sys);
 
 // One orbital's AO coefficient row, out of the attribute at coefficient_path narrowed by 'slice',
 // in the double precision md_gto asks for. Allocated from temp; NULL when the path is absent or the
@@ -2728,7 +2778,7 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx);
 // Whether any are being read on a worker thread, and for how long the oldest has been (the async info panel)
 bool es_nto_warming(const ApplicationState* state, double* seconds);
 // What es_nto_ready keeps, freed: with the system, after its pool tasks have ended
-void es_nto_warm_free(ApplicationState* state);
+void es_nto_warm_free(SystemContext& sys);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow
@@ -2861,14 +2911,14 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 
 // Recentering operations (low level)
 
-void recenter_mark_query_dirty(ApplicationState* app);
-const md_bitset_t& recenter_get_active_target_mask(const ApplicationState* app);
-bool recenter_update_query_mask(ApplicationState* app);
-void recenter_update(ApplicationState* app);
+void recenter_mark_query_dirty(SystemContext& sys);
+const md_bitset_t& recenter_get_active_target_mask(const SystemContext& sys);
+bool recenter_update_query_mask(SystemContext& sys);
+void recenter_update(SystemContext& sys);
 
 // Builds the reference that keeping the orientation fits against, from the first frame of the run, when
 // the target's atoms differ from the ones it was built for. Does nothing while the orientation is not kept.
-void recenter_update_target_data(ApplicationState* app);
+void recenter_update_target_data(SystemContext& sys);
 
 // The recentering transform T = rotation * translation, split where the periodic images have to be
 // settled (see apply_state_operations):
@@ -2876,7 +2926,7 @@ void recenter_update_target_data(ApplicationState* app);
 //     rotation    = translate(cell_centre) * alignment_mat * R * translate(-cell_centre)
 // rotation is exactly the identity unless the orientation is kept or alignment_mat is set, and the
 // return value says whether it is not.
-bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app);
+bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const SystemContext& sys);
 
 // Applies the coordinate operations to mold.state in the one order that keeps them valid together:
 //     take off operations.state_rotation -> translate -> wrap -> make whole -> turn
@@ -2884,7 +2934,7 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
 // periodic images are settled turns the arbitrary image each atom arrived in into a real displacement
 // of R times a lattice vector. So the turn comes last, and a fresh turn is always preceded by a wrap.
 // Returns true if the coordinates were touched.
-bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool unwrap);
+bool apply_state_operations(SystemContext& sys, bool recenter, bool pbc, bool unwrap);
 
 // Picking
 
@@ -2906,11 +2956,11 @@ const PickingRange* picking_space_find_range(const PickingSpace& space, PickingD
 // them from here: a base left at 0 makes that kind write into the atom range and pick as the wrong atoms.
 static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& state) {
     return {
-        .atom_base     = state.picking_range_atom.beg,
-        .bond_base     = state.picking_range_bond.beg,
-        .backbone_base = state.picking_range_backbone.beg,
-        .ring_base     = state.picking_range_ring.beg,
-        .gap_base      = state.picking_range_gap.beg,
+        .atom_base     = state.system_context.picking.atom.beg,
+        .bond_base     = state.system_context.picking.bond.beg,
+        .backbone_base = state.system_context.picking.backbone.beg,
+        .ring_base     = state.system_context.picking.ring.beg,
+        .gap_base      = state.system_context.picking.gap.beg,
     };
 }
 
@@ -2919,10 +2969,10 @@ static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& s
 // their slabs their index after those (cartoon_glyphs_picked_point)
 static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
     return {
-        .atom_base     = state.picking_range_glyph.beg,
-        .bond_base     = state.picking_range_glyph.beg,
-        .backbone_base = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points,
-        .ring_base     = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
+        .atom_base     = state.system_context.picking.glyph.beg,
+        .bond_base     = state.system_context.picking.glyph.beg,
+        .backbone_base = state.system_context.picking.glyph.beg + state.mold.cartoon_glyphs.num_points,
+        .ring_base     = state.system_context.picking.glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
     };
 }
 
@@ -3115,8 +3165,8 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
 
 // The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
 // freed: before the molecule goes
-void assembly_subsets_update(ApplicationState* app);
-void assembly_subsets_free(ApplicationState* app);
+void assembly_subsets_update(SystemContext& sys);
+void assembly_subsets_free(SystemContext& sys);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, compiling src in the workspace's language, and nothing frees one directly. A

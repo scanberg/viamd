@@ -204,7 +204,7 @@ struct ScriptPlan {
 static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* alloc) {
     ScriptPlan plan;
     const script::Program* ir = state.script.ir;
-    plan.num_frames = (uint32_t)run_num_frames(&state);
+    plan.num_frames = (uint32_t)run_num_frames(state.system_context);
     plan.valid = script::valid(ir) && plan.num_frames > 0;
     plan.running = task_system::task_is_running(state.tasks.evaluate);
     if (!plan.valid) return plan;
@@ -629,14 +629,14 @@ static void update_timeline_time_unit(ApplicationState* state) {
     state->timeline.units_version = display_units::version();
 
     const double prev_scl = state->timeline.time_scale;
-    const double time_scl = display_units::factor(&state->timeline.time_unit, run_time_unit(state));
+    const double time_scl = display_units::factor(&state->timeline.time_unit, run_time_unit(state->system_context));
     state->timeline.time_scale = time_scl;
 
     if (time_scl == prev_scl) {
         return;
     }
 
-    const double* frame_times = run_frame_times(state);
+    const double* frame_times = run_frame_times(state->system_context);
     const size_t  num_frames  = md_array_size(state->timeline.x_values);
     if (frame_times) {
         for (size_t i = 0; i < num_frames; ++i) {
@@ -651,7 +651,7 @@ static void update_timeline_time_unit(ApplicationState* state) {
 
 static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
-    modify_field(&state->selection.selection_mask, atom_mask, op);
+    modify_field(&state->system_context.selection.selection_mask, atom_mask, op);
 }
 
 // What an evaluation spreads frames over (script::EvalDesc::parallel_for): viamd's pool. Called from a pool task, which
@@ -727,29 +727,19 @@ int main(int argc, char** argv) {
     md_log_register(&notification_logger);
 
     ApplicationState state;
-    state.system_context.app = &state;
     ViamdEventHandler event_handler(&state);
 
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
-    // One arena per dataset, held by the system and the state that share it. Both are rewound
-    // rather than destroyed between loads, so this handle is set once and never reassigned.
-    state.mold.sys.alloc   = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
-    state.mold.state.alloc = state.mold.sys.alloc;
+    // The first system, which is held in place: its arena and its masks
+    system_context_init(&state.system_context, &state);
 
     md_temp_arena_system_init();
 
-    // The masks are edited in place. Over any atom index: they hold only the words they write, and a mask over a
-    // system's atoms needs no resizing when another is loaded.
-    md_bitmask_init(&state.selection.selection_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
-    md_bitmask_init(&state.selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    // The masks of the windows are edited in place, over any atom index
     md_bitmask_init(&state.selection.query.mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
-    md_bitmask_init(&state.representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
-    // Sets, replaced whole
-    state.system.operations.selection_mask = md_bitset_empty_set();
-    state.system.operations.recenter_query.mask = md_bitset_empty_set();
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
@@ -957,7 +947,7 @@ int main(int argc, char** argv) {
         ImGui::CreateDockspace();
 #endif
 
-        const size_t num_frames  = run_num_frames(&state);
+        const size_t num_frames  = run_num_frames(state.system_context);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
@@ -1048,22 +1038,22 @@ int main(int argc, char** argv) {
                 md_bitset_t candidate_mask = md_bitmask_view(&state.representation.visibility_mask);
                 if (event.selection_mode == InteractionSelectionMode::Remove) {
                     // When removing, only consider currently selected atoms as candidates for region selection
-                    candidate_mask = md_bitmask_view(&state.selection.selection_mask);
+                    candidate_mask = md_bitmask_view(&state.system_context.selection.selection_mask);
                 }
-                point_set_region_mask_compute(&state.selection.highlight_mask,
+                point_set_region_mask_compute(&state.system_context.selection.highlight_mask,
                     state.mold.state.xyz, state.mold.state.num_atoms,
                     &candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
 
-                grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
+                grow_mask_by_selection_granularity(&state.system_context.selection.highlight_mask, state.selection.granularity, state.mold.sys);
                 if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                     // Merge highlight into selection
                     if (event.selection_mode == InteractionSelectionMode::Append) {
-                        md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                        md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                     }
                     else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                        md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
+                        md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
                     }
-                    md_bitmask_clear(&state.selection.highlight_mask);
+                    md_bitmask_clear(&state.system_context.selection.highlight_mask);
                     // A region select is not a sequence of individual picks, so whatever order was
                     // recorded before no longer describes the selection.
                     single_selection_sequence_clear(&state.selection.single_selection_sequence);
@@ -1207,9 +1197,9 @@ int main(int argc, char** argv) {
 
         if (state.mold.interpolate_system_state) {
 			state.mold.interpolate_system_state = false;
-            if (run_num_frames(&state) > 0) {
+            if (run_num_frames(state.system_context) > 0) {
                 PUSH_CPU_SECTION("Interpolate System State")
-                interpolate_system_state(&state);
+                interpolate_system_state(state.system_context);
                 POP_CPU_SECTION()
                 viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
             }
@@ -1469,16 +1459,16 @@ int main(int argc, char** argv) {
             }
         }
 
-        recenter_update(&state);
+        recenter_update(state.system_context);
 
         // The bonds formed and broken in the frame shown, before they are uploaded
-        bond_tracking_update(&state);
+        bond_tracking_update(state.system_context);
 
 		// Perform once per-frame updates of representations (if required)
 		update_all_representations(&state);
 
         if (state.representation.atom_visibility_mask_dirty) {
-            recompute_atom_visibility_mask(&state);
+            recompute_atom_visibility_mask(state.system_context);
             state.representation.atom_visibility_mask_dirty = false;
         }
 
@@ -1601,8 +1591,8 @@ int main(int argc, char** argv) {
         // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
         uint64_t v_hash = state.representation.visibility_mask_hash;
-        uint64_t h_hash = md_bitset_hash64(md_bitmask_view(&state.selection.highlight_mask), 0);
-        uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.selection.selection_mask), 0);
+        uint64_t h_hash = md_bitset_hash64(md_bitmask_view(&state.system_context.selection.highlight_mask), 0);
+        uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.system_context.selection.selection_mask), 0);
         uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
         f_hash = md_hash64_combine(f_hash, state.selection.highlight_groups.key);
         state.render.selection_hash = s_hash;
@@ -1613,7 +1603,7 @@ int main(int argc, char** argv) {
         uint64_t r_hash = md_array_size(state.representation.reps);
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
             const Representation& rep = state.representation.reps[i];
-            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)representation_shown(state, rep) };
+            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)representation_shown(state.system_context, rep) };
             r_hash = md_hash64(kind, sizeof(kind), r_hash);
             const str_t filt = str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
             r_hash = md_hash64(filt.ptr, filt.len, r_hash);
@@ -1630,7 +1620,7 @@ int main(int argc, char** argv) {
         if (h_hash != highlight_hash) {
             highlight_hash = h_hash;
             // The highlight fades in where there was none: from one atom to the next it stays
-            const bool empty = md_bitmask_empty(&state.selection.highlight_mask);
+            const bool empty = md_bitmask_empty(&state.system_context.selection.highlight_mask);
             if (highlight_empty && !empty) {
                 state.selection.highlight_time = ImGui::GetTime();
             }
@@ -1752,8 +1742,8 @@ static void update_view_param(ApplicationState* data) {
 
     // The copies of the scene, as of this frame and the last: as many as before, or they did not move
     {
-        md_array(mat4_t)& curr = data->view.periodic_transforms;
-        md_array(mat4_t)& prev = data->view.periodic_transforms_prev;
+        md_array(mat4_t)& curr = data->system.periodic_transforms;
+        md_array(mat4_t)& prev = data->system.periodic_transforms_prev;
         md_array_shrink(prev, 0);
         md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
         compute_periodic_transforms(&curr, *data, persistent_alloc);
@@ -1766,9 +1756,9 @@ static void update_view_param(ApplicationState* data) {
     if (data->system.assembly >= 0 && (size_t)data->system.assembly >= data->mold.sys.assembly.count) {
         data->system.assembly = -1;
     }
-    assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, data->system.assembly, persistent_alloc);
+    assembly_transforms(&data->system.assembly_transforms, &data->system.assembly_copy_offset, data->mold.sys, data->system.assembly, persistent_alloc);
     // And the subsets of its parts, which its copies draw: made when another is shown
-    assembly_subsets_update(data);
+    assembly_subsets_update(data->system_context);
 
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
@@ -2248,20 +2238,20 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
             ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
-            size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
+            size_t num_selected_atoms = md_bitmask_count(&data->system_context.selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
-                md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_invert_range(&data->system_context.selection.selection_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::IsItemHovered()) {
-                md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.selection_mask));
-                md_bitmask_invert_range(&data->selection.highlight_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_assign(&data->system_context.selection.highlight_mask, md_bitmask_view(&data->system_context.selection.selection_mask));
+                md_bitmask_invert_range(&data->system_context.selection.highlight_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) data->selection.query.show_window = true;
             if (num_selected_atoms == 0) ImGui::PushDisabled();
             if (ImGui::MenuItem("Grow"))  data->selection.grow.show_window = true;
             if (num_selected_atoms == 0) ImGui::PopDisabled();
             if (ImGui::MenuItem("Clear")) {
-                md_bitmask_clear(&data->selection.selection_mask);
+                md_bitmask_clear(&data->system_context.selection.selection_mask);
                 single_selection_sequence_clear(&data->selection.single_selection_sequence);
             }
             ImGui::Spacing();
@@ -2269,7 +2259,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // STORED SELECTIONS
             {
-                md_bitmask_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->system_context.selection.highlight_mask);
                 // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
                 // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
@@ -2296,17 +2286,17 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
-                        md_bitmask_assign(&data->selection.selection_mask, sel.atom_mask);
+                        md_bitmask_assign(&data->system_context.selection.selection_mask, sel.atom_mask);
                         flag_all_representations_as_dirty(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
-                        md_bitmask_assign(&data->selection.highlight_mask, sel.atom_mask);
+                        md_bitmask_assign(&data->system_context.selection.highlight_mask, sel.atom_mask);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
                         ImGui::SetTooltip("Store the active selection into this selection");
-                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->selection.selection_mask), persistent_alloc);
+                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->system_context.selection.selection_mask), persistent_alloc);
                         data->script.compile_ir = true;
                         flag_all_representations_as_dirty(data);
                     }
@@ -2321,7 +2311,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
                     snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), md_bitmask_view(&data->selection.selection_mask));
+                    create_selection(data, str_from_cstr(name_buf), md_bitmask_view(&data->system_context.selection.selection_mask));
                 }
 
                 //ImGui::PopItemFlag();
@@ -2619,8 +2609,8 @@ void draw_load_dataset_window(ApplicationState* data) {
             const LoadResult result = load_data_from_file(data, data->system_context, path, load_state);
             if (result == LoadResult_System || result == LoadResult_Trajectory) {
                 if (result == LoadResult_System && !data->settings.keep_representations) {
-                    remove_all_representations(data);
-                    create_default_representations(data);
+                    remove_all_representations(data->system_context);
+                    create_default_representations(data->system_context);
                 }
                 data->animation = {};
                 reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
@@ -2747,8 +2737,8 @@ static struct {
 } context_targets;
 
 static void context_targets_update(ApplicationState* state, const PickingHit& hit) {
-    representation_targets_from_hit(&context_targets.hovered, &context_targets.all, *state, hit);
-    representation_target_from_selection(&context_targets.selection, *state);
+    representation_targets_from_hit(&context_targets.hovered, &context_targets.all, state->system_context, hit);
+    representation_target_from_selection(&context_targets.selection, state->system_context);
     if (!md_bitset_empty(context_targets.hovered.atoms) && md_bitset_equal(context_targets.hovered.atoms, context_targets.selection.atoms)) {
         representation_target_free(&context_targets.hovered);
     }
@@ -2758,7 +2748,7 @@ static void context_targets_update(ApplicationState* state, const PickingHit& hi
     context_targets.hit_bond[0] = context_targets.hit_bond[1] = -1;
     const md_system_t& sys = state->mold.sys;
     md_bitmask_t mask = md_bitmask_create(0, (uint32_t)sys.atom.count, alloc);
-    picking_hit_mask_set(&mask, *state, hit, state->selection.granularity);
+    picking_hit_mask_set(&mask, state->system_context, hit, state->selection.granularity);
     // A single atom is no subject of its own
     if (md_bitmask_count(&mask) > 1) {
         context_targets.hit_atoms = md_bitmask_extract(&mask, alloc);
@@ -2768,7 +2758,7 @@ static void context_targets_update(ApplicationState* state, const PickingHit& hi
         md_atom_pair_t pair;
         md_bond_flags_t flags;
         bool formed;
-        if (picked_bond(*state, hit.local_idx, &pair, &flags, &formed)) {
+        if (picked_bond(state->system_context, hit.local_idx, &pair, &flags, &formed)) {
             context_targets.hit_bond[0] = pair.idx[0];
             context_targets.hit_bond[1] = pair.idx[1];
         }
@@ -2790,7 +2780,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
     const SingleSelectionSequence& seq = state->selection.single_selection_sequence;
 
     // The selection, or while there is none what was right-clicked, as it was highlighted
-    md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+    md_bitset_t sel = md_bitmask_view(&state->system_context.selection.selection_mask);
     const bool from_hit = md_bitset_empty(sel);
     if (from_hit) sel = context_targets.hit_atoms;
 
@@ -2887,16 +2877,16 @@ static void draw_new_representation_menu(ApplicationState* state, const Represen
     ImGui::PushID(&target);
     const bool open = ImGui::BeginMenu(target.selection ? "Selected atoms" : target.label);
     if (open || ImGui::IsItemHovered()) {
-        md_bitmask_assign(&state->selection.highlight_mask, target.atoms);
+        md_bitmask_assign(&state->system_context.selection.highlight_mask, target.atoms);
     }
     if (open) {
         ImGui::TextDisabled("%llu atoms", (unsigned long long)md_bitset_count(target.atoms));
         ImGui::Separator();
-        const bool room = representation_can_add(*state);
+        const bool room = representation_can_add(state->system_context);
         if (!room) ImGui::TextDisabled("At most %zu representations per system", REPRESENTATION_MAX);
         auto item = [&](RepresentationType type, bool suggested) {
             if (ImGui::MenuItem(representation_type_str[(int)type], suggested ? "suggested" : nullptr, false, room)) {
-                create_representation_of_target(state, target, type);
+                create_representation_of_target(state->system_context, target, type);
                 ImGui::CloseCurrentPopup();
             }
         };
@@ -2907,7 +2897,7 @@ static void draw_new_representation_menu(ApplicationState* state, const Represen
             RepresentationType::Ribbons, RepresentationType::Cartoon,
         };
         for (RepresentationType type : types) {
-            if (type != target.suggested_type && representation_target_can_show(*state, target, type)) item(type, false);
+            if (type != target.suggested_type && representation_target_can_show(state->system_context, target, type)) item(type, false);
         }
         ImGui::EndMenu();
     }
@@ -2920,7 +2910,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
     if (!state->mold.sys.atom.count) return;
 
-    const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
+    const size_t num_atoms_selected = md_bitmask_count(&state->system_context.selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
         // What was under the cursor, found once, as the menu opens
@@ -2930,7 +2920,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         if (num_atoms_selected == 2) {
             // A bond between the two, of a kind, or the removal of the one a user made
             int idx[2];
-            md_bitset_iter_extract_indices(idx, 2, md_bitmask_iter(&state->selection.selection_mask));
+            md_bitset_iter_extract_indices(idx, 2, md_bitmask_iter(&state->system_context.selection.selection_mask));
 
             md_system_t& sys = state->mold.sys;
             md_bond_idx_t bond_idx = md_system_bond_find(&sys, idx[0], idx[1]);
@@ -2957,10 +2947,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
                             const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
-                            system_bonds_edit_begin(state);
+                            system_bonds_edit_begin(state->system_context);
                             md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
                             if (graph) md_util_system_infer_coordination(&sys);
-                            system_bonds_changed(state, graph);
+                            system_bonds_changed(state->system_context, graph);
                             ImGui::CloseCurrentPopup();
                         }
                         ImGui::SetItemTooltip("%s", kinds[k].tip);
@@ -2975,8 +2965,8 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 if (ImGui::BeginMenu(buf)) {
                     // A representation of its own, to style the bond by, or one of the Bonds representations of the
                     // whole system
-                    if (ImGui::MenuItem("New Bonds Representation", nullptr, false, representation_can_add(*state))) {
-                        representation_show_bond(state, pair, flags, nullptr);
+                    if (ImGui::MenuItem("New Bonds Representation", nullptr, false, representation_can_add(state->system_context))) {
+                        representation_show_bond(state->system_context, pair, flags, nullptr);
                         ImGui::CloseCurrentPopup();
                     }
                     ImGui::SetItemTooltip("A representation of this bond alone, drawn over the sticks, to style it by.\n"
@@ -2984,7 +2974,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     bool separated = false;
                     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
                         Representation& rep = state->representation.reps[i];
-                        if (!representation_can_show_bond(*state, rep)) continue;
+                        if (!representation_can_show_bond(state->system_context, rep)) continue;
                         if (!separated) {
                             ImGui::Separator();
                             separated = true;
@@ -2992,7 +2982,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         ImGui::PushID((int)rep.node.id);
                         const bool shows = representation_shows_bond(rep, pair);
                         if (ImGui::MenuItem(rep.name, nullptr, shows, !shows)) {
-                            if (!representation_show_bond(state, pair, flags, &rep)) {
+                            if (!representation_show_bond(state->system_context, pair, flags, &rep)) {
                                 VIAMD_LOG_INFO("The filter of '%s' has no room for the bond", rep.name);
                             }
                             ImGui::CloseCurrentPopup();
@@ -3006,19 +2996,19 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                     if (ImGui::MenuItem(buf)) {
                         const bool graph = (size_t)bond_idx < sys.bond.count;
-                        system_bonds_edit_begin(state);
+                        system_bonds_edit_begin(state->system_context);
                         md_system_bond_remove(&sys, bond_idx);
-                        system_bonds_changed(state, graph);
+                        system_bonds_changed(state->system_context, graph);
                         ImGui::CloseCurrentPopup();
                     }
                 }
             }
         }
-        if (num_atoms_selected >= 1 && run_num_frames(state) > 0) {
+        if (num_atoms_selected >= 1 && run_num_frames(state->system_context) > 0) {
             // The bond changes of the selection, written as the scope of the tracking: "x = <expression>;" of the
             // suggestions of the script. Written when it is asked for, it can take long for a large selection.
             auto selection_scope = [state]() -> str_t {
-                const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
+                const md_bitset_t sel = md_bitmask_view(&state->system_context.selection.selection_mask);
                 const md_array(ScriptSuggestion) suggestions = script_suggest_selection(state->script.language, STR_LIT("x"), sel, state->mold.sys, frame_alloc);
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
                     str_t expr = suggestions[i].text;
@@ -3119,12 +3109,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
-                md_bitmask_invert_range(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_invert_range(&state->system_context.selection.selection_mask, 0, state->mold.sys.atom.count);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
-                md_bitmask_invert_range(&state->selection.highlight_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_assign(&state->system_context.selection.highlight_mask, md_bitmask_view(&state->system_context.selection.selection_mask));
+                md_bitmask_invert_range(&state->system_context.selection.highlight_mask, 0, state->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) {
                 state->selection.query.show_window = true;
@@ -3136,7 +3126,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     ImGui::CloseCurrentPopup();
                 }
                 if (ImGui::MenuItem("Clear")) {
-                    md_bitmask_clear(&state->selection.selection_mask);
+                    md_bitmask_clear(&state->system_context.selection.selection_mask);
                     single_selection_sequence_clear(&state->selection.single_selection_sequence);
                 }
             }
@@ -3145,13 +3135,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Centering Target")) {
-                md_bitset_assign(&state->system.operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
+                md_bitset_assign(&state->system.operations.selection_mask, md_bitmask_view(&state->system_context.selection.selection_mask), persistent_alloc);
                 state->system.operations.recenter_query.enabled = false;
-                recenter_update_target_data(state);
+                recenter_update_target_data(state->system_context);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
+                md_bitmask_assign(&state->system_context.selection.highlight_mask, md_bitmask_view(&state->system_context.selection.selection_mask));
             }
         }
 
@@ -3184,7 +3174,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
     if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
         static uint64_t sel_popcount = 0;
-        const uint64_t popcount = md_bitmask_count(&data->selection.selection_mask);
+        const uint64_t popcount = md_bitmask_count(&data->system_context.selection.selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const char* fmt = (data->selection.grow.mode == SelectionGrowthMode::CovalentBond) ? "%.0f" : "%.2f";
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
@@ -3201,7 +3191,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
             sel_popcount = popcount;
             data->selection.grow.mask_invalid = false;
             md_bitmask_t* grow = &data->selection.grow.mask;
-            md_bitmask_assign(grow, md_bitmask_view(&data->selection.selection_mask));
+            md_bitmask_assign(grow, md_bitmask_view(&data->system_context.selection.selection_mask));
             const md_bitset_t viable = md_bitmask_view(&data->representation.visibility_mask);
 
             switch (data->selection.grow.mode) {
@@ -3224,10 +3214,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
                                     (ImGui::GetHoveredID() == ImGui::GetID("Apply"));
 
         if (show_preview) {
-            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
+            md_bitmask_assign(&data->system_context.selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
         }
         if (apply) {
-            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
+            md_bitmask_assign(&data->system_context.selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
             data->selection.grow.mask_invalid = true;
         }
     }
@@ -3248,7 +3238,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         ImGui::PushItemWidth(-1);
         bool apply = false;
-        if (filter_input("##query", &query.filter, data->script.language, filter_context(data), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
+        if (filter_input("##query", &query.filter, data->script.language, filter_context(data->system_context), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
             query.query_invalid = true;
         }
         ImGui::PopItemWidth();
@@ -3272,7 +3262,7 @@ static void draw_selection_query_window(ApplicationState* data) {
         if (query.query_invalid) {
             query.query_invalid = false;
             md_bitset_t result = md_bitset_empty_set();
-            filter_evaluate(&query.filter, &result, data->script.language, filter_context(data), frame_alloc);
+            filter_evaluate(&query.filter, &result, data->script.language, filter_context(data->system_context), frame_alloc);
             query_frame = data->animation.frame;
 
             md_bitmask_assign(&query.mask, query.filter.result.success ? result : md_bitset_empty_set());
@@ -3280,11 +3270,11 @@ static void draw_selection_query_window(ApplicationState* data) {
         }
 
         if (preview) {
-            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&query.mask));
+            md_bitmask_assign(&data->system_context.selection.highlight_mask, md_bitmask_view(&query.mask));
         }
 
         if (apply && query.filter.result.success) {
-            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
+            md_bitmask_assign(&data->system_context.selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
     }
@@ -3293,7 +3283,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
 static void draw_animation_window(ApplicationState* data) {
     ASSERT(data);
-    size_t num_frames = run_num_frames(data);
+    size_t num_frames = run_num_frames(data->system_context);
     if (num_frames == 0) return;
 
     ASSERT(data->timeline.x_values);
@@ -3900,13 +3890,13 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
 // The series loaded along the run, one submenu per file
 static void plot_system_series_menu(ApplicationState* data, const char* dnd_type, PlotSubplot& first) {
     str_t groups[64];
-    const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data), ARRAY_SIZE(groups));
+    const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data->system_context), ARRAY_SIZE(groups));
     size_t num_listed = 0;
     for (size_t g = 0; g < num_groups; ++g) {
         md_temp_scope_t temp = md_temp_begin();
-        const size_t num = system_series_members(nullptr, 0, data, groups[g]);
+        const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
         str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
-        system_series_members(paths, num, data, groups[g]);
+        system_series_members(paths, num, data->system_context, groups[g]);
         if (num > 0) {
             char group_label[256];
             system_series_group_label(group_label, sizeof(group_label), data, groups[g]);
@@ -4260,7 +4250,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     bool print_timeline_tooltip = false;
 
                     if (ImPlot::IsPlotHovered()) {
-                        md_bitmask_clear(&data->selection.highlight_mask);
+                        md_bitmask_clear(&data->system_context.selection.highlight_mask);
                         script_set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
@@ -4778,7 +4768,7 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
     };
 
     // The key's own frames first, in the series' colour: every frame, or its period's
-    const int num_frames = (int)run_num_frames(data);
+    const int num_frames = (int)run_num_frames(data->system_context);
     auto frames_of = [&](char* buf, size_t cap, const TimelinePeriod& r) {
         int beg, end;
         if (timeline_period_frames(&beg, &end, r, data->animation.frame, num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
@@ -5792,14 +5782,14 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
 
         if (editor_hovered) {
-            md_bitmask_clear(&state->selection.highlight_mask);
+            md_bitmask_clear(&state->system_context.selection.highlight_mask);
         }
 
         if (hovered_marker) {
             if (hovered_marker->atoms || !script::ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
-                    md_bitmask_assign(&state->selection.highlight_mask, *hovered_marker->atoms);
+                    md_bitmask_assign(&state->system_context.selection.highlight_mask, *hovered_marker->atoms);
                 }
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
@@ -5829,7 +5819,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
                     SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(state, md_bitmask_view(&state->selection.highlight_mask), op);
+                    modify_selection(state, md_bitmask_view(&state->system_context.selection.highlight_mask), op);
                 }
             }
 
@@ -5957,7 +5947,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
     // Frame 0, with room for its coordinates: an extract fills what has storage and allocates none
     md_system_state_t state = { .alloc = temp.arena };
     md_system_state_init(&state, sys.atom.count);
-    if (!extract_frame(&data, 0, &state)) {
+    if (!extract_frame(data.system_context, 0, &state)) {
         return false;
     }
 
@@ -6160,11 +6150,11 @@ static void draw_property_export_window(ApplicationState* data) {
             }
             if (kind != ExportKind_Volume) {
                 str_t groups[64];
-                const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data), ARRAY_SIZE(groups));
+                const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data->system_context), ARRAY_SIZE(groups));
                 for (size_t g = 0; g < num_groups; ++g) {
-                    const size_t num = system_series_members(nullptr, 0, data, groups[g]);
+                    const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
                     str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
-                    system_series_members(paths, num, data, groups[g]);
+                    system_series_members(paths, num, data->system_context, groups[g]);
                     for (size_t i = 0; i < num; ++i) {
                         md_array_push(candidates, series_key(SeriesSource_System, paths[i]), alloc);
                     }
@@ -6421,7 +6411,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
         const md_system_t* sys = &data->mold.sys;
         const md_system_state_t* state = &data->mold.state;
-        const bool traj = run_num_frames(data) > 0;
+        const bool traj = run_num_frames(data->system_context) > 0;
         auto& struct_exp = data->structure_export;
 
         static const char* atom_mask_options[] = {
@@ -6448,21 +6438,21 @@ void draw_structure_export_window(ApplicationState* data) {
 
         if (struct_exp.selected_atom_filter == 2) { // Query
             auto& query = struct_exp.query;
-            query.requires_evaluation |= filter_input("Query", &query.filter, data->script.language, filter_context(data));
+            query.requires_evaluation |= filter_input("Query", &query.filter, data->script.language, filter_context(data->system_context));
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
 
             if (query.requires_evaluation) {
-                filter_evaluate(&query.filter, &query.mask, data->script.language, filter_context(data), persistent_alloc);
+                filter_evaluate(&query.filter, &query.mask, data->script.language, filter_context(data->system_context), persistent_alloc);
                 query.requires_evaluation = false;
             }
 
             if (ImGui::IsWindowHovered()) {
                 // Clear highlight mask
-                md_bitmask_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->system_context.selection.highlight_mask);
             }
 
             if (query.filter.result.success && preview) {
-                md_bitmask_assign(&data->selection.highlight_mask, query.mask);
+                md_bitmask_assign(&data->system_context.selection.highlight_mask, query.mask);
             }
         }
 
@@ -6500,7 +6490,7 @@ void draw_structure_export_window(ApplicationState* data) {
         auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
-                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->selection.selection_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->system_context.selection.selection_mask));
                 } break;
                 case 1: { // Visible Atoms
                     return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
@@ -6510,7 +6500,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     if (query.filter.result.is_dynamic) {
                         // What it picks depends on the coordinates: picked again in each frame exported (script::filter
                         // replaces what the mask held, so nothing of the previous frame stays)
-                        script::FilterCtx ctx = filter_context(data);
+                        script::FilterCtx ctx = filter_context(data->system_context);
                         ctx.state = state;
                         filter_evaluate(&query.filter, &query.mask, data->script.language, ctx, persistent_alloc);
                     }
@@ -6539,7 +6529,7 @@ void draw_structure_export_window(ApplicationState* data) {
             if (traj) {
                 switch (struct_exp.selected_traj_filter) {
                 case 0: { // All Frames
-                    size_t num_frames = run_num_frames(data);
+                    size_t num_frames = run_num_frames(data->system_context);
                     for (size_t i = 0; i < num_frames; ++i) {
                         md_array_push(frame_indices, (int32_t)i, frame_alloc);
                     }
@@ -6550,7 +6540,7 @@ void draw_structure_export_window(ApplicationState* data) {
                 } break;
                 case 2: { // A timeline period
                     int beg = 0, end = -1;
-                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, data->animation.frame, (int)run_num_frames(data))) {
+                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, data->animation.frame, (int)run_num_frames(data->system_context))) {
                         beg = 0;
                         end = -1;
                     }
@@ -6585,7 +6575,7 @@ void draw_structure_export_window(ApplicationState* data) {
                                 // frame, which is delivered on the state.
                                 md_system_state_t frame_state = {};
                                 int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
-                                if (extract_frame(data, first_frame, &frame_state)) {
+                                if (extract_frame(data->system_context, first_frame, &frame_state)) {
                                     if (frame_state.unitcell.flags != 0) {
                                         double a, b, c, alpha, beta, gamma;
                                         md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_state.unitcell);
@@ -6727,7 +6717,7 @@ static void update_md_buffers(ApplicationState* data) {
         MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
-            md_bitset_iter_t it = md_bitmask_iter(&data->selection.highlight_mask);
+            md_bitset_iter_t it = md_bitmask_iter(&data->system_context.selection.highlight_mask);
             while (md_bitset_iter_next(&it)) {
                 uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Highlighted | AtomBit_Marked;
@@ -6745,13 +6735,13 @@ static void update_md_buffers(ApplicationState* data) {
             }
         }
         {
-            md_bitset_iter_t it = md_bitmask_iter(&data->selection.selection_mask);
+            md_bitset_iter_t it = md_bitmask_iter(&data->system_context.selection.selection_mask);
             while (md_bitset_iter_next(&it)) {
                 uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Selected | AtomBit_Marked;
             }
         }
-        if (!md_bitmask_empty(&data->selection.selection_mask)) {
+        if (!md_bitmask_empty(&data->system_context.selection.selection_mask)) {
             for (size_t i = 0; i < sys.atom.count; ++i) {
                 if (!(flags[i] & AtomBit_Selected)) flags[i] |= AtomBit_Dimmed;
             }
@@ -6770,7 +6760,7 @@ static void update_md_buffers(ApplicationState* data) {
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
         // The bonds of the graph, then those formed in the frame shown while tracking them. A broken one is set to one
         // atom twice, which is not drawn, so that the bonds keep their indices: the orders and the picking go by them.
-        const md_bond_delta_t* delta = bond_tracking_delta(data);
+        const md_bond_delta_t* delta = bond_tracking_delta(data->system_context);
         if (delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken))) {
             const size_t count = sys.bond.count + delta->num_formed;
             md_atom_pair_t* pairs = (md_atom_pair_t*)md_vm_arena_push(data->allocator.frame, sizeof(md_atom_pair_t) * count);
@@ -6785,11 +6775,11 @@ static void update_md_buffers(ApplicationState* data) {
             md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
         }
         // The orders of the frame shown where the bonds tracked changed them (bond_tracking_chem)
-        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys, delta, bond_tracking_chem(data));
+        md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys, delta, bond_tracking_chem(data->system_context));
 
         // The non-covalent bonds of the system are drawn dashed by the licorice and ball and stick representations
         for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-            representation_set_weak_bonds(data, &data->representation.reps[i]);
+            representation_set_weak_bonds(data->system_context, &data->representation.reps[i]);
         }
     }
 
@@ -6800,7 +6790,7 @@ static void update_md_buffers(ApplicationState* data) {
         bool shown = false;
         for (size_t i = 0; i < md_array_size(data->representation.reps) && !shown; ++i) {
             const Representation& rep = data->representation.reps[i];
-            shown = representation_shown(*data, rep) && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
+            shown = representation_shown(data->system_context, rep) && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
         }
         if (shown) {
             cartoon_glyphs_update_positions(&glyphs, state);
@@ -7255,8 +7245,8 @@ static void render(ApplicationState* state) {
     // of the size of the image made, unjittered, each fragment marked in view or behind the scene (its depth, from the
     // G-buffer); put over the image as it is presented. They are not part of the scene: changing them changes nothing in
     // it, nor in its history. Drawn again when they change, or the scene was made.
-    const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
-    const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
+    const bool selection_empty = md_bitmask_empty(&state->system_context.selection.selection_mask);
+    const bool highlight_empty = md_bitmask_empty(&state->system_context.selection.highlight_mask);
     const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
@@ -7395,10 +7385,10 @@ static void compute_periodic_transforms(md_array(mat4_t)* transforms, const Appl
 // md_gl culls those out of view on the CPU. Read from the view state, which outlives the draw.
 static md_gl_copies_t rep_copies(const ApplicationState& state, const Representation& rep) {
     md_gl_copies_t copies = {};
-    const size_t n = md_array_size(state.view.periodic_transforms);
+    const size_t n = md_array_size(state.system.periodic_transforms);
     if (rep.periodic_images && n > 1) {
-        copies.transforms = &state.view.periodic_transforms[0].elem[0][0];
-        copies.prev_transforms = md_array_size(state.view.periodic_transforms_prev) == n ? &state.view.periodic_transforms_prev[0].elem[0][0] : NULL;
+        copies.transforms = &state.system.periodic_transforms[0].elem[0][0];
+        copies.prev_transforms = md_array_size(state.system.periodic_transforms_prev) == n ? &state.system.periodic_transforms_prev[0].elem[0][0] : NULL;
         copies.count = (uint32_t)n;
     }
     return copies;
@@ -7414,20 +7404,20 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
     const bool shown = state.system.assembly >= 0 && (size_t)state.system.assembly < a.count;
     const size_t part_beg = shown ? a.group_offset[state.system.assembly] : 0;
     const size_t part_end = shown ? a.group_offset[state.system.assembly + 1] : 0;
-    const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
-    const md_gl_subset_t* subsets = glyphs ? state.view.assembly_glyph_subsets : state.view.assembly_subsets;
+    const size_t num_parts = md_array_size(state.system.assembly_copy_offset) > 0 ? md_array_size(state.system.assembly_copy_offset) - 1 : 0;
+    const md_gl_subset_t* subsets = glyphs ? state.system.assembly_glyph_subsets : state.system.assembly_subsets;
     // Without an assembly, or its copies or subsets not of it (yet)
-    if (num_parts == 0 || num_parts != part_end - part_beg || state.view.assembly_subsets_of != state.system.assembly || md_array_size(subsets) != num_parts) {
+    if (num_parts == 0 || num_parts != part_end - part_beg || state.system.assembly_subsets_of != state.system.assembly || md_array_size(subsets) != num_parts) {
         const md_gl_copies_t copies = rep_copies(state, rep);
         for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
         return;
     }
     for (size_t p = 0; p < num_parts; ++p) {
-        const uint32_t c0 = state.view.assembly_copy_offset[p];
-        const uint32_t c1 = state.view.assembly_copy_offset[p + 1];
+        const uint32_t c0 = state.system.assembly_copy_offset[p];
+        const uint32_t c1 = state.system.assembly_copy_offset[p + 1];
         for (size_t i = beg; i < end; ++i) {
             md_gl_draw_op_t op = (*ops)[i];
-            op.copies = {&state.view.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
+            op.copies = {&state.system.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
             op.subset = subsets[p];
             if (p == 0) {
                 (*ops)[i] = op;
@@ -7487,7 +7477,7 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     cell_radius = cell_radius * 1.01f + 0.5f * rep.box.thickness;
 
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const md_array(mat4_t) transforms = state->view.periodic_transforms;
+    const md_array(mat4_t) transforms = state->system.periodic_transforms;
     const size_t num_cells = rep.periodic_images ? MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
         const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
@@ -7579,31 +7569,31 @@ static void draw_representations_opaque(ApplicationState* state) {
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
 
-            if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid) {
+            if (rep.type == RepresentationType::Cartoon && representation_shown(state->system_context, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(glyph_ops);
-                representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+                representation_glyph_draw_ops(&glyph_ops, state->system_context, rep, frame_alloc);
                 place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
                 // The cartoon of the proteins needs a protein backbone to draw
                 if (state->mold.sys.protein_backbone.range.count == 0) continue;
             }
 
             if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                if (representation_shown(state->system_context, rep) && rep.type_is_valid) {
                     const md_gl_draw_op_t op = representation_draw_op(rep);
                     const size_t beg = md_array_size(draw_ops);
                     md_array_push(draw_ops, op, frame_alloc);
                     // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
-                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
+                    representation_weak_bond_draw_ops(&draw_ops, state->system_context, rep, frame_alloc);
                     place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::Bonds) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                if (representation_shown(state->system_context, rep) && rep.type_is_valid) {
                     const size_t beg = md_array_size(draw_ops);
-                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
+                    representation_weak_bond_draw_ops(&draw_ops, state->system_context, rep, frame_alloc);
                     place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
-                if (representation_shown(*state, rep)) {
+                if (representation_shown(state->system_context, rep)) {
                     // immediate draw of dipole moment as arrow
                     vec3_t dipole_vec = { 0, 0, 0 };
                     vec3_t dipole_org = { 0, 0, 0 };
@@ -7641,7 +7631,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                     }
                 }
             } else if (rep.type == RepresentationType::SimulationBox) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
+                if (representation_shown(state->system_context, rep) && rep.type_is_valid) {
                     draw_simulation_box(state, rep);
                 }
             }
@@ -7687,7 +7677,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     h = md_hash64(&state->system.assembly, sizeof(state->system.assembly), h);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
-        const bool shown = representation_shown(*state, rep) && rep.type_is_valid;
+        const bool shown = representation_shown(state->system_context, rep) && rep.type_is_valid;
         h = md_hash64(&shown, sizeof(shown), h);
         if (!shown) continue;
         h = md_hash64(&rep.type, sizeof(rep.type), h);
@@ -7737,7 +7727,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(state->system_context, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
 
         IsoDesc iso;
@@ -7823,7 +7813,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
-        if (!representation_shown(*state, rep)) continue;
+        if (!representation_shown(state->system_context, rep)) continue;
         if (rep.type == RepresentationType::ElectronicStructure) {
             const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
@@ -7907,21 +7897,21 @@ static void draw_representations_marks(ApplicationState* data) {
         const Representation& rep = data->representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
-        if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid) {
+        if (rep.type == RepresentationType::Cartoon && representation_shown(data->system_context, rep) && rep.type_is_valid) {
             const size_t beg = md_array_size(glyph_ops);
-            representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
+            representation_glyph_draw_ops(&glyph_ops, data->system_context, rep, frame_alloc);
             place_ops(&glyph_ops, beg, *data, rep, true, frame_alloc);
             if (data->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
-        if (representation_shown(*data, rep) && rep.type_is_valid) {
+        if (representation_shown(data->system_context, rep) && rep.type_is_valid) {
             // The op of the opaque pass: its depth tells the marks in view from those behind it, so the geometry must
             // be the same, the bond orders too
             const size_t beg = md_array_size(draw_ops);
             if (rep.type != RepresentationType::Bonds) {
                 md_array_push(draw_ops, representation_draw_op(rep), frame_alloc);
             }
-            representation_weak_bond_draw_ops(&draw_ops, *data, rep, frame_alloc);
+            representation_weak_bond_draw_ops(&draw_ops, data->system_context, rep, frame_alloc);
             place_ops(&draw_ops, beg, *data, rep, false, frame_alloc);
         }
     }

@@ -24,27 +24,27 @@ struct deserialization_state_t;
 
 // Whether count more can be made: a system has at most REPRESENTATION_MAX. What makes them returns NULL (or false)
 // rather than make one beyond it, and says so.
-bool representation_can_add(const ApplicationState& app, size_t count = 1);
+bool representation_can_add(const SystemContext& sys, size_t count = 1);
 
 // Appended at the end of 'group' (0 for the top level). NULL when the system has as many as it can.
-Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
+Representation* create_representation(SystemContext& sys, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
 // Placed just after the original, in the same group. NULL when the system has as many as it can.
-Representation* clone_representation(ApplicationState* app, const Representation& rep);
-void remove_representation(ApplicationState* app, size_t idx);
+Representation* clone_representation(SystemContext& sys, const Representation& rep);
+void remove_representation(SystemContext& sys, size_t idx);
 // The representations and the groups
-void remove_all_representations(ApplicationState* app);
-void create_default_representations(ApplicationState* app);
+void remove_all_representations(SystemContext& sys);
+void create_default_representations(SystemContext& sys);
 
-Representation* find_representation(ApplicationState* app, uint32_t id);
+Representation* find_representation(SystemContext& sys, uint32_t id);
 
 // The bond between two atoms (pair, of the system) in a Bonds representation, picked by 'bond(i, j)'. Into
 // NULL: a new one at the top level, dashed for a non-covalent bond and over the sticks of a licorice otherwise, opened
 // in the window to be styled. Otherwise added to the filter of 'into', which representation_can_show_bond allows;
 // false when the filter would not fit.
-bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into);
+bool representation_show_bond(SystemContext& sys, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into);
 // Whether representation_show_bond can add a bond to it: a Bonds representation of the whole system (an atom index
 // counts from the start of the context, and a group's context can change with the frame)
-bool representation_can_show_bond(const ApplicationState& app, const Representation& rep);
+bool representation_can_show_bond(const SystemContext& sys, const Representation& rep);
 // Whether it shows the bond between the two atoms, as of the last evaluation of its filter
 bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair);
 
@@ -70,36 +70,36 @@ struct RepresentationTarget {
 // its name. 'all' (may be NULL) is set to all the residues of its name, where it is one of several that are no part of
 // a polymer (the lipids of a kind, the waters, a ligand bound to each of several chains). False when there is none:
 // nothing hit, or a single atom that nothing else shares the name of.
-bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const ApplicationState& app, const PickingHit& hit);
+bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const SystemContext& sys, const PickingHit& hit);
 // The selection, which takes more than one atom
-bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app);
+bool representation_target_from_selection(RepresentationTarget* target, const SystemContext& sys);
 void representation_target_free(RepresentationTarget* target);
-bool representation_target_can_show(const ApplicationState& app, const RepresentationTarget& target, RepresentationType type);
+bool representation_target_can_show(const SystemContext& sys, const RepresentationTarget& target, RepresentationType type);
 // A new representation of it, at the top level, its properties open the next time the window lists it: its filter is the most telling expression that
 // picks exactly its atoms (script_suggest_selection). NULL when none fits in a filter.
-Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type);
+Representation* create_representation_of_target(SystemContext& sys, const RepresentationTarget& target, RepresentationType type);
 
 // --- Groups ---
 
 // Appended at the end of 'parent' (0 for the top level)
-RepresentationGroup* create_representation_group(ApplicationState* app, str_t name = STR_LIT("group"), uint32_t parent = 0);
+RepresentationGroup* create_representation_group(SystemContext& sys, str_t name = STR_LIT("group"), uint32_t parent = 0);
 // The group and everything within it, placed just after the original. Nothing when the representations within it
 // would take the system beyond as many as it can have.
-void clone_representation_group(ApplicationState* app, uint32_t id);
+void clone_representation_group(SystemContext& sys, uint32_t id);
 // How many representations the group holds, at any depth: what a copy of it adds
-size_t representation_group_rep_count(const ApplicationState& app, uint32_t id);
+size_t representation_group_rep_count(const SystemContext& sys, uint32_t id);
 // The group and everything within it
-void remove_representation_group(ApplicationState* app, uint32_t id);
+void remove_representation_group(SystemContext& sys, uint32_t id);
 // The group goes, and what it held takes its place, in the group around it
-void ungroup_representation_group(ApplicationState* app, uint32_t id);
+void ungroup_representation_group(SystemContext& sys, uint32_t id);
 
-RepresentationGroup* find_representation_group(ApplicationState* app, uint32_t id);
-const RepresentationGroup* find_representation_group(const ApplicationState& app, uint32_t id);
+RepresentationGroup* find_representation_group(SystemContext& sys, uint32_t id);
+const RepresentationGroup* find_representation_group(const SystemContext& sys, uint32_t id);
 
 // --- Tree ---
 
-bool representation_shown(const ApplicationState& app, const Representation& rep);
-bool representation_group_shown(const ApplicationState& app, const RepresentationGroup& group);
+bool representation_shown(const SystemContext& sys, const Representation& rep);
+bool representation_group_shown(const SystemContext& sys, const RepresentationGroup& group);
 
 // The context something within the group 'parent' is evaluated in: the innermost group out from it that has
 // a filter, or none (atoms NULL) for the whole system
@@ -109,42 +109,45 @@ struct RepresentationContext {
     bool valid = true;                              // false while that group's filter, or one around it, is not
     bool dynamic = false;                           // it depends on the frame
 };
-RepresentationContext representation_context(const ApplicationState& app, uint32_t parent);
+RepresentationContext representation_context(const SystemContext& sys, uint32_t parent);
 // What a filter in that context is evaluated and completed against: the application's (filter_context), within its atoms
-script::FilterCtx representation_filter_context(const ApplicationState& app, const RepresentationContext& ctx);
+script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx);
 
 // Moves a representation (group false) or a group, with everything within it, to where 'drop' puts it
 // relative to the target - a representation or a group by id, or the top level (target_id 0, which takes only
 // RepresentationDrop_IntoLast). False when it cannot go there: a group cannot go anywhere within itself.
-bool representation_move(ApplicationState* app, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
-bool representation_can_move(const ApplicationState& app, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
+bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
+bool representation_can_move(const SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
 
 // --- Evaluation ---
 
 // For a system that was just loaded: GPU resources made again, every filter evaluated again
-void init_all_representations(ApplicationState* app);
+void init_all_representations(SystemContext& sys);
 // Once per frame: the contexts of the groups, then the representations, that need it and are shown
-void update_all_representations(ApplicationState* app);
+void update_all_representations(SystemContext& sys);
+void update_all_representations(ApplicationState* app);     // of every system
 
 void flag_representation_as_dirty(Representation* rep);
 
 // The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds): of a licorice or a ball and stick, the
 // non-covalent bonds of the system, dashed among its atoms; of a Bonds representation, the bonds its filter picked.
 // Set again whenever the bonds of the system change.
-void representation_set_weak_bonds(ApplicationState* app, Representation* rep);
+void representation_set_weak_bonds(SystemContext& sys, Representation* rep);
 // The representations and the contexts of the groups: what they are evaluated against changed (the script, the system)
-void flag_all_representations_as_dirty(ApplicationState* app);
+void flag_all_representations_as_dirty(SystemContext& sys);
+void flag_all_representations_as_dirty(ApplicationState* app);     // of every system
 // The frame changed: what follows it is evaluated again. That is a filter or a context which depends on the
 // frame (unless its auto-update is off), colours by secondary structure or by an attribute, and an
 // electronic structure, whose volume moves with the atoms.
-void flag_dynamic_representations_as_dirty(ApplicationState* app);
+void flag_dynamic_representations_as_dirty(SystemContext& sys);
+void flag_dynamic_representations_as_dirty(ApplicationState* app);     // of every system
 
 // Whether the atoms of a representation depend on the frame: its own filter, or the context it is in
-bool representation_is_dynamic(const ApplicationState& app, const Representation& rep);
+bool representation_is_dynamic(const SystemContext& sys, const Representation& rep);
 bool representation_uses_atom_colors(const Representation& rep);
 
 // The union of the atoms of the shown representations, visibility_mask
-void recompute_atom_visibility_mask(ApplicationState* app);
+void recompute_atom_visibility_mask(SystemContext& sys);
 
 // --- Representations of atoms, wherever they are drawn ---
 // What the Representations window and others (the reference structures of the Density Volume window) share of the
@@ -152,7 +155,7 @@ void recompute_atom_visibility_mask(ApplicationState* app);
 // properties in the window and in a workspace.
 
 // Whether the system has what a type draws: atoms, bonds, a backbone
-bool representation_particle_type_valid(const ApplicationState& app, RepresentationType type);
+bool representation_particle_type_valid(const SystemContext& sys, RepresentationType type);
 
 // The draw op of a representation of atoms: its type, arguments and colours (md_rep). The copies and the subset are
 // the caller's.
@@ -161,24 +164,24 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 // spheres, tubes and slabs, thickened by the w of its scale, in its colours of the glyphs (glyph_rep). None while it
 // shows none or their positions are not derived (cartoon_glyphs_update_positions). The copies and the subset (of the
 // glyphs) are the caller's.
-void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
+void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
 // The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
 // solid or dashed, and the non-covalent bonds of the system, dashed, over the sticks of a licorice or a ball and stick.
 // Nothing for the others. The copies and the subset are the caller's.
-void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
+void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the
 // atoms a colour scale of an attribute spans the values of (NULL for all), whose span it keeps (atom_attribute).
-void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationState* app, Representation* rep, const md_bitset_t* shown);
+void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContext& sys, Representation* rep, const md_bitset_t* shown);
 
 // --- Workspace ---
 
 // [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it
-void representations_serialize(viamd::serialization_state_t& state, const ApplicationState* app);
+void representations_serialize(viamd::serialization_state_t& state, const SystemContext& sys);
 // The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
 // when it is not one of them
-void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app, const Representation& rep);
+void representation_write_entries(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep);
 bool representation_read_entry(Representation* rep, str_t ident, str_t arg);
 // True when the section was one of the above, which it has then read
 bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state);
@@ -189,9 +192,9 @@ void draw_representations_window(ApplicationState* app);
 // Rows of the properties of a representation, in a property grid (property_grid.h), as the Representations window
 // draws them: its type (atoms_only: SpaceFill to Cartoon), the rows of its Color section, those of its Geometry
 // section. Each returns whether it needs updating.
-bool draw_representation_type(ApplicationState* app, Representation& rep, bool atoms_only);
-bool draw_representation_coloring(ApplicationState* app, Representation& rep);
-bool draw_representation_geometry(ApplicationState* app, Representation& rep);
+bool draw_representation_type(SystemContext& sys, Representation& rep, bool atoms_only);
+bool draw_representation_coloring(SystemContext& sys, Representation& rep);
+bool draw_representation_geometry(SystemContext& sys, Representation& rep);
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);

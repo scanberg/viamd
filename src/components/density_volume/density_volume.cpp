@@ -331,7 +331,7 @@ struct DensityVolume : viamd::EventHandler {
         defer { md_temp_end(temp); };
 
         Representation& rep = r.rep;
-        rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
+        rep.type_is_valid = representation_particle_type_valid(state->system_context, rep.type);
 
         // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
         // id 0 would draw all of the molecule.
@@ -355,7 +355,7 @@ struct DensityVolume : viamd::EventHandler {
         for (size_t i = 0; i < made; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
-                script::FilterCtx ctx = filter_context(state);
+                script::FilterCtx ctx = filter_context(state->system_context);
                 ctx.atoms = &structures[i];
                 md_bitset_t out = md_bitset_empty_set();
                 filter_evaluate(&rep.filter, &out, state->script.language, ctx, frame);
@@ -401,7 +401,7 @@ struct DensityVolume : viamd::EventHandler {
         } else if (made == 0) {
             // No structure to evaluate it within: whether it is valid at all, within the whole system
             md_bitset_t out = md_bitset_empty_set();
-            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state), frame);
+            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state->system_context), frame);
         } else if (failed) {
             rep.filter.result = failure;
             rep.filter.result.is_dynamic = dynamic;
@@ -430,7 +430,7 @@ struct DensityVolume : viamd::EventHandler {
 
         // Opaque: what is drawn is what the subsets hold
         uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
-        representation_atom_colors(colors, num_atoms, state, &rep, &rep.atom_mask);
+        representation_atom_colors(colors, num_atoms, state->system_context, &rep, &rep.atom_mask);
         for (size_t i = 0; i < num_atoms; ++i) {
             colors[i] |= 0xFF000000u;
         }
@@ -579,7 +579,7 @@ struct DensityVolume : viamd::EventHandler {
         // of a representation of the Representations window
         for (size_t i = 0; i < md_array_size(reps); ++i) {
             viamd::write_section_header(state, STR_LIT("DensityVolumeRepresentation"));
-            representation_write_entries(state, app, reps[i].rep);
+            representation_write_entries(state, app->system_context, reps[i].rep);
         }
     }
 
@@ -964,7 +964,7 @@ struct DensityVolume : viamd::EventHandler {
         md_system_state_init(&st0, state->mold.sys.atom.count);
         md_array(int32_t) atoms = nullptr;
         vec3_t* xyz = nullptr;
-        if (script::valid(state->script.eval_ir) && extract_frame(state, 0, &st0)) {
+        if (script::valid(state->script.eval_ir) && extract_frame(state->system_context, 0, &st0)) {
             script::Drawing vis = {};
             script::drawing_init(&vis, temp);
             script::DrawCtx ctx = {
@@ -1310,12 +1310,12 @@ struct DensityVolume : viamd::EventHandler {
         if (open) {
             // Its type only says what is drawn of the subsets, its geometry how: neither is found again, but for the
             // glyphs of a Cartoon (update_reps)
-            if (draw_representation_type(state, rep, true)) {
-                rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
+            if (draw_representation_type(state->system_context, rep, true)) {
+                rep.type_is_valid = representation_particle_type_valid(state->system_context, rep.type);
             }
 
             // Completed within the first structure, as each is evaluated within its own
-            script::FilterCtx ctx = filter_context(state);
+            script::FilterCtx ctx = filter_context(state->system_context);
             if (md_array_size(structures) > 0) ctx.atoms = &structures[0];
             prop::row("filter", "Evaluated within each reference structure: all is the structure, residue(1) its first residue.\n"
                                 "'out' reaches outside of it, as in a script: within(5, out resname(\"LIG\")).");
@@ -1324,7 +1324,7 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             if (prop::section("Color")) {
-                if (draw_representation_coloring(state, rep)) {
+                if (draw_representation_coloring(state->system_context, rep)) {
                     r.colors_dirty = true;
                 }
                 prop::section_end();
@@ -1333,7 +1333,7 @@ struct DensityVolume : viamd::EventHandler {
                 // Only what the args of the draws take, but whether the head of a lipid is two spheres, which its glyphs'
                 // colours do
                 const bool two_heads = rep.two_head_spheres;
-                draw_representation_geometry(state, rep);
+                draw_representation_geometry(state->system_context, rep);
                 if (rep.two_head_spheres != two_heads) r.colors_dirty = true;
                 prop::section_end();
             }
@@ -1665,7 +1665,7 @@ struct DensityVolume : viamd::EventHandler {
                         // Derived from the positions of the atoms when a cartoon of the main view has not
                         if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, state->mold.state);
                         md_array(md_gl_draw_op_t) ops = nullptr;
-                        representation_glyph_draw_ops(&ops, *state, r.rep, temp_arena);
+                        representation_glyph_draw_ops(&ops, state->system_context, r.rep, temp_arena);
                         const size_t n = MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
                         for (size_t k = 0; k < md_array_size(ops); ++k) {
                             for (size_t j = 0; j < n; ++j) {

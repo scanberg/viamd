@@ -387,8 +387,8 @@ static void tooltip_append_atom_name(md_str_writer_t* sb, const md_system_t& sys
 // Values of the attribute table for one atom: the field a visible representation is coloured by, at the variant it
 // shows, which is the value behind the colour; then every field with one value per atom (a partial charge, a B-factor,
 // an occupancy). Fields the atom's rows already give from the system itself are skipped, as are absent values.
-static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t atom_idx) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t atom_idx) {
+    const md_system_t& sys = sc.data.sys;
 
     struct Field {
         const md_attribute_t* attr;
@@ -405,9 +405,9 @@ static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const Ap
         fields[num_fields++] = {attr, variant};
     };
 
-    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-        const Representation& rep = state.representation.reps[i];
-        if (!representation_shown(state, rep) || rep.color_mapping != ColorMapping::Attribute) continue;
+    for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
+        const Representation& rep = sc.representation.reps[i];
+        if (!representation_shown(sc, rep) || rep.color_mapping != ColorMapping::Attribute) continue;
         const md_attribute_t* attr = md_attributes_get(&sys.attributes, rep.atom_attribute.key);
         if (!attr) continue;
         const int variant = attr->format.rank > 1 ? CLAMP(rep.atom_attribute.variant_idx, 0, atom_attribute_variant_count(attr) - 1) : -1;
@@ -443,8 +443,8 @@ static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const Ap
     }
 }
 
-static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t atom_idx) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_atom(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t atom_idx) {
+    const md_system_t& sys = sc.data.sys;
     const TooltipPlace place = tooltip_place_of_atom(sys, atom_idx);
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
@@ -457,7 +457,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     // Its chemistry in the frame shown where the bonds tracked changed it, that of the system elsewhere
     int formal_charge = 0;
     int num_h = 0;
-    const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
+    const md_atom_flags_t    flags    = frame_atom_flags(sc, atom_idx, &formal_charge, &num_h);
     const bool nucleotide = place.res_idx != -1 && md_system_residue_kind(&sys, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
 
     // What it is
@@ -508,9 +508,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_row(req, STR_LIT("region"), "QM");
     }
 
-    tooltip_atom_attribute_rows(req, state, atom_idx);
+    tooltip_atom_attribute_rows(req, sc, atom_idx);
 
-    const vec3_t pos = md_state_coord(&state.mold.state, atom_idx);
+    const vec3_t pos = md_state_coord(&sc.data.state, atom_idx);
     tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
@@ -520,9 +520,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
 }
 
 // A bond of the system, or one formed in the frame shown (picked_bond)
-static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, md_atom_pair_t pair, md_bond_flags_t flags, bool formed) {
-    const md_system_t& sys = state.mold.sys;
-    const md_system_state_t& sys_state = state.mold.state;
+static void tooltip_bond(PickingTooltipTextRequest* req, const SystemContext& sc, md_atom_pair_t pair, md_bond_flags_t flags, bool formed) {
+    const md_system_t& sys = sc.data.sys;
+    const md_system_state_t& sys_state = sc.data.state;
     const int order = md_bond_order(flags);
 
     char symbol = '-';
@@ -585,15 +585,15 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 // the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
 // dihedrals. phi and psi need a neighbour on either side within the chain, so the ends of a chain, and chains too
 // short to assign, have none (md_util_backbone_angles_compute).
-static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t seg_idx) {
+    const md_system_t& sys = sc.data.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
 
-    if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
+    if (const md_secondary_structure_t* ss = displayed_secondary_structure(sc)) {
         tooltip_row(req, STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
     }
 
-    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&state.mold.state, &sys);
+    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&sc.data.state, &sys);
     if (angles && bb.range.offset) {
         for (size_t i = 0; i < bb.range.count; ++i) {
             const uint32_t beg = bb.range.offset[i];
@@ -608,8 +608,8 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
     }
 }
 
-static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t seg_idx) {
+    const md_system_t& sys = sc.data.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
     ASSERT(seg_idx < bb.segment.count && bb.segment.res_idx);
 
@@ -618,7 +618,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         // No residue (a backbone found from the bonds alone, as for an XYZ file): no residue to name, only what the
         // segment adds, and the atom of its CA
         tooltip_title(req, "amino acid");
-        tooltip_backbone_segment_geometry(req, state, seg_idx);
+        tooltip_backbone_segment_geometry(req, sc, seg_idx);
         tooltip_row(req, STR_LIT("index"), "atom(%d)", bb.segment.atoms[seg_idx].ca + 1);
         return;
     }
@@ -642,7 +642,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     if (flags & MD_RESIDUE_FLAG_BREAK_AFTER)    tooltip_list_add(&kind_list, "chain break after");
     tooltip_row_list(req, STR_LIT("kind"), kind_list);
 
-    tooltip_backbone_segment_geometry(req, state, seg_idx);
+    tooltip_backbone_segment_geometry(req, sc, seg_idx);
 
     tooltip_row(req, STR_LIT("atoms"), "%u", range.end - range.beg);
 
@@ -658,8 +658,8 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
 // the current frame. The numbering is that of the residues of the sequence in an mmCIF file, which counts the missing
 // ones exactly, but the author's in a PDB file, which may skip where nothing is missing; a model built in pieces may
 // number on over a break where something is.
-static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t res_idx) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_chain_gap(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t res_idx) {
+    const md_system_t& sys = sc.data.sys;
     ASSERT((size_t)res_idx + 1 < sys.residue.count);
     if (!(md_system_residue_flags(&sys, res_idx) & MD_RESIDUE_FLAG_BREAK_AFTER)) return;
 
@@ -683,7 +683,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
 
     md_atom_idx_t atoms[2];
     if (md_util_chain_break_atoms(atoms, &sys, res_idx)) {
-        const md_system_state_t& sys_state = state.mold.state;
+        const md_system_state_t& sys_state = sc.data.state;
         vec3_t d = vec3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
         md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
         md_str_writer_t span = md_str_writer_create(req->alloc);
@@ -708,14 +708,14 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
 
 // A ring (the circle of an aromatic ring): what it is, its atoms around it and their elements, and how flat it is in the
 // current frame, the RMS distance of its atoms from their plane (the plane the circle is drawn in, ring.vert)
-static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t ring_idx) {
-    const md_system_t& sys = state.mold.sys;
-    const md_system_state_t& sys_state = state.mold.state;
+static void tooltip_ring(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t ring_idx) {
+    const md_system_t& sys = sc.data.sys;
+    const md_system_state_t& sys_state = sc.data.state;
     // A ring of the system, or one of the frame where its bonds changed (picked_ring)
     const int32_t* atoms = nullptr;
     size_t count = 0;
     md_ring_flags_t flags = MD_RING_FLAG_NONE;
-    if (!picked_ring(state, ring_idx, &atoms, &count, &flags) || count == 0) return;
+    if (!picked_ring(sc, ring_idx, &atoms, &count, &flags) || count == 0) return;
     for (size_t i = 0; i < count; ++i) {
         if (atoms[i] < 0 || (size_t)atoms[i] >= sys.atom.count) return;
     }
@@ -815,9 +815,9 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
 
 // A point of the cartoon of the lipids and nucleic acids stands for its residue: the residue, and what part of it
 // the point is
-static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t point_idx) {
-    const md_system_t& sys = state.mold.sys;
-    const CartoonGlyphs& glyphs = state.mold.cartoon_glyphs;
+static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t point_idx) {
+    const md_system_t& sys = sc.data.sys;
+    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
     // Indexed by CartoonGlyphKind
     static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
     static_assert(ARRAY_SIZE(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
@@ -846,8 +846,8 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
 
 // The hit names the group and the element outright - its range was reserved against that group's attribute - so there
 // is no list to rebuild and nothing to look the index up in.
-static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
-    const md_system_t& sys = state.mold.sys;
+static void tooltip_dipole(PickingTooltipTextRequest* req, const SystemContext& sc, const PickingHit& hit) {
+    const md_system_t& sys = sc.data.sys;
     DipoleGroup group = {};
     if (!dipole_group_from_key(&group, sys, hit.key) || hit.local_idx >= group.count) return;
 
@@ -868,28 +868,28 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     }
 }
 
-static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+static void fill_picking_tooltip(PickingTooltipTextRequest* req, const SystemContext& sc, const PickingHit& hit) {
     ASSERT(req);
-    const md_system_t& sys = state.mold.sys;
+    const md_system_t& sys = sc.data.sys;
 
     if (hit.domain == PickingDomain_Atom) {
-        if (hit.local_idx < sys.atom.count) tooltip_atom(req, state, hit.local_idx);
+        if (hit.local_idx < sys.atom.count) tooltip_atom(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
         bool formed;
-        if (picked_bond(state, hit.local_idx, &pair, &flags, &formed)) tooltip_bond(req, state, pair, flags, formed);
+        if (picked_bond(sc, hit.local_idx, &pair, &flags, &formed)) tooltip_bond(req, sc, pair, flags, formed);
     } else if (hit.domain == PickingDomain_BackboneSegment) {
-        if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.res_idx) tooltip_backbone_segment(req, state, hit.local_idx);
+        if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.res_idx) tooltip_backbone_segment(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
-        tooltip_ring(req, state, hit.local_idx);
+        tooltip_ring(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
-        if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
+        const uint32_t point_idx = cartoon_glyphs_picked_point(sc.data.cartoon_glyphs, hit.local_idx);
+        if (point_idx < sc.data.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, sc, point_idx);
     } else if (hit.domain == PickingDomain_ChainGap) {
-        if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
+        if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
-        tooltip_dipole(req, state, hit);
+        tooltip_dipole(req, sc, hit);
     }
 }
 
@@ -1025,9 +1025,8 @@ static inline void set_mru_cache_slot(FrameCache* cache, int slot_idx) {
 #endif
 }
 
-void clear_system_frame_cache(ApplicationState* state) {
-    ASSERT(state);
-    clear_frame_cache(&state->run.frame_cache);
+void clear_system_frame_cache(SystemContext& sys) {
+    clear_frame_cache(&sys.run.frame_cache);
 }
 
 enum class SecondaryStructureRenderClass : uint8_t {
@@ -1213,24 +1212,17 @@ md_unit_t run_time_unit(const SystemContext& sys) {
 }
 
 // Of the one system loaded (see SystemContext)
-str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf) { return run_attribute_path(buf, cap, app->system_context, leaf); }
-const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf) { return run_attribute(app->system_context, leaf); }
-const md_attribute_t* run_time_axis(const ApplicationState* app) { return run_time_axis(app->system_context); }
-size_t run_num_frames(const ApplicationState* app) { return run_num_frames(app->system_context); }
-const double* run_frame_times(const ApplicationState* app) { return run_frame_times(app->system_context); }
-md_unit_t run_time_unit(const ApplicationState* app) { return run_time_unit(app->system_context); }
 
-const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
-    ASSERT(app);
-    const md_system_state_t* state = &app->mold.state;
-    const auto& render = app->trajectory_data.secondary_structure_render;
-    if (render.data && render.stride == app->mold.sys.protein_backbone.segment.count && md_state_has_frame(state)) {
+const md_secondary_structure_t* displayed_secondary_structure(const SystemContext& sys) {
+    const md_system_state_t* state = &sys.data.state;
+    const auto& render = sys.run.trajectory_data.secondary_structure_render;
+    if (render.data && render.stride == sys.data.sys.protein_backbone.segment.count && md_state_has_frame(state)) {
         const size_t frame = (size_t)md_state_frame_nearest(state);
         if ((frame + 1) * render.stride <= render.count) {
             return render.data + frame * render.stride;
         }
     }
-    return md_util_state_secondary_structure(state, &app->mold.sys);
+    return md_util_state_secondary_structure(state, &sys.data.sys);
 }
 
 static const str_t frame_extract_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
@@ -1247,7 +1239,6 @@ bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* o
     return ok;
 }
 
-bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out) { return extract_frame(app->system_context, frame, out); }
 
 static void end_frame_extracts(SystemRun& run) {
     for (size_t i = 0; i < ARRAY_SIZE(run.frame_extract); ++i) {
@@ -1556,36 +1547,36 @@ void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_
     }
 }
 
-void assembly_subsets_free(ApplicationState* app) {
-    ASSERT(app);
-    for (size_t i = 0; i < md_array_size(app->view.assembly_subsets); ++i) {
-        if (app->view.assembly_subsets[i].id) md_gl_subset_destroy(app->view.assembly_subsets[i]);
+void assembly_subsets_free(SystemContext& sys) {
+    for (size_t i = 0; i < md_array_size(sys.scene.assembly_subsets); ++i) {
+        if (sys.scene.assembly_subsets[i].id) md_gl_subset_destroy(sys.scene.assembly_subsets[i]);
     }
-    for (size_t i = 0; i < md_array_size(app->view.assembly_glyph_subsets); ++i) {
-        if (app->view.assembly_glyph_subsets[i].id) md_gl_subset_destroy(app->view.assembly_glyph_subsets[i]);
+    for (size_t i = 0; i < md_array_size(sys.scene.assembly_glyph_subsets); ++i) {
+        if (sys.scene.assembly_glyph_subsets[i].id) md_gl_subset_destroy(sys.scene.assembly_glyph_subsets[i]);
     }
-    md_array_shrink(app->view.assembly_subsets, 0);
-    md_array_shrink(app->view.assembly_glyph_subsets, 0);
-    app->view.assembly_subsets_of  = -1;
-    app->view.assembly_subsets_mol = 0;
+    md_array_shrink(sys.scene.assembly_subsets, 0);
+    md_array_shrink(sys.scene.assembly_glyph_subsets, 0);
+    sys.scene.assembly_subsets_of  = -1;
+    sys.scene.assembly_subsets_mol = 0;
 }
 
-void assembly_subsets_update(ApplicationState* app) {
+void assembly_subsets_update(SystemContext& sc) {
+    ApplicationState* app = sc.app;
     ASSERT(app);
-    const int assembly = app->system.assembly;
-    const uint32_t mol_id = app->mold.gl_mol.id;
-    if (assembly == app->view.assembly_subsets_of && mol_id == app->view.assembly_subsets_mol) return;
-    assembly_subsets_free(app);
-    const md_system_t& sys = app->mold.sys;
+    const int assembly = sc.scene.assembly;
+    const uint32_t mol_id = sc.data.gl_mol.id;
+    if (assembly == sc.scene.assembly_subsets_of && mol_id == sc.scene.assembly_subsets_mol) return;
+    assembly_subsets_free(sc);
+    const md_system_t& sys = sc.data.sys;
     if (assembly < 0 || (size_t)assembly >= sys.assembly.count || !mol_id) return;
-    app->view.assembly_subsets_of  = assembly;
-    app->view.assembly_subsets_mol = mol_id;
+    sc.scene.assembly_subsets_of  = assembly;
+    sc.scene.assembly_subsets_mol = mol_id;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
     md_allocator_i* alloc = app->allocator.persistent;
     const md_assembly_data_t& a = sys.assembly;
-    const CartoonGlyphs& glyphs = app->mold.cartoon_glyphs;
+    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
     const bool has_glyphs = cartoon_glyphs_valid(glyphs);
     uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MAX(sys.atom.count, (size_t)1));
     // The groups and their instances from the offsets as they are (assembly_group), not from a range of them
@@ -1601,15 +1592,15 @@ void assembly_subsets_update(ApplicationState* app) {
                 const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
                 for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
             }
-            subset = md_gl_subset_create(app->mold.gl_mol);
+            subset = md_gl_subset_create(sc.data.gl_mol);
             md_gl_subset_set_atoms(subset, atoms, count);
             if (has_glyphs) {
                 glyph_subset = md_gl_subset_create(glyphs.gl_mol);
                 md_gl_subset_set_derived(glyph_subset, subset);
             }
         }
-        md_array_push(app->view.assembly_subsets, subset, alloc);
-        md_array_push(app->view.assembly_glyph_subsets, glyph_subset, alloc);
+        md_array_push(sc.scene.assembly_subsets, subset, alloc);
+        md_array_push(sc.scene.assembly_glyph_subsets, glyph_subset, alloc);
     }
 }
 
@@ -1622,7 +1613,7 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
         sys.scene.operations.recenter_query.ir_fingerprint = 0;
         sys.scene.operations.initial_frame.valid = false;
         sys.scene.operations.state_rotation = mat4_ident();
-        recenter_mark_query_dirty(data);
+        recenter_mark_query_dirty(sys);
         {
             // Of the bonds of another system
             auto& bt = sys.scene.operations.bond_tracking;
@@ -1640,8 +1631,8 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
         sys.data.gl_mol = md_gl_mol_create(&sys.data.sys);
         // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
         sys.scene.assembly = -1;
-        md_array_shrink(data->view.assembly_transforms, 0);
-        md_array_shrink(data->view.assembly_copy_offset, 0);
+        md_array_shrink(data->system.assembly_transforms, 0);
+        md_array_shrink(data->system.assembly_copy_offset, 0);
         // Before the representations, which each make a representation of the glyphs
         cartoon_glyphs_init(&sys.data.cartoon_glyphs, sys.data.sys, sys.data.gl_mol, data->allocator.persistent);
 
@@ -1693,7 +1684,7 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
     }
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_System, &sys);
 
-    init_all_representations(data);
+    init_all_representations(sys);
     data->script.compile_ir = true;
 
     // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
@@ -1704,7 +1695,7 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
 void free_system_data(ApplicationState* data, SystemContext& sys) {
     ASSERT(data);
     interrupt_async_tasks(data);
-    es_nto_warm_free(data);     // its tasks were waited for above
+    es_nto_warm_free(sys);     // its tasks were waited for above
 
     // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
     // second handle to it: MEMSET over md_system_t clears sys.alloc along with everything else, so
@@ -1722,7 +1713,7 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     sys.scene.operations.initial_frame.valid = false;
 
     // The subsets of the parts of an assembly are of the molecule
-    assembly_subsets_free(data);
+    assembly_subsets_free(sys);
     md_gl_mol_destroy(sys.data.gl_mol);
     // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
     // representations, a frame after a load that failed) sees no molecule rather than a stale one
@@ -1730,7 +1721,7 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     cartoon_glyphs_free(&sys.data.cartoon_glyphs);
 
     // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
-    system_gpu_data_free(data);
+    system_gpu_data_free(sys);
 
     // Everything loaded was loaded onto the system
     file_list_clear(&sys.files);
@@ -1739,8 +1730,8 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     MEMSET(sys.run.frame_cache.states, 0, sizeof(sys.run.frame_cache.states));
     clear_frame_cache(&sys.run.frame_cache);
 
-    md_bitmask_clear(&data->selection.selection_mask);
-    md_bitmask_clear(&data->selection.highlight_mask);
+    md_bitmask_clear(&data->system_context.selection.selection_mask);
+    md_bitmask_clear(&data->system_context.selection.highlight_mask);
     // Computed for this system
     script_vis_reset(data);
 
@@ -1758,6 +1749,110 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_System, &sys);
 }
 
+
+// ## The systems
+
+void system_context_init(SystemContext* sys, ApplicationState* app) {
+    ASSERT(sys && app);
+    md_allocator_i* alloc = app->allocator.persistent;
+    sys->app = app;
+    // One arena per system, held by the system and the state that share it. Both are rewound rather than destroyed
+    // between loads (free_system_data), so this handle is set once and never reassigned.
+    sys->data.sys.alloc   = md_arena_allocator_create(alloc, MEGABYTES(1));
+    sys->data.state.alloc = sys->data.sys.alloc;
+    // The masks are edited in place. Over any atom index: they hold only the words they write, and a mask over a
+    // system's atoms needs no resizing when another is loaded.
+    md_bitmask_init(&sys->selection.selection_mask,       0, MD_BITSET_MAX_INDEX, alloc);
+    md_bitmask_init(&sys->selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, alloc);
+    md_bitmask_init(&sys->representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, alloc);
+    // Sets, replaced whole
+    sys->scene.operations.selection_mask = md_bitset_empty_set();
+    sys->scene.operations.recenter_query.mask = md_bitset_empty_set();
+}
+
+void system_context_destroy(SystemContext* sys) {
+    ASSERT(sys && sys->app);
+    md_allocator_i* alloc = sys->app->allocator.persistent;
+    md_bitmask_free(&sys->selection.selection_mask);
+    md_bitmask_free(&sys->selection.highlight_mask);
+    md_bitmask_free(&sys->representation.visibility_mask);
+    md_bitset_free(&sys->scene.operations.selection_mask, alloc);
+    md_bitset_free(&sys->scene.operations.recenter_query.mask, alloc);
+    md_bitset_free(&sys->scene.operations.bond_tracking.scope_mask, alloc);
+    file_list_free(&sys->files, alloc);
+    md_array_free(sys->representation.reps, alloc);
+    md_array_free(sys->representation.groups, alloc);
+    md_array_free(sys->scene.periodic_transforms, alloc);
+    md_array_free(sys->scene.periodic_transforms_prev, alloc);
+    md_array_free(sys->scene.assembly_transforms, alloc);
+    md_array_free(sys->scene.assembly_copy_offset, alloc);
+    if (sys->data.sys.alloc) md_arena_allocator_destroy(sys->data.sys.alloc);
+    sys->data.sys.alloc = sys->data.state.alloc = nullptr;
+}
+
+bool system_loaded(const SystemContext& sys) {
+    return sys.data.sys.atom.count > 0 || file_list_count(&sys.files) > 0;
+}
+
+SystemContext* system_add(ApplicationState* app) {
+    ASSERT(app);
+    SystemContext* first = &app->system_context;
+    if (!system_loaded(*first)) {
+        // Listed last, as an added one is
+        size_t i = 0;
+        while (i < app->num_systems && app->systems[i] != first) ++i;
+        for (; i + 1 < app->num_systems; ++i) app->systems[i] = app->systems[i + 1];
+        app->systems[app->num_systems - 1] = first;
+        // Of whatever was loaded into it before, nothing refers to it by its id now
+        if (app->num_systems > 1) first->id = app->next_system_id++;
+        return first;
+    }
+    if (app->num_systems >= SYSTEM_MAX) return nullptr;
+    SystemContext* sys = new SystemContext();
+    system_context_init(sys, app);
+    sys->id = app->next_system_id++;
+    app->systems[app->num_systems++] = sys;
+    return sys;
+}
+
+void system_release(ApplicationState* app, SystemContext* sys) {
+    ASSERT(app && sys);
+    if (sys == &app->system_context) return;
+    size_t i = 0;
+    while (i < app->num_systems && app->systems[i] != sys) ++i;
+    if (i == app->num_systems) return;
+    for (; i + 1 < app->num_systems; ++i) app->systems[i] = app->systems[i + 1];
+    app->systems[--app->num_systems] = nullptr;
+    system_context_destroy(sys);
+    delete sys;
+}
+
+SystemContext* system_find(ApplicationState* app, uint32_t id) {
+    ASSERT(app);
+    if (id == SYSTEM_ID_NONE) return nullptr;
+    for (size_t i = 0; i < app->num_systems; ++i) {
+        if (app->systems[i]->id == id) return app->systems[i];
+    }
+    return nullptr;
+}
+
+const SystemContext* system_find(const ApplicationState& app, uint32_t id) {
+    return system_find(const_cast<ApplicationState*>(&app), id);
+}
+
+size_t system_count(const ApplicationState& app) {
+    size_t n = 0;
+    for (size_t i = 0; i < app.num_systems; ++i) n += system_loaded(*app.systems[i]);
+    return n;
+}
+
+SystemContext* picking_hit_system(ApplicationState* app, const PickingHit& hit) {
+    return system_find(app, hit.system);
+}
+
+const SystemContext* picking_hit_system(const ApplicationState& app, const PickingHit& hit) {
+    return system_find(app, hit.system);
+}
 
 // Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
 // False when the file holds no frames to make a run of, which is not an error for a structure file.
@@ -2157,7 +2252,7 @@ struct WorkspacePending {
 
 static void workspace_reset(ApplicationState* data) {
     remove_all_selections(data);
-    remove_all_representations(data);
+    remove_all_representations(data->system_context);
     data->editor.SetText("");
     data->files.workspace[0] = '\0';
 
@@ -2200,12 +2295,12 @@ static void workspace_reset(ApplicationState* data) {
     data->system.assembly = -1;
 
     data->selection.granularity = SelectionGranularity::Atom;
-    md_bitmask_clear(&data->selection.selection_mask);
+    md_bitmask_clear(&data->system_context.selection.selection_mask);
     single_selection_sequence_clear(&data->selection.single_selection_sequence);
 
     // The system as a new one is shown: as it is, with every operation off
     data->system.visible = true;
-    system_reset_operations(data);
+    system_reset_operations(data->system_context);
 }
 
 // A mask by the atoms it holds. Base64 now; a workspace written before that holds the raw bytes,
@@ -2368,7 +2463,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
             // Of a workspace written before [SystemScene]: the operations, all of them the one system's
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("RecenterTarget"))) pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
-                else system_scene_read_entry(data, ident, arg);
+                else system_scene_read_entry(data->system_context, ident, arg);
             }
         } else if (str_eq(section, STR_LIT("SystemScene"))) {
             // Of the system loaded, the first the files name (workspace_files_plan); of another, left out
@@ -2386,7 +2481,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     str_t id = {};
                     if (viamd::extract_str(id, arg)) str_copy_to_char_buf(pending.assembly_id, sizeof(pending.assembly_id), id);
                 } else {
-                    system_scene_read_entry(data, ident, arg);
+                    system_scene_read_entry(data->system_context, ident, arg);
                 }
             }
         } else if (representations_deserialize(data, section, state)) {
@@ -2475,7 +2570,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // The box as it was drawn: lines of a pixel, of its colour
     if (pending.box_enabled) {
-        if (Representation* box = create_representation(data, RepresentationType::SimulationBox)) {
+        if (Representation* box = create_representation(data->system_context, RepresentationType::SimulationBox)) {
             snprintf(box->name, sizeof(box->name), "box");
             if (pending.box_color.w > 0.0f) box->box.color = pending.box_color;
             box->box.thickness = 0.0f;
@@ -2544,7 +2639,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
 
     const size_t num_atoms  = data->mold.sys.atom.count;
-    const size_t num_frames = run_num_frames(data);
+    const size_t num_frames = run_num_frames(data->system_context);
 
     // The counts the workspace was saved with. When the files no longer have them, what it keeps by atom index
     // or by frame would land on other atoms and other frames, and is left out instead.
@@ -2592,17 +2687,17 @@ void load_workspace(ApplicationState* data, str_t filename) {
         return num_atoms > 0 && atoms_as_saved && (md_bitset_empty(*mask) || mask->end <= num_atoms);
     };
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
-        md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
+        md_bitmask_assign(&data->system_context.selection.selection_mask, pending.selection_mask);
     }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitset_assign(&data->system.operations.selection_mask, pending.recenter_target, data->allocator.persistent);
-        recenter_update_target_data(data);
+        recenter_update_target_data(data->system_context);
     }
 
     const size_t num_user_bonds = atoms_as_saved ? md_array_size(pending.user_bonds) : 0;
     if (num_user_bonds > 0) {
         md_system_t& sys = data->mold.sys;
-        system_bonds_edit_begin(data);
+        system_bonds_edit_begin(data->system_context);
         bool graph = false;
         for (size_t i = 0; i < num_user_bonds; ++i) {
             const md_atom_pair_t& pair = pending.user_bonds[i];
@@ -2617,7 +2712,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
         if (graph) {
             md_util_system_infer_coordination(&sys);
         }
-        system_bonds_changed(data, graph);
+        system_bonds_changed(data->system_context, graph);
     }
 
     // The assembly shown, by its id in the files loaded
@@ -2747,9 +2842,9 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_flt(state,  STR_LIT("FovY"), app_state->view.camera.fov_y);
 
     // The system as the scene shows it, of the system the files above give the id 0
-    system_scene_serialize(state, app_state, 0);
+    system_scene_serialize(state, app_state->system_context);
 
-    representations_serialize(state, app_state);
+    representations_serialize(state, app_state->system_context);
 
     {
         std::string text = app_state->editor.GetText();
@@ -2768,7 +2863,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 
     viamd::write_section_header(state, STR_LIT("ActiveSelection"));
     viamd::write_int(state, STR_LIT("Granularity"), (int)app_state->selection.granularity);
-    const md_bitset_t selection = md_bitmask_view(&app_state->selection.selection_mask);
+    const md_bitset_t selection = md_bitmask_view(&app_state->system_context.selection.selection_mask);
     if (!md_bitset_empty(selection)) {
         viamd::write_bitset(state, STR_LIT("Mask"), &selection);
     }
@@ -2815,6 +2910,12 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     str_copy_to_char_buf(app_state->files.workspace, sizeof(app_state->files.workspace), filename);
     VIAMD_LOG_SUCCESS("Saved workspace '" STR_FMT "'", STR_ARG(filename));
     return true;
+}
+
+script::FilterCtx filter_context(const SystemContext& sys) {
+    const ApplicationState* app = sys.app;
+    const bool names = app && &sys == &app->system_context;
+    return script::FilterCtx{&sys.data.sys, &sys.data.state, names ? app->script.ir : nullptr, nullptr, str_from_cstr(sys.run.path)};
 }
 
 // --- SELECTION ---
@@ -3080,26 +3181,27 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 static bool dmat_build_take(ApplicationState* state, bool wait);
 #endif
 
-void system_gpu_data_free(ApplicationState* state) {
+void system_gpu_data_free(SystemContext& sys) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
     gpu_volume_jobs_drain(state);   // what the evaluations under way read goes below
 #if MD_ENABLE_GPU
-    if (state->mold.gpu_basis) {
-        md_gto_gpu_basis_destroy(state->gpu_stream, state->mold.gpu_basis);
-        state->mold.gpu_basis = nullptr;
+    if (sys.data.gpu_basis) {
+        md_gto_gpu_basis_destroy(state->gpu_stream, sys.data.gpu_basis);
+        sys.data.gpu_basis = nullptr;
     }
-    if (state->mold.gpu_atoms) {
-        md_gpu_free(state->gpu_stream, state->mold.gpu_atoms);
-        state->mold.gpu_atoms = 0;
+    if (sys.data.gpu_atoms) {
+        md_gpu_free(state->gpu_stream, sys.data.gpu_atoms);
+        sys.data.gpu_atoms = 0;
     }
-    state->mold.gpu_atoms_hash = 0;
+    sys.data.gpu_atoms_hash = 0;
     dmat_build_take(state, true);   // what a worker has under way: taken, then freed below
-    if (state->mold.gpu_dmat) {
-        md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
-        state->mold.gpu_dmat = nullptr;
+    if (sys.data.gpu_dmat) {
+        md_gto_gpu_dmat_destroy(state->gpu_stream, sys.data.gpu_dmat);
+        sys.data.gpu_dmat = nullptr;
     }
-    state->mold.gpu_dmat_key = 0;
-    state->mold.gpu_dmat_failed_key = 0;
+    sys.data.gpu_dmat_key = 0;
+    sys.data.gpu_dmat_failed_key = 0;
 #else
     (void)state;
 #endif
@@ -3400,13 +3502,12 @@ bool es_nto_warming(const ApplicationState* state, double* seconds) {
     return warming;
 }
 
-void es_nto_warm_free(ApplicationState* state) {
-    ASSERT(state);
-    NtoWarm* w = (NtoWarm*)state->mold.nto_warm;
+void es_nto_warm_free(SystemContext& sys) {
+    NtoWarm* w = (NtoWarm*)sys.data.nto_warm;
     if (!w) return;
     delete[] w->status;
     delete w;
-    state->mold.nto_warm = nullptr;
+    sys.data.nto_warm = nullptr;
 }
 
 size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff) {
@@ -4902,17 +5003,18 @@ int playback_stride(const ApplicationState* app) {
     return (app->animation.mode == PlaybackMode::Playing) ? MAX(1, app->animation.stride) : 1;
 }
 
-void interpolate_system_state(ApplicationState* app) {
+void interpolate_system_state(SystemContext& sc) {
+    ApplicationState* app = sc.app;
     ASSERT(app);
 
     // Recorded before anything can return early, so that a change of stride is acted on once (see main)
     const int64_t stride = playback_stride(app);
-    app->run.last_interpolated_stride = (int)stride;
+    sc.run.last_interpolated_stride = (int)stride;
 
-	const auto& sys  = app->mold.sys;
+	const auto& sys  = sc.data.sys;
 
-	size_t num_atoms = app->mold.state.num_atoms;
-    const size_t num_frames = run_num_frames(app);
+	size_t num_atoms = sc.data.state.num_atoms;
+    const size_t num_frames = run_num_frames(sc);
     if (num_atoms == 0 || num_frames == 0) return;
 
     const int64_t last_frame = MAX(0LL, (int64_t)num_frames - 1);
@@ -4942,23 +5044,23 @@ void interpolate_system_state(ApplicationState* app) {
     const int64_t nearest_frame = (t < 0.5) ? frames[1] : frames[2];
 
     if (app->animation.interpolation == InterpolationMode::Nearest) {
-        if (app->run.last_interpolated_nearest_frame == nearest_frame) {
+        if (sc.run.last_interpolated_nearest_frame == nearest_frame) {
             return;
         }
-        app->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        sc.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
-    app->run.last_interpolated_nearest_frame = nearest_frame;
+    sc.run.last_interpolated_nearest_frame = nearest_frame;
 
     // The backbone keeps the orientation of its cross sections coherent from one displayed state to the next. That
     // continuity only means something while the structure moves continuously, so a jump (seeking, skipping frames,
     // a new run) starts it over. Playback keeps it whatever the speed.
     {
-        const double last = app->run.last_interpolated_frame;
+        const double last = sc.run.last_interpolated_frame;
         const bool playing = app->animation.mode == PlaybackMode::Playing;
         if (last < 0.0 || (!playing && fabs(time - last) > 1.5)) {
-            app->mold.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
+            sc.data.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
         }
-        app->run.last_interpolated_frame = time;
+        sc.run.last_interpolated_frame = time;
     }
 
     // The number of atoms to be processed per thread when divided into chunks
@@ -4969,7 +5071,7 @@ void interpolate_system_state(ApplicationState* app) {
     defer { md_temp_end(temp); };
 
     struct Payload {
-        ApplicationState* app;
+        SystemContext* sys;
         float t;
         float w[4];     // The weights of the four frames, for the cubic modes
         InterpolationMode mode;
@@ -4991,12 +5093,12 @@ void interpolate_system_state(ApplicationState* app) {
     const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : app->animation.interpolation;
 
     Payload payload = {
-        .app = app,
+        .sys = &sc,
         .t = (float)t,
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
-        .dst_state = &app->mold.state,
+        .dst_state = &sc.data.state,
     };
 
     // The cubic modes are a weighted sum of the four frames, the same for everything interpolated: coordinates, cell and
@@ -5018,12 +5120,12 @@ void interpolate_system_state(ApplicationState* app) {
 
     // The backbone of the displayed state is the run's at the frames around it: the angles and the secondary structure
     // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
-    const size_t num_segments = app->mold.sys.protein_backbone.segment.count;
-    if (num_segments > 0 && app->trajectory_data.backbone_angles.data) {
-        payload.dst_angle = md_util_state_backbone_angles_write(&app->mold.state, &app->mold.sys);
+    const size_t num_segments = sc.data.sys.protein_backbone.segment.count;
+    if (num_segments > 0 && sc.run.trajectory_data.backbone_angles.data) {
+        payload.dst_angle = md_util_state_backbone_angles_write(&sc.data.state, &sc.data.sys);
     }
-    if (num_segments > 0 && app->trajectory_data.secondary_structure.data) {
-        payload.dst_ss = md_util_state_secondary_structure_write(&app->mold.state, &app->mold.sys);
+    if (num_segments > 0 && sc.run.trajectory_data.secondary_structure.data) {
+        payload.dst_ss = md_util_state_secondary_structure_write(&sc.data.state, &sc.data.sys);
         payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
     }
 
@@ -5031,11 +5133,11 @@ void interpolate_system_state(ApplicationState* app) {
     // written by a run extraction, so nothing else would fill this in, and a
     // stale value is worse than an absent one. Nearest snaps to a whole frame; the other modes land
     // between two, which is exactly what the fractional part is for.
-    app->mold.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
+    sc.data.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
 
     // Fresh coordinates, in the lattice frame of the cell: the turn the previous ones carried goes
     // with them. The System State Changed handler puts one back if the orientation is kept.
-    app->system.operations.state_rotation = mat4_ident();
+    sc.scene.operations.state_rotation = mat4_ident();
 
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
@@ -5069,18 +5171,18 @@ void interpolate_system_state(ApplicationState* app) {
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = -1;
-        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &app->run.frame_cache)) {
-            slot_idx = find_lru_cache_slot(&app->run.frame_cache);
+        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &sc.run.frame_cache)) {
+            slot_idx = find_lru_cache_slot(&sc.run.frame_cache);
             frame_cache_load_slot[num_frames_to_load++] = slot_idx;
         }
-        set_mru_cache_slot(&app->run.frame_cache, slot_idx);
-        app->run.frame_cache.frame_idx[slot_idx] = requested_frames[i];
+        set_mru_cache_slot(&sc.run.frame_cache, slot_idx);
+        sc.run.frame_cache.frame_idx[slot_idx] = requested_frames[i];
         frame_cache_slot_idx[i] = slot_idx;
     }
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = frame_cache_slot_idx[i];
-        payload.src_states[i] = &app->run.frame_cache.states[slot_idx];
+        payload.src_states[i] = &sc.run.frame_cache.states[slot_idx];
     }
 
     // This holds the chain of tasks we are about to submit
@@ -5091,19 +5193,19 @@ void interpolate_system_state(ApplicationState* app) {
         [data = &payload, frame_cache_load_slot](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
-                int frame_idx = data->app->run.frame_cache.frame_idx[slot_idx];
-                md_system_state_t* state = &data->app->run.frame_cache.states[slot_idx];
+                int frame_idx = data->sys->run.frame_cache.frame_idx[slot_idx];
+                md_system_state_t* state = &data->sys->run.frame_cache.states[slot_idx];
                 // This thread's own context, kept for as long as the trajectory, so playback opens
                 // the run's files once rather than once per frame.
-                md_system_extract_t** ex = (thread_num < ARRAY_SIZE(data->app->run.frame_extract)) ? &data->app->run.frame_extract[thread_num] : nullptr;
+                md_system_extract_t** ex = (thread_num < ARRAY_SIZE(data->sys->run.frame_extract)) ? &data->sys->run.frame_extract[thread_num] : nullptr;
                 if (ex && !*ex) {
-                    *ex = md_system_extract_begin(&data->app->mold.sys, str_from_cstr(data->app->run.path),
+                    *ex = md_system_extract_begin(&data->sys->data.sys, str_from_cstr(data->sys->run.path),
                         frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
                 }
                 if (ex && *ex) {
                     md_system_extract_frame(*ex, frame_idx, state);
                 } else {
-                    extract_frame(data->app, frame_idx, state);
+                    extract_frame(*data->sys, frame_idx, state);
                 }
             }
         }
@@ -5183,11 +5285,11 @@ void interpolate_system_state(ApplicationState* app) {
             case InterpolationMode::Nearest: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(data->dst_angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                    MEMCPY(data->dst_angle, src_angle, data->sys->data.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
                 });
 
                 tasks[num_tasks++] = angle_task;
@@ -5197,8 +5299,8 @@ void interpolate_system_state(ApplicationState* app) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
@@ -5221,10 +5323,10 @@ void interpolate_system_state(ApplicationState* app) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[4] = {
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[0],
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
-                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[3],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[0],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[3],
                     };
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
@@ -5259,14 +5361,14 @@ void interpolate_system_state(ApplicationState* app) {
             (void)thread_num;
             // The state carries the secondary structure of the nearest frame as it was assigned. The cartoon blends the
             // denoised copy (a presentation smoothing, see secondary_structure_render) where it exists.
-            const md_secondary_structure_t* label_nearest = data->app->trajectory_data.secondary_structure.data +
-                data->app->trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
-            const md_secondary_structure_t* ss_data = data->app->trajectory_data.secondary_structure_render.data ?
-                data->app->trajectory_data.secondary_structure_render.data :
-                data->app->trajectory_data.secondary_structure.data;
-            const size_t ss_stride = data->app->trajectory_data.secondary_structure_render.data ?
-                data->app->trajectory_data.secondary_structure_render.stride :
-                data->app->trajectory_data.secondary_structure.stride;
+            const md_secondary_structure_t* label_nearest = data->sys->run.trajectory_data.secondary_structure.data +
+                data->sys->run.trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
+            const md_secondary_structure_t* ss_data = data->sys->run.trajectory_data.secondary_structure_render.data ?
+                data->sys->run.trajectory_data.secondary_structure_render.data :
+                data->sys->run.trajectory_data.secondary_structure.data;
+            const size_t ss_stride = data->sys->run.trajectory_data.secondary_structure_render.data ?
+                data->sys->run.trajectory_data.secondary_structure_render.stride :
+                data->sys->run.trajectory_data.secondary_structure.stride;
             const md_secondary_structure_t* src_ss[4] = {
                 ss_data + ss_stride * data->frames[0],
                 ss_data + ss_stride * data->frames[1],
@@ -5351,7 +5453,7 @@ void interpolate_system_state(ApplicationState* app) {
         // Isolated coils between matching structured segments are filled in, to reduce the noise during transitions.
         // A non temporal filtering step, after the blend above.
         task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
-            secondary_structure_weights_fill_isolated_coils(data->ss_weights, &data->app->mold.sys.protein_backbone);
+            secondary_structure_weights_fill_isolated_coils(data->ss_weights, &data->sys->data.sys.protein_backbone);
         });
         tasks[num_tasks++] = ss_cleanup_task;
     }
@@ -5366,23 +5468,23 @@ void interpolate_system_state(ApplicationState* app) {
 
     // The weights are the renderer's input and nothing else's: straight to the GPU, from the temporary memory above
     if (payload.ss_weights) {
-        md_gl_mol_set_backbone_secondary_structure(app->mold.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
+        md_gl_mol_set_backbone_secondary_structure(sc.data.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
     }
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     mat3_t A;
-    md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
+    md_unitcell_A_extract_float(A.elem, &sc.data.state.unitcell);
     vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
-    app->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+    sc.data.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
 
 #if 0
     if (sys.unitcell.flags) {
         vec3_t c = sys.unitcell.basis * vec3_set1(0.5f);
-        app->mold.model_mat = mat4_translate_vec3(-c);
+        sc.data.model_mat = mat4_translate_vec3(-c);
     }
 #endif
 
-    app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+    sc.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
 // Exact, element by element. The identities compared against here are only ever assigned, never computed.
@@ -5396,27 +5498,26 @@ static bool is_identity(const mat4_t& M) {
     return true;
 }
 
-void recenter_mark_query_dirty(ApplicationState* state) {
-    ASSERT(state);
-    state->system.operations.recenter_query.version += 1;
-    if (state->system.operations.recenter_query.version == 0) {
-        state->system.operations.recenter_query.version = 1;
+void recenter_mark_query_dirty(SystemContext& sys) {
+    sys.scene.operations.recenter_query.version += 1;
+    if (sys.scene.operations.recenter_query.version == 0) {
+        sys.scene.operations.recenter_query.version = 1;
     }
 }
 
-const md_bitset_t& recenter_get_active_target_mask(const ApplicationState* state) {
-    ASSERT(state);
-    return state->system.operations.recenter_query.enabled ? state->system.operations.recenter_query.mask : state->system.operations.selection_mask;
+const md_bitset_t& recenter_get_active_target_mask(const SystemContext& sys) {
+    return sys.scene.operations.recenter_query.enabled ? sys.scene.operations.recenter_query.mask : sys.scene.operations.selection_mask;
 }
 
-bool recenter_update_query_mask(ApplicationState* state) {
+bool recenter_update_query_mask(SystemContext& sys) {
+    ApplicationState* state = sys.app;
     ASSERT(state);
 
-    auto& query = state->system.operations.recenter_query;
+    auto& query = sys.scene.operations.recenter_query;
     const uint64_t ir_fingerprint = state->script.ir ? state->script.ir_fingerprint : 0;
     if (query.ir_fingerprint != ir_fingerprint) {
         query.ir_fingerprint = ir_fingerprint;
-        recenter_mark_query_dirty(state);
+        recenter_mark_query_dirty(sys);
     }
 
     if (!query.enabled) {
@@ -5424,22 +5525,21 @@ bool recenter_update_query_mask(ApplicationState* state) {
     }
 
     if (query.filter.result.is_dynamic) {
-        recenter_mark_query_dirty(state);
+        recenter_mark_query_dirty(sys);
     }
 
     if (query.evaluated_version == query.version) {
         return false;
     }
 
-    filter_evaluate(&query.filter, &query.mask, state->script.language, filter_context(state), state->allocator.persistent);
+    filter_evaluate(&query.filter, &query.mask, state->script.language, filter_context(sys), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }
 
-void recenter_update(ApplicationState* state) {
-    ASSERT(state);
-    recenter_update_query_mask(state);
-    recenter_update_target_data(state);
+void recenter_update(SystemContext& sys) {
+    recenter_update_query_mask(sys);
+    recenter_update_target_data(sys);
 }
 
 // Exactly the same atoms, whatever form each set is in
@@ -5447,15 +5547,16 @@ static bool same_atoms(const md_bitset_t* a, const md_bitset_t* b) {
     return md_bitset_equal(*a, *b);
 }
 
-void recenter_update_target_data(ApplicationState* state) {
-    if (run_num_frames(state) == 0) return;
+void recenter_update_target_data(SystemContext& sys) {
+    ApplicationState* state = sys.app;
+    if (run_num_frames(sys) == 0) return;
 
     // The reference is only for keeping the orientation. Centering alone needs nothing from the first frame,
     // so without this a target picked by a query which depends on the frame read it from disk in every frame.
-    if (!state->system.operations.fixate_orientation) return;
+    if (!sys.scene.operations.fixate_orientation) return;
 
-    auto& ref = state->system.operations.initial_frame;
-    const md_bitset_t& target_mask = recenter_get_active_target_mask(state);
+    auto& ref = sys.scene.operations.initial_frame;
+    const md_bitset_t& target_mask = recenter_get_active_target_mask(sys);
 
     // Keyed on the atoms themselves. The versions this used to compare change every time a query is
     // evaluated, which for one that depends on the frame is every frame, whether or not its atoms changed.
@@ -5464,43 +5565,44 @@ void recenter_update_target_data(ApplicationState* state) {
         ref.valid = true;
         size_t count = md_bitset_count(target_mask);
 
-        md_array_resize(state->system.operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
+        md_array_resize(sys.scene.operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
-        state->system.operations.initial_frame.com = vec3_zero();
+        sys.scene.operations.initial_frame.com = vec3_zero();
 
-        if (state->system.operations.initial_frame.rel_xyzw && count > 0) {
+        if (sys.scene.operations.initial_frame.rel_xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
-            size_t num_atoms = state->mold.sys.atom.count;
+            size_t num_atoms = sys.data.sys.atom.count;
             vec3_t* temp_xyz = (vec3_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec3_t) * ALIGN_TO(num_atoms, 16));
 
             md_system_state_t temp_state = { 0 };
             temp_state.num_atoms = num_atoms;
             temp_state.xyz = temp_xyz;
-            extract_frame(state, 0, &temp_state);
+            extract_frame(sys, 0, &temp_state);
 
             md_bitset_iter_t it = md_bitset_iter(target_mask);
             int dst_idx = 0;
             while (md_bitset_iter_next(&it)) {
                 uint64_t src_idx = it.idx;
-                float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
-                state->system.operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
+                float mass = md_atom_mass(&sys.data.sys.atom, src_idx);
+                sys.scene.operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
             // The circular mean (md_util_com_compute_vec4 with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
             vec3_t com = vec3_zero();
-            md_util_deperiodize_self_vec4(state->system.operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            md_util_deperiodize_self_vec4(sys.scene.operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
             const vec4_t com4 = vec4_from_vec3(com, 0);
             for (size_t i = 0; i < count; ++i) {
-                state->system.operations.initial_frame.rel_xyzw[i] = vec4_sub(state->system.operations.initial_frame.rel_xyzw[i], com4);
+                sys.scene.operations.initial_frame.rel_xyzw[i] = vec4_sub(sys.scene.operations.initial_frame.rel_xyzw[i], com4);
             }
-            state->system.operations.initial_frame.com = com;
+            sys.scene.operations.initial_frame.com = com;
         }
     }
 }
 
-bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app) {
+bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const SystemContext& sys) {
+    const ApplicationState* app = sys.app;
     ASSERT(translation);
     ASSERT(rotation);
     ASSERT(app);
@@ -5509,7 +5611,7 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
     *rotation    = mat4_ident();
     bool turn = false;
 
-    const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
+    const md_bitset_t& target_mask = recenter_get_active_target_mask(sys);
     size_t count = md_bitset_count(target_mask);
 
     if (count > 0) {
@@ -5519,13 +5621,13 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // Extract xyzw subset of target
         vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
 
-		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
+		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &sys.data.sys, &sys.data.state);
 
         // Calculate target
         vec3_t target = {0};
-        if (md_unitcell_flags(&app->mold.state.unitcell) != 0) {
+        if (md_unitcell_flags(&sys.data.state.unitcell) != 0) {
             mat3_t A = {0};
-            md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
+            md_unitcell_A_extract_float(A.elem, &sys.data.state.unitcell);
             target = mat3_mul_vec3(A, vec3_set1(0.5f));
         } 
 
@@ -5546,24 +5648,24 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // size between recenter_update() and this call, which would silently pair up unrelated
         // atoms and yield a garbage rotation. The atoms themselves are the identity of the target.
         const bool reference_valid =
-            app->system.operations.fixate_orientation &&
-            app->system.operations.initial_frame.valid &&
-            app->system.operations.initial_frame.rel_xyzw &&
-            md_array_size(app->system.operations.initial_frame.rel_xyzw) == count &&
-            same_atoms(&app->system.operations.initial_frame.target_mask, &target_mask);
+            sys.scene.operations.fixate_orientation &&
+            sys.scene.operations.initial_frame.valid &&
+            sys.scene.operations.initial_frame.rel_xyzw &&
+            md_array_size(sys.scene.operations.initial_frame.rel_xyzw) == count &&
+            same_atoms(&sys.scene.operations.initial_frame.target_mask, &target_mask);
 
         // R maps the CURRENT target onto the reference: R * (q - target_com) ~= p. The relative fit this
         // replaced had its operands the other way around, which yields the rotation carrying the reference
         // onto the current frame - applied to the current frame, it doubled the rotation it was meant to
         // cancel. It also centred on the circular mean, which lands in the reference cell whatever image
         // the target occupies and is not the mean of the placed points.
-        if (app->system.operations.fixate_orientation && reference_valid) {
+        if (sys.scene.operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->system.operations.initial_frame.rel_xyzw, vec3_zero(),
-                                                   target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
+            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, sys.scene.operations.initial_frame.rel_xyzw, vec3_zero(),
+                                                   target_xyzw, count, &sys.data.state.unitcell, 8, 1.0e-6f);
             R = mat3_orthonormalize(R);
         } else {
-            md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
+            md_util_deperiodize_self_vec4(target_xyzw, count, &sys.data.state.unitcell, &target_com);
         }
 
         // Split at the cell centre. The translation preserves the lattice, so it is valid for coordinates
@@ -5571,8 +5673,8 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // vector, so it may only be applied once every image is settled relative to the target. The
         // product is the transform this used to return in one piece,
         //     translate(target) * A * R * translate(-target_com)
-        const mat4_t A = app->system.operations.alignment_mat;
-        turn = (app->system.operations.fixate_orientation && reference_valid) || !is_identity(A);
+        const mat4_t A = sys.scene.operations.alignment_mat;
+        turn = (sys.scene.operations.fixate_orientation && reference_valid) || !is_identity(A);
 
         *translation = mat4_translate_vec3(vec3_sub(target, target_com));
         if (turn) {
@@ -5583,8 +5685,8 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
 }
 
 // Every atom of mold.state through M
-static void state_transform(ApplicationState* app, const mat4_t& M) {
-    md_system_state_t& s = app->mold.state;
+static void state_transform(SystemContext& sys, const mat4_t& M) {
+    md_system_state_t& s = sys.data.state;
     task_system::ID task = task_system::create_pool_task(STR_LIT("## Transform"), (uint32_t)s.num_atoms, [&s, M](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
         (void)thread_num;
         mat4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
@@ -5593,10 +5695,9 @@ static void state_transform(ApplicationState* app, const mat4_t& M) {
     task_system::task_wait_for(task);
 }
 
-bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool unwrap) {
-    ASSERT(app);
-    md_system_t& sys = app->mold.sys;
-    md_system_state_t& s = app->mold.state;
+bool apply_state_operations(SystemContext& sc, bool recenter, bool pbc, bool unwrap) {
+    md_system_t& sys = sc.data.sys;
+    md_system_state_t& s = sc.data.state;
 
     if (s.num_atoms == 0 || !s.xyz) return false;
     if (!recenter && !pbc && !unwrap) return false;
@@ -5605,24 +5706,24 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
 
     // Into the lattice frame first. Wrapping or making whole turned coordinates against the unturned
     // cell moves atoms by vectors that are not lattice vectors, to places where they have no image.
-    const mat4_t prev_rotation = app->system.operations.state_rotation;
+    const mat4_t prev_rotation = sc.scene.operations.state_rotation;
     if (!is_identity(prev_rotation)) {
-        state_transform(app, mat4_inverse(prev_rotation));
+        state_transform(sc, mat4_inverse(prev_rotation));
     }
 
     // A wrap or a make whole on its own keeps the turn the coordinates had
     mat4_t rotation = prev_rotation;
     bool fresh_turn = false;
-    if (recenter && !md_bitset_empty(recenter_get_active_target_mask(app))) {
+    if (recenter && !md_bitset_empty(recenter_get_active_target_mask(sc))) {
         // Current for this target before it is fitted against. The main loop does this every frame too, but
         // ticking 'keep orientation' applies at once, before the loop has had a chance to build it.
-        recenter_update_target_data(app);
+        recenter_update_target_data(sc);
 
         // Measured on the lattice frame coordinates: the fit is against the reference, not against a
         // previous fit's output
         mat4_t translation = mat4_ident();
-        fresh_turn = recenter_calculate_transform(&translation, &rotation, app);
-        state_transform(app, translation);
+        fresh_turn = recenter_calculate_transform(&translation, &rotation, sc);
+        state_transform(sc, translation);
     }
     const bool turn = !is_identity(rotation);
 
@@ -5656,9 +5757,9 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     }
 
     if (turn) {
-        state_transform(app, rotation);
+        state_transform(sc, rotation);
     }
-    app->system.operations.state_rotation = turn ? rotation : mat4_ident();
+    sc.scene.operations.state_rotation = turn ? rotation : mat4_ident();
 
     return true;
 }
@@ -5666,58 +5767,59 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
 // The coordinates bonds are found in: the whole frame of the run nearest frame, or the coordinates shown when there is
 // no run, taken back out of any turn from keeping the orientation. The bond search takes its minimum images in the cell,
 // so they have to be in the lattice frame of the cell, which a frame of the run always is.
-static bool bond_coordinates(md_system_state_t* state, const ApplicationState* app, int64_t frame) {
-    const size_t num_atoms = app->mold.sys.atom.count;
+static bool bond_coordinates(md_system_state_t* state, const SystemContext& sys, int64_t frame) {
+    const size_t num_atoms = sys.data.sys.atom.count;
     if (!md_system_state_init(state, num_atoms)) return false;
 
-    const size_t num_frames = run_num_frames(app);
+    const size_t num_frames = run_num_frames(sys);
     if (num_frames > 0) {
-        if (!extract_frame(app, CLAMP(frame, (int64_t)0, (int64_t)num_frames - 1), state)) {
+        if (!extract_frame(sys, CLAMP(frame, (int64_t)0, (int64_t)num_frames - 1), state)) {
             MD_LOG_ERROR("Failed to extract frame data");
             return false;
         }
         return true;
     }
-    const md_system_state_t& shown = app->mold.state;
+    const md_system_state_t& shown = sys.data.state;
     if (!shown.xyz || shown.num_atoms != num_atoms) return false;
     MEMCPY(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
     state->unitcell = shown.unitcell;
-    if (!is_identity(app->system.operations.state_rotation)) {
-        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->system.operations.state_rotation));
+    if (!is_identity(sys.scene.operations.state_rotation)) {
+        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(sys.scene.operations.state_rotation));
     }
     return true;
 }
 
-bool recompute_bonds(ApplicationState* app, int64_t frame) {
-    ASSERT(app);
-    md_system_t& sys = app->mold.sys;
+bool recompute_bonds(SystemContext& sc, int64_t frame) {
+    md_system_t& sys = sc.data.sys;
     if (sys.atom.count == 0) return false;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
     md_system_state_t state = { .alloc = temp.arena };
-    if (!bond_coordinates(&state, app, frame)) return false;
+    if (!bond_coordinates(&state, sc, frame)) return false;
 
-    system_bonds_edit_begin(app);
+    system_bonds_edit_begin(sc);
     md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc);
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
     md_system_topology_changed(&sys);
     // What follows from the bonds, from the same coordinates, which md_util_system_infer records as the reference
     md_util_system_infer(&sys, &state, MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT);
-    system_bonds_changed(app, false);
+    system_bonds_changed(sc, false);
     return true;
 }
 
-void system_bonds_edit_begin(ApplicationState* app) {
+void system_bonds_edit_begin(SystemContext& sys) {
+    ApplicationState* app = sys.app;
     ASSERT(app);
     if (app->script.eval) script::eval_interrupt(app->script.eval);
     task_system::pool_wait_for_completion();
 }
 
-void system_bonds_changed(ApplicationState* app, bool graph_edited) {
+void system_bonds_changed(SystemContext& sc, bool graph_edited) {
+    ApplicationState* app = sc.app;
     ASSERT(app);
-    md_system_t& sys = app->mold.sys;
+    md_system_t& sys = sc.data.sys;
     if (graph_edited) {
         md_system_bond_build_connectivity(&sys);
         // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
@@ -5725,7 +5827,7 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_util_system_infer_molecules(&sys);
         md_util_system_infer_rings(&sys);
     }
-    app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+    sc.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
     // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
     // it holds are indices of the bonds there were. Compiled in this frame, before the representations which name them
     // are evaluated, rather than once the delay for typing has passed.
@@ -5734,21 +5836,19 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
     flag_all_representations_as_dirty(app);
 }
 
-const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app) {
-    ASSERT(app);
-    const auto& bt = app->system.operations.bond_tracking;
+const md_bond_delta_t* bond_tracking_delta(const SystemContext& sys) {
+    const auto& bt = sys.scene.operations.bond_tracking;
     return bt.enabled && bt.key != 0 ? &bt.delta : nullptr;
 }
 
-const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app) {
-    ASSERT(app);
-    const auto& bt = app->system.operations.bond_tracking;
+const md_chem_delta_t* bond_tracking_chem(const SystemContext& sys) {
+    const auto& bt = sys.scene.operations.bond_tracking;
     return bt.enabled && bt.key != 0 ? &bt.chem : nullptr;
 }
 
-md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, int* formal_charge, int* hydrogen_count) {
-    const md_system_t& sys = app.mold.sys;
-    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+md_atom_flags_t frame_atom_flags(const SystemContext& sc, size_t atom_idx, int* formal_charge, int* hydrogen_count) {
+    const md_system_t& sys = sc.data.sys;
+    const md_chem_delta_t* chem = bond_tracking_chem(sc);
     if (chem && chem->num_atoms) {
         // The atoms of the region are ascending
         size_t lo = 0, hi = chem->num_atoms;
@@ -5767,8 +5867,8 @@ md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, i
     return md_atom_flags(&sys.atom, atom_idx);
 }
 
-bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags) {
-    const md_system_t& sys = app.mold.sys;
+bool picked_ring(const SystemContext& sc, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags) {
+    const md_system_t& sys = sc.data.sys;
     const size_t num = md_ring_data_count(&sys.ring);
     if (idx < num) {
         *atoms = md_ring_atoms(&sys.ring, idx);
@@ -5776,7 +5876,7 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
         *flags = md_system_ring_flags(&sys, idx);
         return true;
     }
-    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+    const md_chem_delta_t* chem = bond_tracking_chem(sc);
     idx -= num;
     if (chem && idx < md_ring_data_count(&chem->ring)) {
         *atoms = md_ring_atoms(&chem->ring, idx);
@@ -5787,8 +5887,9 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
     return false;
 }
 
-static void bond_tracking_clear(ApplicationState* app) {
-    auto& bt = app->system.operations.bond_tracking;
+static void bond_tracking_clear(SystemContext& sys) {
+    ApplicationState* app = sys.app;
+    auto& bt = sys.scene.operations.bond_tracking;
     if (bt.key != 0) {
         md_bond_delta_free(&bt.delta, app->allocator.persistent);
         md_chem_delta_free(&bt.chem, app->allocator.persistent);
@@ -5796,16 +5897,17 @@ static void bond_tracking_clear(ApplicationState* app) {
         bt.key = 0;
         bt.formed_capacity = 0;
         bt.ring_capacity = 0;
-        app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+        sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 }
 
-void bond_tracking_update(ApplicationState* app) {
+void bond_tracking_update(SystemContext& sc) {
+    ApplicationState* app = sc.app;
     ASSERT(app);
-    auto& bt = app->system.operations.bond_tracking;
-    const md_system_t& sys = app->mold.sys;
+    auto& bt = sc.scene.operations.bond_tracking;
+    const md_system_t& sys = sc.data.sys;
     if (!bt.enabled || sys.atom.count == 0) {
-        bond_tracking_clear(app);
+        bond_tracking_clear(sc);
         return;
     }
 
@@ -5822,7 +5924,7 @@ void bond_tracking_update(ApplicationState* app) {
     }
     if (bt.scope_dirty) {
         if (has_scope) {
-            filter_evaluate(&bt.scope, &bt.scope_mask, app->script.language, filter_context(app), app->allocator.persistent);
+            filter_evaluate(&bt.scope, &bt.scope_mask, app->script.language, filter_context(sc), app->allocator.persistent);
         } else {
             md_bitset_free(&bt.scope_mask, app->allocator.persistent);
             bt.scope.result = {};
@@ -5832,13 +5934,13 @@ void bond_tracking_update(ApplicationState* app) {
     }
     // A scope that does not evaluate tracks nothing, rather than everything
     if (!bt.scope.result.success) {
-        bond_tracking_clear(app);
+        bond_tracking_clear(sc);
         return;
     }
 
     // What the delta is of. The frame and nothing finer: the bonds of a state between two frames are those of the
     // nearest one, as the script has them.
-    const int64_t frame = run_num_frames(app) > 0 ? (int64_t)(app->animation.frame + 0.5) : -1;
+    const int64_t frame = run_num_frames(sc) > 0 ? (int64_t)(app->animation.frame + 0.5) : -1;
     uint64_t key = md_hash64(&frame, sizeof(frame), sys.topology_version);
     key = md_hash64(&bt.tolerance, sizeof(bt.tolerance), key);
     key = md_hash64(&bt.breakable, sizeof(bt.breakable), key);
@@ -5853,7 +5955,7 @@ void bond_tracking_update(ApplicationState* app) {
     md_system_state_t state = { .alloc = temp.arena };
     md_bond_delta_t delta = {};
     const md_tick_t t0 = md_tick_now();
-    if (bond_coordinates(&state, app, frame)) {
+    if (bond_coordinates(&state, sc, frame)) {
         const md_bond_delta_desc_t desc = {
             .scope = has_scope ? &bt.scope_mask : nullptr,
             .tolerance = bt.tolerance,
@@ -5880,14 +5982,14 @@ void bond_tracking_update(ApplicationState* app) {
         }
         bt.ring_capacity = MAX(bt.ring_capacity, md_ring_data_count(&bt.chem.ring));
         bt.time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
-        app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+        sc.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 }
 
 // The flags of a bond in the frame's chemistry (bond_tracking_chem), whose bonds are ascending by index: those of the
 // region where it is in it, flags otherwise
-static md_bond_flags_t frame_bond_flags(const ApplicationState& app, size_t idx, md_bond_flags_t flags) {
-    const md_chem_delta_t* chem = bond_tracking_chem(&app);
+static md_bond_flags_t frame_bond_flags(const SystemContext& sys, size_t idx, md_bond_flags_t flags) {
+    const md_chem_delta_t* chem = bond_tracking_chem(sys);
     if (!chem || !chem->num_bonds) return flags;
     size_t lo = 0, hi = chem->num_bonds;
     while (lo < hi) {
@@ -5897,19 +5999,19 @@ static md_bond_flags_t frame_bond_flags(const ApplicationState& app, size_t idx,
     return (lo < chem->num_bonds && chem->bond_idx[lo] == idx) ? chem->bond_flags[lo] : flags;
 }
 
-bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed) {
-    const md_system_t& sys = app.mold.sys;
+bool picked_bond(const SystemContext& sc, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed) {
+    const md_system_t& sys = sc.data.sys;
     if (idx < sys.bond.count) {
         *pair = sys.bond.pairs[idx];
-        *flags = frame_bond_flags(app, idx, sys.bond.flags[idx]);
+        *flags = frame_bond_flags(sc, idx, sys.bond.flags[idx]);
         *formed = false;
         return true;
     }
-    const md_bond_delta_t* delta = bond_tracking_delta(&app);
+    const md_bond_delta_t* delta = bond_tracking_delta(sc);
     const size_t k = idx - sys.bond.count;
     if (delta && k < delta->num_formed) {
         *pair = delta->formed_pair[k];
-        *flags = frame_bond_flags(app, idx, delta->formed_flags[k]);
+        *flags = frame_bond_flags(sc, idx, delta->formed_flags[k]);
         *formed = true;
         return true;
     }
@@ -6469,10 +6571,10 @@ void file_queue_process(ApplicationState* state) {
                         md_bitmask_clear(&state->representation.visibility_mask);
 
                         if (!state->settings.keep_representations) {
-                            remove_all_representations(state);
-                            create_default_representations(state);
+                            remove_all_representations(state->system_context);
+                            create_default_representations(state->system_context);
                         }
-                        recompute_atom_visibility_mask(state);
+                        recompute_atom_visibility_mask(state->system_context);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, state->view.region);
@@ -6576,37 +6678,37 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
 }
 
 // Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights and clicking it selects
-void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const PickingHit& hit, SelectionGranularity granularity) {
+void picking_hit_mask_set(md_bitmask_t* mask, const SystemContext& sys, const PickingHit& hit, SelectionGranularity granularity) {
     ASSERT(mask);
     if (hit.domain == PickingDomain_Atom) {
         int32_t atom_idx = hit.local_idx;
-        if (atom_idx >= 0 && (size_t)atom_idx < app.mold.sys.atom.count) {
+        if (atom_idx >= 0 && (size_t)atom_idx < sys.data.sys.atom.count) {
             // Grow the hovered atom by the current granularity so hover feedback matches what a click would select
-            mask_set_atom_by_selection_granularity(mask, (size_t)atom_idx, granularity, app.mold.sys);
+            mask_set_atom_by_selection_granularity(mask, (size_t)atom_idx, granularity, sys.data.sys);
         }
     } else if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
         bool formed;
-        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+        if (picked_bond(sys, hit.local_idx, &pair, &flags, &formed)) {
             // Grow both bond atoms by the current granularity, same as for atom hits
-            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[0], granularity, app.mold.sys);
-            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[1], granularity, app.mold.sys);
+            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[0], granularity, sys.data.sys);
+            mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[1], granularity, sys.data.sys);
         }
     } else if (hit.domain == PickingDomain_BackboneSegment) {
-        const md_protein_backbone_data_t& bb = app.mold.sys.protein_backbone;
+        const md_protein_backbone_data_t& bb = sys.data.sys.protein_backbone;
         const size_t seg_idx = hit.local_idx;
         if (seg_idx < bb.segment.count && bb.segment.res_idx) {
             const md_residue_idx_t res_idx = bb.segment.res_idx[seg_idx];
             if (res_idx >= 0) {
                 // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
-                mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
+                mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, sys.data.sys);
             } else {
                 // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
                 const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
                 const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
                 for (md_atom_idx_t atom : atoms) {
-                    if (atom >= 0) mask_set_atom_by_selection_granularity(mask, (size_t)atom, granularity, app.mold.sys);
+                    if (atom >= 0) mask_set_atom_by_selection_granularity(mask, (size_t)atom, granularity, sys.data.sys);
                 }
             }
         }
@@ -6615,27 +6717,27 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
         const int32_t* ring_atoms = nullptr;
         size_t ring_count = 0;
         md_ring_flags_t ring_flags = MD_RING_FLAG_NONE;
-        if (picked_ring(app, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
-            mask_set_ring_by_selection_granularity(mask, ring_atoms, ring_count, granularity, app.mold.sys);
+        if (picked_ring(sys, hit.local_idx, &ring_atoms, &ring_count, &ring_flags)) {
+            mask_set_ring_by_selection_granularity(mask, ring_atoms, ring_count, granularity, sys.data.sys);
         }
     } else if (hit.domain == PickingDomain_ChainGap) {
         // The gap of a chain stands for the residues on either side of its break
         const size_t res_idx = hit.local_idx;
-        if (res_idx + 1 < app.mold.sys.residue.count) {
-            mask_set_residue_by_selection_granularity(mask, res_idx,        granularity, app.mold.sys);
-            mask_set_residue_by_selection_granularity(mask, res_idx + 1, granularity, app.mold.sys);
+        if (res_idx + 1 < sys.data.sys.residue.count) {
+            mask_set_residue_by_selection_granularity(mask, res_idx,        granularity, sys.data.sys);
+            mask_set_residue_by_selection_granularity(mask, res_idx + 1, granularity, sys.data.sys);
         }
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
-        const uint32_t point_idx = cartoon_glyphs_picked_point(app.mold.cartoon_glyphs, hit.local_idx);
-        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
+        const uint32_t point_idx = cartoon_glyphs_picked_point(sys.data.cartoon_glyphs, hit.local_idx);
+        const CartoonGlyphs& glyphs = sys.data.cartoon_glyphs;
         const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
-        if (res_idx >= 0 && (size_t)res_idx < app.mold.sys.residue.count) {
-            mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
+        if (res_idx >= 0 && (size_t)res_idx < sys.data.sys.residue.count) {
+            mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, sys.data.sys);
         } else if (point_idx < glyphs.num_points) {
             // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
             for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {
-                mask_set_atom_by_selection_granularity(mask, (size_t)glyphs.point_atom[k], granularity, app.mold.sys);
+                mask_set_atom_by_selection_granularity(mask, (size_t)glyphs.point_atom[k], granularity, sys.data.sys);
             }
         }
     }
@@ -6653,21 +6755,21 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             size_t num_atoms = state->mold.sys.atom.count;
             // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
             // frame that is is not settled yet: as many as have formed in any frame are reserved for.
-            const md_bond_delta_t* delta = bond_tracking_delta(state);
+            const md_bond_delta_t* delta = bond_tracking_delta(state->system_context);
             size_t num_bonds = state->mold.sys.bond.count + (delta ? MAX(delta->num_formed, state->system.operations.bond_tracking.formed_capacity) : 0);
-            picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
-            picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
+            picking_range_reserve(&state->system_context.picking.atom, space, PickingDomain_Atom, num_atoms);
+            picking_range_reserve(&state->system_context.picking.bond, space, PickingDomain_Bond, num_bonds);
             // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
-            picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
+            picking_range_reserve(&state->system_context.picking.backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
             // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
             // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
             const size_t num_frame_rings = delta ? state->system.operations.bond_tracking.ring_capacity : 0;
-            picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
+            picking_range_reserve(&state->system_context.picking.ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
             // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
             // one per control point of its tubes after them (cartoon_glyphs_picked_point)
-            picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
+            picking_range_reserve(&state->system_context.picking.glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
             // One index per residue, which the gap over a break after it writes: only those are drawn
-            picking_range_reserve(&state->picking_range_gap, space, PickingDomain_ChainGap, state->mold.sys.residue.count);
+            picking_range_reserve(&state->system_context.picking.gap, space, PickingDomain_ChainGap, state->mold.sys.residue.count);
 
             // One range per dipole group, keyed by the group's vector attribute, sized by that
             // attribute's own shape. An index within a range is then the element index inside the
@@ -6690,8 +6792,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 					[[fallthrough]];
                 case InteractionSurfaceEventKind::Click:
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
-                    md_bitmask_clear(&state->selection.highlight_mask);
-                    picking_hit_mask_set(&state->selection.highlight_mask, *state, surf->hit, state->selection.granularity);
+                    md_bitmask_clear(&state->system_context.selection.highlight_mask);
+                    picking_hit_mask_set(&state->system_context.selection.highlight_mask, state->system_context, surf->hit, state->selection.granularity);
 
                     // Commit to selection mask upon shift+click release. A plain click leaves the selection alone (double-click recenters the view).
                     if (surf->kind == InteractionSurfaceEventKind::Click && surf->selection_mode != InteractionSelectionMode::None) {
@@ -6713,20 +6815,20 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
                         if (picking_domain_resolves_to_atoms(surf->hit.domain)) {
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
-                                md_bitmask_or(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
+                                md_bitmask_or(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitmask_andnot(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
+                                md_bitmask_andnot(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                md_bitmask_clear(&state->selection.selection_mask);
-                                md_bitmask_or(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
+                                md_bitmask_clear(&state->system_context.selection.selection_mask);
+                                md_bitmask_or(&state->system_context.selection.selection_mask, md_bitmask_view(&state->system_context.selection.highlight_mask));
                             }
                         }
                         else if (surf->hit.domain == 0) {
                             // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
                             if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitmask_clear(&state->selection.selection_mask);
+                                md_bitmask_clear(&state->system_context.selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }
                         }
@@ -6745,7 +6847,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         case viamd::EventType_ViamdPickingTooltipTextRequest: {
             ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
-            fill_picking_tooltip(req, *state, req->hit);
+            fill_picking_tooltip(req, state->system_context, req->hit);
             break;
         }
         case viamd::EventType_ViamdViewFit: {
@@ -6755,9 +6857,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 const md_bitmask_t* m = nullptr;
                 switch (req->round) {
                 case ViewFitRound_Highlight:
-                    m = &state->selection.highlight_mask; break;
+                    m = &state->system_context.selection.highlight_mask; break;
                 case ViewFitRound_Selection:
-                    m = &state->selection.selection_mask; break;
+                    m = &state->system_context.selection.selection_mask; break;
                 case ViewFitRound_Visible:
                     m = &state->representation.visibility_mask; break;
                 default:
@@ -6779,11 +6881,11 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			// Apply operators if toggled on system change
 
             ASSERT(event.payload_type == viamd::EventPayloadType_System);
-            ApplicationState* app = ((SystemContext*)event.payload)->app;
+            SystemContext& sys = *(SystemContext*)event.payload;
 
-            // The event means mold.state was just written from its source, in the lattice frame of its
+            // The event means its state was just written from its source, in the lattice frame of its
             // cell: whatever turn the previous coordinates carried went with them.
-            app->system.operations.state_rotation = mat4_ident();
+            sys.scene.operations.state_rotation = mat4_ident();
 
             // The bond changes of the frame are not here: bond_tracking_update keeps them up to date with the frame
             // shown once a frame, and they leave the bonds of the system as they are
@@ -6793,8 +6895,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // broadcasts of this event do not pass through the interpolation step that would otherwise
             // have set the bit.
             // Not while an assembly is shown, whose operators place the coordinates as the file gives them
-            if (app->system.assembly < 0 && apply_state_operations(app, app->system.operations.recenter, app->system.operations.apply_pbc, app->system.operations.unwrap_structures)) {
-                app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+            const auto& op = sys.scene.operations;
+            if (sys.scene.assembly < 0 && apply_state_operations(sys, op.recenter, op.apply_pbc, op.unwrap_structures)) {
+                sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;
         }
@@ -7032,7 +7135,7 @@ void script_vis_update(ApplicationState* state) {
     if (sc.vis_result && sc.vis_result->ok && sc.vis_result->key == key) {
         sc.vis_shown = &sc.vis_result->vis;
         if (!md_bitset_empty(sc.vis_shown->atom_mask)) {
-            md_bitmask_assign(&state->selection.highlight_mask, sc.vis_shown->atom_mask);
+            md_bitmask_assign(&state->system_context.selection.highlight_mask, sc.vis_shown->atom_mask);
             // Its elements, a colour each, when there is more than one. Known by what is visualized, not where the
             // atoms are: playing, the atoms' flags are not made again every frame for them
             const size_t num_groups = md_array_size(sc.vis_shown->groups);

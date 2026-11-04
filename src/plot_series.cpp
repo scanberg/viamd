@@ -564,7 +564,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
-            const md_attribute_t* run_axis = run_time_axis(app);
+            const md_attribute_t* run_axis = run_time_axis(app->system_context);
             if (axis && axis->format.shape[0] == n) {
                 if ((run_axis && md_attribute_same_data(axis, run_axis)) ||
                     md_unit_is_none(app->timeline.time_unit) == md_unit_is_none(axis->unit)) {
@@ -652,7 +652,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
         const md_attribute_t* axis = md_attributes_axis(table, src);
         if (!axis || axis->format.shape[0] != n) return false;
 
-        const md_attribute_t* run_axis = run_time_axis(app);
+        const md_attribute_t* run_axis = run_time_axis(app->system_context);
         if (run_axis && md_attribute_same_data(axis, run_axis) && num_frames == n) {
             x = app->timeline.x_values;
         } else {
@@ -952,7 +952,7 @@ bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const Ser
 }
 
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
-    const uint32_t num_frames = app->script.eval ? (uint32_t)script::eval_num_frames(app->script.eval) : (uint32_t)run_num_frames(app);
+    const uint32_t num_frames = app->script.eval ? (uint32_t)script::eval_num_frames(app->script.eval) : (uint32_t)run_num_frames(app->system_context);
     if (num_frames == 0) return false;
     // The key's own: every frame, or its period's
     if (period == 0) period = key.period;
@@ -1459,11 +1459,10 @@ void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subpl
 
 // ## Series loaded along the run
 
-size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationState* app) {
-    ASSERT(app);
-    if (app->run.path[0] == '\0') return 0;
-    const md_attributes_t* table = &app->mold.sys.attributes;
-    const str_t run = str_from_cstr(app->run.path);
+size_t system_series_groups(str_t out_groups[], size_t cap, const SystemContext& sys) {
+    if (sys.run.path[0] == '\0') return 0;
+    const md_attributes_t* table = &sys.data.sys.attributes;
+    const str_t run = str_from_cstr(sys.run.path);
 
     size_t count = 0;
     for (md_attribute_iter_t it = md_attributes_iter(table, run); md_attributes_next(&it);) {
@@ -1478,8 +1477,8 @@ size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationSta
     return count;
 }
 
-str_t system_series_group_source(const ApplicationState* app, str_t group) {
-    const md_attributes_t* table = &app->mold.sys.attributes;
+str_t system_series_group_source(const SystemContext& sys, str_t group) {
+    const md_attributes_t* table = &sys.data.sys.attributes;
     const md_attribute_t* src = md_attributes_find_in(table, group, STR_LIT("source"));
     if (!src || src->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
     return md_attribute_str(table, src, 0);
@@ -1492,7 +1491,7 @@ void system_series_group_label(char* buf, size_t cap, const ApplicationState* ap
     if (!str_empty(run) && str_begins_with(group, run) && group.len > run.len + 1) {
         rel = str_substr(group, run.len + 1);
     }
-    str_t file = system_series_group_source(app, group);
+    str_t file = system_series_group_source(app->system_context, group);
     size_t loc;
     if (str_rfind_char(&loc, file, '/') || str_rfind_char(&loc, file, '\\')) {
         file = str_substr(file, loc + 1);
@@ -1504,9 +1503,8 @@ void system_series_group_label(char* buf, size_t cap, const ApplicationState* ap
     }
 }
 
-size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationState* app, str_t group) {
-    ASSERT(app);
-    const md_attributes_t* table = &app->mold.sys.attributes;
+size_t system_series_members(str_t out_paths[], size_t cap, const SystemContext& sys, str_t group) {
+    const md_attributes_t* table = &sys.data.sys.attributes;
 
     size_t count = 0;
     for (md_attribute_iter_t it = md_attributes_iter(table, group); md_attributes_next(&it);) {
