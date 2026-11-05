@@ -2022,8 +2022,12 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_bool(rep->periodic_images, arg);
     } else if (str_eq(ident, STR_LIT("BoxColor"))) {
         viamd::extract_vec4(rep->box.color, arg);
-    } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
+    } else if (str_eq(ident, STR_LIT("BoxThicknessPt"))) {
         viamd::extract_flt(rep->box.thickness, arg);
+    } else if (str_eq(ident, STR_LIT("BoxThickness"))) {
+        // Of old a diameter in Å, which has no width in points: only its 0, lines of a pixel, is kept
+        float thickness = -1.0f;
+        if (viamd::extract_flt(thickness, arg) && thickness == 0.0f) rep->box.thickness = 0.0f;
     } else if (str_eq(ident, STR_LIT("BoxAxes"))) {
         viamd::extract_bool(rep->box.axes, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureOrbitalIdx"))) {
@@ -2227,7 +2231,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
 
     if (rep.type == RepresentationType::SimulationBox) {
         viamd::write_vec4(state, STR_LIT("BoxColor"), rep.box.color);
-        viamd::write_flt(state,  STR_LIT("BoxThickness"), rep.box.thickness);
+        viamd::write_flt(state,  STR_LIT("BoxThicknessPt"), rep.box.thickness);
         viamd::write_bool(state, STR_LIT("BoxAxes"), rep.box.axes);
     }
 
@@ -3573,9 +3577,10 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             // Drawn from the cell every frame, so none of these is an update of the representation
             prop::row("color");
             prop::color("##color", rep.box.color.elem);
-            prop::row("thickness", "Diameter of the edges, shaded as the rest of the scene and never thinner than a pixel.\n"
+            prop::row("thickness", "Width of the edges on the screen in points, the same near and far, shaded as the rest of\n"
+                                   "the scene and never thinner than a pixel.\n"
                                    "0: lines of a pixel, unshaded.");
-            ImGui::SliderFloat("##thickness", &rep.box.thickness, 0.0f, 2.0f, rep.box.thickness > 0.0f ? "%.2f Å" : "line", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SliderFloat("##thickness", &rep.box.thickness, 0.0f, 8.0f, rep.box.thickness > 0.0f ? "%.1f pt" : "line", ImGuiSliderFlags_AlwaysClamp);
             prop::row("axes", "The edges along a, b and c from the origin of the cell in red, green and blue");
             ImGui::Checkbox("##axes", &rep.box.axes);
             if (periodic) {

@@ -79,6 +79,10 @@ void cone_wireframe(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_
 // The head is shortened to the arrow's length if it is longer; its radius is at least the shaft's.
 void arrow(Queue* queue, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 32);
 
+// The side of a truncated cone from 'from' to 'to', its radius going linearly from radius_from to radius_to, open at
+// both ends (closed by whatever joins it there, e.g. spheres of the same radii)
+void frustum(Queue* queue, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+
 void capsule(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
 void capsule_wireframe(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 

@@ -175,6 +175,7 @@ void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, u
 void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments);
 void draw_cone_wireframe(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments);
 void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments);
+void draw_frustum(Queue& ctx, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments);
 void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx);
 
 // All queue APIs require an explicit queue; this helper enforces that contract
@@ -253,6 +254,11 @@ void cone_wireframe(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_
 void arrow(Queue* queue, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_arrow(q, from, to, shaft_radius, head_radius, head_length, color, picking_idx, segments);
+}
+
+void frustum(Queue* queue, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
+    Queue& q = require_queue(queue);
+    draw_frustum(q, from, to, radius_from, radius_to, color, picking_idx, segments);
 }
 
 void capsule(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
@@ -1176,6 +1182,29 @@ void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float he
     }
     if (head_length > 0.0f) {
         lathe_cone_side(ctx, l, shaft_length, head_radius, head_length, color, picking_idx);
+    }
+}
+
+// The side of a truncated cone, open at both ends: the surface's normal at an angle is the same along the whole
+// slant, (length, radius_from - radius_to) in (radial, axial)
+void draw_frustum(Queue& ctx, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
+    ASSERT(segments >= 3);
+    const vec3_t axis_vec = vec3_sub(to, from);
+    const float length = vec3_length(axis_vec);
+    if (!(length > 0.0f)) return;
+    radius_from = MAX(radius_from, 0.0f);
+    radius_to   = MAX(radius_to,   0.0f);
+    if (radius_from == 0.0f && radius_to == 0.0f) return;
+
+    const Lathe l = lathe_init(from, vec3_mul1(axis_vec, 1.0f / length), segments);
+    const float nr = length;
+    const float na = radius_from - radius_to;
+    if (radius_from == 0.0f) {
+        // A point at the start: the band toward it, reversed, so that the fan is at the point
+        const Lathe r = lathe_init(to, vec3_mul1(axis_vec, -1.0f / length), segments);
+        lathe_band(ctx, r, 0.0f, radius_to, nr, -na, length, 0.0f, nr, -na, color, picking_idx);
+    } else {
+        lathe_band(ctx, l, 0.0f, radius_from, nr, na, length, radius_to, nr, na, color, picking_idx);
     }
 }
 

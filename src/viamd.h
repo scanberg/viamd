@@ -943,8 +943,8 @@ struct DipoleRepresentation {
 // The edges of the unit cell, of the frame shown (it may change with it)
 struct BoxRepresentation {
     vec4_t color = { 0.25f, 0.25f, 0.25f, 1.0f };
-    float thickness = 0.2f;     // Å, the diameter of the edges (capsules, lit), never thinner than a pixel; 0 for lines of
-                                // a pixel, unlit
+    float thickness = 1.5f;     // pt, the width of the edges on screen (tubes, lit), never thinner than a pixel; 0 for
+                                // lines of a pixel, unlit
     bool axes = false;          // The edges along a, b and c from the origin of the cell red, green and blue
 };
 

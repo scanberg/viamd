@@ -7740,10 +7740,9 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const Applicat
 }
 
 // The edges of the unit cell of the frame shown (a SimulationBox representation), through the turn the coordinates
-// carry if the orientation is kept (the cell itself cannot hold one). Capsules of the thickness, shaded as the rest of
-// the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
-// does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
-// The cells out of view are left out.
+// carry if the orientation is kept (the cell itself cannot hold one). Tubes of the thickness in points on the screen,
+// shaded as the rest of the scene (the world queue writes the G-buffer), never thinner than a pixel; or lines of a
+// pixel. With axes, the edges along a, b and c from the origin red, green and blue. The cells out of view are left out.
 static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
@@ -7756,21 +7755,33 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
 
     immediate::Scope scope(state->gfx.world, "simulation box");
 
-    // The corners: bit k of i is the coordinate along cell vector k
+    // The corners: bit b of i is the coordinate along cell vector b
     vec3_t corner[8];
     for (int i = 0; i < 8; ++i) {
         corner[i] = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
     }
 
-    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection
+    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection.
+    // A point likewise, with h the view's height in points: the view is the whole window, DisplaySize in points, and a
+    // screenshot at another resolution is the same view, its points as much larger as the image is.
     const mat4_t& V = state->view.param.matrix.curr.view;
     const mat4_t& P = state->view.param.matrix.curr.proj;
-    const float   h = (float)MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
+    const float   h_px = (float)MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
+    const float   h_pt = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
     const bool    ortho = P.elem[3][3] == 1.0f;
-    const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
+
+    // The radius of a tube in the world is k times the depth (k itself in an orthographic projection): its diameter the
+    // thickness in points, and at least about a pixel. As the radius is linear in the depth, an edge drawn as a
+    // truncated cone from the radius at one end to that at the other is of the same width on screen all along it.
+    const float k = MAX(0.5f * rep.box.thickness * 2.0f / (P.elem[1][1] * h_pt), 0.6f * 2.0f / (P.elem[1][1] * h_px));
+    // Where the depth is less than this, the tube is clipped to it: in front of the camera, and its radius still k d
+    const float min_depth = 1.0e-3f;
+    auto depth_of = [&](vec3_t p) {
+        return ortho ? 1.0f : -vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(p, 1.0f))).z;
+    };
 
     // The planes of the view volume, inward, and the sphere of a cell about its center: a cell wholly outside of one is
-    // out of view. The capsules are at most a few pixels thick, a margin of a hundredth of the cell covers them.
+    // out of view, the tubes' radius at the far side of the cell taken as the margin.
     const mat4_t PV = P * V;
     vec4_t plane[6];
     for (int p = 0; p < 6; ++p) {
@@ -7785,35 +7796,53 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     const vec3_t cell_center = (corner[0] + corner[7]) * 0.5f;
     float cell_radius = 0.0f;
     for (int i = 0; i < 8; ++i) cell_radius = MAX(cell_radius, vec3_length(corner[i] - cell_center));
-    cell_radius = cell_radius * 1.01f + 0.5f * rep.box.thickness;
+    cell_radius *= 1.01f;
 
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
     const md_array(mat4_t) transforms = state->view.periodic_transforms;
     const size_t num_cells = rep.periodic_images ? MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
         const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
+        const float margin = rep.box.thickness > 0.0f ? k * MAX(depth_of(cell_center + t) + cell_radius, 0.0f) : 0.0f;
         const vec4_t center = vec4_from_vec3(cell_center + t, 1.0f);
         bool out_of_view = false;
         for (int p = 0; p < 6 && !out_of_view; ++p) {
-            out_of_view = vec4_dot(plane[p], center) < -cell_radius;
+            out_of_view = vec4_dot(plane[p], center) < -(cell_radius + margin);
         }
         if (out_of_view) continue;
-        for (int i = 0; i < 8; ++i) {
-            for (int k = 0; k < 3; ++k) {
-                const int bit = 1 << k;
-                if (i & bit) continue;
-                const int j = i | bit;
-                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[k] : color;
-                const vec3_t p0 = corner[i] + t;
-                const vec3_t p1 = corner[j] + t;
-                if (rep.box.thickness > 0.0f) {
-                    const vec3_t mid  = (p0 + p1) * 0.5f;
-                    const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
-                    const float radius = MAX(0.5f * rep.box.thickness, 0.6f * px_per_depth * depth);
-                    immediate::capsule(scope, p0, p1, radius, col);
-                } else {
-                    immediate::line(scope, p0, p1, col);
+
+        if (rep.box.thickness <= 0.0f) {
+            for (int i = 0; i < 8; ++i) {
+                for (int b = 0; b < 3; ++b) {
+                    if (i & (1 << b)) continue;
+                    const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
+                    immediate::line(scope, corner[i] + t, corner[i | (1 << b)] + t, col);
                 }
+            }
+            continue;
+        }
+
+        // The corners as spheres, one each, of the tubes' radius there: it closes the three tubes that meet in it. The
+        // origin's is of the box's colour too with axes, where the three axes start.
+        float depth[8];
+        for (int i = 0; i < 8; ++i) {
+            depth[i] = depth_of(corner[i] + t);
+            if (depth[i] >= min_depth) {
+                immediate::sphere(scope, corner[i] + t, k * depth[i], color, 0xFFFFFFFF, 16, 32);
+            }
+        }
+        for (int i = 0; i < 8; ++i) {
+            for (int b = 0; b < 3; ++b) {
+                if (i & (1 << b)) continue;
+                const int j = i | (1 << b);
+                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
+                vec3_t p0 = corner[i] + t, p1 = corner[j] + t;
+                float  d0 = depth[i],      d1 = depth[j];
+                if (d0 < min_depth && d1 < min_depth) continue;
+                // Clipped to min_depth where it passes behind the camera, so that the radius stays k times the depth
+                if (d0 < min_depth) { p0 = vec3_lerp(p0, p1, (min_depth - d0) / (d1 - d0)); d0 = min_depth; }
+                if (d1 < min_depth) { p1 = vec3_lerp(p1, p0, (min_depth - d1) / (d0 - d1)); d1 = min_depth; }
+                immediate::frustum(scope, p0, p1, k * d0, k * d1, col);
             }
         }
     }
