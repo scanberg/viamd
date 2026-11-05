@@ -2093,7 +2093,10 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         if (viamd::extract_int(d, arg) && d >= 0 && d < (int)ElectronicStructureDisplay::Count) rep->electronic_structure.display = (ElectronicStructureDisplay)d;
     } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneCount"))) {
         int n;
-        if (viamd::extract_int(n, arg)) rep->electronic_structure.num_planes = CLAMP(n, 0, ES_MAX_PLANES);
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.cuts.count = CLAMP(n, 0, ES_MAX_PLANES);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureSliceCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.slices.count = CLAMP(n, 0, ES_MAX_PLANES);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
@@ -2132,13 +2135,27 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         // of the colour scale and the ramp before the curve: nothing of them is kept
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlaneEnabled"))) {
         const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlaneEnabled"), ES_MAX_PLANES);
-        if (i >= 0) viamd::extract_bool(rep->electronic_structure.planes[i].enabled, arg);
+        if (i >= 0) viamd::extract_bool(rep->electronic_structure.cuts.items[i].enabled, arg);
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlane"))) {
         const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlane"), ES_MAX_PLANES);
         vec4_t v;
         if (i >= 0 && viamd::extract_vec4(v, arg)) {
             const float len = vec3_length(vec3_set(v.x, v.y, v.z));
-            if (len > 1e-6f) rep->electronic_structure.planes[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+            if (len > 1e-6f) rep->electronic_structure.cuts.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+        }
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceEnabled"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceEnabled"), ES_MAX_PLANES);
+        if (i >= 0) viamd::extract_bool(rep->electronic_structure.slices.items[i].enabled, arg);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceOpacity"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceOpacity"), ES_MAX_PLANES);
+        float o;
+        if (i >= 0 && viamd::extract_flt(o, arg)) rep->electronic_structure.slices.items[i].opacity = CLAMP(o, 0.0f, 1.0f);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSlice"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSlice"), ES_MAX_PLANES);
+        vec4_t v;
+        if (i >= 0 && viamd::extract_vec4(v, arg)) {
+            const float len = vec3_length(vec3_set(v.x, v.y, v.z));
+            if (len > 1e-6f) rep->electronic_structure.slices.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
         }
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureFieldIsoline"))) {
         // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
@@ -2300,13 +2317,23 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         {
             const ElectronicStructureRepresentation& es = rep.electronic_structure;
             viamd::write_int(state, STR_LIT("ElectronicStructureDisplay"), (int)es.display);
-            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneCount"), es.num_planes);
-            for (int j = 0; j < es.num_planes; ++j) {
+            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneCount"), es.cuts.count);
+            for (int j = 0; j < es.cuts.count; ++j) {
                 char key[64];
                 snprintf(key, sizeof(key), "ElectronicStructurePlane%d", j);
-                viamd::write_vec4(state, str_from_cstr(key), plane_vec4(es.planes[j].plane));
+                viamd::write_vec4(state, str_from_cstr(key), plane_vec4(es.cuts.items[j].plane));
                 snprintf(key, sizeof(key), "ElectronicStructurePlaneEnabled%d", j);
-                viamd::write_bool(state, str_from_cstr(key), es.planes[j].enabled);
+                viamd::write_bool(state, str_from_cstr(key), es.cuts.items[j].enabled);
+            }
+            viamd::write_int(state, STR_LIT("ElectronicStructureSliceCount"), es.slices.count);
+            for (int j = 0; j < es.slices.count; ++j) {
+                char key[64];
+                snprintf(key, sizeof(key), "ElectronicStructureSlice%d", j);
+                viamd::write_vec4(state, str_from_cstr(key), plane_vec4(es.slices.items[j].plane));
+                snprintf(key, sizeof(key), "ElectronicStructureSliceEnabled%d", j);
+                viamd::write_bool(state, str_from_cstr(key), es.slices.items[j].enabled);
+                snprintf(key, sizeof(key), "ElectronicStructureSliceOpacity%d", j);
+                viamd::write_flt(state, str_from_cstr(key), es.slices.items[j].opacity);
             }
             if (es.volume.map_init) {
                 const TransferFunction& tf = es.volume.tf;
@@ -2570,8 +2597,11 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
 // The planes of an electronic structure representation (es_planes.h): per plane whether it cuts, picking it for the
 // gizmo in the view, flipping it, turning it to face along the view or an axis through where it is, removing it; and
 // adding one. At most max_planes of them (a plane display draws one).
-static bool draw_electronic_structure_planes(ApplicationState* state, Representation& rep, int max_planes) {
+static bool draw_electronic_structure_planes(ApplicationState* state, Representation& rep) {
     ElectronicStructureRepresentation& es = rep.electronic_structure;
+    // the display's: the volume's cuts, or the planes display's slices (whose normal points either way)
+    ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
+    const bool slices = es.display == ElectronicStructureDisplay::Planes;
     auto& gizmo = state->representation.gizmo;
     bool changed = false;
     const float bw = ImGui::GetFrameHeight();
@@ -2582,19 +2612,17 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
     const vec4_t c4 = have_box ? mat4_mul_vec4(box, vec4_set(0.5f, 0.5f, 0.5f, 1.0f)) : vec4_set(0, 0, 0, 1);
     const vec3_t centre = vec3_set(c4.x, c4.y, c4.z);
     int remove = -1;
-    const int count = MIN(es.num_planes, max_planes);
+    const int count = set.count;
     const size_t num_selected = md_bitmask_count(&state->selection.selection_mask);
     for (int i = 0; i < count; ++i) {
-        Plane& plane = es.planes[i].plane;
+        Plane& plane = set.items[i].plane;
         ImGui::PushID(i);
         char label[32];
         snprintf(label, sizeof(label), "plane %d", i + 1);
         prop::row(label);
-        if (max_planes > 1) {
-            changed |= ImGui::Checkbox("##on", &es.planes[i].enabled);
-            ImGui::SetItemTooltip("Whether it cuts the volume");
-            ImGui::SameLine(0.0f, gap);
-        }
+        changed |= ImGui::Checkbox("##on", &set.items[i].enabled);
+        ImGui::SetItemTooltip(slices ? "Whether it is drawn" : "Whether it cuts the volume");
+        ImGui::SameLine(0.0f, gap);
         const bool picked = gizmo.rep_id == rep.node.id && gizmo.plane == i;
         if (picked) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         if (ImGui::Button(ICON_FA_ARROWS_UP_DOWN_LEFT_RIGHT, ImVec2(bw, 0))) {
@@ -2604,18 +2632,20 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         if (picked) ImGui::PopStyleColor();
         ImGui::SetItemTooltip("Move it in the view (or click its outline there)");
         ImGui::SameLine(0.0f, gap);
-        if (ImGui::Button(ICON_FA_RIGHT_LEFT, ImVec2(bw, 0))) {
-            plane_flip(&plane);
-            changed = true;
+        if (!slices) {
+            if (ImGui::Button(ICON_FA_RIGHT_LEFT, ImVec2(bw, 0))) {
+                plane_flip(&plane);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Flip it: keep the other side");
+            ImGui::SameLine(0.0f, gap);
         }
-        ImGui::SetItemTooltip("Flip it: keep the other side");
-        ImGui::SameLine(0.0f, gap);
         const vec3_t at = plane_project(plane, centre);
         if (ImGui::Button(ICON_FA_EYE, ImVec2(bw, 0))) {
             plane = plane_from_point_normal(at, quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, -1)));
             changed = true;
         }
-        ImGui::SetItemTooltip("Face along the view, keeping what is behind it");
+        ImGui::SetItemTooltip(slices ? "Face the view" : "Face along the view, keeping what is behind it");
         ImGui::SameLine(0.0f, gap);
         ImGui::BeginDisabled(num_selected == 0);
         if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
@@ -2657,25 +2687,30 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         ImGui::SameLine(0.0f, gap);
         if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(bw, 0))) remove = i;
         ImGui::SetItemTooltip("Remove it");
+        if (slices) {
+            prop::row("opacity", "How much of what is behind it it hides");
+            changed |= ImGui::SliderFloat("##opacity", &set.items[i].opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        }
         ImGui::PopID();
     }
     if (remove >= 0) {
-        for (int i = remove; i + 1 < es.num_planes; ++i) es.planes[i] = es.planes[i + 1];
-        es.num_planes -= 1;
+        for (int i = remove; i + 1 < set.count; ++i) set.items[i] = set.items[i + 1];
+        set.count -= 1;
         if (gizmo.rep_id == rep.node.id) {
             if (gizmo.plane == remove) gizmo.plane = -1;
             else if (gizmo.plane > remove) gizmo.plane -= 1;
         }
         changed = true;
     }
-    if (count < max_planes) {
+    if (count < ES_MAX_PLANES) {
         prop::row(count == 0 ? "plane" : "");
-        ImGui::BeginDisabled(!have_box || es.num_planes >= ES_MAX_PLANES);
+        ImGui::BeginDisabled(!have_box);
         if (ImGui::Button(ICON_FA_PLUS, ImVec2(bw, 0))) {
             changed |= es_planes_add(state, &es, rep.node.id) >= 0;
         }
         ImGui::EndDisabled();
-        ImGui::SetItemTooltip(have_box ? "Add a plane through the middle, facing along the view" : "The volume is not there yet");
+        ImGui::SetItemTooltip(have_box ? (slices ? "Add a plane through the middle, facing the view" : "Add a plane through the middle, facing along the view")
+                                       : "The volume is not there yet");
     }
     return changed;
 }
@@ -3010,7 +3045,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
-                    if (es.display == ElectronicStructureDisplay::Plane && es.num_planes == 0) {
+                    if (es.display == ElectronicStructureDisplay::Planes && es.slices.count == 0) {
                         es_planes_add(state, &es, rep.node.id);
                     }
                     // what is drawn, and whether the volume is evaluated (part of its hash): an update, not a dirtying,
@@ -3120,9 +3155,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     } else {
         // Below, what is read where it is drawn (the colour map and its opacity, the planes): nothing to update, the
         // scene's hash has them. The resolution is the volume's, which its hash has: an update evaluates it again.
-        if (es.display != ElectronicStructureDisplay::Isosurface && prop::section(es.display == ElectronicStructureDisplay::Volume ? "Volume" : "Plane")) {
+        if (es.display != ElectronicStructureDisplay::Isosurface && prop::section(es.display == ElectronicStructureDisplay::Volume ? "Volume" : "Colors")) {
             // The transfer function's editor over the volume's values: its histogram over what is in view
-            const bool colors_only = es.display == ElectronicStructureDisplay::Plane;
+            const bool colors_only = es.display == ElectronicStructureDisplay::Planes;
             float lo = 0.0f, hi = 0.0f;
             const bool have_range = es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi);
             TransferFunctionHistogram hist = {};
@@ -3143,8 +3178,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             rep.needs_update |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
             prop::section_end();
         }
-        if (prop::section("Planes")) {
-            draw_electronic_structure_planes(state, rep, es.display == ElectronicStructureDisplay::Plane ? 1 : ES_MAX_PLANES);
+        if (prop::section(es.display == ElectronicStructureDisplay::Volume ? "Cutting planes" : "Planes")) {
+            draw_electronic_structure_planes(state, rep);
             prop::section_end();
         }
     }

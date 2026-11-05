@@ -52,10 +52,26 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         view->fit = 0;
     }
 
+    // the opacity as a vertical slider beside the plot, its scale the curve's: the y axis is labelled in opacity
+    const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float vslider_w = colors_only ? 0.0f : ImGui::GetFrameHeight();
+    const float plot_w = colors_only ? width : width - vslider_w - spacing;
+
     const ImPlotFlags plot_flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
-    if (ImPlot::BeginPlot("##tf", ImVec2(width, height), plot_flags)) {
-        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoHighlight, ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoHighlight);
+    if (ImPlot::BeginPlot("##tf", ImVec2(plot_w, height), plot_flags)) {
+        ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoHighlight,
+                          ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoHighlight | (colors_only ? ImPlotAxisFlags_NoTickLabels : 0));
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.06, ImPlotCond_Always);
+        if (!colors_only) {
+            // the curve's 0, 1/2 and 1 as the opacities they are
+            char l0[16], l1[16], l2[16];
+            snprintf(l0, sizeof(l0), "0");
+            snprintf(l1, sizeof(l1), "%.3g", 0.5f * tf->opacity);
+            snprintf(l2, sizeof(l2), "%.3g", tf->opacity);
+            const double ticks[3] = {0.0, 0.5, 1.0};
+            const char* labels[3] = {l0, l1, l2};
+            ImPlot::SetupAxisTicks(ImAxis_Y1, ticks, 3, labels);
+        }
         ImPlot::SetupAxisLimits(ImAxis_X1, view->x_min, view->x_max, refit ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupFinish();
 
@@ -116,26 +132,8 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         }
         ImPlot::PopPlotClipRect();
 
-        // the range: dragged as lines; symmetric, the other follows mirrored
-        {
-            double beg = tf->range_beg, end = tf->range_end;
-            const ImVec4 col = ImVec4(1.0f, 1.0f, 1.0f, 0.8f);
-            const bool db = ImPlot::DragLineX(1, &beg, col, 1.5f);
-            const bool de = ImPlot::DragLineX(2, &end, col, 1.5f);
-            if (db || de) {
-                if (tf->symmetric) {
-                    const float r = (float)fabs(db ? beg : end);
-                    tf->range_beg = -r;
-                    tf->range_end = r;
-                } else {
-                    tf->range_beg = (float)beg;
-                    tf->range_end = (float)end;
-                }
-                changed = true;
-            }
-        }
-
-        // the points: dragged, removed by a right click; one added by ctrl + click elsewhere
+        // the points: dragged, removed by a right click; one added by ctrl + click elsewhere. Before the range's lines:
+        // the first item under the mouse is the one it takes, and a point on a line is to be taken, not the line
         bool point_hovered = false;
         int remove = -1;
         const float ext = tf->range_end - tf->range_beg;
@@ -159,6 +157,35 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
                 if (under && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) remove = i;
             }
         }
+        // the range: dragged as lines; symmetric, the other follows mirrored
+        {
+            double beg = tf->range_beg, end = tf->range_end;
+            const ImVec4 col = ImVec4(1.0f, 1.0f, 1.0f, 0.8f);
+            const bool db = ImPlot::DragLineX(1, &beg, col, 1.5f);
+            const bool de = ImPlot::DragLineX(2, &end, col, 1.5f);
+            if (db || de) {
+                if (tf->symmetric) {
+                    const float r = (float)fabs(db ? beg : end);
+                    tf->range_beg = -r;
+                    tf->range_end = r;
+                } else {
+                    tf->range_beg = (float)beg;
+                    tf->range_end = (float)end;
+                }
+                changed = true;
+            }
+        }
+
+        // the points over the lines, drawn again
+        if (!colors_only) {
+            ImPlot::PushPlotClipRect();
+            for (int i = 0; i < tf->num_points; ++i) {
+                const ImVec2 px = ImPlot::PlotToPixels(transfer_function_value(*tf, tf->points[i].t), tf->points[i].alpha);
+                dl->AddCircleFilled(px, 6.5f, IM_COL32(0, 0, 0, 120), 16);
+                dl->AddCircleFilled(px, 5.0f, IM_COL32(255, 255, 255, 255), 16);
+            }
+            ImPlot::PopPlotClipRect();
+        }
         if (remove >= 0) changed |= transfer_function_remove(tf, remove);
         // (ctrl: ImPlot leaves the mouse alone while it is held, where a double click is its fitting of the axes)
         if (!colors_only && !point_hovered && ImPlot::IsPlotHovered() && ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && fabsf(ext) > 0.0f) {
@@ -168,16 +195,26 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         }
         ImPlot::EndPlot();
     }
+    if (!colors_only) {
+        ImGui::SameLine(0.0f, spacing);
+        float opacity = tf->opacity;
+        if (ImGui::VSliderFloat("##opacity", ImVec2(vslider_w, height), &opacity, 0.001f, 1.0f, "", ImGuiSliderFlags_Logarithmic)) {
+            tf->opacity = opacity;
+            changed = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) || ImGui::IsItemActive()) {
+            ImGui::SetTooltip("opacity %.3f: at the top of the curve (its 1), of a slab 1/150 of the volume thick", tf->opacity);
+        }
+    }
 
-    // under the plot: the colour map, the opacity, the range, symmetric, fitting the view
-    const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
-    const float cmap_w = width * 0.32f;
+    // under the plot: the colour map, the range, symmetric, fitting the view
+    const float cmap_w = width - spacing - ImGui::CalcTextSize("(?)").x;
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(tf->colormap), ImVec2(cmap_w, 0), tf->colormap)) {
         ImGui::OpenPopup("##colormaps");
     }
     if (ImGui::BeginPopup("##colormaps")) {
         for (int i = 0; i < ImPlot::GetColormapCount(); ++i) {
-            if (ImPlot::ColormapButton(ImPlot::GetColormapName(i), ImVec2(cmap_w * 1.5f, 0), i)) {
+            if (ImPlot::ColormapButton(ImPlot::GetColormapName(i), ImVec2(fminf(cmap_w, 240.0f), 0), i)) {
                 tf->colormap = i;
                 changed = true;
                 ImGui::CloseCurrentPopup();
@@ -185,17 +222,6 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         }
         ImGui::EndPopup();
     }
-    if (!colors_only) {
-        ImGui::SameLine(0.0f, spacing);
-        ImGui::SetNextItemWidth(width - cmap_w - 2.0f * spacing - ImGui::CalcTextSize("(?)").x);
-        float opacity = tf->opacity;
-        if (ImGui::SliderFloat("##opacity", &opacity, 0.001f, 1.0f, "opacity %.3f", ImGuiSliderFlags_Logarithmic)) {
-            tf->opacity = opacity;
-            changed = true;
-        }
-        ImGui::SetItemTooltip("The opacity at the top of the curve: of a slab 1/150 of the volume thick");
-    }
-
     // what the plot takes, on a marker rather than on the plot, where it would be in the way of what it describes
     ImGui::SameLine(0.0f, spacing);
     ImGui::TextDisabled("(?)");
@@ -203,7 +229,7 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         ImGui::SetTooltip(colors_only ? "The colour map over its range, the values' histogram behind.\n"
                                         "Drag the two lines of the range. Scroll to zoom, drag to pan."
                                       : "The opacity over the values, the colour map's colours under it, the values' histogram behind.\n"
-                                        "Drag the points and the two lines of the range.\n"
+                                        "Drag the points and the two lines of the range; the opacity by the slider beside it.\n"
                                         "Ctrl + click to add a point, right click one to remove it.\n"
                                         "Scroll to zoom, drag to pan.");
     }

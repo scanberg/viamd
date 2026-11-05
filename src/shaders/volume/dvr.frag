@@ -9,8 +9,8 @@
 // of a slab 1/REF_SAMPLING_RATE of the volume thick. The output is premultiplied colour + coverage,
 // in display space (the colours are the colour map's own).
 //
-// As a slice, the colour of the value where the ray meets the first plane, inside the clip box and in front of the
-// opaque depth, with the transfer function's colour and full coverage.
+// As slices, where the ray meets each plane inside the clip box and in front of the opaque depth, the transfer
+// function's colour of the value there with the plane's opacity, composited front to back.
 
 layout(std140) uniform DvrUniforms {
     mat4  u_clip_to_model;
@@ -24,8 +24,9 @@ layout(std140) uniform DvrUniforms {
     vec4  u_planes[8];      // n . x + d >= 0 is kept, model space
     int   u_num_planes;
     float u_linear_out;     // 1: the colours decoded from sRGB to linear, for an HDR target
-    float u_slice;          // 1: the volume on the first plane, opaque, instead of through the planes' cut
+    float u_slice;          // 1: the volume on the planes (slices), each of its opacity, instead of through their cut
     float u_pad;
+    vec4  u_slice_opacity[2];   // slice i's at [i / 4][i % 4]
 };
 
 uniform sampler3D u_tex_volume;
@@ -68,15 +69,39 @@ void main() {
     float s0 = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float s1 = min(min(tmax.x, tmax.y), min(tmax.z, 1.0));
     if (u_slice > 0.5) {
-        float a = dot(u_planes[0].xyz, pn) + u_planes[0].w;
-        float b = dot(u_planes[0].xyz, seg);
-        if (abs(b) < 1e-20) discard;
-        float s = -a / b;
-        if (s < s0 || s > s1) discard;
-        float d = texture(u_tex_volume, pn + seg * s).r;
-        float t = clamp((d - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
-        vec3  c = texture(u_tex_tf, vec2(t, 0.5)).rgb;
-        out_color = vec4((u_linear_out > 0.5) ? srgb_to_linear(c) : c, 1.0);
+        float hit_s[8];
+        int   hit_i[8];
+        int   num_hits = 0;
+        for (int i = 0; i < u_num_planes; ++i) {
+            float a = dot(u_planes[i].xyz, pn) + u_planes[i].w;
+            float b = dot(u_planes[i].xyz, seg);
+            if (abs(b) < 1e-20) continue;
+            float s = -a / b;
+            if (s < s0 || s > s1) continue;
+            // in order along the ray
+            int k = num_hits++;
+            while (k > 0 && hit_s[k - 1] > s) {
+                hit_s[k] = hit_s[k - 1];
+                hit_i[k] = hit_i[k - 1];
+                --k;
+            }
+            hit_s[k] = s;
+            hit_i[k] = i;
+        }
+        if (num_hits == 0) discard;
+        vec3  L = vec3(0.0);
+        float T = 1.0;
+        for (int h = 0; h < num_hits; ++h) {
+            float d = texture(u_tex_volume, pn + seg * hit_s[h]).r;
+            float t = clamp((d - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
+            vec3  c = texture(u_tex_tf, vec2(t, 0.5)).rgb;
+            c = (u_linear_out > 0.5) ? srgb_to_linear(c) : c;
+            int   i = hit_i[h];
+            float a = u_slice_opacity[i / 4][i % 4];
+            L += T * a * c;
+            T *= 1.0 - a;
+        }
+        out_color = vec4(L, 1.0 - T);
         return;
     }
     for (int i = 0; i < u_num_planes; ++i) {

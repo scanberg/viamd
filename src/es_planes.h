@@ -35,12 +35,16 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
 // 'info' wanted (nullptr: it is set); kind None when no atoms are selected.
 Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info = nullptr);
 
-// The enabled planes of a representation in the space of its volume's texture ([0,1]^3), as n . x + d >= 0 for the
+// The enabled cuts of a representation (its volume display) in the space of its volume's texture ([0,1]^3), as n . x + d >= 0 for the
 // side kept: what the volume rendering clips to. Returns how many (at most ES_MAX_PLANES).
 int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& es);
 
-// Plane i of a representation in the space of its volume's texture, as above, whether it is enabled or not
-vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, int i);
+// A plane of a representation in the space of its volume's texture, as above
+vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane);
+
+// The enabled slices of a representation (its planes display) of some opacity, in the space of its volume's texture,
+// and their opacities: what the slice rendering draws. Returns how many (at most ES_MAX_PLANES).
+int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es);
 
 // The transfer function of a representation's volume rendering (ElectronicStructureRepresentation::volume.tf) baked
 // into a 2D texture of 256 x 1 RGBA32F texels, made again when it changes.

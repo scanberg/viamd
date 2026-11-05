@@ -409,18 +409,30 @@ inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
 // How an electronic structure representation draws its field
 enum class ElectronicStructureDisplay {
     Isosurface,     // surfaces where the field takes given values
-    Volume,         // direct volume rendering through a colour map and an alpha ramp, cut by planes
-    Plane,          // the field on a plane, evaluated at points over it
+    Volume,         // direct volume rendering through a transfer function, cut by planes
+    Planes,         // the field on a set of planes, each of its own opacity
     Count
 };
 
 inline const char* electronic_structure_display_str[(int)ElectronicStructureDisplay::Count] = {
     "Isosurface",
     "Volume",
-    "Plane",
+    "Planes",
 };
 
 #define ES_MAX_PLANES 8
+
+// A plane of an electronic structure representation: a cut of its volume display, or a slice of its planes display
+struct ElectronicStructurePlane {
+    Plane plane = {};
+    bool  enabled = true;       // a cut cuts, a slice is drawn
+    float opacity = 1.0f;       // a slice's
+};
+
+struct ElectronicStructurePlaneSet {
+    ElectronicStructurePlane items[ES_MAX_PLANES] = {};
+    int count = 0;
+};
 
 // Samples per Angstrom for each VolumeResolution. Beside the enum, because a value per enumerator
 // is part of what the enum MEANS and a second table elsewhere is how the two drift apart.
@@ -651,16 +663,15 @@ struct ElectronicStructureRepresentation {
 
     ElectronicStructureDisplay display = ElectronicStructureDisplay::Isosurface;
 
-    // Volume: the planes that cut it (what is drawn is the box of the volume on the kept side of every enabled
-    // one). Plane: planes[0] is the plane drawn. Edited in the view with a gizmo (es_planes.h).
-    struct {
-        Plane plane = {};
-        bool  enabled = true;
-    } planes[ES_MAX_PLANES];
-    int num_planes = 0;
+    // The planes of each display, apart, so that one is switched to and from without changing the other's
+    // (electronic_structure_planes picks the display's). Volume: the cuts (what is drawn is the box of the volume on
+    // the kept side of every enabled one). Planes: the slices, each drawn with its opacity, the direction of its
+    // normal of no matter. Edited in the view with a gizmo (es_planes.h).
+    ElectronicStructurePlaneSet cuts;
+    ElectronicStructurePlaneSet slices;
 
-    // Volume and Plane: what a value is drawn as, a colour map's colour over a range and an opacity curve over it
-    // (transfer_function.h, edited with transfer_function_widget.h); a plane takes the colours alone
+    // Volume and Planes: what a value is drawn as, a colour map's colour over a range and an opacity curve over it
+    // (transfer_function.h, edited with transfer_function_widget.h); the planes take the colours alone
     struct {
         TransferFunction tf = {};
         bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
@@ -670,6 +681,14 @@ struct ElectronicStructureRepresentation {
         TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
     } volume;
 };
+
+// The planes of the representation's display: its slices in the planes display, its cuts otherwise
+static inline ElectronicStructurePlaneSet& electronic_structure_planes(ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? es.slices : es.cuts;
+}
+static inline const ElectronicStructurePlaneSet& electronic_structure_planes(const ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? es.slices : es.cuts;
+}
 
 static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {
     return 1u << (uint32_t)source;

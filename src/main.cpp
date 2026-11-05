@@ -8017,8 +8017,8 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             // how it is drawn as a volume or on a plane (its isosurfaces are in what draws them)
             const ElectronicStructureRepresentation& es = rep.electronic_structure;
             h = md_hash64(&es.display, sizeof(es.display), h);
-            h = md_hash64(&es.num_planes, sizeof(es.num_planes), h);
-            h = md_hash64(es.planes, sizeof(es.planes[0]) * (size_t)MAX(0, MIN(es.num_planes, ES_MAX_PLANES)), h);
+            h = md_hash64(&es.cuts, sizeof(es.cuts), h);
+            h = md_hash64(&es.slices, sizeof(es.slices), h);
             h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
         }
         if (rep.type == RepresentationType::DipoleMoment) {
@@ -8120,7 +8120,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
 // The electronic structure representations drawn from their volumes, over what the isosurfaces drew into the same
 // (HDR) target: a volume display by direct volume rendering of the field through the colour map and alpha ramp of
-// each, cut by its planes; a plane display as the field on its plane through the colour map. True when anything was
+// each, cut by its planes; a planes display as the field on its planes through the colour map, each of its opacity. True when anything was
 // drawn.
 static bool draw_representations_volumes(ApplicationState* state, bool target_written) {
     bool written = false;
@@ -8128,12 +8128,14 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         Representation& rep = state->representation.reps[i];
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
-        const bool slice = es.display == ElectronicStructureDisplay::Plane;
-        if (!(es.display == ElectronicStructureDisplay::Volume || (slice && es.num_planes > 0)) || !es.density_vol.tex_id) continue;
+        const bool slice = es.display == ElectronicStructureDisplay::Planes;
+        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.density_vol.tex_id) continue;
         vec4_t planes[ES_MAX_PLANES];
+        float  slice_opacity[ES_MAX_PLANES];
         int num_planes = 0;
         if (slice) {
-            planes[num_planes++] = es_volume_plane(es, 0);
+            num_planes = es_volume_slices(planes, slice_opacity, es);
+            if (num_planes == 0) continue;
         } else {
             num_planes = es_volume_clip_planes(planes, es);
         }
@@ -8155,6 +8157,7 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.planes.equations = planes;
         desc.linear_output = true;
         desc.slice = slice;
+        desc.slice_opacity = slice ? slice_opacity : nullptr;
         volume::render_dvr(desc);
         written = true;
     }

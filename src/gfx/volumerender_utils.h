@@ -187,10 +187,11 @@ struct DvrRenderDesc {
 
     // The transfer function's colours decoded from sRGB to linear radiance: for an HDR target (the isosurfaces')
     bool linear_output = false;
-    // The volume on the first plane instead of through it (planes.equations[0], which must be given): where each ray
-    // meets the plane inside the clip box and in front of the depth, the transfer function's colour of the value
-    // there, opaque. The other planes are not used.
+    // The volume on the planes instead of through their cut (slices): where each ray meets each plane inside the clip
+    // box and in front of the depth, the transfer function's colour of the value there with the plane's opacity
+    // (slice_opacity[i], 1 when NULL), composited front to back.
     bool slice = false;
+    const float* slice_opacity = nullptr;
 };
 
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)

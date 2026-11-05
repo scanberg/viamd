@@ -79,8 +79,9 @@ struct DvrUniformData {
     float  linear_out;
     float  slice;
     float  pad;
+    vec4_t slice_opacity[2];
 };
-static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16, "DvrUniformData must match the std140 layout of DvrUniforms");
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -1398,6 +1399,7 @@ void render_dvr(const DvrRenderDesc& desc) {
     for (int i = 0; i < data.num_planes; ++i) data.planes[i] = desc.planes.equations[i];
     data.linear_out = desc.linear_output ? 1.0f : 0.0f;
     data.slice      = desc.slice ? 1.0f : 0.0f;
+    for (int i = 0; i < data.num_planes; ++i) data.slice_opacity[i / 4].elem[i % 4] = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
 
     const SavedState saved = save_state();
 

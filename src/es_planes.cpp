@@ -25,12 +25,14 @@ bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation
 
 int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es, uint32_t rep_id) {
     mat4_t box;
-    if (es->num_planes >= ES_MAX_PLANES || !es_volume_box(&box, *es)) return -1;
+    ElectronicStructurePlaneSet& set = electronic_structure_planes(*es);
+    if (set.count >= ES_MAX_PLANES || !es_volume_box(&box, *es)) return -1;
     const vec3_t centre = transform_point(box, vec3_set(0.5f, 0.5f, 0.5f));
     const vec3_t forward = quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, -1));
-    const int i = es->num_planes++;
-    es->planes[i].plane = plane_from_point_normal(centre, forward);
-    es->planes[i].enabled = true;
+    const int i = set.count++;
+    // a cut facing away from the camera keeps the half behind it; a slice faces the camera
+    set.items[i] = ElectronicStructurePlane{};
+    set.items[i].plane = plane_from_point_normal(centre, es->display == ElectronicStructureDisplay::Planes ? vec3_mul1(forward, -1.0f) : forward);
     state->representation.gizmo.rep_id = rep_id;
     state->representation.gizmo.plane = i;
     return i;
@@ -61,21 +63,32 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
     return fitted;
 }
 
-vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, int i) {
+vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane) {
     // n . (A p + t) + d = (A^T n) . p + (n . t + d), with p in the texture's unit cube
     const mat4_t& m = es.density_vol.texture_to_world;
-    const vec3_t n = es.planes[i].plane.normal;
+    const vec3_t n = plane.normal;
     const vec3_t c0 = vec3_set(m.elem[0][0], m.elem[0][1], m.elem[0][2]);
     const vec3_t c1 = vec3_set(m.elem[1][0], m.elem[1][1], m.elem[1][2]);
     const vec3_t c2 = vec3_set(m.elem[2][0], m.elem[2][1], m.elem[2][2]);
     const vec3_t t  = vec3_set(m.elem[3][0], m.elem[3][1], m.elem[3][2]);
-    return vec4_set(vec3_dot(c0, n), vec3_dot(c1, n), vec3_dot(c2, n), vec3_dot(n, t) + es.planes[i].plane.d);
+    return vec4_set(vec3_dot(c0, n), vec3_dot(c1, n), vec3_dot(c2, n), vec3_dot(n, t) + plane.d);
 }
 
 int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& es) {
     int k = 0;
-    for (int i = 0; i < es.num_planes && i < ES_MAX_PLANES; ++i) {
-        if (es.planes[i].enabled) out[k++] = es_volume_plane(es, i);
+    for (int i = 0; i < es.cuts.count && i < ES_MAX_PLANES; ++i) {
+        if (es.cuts.items[i].enabled) out[k++] = es_volume_plane(es, es.cuts.items[i].plane);
+    }
+    return k;
+}
+
+int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es) {
+    int k = 0;
+    for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
+        const ElectronicStructurePlane& p = es.slices.items[i];
+        if (!p.enabled || !(p.opacity > 0.0f)) continue;
+        out_opacity[k] = p.opacity > 1.0f ? 1.0f : p.opacity;
+        out[k++] = es_volume_plane(es, p.plane);
     }
     return k;
 }
@@ -157,7 +170,7 @@ static Representation* gizmo_target(ApplicationState* state, uint32_t rep_id, in
         if (rep.node.id != rep_id) continue;
         const ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) ||
-            es.display == ElectronicStructureDisplay::Isosurface || plane < 0 || plane >= es.num_planes) {
+            es.display == ElectronicStructureDisplay::Isosurface || plane < 0 || plane >= electronic_structure_planes(es).count) {
             return nullptr;
         }
         return &rep;
@@ -237,10 +250,10 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         if (es.display == ElectronicStructureDisplay::Isosurface) continue;
         mat4_t box;
         if (!es_volume_box(&box, es)) continue;
-        const int count = es.display == ElectronicStructureDisplay::Plane ? MIN(es.num_planes, 1) : es.num_planes;
-        for (int i = 0; i < count; ++i) {
+        const ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
+        for (int i = 0; i < set.count; ++i) {
             vec3_t poly[6];
-            const int n = plane_box_polygon(poly, es.planes[i].plane, box);
+            const int n = plane_box_polygon(poly, set.items[i].plane, box);
             if (n == 0) continue;
             const bool selected = target == &rep && sel.plane == i;
             if (selected) {
@@ -252,7 +265,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
             bool all = true;
             for (int k = 0; k < n; ++k) all &= project(&sp[k], world_to_clip, poly[k], canvas_min, canvas_size);
             if (!all) continue;
-            const bool enabled = es.planes[i].enabled;
+            const bool enabled = set.items[i].enabled;
             // a light line on a dark halo: seen over a light background and a dark one alike
             const ImU32 col = selected ? IM_COL32(255, 200, 40, 255) : enabled ? IM_COL32(255, 255, 255, 220) : IM_COL32(200, 200, 200, 130);
             const ImU32 halo = enabled || selected ? IM_COL32(0, 0, 0, 110) : IM_COL32(0, 0, 0, 60);
@@ -273,9 +286,15 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
     bool capture = false;
     GizmoPart hover_part = GizmoPart_None;
     if (target && (centre_valid || dragging)) {
-        Plane& plane = target->electronic_structure.planes[sel.plane].plane;
+        Plane& plane = electronic_structure_planes(target->electronic_structure).items[sel.plane].plane;
         const bool ours = dragging && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane;
         if (dragging && !ours) gizmo_drag.part = GizmoPart_None;
+        // A slice's normal is of no matter which way it points: it is turned to the camera, so that the arrow is
+        // seen and taken hold of (not while it is dragged, which reads it)
+        if (target->electronic_structure.display == ElectronicStructureDisplay::Planes && !ours &&
+            vec3_dot(plane.normal, quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, 1))) < 0.0f) {
+            plane_flip(&plane);
+        }
         vec3_t anchor = ours ? gizmo_drag.anchor : plane_project(plane, centre);
         if (!ours && gizmo_anchor.rep_id == sel.rep_id && gizmo_anchor.plane == sel.plane) {
             mat4_t box;
