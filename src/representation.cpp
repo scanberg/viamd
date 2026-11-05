@@ -360,7 +360,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
     md_gl_rep_destroy(rep.md_rep);
     md_gl_rep_destroy(rep.glyph_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
-    // exists, so let the queue run out first.
+    // exists, so let the queue run out first. Its evaluation not yet all issued is dropped first: the
+    // drain then waits for what is in flight only.
+    gpu_volume_job_cancel(state, rep.electronic_structure.density_vol.tex_id);
     gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);

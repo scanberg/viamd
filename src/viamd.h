@@ -1343,10 +1343,13 @@ struct ApplicationState {
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
-        // A density evaluation not yet all issued (md_gto_gpu_job_t: its counting pass is): the readback is
-        // queued when it is (gpu_volume_jobs_poll), of this grid
+        // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
+        // readback is queued when it is (gpu_volume_jobs_poll), of this grid
         void*             density_job = nullptr;
         md_grid_t         grid      = {};
+        // The same once it is all issued, kept for its progress until the readback lands (gpu_volume_jobs_progress)
+        void*             issued_job = nullptr;
+        int64_t           t0 = 0;               // md_tick_t: when the evaluation began
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -1539,6 +1542,14 @@ struct ApplicationState {
         // spins' density matrices in tiles, made by a pool task; and the key of one that could not be made
         void*               gpu_localization = nullptr;
         uint64_t            gpu_localization_failed_key = 0;
+        // Any other density a representation evaluates (a transition density, made by its provider on every
+        // read; a density property, read from its file) as the packed triangle the kernel reads, extracted on a
+        // worker thread straight into a device buffer of its own (viamd.cpp, DensityPackBuild) and kept: the
+        // last one, until another is asked for
+        md_gpu_addr_t       gpu_dpack = 0;
+        uint64_t            gpu_dpack_key = 0;     // the density, slice and version it holds, 0: none
+        void*               gpu_dpack_build = nullptr;
+        uint64_t            gpu_dpack_failed_key = 0;
 #endif
     } mold;
 
@@ -2705,11 +2716,21 @@ vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, co
 // backend, where evaluation writes the texture directly.
 void gpu_volume_jobs_drain(ApplicationState* state);
 
-// Issues what the density jobs left once their counts are there, and queues their readbacks: once a frame.
+// Issues what the density jobs have room for (their pieces, a few in flight), and queues the readbacks of those
+// all issued: once a frame.
 void gpu_volume_jobs_poll(ApplicationState* state);
 
-// Whether an SCF density's matrix is being made on a worker thread for a representation's volume, and for how
-// long: for a progress display. False without the GPU backend.
+// The density evaluations on the GPU under way for longer than a moment, for a progress display: how far each is
+// (0 to 1). Returns how many (at most cap). 0 without the GPU backend.
+size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap);
+
+// Drops the density evaluation into vol_tex that is not yet all issued, if there is one: what it has in flight
+// completes, nothing more is issued, and the texture keeps what it held. True when one was dropped.
+bool gpu_volume_job_cancel(ApplicationState* state, uint32_t vol_tex);
+
+// Whether a density's matrix is being made on a worker thread for a representation's volume (an SCF density's
+// tiles, or another density's packed triangle), and for how long: for a progress display. False without the
+// GPU backend.
 bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
 // A line of the task overlay from a component, given in answer to EventType_ViamdTaskProgressRequest: what is
