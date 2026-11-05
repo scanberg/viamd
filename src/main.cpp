@@ -3695,7 +3695,11 @@ static void draw_async_task_window(ApplicationState* data) {
     float iso_fraction[8];
     const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
     any_task_label_visible |= num_iso > 0;
-    // the SCF density matrix a volume waits for, made on a worker thread
+    // the density volumes evaluated on the GPU over frames
+    float vol_fraction[8];
+    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, ARRAY_SIZE(vol_fraction));
+    any_task_label_visible |= num_vol > 0;
+    // the density matrix a volume waits for, made on a worker thread
     double dmat_seconds = 0.0;
     const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
     any_task_label_visible |= dmat_preparing;
@@ -3764,6 +3768,10 @@ static void draw_async_task_window(ApplicationState* data) {
         }
         if (dmat_preparing) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
+        }
+        for (size_t i = 0; i < num_vol; i++) {
+            snprintf(buf, sizeof(buf), "Density volume %.0f%%", vol_fraction[i] * 100.f);
+            ImGui::ProgressBar(vol_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
         }
         if (nto_warming) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Natural transition orbitals: computing");
