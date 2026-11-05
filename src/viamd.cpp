@@ -4227,10 +4227,12 @@ static bool es_attribute_exists(const md_system_t& sys, str_t path) {
 // (localization_poll): of each spin rho_s with its gradient and tau_s over the derivative basis
 // (md_qm_kinetic_orbitals), then md_qm_elf or md_qm_lol per point; slow.
 //
-// Below ES_LOCALIZATION_RHO_MIN (both spins) both are 0: further out they are ratios of vanishing sums, which in a
-// gaussian basis take any value (ELF goes to 1 in the vacuum). 1e-4 is outside where any chemistry is (the 1e-3
-// isodensity is the usual molecular surface).
-#define ES_LOCALIZATION_RHO_MIN 1.0e-4
+// No floor of rho: LOL is a plain ratio and holds out to where rho underflows (it goes to 0 there itself). ELF is a
+// small difference of large terms over a vanishing D0 in the tails, and from float data (the basis, the
+// coordinates) it is good to about the noise md_qm_elf_noise; it is faded out smoothly (md_qm_elf_fade) as that
+// goes from MD_QM_ELF_FADE_LO to _HI, where rho is about 1e-7 (the 1e-3 isodensity is the usual molecular
+// surface), rather than cut at a floor of rho. The CPU path, in double from the same float data, fades alike.
+#define ES_LOCALIZATION_RHO_MIN 0.0
 #define ES_LOCALIZATION_CUTOFF 1.0e-8
 #define ES_LOCALIZATION_CHUNK (1u << 18)
 // How far the atoms may move before the matrices' pattern is made again (bohr), as the density's (GPU_DMAT_MARGIN)
@@ -4304,12 +4306,13 @@ static bool localization_fields_init(LocalizationFields* f, const md_system_t& s
 }
 
 static inline float localization_value(bool lol, int num_spins, const double rho[2], const double g2[2], const double tau[2]) {
-    if (num_spins == 1) {
-        return (float)(lol ? md_qm_lol_closed_shell(rho[0], tau[0], ES_LOCALIZATION_RHO_MIN)
-                           : md_qm_elf_closed_shell(rho[0], g2[0], tau[0], ES_LOCALIZATION_RHO_MIN));
+    if (num_spins == 1) {   // a closed shell: two equal halves
+        const double r[2] = {0.5 * rho[0], 0.5 * rho[0]}, g[2] = {0.25 * g2[0], 0.25 * g2[0]}, t[2] = {0.5 * tau[0], 0.5 * tau[0]};
+        return localization_value(lol, 2, r, g, t);
     }
-    return (float)(lol ? md_qm_lol(rho[0], tau[0], rho[1], tau[1], ES_LOCALIZATION_RHO_MIN)
-                       : md_qm_elf(rho[0], g2[0], tau[0], rho[1], g2[1], tau[1], ES_LOCALIZATION_RHO_MIN));
+    if (lol) return (float)md_qm_lol(rho[0], tau[0], rho[1], tau[1], ES_LOCALIZATION_RHO_MIN);
+    const double fade = md_qm_elf_fade(md_qm_elf_noise(rho[0], tau[0], rho[1], tau[1]), MD_QM_ELF_FADE_LO, MD_QM_ELF_FADE_HI);
+    return fade > 0.0 ? (float)(fade * md_qm_elf(rho[0], g2[0], tau[0], rho[1], g2[1], tau[1], ES_LOCALIZATION_RHO_MIN)) : 0.0f;
 }
 
 // The evaluation of a representation's ELF or LOL, by a pool task: the fields made, the points evaluated, ELF or LOL
@@ -4607,6 +4610,7 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
         .basis = L->gpu_basis, .atom_xyz = state->mold.gpu_atoms, .num_spins = L->num_spins,
         .dmat = { L->dmat[0], L->num_spins > 1 ? L->dmat[1] : nullptr },
         .kind = lol ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, .rho_min = ES_LOCALIZATION_RHO_MIN,
+        .fade_lo = MD_QM_ELF_FADE_LO, .fade_hi = MD_QM_ELF_FADE_HI,
         .out_tex = state->gpu_volume, .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
     };
     if (!md_gto_gpu_localization_launch(state->gpu_stream, &desc)) return false;
