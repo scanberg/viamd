@@ -1448,6 +1448,10 @@ struct ApplicationState {
         // one that could not be (made where it is asked for instead)
         void*               gpu_dmat_build = nullptr;
         uint64_t            gpu_dmat_failed_key = 0;
+        // What the ELF and LOL kernel reads (viamd.cpp, LocalizationGpu): a GPU basis at their AO cutoff and the
+        // spins' density matrices in tiles, made by a pool task; and the key of one that could not be made
+        void*               gpu_localization = nullptr;
+        uint64_t            gpu_localization_failed_key = 0;
 #endif
     } mold;
 
