@@ -4230,8 +4230,9 @@ static bool es_attribute_exists(const md_system_t& sys, str_t path) {
 // No floor of rho: LOL is a plain ratio and holds out to where rho underflows (it goes to 0 there itself). ELF is a
 // small difference of large terms over a vanishing D0 in the tails, and from float data (the basis, the
 // coordinates) it is good to about the noise md_qm_elf_noise; it is faded out smoothly (md_qm_elf_fade) as that
-// goes from MD_QM_ELF_FADE_LO to _HI, where rho is about 1e-7 (the 1e-3 isodensity is the usual molecular
-// surface), rather than cut at a floor of rho. The CPU path, in double from the same float data, fades alike.
+// goes from MD_QM_ELF_FADE_LO to _HI (rho about 1e-8 to 1e-9: the noise shows before it goes), rather than cut at a
+// floor of rho. The CPU path, in double from the same float data, fades alike. The box's padding (calculate_bounds,
+// 6 bohr beyond the atoms, rho about 1e-5 to 1e-6 there) ends the volume well before that: it is what bounds ELF now.
 #define ES_LOCALIZATION_RHO_MIN 0.0
 #define ES_LOCALIZATION_CUTOFF 1.0e-8
 #define ES_LOCALIZATION_CHUNK (1u << 18)
