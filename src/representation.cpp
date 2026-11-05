@@ -2205,6 +2205,19 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceOpacity"), ES_MAX_PLANES);
         float o;
         if (i >= 0 && viamd::extract_flt(o, arg)) rep->electronic_structure.slices.items[i].opacity = CLAMP(o, 0.0f, 1.0f);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceCenter"))) {
+        // its rectangle (a workspace without one: the rectangle around where it cuts the box, es_slices_conform)
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceCenter"), ES_MAX_PLANES);
+        float v[3];
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].center = vec3_set(v[0], v[1], v[2]);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceAxis"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceAxis"), ES_MAX_PLANES);
+        float v[3];
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].axis = vec3_set(v[0], v[1], v[2]);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceExtent"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceExtent"), ES_MAX_PLANES);
+        float v[2];
+        if (i >= 0 && viamd::extract_flt_vec(v, 2, arg) && v[0] > 0.0f && v[1] > 0.0f) rep->electronic_structure.slices.items[i].extent = vec2_set(v[0], v[1]);
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSlice"))) {
         const int i = es_key_index(ident, STR_LIT("ElectronicStructureSlice"), ES_MAX_PLANES);
         vec4_t v;
@@ -2391,6 +2404,15 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
                 viamd::write_bool(state, str_from_cstr(key), es.slices.items[j].enabled);
                 snprintf(key, sizeof(key), "ElectronicStructureSliceOpacity%d", j);
                 viamd::write_flt(state, str_from_cstr(key), es.slices.items[j].opacity);
+                const ElectronicStructurePlane& sl = es.slices.items[j];
+                if (sl.extent.x > 0.0f && sl.extent.y > 0.0f) {
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceCenter%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.center.elem, 3);
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceAxis%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.axis.elem, 3);
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceExtent%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.extent.elem, 2);
+                }
             }
             if (es.volume.map_init) {
                 const TransferFunction& tf = es.volume.tf;
@@ -2718,13 +2740,18 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
             ImGui::SetItemTooltip("Flip it: keep the other side");
             ImGui::SameLine(0.0f, gap);
         }
-        const vec3_t at = plane_project(plane, centre);
+        // what it turns about: a slice's rectangle's middle, a cut's point nearest the middle of the box
+        const bool has_rect = slices && set.items[i].extent.x > 0.0f;
+        const vec3_t at = has_rect ? set.items[i].center : plane_project(plane, centre);
         ImGui::BeginDisabled(num_selected == 0);
         if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
             PlaneFitInfo fit;
-            const Plane fitted = es_plane_fit_selection(state, plane, &fit);
+            vec3_t atoms = at;
+            const Plane fitted = es_plane_fit_selection(state, plane, &fit, &atoms);
             if (fit.kind != PlaneFitKind::None) {
                 plane = fitted;
+                // a slice's rectangle moved to the atoms' middle (its size kept: its sides are the gizmo's)
+                if (has_rect) set.items[i].center = plane_project(plane, atoms);
                 changed = true;
             }
         }
@@ -2764,16 +2791,11 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         }
         ImGui::SameLine(0.0f, gap);
         if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(bw, 0))) remove = i;
-        ImGui::SetItemTooltip("Remove it");
+        ImGui::SetItemTooltip("Remove it (or Delete in the view, while it is picked)");
         ImGui::PopID();
     }
     if (remove >= 0) {
-        for (int i = remove; i + 1 < set.count; ++i) set.items[i] = set.items[i + 1];
-        set.count -= 1;
-        if (gizmo.rep_id == rep.node.id) {
-            if (gizmo.plane == remove) gizmo.plane = -1;
-            else if (gizmo.plane > remove) gizmo.plane -= 1;
-        }
+        es_planes_remove(state, &rep, remove);
         changed = true;
     }
     if (count < ES_MAX_PLANES) {

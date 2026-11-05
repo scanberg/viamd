@@ -23,47 +23,103 @@ bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation
     return true;
 }
 
-bool es_plane_frame(EsPlaneFrame* f, const Plane& plane_in, const mat4_t& box) {
-    // Which way the normal points is of no matter to the image (a slice's is turned to the camera as it is picked):
-    // one of the two, so that turning it does not make the image again
-    Plane plane = plane_in;
-    if (vec3_dot(plane.normal, vec3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) plane_flip(&plane);
+// The rectangle around where the plane cuts the box, with its first side along 'right' (as near as the plane allows);
+// where the plane misses the box, a square about the box's middle, as wide as the box's widest side
+static void slice_fit_box(ElectronicStructurePlane* p, const mat4_t& box, vec3_t right) {
+    vec3_t u, v;
+    plane_frame(&u, &v, p->plane, right);
     vec3_t poly[6];
-    const int n = plane_box_polygon(poly, plane, box);
-    if (n < 3) return false;
-    // A frame of the plane by the box's first axis, not the view: the image stays put as the view turns
-    const vec3_t ax = vec3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]);
-    f->plane = plane;
-    plane_frame(&f->u, &f->v, plane, ax);
-    f->rect[0] = FLT_MAX; f->rect[1] = -FLT_MAX; f->rect[2] = FLT_MAX; f->rect[3] = -FLT_MAX;
-    for (int k = 0; k < n; ++k) {
-        const float s = vec3_dot(poly[k], f->u), t = vec3_dot(poly[k], f->v);
-        f->rect[0] = MIN(f->rect[0], s); f->rect[1] = MAX(f->rect[1], s);
-        f->rect[2] = MIN(f->rect[2], t); f->rect[3] = MAX(f->rect[3], t);
+    const int n = plane_box_polygon(poly, p->plane, box);
+    float r[4] = {FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX};
+    if (n >= 3) {
+        for (int k = 0; k < n; ++k) {
+            const float s = vec3_dot(poly[k], u), t = vec3_dot(poly[k], v);
+            r[0] = MIN(r[0], s); r[1] = MAX(r[1], s);
+            r[2] = MIN(r[2], t); r[3] = MAX(r[3], t);
+        }
+    } else {
+        const vec3_t c = plane_project(p->plane, transform_point(box, vec3_set(0.5f, 0.5f, 0.5f)));
+        float side = 0.0f;
+        for (int k = 0; k < 3; ++k) side = MAX(side, vec3_length(vec3_set(box.elem[k][0], box.elem[k][1], box.elem[k][2])));
+        r[0] = vec3_dot(c, u) - 0.5f * side; r[1] = r[0] + side;
+        r[2] = vec3_dot(c, v) - 0.5f * side; r[3] = r[2] + side;
     }
-    f->num_poly = n;
-    for (int k = 0; k < n; ++k) f->poly[k] = poly[k];
+    // the plane's point nearest the origin, and from it along u and v to the rectangle's middle
+    const vec3_t on = vec3_mul1(p->plane.normal, -p->plane.d);
+    p->center = vec3_add(on, vec3_add(vec3_mul1(u, 0.5f * (r[0] + r[1])), vec3_mul1(v, 0.5f * (r[2] + r[3]))));
+    p->axis = u;
+    p->extent = vec2_set(MAX(0.5f * (r[1] - r[0]), 0.1f), MAX(0.5f * (r[3] - r[2]), 0.1f));
+}
+
+void es_slices_conform(ElectronicStructureRepresentation* es) {
+    mat4_t box;
+    const bool have_box = es_volume_box(&box, *es);
+    for (int i = 0; i < es->slices.count && i < ES_MAX_PLANES; ++i) {
+        ElectronicStructurePlane& p = es->slices.items[i];
+        if (!(p.extent.x > 0.0f && p.extent.y > 0.0f)) {
+            // by the box's first axis, not the view: as it was before slices had rectangles of their own
+            if (have_box) slice_fit_box(&p, box, vec3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]));
+            continue;
+        }
+        // only what is off by more than rounding: a slice already on its plane is left exactly as it is (what the
+        // scene's hash and its image's key are of)
+        const float dist = plane_distance(p.plane, p.center);
+        if (fabsf(dist) > 1.0e-5f) p.center = vec3_sub(p.center, vec3_mul1(p.plane.normal, dist));
+        const float along = vec3_dot(p.axis, p.plane.normal);
+        const float len = vec3_length(p.axis);
+        if (fabsf(along) > 1.0e-5f || fabsf(len - 1.0f) > 1.0e-5f) {
+            vec3_t u, v;
+            plane_frame(&u, &v, p.plane, p.axis);
+            p.axis = u;
+        }
+    }
+}
+
+bool es_slice_frame(EsSliceFrame* f, const ElectronicStructurePlane& p) {
+    if (!(p.extent.x > 0.0f && p.extent.y > 0.0f)) return false;
+    // Which way the normal points is of no matter to the image (a slice's is turned to the camera as it is seen): one
+    // of the two, so that turning it does not make the image again
+    vec3_t n = p.plane.normal;
+    if (vec3_dot(n, vec3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) n = vec3_mul1(n, -1.0f);
+    f->n = n;
+    f->u = p.axis;
+    f->v = vec3_cross(n, p.axis);
+    f->c = p.center;
+    f->hu = p.extent.x;
+    f->hv = p.extent.y;
     return true;
 }
 
-void es_plane_image_grid(md_grid_t* grid, const EsPlaneFrame& f, const float rect[4], float spacing) {
-    const Plane& plane = f.plane;
-    const int w = MAX(1, (int)ceilf((rect[1] - rect[0]) / spacing));
-    const int h = MAX(1, (int)ceilf((rect[3] - rect[2]) / spacing));
+mat4_t es_slice_rect_from_world(const EsSliceFrame& f) {
+    // mat4_t's elem[column][row]
+    mat4_t m = {};
+    const vec3_t ax[3] = {vec3_mul1(f.u, 0.5f / f.hu), vec3_mul1(f.v, 0.5f / f.hv), f.n};
+    for (int r = 0; r < 3; ++r) {
+        for (int k = 0; k < 3; ++k) m.elem[k][r] = ax[r].elem[k];
+        m.elem[3][r] = -vec3_dot(ax[r], f.c) + (r < 2 ? 0.5f : 0.0f);
+    }
+    m.elem[3][3] = 1.0f;
+    return m;
+}
+
+void es_slice_image_grid(md_grid_t* grid, const EsSliceFrame& f, float spacing) {
+    const int w = CLAMP((int)ceilf(2.0f * f.hu / spacing), 1, GPU_PLANE_DIM);
+    const int h = CLAMP((int)ceilf(2.0f * f.hv / spacing), 1, GPU_PLANE_DIM);
+    // the pixels' edges on the rectangle's: each axis its own spacing, near the one asked
+    const float su = 2.0f * f.hu / (float)w, sv = 2.0f * f.hv / (float)h, sn = MIN(su, sv);
     // Pixel centres on the plane: the one layer's centre (the kernels sample at voxel centres) a half spacing along n
     // from the corner
-    const vec3_t on = vec3_mul1(plane.normal, -plane.d);   // the plane's point nearest the origin
-    const vec3_t corner = vec3_add(vec3_add(vec3_add(on, vec3_mul1(f.u, rect[0])), vec3_mul1(f.v, rect[2])), vec3_mul1(plane.normal, -0.5f * spacing));
+    const vec3_t corner = vec3_sub(vec3_sub(vec3_sub(f.c, vec3_mul1(f.u, f.hu)), vec3_mul1(f.v, f.hv)), vec3_mul1(f.n, 0.5f * sn));
     const float to_bohr = (float)(1.0 / BOHR_TO_ANGSTROM);
     *grid = md_grid_t{};
     grid->orientation = mat3_t{};
     for (int k = 0; k < 3; ++k) {
         grid->orientation.elem[0][k] = f.u.elem[k];
         grid->orientation.elem[1][k] = f.v.elem[k];
-        grid->orientation.elem[2][k] = plane.normal.elem[k];
+        grid->orientation.elem[2][k] = f.n.elem[k];
     }
     grid->origin  = vec3_mul1(corner, to_bohr);
-    grid->spacing = vec3_set1(spacing * to_bohr);
+    grid->spacing = vec3_set(su * to_bohr, sv * to_bohr, sn * to_bohr);
     grid->dim[0] = w;
     grid->dim[1] = h;
     grid->dim[2] = 1;
@@ -77,17 +133,24 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
     if (set.count >= ES_MAX_PLANES || !es_volume_box(&box, *es)) return -1;
     const vec3_t centre = transform_point(box, vec3_set(0.5f, 0.5f, 0.5f));
     const vec3_t forward = quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, -1));
+    const vec3_t right = quat_mul_vec3(state->view.camera.orientation, vec3_set(1, 0, 0));
+    const bool slice = es->display == ElectronicStructureDisplay::Planes;
     const int i = set.count++;
-    // a cut facing away from the camera keeps the half behind it; a slice faces the camera
-    set.items[i] = ElectronicStructurePlane{};
-    set.items[i].plane = plane_from_point_normal(centre, es->display == ElectronicStructureDisplay::Planes ? vec3_mul1(forward, -1.0f) : forward);
-    if (es->display == ElectronicStructureDisplay::Planes && !faces_camera(state, set.items[i].plane)) plane_flip(&set.items[i].plane);
+    // a cut facing away from the camera keeps the half behind it; a slice faces the camera, its rectangle around where
+    // it cuts the box, square to the view
+    ElectronicStructurePlane& p = set.items[i];
+    p = ElectronicStructurePlane{};
+    p.plane = plane_from_point_normal(centre, slice ? vec3_mul1(forward, -1.0f) : forward);
+    if (slice) {
+        if (!faces_camera(state, p.plane)) plane_flip(&p.plane);
+        slice_fit_box(&p, box, right);
+    }
     state->representation.gizmo.rep_id = rep_id;
     state->representation.gizmo.plane = i;
     return i;
 }
 
-Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info) {
+Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info, vec3_t* out_centre) {
     const md_system_state_t& st = state->mold.state;
     const size_t count = md_bitmask_count(&state->selection.selection_mask);
     if (count == 0 || !st.xyz) {
@@ -108,6 +171,11 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
         for (size_t i = 1; i < n; ++i) pts[i] = vec3_add(pts[i], pts[0]);
     }
     const Plane fitted = plane_fit(plane, pts, n, info);
+    if (out_centre && n > 0) {
+        vec3_t c = vec3_zero();
+        for (size_t i = 0; i < n; ++i) c = vec3_add(c, pts[i]);
+        *out_centre = vec3_mul1(c, 1.0f / (float)n);
+    }
     md_temp_end(temp);
     return fitted;
 }
@@ -131,16 +199,25 @@ int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& 
     return k;
 }
 
-int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es, int* out_index) {
-    int k = 0;
-    for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
+int es_volume_slices(vec4_t* out_plane, float* out_opacity, mat4_t* out_rect_from_model, const ElectronicStructureRepresentation& es) {
+    const int count = MIN(es.slices.count, ES_MAX_PLANES);
+    for (int i = 0; i < count; ++i) {
         const ElectronicStructurePlane& p = es.slices.items[i];
-        if (!p.enabled || !(p.opacity > 0.0f)) continue;
-        out_opacity[k] = p.opacity > 1.0f ? 1.0f : p.opacity;
-        if (out_index) out_index[k] = i;
-        out[k++] = es_volume_plane(es, p.plane);
+        out_plane[i] = es_volume_plane(es, p.plane);
+        EsSliceFrame f;
+        if (es_slice_frame(&f, p)) {
+            out_opacity[i] = p.enabled ? CLAMP(p.opacity, 0.0f, 1.0f) : 0.0f;
+            out_rect_from_model[i] = es_slice_rect_from_world(f) * es.box_to_world;
+        } else {
+            // no rectangle yet: nowhere
+            out_opacity[i] = 0.0f;
+            out_rect_from_model[i] = mat4_t{};
+            out_rect_from_model[i].elem[3][0] = -1.0f;
+            out_rect_from_model[i].elem[3][1] = -1.0f;
+            out_rect_from_model[i].elem[3][3] = 1.0f;
+        }
     }
-    return k;
+    return count;
 }
 
 uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es) {
@@ -159,21 +236,26 @@ uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es) {
 // The gizmo
 // ---------------------------------------------------------------------------------------------------------------
 
-// The gizmo of the picked plane, in screen space at the middle of where the plane cuts its box (its anchor):
+// The gizmo of the picked plane, in screen space at its anchor: a cut's, the middle of where it cuts its box; a slice's,
+// the middle of its rectangle.
 //
 //   - a ring: dragging within it turns the normal as a trackball turns, about the axis in the view across the drag,
-//     by the drag's length over the ring's radius; from any view, the plane seen face on or edge on alike. The
-//     normal has two degrees of freedom and this turns only those: there is no turn about the normal to keep.
-//     With shift, the normal snaps to the nearest axis within 10 degrees.
-//   - the normal, an arrow from the anchor, and a handle at the anchor: dragging either slides the plane along the
-//     normal, by where the mouse's ray passes closest to the normal's line; when the normal points (nearly) at the
-//     viewer, by the mouse's vertical movement instead. Drawn faint when it points away from the viewer.
+//     by the drag's length over the ring's radius (a slice's rectangle turns with it, about its middle). With shift,
+//     the normal snaps to the nearest axis within 10 degrees.
+//   - the normal, an arrow from the anchor: dragging it slides the plane along the normal, by where the mouse's ray
+//     passes closest to the normal's line; when the normal points (nearly) at the viewer, by the mouse's vertical
+//     movement instead. Drawn faint when it points away from the viewer.
+//   - a cut's handle at the anchor slides it as the arrow does. A slice's moves its rectangle along the plane (with
+//     ctrl: slides it as the arrow does, which is how a slice seen face on, its arrow too short to take, is slid).
+//   - a slice's rectangle: its sides and corners resize it, the opposite side staying (with shift: about its middle);
+//     the knob past its first side turns it about the normal (with shift: by 15 degrees).
 //
-// The anchor is held while a drag lasts: the plane turns about it, and slides along its normal through it. After,
-// it stays where the drag left it (as long as it is in the box, projected onto the plane as it moves), rather than
-// jump to the middle of the plane's new cut.
+// What moves along the plane is not offered where the plane is seen (nearly) edge on: the mouse's ray meets it nowhere
+// near where it is pointed. A cut's anchor is held while a drag lasts: the plane turns about it, and slides along its
+// normal through it. After, it stays where the drag left it (as long as it is in the box, projected onto the plane as
+// it moves), rather than jump to the middle of the plane's new cut.
 
-enum GizmoPart { GizmoPart_None, GizmoPart_Rotate, GizmoPart_Slide };
+enum GizmoPart { GizmoPart_None, GizmoPart_Rotate, GizmoPart_Slide, GizmoPart_Move, GizmoPart_Resize, GizmoPart_Twist };
 
 static struct {
     GizmoPart part = GizmoPart_None;    // of the drag under way, None when there is none
@@ -188,18 +270,61 @@ static struct {
     float     slide_d0 = 0.0f;
     float     slide_t = 0.0f;
     float     slide_off = 0.0f;
+    // a slice's plane and rectangle when it began (u0 and v0 as its handles were: v0 = n x u0 of the normal then), and
+    // where on that plane the mouse took it: what a move, a resize and a turn about the normal go from
+    Plane     plane0 = {};
+    vec3_t    c0 = {}, u0 = {}, v0 = {};
+    float     hu0 = 0.0f, hv0 = 0.0f;
+    vec3_t    grab = {};
+    int       su = 0, sv = 0;           // the sides resized: -1, +1 the one along -u, +u (-v, +v); 0 neither
+    float     twist0 = 0.0f;            // the angle about the centre, from u0 to v0, the mouse took it at
 } gizmo_drag;
 
 bool es_planes_dragging(uint32_t rep_id, int plane) {
     return gizmo_drag.part != GizmoPart_None && gizmo_drag.rep_id == rep_id && gizmo_drag.plane == plane;
 }
 
-// Where the last drag left the anchor, of this plane
+// Where the last drag left a cut's anchor, of this plane
 static struct {
     uint32_t rep_id = 0;
     int      plane = -1;
     vec3_t   point = {};
 } gizmo_anchor;
+
+void es_planes_remove(ApplicationState* state, Representation* rep, int i) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
+    if (i < 0 || i >= set.count) return;
+    for (int k = i; k + 1 < set.count; ++k) set.items[k] = set.items[k + 1];
+    set.items[set.count - 1] = ElectronicStructurePlane{};
+    set.count -= 1;
+    if (&set == &es.slices) {
+        // its image with it: what is being evaluated into it first let finish (it would land in a texture freed)
+        ElectronicStructurePlaneImage& im = es.plane_images[i];
+        bool any = false;
+        for (Volume& v : im.img) {
+            if (v.tex_id) {
+                gpu_volume_job_cancel(state, v.tex_id);
+                any = true;
+            }
+        }
+        if (any) gpu_volume_jobs_drain(state);
+        for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
+        for (int k = i; k + 1 < ES_MAX_PLANES; ++k) es.plane_images[k] = es.plane_images[k + 1];
+        es.plane_images[ES_MAX_PLANES - 1] = ElectronicStructurePlaneImage{};
+    }
+    const uint32_t id = rep->node.id;
+    auto& sel = state->representation.gizmo;
+    if (sel.rep_id == id) {
+        if (sel.plane == i) sel.plane = -1;
+        else if (sel.plane > i) sel.plane -= 1;
+    }
+    if (gizmo_drag.rep_id == id) gizmo_drag.part = GizmoPart_None;
+    if (gizmo_anchor.rep_id == id) {
+        if (gizmo_anchor.plane == i) gizmo_anchor.plane = -1;
+        else if (gizmo_anchor.plane > i) gizmo_anchor.plane -= 1;
+    }
+}
 
 static inline bool project(ImVec2* out, const mat4_t& world_to_clip, vec3_t p, vec2_t canvas_min, vec2_t canvas_size) {
     const vec4_t c = mat4_mul_vec4(world_to_clip, vec4_set(p.x, p.y, p.z, 1.0f));
@@ -218,6 +343,10 @@ static inline float segment_distance(ImVec2 p, ImVec2 a, ImVec2 b) {
     return sqrtf(d.x * d.x + d.y * d.y);
 }
 
+static inline float point_distance(ImVec2 a, ImVec2 b) {
+    return sqrtf((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
 // Which way p faces the camera: true when the camera is on the side its normal points to. In perspective, by where the
 // camera is (the side of the plane it is on), so that it turns exactly as the plane is seen edge on; in orthographic,
 // by the direction it looks along, as every point sees the plane alike. In the space the planes are in (the view
@@ -233,7 +362,9 @@ static bool faces_camera(const ApplicationState* state, const Plane& p) {
 }
 
 // The outlines es_planes_gizmo found this frame, as segments in normalized device coordinates (z for the depth test),
-// for es_planes_draw_outlines; the gizmo's own parts are drawn by ImGui, over everything
+// for es_planes_draw_outlines; the gizmo's own parts are drawn by ImGui, over everything. Every cut's (they are not
+// drawn otherwise), and the picked slice's: the others' edges are drawn with the slices (the volume rendering), behind
+// what of them is in front.
 struct OutlineSegment {
     vec3_t a, b;
     ImU32  col, halo;
@@ -286,6 +417,17 @@ static bool line_ray_closest(float* t, vec3_t c, vec3_t n, vec3_t o, vec3_t r) {
     return true;
 }
 
+// Where the ray o + s r (r unit) meets the plane ahead of o: false where it meets it at a grazing angle (within about
+// 3 degrees: where it does, the point runs away as the mouse moves a pixel) or behind
+static bool ray_plane(vec3_t* out, const Plane& p, vec3_t o, vec3_t r) {
+    const float b = vec3_dot(p.normal, r);
+    if (fabsf(b) < 0.05f) return false;
+    const float s = -plane_distance(p, o) / b;
+    if (s < 0.0f) return false;
+    *out = vec3_add(o, vec3_mul1(r, s));
+    return true;
+}
+
 // v turned about the unit axis by angle (Rodrigues)
 static vec3_t rotate_about(vec3_t v, vec3_t axis, float angle) {
     const float c = cosf(angle), s = sinf(angle);
@@ -302,8 +444,27 @@ static vec3_t snap_to_axis(vec3_t n) {
     return a;
 }
 
+// A slice's rectangle's corners, in order around it: (-u -v), (+u -v), (+u +v), (-u +v)
+static void slice_corners(vec3_t out[4], const ElectronicStructurePlane& p) {
+    const vec3_t u = vec3_mul1(p.axis, p.extent.x);
+    const vec3_t v = vec3_mul1(vec3_cross(p.plane.normal, p.axis), p.extent.y);
+    out[0] = vec3_sub(vec3_sub(p.center, u), v);
+    out[1] = vec3_sub(vec3_add(p.center, u), v);
+    out[2] = vec3_add(vec3_add(p.center, u), v);
+    out[3] = vec3_add(vec3_sub(p.center, u), v);
+}
+
+static inline bool slice_has_rect(const ElectronicStructurePlane& p) { return p.extent.x > 0.0f && p.extent.y > 0.0f; }
+
+// The handles of a slice's rectangle: its 4 corners, the middles of its 4 sides, and the knob that turns it
+struct SliceHandle {
+    vec3_t world;
+    int    su, sv;
+};
+
 bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImGuiIO& io = ImGui::GetIO();
     const mat4_t& view = state->view.param.matrix.curr.view;
     const mat4_t& proj = state->view.param.matrix.curr.proj_no_jitter;
     const mat4_t world_to_clip = proj * view;
@@ -315,11 +476,24 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
     const bool dragging = gizmo_drag.part != GizmoPart_None;
     const bool mouse_taken = ImGui::GetActiveID() != 0 && !dragging;
 
+    // every slice with its rectangle, on its plane
+    for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
+        Representation& rep = state->representation.reps[r];
+        if (rep.type == RepresentationType::ElectronicStructure) es_slices_conform(&rep.electronic_structure);
+    }
+
     auto& sel = state->representation.gizmo;
     Representation* target = gizmo_target(state, sel.rep_id, sel.plane);
     if (!target) {
         sel.plane = -1;
         gizmo_drag.part = GizmoPart_None;
+    }
+
+    // Delete (backspace, as macOS calls it delete) removes the picked plane, where no text is being typed
+    if (target && !dragging && !io.WantTextInput && ImGui::GetActiveID() == 0 &&
+        (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
+        es_planes_remove(state, target, sel.plane);
+        target = nullptr;
     }
 
     // The outlines, and the one the mouse is on
@@ -336,15 +510,28 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         if (es.display == ElectronicStructureDisplay::Isosurface) continue;
         mat4_t box;
         if (!es_volume_box(&box, es)) continue;
+        const bool slices = es.display == ElectronicStructureDisplay::Planes;
         const ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
         for (int i = 0; i < set.count; ++i) {
-            vec3_t poly[6];
-            const int n = plane_box_polygon(poly, set.items[i].plane, box);
-            if (n == 0) continue;
             const bool selected = target == &rep && sel.plane == i;
+            // a slice's rectangle, a cut's polygon where it cuts the box
+            vec3_t poly[6];
+            int n = 0;
+            if (slices) {
+                if (!slice_has_rect(set.items[i])) continue;
+                slice_corners(poly, set.items[i]);
+                n = 4;
+            } else {
+                n = plane_box_polygon(poly, set.items[i].plane, box);
+            }
+            if (n == 0) continue;
             if (selected) {
-                for (int k = 0; k < n; ++k) centre = vec3_add(centre, poly[k]);
-                centre = vec3_mul1(centre, 1.0f / (float)n);
+                if (slices) {
+                    centre = set.items[i].center;
+                } else {
+                    for (int k = 0; k < n; ++k) centre = vec3_add(centre, poly[k]);
+                    centre = vec3_mul1(centre, 1.0f / (float)n);
+                }
                 centre_valid = true;
             }
             ImVec2 sp[6];
@@ -352,14 +539,16 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
             bool all = true;
             for (int k = 0; k < n; ++k) all &= project(&sp[k], world_to_clip, poly[k], canvas_min, canvas_size) && project_ndc(&ndc[k], world_to_clip, poly[k]);
             if (!all) continue;
-            const bool enabled = set.items[i].enabled;
-            // a light line on a dark halo: seen over a light background and a dark one alike; hidden behind what is in
-            // front of it (es_planes_draw_outlines)
-            const ImU32 col = selected ? IM_COL32(255, 200, 40, 255) : enabled ? IM_COL32(255, 255, 255, 220) : IM_COL32(200, 200, 200, 130);
-            const ImU32 halo = enabled || selected ? IM_COL32(0, 0, 0, 110) : IM_COL32(0, 0, 0, 60);
-            const float width = selected ? 2.0f : 1.5f;
-            for (int k = 0; k < n && outline_count < (int)ARRAY_SIZE(outline_segs); ++k) {
-                outline_segs[outline_count++] = OutlineSegment{ndc[k], ndc[(k + 1) % n], col, halo, width};
+            if (!slices || selected) {
+                const bool enabled = set.items[i].enabled;
+                // a light line on a dark halo: seen over a light background and a dark one alike; hidden behind what
+                // is in front of it (es_planes_draw_outlines)
+                const ImU32 col = selected ? IM_COL32(255, 200, 40, 255) : enabled ? IM_COL32(255, 255, 255, 220) : IM_COL32(200, 200, 200, 130);
+                const ImU32 halo = enabled || selected ? IM_COL32(0, 0, 0, 110) : IM_COL32(0, 0, 0, 60);
+                const float width = selected ? 2.0f : 1.5f;
+                for (int k = 0; k < n && outline_count < (int)ARRAY_SIZE(outline_segs); ++k) {
+                    outline_segs[outline_count++] = OutlineSegment{ndc[k], ndc[(k + 1) % n], col, halo, width};
+                }
             }
             for (int k = 0; k < n; ++k) {
                 const float d = segment_distance(mouse, sp[k], sp[(k + 1) % n]);
@@ -374,17 +563,18 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
 
     bool capture = false;
     GizmoPart hover_part = GizmoPart_None;
+    int hover_su = 0, hover_sv = 0;
     if (target && (centre_valid || dragging)) {
-        Plane& plane = electronic_structure_planes(target->electronic_structure).items[sel.plane].plane;
+        ElectronicStructurePlane& item = electronic_structure_planes(target->electronic_structure).items[sel.plane];
+        Plane& plane = item.plane;
+        const bool slice = target->electronic_structure.display == ElectronicStructureDisplay::Planes;
         const bool ours = dragging && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane;
         if (dragging && !ours) gizmo_drag.part = GizmoPart_None;
         // A slice's normal is of no matter which way it points: it is turned to the camera, so that the arrow is
         // seen and taken hold of (not while it is dragged, which reads it)
-        if (target->electronic_structure.display == ElectronicStructureDisplay::Planes && !ours && !faces_camera(state, plane)) {
-            plane_flip(&plane);
-        }
-        vec3_t anchor = ours ? gizmo_drag.anchor : plane_project(plane, centre);
-        if (!ours && gizmo_anchor.rep_id == sel.rep_id && gizmo_anchor.plane == sel.plane) {
+        if (slice && !ours && !faces_camera(state, plane)) plane_flip(&plane);
+        vec3_t anchor = slice ? item.center : ours ? gizmo_drag.anchor : plane_project(plane, centre);
+        if (!slice && !ours && gizmo_anchor.rep_id == sel.rep_id && gizmo_anchor.plane == sel.plane) {
             mat4_t box;
             if (es_volume_box(&box, target->electronic_structure)) {
                 const vec3_t p = plane_project(plane, gizmo_anchor.point);
@@ -400,21 +590,85 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         ImVec2 sc, sr;
         const bool visible = project(&sc, world_to_clip, anchor, canvas_min, canvas_size) &&
                              project(&sr, world_to_clip, vec3_add(anchor, right), canvas_min, canvas_size);
-        const float px_per_unit = visible ? sqrtf((sr.x - sc.x) * (sr.x - sc.x) + (sr.y - sc.y) * (sr.y - sc.y)) : 0.0f;
+        const float px_per_unit = visible ? point_distance(sr, sc) : 0.0f;
         if (visible && px_per_unit > 0.0f) {
             const float arrow_len = ring_radius / px_per_unit;
             ImVec2 tip;
             project(&tip, world_to_clip, vec3_add(anchor, vec3_mul1(n, arrow_len)), canvas_min, canvas_size);
-            const float arrow_px = sqrtf((tip.x - sc.x) * (tip.x - sc.x) + (tip.y - sc.y) * (tip.y - sc.y));
+            const float arrow_px = point_distance(tip, sc);
             const bool facing = faces_camera(state, plane);
+            vec3_t mo, mr;
+            mouse_ray(&mo, &mr, world_to_clip, mouse, canvas_min, canvas_size);
 
-            // what the mouse is over: the handle, the arrow, then the ring's disc
-            const float md = sqrtf((mouse.x - sc.x) * (mouse.x - sc.x) + (mouse.y - sc.y) * (mouse.y - sc.y));
+            // A slice's handles, where its plane is not seen edge on (along the ray to its middle)
+            SliceHandle handles[9];
+            ImVec2 hs[9];
+            int num_handles = 0;
+            bool in_plane = false;
+            if (slice && slice_has_rect(item)) {
+                vec3_t co, cr;
+                mouse_ray(&co, &cr, world_to_clip, sc, canvas_min, canvas_size);
+                in_plane = fabsf(vec3_dot(n, cr)) > 0.15f;
+                const vec3_t u = vec3_mul1(item.axis, item.extent.x);
+                const vec3_t v = vec3_mul1(vec3_cross(n, item.axis), item.extent.y);
+                static const int sides[8][2] = {{-1,-1},{1,-1},{1,1},{-1,1},{1,0},{-1,0},{0,1},{0,-1}};
+                bool all = in_plane;
+                for (int k = 0; k < 8 && all; ++k) {
+                    handles[k].world = vec3_add(item.center, vec3_add(vec3_mul1(u, (float)sides[k][0]), vec3_mul1(v, (float)sides[k][1])));
+                    handles[k].su = sides[k][0];
+                    handles[k].sv = sides[k][1];
+                    all &= project(&hs[k], world_to_clip, handles[k].world, canvas_min, canvas_size);
+                }
+                if (all) {
+                    num_handles = 8;
+                    // the knob past the +u side's middle, out from the middle on screen
+                    const ImVec2 d = hs[4] - sc;
+                    const float len = point_distance(hs[4], sc);
+                    if (len > 1.0f) {
+                        hs[8] = hs[4] + d * (22.0f / len);
+                        handles[8] = SliceHandle{handles[4].world, 0, 0};
+                        num_handles = 9;
+                    }
+                }
+            }
+
+            // what the mouse is over: a slice's middle, its knob, its corners, the arrow's head, its sides; the arrow,
+            // then the ring's disc
+            const float md = point_distance(mouse, sc);
+            const bool slide_by_ctrl = io.KeyCtrl;
             if (!dragging && canvas_hovered && !mouse_taken) {
-                if (md <= 8.0f || (arrow_px > 12.0f && segment_distance(mouse, sc, tip) <= 6.0f)) hover_part = GizmoPart_Slide;
-                else if (md <= ring_radius + 4.0f) hover_part = GizmoPart_Rotate;
+                if (md <= 8.0f) {
+                    hover_part = num_handles > 0 && !slide_by_ctrl ? GizmoPart_Move : GizmoPart_Slide;
+                } else if (num_handles == 9 && point_distance(mouse, hs[8]) <= 7.0f) {
+                    hover_part = GizmoPart_Twist;
+                }
+                for (int k = 0; k < 4 && num_handles > 0 && hover_part == GizmoPart_None; ++k) {
+                    if (point_distance(mouse, hs[k]) <= 7.0f) {
+                        hover_part = GizmoPart_Resize;
+                        hover_su = handles[k].su;
+                        hover_sv = handles[k].sv;
+                    }
+                }
+                if (hover_part == GizmoPart_None && arrow_px > 12.0f && point_distance(mouse, tip) <= 9.0f) hover_part = GizmoPart_Slide;
+                if (hover_part == GizmoPart_None && num_handles > 0) {
+                    // the sides: corners 0-1 the -v side, 1-2 +u, 2-3 +v, 3-0 -u
+                    static const int side_of[4][2] = {{0,-1},{1,0},{0,1},{-1,0}};
+                    float best = 5.0f;
+                    for (int k = 0; k < 4; ++k) {
+                        const float d = segment_distance(mouse, hs[k], hs[(k + 1) % 4]);
+                        if (d <= best) {
+                            best = d;
+                            hover_part = GizmoPart_Resize;
+                            hover_su = side_of[k][0];
+                            hover_sv = side_of[k][1];
+                        }
+                    }
+                }
+                if (hover_part == GizmoPart_None && arrow_px > 12.0f && segment_distance(mouse, sc, tip) <= 6.0f) hover_part = GizmoPart_Slide;
+                if (hover_part == GizmoPart_None && md <= ring_radius + 4.0f) hover_part = GizmoPart_Rotate;
             }
             const GizmoPart lit = ours ? gizmo_drag.part : hover_part;
+            const int lit_su = ours ? gizmo_drag.su : hover_su, lit_sv = ours ? gizmo_drag.sv : hover_sv;
 
             // the ring
             const ImU32 ring_col = lit == GizmoPart_Rotate ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 200, 40, 170);
@@ -433,8 +687,30 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
                 dl->AddTriangleFilled(tip, ImVec2(base.x + o.x * head * 0.5f, base.y + o.y * head * 0.5f),
                                       ImVec2(base.x - o.x * head * 0.5f, base.y - o.y * head * 0.5f), arrow_col);
             }
-            dl->AddCircleFilled(sc, 6.0f, IM_COL32(0, 0, 0, 120), 16);
-            dl->AddCircleFilled(sc, 4.5f, arrow_col, 16);
+            const ImU32 handle_col = IM_COL32(255, 200, 40, 255), handle_lit = IM_COL32(255, 240, 160, 255), handle_edge = IM_COL32(0, 0, 0, 150);
+            auto square = [&](ImVec2 p, float h, ImU32 col) {
+                dl->AddRectFilled(ImVec2(p.x - h - 1.0f, p.y - h - 1.0f), ImVec2(p.x + h + 1.0f, p.y + h + 1.0f), handle_edge);
+                dl->AddRectFilled(ImVec2(p.x - h, p.y - h), ImVec2(p.x + h, p.y + h), col);
+            };
+            if (num_handles > 0) {
+                for (int k = 0; k < 8; ++k) {
+                    const bool on = lit == GizmoPart_Resize && handles[k].su == lit_su && handles[k].sv == lit_sv;
+                    square(hs[k], on ? 5.0f : 3.5f, on ? handle_lit : handle_col);
+                }
+                if (num_handles == 9) {
+                    const bool on = lit == GizmoPart_Twist;
+                    dl->AddLine(hs[4], hs[8], handle_edge, 3.0f);
+                    dl->AddLine(hs[4], hs[8], handle_col, 1.5f);
+                    dl->AddCircleFilled(hs[8], on ? 7.0f : 6.0f, handle_edge, 16);
+                    dl->AddCircleFilled(hs[8], on ? 6.0f : 5.0f, on ? handle_lit : handle_col, 16);
+                }
+                // the middle: moves it (with ctrl, slides it as the arrow does)
+                const bool on = lit == GizmoPart_Move || (lit == GizmoPart_Slide && slide_by_ctrl);
+                square(sc, on ? 6.0f : 5.0f, lit == GizmoPart_Slide ? arrow_col : on ? handle_lit : handle_col);
+            } else {
+                dl->AddCircleFilled(sc, 6.0f, IM_COL32(0, 0, 0, 120), 16);
+                dl->AddCircleFilled(sc, 4.5f, arrow_col, 16);
+            }
 
             // a drag begun
             if (!dragging && hover_part != GizmoPart_None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -447,35 +723,51 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
                 gizmo_drag.slide_n = n;
                 gizmo_drag.slide_d0 = plane.d;
                 gizmo_drag.slide_off = 0.0f;
-                vec3_t o, r;
-                mouse_ray(&o, &r, world_to_clip, mouse, canvas_min, canvas_size);
                 float t = 0.0f;
-                gizmo_drag.slide_t = line_ray_closest(&t, anchor, n, o, r) && arrow_px > 12.0f ? t : NAN;
+                gizmo_drag.slide_t = line_ray_closest(&t, anchor, n, mo, mr) && arrow_px > 12.0f ? t : NAN;
+                gizmo_drag.plane0 = plane;
+                gizmo_drag.c0 = item.center;
+                gizmo_drag.u0 = item.axis;
+                gizmo_drag.v0 = vec3_cross(n, item.axis);
+                gizmo_drag.hu0 = item.extent.x;
+                gizmo_drag.hv0 = item.extent.y;
+                gizmo_drag.su = hover_su;
+                gizmo_drag.sv = hover_sv;
+                // where on the plane it was taken: the handle itself where the mouse's ray misses the plane (it does
+                // not: the handles are not there then)
+                if (!ray_plane(&gizmo_drag.grab, plane, mo, mr)) gizmo_drag.grab = anchor;
+                const vec3_t g = vec3_sub(gizmo_drag.grab, item.center);
+                gizmo_drag.twist0 = atan2f(vec3_dot(g, gizmo_drag.v0), vec3_dot(g, gizmo_drag.u0));
             }
             // a drag going on
+            bool moved = false;
             if (gizmo_drag.part != GizmoPart_None && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane) {
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                     gizmo_drag.part = GizmoPart_None;
-                    gizmo_anchor.rep_id = sel.rep_id;
-                    gizmo_anchor.plane = sel.plane;
-                    gizmo_anchor.point = gizmo_drag.anchor;
+                    if (!slice) {
+                        gizmo_anchor.rep_id = sel.rep_id;
+                        gizmo_anchor.plane = sel.plane;
+                        gizmo_anchor.point = gizmo_drag.anchor;
+                    }
                 } else if (gizmo_drag.part == GizmoPart_Rotate) {
                     const ImVec2 dm = ImVec2(mouse.x - gizmo_drag.last_mouse.x, mouse.y - gizmo_drag.last_mouse.y);
                     const float len = sqrtf(dm.x * dm.x + dm.y * dm.y);
+                    const vec3_t pivot = slice ? item.center : gizmo_drag.anchor;
                     if (len > 0.0f) {
                         // the front of a ball under the mouse moves with it: about (dy, dx, 0) in the view, by len / radius
                         const vec3_t axis = vec3_normalize(quat_mul_vec3(state->view.camera.orientation, vec3_set(dm.y, dm.x, 0.0f)));
-                        vec3_t nn = vec3_normalize(rotate_about(plane.normal, axis, len / ring_radius));
-                        plane = plane_from_point_normal(gizmo_drag.anchor, nn);
+                        const float angle = len / ring_radius;
+                        plane = plane_from_point_normal(pivot, vec3_normalize(rotate_about(plane.normal, axis, angle)));
+                        // the rectangle turned with it
+                        if (slice) item.axis = rotate_about(item.axis, axis, angle);
                     }
-                    if (ImGui::GetIO().KeyShift) plane = plane_from_point_normal(gizmo_drag.anchor, snap_to_axis(plane.normal));
-                } else {
+                    if (io.KeyShift) plane = plane_from_point_normal(pivot, snap_to_axis(plane.normal));
+                    moved = true;
+                } else if (gizmo_drag.part == GizmoPart_Slide) {
                     // along the normal it was taken with, from where it was taken
                     const vec3_t sn = gizmo_drag.slide_n;
                     float t = 0.0f;
-                    vec3_t o, r;
-                    mouse_ray(&o, &r, world_to_clip, mouse, canvas_min, canvas_size);
-                    if (gizmo_drag.slide_t == gizmo_drag.slide_t && line_ray_closest(&t, gizmo_drag.slide_a0, sn, o, r)) {
+                    if (gizmo_drag.slide_t == gizmo_drag.slide_t && line_ray_closest(&t, gizmo_drag.slide_a0, sn, mo, mr)) {
                         t -= gizmo_drag.slide_t;
                     } else {
                         // seen along the normal: up the screen is along it
@@ -485,13 +777,63 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
                     gizmo_drag.anchor = vec3_add(gizmo_drag.slide_a0, vec3_mul1(sn, t));
                     plane.normal = sn;
                     plane.d = gizmo_drag.slide_d0 - t;
+                    if (slice) item.center = vec3_add(gizmo_drag.c0, vec3_mul1(sn, t));
+                    moved = true;
+                } else {
+                    // along the plane as it was taken: where the mouse's ray meets it, from where it was taken
+                    vec3_t p;
+                    if (ray_plane(&p, gizmo_drag.plane0, mo, mr)) {
+                        const vec3_t d = vec3_sub(p, gizmo_drag.grab);
+                        const vec3_t u0 = gizmo_drag.u0, v0 = gizmo_drag.v0;
+                        if (gizmo_drag.part == GizmoPart_Move) {
+                            item.center = vec3_add(gizmo_drag.c0, d);
+                        } else if (gizmo_drag.part == GizmoPart_Resize) {
+                            // each side taken follows the mouse, the opposite one staying (with shift, both moving)
+                            const float min_half = 0.05f;
+                            const float ds = vec3_dot(d, u0), dt = vec3_dot(d, v0);
+                            float hu = gizmo_drag.hu0, hv = gizmo_drag.hv0, ou = 0.0f, ov = 0.0f;
+                            if (gizmo_drag.su != 0) {
+                                const float grow = (float)gizmo_drag.su * ds;
+                                hu = MAX(min_half, io.KeyShift ? gizmo_drag.hu0 + grow : gizmo_drag.hu0 + 0.5f * grow);
+                                ou = io.KeyShift ? 0.0f : (float)gizmo_drag.su * (hu - gizmo_drag.hu0);
+                            }
+                            if (gizmo_drag.sv != 0) {
+                                const float grow = (float)gizmo_drag.sv * dt;
+                                hv = MAX(min_half, io.KeyShift ? gizmo_drag.hv0 + grow : gizmo_drag.hv0 + 0.5f * grow);
+                                ov = io.KeyShift ? 0.0f : (float)gizmo_drag.sv * (hv - gizmo_drag.hv0);
+                            }
+                            item.extent = vec2_set(hu, hv);
+                            item.center = vec3_add(gizmo_drag.c0, vec3_add(vec3_mul1(u0, ou), vec3_mul1(v0, ov)));
+                        } else if (gizmo_drag.part == GizmoPart_Twist) {
+                            const vec3_t g = vec3_sub(p, gizmo_drag.c0);
+                            float a = atan2f(vec3_dot(g, v0), vec3_dot(g, u0)) - gizmo_drag.twist0;
+                            if (io.KeyShift) {
+                                const float step = 15.0f * 3.14159265f / 180.0f;
+                                a = roundf(a / step) * step;
+                            }
+                            item.axis = vec3_normalize(rotate_about(u0, gizmo_drag.plane0.normal, a));
+                        }
+                        moved = true;
+                    }
                 }
                 gizmo_drag.last_mouse = mouse;
                 capture = true;
             }
+            if (moved && slice) es_slices_conform(&target->electronic_structure);
             if (hover_part != GizmoPart_None) {
                 capture = true;
-                ImGui::SetMouseCursor(hover_part == GizmoPart_Slide ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_Hand);
+                ImGuiMouseCursor cursor = ImGuiMouseCursor_Hand;
+                if (hover_part == GizmoPart_Slide) cursor = ImGuiMouseCursor_ResizeNS;
+                if (hover_part == GizmoPart_Move) cursor = ImGuiMouseCursor_ResizeAll;
+                if (hover_part == GizmoPart_Resize) {
+                    // across the side (or along the corner's diagonal) on screen
+                    int k = 0;
+                    while (k < 8 && !(handles[k].su == hover_su && handles[k].sv == hover_sv)) ++k;
+                    const ImVec2 d = (k < 8 ? hs[k] : mouse) - sc;
+                    if (hover_su != 0 && hover_sv != 0) cursor = d.x * d.y > 0.0f ? ImGuiMouseCursor_ResizeNWSE : ImGuiMouseCursor_ResizeNESW;
+                    else cursor = fabsf(d.x) > fabsf(d.y) ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS;
+                }
+                ImGui::SetMouseCursor(cursor);
             }
         } else if (ours) {
             // off screen while dragged: the drag ends with the button

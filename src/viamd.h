@@ -443,6 +443,13 @@ struct ElectronicStructurePlane {
     Plane plane = {};
     bool  enabled = true;       // a cut cuts, a slice is drawn
     float opacity = 1.0f;       // a slice's
+    // A slice's rectangle on its plane (a cut has none: it is the plane through the box): its centre, its first side's
+    // direction (u, unit, along the plane; v = normal x u) and its half sizes along u and v (Angstrom). Not limited
+    // to the box: outside it the volume's values at the box's faces carry on. An extent of 0: not set yet (the
+    // rectangle around where the plane cuts the box, once the box is there: es_slices_conform).
+    vec3_t center = {};
+    vec3_t axis = {};
+    vec2_t extent = {};
 };
 
 struct ElectronicStructurePlaneSet {
@@ -626,9 +633,8 @@ struct IsoDesc {
 // anything of it outside the image's rectangle).
 struct ElectronicStructurePlaneImage {
     Volume    img[2] = {};      // W x H x 1 R32F, the texture to world of its rectangle (texture_to_world)
-    uint64_t  key[2] = {};      // of what each is of (the source, the frame, the plane in its box): 0 none
-    float     rect[2][4] = {};  // what each covers, in the plane's frame (es_plane_frame), and its spacing (Angstrom)
-    float     spacing[2] = {};
+    uint64_t  key[2] = {};      // of what each is of (the source and the slice's rectangle): 0 none
+    float     spacing[2] = {};  // each one's (Angstrom; it covers the rectangle exactly, its pixels near this square)
     int       front = 0;        // the one drawn
     uint32_t  serial = 0;       // counted up as the front changes: what the scene's hash takes
     bool      pending = false;  // the other is being evaluated
@@ -2613,7 +2619,7 @@ void electronic_structure_field_poll(Representation* rep);
 // under way.
 bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep);
 // For measurements (the timings shown with it): bumped with each change to how the images are evaluated
-#define ES_PLANE_IMAGES_REVISION "plane-images r4"
+#define ES_PLANE_IMAGES_REVISION "plane-images r5"
 // Whether it is: the planes display, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
 

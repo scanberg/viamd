@@ -187,16 +187,22 @@ struct DvrRenderDesc {
 
     // The transfer function's colours decoded from sRGB to linear radiance: for an HDR target (the isosurfaces')
     bool linear_output = false;
-    // The volume on the planes instead of through their cut (slices): where each ray meets each plane inside the clip
-    // box and in front of the depth, the transfer function's colour of the value there with the plane's opacity
-    // (slice_opacity[i], 1 when NULL), composited front to back.
+    // The volume on the planes instead of through their cut (slices): where each ray meets each plane in front of the
+    // depth, within its rectangle (slice_rect_from_model[i]: model space to the rectangle's unit square, x and y in
+    // [0, 1] on it; not limited to the clip box: past the volume, its values at the faces carry on), the transfer
+    // function's colour of the value there with the plane's opacity (slice_opacity[i], 1 when NULL; 0 draws its
+    // edge only), composited front to back. Each slice's edge (slice_edge[i]: rgb, alpha; alpha 0 or NULL none), a
+    // line of slice_edge_px pixels each way of the rectangle's border on a darker halo a pixel wider, in front of its
+    // plane's colour where the ray meets the plane: behind what is in front of it, as the planes are.
     bool slice = false;
     const float* slice_opacity = nullptr;
-    // Slices with images of their own (evaluated on each plane): slice i's value read from slice_images[i] (a W x H x 1
-    // R32F 3D texture) at slice_image_from_model[i] of the point (model space to the image's unit cube), instead of
-    // from the density volume; where slice_images[i] is 0, from the volume. The volume may be 0 when every slice has one.
+    const mat4_t* slice_rect_from_model = nullptr;
+    const vec4_t* slice_edge = nullptr;
+    float slice_edge_px = 1.0f;
+    // Slices with images of their own (evaluated on each plane, covering its rectangle exactly): slice i's value read
+    // from slice_images[i] (a W x H x 1 R32F 3D texture) at the point's place on the rectangle, instead of from the
+    // density volume; where slice_images[i] is 0, from the volume. The volume may be 0 when every slice drawn has one.
     const uint32_t* slice_images = nullptr;
-    const mat4_t*   slice_image_from_model = nullptr;
 };
 
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)

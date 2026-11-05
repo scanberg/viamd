@@ -79,12 +79,13 @@ struct DvrUniformData {
     int    num_planes;
     float  linear_out;
     float  slice;
-    float  pad;
+    float  edge_px;
     vec4_t slice_opacity[2];
     vec4_t slice_image[2];              // 1 where slice i is read from its image
-    mat4_t slice_image_from_model[8];
+    mat4_t slice_rect_from_model[8];
+    vec4_t slice_edge[8];
 };
-static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16 + 2 * 16 + 8 * 64, "DvrUniformData must match the std140 layout of DvrUniforms");
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16 + 2 * 16 + 8 * 64 + 8 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -1378,10 +1379,15 @@ const float* histogram(uint32_t volume_texture, float lo, float hi, int bins) {
 }
 
 void render_dvr(const DvrRenderDesc& desc) {
-    const bool images = desc.slice && desc.slice_images && desc.slice_image_from_model;
-    bool all_images = images && desc.planes.count > 0;
-    for (int i = 0; all_images && i < desc.planes.count; ++i) all_images = desc.slice_images[i] != 0;
-    if ((!desc.texture.density_volume && !all_images) || !desc.texture.transfer_function || !gl.program.dvr ||
+    const bool slices = desc.slice && desc.slice_rect_from_model;
+    const bool images = slices && desc.slice_images;
+    // the volume is read by every slice drawn without an image (those of opacity 0 read nothing)
+    bool needs_volume = !desc.slice;
+    for (int i = 0; slices && i < MIN(desc.planes.count, 8); ++i) {
+        const float a = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
+        needs_volume |= a > 0.0f && !(images && desc.slice_images[i]);
+    }
+    if ((desc.slice && !slices) || (needs_volume && !desc.texture.density_volume) || !desc.texture.transfer_function || !gl.program.dvr ||
         desc.render_target.width == 0 || desc.render_target.height == 0) {
         return;
     }
@@ -1406,10 +1412,12 @@ void render_dvr(const DvrRenderDesc& desc) {
     for (int i = 0; i < data.num_planes; ++i) data.planes[i] = desc.planes.equations[i];
     data.linear_out = desc.linear_output ? 1.0f : 0.0f;
     data.slice      = desc.slice ? 1.0f : 0.0f;
+    data.edge_px    = desc.slice_edge_px;
     for (int i = 0; i < data.num_planes; ++i) data.slice_opacity[i / 4].elem[i % 4] = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
-    for (int i = 0; images && i < data.num_planes; ++i) {
-        data.slice_image[i / 4].elem[i % 4] = desc.slice_images[i] ? 1.0f : 0.0f;
-        data.slice_image_from_model[i] = desc.slice_image_from_model[i];
+    for (int i = 0; slices && i < data.num_planes; ++i) {
+        data.slice_image[i / 4].elem[i % 4] = images && desc.slice_images[i] ? 1.0f : 0.0f;
+        data.slice_rect_from_model[i] = desc.slice_rect_from_model[i];
+        data.slice_edge[i] = desc.slice_edge ? desc.slice_edge[i] : vec4_set(0, 0, 0, 0);
     }
 
     const SavedState saved = save_state();

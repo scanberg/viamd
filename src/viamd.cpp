@@ -5705,6 +5705,7 @@ static void es_box_update(ApplicationState* state, Representation* rep) {
 bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep) {
 #if MD_ENABLE_GPU
     ElectronicStructureRepresentation& es = rep->electronic_structure;
+    es_slices_conform(&es);
     if (!es.has_box || !es_plane_images_supported(state, es)) return true;
     const uint64_t src = es_source_hash(state, es);
     const float detail_spacing = plane_detail_spacing_angstrom[CLAMP((int)es.plane_detail, 0, (int)PlaneDetail::Count - 1)];
@@ -5727,16 +5728,15 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
         im.current = false;
         const ElectronicStructurePlane& p = es.slices.items[i];
         if (!p.enabled) continue;
-        EsPlaneFrame frame;
-        if (!es_plane_frame(&frame, p.plane, es.box_to_world)) continue;
-        // what an image is of: the source and the plane in its box
-        uint64_t key = md_hash64(&frame.plane, sizeof(frame.plane), src);
-        key = md_hash64(&es.box_to_world, sizeof(es.box_to_world), key);
+        EsSliceFrame frame;
+        if (!es_slice_frame(&frame, p)) continue;
+        // what an image is of: the source and the rectangle (not the box: the volume's values past it are no part of
+        // an image, evaluated wherever it is)
+        uint64_t key = md_hash64(&frame, sizeof(frame), src);
         key = key ? key : 1;
         const int f = im.front;
-        // all of the plane at the detail's spacing, at most GPU_PLANE_DIM a side
-        const float* want = frame.rect;
-        const float ext = MAX(want[1] - want[0], want[3] - want[2]);
+        // all of the rectangle at the detail's spacing, at most GPU_PLANE_DIM a side
+        const float ext = 2.0f * MAX(frame.hu, frame.hv);
         const float spacing = MAX(detail_spacing, ext / (float)GPU_PLANE_DIM);
         im.current = key == im.key[f];
         // while dragged: drawn from the volume, evaluated once let go
@@ -5748,7 +5748,7 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
             continue;
         }
         md_grid_t grid = {};
-        es_plane_image_grid(&grid, frame, want, spacing);
+        es_slice_image_grid(&grid, frame, spacing);
         const int b = 1 - f;
         Volume& v = im.img[b];
         init_volume(&v, grid, GL_R32F);
@@ -5757,11 +5757,6 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
         state->gpu_eval_target = nullptr;
         if (!ok) continue;
         im.key[b] = key;
-        // what it covers: the grid's (whole pixels: as far as the last one reaches)
-        im.rect[b][0] = want[0];
-        im.rect[b][1] = want[0] + (float)grid.dim[0] * spacing;
-        im.rect[b][2] = want[2];
-        im.rect[b][3] = want[2] + (float)grid.dim[1] * spacing;
         im.spacing[b] = spacing;
         im.pending = true;
         im.issued = now;

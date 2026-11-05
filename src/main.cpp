@@ -452,6 +452,15 @@ static inline bool screenshot_offscreen(const ApplicationState* state) {
     return screenshot_pending(state) && state->screenshot.hide_gui;
 }
 
+// The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
+// picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
+// gizmo is); faint for a hidden one
+static vec4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
+    if (screenshot_offscreen(state)) return vec4_set(0, 0, 0, 0);
+    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return vec4_set(0, 0, 0, 0);
+    return enabled ? vec4_set(1.0f, 1.0f, 1.0f, 0.85f) : vec4_set(0.78f, 0.78f, 0.78f, 0.4f);
+}
+
 // Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
 // in a screenshot without the windows, which shows it in the middle.
 static inline vec2_t view_shift(const ApplicationState* state) {
@@ -8058,6 +8067,11 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&es.display, sizeof(es.display), h);
             h = md_hash64(&es.cuts, sizeof(es.cuts), h);
             h = md_hash64(&es.slices, sizeof(es.slices), h);
+            // the slices' edges: which is picked (its edge is drawn over the view instead), and whether they are drawn
+            for (int k = 0; k < es.slices.count; ++k) {
+                const vec4_t e = es_slice_edge_color(state, rep.node.id, k, es.slices.items[k].enabled);
+                h = md_hash64(&e, sizeof(e), h);
+            }
             for (const ElectronicStructurePlaneImage& im : es.plane_images) {
                 h = md_hash64(&im.key[im.front], sizeof(uint64_t), h);
                 h = md_hash64(&im.serial, sizeof(im.serial), h);
@@ -8179,29 +8193,27 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         vec4_t planes[ES_MAX_PLANES];
         float  slice_opacity[ES_MAX_PLANES];
         uint32_t images[ES_MAX_PLANES];
-        mat4_t image_from_model[ES_MAX_PLANES];
+        mat4_t rect_from_model[ES_MAX_PLANES];
+        vec4_t edges[ES_MAX_PLANES];
         int num_planes = 0;
         if (slice) {
-            int index[ES_MAX_PLANES];
-            const int n = es_volume_slices(planes, slice_opacity, es, index);
-            for (int k = 0; k < n; ++k) {
-                images[num_planes] = 0;
-                image_from_model[num_planes] = mat4_ident();
+            es_slices_conform(&es);
+            const uint32_t rep_id = rep.node.id;
+            num_planes = es_volume_slices(planes, slice_opacity, rect_from_model, es);
+            bool any = false;
+            for (int k = 0; k < num_planes; ++k) {
+                images[k] = 0;
                 if (on_planes) {
-                    const ElectronicStructurePlaneImage& im = es.plane_images[index[k]];
+                    const ElectronicStructurePlaneImage& im = es.plane_images[k];
                     const Volume& v = im.img[im.front];
-                    if (im.current && v.tex_id) {
-                        images[num_planes] = v.tex_id;
-                        image_from_model[num_planes] = mat4_inverse(v.texture_to_world) * es.box_to_world;
-                    }
+                    if (im.current && v.tex_id) images[k] = v.tex_id;
                 }
-                // nothing to draw it from yet
-                if (!images[num_planes] && !es.density_vol.tex_id) continue;
-                planes[num_planes] = planes[k];
-                slice_opacity[num_planes] = slice_opacity[k];
-                ++num_planes;
+                // nothing to draw it from yet: its edges only
+                if (!images[k] && !es.density_vol.tex_id) slice_opacity[k] = 0.0f;
+                edges[k] = es_slice_edge_color(state, rep_id, k, es.slices.items[k].enabled);
+                any |= slice_opacity[k] > 0.0f || edges[k].w > 0.0f;
             }
-            if (num_planes == 0) continue;
+            if (!any) continue;
         } else {
             num_planes = es_volume_clip_planes(planes, es);
         }
@@ -8224,8 +8236,11 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.linear_output = true;
         desc.slice = slice;
         desc.slice_opacity = slice ? slice_opacity : nullptr;
-        desc.slice_images = on_planes ? images : nullptr;
-        desc.slice_image_from_model = on_planes ? image_from_model : nullptr;
+        desc.slice_images = slice && on_planes ? images : nullptr;
+        desc.slice_rect_from_model = slice ? rect_from_model : nullptr;
+        desc.slice_edge = slice ? edges : nullptr;
+        // the edges' width: a line of 1.5 points (as the outlines drawn over the view), in the target's pixels
+        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MAX(state->app.framebuffer.width, 1);
         volume::render_dvr(desc);
         written = true;
     }
