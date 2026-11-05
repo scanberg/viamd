@@ -29,6 +29,7 @@
 
 #include <imgui.h>
 #include <imgui_notify.h>
+#include <es_planes.h>
 #include <implot.h>
 #include <implot_internal.h>
 
@@ -3722,6 +3723,11 @@ static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t si
     gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
 }
 
+// The scratch the evaluations write now (ApplicationState::gpu_eval_target)
+static inline md_gpu_texture_t gpu_eval_target(const ApplicationState* state) {
+    return state->gpu_eval_target ? state->gpu_eval_target : state->gpu_volume;
+}
+
 static ApplicationState::GpuVolumeJob* gpu_volume_job_acquire(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         if (!state->gpu_volume_jobs[i].in_flight) {
@@ -3768,7 +3774,7 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region);
+    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, gpu_eval_target(state), &region);
     md_gpu_stream_sync(state->gpu_stream);
     if (ok) gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
     md_gpu_free(state->gpu_stream, rb.gpu);
@@ -3815,7 +3821,7 @@ static void gpu_density_jobs_settle(ApplicationState* state) {
 //
 // Returns true when the work was QUEUED -- not that the texture holds data.
 static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
-    if (!state->gpu_stream || !state->gpu_volume) {
+    if (!state->gpu_stream || !gpu_eval_target(state)) {
         return false;
     }
     const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
@@ -3842,6 +3848,7 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
     if (!job) {
         return gpu_volume_readback_blocking(state, vol_tex, grid, size);
     }
+    job->src = gpu_eval_target(state);
     return gpu_volume_readback_issue(state, job, vol_tex, grid);
 }
 
@@ -3859,7 +3866,7 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region)) {
+    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, job->src ? job->src : state->gpu_volume, &region)) {
         MD_LOG_ERROR("Failed to record the volume readback");
         md_gpu_free(state->gpu_stream, rb.gpu);
         job->in_flight = false;
@@ -3904,6 +3911,7 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
         return gpu_volume_readback(state, vol_tex, grid);
     }
     job->tex_id = vol_tex;
+    job->src = gpu_eval_target(state);
     job->grid = grid;
     job->density_job = dj;
     return true;
@@ -4612,12 +4620,14 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
         .dmat = { L->dmat[0], L->num_spins > 1 ? L->dmat[1] : nullptr },
         .kind = lol ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, .rho_min = ES_LOCALIZATION_RHO_MIN,
         .fade_lo = MD_QM_ELF_FADE_LO, .fade_hi = MD_QM_ELF_FADE_HI,
-        .out_tex = state->gpu_volume, .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
+        .out_tex = gpu_eval_target(state), .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
     };
     if (!md_gto_gpu_localization_launch(state->gpu_stream, &desc)) return false;
     return gpu_volume_readback(state, vol_tex, grid);
 }
 #endif
+
+static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid);
 
 static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep) {
     const ElectronicStructureRepresentation& es = rep->electronic_structure;
@@ -4630,8 +4640,14 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
     }
     init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
     rep->electronic_structure.grid = grid;
-    const uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
+    rep->electronic_structure.box_to_world = rep->electronic_structure.density_vol.texture_to_world;
+    rep->electronic_structure.has_box = true;
+    return es_evaluate_into(state, es, rep->electronic_structure.density_vol.tex_id, grid);
+}
 
+// What the representation's source is, evaluated over grid into tex_id (a GL 3D texture of the grid's dims): the
+// volume, or the image of a plane (one layer). On the GPU, written to the scratch gpu_eval_target and read back.
+static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -4975,7 +4991,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
             .basis        = state->mold.gpu_basis,
             .atom_xyz     = state->mold.gpu_atoms,
             .coeff        = state->gpu_coeff,
-            .out_tex      = state->gpu_volume,
+            .out_tex      = gpu_eval_target(state),
             .grid         = &grid,
             .sample_offset = {0.5f, 0.5f, 0.5f},
             .num_orbitals = 1,
@@ -5039,7 +5055,7 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
         .atom_xyz      = state->mold.gpu_atoms,
         .coeff         = dmat ? 0 : state->gpu_coeff,
         .dmat          = dmat,
-        .out_tex       = state->gpu_volume,
+        .out_tex       = gpu_eval_target(state),
         .grid          = &grid,
         .sample_offset = {0.5f, 0.5f, 0.5f},
         .op            = op,
@@ -5405,6 +5421,123 @@ static void es_volume_map_update(ElectronicStructureRepresentation& es) {
     es.volume.map_kind = (int)kind;
 }
 
+// What the representation's source is, of the frame: what an evaluation of it, on any grid, depends on
+static uint64_t es_source_hash(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
+    uint64_t h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
+    h = md_hash64(&es.source,                       sizeof(es.source), h);
+    h = md_hash64(&es.use_magnitude,                sizeof(es.use_magnitude), h);
+    h = md_hash64(&es.spin,                         sizeof(es.spin), h);
+    h = md_hash64(&es.nto_component,                sizeof(es.nto_component), h);
+    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
+    h = md_hash64(&es.orbital_idx,                  sizeof(es.orbital_idx), h);
+    h = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), h);
+    h = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), h);
+    h = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), h);
+    return h;
+}
+
+// Whether what an evaluation of the source reads is there: 1 yes, 0 not yet (being made: ask again), -1 not on the
+// GPU (ELF and LOL on the CPU, which fills the volume itself)
+static int es_source_ready(ApplicationState* state, const ElectronicStructureRepresentation& es) {
+#if MD_ENABLE_GPU
+    // a density job under way, of any representation: an evaluation now would wait for its counts
+    if (gpu_density_job_pending(state)) return 0;
+    if (es.source == ElectronicStructureSource::ElectronDensity && !density_dmat_prepare(state, es_electron_density_path(es.spin))) return 0;
+#endif
+    if (es.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.excited_state_idx)) return 0;
+    if (electronic_structure_is_localization(es)) {
+#if MD_ENABLE_GPU
+        const int g = localization_gpu_prepare(state);
+        return g == 0 ? 0 : (g < 0 ? -1 : 1);
+#else
+        return -1;
+#endif
+    }
+    return 1;
+}
+
+bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es) {
+#if MD_ENABLE_GPU
+    if (es.display != ElectronicStructureDisplay::Planes || es.plane_sampling != PlaneSampling::Plane) return false;
+    if (!gpu_evaluation_ready(state) || !state->gpu_plane) return false;
+    // ELF and LOL without their kernel: on the CPU, into the volume
+    return !electronic_structure_is_localization(es) || localization_gpu_prepare(state) >= 0;
+#else
+    (void)state; (void)es;
+    return false;
+#endif
+}
+
+// The box of the volume without the volume: its grid, at the resolution, and its unit cube in the world
+static void es_box_update(ApplicationState* state, Representation* rep) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+    md_grid_t grid = {};
+    if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+        es.has_box = false;
+        return;
+    }
+    const float scl = (float)BOHR_TO_ANGSTROM;
+    es.box_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, md_grid_extent(&grid) * scl);
+    es.has_box = true;
+}
+
+bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep) {
+#if MD_ENABLE_GPU
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!es.has_box || !es_plane_images_supported(state, es)) return true;
+    const uint64_t src = es_source_hash(state, es);
+    const float spacing = plane_detail_spacing_angstrom[CLAMP((int)es.plane_detail, 0, (int)PlaneDetail::Count - 1)];
+    const double now = ImGui::GetTime();
+    bool done = true;
+    int ready = -2;     // asked when first needed, and again after each evaluation issued
+    for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
+        ElectronicStructurePlaneImage& im = es.plane_images[i];
+        const int back = 1 - im.front;
+        // the one being evaluated, there: drawn from now on
+        if (im.pending) {
+            if (gpu_volume_job_in_flight_for(state, im.img[back].tex_id)) {
+                done = false;
+                continue;
+            }
+            im.front = back;
+            im.pending = false;
+            im.ms = (float)((now - im.issued) * 1000.0);
+        }
+        im.current = false;
+        const ElectronicStructurePlane& p = es.slices.items[i];
+        if (!p.enabled) continue;
+        md_grid_t grid = {};
+        if (!es_plane_image_grid(&grid, p.plane, es.box_to_world, spacing, (int)GPU_PLANE_DIM)) continue;
+        uint64_t key = md_hash64(&grid, sizeof(grid), src);
+        key = key ? key : 1;
+        im.current = key == im.key[im.front];
+        // while dragged: drawn from the volume, evaluated once let go
+        if (im.current || es_planes_dragging(rep->node.id, i)) continue;
+        if (ready == -2) ready = es_source_ready(state, es);
+        if (ready <= 0) {
+            done &= ready < 0;
+            continue;
+        }
+        Volume& v = im.img[1 - im.front];
+        init_volume(&v, grid, GL_R32F);
+        state->gpu_eval_target = state->gpu_plane;
+        const bool ok = es_evaluate_into(state, es, v.tex_id, grid);
+        state->gpu_eval_target = nullptr;
+        if (!ok) continue;
+        im.key[1 - im.front] = key;
+        im.pending = true;
+        im.issued = now;
+        done = false;
+        ready = -2;
+    }
+    return done;
+#else
+    (void)state; (void)rep;
+    return true;
+#endif
+}
+
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
 // exactly those inputs - the frame included, since the geometry moves the grid.
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
@@ -5412,17 +5545,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
 
-    uint64_t vol_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
-    vol_hash = md_hash64(&es.source,                       sizeof(es.source), vol_hash);
-    vol_hash = md_hash64(&es.use_magnitude,                sizeof(es.use_magnitude), vol_hash);
-    vol_hash = md_hash64(&es.spin,                         sizeof(es.spin), vol_hash);
-    vol_hash = md_hash64(&es.nto_component,                sizeof(es.nto_component), vol_hash);
-    vol_hash = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), vol_hash);
-    vol_hash = md_hash64(&es.resolution,                   sizeof(es.resolution), vol_hash);
-    vol_hash = md_hash64(&es.orbital_idx,                  sizeof(es.orbital_idx), vol_hash);
-    vol_hash = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), vol_hash);
-    vol_hash = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), vol_hash);
-    vol_hash = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), vol_hash);
+    uint64_t vol_hash = es_source_hash(state, es);
+    vol_hash = md_hash64(&es.resolution, sizeof(es.resolution), vol_hash);
 
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom
@@ -5433,6 +5557,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     }
     const bool iso_display = es.display == ElectronicStructureDisplay::Isosurface;
     // a volume rendering and a plane draw from (or over the box of) the volume, whatever renders the isosurfaces
+    // (the planes display evaluated on the planes too: the volume is drawn where an image is not there, or not of the
+    // plane as it is, as while it is dragged)
     const bool needs_volume = !mesh_mode || !iso_display || es.coloring == SurfaceColoring::AtomColors;
     vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
 
@@ -5475,6 +5601,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             es.vol_hash = vol_hash;
             if (needs_volume && !localization_cpu) {
                 electronic_structure_evaluate(state, rep);
+            } else if (!needs_volume) {
+                es_box_update(state, rep);
             }
         } else {
             done = false;

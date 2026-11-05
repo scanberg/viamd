@@ -292,6 +292,7 @@ static void clear_owned(Representation* rep) {
     rep->bond_pairs = nullptr;
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
+    for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.iso_mesh           = nullptr;
 }
@@ -363,6 +364,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
     gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
+    for (ElectronicStructurePlaneImage& im : rep.electronic_structure.plane_images) {
+        for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
+    }
     surface_field_free(&rep.electronic_structure.field_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
 
@@ -1059,6 +1063,10 @@ void update_all_representations(ApplicationState* state) {
         // The field it is coloured by is evaluated over frames, shown or not
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
         update_representation(state, rep);
+        // The images of its planes follow them as they are moved, which is no update of the representation
+        if (rep->type == RepresentationType::ElectronicStructure && rep->type_is_valid && representation_shown(*state, *rep)) {
+            electronic_structure_plane_images_update(state, rep);
+        }
     }
 }
 
@@ -2137,6 +2145,12 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_eq(ident, STR_LIT("ElectronicStructureSliceCount"))) {
         int n;
         if (viamd::extract_int(n, arg)) rep->electronic_structure.slices.count = CLAMP(n, 0, ES_MAX_PLANES);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneSampling"))) {
+        int v;
+        if (viamd::extract_int(v, arg) && v >= 0 && v < (int)PlaneSampling::Count) rep->electronic_structure.plane_sampling = (PlaneSampling)v;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneDetail"))) {
+        int v;
+        if (viamd::extract_int(v, arg) && v >= 0 && v < (int)PlaneDetail::Count) rep->electronic_structure.plane_detail = (PlaneDetail)v;
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
@@ -2366,6 +2380,8 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
                 snprintf(key, sizeof(key), "ElectronicStructurePlaneEnabled%d", j);
                 viamd::write_bool(state, str_from_cstr(key), es.cuts.items[j].enabled);
             }
+            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneSampling"), (int)es.plane_sampling);
+            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneDetail"), (int)es.plane_detail);
             viamd::write_int(state, STR_LIT("ElectronicStructureSliceCount"), es.slices.count);
             for (int j = 0; j < es.slices.count; ++j) {
                 char key[64];
@@ -3216,8 +3232,39 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             transfer_function_editor("##tf", &es.volume.tf, &es.volume.view, counts ? &hist : nullptr, have_range ? lo : 0.0f, have_range ? hi : 0.0f,
                                      colors_only, ImGui::GetContentRegionAvail().x, colors_only ? 90.0f : 150.0f);
             ImGui::Unindent(ImGui::GetStyle().IndentSpacing * 0.5f);
-            if (colors_only) prop::hint("Sampled from the volume, at its resolution");
-            prop::row("resolution", "The resolution of the volume");
+            if (colors_only) {
+                // Where the planes' values come from: the volume, or each plane evaluated on itself (an image of its
+                // own; the volume drawn where it is not there yet, and while the plane is dragged). Read where it is
+                // drawn: nothing to update
+                static const char* sampling_str[(int)PlaneSampling::Count] = {"From the volume", "On each plane"};
+                prop::row("sampling", "Where the values on the planes come from");
+                ImGui::Combo("##sampling", (int*)&es.plane_sampling, sampling_str, IM_ARRAYSIZE(sampling_str));
+                if (es.plane_sampling == PlaneSampling::Plane) {
+                    static const char* detail_str[(int)PlaneDetail::Count] = {"Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
+                    prop::row("detail", "The spacing of the points each plane is evaluated at (at most 2048 a side)");
+                    ImGui::Combo("##detail", (int*)&es.plane_detail, detail_str, IM_ARRAYSIZE(detail_str));
+                    if (!es_plane_images_supported(state, es)) {
+                        prop::hint("Not without the GPU (or its ELF / LOL kernel): from the volume");
+                    } else {
+                        // what each took, for measurements: with the revision of the images' evaluation
+                        for (int k = 0; k < es.slices.count; ++k) {
+                            const ElectronicStructurePlaneImage& im = es.plane_images[k];
+                            const Volume& v = im.img[im.front];
+                            if (!es.slices.items[k].enabled) continue;
+                            if (im.key[im.front] && v.tex_id) {
+                                prop::hint("plane %d: %d x %d, %.0f ms%s (" ES_PLANE_IMAGES_REVISION ")", k + 1, v.dim[0], v.dim[1], im.ms,
+                                           im.current ? "" : im.pending ? ", evaluating" : ", from the volume");
+                            } else {
+                                prop::hint("plane %d: %s", k + 1, im.pending ? "evaluating" : "from the volume");
+                            }
+                        }
+                    }
+                } else {
+                    prop::hint("Sampled from the volume, at its resolution");
+                }
+            }
+            prop::row("resolution", colors_only ? "The resolution of the volume (on each plane: drawn from it until the plane's own is there)"
+                                                : "The resolution of the volume");
             rep.needs_update |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
             prop::section_end();
         }

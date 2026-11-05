@@ -52,7 +52,16 @@ vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane&
 
 // The enabled slices of a representation (its planes display) of some opacity, in the space of its volume's texture,
 // and their opacities: what the slice rendering draws. Returns how many (at most ES_MAX_PLANES).
-int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es);
+int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es, int* out_index = nullptr);
+
+// The grid of a plane's image (PlaneSampling::Plane): its rectangle around where it cuts the box (box_to_world, the
+// unit cube to the world), in a frame of the plane set by the box (not the view), spacing Angstrom a pixel (coarser
+// where it would be more than max_dim pixels a side), one layer whose voxel centres are on the plane. In bohr, as the
+// evaluations take it. The same for either way the normal points. False where the plane misses the box.
+bool es_plane_image_grid(struct md_grid_t* grid, const Plane& plane, const mat4_t& box_to_world, float spacing, int max_dim);
+
+// Whether the gizmo is dragging this plane of this representation now
+bool es_planes_dragging(uint32_t rep_id, int plane);
 
 // The transfer function of a representation's volume rendering (ElectronicStructureRepresentation::volume.tf) baked
 // into a 2D texture of 256 x 1 RGBA32F texels, made again when it changes.

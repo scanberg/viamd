@@ -55,6 +55,7 @@ static struct {
         GLint tex_volume = -1;
         GLint tex_depth = -1;
         GLint tex_tf = -1;
+        GLint tex_slices = -1;
         GLint block_index = -1;
     } dvr_loc;
 
@@ -80,8 +81,10 @@ struct DvrUniformData {
     float  slice;
     float  pad;
     vec4_t slice_opacity[2];
+    vec4_t slice_image[2];              // 1 where slice i is read from its image
+    mat4_t slice_image_from_model[8];
 };
-static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16 + 2 * 16 + 8 * 64, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -880,6 +883,7 @@ void initialize() {
             gl.dvr_loc.tex_volume  = glGetUniformLocation(gl.program.dvr, "u_tex_volume");
             gl.dvr_loc.tex_depth   = glGetUniformLocation(gl.program.dvr, "u_tex_depth");
             gl.dvr_loc.tex_tf      = glGetUniformLocation(gl.program.dvr, "u_tex_tf");
+            gl.dvr_loc.tex_slices  = glGetUniformLocation(gl.program.dvr, "u_tex_slices[0]");
             gl.dvr_loc.block_index = glGetUniformBlockIndex(gl.program.dvr, "DvrUniforms");
         } else {
             MD_LOG_ERROR("DVR shader compilation failed, the DVR program will not be updated");
@@ -1374,7 +1378,10 @@ const float* histogram(uint32_t volume_texture, float lo, float hi, int bins) {
 }
 
 void render_dvr(const DvrRenderDesc& desc) {
-    if (!desc.texture.density_volume || !desc.texture.transfer_function || !gl.program.dvr ||
+    const bool images = desc.slice && desc.slice_images && desc.slice_image_from_model;
+    bool all_images = images && desc.planes.count > 0;
+    for (int i = 0; all_images && i < desc.planes.count; ++i) all_images = desc.slice_images[i] != 0;
+    if ((!desc.texture.density_volume && !all_images) || !desc.texture.transfer_function || !gl.program.dvr ||
         desc.render_target.width == 0 || desc.render_target.height == 0) {
         return;
     }
@@ -1400,6 +1407,10 @@ void render_dvr(const DvrRenderDesc& desc) {
     data.linear_out = desc.linear_output ? 1.0f : 0.0f;
     data.slice      = desc.slice ? 1.0f : 0.0f;
     for (int i = 0; i < data.num_planes; ++i) data.slice_opacity[i / 4].elem[i % 4] = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
+    for (int i = 0; images && i < data.num_planes; ++i) {
+        data.slice_image[i / 4].elem[i % 4] = desc.slice_images[i] ? 1.0f : 0.0f;
+        data.slice_image_from_model[i] = desc.slice_image_from_model[i];
+    }
 
     const SavedState saved = save_state();
 
@@ -1416,6 +1427,13 @@ void render_dvr(const DvrRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+        // the slices' images at 3.. (every one bound: the slots past the last take the first)
+        // (every unit bound to a 3D texture, which the shader may sample: those without an image take the volume)
+        for (int i = 0; i < 8; ++i) {
+            const uint32_t img = images && i < data.num_planes ? desc.slice_images[i] : 0;
+            glActiveTexture(GL_TEXTURE3 + i);
+            glBindTexture(GL_TEXTURE_3D, img ? img : desc.texture.density_volume);
+        }
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(gl.program.dvr);
@@ -1423,6 +1441,8 @@ void render_dvr(const DvrRenderDesc& desc) {
         glUniform1i(gl.dvr_loc.tex_volume, 0);
         glUniform1i(gl.dvr_loc.tex_depth, 1);
         glUniform1i(gl.dvr_loc.tex_tf, 2);
+        static const GLint image_units[8] = {3, 4, 5, 6, 7, 8, 9, 10};
+        if (gl.dvr_loc.tex_slices >= 0) glUniform1iv(gl.dvr_loc.tex_slices, 8, image_units);
 
         // Premultiplied colour over whatever is in the target
         glDisable(GL_DEPTH_TEST);
@@ -1438,6 +1458,11 @@ void render_dvr(const DvrRenderDesc& desc) {
         POP_GPU_SECTION();
         glBindVertexArray(0);
         glUseProgram(0);
+        for (int i = 0; i < 8; ++i) {
+            glActiveTexture(GL_TEXTURE3 + i);
+            glBindTexture(GL_TEXTURE_3D, 0);
+        }
+        glActiveTexture(GL_TEXTURE0);
     }
     POP_GPU_SECTION()
 

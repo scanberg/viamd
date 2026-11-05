@@ -10,7 +10,8 @@
 // in display space (the colours are the colour map's own).
 //
 // As slices, where the ray meets each plane inside the clip box and in front of the opaque depth, the transfer
-// function's colour of the value there with the plane's opacity, composited front to back.
+// function's colour of the value there with the plane's opacity, composited front to back; the value from the volume,
+// or from the plane's own image where it has one (evaluated on the plane, at a resolution of its own).
 
 layout(std140) uniform DvrUniforms {
     mat4  u_clip_to_model;
@@ -27,11 +28,14 @@ layout(std140) uniform DvrUniforms {
     float u_slice;          // 1: the volume on the planes (slices), each of its opacity, instead of through their cut
     float u_pad;
     vec4  u_slice_opacity[2];   // slice i's at [i / 4][i % 4]
+    vec4  u_slice_image[2];     // 1: slice i's values from its own image (u_tex_slices[i]), not the volume
+    mat4  u_slice_image_from_model[8];
 };
 
 uniform sampler3D u_tex_volume;
 uniform sampler2D u_tex_depth;
 uniform sampler2D u_tex_tf;
+uniform sampler3D u_tex_slices[8];  // W x H x 1: each slice's image, evaluated on its plane
 
 layout(location = 0) out vec4 out_color;
 
@@ -46,6 +50,24 @@ vec3 unproject(vec2 ndc_xy, float depth) {
 
 vec3 srgb_to_linear(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+// The value of slice i at p (model space): from its image, or the volume. The images by constant indices: i is not
+// dynamically uniform where the slices are sorted per pixel, so it is read here, where i is the loop's.
+float slice_value(int i, vec3 p) {
+    if (u_slice_image[i / 4][i % 4] < 0.5) return texture(u_tex_volume, p).r;
+    vec3 q = (u_slice_image_from_model[i] * vec4(p, 1.0)).xyz;
+    q.z = 0.5;
+    switch (i) {
+        case 0: return texture(u_tex_slices[0], q).r;
+        case 1: return texture(u_tex_slices[1], q).r;
+        case 2: return texture(u_tex_slices[2], q).r;
+        case 3: return texture(u_tex_slices[3], q).r;
+        case 4: return texture(u_tex_slices[4], q).r;
+        case 5: return texture(u_tex_slices[5], q).r;
+        case 6: return texture(u_tex_slices[6], q).r;
+        default: return texture(u_tex_slices[7], q).r;
+    }
 }
 
 float PDnrand(vec2 n) {
@@ -71,6 +93,7 @@ void main() {
     if (u_slice > 0.5) {
         float hit_s[8];
         int   hit_i[8];
+        float hit_v[8];
         int   num_hits = 0;
         for (int i = 0; i < u_num_planes; ++i) {
             float a = dot(u_planes[i].xyz, pn) + u_planes[i].w;
@@ -78,21 +101,24 @@ void main() {
             if (abs(b) < 1e-20) continue;
             float s = -a / b;
             if (s < s0 || s > s1) continue;
+            float v = slice_value(i, pn + seg * s);
             // in order along the ray
             int k = num_hits++;
             while (k > 0 && hit_s[k - 1] > s) {
                 hit_s[k] = hit_s[k - 1];
                 hit_i[k] = hit_i[k - 1];
+                hit_v[k] = hit_v[k - 1];
                 --k;
             }
             hit_s[k] = s;
             hit_i[k] = i;
+            hit_v[k] = v;
         }
         if (num_hits == 0) discard;
         vec3  L = vec3(0.0);
         float T = 1.0;
         for (int h = 0; h < num_hits; ++h) {
-            float d = texture(u_tex_volume, pn + seg * hit_s[h]).r;
+            float d = hit_v[h];
             float t = clamp((d - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
             vec3  c = texture(u_tex_tf, vec2(t, 0.5)).rgb;
             c = (u_linear_out > 0.5) ? srgb_to_linear(c) : c;

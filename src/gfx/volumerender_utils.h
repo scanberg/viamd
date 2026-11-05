@@ -192,6 +192,11 @@ struct DvrRenderDesc {
     // (slice_opacity[i], 1 when NULL), composited front to back.
     bool slice = false;
     const float* slice_opacity = nullptr;
+    // Slices with images of their own (evaluated on each plane): slice i's value read from slice_images[i] (a W x H x 1
+    // R32F 3D texture) at slice_image_from_model[i] of the point (model space to the image's unit cube), instead of
+    // from the density volume; where slice_images[i] is 0, from the volume. The volume may be 0 when every slice has one.
+    const uint32_t* slice_images = nullptr;
+    const mat4_t*   slice_image_from_model = nullptr;
 };
 
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)

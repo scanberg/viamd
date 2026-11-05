@@ -18,8 +18,50 @@ static inline vec3_t transform_point(const mat4_t& m, vec3_t p) {
 
 
 bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation& es) {
-    if (!es.density_vol.tex_id) return false;
-    *box_to_world = es.density_vol.texture_to_world;
+    if (!es.has_box) return false;
+    *box_to_world = es.box_to_world;
+    return true;
+}
+
+bool es_plane_image_grid(md_grid_t* grid, const Plane& plane_in, const mat4_t& box, float spacing, int max_dim) {
+    // Which way the normal points is of no matter to the image (a slice's is turned to the camera as it is picked):
+    // one of the two, so that turning it does not make the image again
+    Plane plane = plane_in;
+    if (vec3_dot(plane.normal, vec3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) plane_flip(&plane);
+    vec3_t poly[6];
+    const int n = plane_box_polygon(poly, plane, box);
+    if (n < 3 || !(spacing > 0.0f) || max_dim < 1) return false;
+    // A frame of the plane by the box's first axis, not the view: the image stays put as the view turns
+    const vec3_t ax = vec3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]);
+    vec3_t u, v;
+    plane_frame(&u, &v, plane, ax);
+    float s0 = FLT_MAX, s1 = -FLT_MAX, t0 = FLT_MAX, t1 = -FLT_MAX;
+    for (int k = 0; k < n; ++k) {
+        const float s = vec3_dot(poly[k], u), t = vec3_dot(poly[k], v);
+        s0 = MIN(s0, s); s1 = MAX(s1, s);
+        t0 = MIN(t0, t); t1 = MAX(t1, t);
+    }
+    const float ext = MAX(s1 - s0, t1 - t0);
+    if (ext > spacing * (float)max_dim) spacing = ext / (float)max_dim;
+    const int w = CLAMP((int)ceilf((s1 - s0) / spacing), 1, max_dim);
+    const int h = CLAMP((int)ceilf((t1 - t0) / spacing), 1, max_dim);
+    // Pixel centres on the plane: the one layer's centre (the kernels sample at voxel centres) a half spacing along n
+    // from the corner
+    const vec3_t on = vec3_mul1(plane.normal, -plane.d);   // the plane's point nearest the origin
+    const vec3_t corner = vec3_add(vec3_add(vec3_add(on, vec3_mul1(u, s0)), vec3_mul1(v, t0)), vec3_mul1(plane.normal, -0.5f * spacing));
+    const float to_bohr = (float)(1.0 / BOHR_TO_ANGSTROM);
+    *grid = md_grid_t{};
+    grid->orientation = mat3_t{};
+    for (int k = 0; k < 3; ++k) {
+        grid->orientation.elem[0][k] = u.elem[k];
+        grid->orientation.elem[1][k] = v.elem[k];
+        grid->orientation.elem[2][k] = plane.normal.elem[k];
+    }
+    grid->origin  = vec3_mul1(corner, to_bohr);
+    grid->spacing = vec3_set1(spacing * to_bohr);
+    grid->dim[0] = w;
+    grid->dim[1] = h;
+    grid->dim[2] = 1;
     return true;
 }
 
@@ -68,7 +110,7 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
 
 vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane) {
     // n . (A p + t) + d = (A^T n) . p + (n . t + d), with p in the texture's unit cube
-    const mat4_t& m = es.density_vol.texture_to_world;
+    const mat4_t& m = es.box_to_world;
     const vec3_t n = plane.normal;
     const vec3_t c0 = vec3_set(m.elem[0][0], m.elem[0][1], m.elem[0][2]);
     const vec3_t c1 = vec3_set(m.elem[1][0], m.elem[1][1], m.elem[1][2]);
@@ -85,12 +127,13 @@ int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& 
     return k;
 }
 
-int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es) {
+int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es, int* out_index) {
     int k = 0;
     for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
         const ElectronicStructurePlane& p = es.slices.items[i];
         if (!p.enabled || !(p.opacity > 0.0f)) continue;
         out_opacity[k] = p.opacity > 1.0f ? 1.0f : p.opacity;
+        if (out_index) out_index[k] = i;
         out[k++] = es_volume_plane(es, p.plane);
     }
     return k;
@@ -142,6 +185,10 @@ static struct {
     float     slide_t = 0.0f;
     float     slide_off = 0.0f;
 } gizmo_drag;
+
+bool es_planes_dragging(uint32_t rep_id, int plane) {
+    return gizmo_drag.part != GizmoPart_None && gizmo_drag.rep_id == rep_id && gizmo_drag.plane == plane;
+}
 
 // Where the last drag left the anchor, of this plane
 static struct {

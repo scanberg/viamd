@@ -819,6 +819,15 @@ int main(int argc, char** argv) {
         if (!state.gpu_volume) {
             VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
         }
+        md_gpu_texture_desc_t plane_desc = vol_desc;
+        plane_desc.width = GPU_PLANE_DIM;
+        plane_desc.height = GPU_PLANE_DIM;
+        plane_desc.depth_or_layers = 1;
+        plane_desc.label = "Evaluation plane";
+        state.gpu_plane = md_gpu_texture_create(state.gpu_stream, &plane_desc);
+        if (!state.gpu_plane) {
+            VIAMD_LOG_ERROR("Failed to create the GPU evaluation plane: %s", md_gpu_last_error());
+        }
 
         // Potentials (surface fields). Kernels are made on first use, so this costs nothing until a
         // surface is coloured by one.
@@ -1729,6 +1738,8 @@ int main(int argc, char** argv) {
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
+        if (state.gpu_plane) md_gpu_texture_destroy(state.gpu_plane);
+        state.gpu_plane = nullptr;
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
         state.gpu_volume = nullptr;
@@ -8033,6 +8044,8 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&es.display, sizeof(es.display), h);
             h = md_hash64(&es.cuts, sizeof(es.cuts), h);
             h = md_hash64(&es.slices, sizeof(es.slices), h);
+            h = md_hash64(&es.plane_sampling, sizeof(es.plane_sampling), h);
+            for (const ElectronicStructurePlaneImage& im : es.plane_images) h = md_hash64(&im.key[im.front], sizeof(uint64_t), h);
             h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
         }
         if (rep.type == RepresentationType::DipoleMoment) {
@@ -8143,12 +8156,34 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         const bool slice = es.display == ElectronicStructureDisplay::Planes;
-        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.density_vol.tex_id) continue;
+        // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
+        const bool on_planes = slice && es_plane_images_supported(state, es);
+        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.has_box || (!on_planes && !es.density_vol.tex_id)) continue;
         vec4_t planes[ES_MAX_PLANES];
         float  slice_opacity[ES_MAX_PLANES];
+        uint32_t images[ES_MAX_PLANES];
+        mat4_t image_from_model[ES_MAX_PLANES];
         int num_planes = 0;
         if (slice) {
-            num_planes = es_volume_slices(planes, slice_opacity, es);
+            int index[ES_MAX_PLANES];
+            const int n = es_volume_slices(planes, slice_opacity, es, index);
+            for (int k = 0; k < n; ++k) {
+                images[num_planes] = 0;
+                image_from_model[num_planes] = mat4_ident();
+                if (on_planes) {
+                    const ElectronicStructurePlaneImage& im = es.plane_images[index[k]];
+                    const Volume& v = im.img[im.front];
+                    if (im.current && v.tex_id) {
+                        images[num_planes] = v.tex_id;
+                        image_from_model[num_planes] = mat4_inverse(v.texture_to_world) * es.box_to_world;
+                    }
+                }
+                // nothing to draw it from yet
+                if (!images[num_planes] && !es.density_vol.tex_id) continue;
+                planes[num_planes] = planes[k];
+                slice_opacity[num_planes] = slice_opacity[k];
+                ++num_planes;
+            }
             if (num_planes == 0) continue;
         } else {
             num_planes = es_volume_clip_planes(planes, es);
@@ -8161,7 +8196,7 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.render_target.clear_color = !(target_written || written);
         desc.texture.density_volume = es.density_vol.tex_id;
         desc.texture.transfer_function = es_volume_transfer_function(&es);
-        desc.matrix.model = es.density_vol.texture_to_world;
+        desc.matrix.model = es.box_to_world;
         desc.matrix.view = state->view.param.matrix.curr.view;
         desc.matrix.proj = state->view.param.matrix.curr.proj;
         desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
@@ -8172,6 +8207,8 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.linear_output = true;
         desc.slice = slice;
         desc.slice_opacity = slice ? slice_opacity : nullptr;
+        desc.slice_images = on_planes ? images : nullptr;
+        desc.slice_image_from_model = on_planes ? image_from_model : nullptr;
         volume::render_dvr(desc);
         written = true;
     }
