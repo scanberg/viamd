@@ -4557,7 +4557,7 @@ static int localization_poll(ApplicationState* state, Representation* rep, uint6
     if (!job) {
         if (g_num_localization_jobs == ARRAY_SIZE(g_localization_jobs)) return 0;   // asked again next frame
         md_grid_t grid = {};
-        const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+        const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
         if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
         md_temp_scope_t temp = md_temp_begin();
         size_t num_atoms = 0;
@@ -4739,7 +4739,7 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
 static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep) {
     const ElectronicStructureRepresentation& es = rep->electronic_structure;
 
-    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
 
     md_grid_t grid = {};
     if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
@@ -5681,7 +5681,7 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
 
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es) {
 #if MD_ENABLE_GPU
-    if (es.display != ElectronicStructureDisplay::Planes || es.plane_sampling != PlaneSampling::Plane) return false;
+    if (es.display != ElectronicStructureDisplay::Planes) return false;
     if (!gpu_evaluation_ready(state) || !state->gpu_plane) return false;
     // ELF and LOL without their kernel: on the CPU, into the volume
     return !electronic_structure_is_localization(es) || localization_gpu_prepare(state) >= 0;
@@ -5694,7 +5694,7 @@ bool es_plane_images_supported(ApplicationState* state, const ElectronicStructur
 // The box of the volume without the volume: its grid, at the resolution, and its unit cube in the world
 static void es_box_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
     md_grid_t grid = {};
     if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
         es.has_box = false;
@@ -5786,7 +5786,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     ElectronicStructureRepresentation& es = rep->electronic_structure;
 
     uint64_t vol_hash = es_source_hash(state, es);
-    vol_hash = md_hash64(&es.resolution, sizeof(es.resolution), vol_hash);
+    const VolumeResolution resolution = electronic_structure_volume_resolution(es);
+    vol_hash = md_hash64(&resolution, sizeof(resolution), vol_hash);
 
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom

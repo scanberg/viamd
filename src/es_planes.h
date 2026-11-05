@@ -55,7 +55,7 @@ vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane&
 // and their opacities: what the slice rendering draws. Returns how many (at most ES_MAX_PLANES).
 int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es, int* out_index = nullptr);
 
-// The images of planes (PlaneSampling::Plane). A plane's frame: the plane with its normal one of its two ways (the
+// The images of planes (the planes display). A plane's frame: the plane with its normal one of its two ways (the
 // same frame either way it is given), u and v along it, set by the box (not the view: the image stays put as the view
 // turns), and the polygon where it cuts the box (box_to_world: the unit cube to the world) with the rectangle around it
 // in (u, v), Angstrom. False where the plane misses the box.

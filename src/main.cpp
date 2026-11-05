@@ -8058,7 +8058,6 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&es.display, sizeof(es.display), h);
             h = md_hash64(&es.cuts, sizeof(es.cuts), h);
             h = md_hash64(&es.slices, sizeof(es.slices), h);
-            h = md_hash64(&es.plane_sampling, sizeof(es.plane_sampling), h);
             for (const ElectronicStructurePlaneImage& im : es.plane_images) {
                 h = md_hash64(&im.key[im.front], sizeof(uint64_t), h);
                 h = md_hash64(&im.serial, sizeof(im.serial), h);

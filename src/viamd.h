@@ -422,14 +422,7 @@ inline const char* electronic_structure_display_str[(int)ElectronicStructureDisp
 
 #define ES_MAX_PLANES 8
 
-// How the planes display takes its values: sampled from the volume (at its resolution), or evaluated on each plane
-// into an image of its own (no volume), at a spacing (PlaneDetail)
-enum class PlaneSampling {
-    Volume,
-    Plane,
-    Count,
-};
-
+// The spacing of the planes display's images (each plane evaluated on itself)
 enum class PlaneDetail {
     Coarse,
     Fine,
@@ -628,8 +621,7 @@ struct IsoDesc {
     float optical_densities[8];
 };
 
-// The image of a slice evaluated on its plane (PlaneSampling::Plane; viamd.cpp, electronic_structure_plane_images_
-// update): two, the one drawn and the one being evaluated, swapped when it is there. Drawn only while it is of the
+// The image of a slice evaluated on its plane (the planes display; viamd.cpp, electronic_structure_plane_images_update): two, the one drawn and the one being evaluated, swapped when it is there. Drawn only while it is of the
 // plane as it is (current): until then, and while the plane is dragged, the plane is drawn from the volume (and so is
 // anything of it outside the image's rectangle).
 struct ElectronicStructurePlaneImage {
@@ -718,8 +710,8 @@ struct ElectronicStructureRepresentation {
     ElectronicStructurePlaneSet cuts;
     ElectronicStructurePlaneSet slices;
 
-    // Planes: the slices' values from the volume, or evaluated on each (plane_images, at plane_detail's spacing)
-    PlaneSampling plane_sampling = PlaneSampling::Volume;
+    // Planes: each slice evaluated on itself (plane_images, at plane_detail's spacing); drawn from the volume, at Mid
+    // (electronic_structure_volume_resolution), where its image is not there, while it is dragged, and without the GPU
     PlaneDetail   plane_detail = PlaneDetail::Fine;
     ElectronicStructurePlaneImage plane_images[ES_MAX_PLANES] = {};
 
@@ -739,6 +731,12 @@ struct ElectronicStructureRepresentation {
         TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
     } volume;
 };
+
+// The resolution the representation's volume is evaluated at: the planes display's is Mid (what a plane is drawn from
+// until its own image is there, while it is dragged, and without the GPU), not a setting; else the representation's
+static inline VolumeResolution electronic_structure_volume_resolution(const ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? VolumeResolution::Mid : es.resolution;
+}
 
 // The planes of the representation's display: its slices in the planes display, its cuts otherwise
 static inline ElectronicStructurePlaneSet& electronic_structure_planes(ElectronicStructureRepresentation& es) {
@@ -2609,14 +2607,14 @@ void electronic_structure_field_poll(Representation* rep);
 // atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.
 // False when something it waits for without blocking (the volume's last readback, a density matrix made on a
 // worker thread, the density a field update reads) is not there yet: it is to be called again next frame.
-// The planes display evaluated on its planes (PlaneSampling::Plane, on the GPU): each slice's image, made again where
+// The planes display evaluated on its planes (on the GPU): each slice's image, made again where
 // the plane, the source or the frame changed (not while the plane is dragged), one at a time per plane. A plane whose
 // image is not current is drawn from the volume, which this display keeps too. Called every frame; false while one is
 // under way.
 bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep);
 // For measurements (the timings shown with it): bumped with each change to how the images are evaluated
 #define ES_PLANE_IMAGES_REVISION "plane-images r4"
-// Whether it is: the planes display, PlaneSampling::Plane, and the source on the GPU
+// Whether it is: the planes display, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
 
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
