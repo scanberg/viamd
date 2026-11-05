@@ -1,9 +1,9 @@
 #pragma once
 
 // The planes of the electronic structure representations: the cuts of a volume rendering, and the plane a field is
-// drawn on (ElectronicStructureRepresentation::planes, Plane in viamd.h). Shown in the view as outlines where they
-// cut their representation's box, a click on an outline picking it for the gizmo, which turns it about the axes in
-// it and moves it along its normal.
+// drawn on (ElectronicStructureRepresentation::planes, Plane in plane.h). Shown in the view as outlines where they
+// cut their representation's box, a click on an outline picking it for the gizmo (es_planes.cpp): a ring to turn
+// its normal as a trackball, and the normal as an arrow to slide it along.
 //
 // And what the volume rendering of a representation is drawn with: its planes in the space of its volume, and its
 // transfer function baked, the colour map with the opacity curve over it.

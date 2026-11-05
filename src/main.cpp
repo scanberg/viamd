@@ -59,7 +59,6 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
-#include <ImGuizmo.h>
 
 #include <implot.h>
 #include <implot_internal.h>
@@ -1005,7 +1004,6 @@ int main(int argc, char** argv) {
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Viewport");
-        ImGuizmo::BeginFrame();
         ImGui::BeginCanvas("Main interaction window", true);
         const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();

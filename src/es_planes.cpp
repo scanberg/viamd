@@ -7,7 +7,6 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
-#include <ImGuizmo.h>
 
 #include <math.h>
 #include <float.h>
@@ -97,15 +96,43 @@ uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es) {
 // The gizmo
 // ---------------------------------------------------------------------------------------------------------------
 
-// The frame the gizmo was given when a drag began, and what it made of it since: passed back to it while the drag
-// lasts, as it turns what it is given (a frame made again from the plane each frame could turn about the normal
-// under it)
+// The gizmo of the picked plane, in screen space at the middle of where the plane cuts its box (its anchor):
+//
+//   - a ring: dragging within it turns the normal as a trackball turns, about the axis in the view across the drag,
+//     by the drag's length over the ring's radius; from any view, the plane seen face on or edge on alike. The
+//     normal has two degrees of freedom and this turns only those: there is no turn about the normal to keep.
+//     With shift, the normal snaps to the nearest axis within 10 degrees.
+//   - the normal, an arrow from the anchor, and a handle at the anchor: dragging either slides the plane along the
+//     normal, by where the mouse's ray passes closest to the normal's line; when the normal points (nearly) at the
+//     viewer, by the mouse's vertical movement instead. Drawn faint when it points away from the viewer.
+//
+// The anchor is held while a drag lasts: the plane turns about it, and slides along its normal through it. After,
+// it stays where the drag left it (as long as it is in the box, projected onto the plane as it moves), rather than
+// jump to the middle of the plane's new cut.
+
+enum GizmoPart { GizmoPart_None, GizmoPart_Rotate, GizmoPart_Slide };
+
 static struct {
-    bool     active = false;
+    GizmoPart part = GizmoPart_None;    // of the drag under way, None when there is none
+    uint32_t  rep_id = 0;
+    int       plane = -1;
+    vec3_t    anchor = {};              // on the plane, held while the drag lasts
+    ImVec2    last_mouse = {};
+    // a slide: the anchor, the normal and the plane's d when it began; where along the normal from that anchor the
+    // mouse took it (NaN: by the mouse's vertical movement, the normal pointing at the viewer), and that movement
+    vec3_t    slide_a0 = {};
+    vec3_t    slide_n = {};
+    float     slide_d0 = 0.0f;
+    float     slide_t = 0.0f;
+    float     slide_off = 0.0f;
+} gizmo_drag;
+
+// Where the last drag left the anchor, of this plane
+static struct {
     uint32_t rep_id = 0;
     int      plane = -1;
-    mat4_t   frame = {};
-} gizmo_drag;
+    vec3_t   point = {};
+} gizmo_anchor;
 
 static inline bool project(ImVec2* out, const mat4_t& world_to_clip, vec3_t p, vec2_t canvas_min, vec2_t canvas_size) {
     const vec4_t c = mat4_mul_vec4(world_to_clip, vec4_set(p.x, p.y, p.z, 1.0f));
@@ -138,6 +165,45 @@ static Representation* gizmo_target(ApplicationState* state, uint32_t rep_id, in
     return nullptr;
 }
 
+// The mouse's ray in world space
+static void mouse_ray(vec3_t* origin, vec3_t* dir, const mat4_t& world_to_clip, ImVec2 mouse, vec2_t canvas_min, vec2_t canvas_size) {
+    const mat4_t inv = mat4_inverse(world_to_clip);
+    const float x = (mouse.x - canvas_min.x) / canvas_size.x * 2.0f - 1.0f;
+    const float y = 1.0f - (mouse.y - canvas_min.y) / canvas_size.y * 2.0f;
+    vec4_t a = mat4_mul_vec4(inv, vec4_set(x, y, -1.0f, 1.0f));
+    vec4_t b = mat4_mul_vec4(inv, vec4_set(x, y,  1.0f, 1.0f));
+    const vec3_t pa = vec3_set(a.x / a.w, a.y / a.w, a.z / a.w);
+    const vec3_t pb = vec3_set(b.x / b.w, b.y / b.w, b.z / b.w);
+    *origin = pa;
+    *dir = vec3_normalize(vec3_sub(pb, pa));
+}
+
+// Along the line c + t n (n unit), where the ray o + s r passes closest: false when the two are (nearly) parallel
+static bool line_ray_closest(float* t, vec3_t c, vec3_t n, vec3_t o, vec3_t r) {
+    const vec3_t w = vec3_sub(c, o);
+    const float b = vec3_dot(n, r);
+    const float den = 1.0f - b * b;
+    if (den < 1.0e-3f) return false;
+    *t = (b * vec3_dot(r, w) - vec3_dot(n, w)) / den;
+    return true;
+}
+
+// v turned about the unit axis by angle (Rodrigues)
+static vec3_t rotate_about(vec3_t v, vec3_t axis, float angle) {
+    const float c = cosf(angle), s = sinf(angle);
+    return vec3_add(vec3_add(vec3_mul1(v, c), vec3_mul1(vec3_cross(axis, v), s)), vec3_mul1(axis, vec3_dot(axis, v) * (1.0f - c)));
+}
+
+// The nearest axis to n within 10 degrees, or n
+static vec3_t snap_to_axis(vec3_t n) {
+    int k = 0;
+    for (int i = 1; i < 3; ++i) if (fabsf(n.elem[i]) > fabsf(n.elem[k])) k = i;
+    if (fabsf(n.elem[k]) < cosf(10.0f * 3.14159265f / 180.0f)) return n;
+    vec3_t a = vec3_zero();
+    a.elem[k] = n.elem[k] < 0.0f ? -1.0f : 1.0f;
+    return a;
+}
+
 bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const mat4_t& view = state->view.param.matrix.curr.view;
@@ -145,25 +211,25 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
     const mat4_t world_to_clip = proj * view;
     const ImVec2 mouse = ImGui::GetMousePos();
     const bool canvas_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-
     // Something else has the mouse (the view being turned, a slider being dragged): what started first keeps it, so the
     // planes neither take it nor pick, though the mouse passes over them. ActiveId is that of the frame before here,
     // as the view's surface is submitted after this.
-    const bool mouse_taken = ImGui::GetActiveID() != 0 && !gizmo_drag.active;
+    const bool dragging = gizmo_drag.part != GizmoPart_None;
+    const bool mouse_taken = ImGui::GetActiveID() != 0 && !dragging;
 
     auto& sel = state->representation.gizmo;
     Representation* target = gizmo_target(state, sel.rep_id, sel.plane);
     if (!target) {
         sel.plane = -1;
-        gizmo_drag.active = false;
+        gizmo_drag.part = GizmoPart_None;
     }
 
     // The outlines, and the one the mouse is on
     uint32_t hover_rep = 0;
     int hover_plane = -1;
     float hover_dist = 6.0f;
-    vec3_t gizmo_centre = vec3_zero();
-    bool gizmo_centre_valid = false;
+    vec3_t centre = vec3_zero();
+    bool centre_valid = false;
     for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
         const Representation& rep = state->representation.reps[r];
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
@@ -178,9 +244,9 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
             if (n == 0) continue;
             const bool selected = target == &rep && sel.plane == i;
             if (selected) {
-                for (int k = 0; k < n; ++k) gizmo_centre = vec3_add(gizmo_centre, poly[k]);
-                gizmo_centre = vec3_mul1(gizmo_centre, 1.0f / (float)n);
-                gizmo_centre_valid = true;
+                for (int k = 0; k < n; ++k) centre = vec3_add(centre, poly[k]);
+                centre = vec3_mul1(centre, 1.0f / (float)n);
+                centre_valid = true;
             }
             ImVec2 sp[6];
             bool all = true;
@@ -204,55 +270,128 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         }
     }
 
-    // The gizmo on the picked plane, at the middle of where it cuts the box: it slides along the normal and turns about
-    // the two axes in the plane
     bool capture = false;
-    static bool gizmo_over_last = false;
-    if (!(target && gizmo_centre_valid)) gizmo_over_last = false;
-    if (target && gizmo_centre_valid) {
-        ElectronicStructureRepresentation& es = target->electronic_structure;
-        Plane& plane = es.planes[sel.plane].plane;
-        mat4_t frame;
-        if (gizmo_drag.active && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane) {
-            frame = gizmo_drag.frame;
-        } else {
-            // its rings along the screen: the first axis in the plane is the camera's right as near as the plane allows
-            vec3_t u, v;
-            plane_frame(&u, &v, plane, quat_mul_vec3(state->view.camera.orientation, vec3_set(1, 0, 0)));
-            const vec3_t n = plane.normal;
-            const vec3_t o = plane_project(plane, gizmo_centre);
-            frame = mat4_ident();
-            frame.elem[0][0] = u.x; frame.elem[0][1] = u.y; frame.elem[0][2] = u.z;
-            frame.elem[1][0] = v.x; frame.elem[1][1] = v.y; frame.elem[1][2] = v.z;
-            frame.elem[2][0] = n.x; frame.elem[2][1] = n.y; frame.elem[2][2] = n.z;
-            frame.elem[3][0] = o.x; frame.elem[3][1] = o.y; frame.elem[3][2] = o.z;
+    GizmoPart hover_part = GizmoPart_None;
+    if (target && (centre_valid || dragging)) {
+        Plane& plane = target->electronic_structure.planes[sel.plane].plane;
+        const bool ours = dragging && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane;
+        if (dragging && !ours) gizmo_drag.part = GizmoPart_None;
+        vec3_t anchor = ours ? gizmo_drag.anchor : plane_project(plane, centre);
+        if (!ours && gizmo_anchor.rep_id == sel.rep_id && gizmo_anchor.plane == sel.plane) {
+            mat4_t box;
+            if (es_volume_box(&box, target->electronic_structure)) {
+                const vec3_t p = plane_project(plane, gizmo_anchor.point);
+                const vec4_t u = mat4_mul_vec4(mat4_inverse(box), vec4_set(p.x, p.y, p.z, 1.0f));
+                if (u.x >= 0.0f && u.x <= 1.0f && u.y >= 0.0f && u.y <= 1.0f && u.z >= 0.0f && u.z <= 1.0f) anchor = p;
+            }
         }
-        ImGuizmo::SetOrthographic(false);
-        ImGuizmo::SetDrawlist(dl);
-        ImGuizmo::SetRect(canvas_min.x, canvas_min.y, canvas_size.x, canvas_size.y);
-        ImGuizmo::PushID((int)(sel.rep_id * ES_MAX_PLANES + (uint32_t)sel.plane));
-        const ImGuizmo::OPERATION op = (ImGuizmo::OPERATION)(ImGuizmo::TRANSLATE_Z | ImGuizmo::ROTATE_X | ImGuizmo::ROTATE_Y);
-        // The gizmo takes a click only when no item was hovered the frame before (ImGuizmo's CanActivate), and the view's
-        // interaction surface, disabled while the gizmo has the mouse, is still hovered (ImGui's disabled items keep
-        // HoveredId). So once the gizmo had the mouse last frame, and nothing is active, that hover is the surface's
-        // and is let go of.
-        if (gizmo_over_last && canvas_hovered && ImGui::GetActiveID() == 0) {
-            GImGui->HoveredIdPreviousFrame = 0;
+        const vec3_t n = plane.normal;
+
+        // its size on screen, and the normal's length in the world that makes the arrow as long as the ring's radius
+        const float ring_radius = 64.0f;
+        const vec3_t right = quat_mul_vec3(state->view.camera.orientation, vec3_set(1, 0, 0));
+        const vec3_t to_camera = quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, 1));
+        ImVec2 sc, sr;
+        const bool visible = project(&sc, world_to_clip, anchor, canvas_min, canvas_size) &&
+                             project(&sr, world_to_clip, vec3_add(anchor, right), canvas_min, canvas_size);
+        const float px_per_unit = visible ? sqrtf((sr.x - sc.x) * (sr.x - sc.x) + (sr.y - sc.y) * (sr.y - sc.y)) : 0.0f;
+        if (visible && px_per_unit > 0.0f) {
+            const float arrow_len = ring_radius / px_per_unit;
+            ImVec2 tip;
+            project(&tip, world_to_clip, vec3_add(anchor, vec3_mul1(n, arrow_len)), canvas_min, canvas_size);
+            const float arrow_px = sqrtf((tip.x - sc.x) * (tip.x - sc.x) + (tip.y - sc.y) * (tip.y - sc.y));
+            const bool facing = vec3_dot(n, to_camera) >= 0.0f;
+
+            // what the mouse is over: the handle, the arrow, then the ring's disc
+            const float md = sqrtf((mouse.x - sc.x) * (mouse.x - sc.x) + (mouse.y - sc.y) * (mouse.y - sc.y));
+            if (!dragging && canvas_hovered && !mouse_taken) {
+                if (md <= 8.0f || (arrow_px > 12.0f && segment_distance(mouse, sc, tip) <= 6.0f)) hover_part = GizmoPart_Slide;
+                else if (md <= ring_radius + 4.0f) hover_part = GizmoPart_Rotate;
+            }
+            const GizmoPart lit = ours ? gizmo_drag.part : hover_part;
+
+            // the ring
+            const ImU32 ring_col = lit == GizmoPart_Rotate ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 200, 40, 170);
+            if (lit == GizmoPart_Rotate) dl->AddCircleFilled(sc, ring_radius, IM_COL32(255, 200, 40, 28), 48);
+            dl->AddCircle(sc, ring_radius, IM_COL32(0, 0, 0, 90), 48, 4.0f);
+            dl->AddCircle(sc, ring_radius, ring_col, 48, 2.0f);
+            // the normal: an arrow, faint behind the plane (pointing away)
+            const ImU32 arrow_col = lit == GizmoPart_Slide ? IM_COL32(120, 200, 255, 255) : facing ? IM_COL32(60, 150, 255, 235) : IM_COL32(60, 150, 255, 110);
+            if (arrow_px > 2.0f) {
+                const ImVec2 d = ImVec2((tip.x - sc.x) / arrow_px, (tip.y - sc.y) / arrow_px);
+                const ImVec2 o = ImVec2(-d.y, d.x);
+                const float head = MIN(12.0f, 0.4f * arrow_px);
+                const ImVec2 base = ImVec2(tip.x - d.x * head, tip.y - d.y * head);
+                dl->AddLine(sc, base, IM_COL32(0, 0, 0, 110), 5.0f);
+                dl->AddLine(sc, base, arrow_col, 3.0f);
+                dl->AddTriangleFilled(tip, ImVec2(base.x + o.x * head * 0.5f, base.y + o.y * head * 0.5f),
+                                      ImVec2(base.x - o.x * head * 0.5f, base.y - o.y * head * 0.5f), arrow_col);
+            }
+            dl->AddCircleFilled(sc, 6.0f, IM_COL32(0, 0, 0, 120), 16);
+            dl->AddCircleFilled(sc, 4.5f, arrow_col, 16);
+
+            // a drag begun
+            if (!dragging && hover_part != GizmoPart_None && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                gizmo_drag.part = hover_part;
+                gizmo_drag.rep_id = sel.rep_id;
+                gizmo_drag.plane = sel.plane;
+                gizmo_drag.anchor = anchor;
+                gizmo_drag.last_mouse = mouse;
+                gizmo_drag.slide_a0 = anchor;
+                gizmo_drag.slide_n = n;
+                gizmo_drag.slide_d0 = plane.d;
+                gizmo_drag.slide_off = 0.0f;
+                vec3_t o, r;
+                mouse_ray(&o, &r, world_to_clip, mouse, canvas_min, canvas_size);
+                float t = 0.0f;
+                gizmo_drag.slide_t = line_ray_closest(&t, anchor, n, o, r) && arrow_px > 12.0f ? t : NAN;
+            }
+            // a drag going on
+            if (gizmo_drag.part != GizmoPart_None && gizmo_drag.rep_id == sel.rep_id && gizmo_drag.plane == sel.plane) {
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    gizmo_drag.part = GizmoPart_None;
+                    gizmo_anchor.rep_id = sel.rep_id;
+                    gizmo_anchor.plane = sel.plane;
+                    gizmo_anchor.point = gizmo_drag.anchor;
+                } else if (gizmo_drag.part == GizmoPart_Rotate) {
+                    const ImVec2 dm = ImVec2(mouse.x - gizmo_drag.last_mouse.x, mouse.y - gizmo_drag.last_mouse.y);
+                    const float len = sqrtf(dm.x * dm.x + dm.y * dm.y);
+                    if (len > 0.0f) {
+                        // the front of a ball under the mouse moves with it: about (dy, dx, 0) in the view, by len / radius
+                        const vec3_t axis = vec3_normalize(quat_mul_vec3(state->view.camera.orientation, vec3_set(dm.y, dm.x, 0.0f)));
+                        vec3_t nn = vec3_normalize(rotate_about(plane.normal, axis, len / ring_radius));
+                        plane = plane_from_point_normal(gizmo_drag.anchor, nn);
+                    }
+                    if (ImGui::GetIO().KeyShift) plane = plane_from_point_normal(gizmo_drag.anchor, snap_to_axis(plane.normal));
+                } else {
+                    // along the normal it was taken with, from where it was taken
+                    const vec3_t sn = gizmo_drag.slide_n;
+                    float t = 0.0f;
+                    vec3_t o, r;
+                    mouse_ray(&o, &r, world_to_clip, mouse, canvas_min, canvas_size);
+                    if (gizmo_drag.slide_t == gizmo_drag.slide_t && line_ray_closest(&t, gizmo_drag.slide_a0, sn, o, r)) {
+                        t -= gizmo_drag.slide_t;
+                    } else {
+                        // seen along the normal: up the screen is along it
+                        gizmo_drag.slide_off += (gizmo_drag.last_mouse.y - mouse.y) / px_per_unit;
+                        t = gizmo_drag.slide_off;
+                    }
+                    gizmo_drag.anchor = vec3_add(gizmo_drag.slide_a0, vec3_mul1(sn, t));
+                    plane.normal = sn;
+                    plane.d = gizmo_drag.slide_d0 - t;
+                }
+                gizmo_drag.last_mouse = mouse;
+                capture = true;
+            }
+            if (hover_part != GizmoPart_None) {
+                capture = true;
+                ImGui::SetMouseCursor(hover_part == GizmoPart_Slide ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_Hand);
+            }
+        } else if (ours) {
+            // off screen while dragged: the drag ends with the button
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) gizmo_drag.part = GizmoPart_None;
+            capture = true;
         }
-        const bool changed = ImGuizmo::Manipulate(&view.elem[0][0], &proj.elem[0][0], op, ImGuizmo::LOCAL, &frame.elem[0][0]);
-        const bool using_it = ImGuizmo::IsUsing();
-        capture = using_it || (ImGuizmo::IsOver() && !mouse_taken);
-        gizmo_over_last = capture;
-        ImGuizmo::PopID();
-        if (changed) {
-            const vec3_t n = vec3_set(frame.elem[2][0], frame.elem[2][1], frame.elem[2][2]);
-            const vec3_t o = vec3_set(frame.elem[3][0], frame.elem[3][1], frame.elem[3][2]);
-            if (vec3_length(n) > 1.0e-6f) plane = plane_from_point_normal(o, n);
-        }
-        gizmo_drag.active = using_it;
-        gizmo_drag.rep_id = sel.rep_id;
-        gizmo_drag.plane = sel.plane;
-        gizmo_drag.frame = frame;
     }
 
     // A click on an outline picks its plane
@@ -261,7 +400,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             sel.rep_id = hover_rep;
             sel.plane = hover_plane;
-            gizmo_drag.active = false;
+            gizmo_drag.part = GizmoPart_None;
             capture = true;
         }
     }
