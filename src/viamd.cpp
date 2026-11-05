@@ -3776,8 +3776,11 @@ static void gpu_volume_job_complete(void* user) {
     }
     if (self && job->rb.gpu) md_gpu_free(self->gpu_stream, job->rb.gpu);
     if (job->issued_job) {
-        MD_LOG_DEBUG("Density volume %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (" MD_GTO_GPU_GEMM_PIECES_REVISION ")",
-                     (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0));
+        const char* what = job->label ? job->label : "Density";
+        const bool localization = what[0] == 'E' || what[0] == 'L';     // "ELF", "LOL"
+        MD_LOG_DEBUG("%s %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (%s)", what,
+                     (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0),
+                     localization ? MD_GTO_GPU_LOCALIZATION_REVISION : MD_GTO_GPU_GEMM_PIECES_REVISION);
         md_gto_gpu_job_end((md_gto_gpu_job_t*)job->issued_job);
         job->issued_job = nullptr;
     }
@@ -3932,7 +3935,7 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
 
 // The readback of a density job's evaluation: its slot now, the copy once the job is all issued
 // (gpu_volume_jobs_poll). Takes the job.
-static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj) {
+static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj, const char* label = "Density") {
     if (md_gto_gpu_job_poll(dj, false)) {
         md_gto_gpu_job_end(dj);
         return gpu_volume_readback(state, vol_tex, grid);
@@ -3955,6 +3958,7 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
     job->grid = grid;
     job->density_job = dj;
     job->t0 = md_tick_now();
+    job->label = label;
     return true;
 }
 
@@ -4026,7 +4030,7 @@ void gpu_volume_jobs_poll(ApplicationState* state) {
 #endif
 }
 
-size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap) {
+size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, const char** label, size_t cap) {
     ASSERT(state);
     size_t n = 0;
 #if MD_ENABLE_GPU
@@ -4037,11 +4041,13 @@ size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, 
         if (!j.in_flight || !dj) continue;
         // one done within a few frames shows nothing
         if (md_tick_to_seconds(now - (md_tick_t)j.t0) < 0.25) continue;
+        if (label) label[n] = j.label ? j.label : "Density";
         fraction[n++] = md_gto_gpu_job_progress((md_gto_gpu_job_t*)dj);
     }
 #else
     (void)state;
     (void)fraction;
+    (void)label;
     (void)cap;
 #endif
     return n;
@@ -4660,6 +4666,7 @@ static void localization_gpu_destroy(LocalizationGpu* L, md_gpu_stream_t gl_stre
 
 static void localization_gpu_free(ApplicationState* state) {
     if (state->mold.gpu_localization) {
+        gpu_density_jobs_settle(state);     // an ELF or LOL job not yet all issued reads the basis and the matrices
         localization_gpu_destroy((LocalizationGpu*)state->mold.gpu_localization, state->gpu_stream);
         state->mold.gpu_localization = nullptr;
     }
@@ -4726,8 +4733,13 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
         .d_min = MD_QM_ELF_D_MIN,
         .out_tex = gpu_eval_target(state), .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
     };
-    if (!md_gto_gpu_localization_launch(state->gpu_stream, &desc)) return false;
-    return gpu_volume_readback(state, vol_tex, grid);
+    // As a job, in pieces of bounded work, each its own submission, over the frames (md_gto.h): at the cutoff ELF
+    // takes, a large system's grid as one launch is minutes of GPU work, which the watchdog takes the device for. Read
+    // back once it is all issued (gpu_volume_jobs_poll); its progress in the task overlay; dropped when what it is of
+    // changes, as the density's
+    md_gto_gpu_job_t* job = md_gto_gpu_localization_job_begin(state->gpu_stream, &desc);
+    if (!job) return false;
+    return gpu_volume_readback_after(state, vol_tex, grid, job, lol ? "LOL" : "ELF");
 }
 #endif
 
@@ -5716,14 +5728,29 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
         ElectronicStructurePlaneImage& im = es.plane_images[i];
         // the one being evaluated, there: drawn from now on
         if (im.pending) {
-            if (gpu_volume_job_in_flight_for(state, im.img[1 - im.front].tex_id)) {
-                done = false;
-                continue;
+            const int back = 1 - im.front;
+            if (gpu_volume_job_in_flight_for(state, im.img[back].tex_id)) {
+                // Of a plane or a source no longer as it is: dropped where it is not yet all issued (ELF over a large
+                // system: seconds), rather than waited for, and the image evaluated anew below. Not while playing, where
+                // each frame would drop the one before (as the volume's)
+                uint64_t want = 0;
+                EsSliceFrame fr;
+                if (es.slices.items[i].enabled && es_slice_frame(&fr, es.slices.items[i])) {
+                    want = md_hash64(&fr, sizeof(fr), src);
+                    want = want ? want : 1;
+                }
+                if (want == im.key[back] || state->animation.mode == PlaybackMode::Playing || !gpu_volume_job_cancel(state, im.img[back].tex_id)) {
+                    done = false;
+                    continue;
+                }
+                im.pending = false;
+                im.key[back] = 0;
+            } else {
+                im.front = back;
+                im.pending = false;
+                im.serial += 1;
+                im.ms = (float)((now - im.issued) * 1000.0);
             }
-            im.front = 1 - im.front;
-            im.pending = false;
-            im.serial += 1;
-            im.ms = (float)((now - im.issued) * 1000.0);
         }
         im.current = false;
         const ElectronicStructurePlane& p = es.slices.items[i];

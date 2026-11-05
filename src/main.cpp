@@ -3736,7 +3736,8 @@ static void draw_async_task_window(ApplicationState* data) {
     any_task_label_visible |= num_iso > 0;
     // the density volumes evaluated on the GPU over frames
     float vol_fraction[8];
-    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, ARRAY_SIZE(vol_fraction));
+    const char* vol_label[8];
+    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, vol_label, ARRAY_SIZE(vol_fraction));
     any_task_label_visible |= num_vol > 0;
     // the density matrix a volume waits for, made on a worker thread
     double dmat_seconds = 0.0;
@@ -3809,7 +3810,7 @@ static void draw_async_task_window(ApplicationState* data) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
         }
         for (size_t i = 0; i < num_vol; i++) {
-            snprintf(buf, sizeof(buf), "Density volume %.0f%%", vol_fraction[i] * 100.f);
+            snprintf(buf, sizeof(buf), "%s %.0f%%", vol_label[i], vol_fraction[i] * 100.f);
             ImGui::ProgressBar(vol_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
         }
         if (nto_warming) {

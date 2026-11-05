@@ -1354,6 +1354,7 @@ struct ApplicationState {
         // The same once it is all issued, kept for its progress until the readback lands (gpu_volume_jobs_progress)
         void*             issued_job = nullptr;
         int64_t           t0 = 0;               // md_tick_t: when the evaluation began
+        const char*       label = nullptr;      // what it is of, for the task overlay (a string literal)
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -2724,9 +2725,10 @@ void gpu_volume_jobs_drain(ApplicationState* state);
 // all issued: once a frame.
 void gpu_volume_jobs_poll(ApplicationState* state);
 
-// The density evaluations on the GPU under way for longer than a moment, for a progress display: how far each is
-// (0 to 1). Returns how many (at most cap). 0 without the GPU backend.
-size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap);
+// The evaluations on the GPU under way as jobs (a density, ELF, LOL) for longer than a moment, for a progress display:
+// how far each is (0 to 1) and what it is of (label: may be NULL). Returns how many (at most cap). 0 without the GPU
+// backend.
+size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, const char** label, size_t cap);
 
 // Drops the density evaluation into vol_tex that is not yet all issued, if there is one: what it has in flight
 // completes, nothing more is issued, and the texture keeps what it held. True when one was dropped.
