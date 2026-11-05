@@ -68,10 +68,6 @@ struct EsPlaneFrame {
 };
 bool es_plane_frame(EsPlaneFrame* f, const Plane& plane, const mat4_t& box_to_world);
 
-// The part of it in view: the rectangle (s0, s1, t0, t1) around what of its polygon is inside the view's frustum, and
-// the size of a pixel (Angstrom) where it is nearest the camera (viewport_height: pixels). False when none is in view.
-bool es_plane_view_rect(float rect[4], float* pixel, const EsPlaneFrame& f, const mat4_t& view, const mat4_t& proj, float viewport_height);
-
 // The grid of an image over rect (in the frame) at spacing Angstrom a pixel: one layer whose voxel centres are on the
 // plane, in bohr as the evaluations take it
 void es_plane_image_grid(struct md_grid_t* grid, const EsPlaneFrame& f, const float rect[4], float spacing);

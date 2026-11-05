@@ -46,60 +46,6 @@ bool es_plane_frame(EsPlaneFrame* f, const Plane& plane_in, const mat4_t& box) {
     return true;
 }
 
-// The polygon clipped to the frustum, in homogeneous clip space (-w <= x, y, z <= w for x and y, -w <= z): each
-// vertex with its world position, interpolated alike (the projection is linear in clip space)
-struct ClipVertex { vec4_t c; vec3_t p; };
-
-static int clip_polygon(ClipVertex* out, const ClipVertex* in, int n, int plane) {
-    // the signed distance to the plane: x + w, w - x, y + w, w - y, z + w
-    auto dist = [plane](const vec4_t& c) {
-        switch (plane) {
-            case 0: return c.w + c.x;
-            case 1: return c.w - c.x;
-            case 2: return c.w + c.y;
-            case 3: return c.w - c.y;
-            default: return c.w + c.z;
-        }
-    };
-    int m = 0;
-    for (int k = 0; k < n; ++k) {
-        const ClipVertex& a = in[k];
-        const ClipVertex& b = in[(k + 1) % n];
-        const float da = dist(a.c), db = dist(b.c);
-        if (da >= 0.0f) out[m++] = a;
-        if ((da >= 0.0f) != (db >= 0.0f)) {
-            const float t = da / (da - db);
-            out[m++] = ClipVertex{ vec4_lerp(a.c, b.c, t), vec3_lerp(a.p, b.p, t) };
-        }
-    }
-    return m;
-}
-
-bool es_plane_view_rect(float rect[4], float* pixel, const EsPlaneFrame& f, const mat4_t& view, const mat4_t& proj, float viewport_height) {
-    const mat4_t world_to_clip = proj * view;
-    ClipVertex a[16], b[16];
-    int n = f.num_poly;
-    for (int k = 0; k < n; ++k) a[k] = ClipVertex{ mat4_mul_vec4(world_to_clip, vec4_set(f.poly[k].x, f.poly[k].y, f.poly[k].z, 1.0f)), f.poly[k] };
-    for (int pl = 0; pl < 5 && n > 0; ++pl) {
-        n = clip_polygon(b, a, n, pl);
-        for (int k = 0; k < n; ++k) a[k] = b[k];
-    }
-    if (n < 3) return false;
-    // The size of a pixel at a depth: 2 w / (P11 H) world units (w the depth in perspective, 1 in orthographic); the
-    // nearest point of the part in view is a vertex of it
-    const float p11 = proj.elem[1][1];
-    float w_min = FLT_MAX;
-    rect[0] = FLT_MAX; rect[1] = -FLT_MAX; rect[2] = FLT_MAX; rect[3] = -FLT_MAX;
-    for (int k = 0; k < n; ++k) {
-        w_min = MIN(w_min, a[k].c.w);
-        const float s = vec3_dot(a[k].p, f.u), t = vec3_dot(a[k].p, f.v);
-        rect[0] = MIN(rect[0], s); rect[1] = MAX(rect[1], s);
-        rect[2] = MIN(rect[2], t); rect[3] = MAX(rect[3], t);
-    }
-    *pixel = (p11 != 0.0f && viewport_height > 0.0f) ? 2.0f * MAX(w_min, 1.0e-6f) / (fabsf(p11) * viewport_height) : 0.0f;
-    return *pixel > 0.0f;
-}
-
 void es_plane_image_grid(md_grid_t* grid, const EsPlaneFrame& f, const float rect[4], float spacing) {
     const Plane& plane = f.plane;
     const int w = MAX(1, (int)ceilf((rect[1] - rect[0]) / spacing));

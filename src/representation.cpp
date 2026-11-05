@@ -2685,7 +2685,22 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
             gizmo.rep_id = rep.node.id;
             gizmo.plane = picked ? -1 : i;
         }
-        ImGui::SetItemTooltip(picked ? "Moved in the view: click to let go" : "Click to move it in the view (or click its outline there)");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(picked ? "Moved in the view: click to let go" : "Click to move it in the view (or click its outline there)");
+            // evaluated on the plane: its image, and how long it took to be there (for measurements, with the revision)
+            if (slices && es.plane_sampling == PlaneSampling::Plane && es_plane_images_supported(state, es)) {
+                const ElectronicStructurePlaneImage& im = es.plane_images[i];
+                const Volume& v = im.img[im.front];
+                ImGui::Separator();
+                if (im.key[im.front] && v.tex_id) {
+                    ImGui::Text("Image %d x %d at %.3f \xc3\x85, there after %.0f ms (" ES_PLANE_IMAGES_REVISION ")", v.dim[0], v.dim[1], im.spacing[im.front], im.ms);
+                }
+                if (im.pending) ImGui::TextUnformatted("Being evaluated: drawn from the volume until it is there");
+                else if (!im.current) ImGui::TextUnformatted("Drawn from the volume");
+            }
+            ImGui::EndTooltip();
+        }
         ImGui::SetCursorPos(row_start);
         prop::row(label);
         bool& shown = set.items[i].enabled;
@@ -3240,26 +3255,11 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("sampling", "Where the values on the planes come from");
                 ImGui::Combo("##sampling", (int*)&es.plane_sampling, sampling_str, IM_ARRAYSIZE(sampling_str));
                 if (es.plane_sampling == PlaneSampling::Plane) {
-                    static const char* detail_str[(int)PlaneDetail::Count] = {"Screen (a value a pixel)", "Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
-                    prop::row("detail", "Screen: the part of each plane in view, a value a pixel where it is nearest (made again once the view rests, "
-                                        "where it is too coarse or does not cover what is in view). Else all of each plane at a spacing. At most "
-                                        "2048 a side.");
+                    static const char* detail_str[(int)PlaneDetail::Count] = {"Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
+                    prop::row("detail", "The spacing of the points each plane is evaluated at (at most 2048 a side)");
                     ImGui::Combo("##detail", (int*)&es.plane_detail, detail_str, IM_ARRAYSIZE(detail_str));
                     if (!es_plane_images_supported(state, es)) {
                         prop::hint("Not without the GPU (or its ELF / LOL kernel): from the volume");
-                    } else {
-                        // what each took, for measurements: with the revision of the images' evaluation
-                        for (int k = 0; k < es.slices.count; ++k) {
-                            const ElectronicStructurePlaneImage& im = es.plane_images[k];
-                            const Volume& v = im.img[im.front];
-                            if (!es.slices.items[k].enabled) continue;
-                            if (im.key[im.front] && v.tex_id) {
-                                prop::hint("plane %d: %d x %d at %.3f \xc3\x85, %.0f ms%s (" ES_PLANE_IMAGES_REVISION ")", k + 1, v.dim[0], v.dim[1],
-                                           im.spacing[im.front], im.ms, im.pending ? ", evaluating" : im.current ? "" : ", from the volume");
-                            } else {
-                                prop::hint("plane %d: %s", k + 1, im.pending ? "evaluating" : "from the volume");
-                            }
-                        }
                     }
                 } else {
                     prop::hint("Sampled from the volume, at its resolution");
