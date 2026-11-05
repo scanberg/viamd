@@ -201,5 +201,11 @@ void render_dvr(const DvrRenderDesc& desc);
 // it cannot be made.
 bool value_range(uint32_t volume_texture, float* out_min, float* out_max);
 
+// The histogram of the values of a volume (an R32F 3D texture) over [lo, hi]: bins counts, evenly spaced, of the
+// texels in each (those outside the interval not counted). Made on the GPU, one point per texel added into a row of
+// bins (GL 3.3: no compute), and kept until the volume's texels change (notify_data_changed) or another interval or
+// number of bins is asked for. The counts until the next call, or NULL when it cannot be made. Exact to 2^24 per bin.
+const float* histogram(uint32_t volume_texture, float lo, float hi, int bins);
+
 
 }  // namespace volume

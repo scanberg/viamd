@@ -1872,16 +1872,16 @@ done:
 // Workspace
 // ---------------------------------------------------------------------------------------------------------
 
-// The index in a key like ElectronicStructurePlane<i>: -1 when what follows the prefix is not a plane index
-static int es_plane_key_index(str_t ident, str_t prefix) {
+// The index in a key like ElectronicStructurePlane<i>: -1 when what follows the prefix is not an index below max
+static int es_key_index(str_t ident, str_t prefix, int max) {
     const str_t num = str_substr(ident, prefix.len, SIZE_MAX);
-    if (num.len == 0 || num.len > 2) return -1;
+    if (num.len == 0 || num.len > 3) return -1;
     int i = 0;
     for (size_t k = 0; k < num.len; ++k) {
         if (num.ptr[k] < '0' || num.ptr[k] > '9') return -1;
         i = i * 10 + (num.ptr[k] - '0');
     }
-    return i < ES_MAX_PLANES ? i : -1;
+    return i < max ? i : -1;
 }
 
 bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
@@ -2102,28 +2102,39 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
             rep->electronic_structure.volume.map_init = true;
         }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeColormap"))) {
-        viamd::extract_int(rep->electronic_structure.volume.map.colormap, arg);
+        viamd::extract_int(rep->electronic_structure.volume.tf.colormap, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRange"))) {
         float r[2];
-        if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.volume.map.range_beg = r[0]; rep->electronic_structure.volume.map.range_end = r[1]; }
+        if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.volume.tf.range_beg = r[0]; rep->electronic_structure.volume.tf.range_end = r[1]; }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeSymmetric"))) {
-        viamd::extract_bool(rep->electronic_structure.volume.map.symmetric, arg);
-    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeAutoRange"))) {
-        viamd::extract_bool(rep->electronic_structure.volume.map.auto_range, arg);
-    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeLegend"))) {
-        viamd::extract_bool(rep->electronic_structure.volume.map.show_legend, arg);
+        viamd::extract_bool(rep->electronic_structure.volume.tf.symmetric, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeOpacity"))) {
-        viamd::extract_flt(rep->electronic_structure.volume.opacity, arg);
+        viamd::extract_flt(rep->electronic_structure.volume.tf.opacity, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumePointCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.volume.tf.num_points = CLAMP(n, 1, TRANSFER_FUNCTION_MAX_POINTS);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureVolumePoint"))) {
+        // ElectronicStructureVolumePoint<i>: t, alpha
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureVolumePoint"), TRANSFER_FUNCTION_MAX_POINTS);
+        float p[2];
+        if (i >= 0 && viamd::extract_flt_vec(p, 2, arg)) {
+            rep->electronic_structure.volume.tf.points[i] = {CLAMP(p[0], 0.0f, 1.0f), CLAMP(p[1], 0.0f, 1.0f)};
+        }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRamp"))) {
+        // the ramp before the curve (its exponent not kept): the curve it was, near enough
         float r[2];
-        if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.volume.ramp_beg = r[0]; rep->electronic_structure.volume.ramp_end = r[1]; }
-    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRampExponent"))) {
-        viamd::extract_flt(rep->electronic_structure.volume.ramp_exponent, arg);
+        if (viamd::extract_flt_vec(r, 2, arg)) {
+            TransferFunction& tf = rep->electronic_structure.volume.tf;
+            if (tf.symmetric) transfer_function_ramp_magnitude(&tf, r[0]); else transfer_function_ramp(&tf, r[0]);
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeAutoRange")) || str_eq(ident, STR_LIT("ElectronicStructureVolumeLegend")) ||
+               str_eq(ident, STR_LIT("ElectronicStructureVolumeRampExponent"))) {
+        // of the colour scale and the ramp before the curve: nothing of them is kept
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlaneEnabled"))) {
-        const int i = es_plane_key_index(ident, STR_LIT("ElectronicStructurePlaneEnabled"));
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlaneEnabled"), ES_MAX_PLANES);
         if (i >= 0) viamd::extract_bool(rep->electronic_structure.planes[i].enabled, arg);
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlane"))) {
-        const int i = es_plane_key_index(ident, STR_LIT("ElectronicStructurePlane"));
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlane"), ES_MAX_PLANES);
         vec4_t v;
         if (i >= 0 && viamd::extract_vec4(v, arg)) {
             const float len = vec3_length(vec3_set(v.x, v.y, v.z));
@@ -2298,17 +2309,20 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
                 viamd::write_bool(state, str_from_cstr(key), es.planes[j].enabled);
             }
             if (es.volume.map_init) {
-                const float range[2] = { es.volume.map.range_beg, es.volume.map.range_end };
-                const float ramp[2]  = { es.volume.ramp_beg, es.volume.ramp_end };
-                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeKind"),         es.volume.map_kind);
-                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeColormap"),     es.volume.map.colormap);
-                viamd::write_flt_vec(state, STR_LIT("ElectronicStructureVolumeRange"),        range, 2);
-                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeSymmetric"),    es.volume.map.symmetric);
-                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeAutoRange"),    es.volume.map.auto_range);
-                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeLegend"),       es.volume.map.show_legend);
-                viamd::write_flt(state,     STR_LIT("ElectronicStructureVolumeOpacity"),      es.volume.opacity);
-                viamd::write_flt_vec(state, STR_LIT("ElectronicStructureVolumeRamp"),         ramp, 2);
-                viamd::write_flt(state,     STR_LIT("ElectronicStructureVolumeRampExponent"), es.volume.ramp_exponent);
+                const TransferFunction& tf = es.volume.tf;
+                const float range[2] = { tf.range_beg, tf.range_end };
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeKind"),       es.volume.map_kind);
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeColormap"),   tf.colormap);
+                viamd::write_flt_vec(state, STR_LIT("ElectronicStructureVolumeRange"),      range, 2);
+                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeSymmetric"),  tf.symmetric);
+                viamd::write_flt(state,     STR_LIT("ElectronicStructureVolumeOpacity"),    tf.opacity);
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumePointCount"), tf.num_points);
+                for (int j = 0; j < tf.num_points; ++j) {
+                    char key[64];
+                    snprintf(key, sizeof(key), "ElectronicStructureVolumePoint%d", j);
+                    const float p[2] = { tf.points[j].t, tf.points[j].alpha };
+                    viamd::write_flt_vec(state, str_from_cstr(key), p, 2);
+                }
             }
         }
         viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
@@ -2999,7 +3013,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     if (es.display == ElectronicStructureDisplay::Plane && es.num_planes == 0) {
                         es_planes_add(state, &es, rep.node.id);
                     }
-                    update_rep = true;
+                    // what is drawn, and whether the volume is evaluated (part of its hash): an update, not a dirtying,
+                    // which would evaluate it again whatever (flag_representation_as_dirty)
+                    rep.needs_update = true;
                 }
                 ImGui::EndDisabled();
                 if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
@@ -3102,32 +3118,33 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             prop::section_end();
         }
     } else {
-        if (es.display == ElectronicStructureDisplay::Volume && prop::section("Volume")) {
+        // Below, what is read where it is drawn (the colour map and its opacity, the planes): nothing to update, the
+        // scene's hash has them. The resolution is the volume's, which its hash has: an update evaluates it again.
+        if (es.display != ElectronicStructureDisplay::Isosurface && prop::section(es.display == ElectronicStructureDisplay::Volume ? "Volume" : "Plane")) {
+            // The transfer function's editor over the volume's values: its histogram over what is in view
+            const bool colors_only = es.display == ElectronicStructureDisplay::Plane;
             float lo = 0.0f, hi = 0.0f;
-            const ColorScaleSpan span = (es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi)) ? color_scale_span(lo, hi) : ColorScaleSpan{};
-            update_rep |= color_scale_draw_controls(&es.volume.map, span, md_unit_none(), "in volume", "The smallest and largest value of the evaluated volume");
-            prop::row("opacity", "The opacity at the top of the ramp: of a slab 1/150 of the volume thick");
-            update_rep |= ImGui::SliderFloat("##opacity", &es.volume.opacity, 0.001f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-            prop::row("ramp", es.volume.map.symmetric ? "Where the opacity rises from nothing to its top, as fractions of the magnitude over the range"
-                                                      : "Where the opacity rises from nothing to its top, as fractions of the range");
-            update_rep |= ImGui::DragFloatRange2("##ramp", &es.volume.ramp_beg, &es.volume.ramp_end, 0.002f, 0.0f, 1.0f, "%.3f", "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            prop::row("ramp shape", "The exponent of the ramp: below 1 the opacity rises fast and levels out, above 1 slowly and then steeply");
-            update_rep |= ImGui::SliderFloat("##ramp_exp", &es.volume.ramp_exponent, 0.1f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            const bool have_range = es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi);
+            TransferFunctionHistogram hist = {};
+            enum { HIST_BINS = 128 };
+            const float* counts = have_range ? volume::histogram(es.density_vol.tex_id, (float)es.volume.view.x_min, (float)es.volume.view.x_max, HIST_BINS) : nullptr;
+            if (counts) {
+                hist.counts = counts;
+                hist.bins = HIST_BINS;
+                hist.lo = (float)es.volume.view.x_min;
+                hist.hi = (float)es.volume.view.x_max;
+            }
+            ImGui::Indent(ImGui::GetStyle().IndentSpacing * 0.5f);
+            transfer_function_editor("##tf", &es.volume.tf, &es.volume.view, counts ? &hist : nullptr, have_range ? lo : 0.0f, have_range ? hi : 0.0f,
+                                     colors_only, ImGui::GetContentRegionAvail().x, colors_only ? 90.0f : 150.0f);
+            ImGui::Unindent(ImGui::GetStyle().IndentSpacing * 0.5f);
+            if (colors_only) prop::hint("Sampled from the volume, at its resolution");
             prop::row("resolution", "The resolution of the volume");
-            update_rep |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
-            prop::section_end();
-        }
-        if (es.display == ElectronicStructureDisplay::Plane && prop::section("Plane")) {
-            float lo = 0.0f, hi = 0.0f;
-            const ColorScaleSpan span = (es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi)) ? color_scale_span(lo, hi) : ColorScaleSpan{};
-            update_rep |= color_scale_draw_controls(&es.volume.map, span, md_unit_none(), "in volume", "The smallest and largest value of the evaluated volume");
-            prop::hint("Sampled from the volume, at its resolution");
-            prop::row("resolution", "The resolution of the volume");
-            update_rep |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
+            rep.needs_update |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
             prop::section_end();
         }
         if (prop::section("Planes")) {
-            update_rep |= draw_electronic_structure_planes(state, rep, es.display == ElectronicStructureDisplay::Plane ? 1 : ES_MAX_PLANES);
+            draw_electronic_structure_planes(state, rep, es.display == ElectronicStructureDisplay::Plane ? 1 : ES_MAX_PLANES);
             prop::section_end();
         }
     }

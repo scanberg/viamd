@@ -970,6 +970,8 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
+        // and what the ELF and LOL evaluations left (es_jobs_collect)
+        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1703,6 +1705,7 @@ int main(int argc, char** argv) {
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
+    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
@@ -8018,9 +8021,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&es.display, sizeof(es.display), h);
             h = md_hash64(&es.num_planes, sizeof(es.num_planes), h);
             h = md_hash64(es.planes, sizeof(es.planes[0]) * (size_t)MAX(0, MIN(es.num_planes, ES_MAX_PLANES)), h);
-            h = md_hash64(&es.volume.map, sizeof(es.volume.map), h);
-            const float ramp[4] = {es.volume.opacity, es.volume.ramp_beg, es.volume.ramp_end, es.volume.ramp_exponent};
-            h = md_hash64(ramp, sizeof(ramp), h);
+            h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
@@ -8131,12 +8132,6 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         const bool slice = es.display == ElectronicStructureDisplay::Plane;
         if (!(es.display == ElectronicStructureDisplay::Volume || (slice && es.num_planes > 0)) || !es.density_vol.tex_id) continue;
-        // The range follows the volume when it is automatic: here, since the volume is filled after its update
-        // (off the GPU), and the range of it is kept with it until it changes
-        float lo = 0.0f, hi = 0.0f;
-        if (es.volume.map.auto_range && volume::value_range(es.density_vol.tex_id, &lo, &hi)) {
-            color_scale_update_range(&es.volume.map, color_scale_span(lo, hi));
-        }
         vec4_t planes[ES_MAX_PLANES];
         int num_planes = 0;
         if (slice) {
@@ -8156,8 +8151,8 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.matrix.view = state->view.param.matrix.curr.view;
         desc.matrix.proj = state->view.param.matrix.curr.proj;
         desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
-        desc.tf.min_value = es.volume.map.range_beg;
-        desc.tf.max_value = es.volume.map.range_end;
+        desc.tf.min_value = es.volume.tf.range_beg;
+        desc.tf.max_value = es.volume.tf.range_end;
         desc.planes.count = num_planes;
         desc.planes.equations = planes;
         desc.linear_output = true;

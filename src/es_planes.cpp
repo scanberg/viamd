@@ -82,29 +82,11 @@ int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& 
 }
 
 uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es) {
-    const auto& vol = es->volume;
-    uint64_t h = md_hash64(&vol.map.colormap, sizeof(vol.map.colormap), 0);
-    h = md_hash64(&vol.map.symmetric, sizeof(vol.map.symmetric), h);
-    const float ramp[4] = {vol.opacity, vol.ramp_beg, vol.ramp_end, vol.ramp_exponent};
-    h = md_hash64(ramp, sizeof(ramp), h);
-    if (vol.tf_tex && h == vol.tf_hash) return vol.tf_tex;
-
+    const uint64_t h = transfer_function_hash(es->volume.tf);
+    if (es->volume.tf_tex && h == es->volume.tf_hash) return es->volume.tf_tex;
     enum { RES = 256 };
     float px[RES * 4];
-    const float beg = CLAMP(vol.ramp_beg, 0.0f, 1.0f);
-    const float end = MAX(CLAMP(vol.ramp_end, 0.0f, 1.0f), beg + 1.0e-4f);
-    for (int i = 0; i < RES; ++i) {
-        const float t = (float)i / (float)(RES - 1);
-        const ImVec4 col = ImPlot::SampleColormap(t, vol.map.colormap);
-        // the ramp over the value, or over its magnitude on a symmetric range
-        const float x = vol.map.symmetric ? fabsf(2.0f * t - 1.0f) : t;
-        const float r = CLAMP((x - beg) / (end - beg), 0.0f, 1.0f);
-        const float a = vol.opacity * powf(r, MAX(vol.ramp_exponent, 0.01f));
-        px[4 * i + 0] = col.x;
-        px[4 * i + 1] = col.y;
-        px[4 * i + 2] = col.z;
-        px[4 * i + 3] = CLAMP(a, 0.0f, 1.0f);
-    }
+    transfer_function_bake_rgba(es->volume.tf, px, RES);
     if (!es->volume.tf_tex) gl::init_texture_2D(&es->volume.tf_tex, RES, 1, GL_RGBA32F);
     gl::set_texture_2D_data(es->volume.tf_tex, 0, px, GL_RGBA32F);
     es->volume.tf_hash = h;

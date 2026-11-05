@@ -207,6 +207,8 @@ set(SRC_FILES
     src/iso_meshes.cpp
     src/es_planes.cpp
     src/plane.cpp
+    src/transfer_function.cpp
+    src/transfer_function_widget.cpp
 
     src/app_settings.h
     src/cartoon_glyphs.h

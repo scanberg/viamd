@@ -1227,6 +1227,151 @@ bool value_range(uint32_t volume_texture, float* out_min, float* out_max) {
     return ok;
 }
 
+// The histogram's program: every texel a point, at the column of its bin, added (GL_ONE, GL_ONE) into a bins x 1 R32F
+// target. A texel outside the interval (or not a number) is put outside the target, and so not counted.
+static const char* histogram_vert = R"(#version 330 core
+uniform sampler3D u_tex_volume;
+uniform ivec3 u_dim;
+uniform float u_lo;
+uniform float u_inv_ext;
+uniform int   u_bins;
+void main() {
+    int i = gl_VertexID;
+    ivec3 c = ivec3(i % u_dim.x, (i / u_dim.x) % u_dim.y, i / (u_dim.x * u_dim.y));
+    float t = (texelFetch(u_tex_volume, c, 0).r - u_lo) * u_inv_ext;
+    if (!(t >= 0.0 && t <= 1.0)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    float b = min(floor(t * float(u_bins)), float(u_bins - 1));
+    gl_Position = vec4((b + 0.5) / float(u_bins) * 2.0 - 1.0, 0.0, 0.0, 1.0);
+    gl_PointSize = 1.0;
+}
+)";
+
+static const char* histogram_frag = R"(#version 330 core
+layout(location = 0) out vec4 out_count;
+void main() {
+    out_count = vec4(1.0);
+}
+)";
+
+static struct {
+    GLuint program = 0;
+    GLint  loc_volume = -1, loc_dim = -1, loc_lo = -1, loc_inv_ext = -1, loc_bins = -1;
+    GLuint fbo = 0;
+    GLuint target = 0;
+    int    target_bins = 0;
+    bool   failed = false;
+    // what was made last: one volume's, the one being edited
+    GLuint   volume = 0;
+    uint64_t version = 0;
+    float    lo = 0.0f, hi = 0.0f;
+    int      bins = 0;
+    float*   counts = nullptr;
+} hist;
+
+const float* histogram(uint32_t volume_texture, float lo, float hi, int bins) {
+    if (!volume_texture || bins <= 0 || bins > 4096 || !(hi > lo) || hist.failed) return nullptr;
+    const uint64_t version = data_version(volume_texture);
+    if (hist.counts && hist.volume == volume_texture && hist.version == version && hist.lo == lo && hist.hi == hi && hist.bins == bins) {
+        return hist.counts;
+    }
+    if (!hist.program) {
+        const GLuint vs = gl::compile_shader_from_source({histogram_vert, strlen(histogram_vert)}, GL_VERTEX_SHADER);
+        const GLuint fs = gl::compile_shader_from_source({histogram_frag, strlen(histogram_frag)}, GL_FRAGMENT_SHADER);
+        if (vs && fs) {
+            hist.program = glCreateProgram();
+            const GLuint shaders[] = {vs, fs};
+            gl::attach_link_detach(hist.program, shaders, 2);
+            hist.loc_volume  = glGetUniformLocation(hist.program, "u_tex_volume");
+            hist.loc_dim     = glGetUniformLocation(hist.program, "u_dim");
+            hist.loc_lo      = glGetUniformLocation(hist.program, "u_lo");
+            hist.loc_inv_ext = glGetUniformLocation(hist.program, "u_inv_ext");
+            hist.loc_bins    = glGetUniformLocation(hist.program, "u_bins");
+            glGenFramebuffers(1, &hist.fbo);
+        }
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        if (!hist.program) {
+            MD_LOG_ERROR("Volume histogram shader compilation failed");
+            hist.failed = true;
+            return nullptr;
+        }
+    }
+
+    const SavedState saved = save_state();
+    GLint read_fbo = 0;     // (the saved state is the draw framebuffer's)
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+    int dim[3] = {0, 0, 0};
+    glBindTexture(GL_TEXTURE_3D, volume_texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &dim[0]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &dim[1]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &dim[2]);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    const int64_t count = (int64_t)dim[0] * dim[1] * dim[2];
+    bool ok = count > 0 && count < INT32_MAX;
+
+    if (ok && hist.target_bins != bins) {
+        if (!hist.target) glGenTextures(1, &hist.target);
+        glBindTexture(GL_TEXTURE_2D, hist.target);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, bins, 1, 0, GL_RED, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        hist.target_bins = bins;
+        glBindFramebuffer(GL_FRAMEBUFFER, hist.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hist.target, 0);
+        ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        if (!ok) {
+            MD_LOG_ERROR("Volume histogram: the R32F target cannot be drawn to");
+            hist.failed = true;
+        }
+    }
+    if (ok) {
+        PUSH_GPU_SECTION("Volume histogram");
+        glBindFramebuffer(GL_FRAMEBUFFER, hist.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, bins, 1);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_PROGRAM_POINT_SIZE);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glUseProgram(hist.program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, volume_texture);
+        glUniform1i(hist.loc_volume, 0);
+        glUniform3i(hist.loc_dim, dim[0], dim[1], dim[2]);
+        glUniform1f(hist.loc_lo, lo);
+        glUniform1f(hist.loc_inv_ext, 1.0f / (hi - lo));
+        glUniform1i(hist.loc_bins, bins);
+        glBindVertexArray(gl.vao);
+        glDrawArrays(GL_POINTS, 0, (GLsizei)count);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        if (hist.bins != bins || !hist.counts) {
+            free(hist.counts);
+            hist.counts = (float*)malloc(sizeof(float) * bins);
+        }
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, bins, 1, GL_RED, GL_FLOAT, hist.counts);
+        POP_GPU_SECTION();
+        hist.volume = volume_texture;
+        hist.version = version;
+        hist.lo = lo;
+        hist.hi = hi;
+        hist.bins = bins;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read_fbo);
+    restore_state(saved);
+    return ok ? hist.counts : nullptr;
+}
+
 void render_dvr(const DvrRenderDesc& desc) {
     if (!desc.texture.density_volume || !desc.texture.transfer_function || !gl.program.dvr ||
         desc.render_target.width == 0 || desc.render_target.height == 0) {

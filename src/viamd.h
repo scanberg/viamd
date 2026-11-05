@@ -8,6 +8,7 @@
 
 #include <md_system.h>
 #include <plane.h>
+#include <transfer_function_widget.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
 #include <script_engine.h>
@@ -658,18 +659,15 @@ struct ElectronicStructureRepresentation {
     } planes[ES_MAX_PLANES];
     int num_planes = 0;
 
-    // Volume: the colour of a value is the colour map's over the range, its opacity a ramp over [ramp_beg, ramp_end]
-    // (fractions of the range; for a symmetric range, of the magnitude) rising to 'opacity' with 'ramp_exponent'
+    // Volume and Plane: what a value is drawn as, a colour map's colour over a range and an opacity curve over it
+    // (transfer_function.h, edited with transfer_function_widget.h); a plane takes the colours alone
     struct {
-        ColorScale map = {};
-        float opacity = 0.1f;          // the opacity of a slab 1/150 of the volume thick at the top of the ramp
-        float ramp_beg = 0.0f;
-        float ramp_end = 1.0f;
-        float ramp_exponent = 1.0f;
-        bool  map_init = false;        // the map was set up for a field (es_volume_map_update) ...
+        TransferFunction tf = {};
+        bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
         int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
-        uint32_t tf_tex = 0;           // the transfer function made of the above, and what it was made of
+        uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
         uint64_t tf_hash = 0;
+        TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
     } volume;
 };
 
@@ -2510,6 +2508,12 @@ void electronic_structure_field_poll(Representation* rep);
 // False when something it waits for without blocking (the volume's last readback, a density matrix made on a
 // worker thread, the density a field update reads) is not there yet: it is to be called again next frame.
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
+
+// The evaluations of ELF and LOL run as pool tasks (viamd.cpp, localization_poll), polled by the representations'
+// updates: those nobody wants any more are let go of here once they have stopped, once a frame; all of them (waited
+// for) at the shutdown, before the GPU device goes.
+void es_jobs_collect(ApplicationState* state);
+void es_jobs_shutdown(ApplicationState* state);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".

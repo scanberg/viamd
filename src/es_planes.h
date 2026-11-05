@@ -6,7 +6,7 @@
 // it and moves it along its normal.
 //
 // And what the volume rendering of a representation is drawn with: its planes in the space of its volume, and its
-// transfer function, the colour map with an alpha ramp.
+// transfer function baked, the colour map with the opacity curve over it.
 
 #include <core/md_vec_math.h>
 
@@ -42,6 +42,6 @@ int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& 
 // Plane i of a representation in the space of its volume's texture, as above, whether it is enabled or not
 vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, int i);
 
-// The transfer function of a representation's volume rendering, its colour map with the alpha ramp
-// (ElectronicStructureRepresentation::volume), as a 2D texture of 256 x 1 RGBA32F texels, remade when they change.
+// The transfer function of a representation's volume rendering (ElectronicStructureRepresentation::volume.tf) baked
+// into a 2D texture of 256 x 1 RGBA32F texels, made again when it changes.
 uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es);
