@@ -473,6 +473,14 @@ enum class BondColorMode {
     Count,
 };
 
+// Which bonds a Bonds representation draws dashed, each in the style of its kind (md_gl_dashes_t, BOND DASHES in md_gl.h)
+enum class BondDashes {
+    ByKind,     // Those which are not covalent: coordinate bonds, hydrogen bonds, interactions
+    None,
+    All,
+    Count,
+};
+
 inline const char* bond_color_mode_str[(int)BondColorMode::Count] = {
     "Nearest Atom",
     "Smooth Atom",
@@ -1091,9 +1099,10 @@ struct Representation {
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   noncovalent_bonds = true; // Licorice, ball and stick: the non-covalent bonds of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
-    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and whether they are dashed
+    bool   coordinate_bonds_dashed = true; // Licorice, ball and stick: the coordinate bonds (MD_BOND_KIND_COORDINATE) dashed, rather than sticks
+    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed
     md_array(md_atom_pair_t) bond_pairs = nullptr;
-    bool   bonds_dashed = false;
+    BondDashes bond_dashes = BondDashes::ByKind;
     bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
