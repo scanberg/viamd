@@ -15,6 +15,7 @@
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
 #include <core/md_unit.h>
+#include <core/md_executor.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -154,18 +155,13 @@ int   ref_dim(const Program* prog, Ref ref);        // its outer extent, -1 when
 
 struct Eval;
 
-// v2 spreads frames over threads itself: through this, which calls fn(arg, i) for every i in [0, count) and returns when
-// every call has returned. viamd passes its task pool.
-typedef void (*ParallelFor)(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg);
-
 struct EvalDesc {
     size_t             num_frames = 0;
-    // v2: the system and run it evaluates over, and its threads
-    const md_system_t* sys = nullptr;
-    str_t              run = {};
-    size_t             num_threads = 0;
-    ParallelFor        parallel_for = nullptr;
-    void*              parallel_user = nullptr;
+    // v2: the system and run it evaluates over, and what it spreads the frames over (md_executor.h; viamd passes its
+    // task pool, task_system::executor). NULL: the calling thread. It must outlive the evaluation.
+    const md_system_t*   sys = nullptr;
+    str_t                run = {};
+    const md_executor_t* executor = nullptr;
 };
 
 // prev may be NULL; it is not changed and may be freed after. prog must outlive the evaluation.

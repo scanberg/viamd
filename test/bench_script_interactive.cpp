@@ -63,9 +63,9 @@ bool load(Bench* b, const char* top, const char* traj) {
     b->sys = {.alloc = b->alloc};
     b->state = {.alloc = b->alloc};
     const str_t t = str_from_cstr(top);
-    bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t)
-                                      : md_pdb_system_init_from_file(&b->sys, &b->state, t, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
-    ok = ok && md_util_system_infer(&b->sys, &b->state, MD_UTIL_INFER_ALL);
+    bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t, NULL)
+                                      : md_pdb_system_init_from_file(&b->sys, &b->state, t, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    ok = ok && md_util_system_infer(&b->sys, &b->state, MD_UTIL_INFER_ALL, NULL);
     if (!ok) return false;
     const str_t r = str_from_cstr(traj ? traj : top);
     bool run = false;
@@ -77,10 +77,6 @@ bool load(Bench* b, const char* top, const char* traj) {
         b->num_frames = tm ? (size_t)tm->format.shape[0] : 0;
     }
     return true;
-}
-
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
 }
 
 // The same analysis in each language, with the filters a user of it would write
@@ -158,8 +154,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     ed.num_frames = b.num_frames;
     ed.sys = &b.sys;
     ed.run = STR_LIT("run");
-    ed.num_threads = 1;
-    ed.parallel_for = serial_for;
+    // no executor: the frames on this thread
     script::Eval* e = script::eval_create(nullptr, p, ed, palloc);
     if (e && b.num_frames) {
         std::vector<uint32_t> frames(b.num_frames);

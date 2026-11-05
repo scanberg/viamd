@@ -137,19 +137,17 @@ struct Evaluation {
     size_t   num_structures = 0;
     vec2_t*  coords = nullptr;              // [structure * num_frames + frame], in the triangle: NaN for frames not done
     std::atomic<uint32_t> frames_done{0};
-    std::atomic<int32_t>  cancel{0};
-    task_system::ID task = task_system::INVALID_ID;
+    task_system::Job task;
 
     bool complete() const { return num_frames > 0 && frames_done.load() >= num_frames; }
     // Stopped before all of its frames were done (interrupted from the task overlay, or by a load): never will be
     // (Asked in this order: a task that has stopped has counted all the frames it did.)
-    bool failed() const { return !task_system::task_is_running(task) && !complete(); }
+    bool failed() const { return !task.running() && !complete(); }
 
     // Waits for its task, which on the main thread may run pool work meanwhile: what is dropped in use goes through
-    // Shapespace::retired first, freed once its task has stopped
+    // Shapespace::retired first, freed once its task has stopped. Before the arena goes, which the task reads.
     ~Evaluation() {
-        cancel.store(1);
-        task_system::task_interrupt_and_wait_for(task);
+        task.cancel_and_wait();
         if (arena) md_arena_allocator_destroy(arena);
     }
 };
@@ -425,10 +423,10 @@ struct Shapespace : viamd::EventHandler {
             l.structs_key = 0;
             l.current_key = 0;
         }
-        for (EvaluationRef& e : evaluations) e->cancel.store(1);
-        for (EvaluationRef& e : retired) e->cancel.store(1);
-        for (EvaluationRef& e : evaluations) task_system::task_interrupt_and_wait_for(e->task);
-        for (EvaluationRef& e : retired) task_system::task_interrupt_and_wait_for(e->task);
+        for (EvaluationRef& e : evaluations) e->task.cancel();
+        for (EvaluationRef& e : retired) e->task.cancel();
+        for (EvaluationRef& e : evaluations) e->task.wait();
+        for (EvaluationRef& e : retired) e->task.wait();
         evaluations.clear();
         retired.clear();
         density_map_canvas_invalidate(&canvas);
@@ -936,7 +934,7 @@ struct Shapespace : viamd::EventHandler {
 
         Evaluation* ev = e.get();
         ApplicationState* state = app;
-        e->task = task_system::create_pool_task(STR_LIT("Shapespace"), (uint32_t)num_frames, [ev, state](uint32_t beg, uint32_t end, uint32_t) {
+        e->task.start_for(STR_LIT("Shapespace"), (uint32_t)num_frames, 1, [ev, state](uint32_t beg, uint32_t end) {
             const md_system_t& sys = state->mold.sys;
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
@@ -956,7 +954,7 @@ struct Shapespace : viamd::EventHandler {
             }
             defer { md_system_extract_end(ex); };
             for (uint32_t f = beg; f < end; ++f) {
-                if (ev->cancel.load(std::memory_order_relaxed)) return;
+                if (task_system::cancelled()) return;
                 md_system_state_t frame = {};
                 frame.num_atoms = sys.atom.count;
                 frame.xyz = xyz;
@@ -974,7 +972,6 @@ struct Shapespace : viamd::EventHandler {
                 ev->frames_done.fetch_add(1);
             }
         });
-        task_system::enqueue_task(e->task);
         evaluations.push_back(e);
         l.eval = e;
     }
@@ -1090,7 +1087,7 @@ struct Shapespace : viamd::EventHandler {
             else ++i;
         }
         for (size_t i = 0; i < retired.size();) {
-            if (retired[i].use_count() == 1 && !task_system::task_is_running(retired[i]->task)) {
+            if (retired[i].use_count() == 1 && !retired[i]->task.running()) {
                 retired[i] = std::move(retired.back());
                 retired.pop_back();
             } else {
@@ -1101,7 +1098,7 @@ struct Shapespace : viamd::EventHandler {
 
     // Out of evaluations[i]: cancelled, and freed once its task has stopped
     void retire(size_t i) {
-        evaluations[i]->cancel.store(1);
+        evaluations[i]->task.cancel();
         retired.push_back(std::move(evaluations[i]));
         evaluations[i] = std::move(evaluations.back());
         evaluations.pop_back();

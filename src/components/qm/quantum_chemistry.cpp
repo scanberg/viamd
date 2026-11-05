@@ -702,7 +702,7 @@ struct GtoCriticalPointJob {
     volatile int32_t  cancel  = 0;
     volatile float    progress = 0.0f;       // written by the run: 0 to 1, an estimate (md_topo_gto_desc_t)
     std::atomic<bool> done    = false;
-    task_system::ID   task    = task_system::INVALID_ID;
+    task_system::Job  task;
 #if MD_ENABLE_GPU
     md_gpu_stream_t   stream  = nullptr;   // own stream: the sweep runs on the GPU, used by the task only
 #endif
@@ -767,7 +767,8 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->desc.density_matrix     = job->density;
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
-    job->desc.cancel             = &job->cancel;   // num_threads 0: every core
+    job->desc.cancel             = &job->cancel;
+    job->desc.executor           = task_system::executor();   // its loops on the pool, stopped with the job
     job->desc.progress           = &job->progress;
 
     job->graph.alloc = md_get_heap_allocator();
@@ -781,7 +782,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
     // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
     // instead (EventType_ViamdTaskProgressRequest), as does the Critical Points window, each with a cancel button.
-    job->task = task_system::create_pool_task(STR_LIT("##Critical Points"), [job]() {
+    job->task.start({}, [job]() {
 #if MD_ENABLE_GPU
         if (job->stream) {
             job->ok = md_topo_compute_extremum_graph_gto_gpu(&job->graph, &job->info, &job->desc, job->stream);
@@ -789,16 +790,15 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
 #endif
         job->ok = md_topo_compute_extremum_graph_gto(&job->graph, &job->info, &job->desc);
         job->seconds = md_tick_to_seconds(md_tick_now() - job->start);
-        job->done.store(true, std::memory_order_release);   // the last access: the job may be freed after this
+        job->done.store(true, std::memory_order_release);
     });
-    task_system::enqueue_task(job->task);
     return job;
 }
 
 static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
     if (!job) return;
     job->cancel = 1;
-    task_system::task_wait_for(job->task);
+    job->task.wait();
 #if MD_ENABLE_GPU
     if (job->stream) md_gpu_stream_destroy(job->stream);
 #endif
@@ -951,7 +951,6 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t out_tex[16] = {};      // RGBA8: the finished panel
         uint32_t out_fbo = 0;
         uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
-        task_system::ID vol_task[16] = {};
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;

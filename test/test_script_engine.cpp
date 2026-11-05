@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <script_engine.h>
 
@@ -37,8 +38,8 @@ const Peptide* peptide() {
         p.sys = { .alloc = p.alloc };
         p.state = { .alloc = p.alloc };
         const str_t path = STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&p.sys, &p.state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE) &&
-            md_util_system_infer(&p.sys, &p.state, MD_UTIL_INFER_ALL) &&
+        if (md_pdb_system_init_from_file(&p.sys, &p.state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
+            md_util_system_infer(&p.sys, &p.state, MD_UTIL_INFER_ALL, NULL) &&
             md_pdb_system_publish_run(&p.sys, path, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
             const md_attribute_t* t = md_attributes_find(&p.sys.attributes, STR_LIT("run/time"));
             p.num_frames = t ? (size_t)t->format.shape[0] : 0;
@@ -204,18 +205,15 @@ UTEST(script_v2, editor) {
 }
 
 namespace {
-// The frames one after another: enough to show that what the evaluation spreads over threads is all done
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
-}
-
 script::EvalDesc eval_desc() {
     script::EvalDesc d;
     d.num_frames = peptide()->num_frames;
     d.sys = &peptide()->sys;
     d.run = STR_LIT("run");
-    d.num_threads = 3;
-    d.parallel_for = serial_for;
+    // The frames one thread at a time, out of order and over three thread_idx: what the evaluation spreads over
+    // threads is all done, whichever order and worker the frames come in
+    static test_executor_t shuffled = test_executor_shuffled(3);
+    d.executor = test_executor(&shuffled);
     return d;
 }
 }  // namespace

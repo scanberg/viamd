@@ -1,4 +1,5 @@
 #include "utest.h"
+#include "test_executor.h"
 
 #include <script_engine.h>
 
@@ -81,9 +82,9 @@ const Data* load(const std::string& files) {
     d->sys = {.alloc = d->alloc};
     d->state = {.alloc = d->alloc};
     const str_t top = {names[0].c_str(), names[0].size()};
-    bool ok = ends_with(names[0], ".gro") ? md_gro_system_init_from_file(&d->sys, &d->state, top)
-                                           : md_pdb_system_init_from_file(&d->sys, &d->state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE);
-    ok = ok && md_util_system_infer(&d->sys, &d->state, MD_UTIL_INFER_ALL);
+    bool ok = ends_with(names[0], ".gro") ? md_gro_system_init_from_file(&d->sys, &d->state, top, NULL)
+                                           : md_pdb_system_init_from_file(&d->sys, &d->state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+    ok = ok && md_util_system_infer(&d->sys, &d->state, MD_UTIL_INFER_ALL, NULL);
     if (!ok) return nullptr;
     bool run = false;
     if (ends_with(names[0], ".pdb") && names.size() == 1) run = md_pdb_system_publish_run(&d->sys, top, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
@@ -119,10 +120,6 @@ std::string read_file(const fs::path& p) {
     return ss.str();
 }
 
-void serial_for(void*, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    for (size_t i = 0; i < count; ++i) fn(arg, i);
-}
-
 // Compiles and evaluates over every frame; NULL, said why, when either fails
 script::Eval* run_script(script::Language lang, const std::string& src, const Data& d, script::Program** out_prog, md_allocator_i* alloc) {
     script::CompileDesc cd;
@@ -139,8 +136,8 @@ script::Eval* run_script(script::Language lang, const std::string& src, const Da
     ed.num_frames = d.num_frames;
     ed.sys = &d.sys;
     ed.run = STR_LIT("run");
-    ed.num_threads = 2;
-    ed.parallel_for = serial_for;
+    static test_executor_t shuffled = test_executor_shuffled(2);   // one thread, two thread_idx, pieces out of order
+    ed.executor = test_executor(&shuffled);
     script::Eval* e = script::eval_create(nullptr, p, ed, alloc);
     if (!e) return nullptr;
     if (d.num_frames) {
