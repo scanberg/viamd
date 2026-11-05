@@ -1040,6 +1040,14 @@ int main(int argc, char** argv) {
             event.clip_to_world = clip_to_world;
             event.world_to_clip = world_to_clip;
 
+            // A click on nothing (no outline or handle of a plane, which would have taken the mouse, and nothing of the
+            // scene: the background) lets go of the plane picked for the gizmo, as a click on its outline picks it
+            if (surface_state.deactivated && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
+                hit.raw_idx == INVALID_PICKING_IDX && hit.depth >= 1.0f) {
+                state.representation.gizmo.plane = -1;
+            }
+
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
                 md_bitset_t candidate_mask = md_bitmask_view(&state.representation.visibility_mask);
                 if (event.selection_mode == InteractionSelectionMode::Remove) {
@@ -1687,6 +1695,7 @@ int main(int argc, char** argv) {
     immediate::queue_destroy(state.gfx.world);
     immediate::queue_destroy(state.gfx.overlay);
     immediate::shutdown();
+    es_planes_shutdown();
 
     state.gfx.world = nullptr;
     state.gfx.overlay = nullptr;
@@ -7609,6 +7618,9 @@ static void render(ApplicationState* state) {
     glClear(GL_COLOR_BUFFER_BIT);
     if (!offscreen) {
         present();
+        // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
+        es_planes_draw_outlines(state->gbuffer.tex.depth, state->gbuffer.width, state->gbuffer.height,
+                                state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
     } else {
         const uint32_t total = MAX(settle_frames(state), 1u);
         float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;

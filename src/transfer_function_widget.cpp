@@ -193,6 +193,19 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
             const float t = (float)((m.x - tf->range_beg) / ext);
             if (t >= 0.0f && t <= 1.0f) changed |= transfer_function_insert(tf, t, (float)m.y) >= 0;
         }
+        // How it is used, once the mouse rests on the plot (not while it is being worked: it would be in the way)
+        static float rest = 0.0f;
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool resting = ImPlot::IsPlotHovered() && io.MouseDelta.x == 0.0f && io.MouseDelta.y == 0.0f && !ImGui::IsAnyMouseDown();
+        rest = resting ? rest + io.DeltaTime : 0.0f;
+        if (rest > 1.0f) {
+            ImGui::SetTooltip(colors_only ? "The colour map over its range, the values' histogram behind.\n"
+                                            "Drag the two lines of the range. Scroll to zoom, drag to pan."
+                                          : "The opacity over the values, the colour map's colours under it, the values' histogram behind.\n"
+                                            "Drag the points and the two lines of the range; the opacity by the slider beside it.\n"
+                                            "Ctrl + click to add a point, right click one to remove it.\n"
+                                            "Scroll to zoom, drag to pan.");
+        }
         ImPlot::EndPlot();
     }
     if (!colors_only) {
@@ -208,7 +221,7 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
     }
 
     // under the plot: the colour map, the range, symmetric, fitting the view
-    const float cmap_w = width - spacing - ImGui::CalcTextSize("(?)").x;
+    const float cmap_w = width;
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(tf->colormap), ImVec2(cmap_w, 0), tf->colormap)) {
         ImGui::OpenPopup("##colormaps");
     }
@@ -221,17 +234,6 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
             }
         }
         ImGui::EndPopup();
-    }
-    // what the plot takes, on a marker rather than on the plot, where it would be in the way of what it describes
-    ImGui::SameLine(0.0f, spacing);
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-        ImGui::SetTooltip(colors_only ? "The colour map over its range, the values' histogram behind.\n"
-                                        "Drag the two lines of the range. Scroll to zoom, drag to pan."
-                                      : "The opacity over the values, the colour map's colours under it, the values' histogram behind.\n"
-                                        "Drag the points and the two lines of the range; the opacity by the slider beside it.\n"
-                                        "Ctrl + click to add a point, right click one to remove it.\n"
-                                        "Scroll to zoom, drag to pan.");
     }
     const float sym_w = ImGui::CalcTextSize("symmetric").x + ImGui::GetFrameHeight() + spacing;
     const float fit_w = ImGui::CalcTextSize("fit").x + 2.0f * ImGui::GetStyle().FramePadding.x;

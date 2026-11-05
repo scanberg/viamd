@@ -2635,9 +2635,10 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
 }
 
 
-// The planes of an electronic structure representation (es_planes.h): per plane whether it cuts, picking it for the
-// gizmo in the view, flipping it, turning it to face along the view or an axis through where it is, removing it; and
-// adding one. At most max_planes of them (a plane display draws one).
+// The planes of an electronic structure representation (es_planes.h), a row each: a click on the row picks it for the
+// gizmo in the view (lit while it is); on it whether it is shown (a cut: whether it cuts), flipping a cut, fitting it
+// to the selected atoms, turning it to face along an axis through where it is, a slice's opacity, removing it. And
+// adding one, up to ES_MAX_PLANES.
 static bool draw_electronic_structure_planes(ApplicationState* state, Representation& rep) {
     ElectronicStructureRepresentation& es = rep.electronic_structure;
     // the display's: the volume's cuts, or the planes display's slices (whose normal points either way)
@@ -2660,18 +2661,23 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         ImGui::PushID(i);
         char label[32];
         snprintf(label, sizeof(label), "plane %d", i + 1);
-        prop::row(label);
-        changed |= ImGui::Checkbox("##on", &set.items[i].enabled);
-        ImGui::SetItemTooltip(slices ? "Whether it is drawn" : "Whether it cuts the volume");
-        ImGui::SameLine(0.0f, gap);
+        // The row picks it for the gizmo in the view (as a click on its outline there does), and is lit while it is;
+        // the controls on it take their own clicks
         const bool picked = gizmo.rep_id == rep.node.id && gizmo.plane == i;
-        if (picked) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-        if (ImGui::Button(ICON_FA_ARROWS_UP_DOWN_LEFT_RIGHT, ImVec2(bw, 0))) {
+        const ImVec2 row_start = ImGui::GetCursorPos();
+        if (ImGui::Selectable("##pick", picked, ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetFrameHeight()))) {
             gizmo.rep_id = rep.node.id;
             gizmo.plane = picked ? -1 : i;
         }
-        if (picked) ImGui::PopStyleColor();
-        ImGui::SetItemTooltip("Move it in the view (or click its outline there)");
+        ImGui::SetItemTooltip(picked ? "Moved in the view: click to let go" : "Click to move it in the view (or click its outline there)");
+        ImGui::SetCursorPos(row_start);
+        prop::row(label);
+        bool& shown = set.items[i].enabled;
+        if (ImGui::Button(shown ? ICON_FA_EYE : ICON_FA_EYE_SLASH, ImVec2(bw, 0))) {
+            shown = !shown;
+            changed = true;
+        }
+        ImGui::SetItemTooltip(slices ? (shown ? "Hide it" : "Show it") : (shown ? "It cuts the volume: click to stop it" : "It does not cut: click to make it"));
         ImGui::SameLine(0.0f, gap);
         if (!slices) {
             if (ImGui::Button(ICON_FA_RIGHT_LEFT, ImVec2(bw, 0))) {
@@ -2682,12 +2688,6 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
             ImGui::SameLine(0.0f, gap);
         }
         const vec3_t at = plane_project(plane, centre);
-        if (ImGui::Button(ICON_FA_EYE, ImVec2(bw, 0))) {
-            plane = plane_from_point_normal(at, quat_mul_vec3(state->view.camera.orientation, vec3_set(0, 0, -1)));
-            changed = true;
-        }
-        ImGui::SetItemTooltip(slices ? "Face the view" : "Face along the view, keeping what is behind it");
-        ImGui::SameLine(0.0f, gap);
         ImGui::BeginDisabled(num_selected == 0);
         if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
             PlaneFitInfo fit;
@@ -2725,13 +2725,15 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
             }
             ImGui::SetItemTooltip("Face along the %s axis", axes[k]);
         }
+        if (slices) {
+            ImGui::SameLine(0.0f, gap);
+            ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x - bw - gap, bw));
+            changed |= ImGui::SliderFloat("##opacity", &set.items[i].opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SetItemTooltip("Its opacity: how much of what is behind it it hides");
+        }
         ImGui::SameLine(0.0f, gap);
         if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(bw, 0))) remove = i;
         ImGui::SetItemTooltip("Remove it");
-        if (slices) {
-            prop::row("opacity", "How much of what is behind it it hides");
-            changed |= ImGui::SliderFloat("##opacity", &set.items[i].opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        }
         ImGui::PopID();
     }
     if (remove >= 0) {

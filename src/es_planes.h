@@ -2,8 +2,10 @@
 
 // The planes of the electronic structure representations: the cuts of a volume rendering, and the plane a field is
 // drawn on (ElectronicStructureRepresentation::planes, Plane in plane.h). Shown in the view as outlines where they
-// cut their representation's box, a click on an outline picking it for the gizmo (es_planes.cpp): a ring to turn
-// its normal as a trackball, and the normal as an arrow to slide it along.
+// cut their representation's box (hidden behind what of the scene is in front of them), a click on an outline (or on
+// its row in the representation's panel) picking it for the gizmo, a click on nothing letting go of it (main.cpp)
+// (es_planes.cpp): a ring to turn its normal as a trackball, and the normal as an arrow to slide it along. A slice's
+// normal is kept on the camera's side of it: it turns over as the plane is seen edge on.
 //
 // And what the volume rendering of a representation is drawn with: its planes in the space of its volume, and its
 // transfer function baked, the colour map with the opacity curve over it.
@@ -24,6 +26,12 @@ bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation
 // scene is drawn over (screen coordinates, the whole viewport): true when the mouse is the planes' this frame (over the gizmo, using it, or
 // picking an outline), in which case the view is not to turn or pick with it.
 bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_size);
+
+// The outlines es_planes_gizmo found this frame, drawn into the framebuffer bound (fb_width x fb_height pixels, the
+// window's: the image presented, before the GUI): hidden where the scene, depth_tex (the G-buffer's, of its size), is
+// in front of them. They write no depth. px_per_point: framebuffer pixels per ImGui point.
+void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int fb_width, int fb_height, float px_per_point);
+void es_planes_shutdown();
 
 // A plane through the middle of the representation's box, facing away from the camera: as a cut it removes the half
 // in front, showing the inside. Returns its index, or -1 when there is no room (ES_MAX_PLANES) or no box yet.
