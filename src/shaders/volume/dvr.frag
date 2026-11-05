@@ -57,6 +57,8 @@ vec3 srgb_to_linear(vec3 c) {
 float slice_value(int i, vec3 p) {
     if (u_slice_image[i / 4][i % 4] < 0.5) return texture(u_tex_volume, p).r;
     vec3 q = (u_slice_image_from_model[i] * vec4(p, 1.0)).xyz;
+    // outside its image (the part of the plane in view when it was made): from the volume
+    if (any(lessThan(q.xy, vec2(0.0))) || any(greaterThan(q.xy, vec2(1.0)))) return texture(u_tex_volume, p).r;
     q.z = 0.5;
     switch (i) {
         case 0: return texture(u_tex_slices[0], q).r;

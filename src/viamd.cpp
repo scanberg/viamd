@@ -5482,50 +5482,123 @@ static void es_box_update(ApplicationState* state, Representation* rep) {
     es.has_box = true;
 }
 
+// Whether the view has rested (not moved for a moment): what a plane's image to the screen waits for, so that turning or
+// zooming the view does not evaluate it at every frame of the way
+static bool es_view_rested(const ApplicationState* state) {
+    static int      frame = -1;
+    static uint64_t view_hash = 0;
+    static double   since = 0.0;
+    static bool     rested = false;
+    const int f = ImGui::GetFrameCount();
+    if (f != frame) {
+        frame = f;
+        const mat4_t m[2] = {state->view.param.matrix.curr.view, state->view.param.matrix.curr.proj_no_jitter};
+        uint64_t h = md_hash64(m, sizeof(m), 0);
+        h = md_hash64(&state->app.framebuffer.height, sizeof(state->app.framebuffer.height), h);
+        const double now = ImGui::GetTime();
+        if (h != view_hash) {
+            view_hash = h;
+            since = now;
+        }
+        rested = now - since >= 0.3;
+    }
+    return rested;
+}
+
+static inline bool rect_contains(const float outer[4], const float inner[4]) {
+    const float eps = 1.0e-4f;
+    return outer[0] <= inner[0] + eps && outer[1] >= inner[1] - eps && outer[2] <= inner[2] + eps && outer[3] >= inner[3] - eps;
+}
+
 bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep) {
 #if MD_ENABLE_GPU
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es.has_box || !es_plane_images_supported(state, es)) return true;
     const uint64_t src = es_source_hash(state, es);
-    const float spacing = plane_detail_spacing_angstrom[CLAMP((int)es.plane_detail, 0, (int)PlaneDetail::Count - 1)];
+    const int detail = CLAMP((int)es.plane_detail, 0, (int)PlaneDetail::Count - 1);
+    const bool screen = detail == (int)PlaneDetail::Screen;
+    const float min_spacing = plane_detail_spacing_angstrom[detail];
     const double now = ImGui::GetTime();
     bool done = true;
     int ready = -2;     // asked when first needed, and again after each evaluation issued
     for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
         ElectronicStructurePlaneImage& im = es.plane_images[i];
-        const int back = 1 - im.front;
         // the one being evaluated, there: drawn from now on
         if (im.pending) {
-            if (gpu_volume_job_in_flight_for(state, im.img[back].tex_id)) {
+            if (gpu_volume_job_in_flight_for(state, im.img[1 - im.front].tex_id)) {
                 done = false;
                 continue;
             }
-            im.front = back;
+            im.front = 1 - im.front;
             im.pending = false;
+            im.serial += 1;
             im.ms = (float)((now - im.issued) * 1000.0);
         }
         im.current = false;
         const ElectronicStructurePlane& p = es.slices.items[i];
         if (!p.enabled) continue;
-        md_grid_t grid = {};
-        if (!es_plane_image_grid(&grid, p.plane, es.box_to_world, spacing, (int)GPU_PLANE_DIM)) continue;
-        uint64_t key = md_hash64(&grid, sizeof(grid), src);
+        EsPlaneFrame frame;
+        if (!es_plane_frame(&frame, p.plane, es.box_to_world)) continue;
+        // what an image is of: the source and the plane in its box (not what part of it, at what spacing)
+        uint64_t key = md_hash64(&frame.plane, sizeof(frame.plane), src);
+        key = md_hash64(&es.box_to_world, sizeof(es.box_to_world), key);
         key = key ? key : 1;
-        im.current = key == im.key[im.front];
+        const int f = im.front;
+        im.current = key == im.key[f];
         // while dragged: drawn from the volume, evaluated once let go
-        if (im.current || es_planes_dragging(rep->node.id, i)) continue;
+        if (es_planes_dragging(rep->node.id, i)) continue;
+
+        // What it would be now: the part in view at a value a pixel where it is nearest (with a margin, which a little
+        // turning or moving of the view keeps within), or all of it at the detail's spacing; at most GPU_PLANE_DIM a side
+        float want[4], spacing;
+        float covers[4];        // what it has to cover to be enough
+        if (screen) {
+            float vis[4], pixel = 0.0f;
+            if (!es_plane_view_rect(vis, &pixel, frame, state->view.param.matrix.curr.view, state->view.param.matrix.curr.proj_no_jitter,
+                                    (float)state->app.framebuffer.height)) {
+                continue;   // not in view: nothing to make
+            }
+            const float m = 0.25f * MAX(vis[1] - vis[0], vis[3] - vis[2]);
+            want[0] = MAX(vis[0] - m, frame.rect[0]); want[1] = MIN(vis[1] + m, frame.rect[1]);
+            want[2] = MAX(vis[2] - m, frame.rect[2]); want[3] = MIN(vis[3] + m, frame.rect[3]);
+            spacing = MAX(pixel, min_spacing);
+            MEMCPY(covers, vis, sizeof(covers));
+        } else {
+            MEMCPY(want, frame.rect, sizeof(want));
+            spacing = min_spacing;
+            MEMCPY(covers, frame.rect, sizeof(covers));
+        }
+        const float ext = MAX(want[1] - want[0], want[3] - want[2]);
+        spacing = MAX(spacing, ext / (float)GPU_PLANE_DIM);
+
+        // Enough as it is: of the plane, covering what it has to, not coarser than wanted (to the screen: by at most half
+        // as much again, and any finer is kept); else made again - to the screen once the view has rested
+        if (im.current) {
+            const bool enough = rect_contains(im.rect[f], covers) &&
+                                (screen ? im.spacing[f] <= 1.5f * spacing : fabsf(im.spacing[f] - spacing) <= 1.0e-3f * spacing);
+            if (enough || (screen && !es_view_rested(state))) continue;
+        }
         if (ready == -2) ready = es_source_ready(state, es);
         if (ready <= 0) {
             done &= ready < 0;
             continue;
         }
-        Volume& v = im.img[1 - im.front];
+        md_grid_t grid = {};
+        es_plane_image_grid(&grid, frame, want, spacing);
+        const int b = 1 - f;
+        Volume& v = im.img[b];
         init_volume(&v, grid, GL_R32F);
         state->gpu_eval_target = state->gpu_plane;
         const bool ok = es_evaluate_into(state, es, v.tex_id, grid);
         state->gpu_eval_target = nullptr;
         if (!ok) continue;
-        im.key[1 - im.front] = key;
+        im.key[b] = key;
+        // what it covers: the grid's (whole pixels: as far as the last one reaches)
+        im.rect[b][0] = want[0];
+        im.rect[b][1] = want[0] + (float)grid.dim[0] * spacing;
+        im.rect[b][2] = want[2];
+        im.rect[b][3] = want[2] + (float)grid.dim[1] * spacing;
+        im.spacing[b] = spacing;
         im.pending = true;
         im.issued = now;
         done = false;

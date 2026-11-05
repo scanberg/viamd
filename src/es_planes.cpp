@@ -23,38 +23,97 @@ bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation
     return true;
 }
 
-bool es_plane_image_grid(md_grid_t* grid, const Plane& plane_in, const mat4_t& box, float spacing, int max_dim) {
+bool es_plane_frame(EsPlaneFrame* f, const Plane& plane_in, const mat4_t& box) {
     // Which way the normal points is of no matter to the image (a slice's is turned to the camera as it is picked):
     // one of the two, so that turning it does not make the image again
     Plane plane = plane_in;
     if (vec3_dot(plane.normal, vec3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) plane_flip(&plane);
     vec3_t poly[6];
     const int n = plane_box_polygon(poly, plane, box);
-    if (n < 3 || !(spacing > 0.0f) || max_dim < 1) return false;
+    if (n < 3) return false;
     // A frame of the plane by the box's first axis, not the view: the image stays put as the view turns
     const vec3_t ax = vec3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]);
-    vec3_t u, v;
-    plane_frame(&u, &v, plane, ax);
-    float s0 = FLT_MAX, s1 = -FLT_MAX, t0 = FLT_MAX, t1 = -FLT_MAX;
+    f->plane = plane;
+    plane_frame(&f->u, &f->v, plane, ax);
+    f->rect[0] = FLT_MAX; f->rect[1] = -FLT_MAX; f->rect[2] = FLT_MAX; f->rect[3] = -FLT_MAX;
     for (int k = 0; k < n; ++k) {
-        const float s = vec3_dot(poly[k], u), t = vec3_dot(poly[k], v);
-        s0 = MIN(s0, s); s1 = MAX(s1, s);
-        t0 = MIN(t0, t); t1 = MAX(t1, t);
+        const float s = vec3_dot(poly[k], f->u), t = vec3_dot(poly[k], f->v);
+        f->rect[0] = MIN(f->rect[0], s); f->rect[1] = MAX(f->rect[1], s);
+        f->rect[2] = MIN(f->rect[2], t); f->rect[3] = MAX(f->rect[3], t);
     }
-    const float ext = MAX(s1 - s0, t1 - t0);
-    if (ext > spacing * (float)max_dim) spacing = ext / (float)max_dim;
-    const int w = CLAMP((int)ceilf((s1 - s0) / spacing), 1, max_dim);
-    const int h = CLAMP((int)ceilf((t1 - t0) / spacing), 1, max_dim);
+    f->num_poly = n;
+    for (int k = 0; k < n; ++k) f->poly[k] = poly[k];
+    return true;
+}
+
+// The polygon clipped to the frustum, in homogeneous clip space (-w <= x, y, z <= w for x and y, -w <= z): each
+// vertex with its world position, interpolated alike (the projection is linear in clip space)
+struct ClipVertex { vec4_t c; vec3_t p; };
+
+static int clip_polygon(ClipVertex* out, const ClipVertex* in, int n, int plane) {
+    // the signed distance to the plane: x + w, w - x, y + w, w - y, z + w
+    auto dist = [plane](const vec4_t& c) {
+        switch (plane) {
+            case 0: return c.w + c.x;
+            case 1: return c.w - c.x;
+            case 2: return c.w + c.y;
+            case 3: return c.w - c.y;
+            default: return c.w + c.z;
+        }
+    };
+    int m = 0;
+    for (int k = 0; k < n; ++k) {
+        const ClipVertex& a = in[k];
+        const ClipVertex& b = in[(k + 1) % n];
+        const float da = dist(a.c), db = dist(b.c);
+        if (da >= 0.0f) out[m++] = a;
+        if ((da >= 0.0f) != (db >= 0.0f)) {
+            const float t = da / (da - db);
+            out[m++] = ClipVertex{ vec4_lerp(a.c, b.c, t), vec3_lerp(a.p, b.p, t) };
+        }
+    }
+    return m;
+}
+
+bool es_plane_view_rect(float rect[4], float* pixel, const EsPlaneFrame& f, const mat4_t& view, const mat4_t& proj, float viewport_height) {
+    const mat4_t world_to_clip = proj * view;
+    ClipVertex a[16], b[16];
+    int n = f.num_poly;
+    for (int k = 0; k < n; ++k) a[k] = ClipVertex{ mat4_mul_vec4(world_to_clip, vec4_set(f.poly[k].x, f.poly[k].y, f.poly[k].z, 1.0f)), f.poly[k] };
+    for (int pl = 0; pl < 5 && n > 0; ++pl) {
+        n = clip_polygon(b, a, n, pl);
+        for (int k = 0; k < n; ++k) a[k] = b[k];
+    }
+    if (n < 3) return false;
+    // The size of a pixel at a depth: 2 w / (P11 H) world units (w the depth in perspective, 1 in orthographic); the
+    // nearest point of the part in view is a vertex of it
+    const float p11 = proj.elem[1][1];
+    float w_min = FLT_MAX;
+    rect[0] = FLT_MAX; rect[1] = -FLT_MAX; rect[2] = FLT_MAX; rect[3] = -FLT_MAX;
+    for (int k = 0; k < n; ++k) {
+        w_min = MIN(w_min, a[k].c.w);
+        const float s = vec3_dot(a[k].p, f.u), t = vec3_dot(a[k].p, f.v);
+        rect[0] = MIN(rect[0], s); rect[1] = MAX(rect[1], s);
+        rect[2] = MIN(rect[2], t); rect[3] = MAX(rect[3], t);
+    }
+    *pixel = (p11 != 0.0f && viewport_height > 0.0f) ? 2.0f * MAX(w_min, 1.0e-6f) / (fabsf(p11) * viewport_height) : 0.0f;
+    return *pixel > 0.0f;
+}
+
+void es_plane_image_grid(md_grid_t* grid, const EsPlaneFrame& f, const float rect[4], float spacing) {
+    const Plane& plane = f.plane;
+    const int w = MAX(1, (int)ceilf((rect[1] - rect[0]) / spacing));
+    const int h = MAX(1, (int)ceilf((rect[3] - rect[2]) / spacing));
     // Pixel centres on the plane: the one layer's centre (the kernels sample at voxel centres) a half spacing along n
     // from the corner
     const vec3_t on = vec3_mul1(plane.normal, -plane.d);   // the plane's point nearest the origin
-    const vec3_t corner = vec3_add(vec3_add(vec3_add(on, vec3_mul1(u, s0)), vec3_mul1(v, t0)), vec3_mul1(plane.normal, -0.5f * spacing));
+    const vec3_t corner = vec3_add(vec3_add(vec3_add(on, vec3_mul1(f.u, rect[0])), vec3_mul1(f.v, rect[2])), vec3_mul1(plane.normal, -0.5f * spacing));
     const float to_bohr = (float)(1.0 / BOHR_TO_ANGSTROM);
     *grid = md_grid_t{};
     grid->orientation = mat3_t{};
     for (int k = 0; k < 3; ++k) {
-        grid->orientation.elem[0][k] = u.elem[k];
-        grid->orientation.elem[1][k] = v.elem[k];
+        grid->orientation.elem[0][k] = f.u.elem[k];
+        grid->orientation.elem[1][k] = f.v.elem[k];
         grid->orientation.elem[2][k] = plane.normal.elem[k];
     }
     grid->origin  = vec3_mul1(corner, to_bohr);
@@ -62,7 +121,6 @@ bool es_plane_image_grid(md_grid_t* grid, const Plane& plane_in, const mat4_t& b
     grid->dim[0] = w;
     grid->dim[1] = h;
     grid->dim[2] = 1;
-    return true;
 }
 
 static bool faces_camera(const ApplicationState* state, const Plane& p);

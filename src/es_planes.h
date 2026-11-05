@@ -11,6 +11,7 @@
 // transfer function baked, the colour map with the opacity curve over it.
 
 #include <core/md_vec_math.h>
+#include <plane.h>
 
 struct ApplicationState;
 struct ElectronicStructureRepresentation;
@@ -54,11 +55,26 @@ vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane&
 // and their opacities: what the slice rendering draws. Returns how many (at most ES_MAX_PLANES).
 int es_volume_slices(vec4_t* out, float* out_opacity, const ElectronicStructureRepresentation& es, int* out_index = nullptr);
 
-// The grid of a plane's image (PlaneSampling::Plane): its rectangle around where it cuts the box (box_to_world, the
-// unit cube to the world), in a frame of the plane set by the box (not the view), spacing Angstrom a pixel (coarser
-// where it would be more than max_dim pixels a side), one layer whose voxel centres are on the plane. In bohr, as the
-// evaluations take it. The same for either way the normal points. False where the plane misses the box.
-bool es_plane_image_grid(struct md_grid_t* grid, const Plane& plane, const mat4_t& box_to_world, float spacing, int max_dim);
+// The images of planes (PlaneSampling::Plane). A plane's frame: the plane with its normal one of its two ways (the
+// same frame either way it is given), u and v along it, set by the box (not the view: the image stays put as the view
+// turns), and the polygon where it cuts the box (box_to_world: the unit cube to the world) with the rectangle around it
+// in (u, v), Angstrom. False where the plane misses the box.
+struct EsPlaneFrame {
+    Plane  plane;
+    vec3_t u, v;
+    float  rect[4];     // s0, s1, t0, t1: along u, along v
+    vec3_t poly[6];
+    int    num_poly;
+};
+bool es_plane_frame(EsPlaneFrame* f, const Plane& plane, const mat4_t& box_to_world);
+
+// The part of it in view: the rectangle (s0, s1, t0, t1) around what of its polygon is inside the view's frustum, and
+// the size of a pixel (Angstrom) where it is nearest the camera (viewport_height: pixels). False when none is in view.
+bool es_plane_view_rect(float rect[4], float* pixel, const EsPlaneFrame& f, const mat4_t& view, const mat4_t& proj, float viewport_height);
+
+// The grid of an image over rect (in the frame) at spacing Angstrom a pixel: one layer whose voxel centres are on the
+// plane, in bohr as the evaluations take it
+void es_plane_image_grid(struct md_grid_t* grid, const EsPlaneFrame& f, const float rect[4], float spacing);
 
 // Whether the gizmo is dragging this plane of this representation now
 bool es_planes_dragging(uint32_t rep_id, int plane);

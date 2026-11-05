@@ -3240,8 +3240,10 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("sampling", "Where the values on the planes come from");
                 ImGui::Combo("##sampling", (int*)&es.plane_sampling, sampling_str, IM_ARRAYSIZE(sampling_str));
                 if (es.plane_sampling == PlaneSampling::Plane) {
-                    static const char* detail_str[(int)PlaneDetail::Count] = {"Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
-                    prop::row("detail", "The spacing of the points each plane is evaluated at (at most 2048 a side)");
+                    static const char* detail_str[(int)PlaneDetail::Count] = {"Screen (a value a pixel)", "Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
+                    prop::row("detail", "Screen: the part of each plane in view, a value a pixel where it is nearest (made again once the view rests, "
+                                        "where it is too coarse or does not cover what is in view). Else all of each plane at a spacing. At most "
+                                        "2048 a side.");
                     ImGui::Combo("##detail", (int*)&es.plane_detail, detail_str, IM_ARRAYSIZE(detail_str));
                     if (!es_plane_images_supported(state, es)) {
                         prop::hint("Not without the GPU (or its ELF / LOL kernel): from the volume");
@@ -3252,8 +3254,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                             const Volume& v = im.img[im.front];
                             if (!es.slices.items[k].enabled) continue;
                             if (im.key[im.front] && v.tex_id) {
-                                prop::hint("plane %d: %d x %d, %.0f ms%s (" ES_PLANE_IMAGES_REVISION ")", k + 1, v.dim[0], v.dim[1], im.ms,
-                                           im.current ? "" : im.pending ? ", evaluating" : ", from the volume");
+                                prop::hint("plane %d: %d x %d at %.3f \xc3\x85, %.0f ms%s (" ES_PLANE_IMAGES_REVISION ")", k + 1, v.dim[0], v.dim[1],
+                                           im.spacing[im.front], im.ms, im.pending ? ", evaluating" : im.current ? "" : ", from the volume");
                             } else {
                                 prop::hint("plane %d: %s", k + 1, im.pending ? "evaluating" : "from the volume");
                             }

@@ -430,16 +430,20 @@ enum class PlaneSampling {
     Count,
 };
 
+// Screen: a value a pixel of the screen where the plane is nearest the camera, of the part in view; the others a fixed
+// spacing over the whole plane
 enum class PlaneDetail {
+    Screen,
     Coarse,
     Fine,
     Finest,
     Count,
 };
 
-// Angstrom per pixel of a plane's image for each PlaneDetail; an image is at most GPU_PLANE_DIM pixels a side, the
-// spacing made coarser where the plane is larger than that
+// Angstrom per pixel of a plane's image for each PlaneDetail (Screen: the finest it takes); an image is at most
+// GPU_PLANE_DIM pixels a side, the spacing made coarser where the plane is larger than that
 inline const float plane_detail_spacing_angstrom[(int)PlaneDetail::Count] = {
+    0.005f,
     0.05f,
     0.02f,
     0.01f,
@@ -630,11 +634,15 @@ struct IsoDesc {
 
 // The image of a slice evaluated on its plane (PlaneSampling::Plane; viamd.cpp, electronic_structure_plane_images_
 // update): two, the one drawn and the one being evaluated, swapped when it is there. Drawn only while it is of the
-// plane as it is (current): until then, and while the plane is dragged, the plane is drawn from the volume.
+// plane as it is (current): until then, and while the plane is dragged, the plane is drawn from the volume, and so is
+// what of it is outside the image's rectangle (PlaneDetail::Screen: the image covers what was in view).
 struct ElectronicStructurePlaneImage {
-    Volume    img[2] = {};      // W x H x 1 R32F, the texture to world of the plane's rectangle (texture_to_world)
-    uint64_t  key[2] = {};      // of what each holds (the source, the frame, the grid): 0 none
+    Volume    img[2] = {};      // W x H x 1 R32F, the texture to world of its rectangle (texture_to_world)
+    uint64_t  key[2] = {};      // of what each is of (the source, the frame, the plane in its box): 0 none
+    float     rect[2][4] = {};  // what each covers, in the plane's frame (es_plane_frame), and its spacing (Angstrom)
+    float     spacing[2] = {};
     int       front = 0;        // the one drawn
+    uint32_t  serial = 0;       // counted up as the front changes: what the scene's hash takes
     bool      pending = false;  // the other is being evaluated
     bool      current = false;  // the front one is of the plane, the source and the frame as they are
     double    issued = 0.0;     // when the pending one was issued (s), and how long the front one took (ms)
@@ -716,7 +724,7 @@ struct ElectronicStructureRepresentation {
 
     // Planes: the slices' values from the volume, or evaluated on each (plane_images, at plane_detail's spacing)
     PlaneSampling plane_sampling = PlaneSampling::Volume;
-    PlaneDetail   plane_detail = PlaneDetail::Fine;
+    PlaneDetail   plane_detail = PlaneDetail::Screen;
     ElectronicStructurePlaneImage plane_images[ES_MAX_PLANES] = {};
 
     // The box the volume is (or would be) evaluated in: its unit cube to the world (Angstrom), as the volume's
@@ -2600,7 +2608,7 @@ void electronic_structure_field_poll(Representation* rep);
 // under way.
 bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep);
 // For measurements (the timings shown with it): bumped with each change to how the images are evaluated
-#define ES_PLANE_IMAGES_REVISION "plane-images r2"
+#define ES_PLANE_IMAGES_REVISION "plane-images r3"
 // Whether it is: the planes display, PlaneSampling::Plane, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
 
