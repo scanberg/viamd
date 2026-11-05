@@ -43,6 +43,7 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <es_planes.h>
 #include <surface_field.h>
 #include <md_gto_iso.h>
 
@@ -451,6 +452,15 @@ static inline bool screenshot_offscreen(const ApplicationState* state) {
     return screenshot_pending(state) && state->screenshot.hide_gui;
 }
 
+// The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
+// picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
+// gizmo is); faint for a hidden one
+static vec4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
+    if (screenshot_offscreen(state)) return vec4_set(0, 0, 0, 0);
+    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return vec4_set(0, 0, 0, 0);
+    return enabled ? vec4_set(1.0f, 1.0f, 1.0f, 0.85f) : vec4_set(0.78f, 0.78f, 0.78f, 0.4f);
+}
+
 // Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
 // in a screenshot without the windows, which shows it in the middle.
 static inline vec2_t view_shift(const ApplicationState* state) {
@@ -818,6 +828,15 @@ int main(int argc, char** argv) {
         if (!state.gpu_volume) {
             VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
         }
+        md_gpu_texture_desc_t plane_desc = vol_desc;
+        plane_desc.width = GPU_PLANE_DIM;
+        plane_desc.height = GPU_PLANE_DIM;
+        plane_desc.depth_or_layers = 1;
+        plane_desc.label = "Evaluation plane";
+        state.gpu_plane = md_gpu_texture_create(state.gpu_stream, &plane_desc);
+        if (!state.gpu_plane) {
+            VIAMD_LOG_ERROR("Failed to create the GPU evaluation plane: %s", md_gpu_last_error());
+        }
 
         // Potentials (surface fields). Kernels are made on first use, so this costs nothing until a
         // surface is coloured by one.
@@ -968,6 +987,8 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
+        // and what the ELF and LOL evaluations left (es_jobs_collect)
+        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1004,7 +1025,13 @@ int main(int argc, char** argv) {
         ImGui::BeginCanvas("Main interaction window", true);
         const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();
+        // The planes of the representations first (es_planes.h): while the mouse is theirs, the view neither turns nor picks
+        // (over the whole viewport, as the scene is drawn: the canvas's content starts under its menu bar)
+        const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+        const bool planes_capture = es_planes_gizmo(&state, vec_cast(main_viewport->Pos), vec_cast(main_viewport->Size));
+        if (planes_capture) ImGui::BeginDisabled();
         InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
+        if (planes_capture) ImGui::EndDisabled();
         ImGui::EndCanvas();
 
         const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
@@ -1030,6 +1057,14 @@ int main(int argc, char** argv) {
 
             event.clip_to_world = clip_to_world;
             event.world_to_clip = world_to_clip;
+
+            // A click on nothing (no outline or handle of a plane, which would have taken the mouse, and nothing of the
+            // scene: the background) lets go of the plane picked for the gizmo, as a click on its outline picks it
+            if (surface_state.deactivated && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
+                hit.raw_idx == INVALID_PICKING_IDX && hit.depth >= 1.0f) {
+                state.representation.gizmo.plane = -1;
+            }
 
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
                 md_bitset_t candidate_mask = md_bitmask_view(&state.representation.visibility_mask);
@@ -1678,6 +1713,7 @@ int main(int argc, char** argv) {
     immediate::queue_destroy(state.gfx.world);
     immediate::queue_destroy(state.gfx.overlay);
     immediate::shutdown();
+    es_planes_shutdown();
 
     state.gfx.world = nullptr;
     state.gfx.overlay = nullptr;
@@ -1694,6 +1730,7 @@ int main(int argc, char** argv) {
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
+    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
@@ -1710,6 +1747,8 @@ int main(int argc, char** argv) {
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
+        if (state.gpu_plane) md_gpu_texture_destroy(state.gpu_plane);
+        state.gpu_plane = nullptr;
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
         state.gpu_volume = nullptr;
@@ -7607,6 +7646,9 @@ static void render(ApplicationState* state) {
     glClear(GL_COLOR_BUFFER_BIT);
     if (!offscreen) {
         present();
+        // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
+        es_planes_draw_outlines(state->gbuffer.tex.depth, state->gbuffer.width, state->gbuffer.height,
+                                state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
     } else {
         const uint32_t total = MAX(settle_frames(state), 1u);
         float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
@@ -8048,6 +8090,24 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&rep.box.thickness, sizeof(rep.box.thickness), h);
             h = md_hash64(&rep.box.axes, sizeof(rep.box.axes), h);
         }
+        if (rep.type == RepresentationType::ElectronicStructure) {
+            // how it is drawn as a volume or on a plane (its isosurfaces are in what draws them)
+            const ElectronicStructureRepresentation& es = rep.electronic_structure;
+            h = md_hash64(&es.display, sizeof(es.display), h);
+            h = md_hash64(&es.cuts, sizeof(es.cuts), h);
+            h = md_hash64(&es.slices, sizeof(es.slices), h);
+            // the slices' edges: which is picked (its edge is drawn over the view instead), and whether they are drawn
+            for (int k = 0; k < es.slices.count; ++k) {
+                const vec4_t e = es_slice_edge_color(state, rep.node.id, k, es.slices.items[k].enabled);
+                h = md_hash64(&e, sizeof(e), h);
+            }
+            for (const ElectronicStructurePlaneImage& im : es.plane_images) {
+                h = md_hash64(&im.key[im.front], sizeof(uint64_t), h);
+                h = md_hash64(&im.serial, sizeof(im.serial), h);
+                h = md_hash64(&im.current, sizeof(im.current), h);
+            }
+            h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
+        }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
             h = md_hash64(&rep.dipole.dipole_index, sizeof(rep.dipole.dipole_index), h);
@@ -8077,6 +8137,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         Representation& rep = state->representation.reps[i];
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
+        if (es.display != ElectronicStructureDisplay::Isosurface) continue;
 
         IsoDesc iso;
         electronic_structure_iso_desc_init(&iso, es);
@@ -8144,6 +8205,77 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
     return isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
 }
 
+// The electronic structure representations drawn from their volumes, over what the isosurfaces drew into the same
+// (HDR) target: a volume display by direct volume rendering of the field through the colour map and alpha ramp of
+// each, cut by its planes; a planes display as the field on its planes through the colour map, each of its opacity. True when anything was
+// drawn.
+static bool draw_representations_volumes(ApplicationState* state, bool target_written) {
+    bool written = false;
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        ElectronicStructureRepresentation& es = rep.electronic_structure;
+        const bool slice = es.display == ElectronicStructureDisplay::Planes;
+        // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
+        const bool on_planes = slice && es_plane_images_supported(state, es);
+        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.has_box || (!on_planes && !es.density_vol.tex_id)) continue;
+        vec4_t planes[ES_MAX_PLANES];
+        float  slice_opacity[ES_MAX_PLANES];
+        uint32_t images[ES_MAX_PLANES];
+        mat4_t rect_from_model[ES_MAX_PLANES];
+        vec4_t edges[ES_MAX_PLANES];
+        int num_planes = 0;
+        if (slice) {
+            es_slices_conform(&es);
+            const uint32_t rep_id = rep.node.id;
+            num_planes = es_volume_slices(planes, slice_opacity, rect_from_model, es);
+            bool any = false;
+            for (int k = 0; k < num_planes; ++k) {
+                images[k] = 0;
+                if (on_planes) {
+                    const ElectronicStructurePlaneImage& im = es.plane_images[k];
+                    const Volume& v = im.img[im.front];
+                    if (im.current && v.tex_id) images[k] = v.tex_id;
+                }
+                // nothing to draw it from yet: its edges only
+                if (!images[k] && !es.density_vol.tex_id) slice_opacity[k] = 0.0f;
+                edges[k] = es_slice_edge_color(state, rep_id, k, es.slices.items[k].enabled);
+                any |= slice_opacity[k] > 0.0f || edges[k].w > 0.0f;
+            }
+            if (!any) continue;
+        } else {
+            num_planes = es_volume_clip_planes(planes, es);
+        }
+        volume::DvrRenderDesc desc = {};
+        desc.render_target.depth = state->gbuffer.tex.depth;
+        desc.render_target.color = state->gbuffer.tex.transparency_hdr;
+        desc.render_target.width = state->gbuffer.width;
+        desc.render_target.height = state->gbuffer.height;
+        desc.render_target.clear_color = !(target_written || written);
+        desc.texture.density_volume = es.density_vol.tex_id;
+        desc.texture.transfer_function = es_volume_transfer_function(&es);
+        desc.matrix.model = es.box_to_world;
+        desc.matrix.view = state->view.param.matrix.curr.view;
+        desc.matrix.proj = state->view.param.matrix.curr.proj;
+        desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
+        desc.tf.min_value = es.volume.tf.range_beg;
+        desc.tf.max_value = es.volume.tf.range_end;
+        desc.planes.count = num_planes;
+        desc.planes.equations = planes;
+        desc.linear_output = true;
+        desc.slice = slice;
+        desc.slice_opacity = slice ? slice_opacity : nullptr;
+        desc.slice_images = slice && on_planes ? images : nullptr;
+        desc.slice_rect_from_model = slice ? rect_from_model : nullptr;
+        desc.slice_edge = slice ? edges : nullptr;
+        // the edges' width: a line of 1.5 points (as the outlines drawn over the view), in the target's pixels
+        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MAX(state->app.framebuffer.width, 1);
+        volume::render_dvr(desc);
+        written = true;
+    }
+    return written;
+}
+
 static bool draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
     if (state->mold.sys.atom.count == 0) return false;
@@ -8153,7 +8285,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
     iso_mesh_converged = true;
     if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
-        return draw_representations_transparent_mesh(state);
+        const bool meshes = draw_representations_transparent_mesh(state);
+        return draw_representations_volumes(state, meshes) || meshes;
     }
     isomesh::target_free(&iso_mesh_target);
 
@@ -8162,7 +8295,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
         if (!representation_shown(*state, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure) {
+        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface) {
             const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
             electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
@@ -8233,7 +8366,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 #endif
         }
     }
-    return written;
+    return draw_representations_volumes(state, written) || written;
 }
 
 static void draw_representations_marks(ApplicationState* data) {

@@ -2,6 +2,7 @@
 #include <md_util.h>
 #include <md_dssp.h>
 #include <md_qm.h>
+#include <md_gto_iso.h>
 
 #include <atomic>
 #include <stdarg.h>
@@ -28,6 +29,7 @@
 
 #include <imgui.h>
 #include <imgui_notify.h>
+#include <es_planes.h>
 #include <implot.h>
 #include <implot_internal.h>
 
@@ -3264,6 +3266,7 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 
 #if MD_ENABLE_GPU
 static bool dmat_build_take(ApplicationState* state, bool wait);
+static void localization_gpu_free(ApplicationState* state);
 static bool dpack_build_take(ApplicationState* state, bool wait);
 static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex);
 #endif
@@ -3292,6 +3295,7 @@ void system_gpu_data_free(ApplicationState* state) {
     }
     state->mold.gpu_dmat_key = 0;
     state->mold.gpu_dmat_failed_key = 0;
+    localization_gpu_free(state);
     dpack_build_take(state, true);
     if (state->mold.gpu_dpack) {
         md_gpu_free(state->gpu_stream, state->mold.gpu_dpack);
@@ -3732,6 +3736,11 @@ static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t si
     gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
 }
 
+// The scratch the evaluations write now (ApplicationState::gpu_eval_target)
+static inline md_gpu_texture_t gpu_eval_target(const ApplicationState* state) {
+    return state->gpu_eval_target ? state->gpu_eval_target : state->gpu_volume;
+}
+
 static ApplicationState::GpuVolumeJob* gpu_volume_job_acquire(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         if (!state->gpu_volume_jobs[i].in_flight) {
@@ -3784,7 +3793,7 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region);
+    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, gpu_eval_target(state), &region);
     md_gpu_stream_sync(state->gpu_stream);
     if (ok) gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
     md_gpu_free(state->gpu_stream, rb.gpu);
@@ -3852,7 +3861,7 @@ static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex) {
 //
 // Returns true when the work was QUEUED -- not that the texture holds data.
 static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
-    if (!state->gpu_stream || !state->gpu_volume) {
+    if (!state->gpu_stream || !gpu_eval_target(state)) {
         return false;
     }
     const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
@@ -3879,6 +3888,7 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
     if (!job) {
         return gpu_volume_readback_blocking(state, vol_tex, grid, size);
     }
+    job->src = gpu_eval_target(state);
     return gpu_volume_readback_issue(state, job, vol_tex, grid);
 }
 
@@ -3896,7 +3906,7 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region)) {
+    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, job->src ? job->src : state->gpu_volume, &region)) {
         MD_LOG_ERROR("Failed to record the volume readback");
         md_gpu_free(state->gpu_stream, rb.gpu);
         job->in_flight = false;
@@ -3941,6 +3951,7 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
         return gpu_volume_readback(state, vol_tex, grid);
     }
     job->tex_id = vol_tex;
+    job->src = gpu_eval_target(state);
     job->grid = grid;
     job->density_job = dj;
     job->t0 = md_tick_now();
@@ -4320,10 +4331,412 @@ static bool es_volume_density(str_t* out_path, md_attribute_slice_t* out_slice, 
 // Evaluates whatever the representation is currently pointed at into its own volume texture.
 // Everything it needs is an attribute on the system or a field of the representation; there is no
 // reader, no component and no event in the path, which is the whole point of the port.
+// ---------------------------------------------------------------------------
+// ELF and LOL over a grid
+// ---------------------------------------------------------------------------
+// On the GPU by their own grid kernel (md_gto_gpu_localization_launch): the spins' density matrices in tiles,
+// built on the device from the orbitals over a GPU basis at the AO cutoff 1e-8 (ELF is made of small differences
+// in the tails), made by a pool task (localization_gpu_prepare) and kept until the orbitals change or the atoms
+// move out of the tiles' margin; the kernel issued into the GPU stream as the density's is, and its volume read
+// back as the density's (gpu_volume_readback): nothing waits. Without a GPU, by a pool task on the CPU, in double
+// (localization_poll): of each spin rho_s with its gradient and tau_s over the derivative basis
+// (md_qm_kinetic_orbitals), then md_qm_elf or md_qm_lol per point; slow.
+//
+// No floor of rho. ELF is a ratio of two vanishing quantities far from the atoms (with a gaussian basis it goes to 1,
+// or in float to noise, there: nothing of the molecule); it is taken as Multiwfn has it, D + MD_QM_ELF_D_MIN (1e-5),
+// which follows the exact one to the 1e-3 isodensity and goes to 0 smoothly by rho 1e-4 (md_qm_elf). LOL is a plain
+// ratio and goes to 0 there itself. The CPU path, in double from the same float data, alike.
+#define ES_LOCALIZATION_RHO_MIN 0.0
+#define ES_LOCALIZATION_CUTOFF 1.0e-8
+#define ES_LOCALIZATION_CHUNK (1u << 18)
+// How far the atoms may move before the matrices' pattern is made again (bohr), as the density's (GPU_DMAT_MARGIN)
+#define ES_LOCALIZATION_MARGIN 1.0
+
+#if MD_ENABLE_GPU
+static bool gpu_evaluation_ready(const ApplicationState* state);
+static uint64_t density_dmat_key(const md_system_t& sys, str_t density_path);
+#endif
+
+// The densities and kinetic energy densities of the spins (one, the total, for a closed shell), as product fields
+struct LocalizationFields {
+    md_gto_basis_t      basis = {};
+    md_gto_basis_t      dbasis = {};    // the derivative basis
+    md_gto_iso_field_t* rho[2] = {};
+    md_gto_iso_field_t* tau[2] = {};
+    int                 num_spins = 0;  // 1: closed shell (the total density), 2: alpha and beta
+};
+
+static void localization_fields_free(LocalizationFields* f) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    for (int i = 0; i < 2; ++i) {
+        if (f->rho[i]) md_gto_iso_field_destroy(f->rho[i]);
+        if (f->tau[i]) md_gto_iso_field_destroy(f->tau[i]);
+    }
+    md_gto_basis_free(&f->basis, heap);
+    md_gto_basis_free(&f->dbasis, heap);
+    *f = LocalizationFields{};
+}
+
+static bool localization_fields_init(LocalizationFields* f, const md_system_t& sys, const float* atom_xyz) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    if (!md_gto_basis_extract_attributes(&f->basis, &sys.attributes, heap)) return false;
+
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density
+    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
+    size_t ana = 0, bna = 0;
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &sys, STR_LIT("orbital/alpha/density"), alloc);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &sys, STR_LIT("orbital/beta/density"), alloc);
+    if (an == 0 && bn == 0) return false;
+    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    // A spin without occupied orbitals has no density: it is left out, as md_qm_elf takes a spin of none
+    str_t paths[2];
+    int num = 0;
+    if (closed) {
+        paths[num++] = STR_LIT("orbital/total/density");
+    } else {
+        if (an) paths[num++] = STR_LIT("orbital/alpha/density");
+        if (bn) paths[num++] = STR_LIT("orbital/beta/density");
+    }
+    for (int i = 0; i < num; ++i) {
+        double *rr = nullptr, *rw = nullptr, *kr = nullptr, *kw = nullptr;
+        size_t rna = 0, kna = 0;
+        md_gto_basis_t dbasis = {};
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &sys, paths[i], alloc);
+        const size_t kn = rn ? md_qm_kinetic_orbitals(&kr, &kw, &kna, &dbasis, &sys, paths[i], heap) : 0;
+        if (!rn || !kn) return false;
+        if (i == 0) f->dbasis = dbasis; else md_gto_basis_free(&dbasis, heap);
+        f->rho[i] = md_gto_iso_field_create_products(&f->basis,  atom_xyz, 0, rr, nullptr, rw, rn, heap);
+        f->tau[i] = md_gto_iso_field_create_products(&f->dbasis, atom_xyz, 0, kr, nullptr, kw, kn, heap);
+        md_free(heap, kr, sizeof(double) * kn * kna);
+        md_free(heap, kw, sizeof(double) * kn);
+        if (!f->rho[i] || !f->tau[i]) return false;
+    }
+    // Not the spin form with one spin's terms twice: closed is what says num_spins = 1 means the total
+    f->num_spins = closed ? 1 : num;
+    return true;
+}
+
+static inline float localization_value(bool lol, int num_spins, const double rho[2], const double g2[2], const double tau[2]) {
+    if (num_spins == 1) {   // a closed shell: two equal halves
+        const double r[2] = {0.5 * rho[0], 0.5 * rho[0]}, g[2] = {0.25 * g2[0], 0.25 * g2[0]}, t[2] = {0.5 * tau[0], 0.5 * tau[0]};
+        return localization_value(lol, 2, r, g, t);
+    }
+    if (lol) return (float)md_qm_lol(rho[0], tau[0], rho[1], tau[1], ES_LOCALIZATION_RHO_MIN);
+    return (float)md_qm_elf(rho[0], g2[0], tau[0], rho[1], g2[1], tau[1], ES_LOCALIZATION_RHO_MIN, MD_QM_ELF_D_MIN);
+}
+
+// The evaluation of a representation's ELF or LOL, by a pool task: the fields made, the points evaluated, ELF or LOL
+// taken, while the frame goes on and the volume shown stays what it was. Polled each frame by the representation's
+// update (localization_poll), which puts the values in its volume once they are there. What the task reads outlives
+// it: the system's attributes (a load waits for the pool), the rest its own copies. A job no longer wanted (another
+// field asked for, the representation gone) is cancelled and let go of once it has stopped (es_jobs_collect):
+// nothing here waits for one but the shutdown.
+struct LocalizationJob {
+    task_system::Job   task;
+    uint32_t           rep_id = 0;
+    uint64_t           key = 0;           // the volume hash it was started for
+    bool               lol = false;
+    bool               orphan = false;    // nobody wants what it makes
+    const md_system_t* sys = nullptr;
+    md_grid_t          grid = {};
+    float*             atom_xyz = nullptr;  // bohr, packed, one per basis atom: its own copy
+    size_t             num_atoms = 0;
+    float*             out = nullptr;       // the values, in the texture's order
+    bool               ok = false;
+    double             seconds = 0.0;
+};
+
+static LocalizationJob* g_localization_jobs[64];
+static uint32_t g_num_localization_jobs = 0;
+
+// In double on the CPU: slow, for when there is no GPU (localization_gpu_prepare)
+static bool localization_evaluate_cpu(LocalizationJob* job, const LocalizationFields& f, const float* xyz, size_t count) {
+    const size_t chunk = MIN(count, (size_t)4096);
+    const int ns = f.num_spins;
+    double* buf = (double*)malloc(sizeof(double) * chunk * ns * 5);
+    if (!buf) return false;
+    for (size_t beg = 0; beg < count; beg += chunk) {
+        if (task_system::cancelled()) { free(buf); return false; }
+        const size_t n = MIN(chunk, count - beg);
+        double* rho = buf;
+        double* grad = buf + ns * n;
+        double* tau = buf + 4 * ns * n;
+        for (int s = 0; s < ns; ++s) {
+            md_gto_iso_field_evaluate(f.rho[s], xyz + 3 * beg, n, 0, rho + s * n, grad + 3 * s * n);
+            md_gto_iso_field_evaluate(f.tau[s], xyz + 3 * beg, n, 0, tau + s * n, nullptr);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            double r[2] = {}, g2[2] = {}, t[2] = {};
+            for (int s = 0; s < ns; ++s) {
+                const double* g = grad + 3 * (s * n + i);
+                r[s]  = rho[s * n + i];
+                g2[s] = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+                t[s]  = tau[s * n + i];
+            }
+            job->out[beg + i] = localization_value(job->lol, ns, r, g2, t);
+        }
+        task_system::set_progress((float)(beg + n) / (float)count);
+    }
+    free(buf);
+    return true;
+}
+
+// On a worker thread
+static void localization_job_run(LocalizationJob* job) {
+    const md_tick_t t0 = md_tick_now();
+    const size_t count = md_grid_num_points(&job->grid);
+    float* xyz = (float*)malloc(sizeof(float) * 3 * count);
+    job->out = (float*)malloc(sizeof(float) * count);
+    LocalizationFields f;
+    bool ok = xyz && job->out && localization_fields_init(&f, *job->sys, job->atom_xyz);
+    if (ok) md_grid_extract_points(xyz, &job->grid);   // bohr, in the order of the texture's texels
+    bool done = false;
+    if (ok && !done && !task_system::cancelled()) {
+        done = localization_evaluate_cpu(job, f, xyz, count);
+    }
+    localization_fields_free(&f);
+    free(xyz);
+    job->ok = done;
+    job->seconds = md_tick_to_seconds(md_tick_now() - t0);
+}
+
+static void localization_job_destroy(LocalizationJob* job) {
+    job->task.cancel_and_wait();
+    free(job->atom_xyz);
+    free(job->out);
+    delete job;
+}
+
+// Lets go of the jobs which have stopped and nobody wants: superseded, or of a representation which is gone or no
+// longer of ELF or LOL
+void es_jobs_collect(ApplicationState* state) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < g_num_localization_jobs; ++i) {
+        LocalizationJob* job = g_localization_jobs[i];
+        if (!job->orphan && !job->task.running()) {
+            const Representation* rep = nullptr;
+            for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
+                if (state->representation.reps[r].node.id == job->rep_id) rep = &state->representation.reps[r];
+            }
+            job->orphan = !rep || rep->type != RepresentationType::ElectronicStructure || !electronic_structure_is_localization(rep->electronic_structure);
+        }
+        if (job->orphan && !job->task.running()) {
+            localization_job_destroy(job);
+        } else {
+            g_localization_jobs[n++] = job;
+        }
+    }
+    g_num_localization_jobs = n;
+}
+
+void es_jobs_shutdown(ApplicationState*) {
+    for (uint32_t i = 0; i < g_num_localization_jobs; ++i) localization_job_destroy(g_localization_jobs[i]);
+    g_num_localization_jobs = 0;
+}
+
+// The representation's ELF or LOL for the volume hash 'key': 1 when it is in the volume (put there now), 0 while it
+// is under way (started here if it was not), -1 when it could not be made
+static int localization_poll(ApplicationState* state, Representation* rep, uint64_t key) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    const bool lol = es.source == ElectronicStructureSource::LocalizedOrbitalLocator;
+    LocalizationJob* job = nullptr;
+    for (uint32_t i = 0; i < g_num_localization_jobs; ++i) {
+        LocalizationJob* j = g_localization_jobs[i];
+        if (j->orphan || j->rep_id != rep->node.id) continue;
+        if (j->key == key) { job = j; continue; }
+        // of another field: it goes once it has stopped
+        j->task.cancel();
+        j->orphan = true;
+    }
+    if (!job) {
+        if (g_num_localization_jobs == ARRAY_SIZE(g_localization_jobs)) return 0;   // asked again next frame
+        md_grid_t grid = {};
+        const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
+        if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+        md_temp_scope_t temp = md_temp_begin();
+        size_t num_atoms = 0;
+        const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state->mold.sys, state->mold.state);
+        job = new LocalizationJob();
+        job->rep_id = rep->node.id;
+        job->key = key;
+        job->lol = lol;
+        job->sys = &state->mold.sys;
+        job->grid = grid;
+        job->atom_xyz = atom_pos ? (float*)malloc(sizeof(vec3_t) * num_atoms) : nullptr;
+        if (job->atom_xyz) {
+            MEMCPY(job->atom_xyz, atom_pos, sizeof(vec3_t) * num_atoms);
+            job->num_atoms = num_atoms;
+        }
+        md_temp_end(temp);
+        if (!job->atom_xyz) {
+            delete job;
+            return -1;
+        }
+        g_localization_jobs[g_num_localization_jobs++] = job;
+        job->task.start(lol ? STR_LIT("Localized orbital locator") : STR_LIT("Electron localization function"),
+                        [job]() { localization_job_run(job); md_temp_trim(); });
+        return 0;
+    }
+    if (job->task.running()) return 0;
+    const bool made = job->task.status() == task_system::Status::Completed && job->ok;
+    if (made) {
+        init_volume(&es.density_vol, job->grid, GL_R32F);
+        es.grid = job->grid;
+        gl::set_texture_3D_data(es.density_vol.tex_id, 0, job->out, GL_R32F);
+        volume::notify_data_changed(es.density_vol.tex_id);
+        MD_LOG_INFO("%s: %zu points in %.2f s (CPU)", lol ? "LOL" : "ELF", md_grid_num_points(&job->grid), job->seconds);
+    } else if (job->task.status() == task_system::Status::Completed) {
+        MD_LOG_ERROR("%s could not be evaluated (are the orbitals and their occupations there?)", lol ? "LOL" : "ELF");
+    }
+    job->orphan = true;   // what it made is taken: it goes with the next collect
+    return made ? 1 : -1;
+}
+
+#if MD_ENABLE_GPU
+// What the kernel reads, made by a pool task on a stream of its own (destroyed by the task once its work is done:
+// what it made is then ready for any stream), kept in state->mold.gpu_localization
+struct LocalizationGpu {
+    task_system::Job   task;            // a cancelled one (a load) made nothing to be taken
+    uint64_t           key = 0;         // the orbitals and occupations it is made of (density_dmat_key)
+    const md_system_t* sys = nullptr;
+    vec3_t*            xyz = nullptr;   // bohr, its copy: the positions the tiles' pattern is made for
+    size_t             num_atoms = 0;
+    md_gpu_stream_t    stream = nullptr;
+    md_gto_basis_t     basis = {};      // heap
+    md_gto_gpu_basis_t gpu_basis = nullptr;
+    md_gto_gpu_dmat_t  dmat[2] = {};
+    uint32_t           num_spins = 0;   // 1: dmat[0] the total density of a closed shell; 2: alpha and beta
+    bool               ok = false;
+    md_tick_t          t0 = 0;
+};
+
+// On a worker thread
+static void localization_gpu_build(LocalizationGpu* L) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    bool ok = md_gto_basis_extract_attributes(&L->basis, &L->sys->attributes, heap);
+    const md_gto_gpu_basis_desc_t bd = { .basis = &L->basis, .cutoff = ES_LOCALIZATION_CUTOFF };
+    L->gpu_basis = ok ? md_gto_gpu_basis_create(L->stream, &bd) : nullptr;
+    ok = ok && L->gpu_basis;
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density, the total
+    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
+    size_t ana = 0, bna = 0;
+    const size_t an = ok ? md_qm_density_orbitals(&ar, &aw, &ana, L->sys, es_path::alpha_density, alloc) : 0;
+    const size_t bn = ok ? md_qm_density_orbitals(&br, &bw, &bna, L->sys, es_path::beta_density, alloc) : 0;
+    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    ok = ok && an > 0 && bn > 0;
+    L->num_spins = closed ? 1 : 2;
+    for (uint32_t k = 0; ok && k < L->num_spins; ++k) {
+        const md_gto_gpu_dmat_desc_t dd = {
+            .basis = &L->basis, .atom_xyz = (const float*)L->xyz, .atom_xyz_stride = sizeof(vec3_t), .cutoff = ES_LOCALIZATION_CUTOFF, .margin = ES_LOCALIZATION_MARGIN };
+        L->dmat[k] = md_gto_gpu_dmat_create(L->stream, &dd);
+        double* rows = k == 0 ? ar : br;
+        double* w = k == 0 ? aw : bw;
+        const size_t n = k == 0 ? an : bn;
+        if (closed) for (size_t i = 0; i < n; ++i) w[i] *= 2.0;     // the total
+        ok = L->dmat[k] && md_gto_gpu_dmat_build(L->stream, L->dmat[k], rows, w, n);
+    }
+    L->ok = ok;
+    md_temp_end(temp);
+    md_gpu_stream_destroy(L->stream);   // once its work is done
+    L->stream = nullptr;
+    md_temp_trim();
+}
+
+static void localization_gpu_destroy(LocalizationGpu* L, md_gpu_stream_t gl_stream) {
+    // only once its task has ended
+    L->task.cancel_and_wait();
+    for (int k = 0; k < 2; ++k) if (L->dmat[k]) md_gto_gpu_dmat_destroy(gl_stream, L->dmat[k]);
+    if (L->gpu_basis) md_gto_gpu_basis_destroy(gl_stream, L->gpu_basis);
+    if (L->stream) md_gpu_stream_destroy(L->stream);    // of a task cancelled before it ran
+    md_gto_basis_free(&L->basis, md_get_heap_allocator());
+    free(L->xyz);
+    delete L;
+}
+
+static void localization_gpu_free(ApplicationState* state) {
+    if (state->mold.gpu_localization) {
+        localization_gpu_destroy((LocalizationGpu*)state->mold.gpu_localization, state->gpu_stream);
+        state->mold.gpu_localization = nullptr;
+    }
+    state->mold.gpu_localization_failed_key = 0;
+}
+
+// Whether ELF and LOL can be evaluated on the GPU now: 1 when what the kernel reads is there for the orbitals and
+// the atoms as they are, 0 while it is being made (begun here when it is not), -1 when there is no GPU or it
+// could not be made (then on the CPU)
+static int localization_gpu_prepare(ApplicationState* state) {
+    if (!gpu_evaluation_ready(state) || !state->gpu_device) return -1;
+    const md_system_t& sys = state->mold.sys;
+    const uint64_t key = density_dmat_key(sys, STR_LIT("localization"));
+    if (key == state->mold.gpu_localization_failed_key) return -1;
+    LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
+    if (L && L->task.running()) return 0;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    size_t num_atoms = 0;
+    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    if (!xyz) return -1;
+    if (L && L->key == key) {
+        if (L->task.status() != task_system::Status::Completed || !L->ok) {
+            MD_LOG_ERROR("ELF and LOL: what their GPU kernel reads could not be made; evaluating them on the CPU");
+            localization_gpu_free(state);
+            state->mold.gpu_localization_failed_key = key;
+            return -1;
+        }
+        bool valid = num_atoms == L->num_atoms;
+        for (uint32_t k = 0; valid && k < L->num_spins; ++k) valid = md_gto_gpu_dmat_pattern_valid(L->dmat[k], (const float*)xyz, sizeof(vec3_t));
+        if (valid) return 1;
+    }
+    // made (again): for other orbitals, or atoms beyond the margin
+    if (L) localization_gpu_free(state);
+    L = new LocalizationGpu();
+    L->key = key;
+    L->sys = &state->mold.sys;
+    L->t0 = md_tick_now();
+    L->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+    L->num_atoms = num_atoms;
+    L->stream = L->xyz ? md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "ELF/LOL matrices") : nullptr;
+    if (!L->stream) {
+        free(L->xyz);
+        delete L;
+        return -1;
+    }
+    MEMCPY(L->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    state->mold.gpu_localization = L;
+    L->task.start(STR_LIT("ELF/LOL density matrices"), [L]() { localization_gpu_build(L); });
+    return 0;
+}
+
+// ELF or LOL into vol_tex by the kernel, read back as the density is; what it reads is there (localization_gpu_prepare)
+static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool lol) {
+    LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
+    if (!L || !L->ok || L->task.running()) return false;
+    gpu_density_jobs_settle(state);     // the scratch volume is written below
+    if (!gpu_atoms_ensure_uploaded(state, state->mold.sys, state->mold.state)) return false;
+    md_gto_gpu_localization_desc_t desc = {
+        .basis = L->gpu_basis, .atom_xyz = state->mold.gpu_atoms, .num_spins = L->num_spins,
+        .dmat = { L->dmat[0], L->num_spins > 1 ? L->dmat[1] : nullptr },
+        .kind = lol ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, .rho_min = ES_LOCALIZATION_RHO_MIN,
+        .d_min = MD_QM_ELF_D_MIN,
+        .out_tex = gpu_eval_target(state), .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
+    };
+    if (!md_gto_gpu_localization_launch(state->gpu_stream, &desc)) return false;
+    return gpu_volume_readback(state, vol_tex, grid);
+}
+#endif
+
+static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid);
+
 static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep) {
     const ElectronicStructureRepresentation& es = rep->electronic_structure;
 
-    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
 
     md_grid_t grid = {};
     if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
@@ -4331,8 +4744,14 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
     }
     init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
     rep->electronic_structure.grid = grid;
-    const uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
+    rep->electronic_structure.box_to_world = rep->electronic_structure.density_vol.texture_to_world;
+    rep->electronic_structure.has_box = true;
+    return es_evaluate_into(state, es, rep->electronic_structure.density_vol.tex_id, grid);
+}
 
+// What the representation's source is, evaluated over grid into tex_id (a GL 3D texture of the grid's dims): the
+// volume, or the image of a plane (one layer). On the GPU, written to the scratch gpu_eval_target and read back.
+static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -4358,6 +4777,15 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
         const bool magnitude = es.source == ElectronicStructureSource::ElectronDensity && es.spin == ElectronicStructureSpin::Difference && es.use_magnitude;
         return density_evaluate(state, tex_id, grid, path, slice.num_idx > 0 ? &slice : nullptr, es_gto_op(magnitude), true);
     }
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
+#if MD_ENABLE_GPU
+        // by their kernel when what it reads is there (the update waits for it); else by a pool task on the CPU,
+        // which the update polls (localization_poll), and which fills the volume itself
+        return localization_gpu_evaluate(state, tex_id, grid, es.source == ElectronicStructureSource::LocalizedOrbitalLocator);
+#else
+        return false;
+#endif
     default:
         MD_LOG_ERROR("Unknown electronic structure source");
         return false;
@@ -4654,7 +5082,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
             .basis        = state->mold.gpu_basis,
             .atom_xyz     = state->mold.gpu_atoms,
             .coeff        = state->gpu_coeff,
-            .out_tex      = state->gpu_volume,
+            .out_tex      = gpu_eval_target(state),
             .grid         = &grid,
             .sample_offset = {0.5f, 0.5f, 0.5f},
             .num_orbitals = 1,
@@ -4721,7 +5149,7 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
         .atom_xyz      = state->mold.gpu_atoms,
         .coeff         = dmat ? 0 : (coeff ? coeff : state->gpu_coeff),
         .dmat          = dmat,
-        .out_tex       = state->gpu_volume,
+        .out_tex       = gpu_eval_target(state),
         .grid          = &grid,
         .sample_offset = {0.5f, 0.5f, 0.5f},
         .op            = op,
@@ -5170,6 +5598,178 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
 }
 
+// The transfer function of a volume rendering, set up for the field when it is first drawn (or when the kind of its
+// values changes), on a range set by hand: one to the largest values would put most of the field at the bottom of
+// the curve. A signed field (an orbital, a difference) from -3 to 3 times the isovalue, the value it is significant
+// at, through a diverging map, the curve on the magnitude from a tenth of the range; a density from 0 to 10 times it
+// (its largest values are at the nuclei) through a sequential one; ELF and LOL over [0, 1], what they span, the curve
+// from 1/2, the electron gas's value, so what shows is where the electrons are more localized.
+static void es_volume_map_update(ElectronicStructureRepresentation& es) {
+    const ElectronicStructureValueKind kind = electronic_structure_value_kind(es);
+    if (es.volume.map_init && es.volume.map_kind == (int)kind) return;
+    TransferFunction& tf = es.volume.tf;
+    const float iso = (float)fabs(es.iso_value);
+    switch (kind) {
+    case ElectronicStructureValueKind::Signed:
+        tf.symmetric = true;
+        tf.colormap = COLOR_SCALE_COLORMAP_RDBU;
+        tf.range_beg = -3.0f * iso;
+        tf.range_end =  3.0f * iso;
+        transfer_function_ramp_magnitude(&tf, 0.1f);
+        break;
+    case ElectronicStructureValueKind::Localization:
+        tf.symmetric = false;
+        tf.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+        tf.range_beg = 0.0f;
+        tf.range_end = 1.0f;
+        transfer_function_ramp(&tf, 0.5f);
+        break;
+    case ElectronicStructureValueKind::Density:
+    default:
+        tf.symmetric = false;
+        tf.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+        tf.range_beg = 0.0f;
+        tf.range_end = 10.0f * iso;
+        transfer_function_ramp(&tf, 0.0f);
+        break;
+    }
+    es.volume.view.fit = 1;
+    es.volume.map_init = true;
+    es.volume.map_kind = (int)kind;
+}
+
+// What the representation's source is, of the frame: what an evaluation of it, on any grid, depends on
+static uint64_t es_source_hash(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
+    uint64_t h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
+    h = md_hash64(&es.source,                       sizeof(es.source), h);
+    h = md_hash64(&es.use_magnitude,                sizeof(es.use_magnitude), h);
+    h = md_hash64(&es.spin,                         sizeof(es.spin), h);
+    h = md_hash64(&es.nto_component,                sizeof(es.nto_component), h);
+    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
+    h = md_hash64(&es.orbital_idx,                  sizeof(es.orbital_idx), h);
+    h = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), h);
+    h = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), h);
+    h = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), h);
+    return h;
+}
+
+// Whether what an evaluation of the source reads is there: 1 yes, 0 not yet (being made: ask again), -1 not on the
+// GPU (ELF and LOL on the CPU, which fills the volume itself)
+static int es_source_ready(ApplicationState* state, const ElectronicStructureRepresentation& es) {
+#if MD_ENABLE_GPU
+    // a density job under way, of any representation: an evaluation now would wait for its counts
+    if (gpu_density_job_pending(state)) return 0;
+    // a density's matrix, made on a worker thread (an SCF density's dmat, another's packed triangle)
+    str_t path = {};
+    md_attribute_slice_t slice = {};
+    if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_pack_prepare(state, path, &slice)) return 0;
+#endif
+    if (es.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.excited_state_idx)) return 0;
+    if (electronic_structure_is_localization(es)) {
+#if MD_ENABLE_GPU
+        const int g = localization_gpu_prepare(state);
+        return g == 0 ? 0 : (g < 0 ? -1 : 1);
+#else
+        return -1;
+#endif
+    }
+    return 1;
+}
+
+bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es) {
+#if MD_ENABLE_GPU
+    if (es.display != ElectronicStructureDisplay::Planes) return false;
+    if (!gpu_evaluation_ready(state) || !state->gpu_plane) return false;
+    // ELF and LOL without their kernel: on the CPU, into the volume
+    return !electronic_structure_is_localization(es) || localization_gpu_prepare(state) >= 0;
+#else
+    (void)state; (void)es;
+    return false;
+#endif
+}
+
+// The box of the volume without the volume: its grid, at the resolution, and its unit cube in the world
+static void es_box_update(ApplicationState* state, Representation* rep) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
+    md_grid_t grid = {};
+    if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+        es.has_box = false;
+        return;
+    }
+    const float scl = (float)BOHR_TO_ANGSTROM;
+    es.box_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, md_grid_extent(&grid) * scl);
+    es.has_box = true;
+}
+
+bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep) {
+#if MD_ENABLE_GPU
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    es_slices_conform(&es);
+    if (!es.has_box || !es_plane_images_supported(state, es)) return true;
+    const uint64_t src = es_source_hash(state, es);
+    const float detail_spacing = plane_detail_spacing_angstrom[CLAMP((int)es.plane_detail, 0, (int)PlaneDetail::Count - 1)];
+    const double now = ImGui::GetTime();
+    bool done = true;
+    int ready = -2;     // asked when first needed, and again after each evaluation issued
+    for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
+        ElectronicStructurePlaneImage& im = es.plane_images[i];
+        // the one being evaluated, there: drawn from now on
+        if (im.pending) {
+            if (gpu_volume_job_in_flight_for(state, im.img[1 - im.front].tex_id)) {
+                done = false;
+                continue;
+            }
+            im.front = 1 - im.front;
+            im.pending = false;
+            im.serial += 1;
+            im.ms = (float)((now - im.issued) * 1000.0);
+        }
+        im.current = false;
+        const ElectronicStructurePlane& p = es.slices.items[i];
+        if (!p.enabled) continue;
+        EsSliceFrame frame;
+        if (!es_slice_frame(&frame, p)) continue;
+        // what an image is of: the source and the rectangle (not the box: the volume's values past it are no part of
+        // an image, evaluated wherever it is)
+        uint64_t key = md_hash64(&frame, sizeof(frame), src);
+        key = key ? key : 1;
+        const int f = im.front;
+        // all of the rectangle at the detail's spacing, at most GPU_PLANE_DIM a side
+        const float ext = 2.0f * MAX(frame.hu, frame.hv);
+        const float spacing = MAX(detail_spacing, ext / (float)GPU_PLANE_DIM);
+        im.current = key == im.key[f];
+        // while dragged: drawn from the volume, evaluated once let go
+        if (es_planes_dragging(rep->node.id, i)) continue;
+        if (im.current && fabsf(im.spacing[f] - spacing) <= 1.0e-3f * spacing) continue;
+        if (ready == -2) ready = es_source_ready(state, es);
+        if (ready <= 0) {
+            done &= ready < 0;
+            continue;
+        }
+        md_grid_t grid = {};
+        es_slice_image_grid(&grid, frame, spacing);
+        const int b = 1 - f;
+        Volume& v = im.img[b];
+        init_volume(&v, grid, GL_R32F);
+        state->gpu_eval_target = state->gpu_plane;
+        const bool ok = es_evaluate_into(state, es, v.tex_id, grid);
+        state->gpu_eval_target = nullptr;
+        if (!ok) continue;
+        im.key[b] = key;
+        im.spacing[b] = spacing;
+        im.pending = true;
+        im.issued = now;
+        done = false;
+        ready = -2;
+    }
+    return done;
+#else
+    (void)state; (void)rep;
+    return true;
+#endif
+}
+
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
 // exactly those inputs - the frame included, since the geometry moves the grid.
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
@@ -5177,22 +5777,22 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
 
-    uint64_t vol_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
-    vol_hash = md_hash64(&es.source,                       sizeof(es.source), vol_hash);
-    vol_hash = md_hash64(&es.use_magnitude,                sizeof(es.use_magnitude), vol_hash);
-    vol_hash = md_hash64(&es.spin,                         sizeof(es.spin), vol_hash);
-    vol_hash = md_hash64(&es.nto_component,                sizeof(es.nto_component), vol_hash);
-    vol_hash = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), vol_hash);
-    vol_hash = md_hash64(&es.resolution,                   sizeof(es.resolution), vol_hash);
-    vol_hash = md_hash64(&es.orbital_idx,                  sizeof(es.orbital_idx), vol_hash);
-    vol_hash = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), vol_hash);
-    vol_hash = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), vol_hash);
-    vol_hash = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), vol_hash);
+    uint64_t vol_hash = es_source_hash(state, es);
+    const VolumeResolution resolution = electronic_structure_volume_resolution(es);
+    vol_hash = md_hash64(&resolution, sizeof(resolution), vol_hash);
 
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom
     const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-    const bool needs_volume = !mesh_mode || es.coloring == SurfaceColoring::AtomColors;
+    // ELF and LOL are not drawn as isosurfaces (a workspace may say otherwise)
+    if (electronic_structure_is_localization(es) && es.display == ElectronicStructureDisplay::Isosurface) {
+        es.display = ElectronicStructureDisplay::Volume;
+    }
+    const bool iso_display = es.display == ElectronicStructureDisplay::Isosurface;
+    // a volume rendering and a plane draw from (or over the box of) the volume, whatever renders the isosurfaces
+    // (the planes display evaluated on the planes too: the volume is drawn where an image is not there, or not of the
+    // plane as it is, as while it is dragged)
+    const bool needs_volume = !mesh_mode || !iso_display || es.coloring == SurfaceColoring::AtomColors;
     vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
 
     bool done = true;
@@ -5226,24 +5826,44 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
         if (ready && needs_volume && es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
             ready = es_nto_ready(state, (size_t)es.excited_state_idx);
         }
+        // ELF and LOL: on the GPU once what their kernel reads is made (by a pool task), else by a pool task on the
+        // CPU which puts them in the volume once they are there. Until then the volume shown stays (a failure is
+        // taken as done, not tried again every frame)
+        bool localization_cpu = false;
+        if (ready && needs_volume && electronic_structure_is_localization(es)) {
+#if MD_ENABLE_GPU
+            const int g = localization_gpu_prepare(state);
+            if (g == 0) ready = false;
+            localization_cpu = g < 0;
+#else
+            localization_cpu = true;
+#endif
+            if (localization_cpu) ready = localization_poll(state, rep, vol_hash) != 0;
+        }
         if (ready) {
             es.vol_hash = vol_hash;
-            if (needs_volume) {
+            if (needs_volume && !localization_cpu) {
                 electronic_structure_evaluate(state, rep);
+            } else if (!needs_volume) {
+                es_box_update(state, rep);
             }
         } else {
             done = false;
         }
     }
 
-    if (es.coloring == SurfaceColoring::AtomColors) {
+    if (es.display != ElectronicStructureDisplay::Isosurface) {
+        es_volume_map_update(es);
+    }
+
+    if (iso_display && es.coloring == SurfaceColoring::AtomColors) {
         uint64_t col_hash = md_hash64(&es.gaussian_splatting_power, sizeof(es.gaussian_splatting_power), (int)rep->color_mapping);
         col_hash = md_hash64_combine(col_hash, es.vol_hash);
         if (col_hash != es.col_hash) {
             es.col_hash = col_hash;
             electronic_structure_color_volume_update(state, rep, atom_colors);
         }
-    } else if (es.coloring == SurfaceColoring::Field && !mesh_mode) {
+    } else if (iso_display && es.coloring == SurfaceColoring::Field && !mesh_mode) {
         done &= electronic_structure_field_update(state, rep);
     }
     return done;
@@ -5276,6 +5896,11 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     if (es_attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
     if (es_attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
     if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
+    // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose
+    // derivatives are within what is evaluated (no g functions)
+    if (es_attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
+        mask |= ElectronicStructureSourceFlag_ElectronLocalization | ElectronicStructureSourceFlag_LocalizedOrbitalLocator;
+    }
 
     return mask;
 }

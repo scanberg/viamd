@@ -16,6 +16,8 @@
 #include <property_grid.h>
 
 #include <gfx/gl_utils.h>
+#include <es_planes.h>
+#include <gfx/volumerender_utils.h>
 #include <iso_meshes.h>
 #include <script_suggestions.h>
 
@@ -290,6 +292,7 @@ static void clear_owned(Representation* rep) {
     rep->bond_pairs = nullptr;
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
+    for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.iso_mesh           = nullptr;
 }
@@ -363,6 +366,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
     gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
+    for (ElectronicStructurePlaneImage& im : rep.electronic_structure.plane_images) {
+        for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
+    }
     surface_field_free(&rep.electronic_structure.field_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
 
@@ -1059,6 +1065,10 @@ void update_all_representations(ApplicationState* state) {
         // The field it is coloured by is evaluated over frames, shown or not
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
         update_representation(state, rep);
+        // The images of its planes follow them as they are moved, which is no update of the representation
+        if (rep->type == RepresentationType::ElectronicStructure && rep->type_is_valid && representation_shown(*state, *rep)) {
+            electronic_structure_plane_images_update(state, rep);
+        }
     }
 }
 
@@ -1905,6 +1915,18 @@ done:
 // Workspace
 // ---------------------------------------------------------------------------------------------------------
 
+// The index in a key like ElectronicStructurePlane<i>: -1 when what follows the prefix is not an index below max
+static int es_key_index(str_t ident, str_t prefix, int max) {
+    const str_t num = str_substr(ident, prefix.len, SIZE_MAX);
+    if (num.len == 0 || num.len > 3) return -1;
+    int i = 0;
+    for (size_t k = 0; k < num.len; ++k) {
+        if (num.ptr[k] < '0' || num.ptr[k] > '9') return -1;
+        i = i * 10 + (num.ptr[k] - '0');
+    }
+    return i < max ? i : -1;
+}
+
 bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     if (str_eq(ident, STR_LIT("Name"))) {
         viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
@@ -2120,6 +2142,93 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         if (viamd::extract_int(n, arg)) {
             rep->electronic_structure.density_property.num_isos = CLAMP(n, 0, (int)ARRAY_SIZE(rep->electronic_structure.density_property.values));
         }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureDisplay"))) {
+        int d;
+        if (viamd::extract_int(d, arg) && d >= 0 && d < (int)ElectronicStructureDisplay::Count) rep->electronic_structure.display = (ElectronicStructureDisplay)d;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.cuts.count = CLAMP(n, 0, ES_MAX_PLANES);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureSliceCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.slices.count = CLAMP(n, 0, ES_MAX_PLANES);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneSampling"))) {
+        // no longer a setting (the planes are evaluated on themselves): known, and passed over
+    } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneDetail"))) {
+        int v;
+        if (viamd::extract_int(v, arg) && v >= 0 && v < (int)PlaneDetail::Count) rep->electronic_structure.plane_detail = (PlaneDetail)v;
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeKind"))) {
+        // the map was saved, for a field of this kind: kept rather than set up for the field
+        int kind;
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Localization) {
+            rep->electronic_structure.volume.map_kind = kind;
+            rep->electronic_structure.volume.map_init = true;
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeColormap"))) {
+        viamd::extract_int(rep->electronic_structure.volume.tf.colormap, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRange"))) {
+        float r[2];
+        if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.volume.tf.range_beg = r[0]; rep->electronic_structure.volume.tf.range_end = r[1]; }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeSymmetric"))) {
+        viamd::extract_bool(rep->electronic_structure.volume.tf.symmetric, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeOpacity"))) {
+        viamd::extract_flt(rep->electronic_structure.volume.tf.opacity, arg);
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumePointCount"))) {
+        int n;
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.volume.tf.num_points = CLAMP(n, 1, TRANSFER_FUNCTION_MAX_POINTS);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureVolumePoint"))) {
+        // ElectronicStructureVolumePoint<i>: t, alpha
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureVolumePoint"), TRANSFER_FUNCTION_MAX_POINTS);
+        float p[2];
+        if (i >= 0 && viamd::extract_flt_vec(p, 2, arg)) {
+            rep->electronic_structure.volume.tf.points[i] = {CLAMP(p[0], 0.0f, 1.0f), CLAMP(p[1], 0.0f, 1.0f)};
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRamp"))) {
+        // the ramp before the curve (its exponent not kept): the curve it was, near enough
+        float r[2];
+        if (viamd::extract_flt_vec(r, 2, arg)) {
+            TransferFunction& tf = rep->electronic_structure.volume.tf;
+            if (tf.symmetric) transfer_function_ramp_magnitude(&tf, r[0]); else transfer_function_ramp(&tf, r[0]);
+        }
+    } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeAutoRange")) || str_eq(ident, STR_LIT("ElectronicStructureVolumeLegend")) ||
+               str_eq(ident, STR_LIT("ElectronicStructureVolumeRampExponent"))) {
+        // of the colour scale and the ramp before the curve: nothing of them is kept
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlaneEnabled"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlaneEnabled"), ES_MAX_PLANES);
+        if (i >= 0) viamd::extract_bool(rep->electronic_structure.cuts.items[i].enabled, arg);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructurePlane"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructurePlane"), ES_MAX_PLANES);
+        vec4_t v;
+        if (i >= 0 && viamd::extract_vec4(v, arg)) {
+            const float len = vec3_length(vec3_set(v.x, v.y, v.z));
+            if (len > 1e-6f) rep->electronic_structure.cuts.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+        }
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceEnabled"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceEnabled"), ES_MAX_PLANES);
+        if (i >= 0) viamd::extract_bool(rep->electronic_structure.slices.items[i].enabled, arg);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceOpacity"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceOpacity"), ES_MAX_PLANES);
+        float o;
+        if (i >= 0 && viamd::extract_flt(o, arg)) rep->electronic_structure.slices.items[i].opacity = CLAMP(o, 0.0f, 1.0f);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceCenter"))) {
+        // its rectangle (a workspace without one: the rectangle around where it cuts the box, es_slices_conform)
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceCenter"), ES_MAX_PLANES);
+        float v[3];
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].center = vec3_set(v[0], v[1], v[2]);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceAxis"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceAxis"), ES_MAX_PLANES);
+        float v[3];
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].axis = vec3_set(v[0], v[1], v[2]);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceExtent"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceExtent"), ES_MAX_PLANES);
+        float v[2];
+        if (i >= 0 && viamd::extract_flt_vec(v, 2, arg) && v[0] > 0.0f && v[1] > 0.0f) rep->electronic_structure.slices.items[i].extent = vec2_set(v[0], v[1]);
+    } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSlice"))) {
+        const int i = es_key_index(ident, STR_LIT("ElectronicStructureSlice"), ES_MAX_PLANES);
+        vec4_t v;
+        if (i >= 0 && viamd::extract_vec4(v, arg)) {
+            const float len = vec3_length(vec3_set(v.x, v.y, v.z));
+            if (len > 1e-6f) rep->electronic_structure.slices.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+        }
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureFieldIsoline"))) {
         // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
         const str_t num = str_substr(ident, STR_LIT("ElectronicStructureFieldIsoline").len, SIZE_MAX);
@@ -2276,6 +2385,54 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
                 char key[64];
                 snprintf(key, sizeof(key), "ElectronicStructureFieldIsoline%d", j);
                 viamd::write_flt(state, str_from_cstr(key), lines.values[j]);
+            }
+        }
+        {
+            const ElectronicStructureRepresentation& es = rep.electronic_structure;
+            viamd::write_int(state, STR_LIT("ElectronicStructureDisplay"), (int)es.display);
+            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneCount"), es.cuts.count);
+            for (int j = 0; j < es.cuts.count; ++j) {
+                char key[64];
+                snprintf(key, sizeof(key), "ElectronicStructurePlane%d", j);
+                viamd::write_vec4(state, str_from_cstr(key), plane_vec4(es.cuts.items[j].plane));
+                snprintf(key, sizeof(key), "ElectronicStructurePlaneEnabled%d", j);
+                viamd::write_bool(state, str_from_cstr(key), es.cuts.items[j].enabled);
+            }
+            viamd::write_int(state, STR_LIT("ElectronicStructurePlaneDetail"), (int)es.plane_detail);
+            viamd::write_int(state, STR_LIT("ElectronicStructureSliceCount"), es.slices.count);
+            for (int j = 0; j < es.slices.count; ++j) {
+                char key[64];
+                snprintf(key, sizeof(key), "ElectronicStructureSlice%d", j);
+                viamd::write_vec4(state, str_from_cstr(key), plane_vec4(es.slices.items[j].plane));
+                snprintf(key, sizeof(key), "ElectronicStructureSliceEnabled%d", j);
+                viamd::write_bool(state, str_from_cstr(key), es.slices.items[j].enabled);
+                snprintf(key, sizeof(key), "ElectronicStructureSliceOpacity%d", j);
+                viamd::write_flt(state, str_from_cstr(key), es.slices.items[j].opacity);
+                const ElectronicStructurePlane& sl = es.slices.items[j];
+                if (sl.extent.x > 0.0f && sl.extent.y > 0.0f) {
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceCenter%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.center.elem, 3);
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceAxis%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.axis.elem, 3);
+                    snprintf(key, sizeof(key), "ElectronicStructureSliceExtent%d", j);
+                    viamd::write_flt_vec(state, str_from_cstr(key), sl.extent.elem, 2);
+                }
+            }
+            if (es.volume.map_init) {
+                const TransferFunction& tf = es.volume.tf;
+                const float range[2] = { tf.range_beg, tf.range_end };
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeKind"),       es.volume.map_kind);
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumeColormap"),   tf.colormap);
+                viamd::write_flt_vec(state, STR_LIT("ElectronicStructureVolumeRange"),      range, 2);
+                viamd::write_bool(state,    STR_LIT("ElectronicStructureVolumeSymmetric"),  tf.symmetric);
+                viamd::write_flt(state,     STR_LIT("ElectronicStructureVolumeOpacity"),    tf.opacity);
+                viamd::write_int(state,     STR_LIT("ElectronicStructureVolumePointCount"), tf.num_points);
+                for (int j = 0; j < tf.num_points; ++j) {
+                    char key[64];
+                    snprintf(key, sizeof(key), "ElectronicStructureVolumePoint%d", j);
+                    const float p[2] = { tf.points[j].t, tf.points[j].alpha };
+                    viamd::write_flt_vec(state, str_from_cstr(key), p, 2);
+                }
             }
         }
         viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
@@ -2519,6 +2676,144 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     return update_rep;
 }
 
+
+// The planes of an electronic structure representation (es_planes.h), a row each: a click on the row picks it for the
+// gizmo in the view (lit while it is); on it whether it is shown (a cut: whether it cuts), flipping a cut, fitting it
+// to the selected atoms, turning it to face along an axis through where it is, a slice's opacity, removing it. And
+// adding one, up to ES_MAX_PLANES.
+static bool draw_electronic_structure_planes(ApplicationState* state, Representation& rep) {
+    ElectronicStructureRepresentation& es = rep.electronic_structure;
+    // the display's: the volume's cuts, or the planes display's slices (whose normal points either way)
+    ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
+    const bool slices = es.display == ElectronicStructureDisplay::Planes;
+    auto& gizmo = state->representation.gizmo;
+    bool changed = false;
+    const float bw = ImGui::GetFrameHeight();
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    mat4_t box;
+    const bool have_box = es_volume_box(&box, es);
+    // where a plane is, to turn it about: its point nearest the middle of the box
+    const vec4_t c4 = have_box ? mat4_mul_vec4(box, vec4_set(0.5f, 0.5f, 0.5f, 1.0f)) : vec4_set(0, 0, 0, 1);
+    const vec3_t centre = vec3_set(c4.x, c4.y, c4.z);
+    int remove = -1;
+    const int count = set.count;
+    const size_t num_selected = md_bitmask_count(&state->selection.selection_mask);
+    for (int i = 0; i < count; ++i) {
+        Plane& plane = set.items[i].plane;
+        ImGui::PushID(i);
+        char label[32];
+        snprintf(label, sizeof(label), "plane %d", i + 1);
+        // The row picks it for the gizmo in the view (as a click on its outline there does), and is lit while it is;
+        // the controls on it take their own clicks
+        const bool picked = gizmo.rep_id == rep.node.id && gizmo.plane == i;
+        const ImVec2 row_start = ImGui::GetCursorPos();
+        if (ImGui::Selectable("##pick", picked, ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetFrameHeight()))) {
+            gizmo.rep_id = rep.node.id;
+            gizmo.plane = picked ? -1 : i;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(picked ? "Moved in the view: click to let go" : "Click to move it in the view (or click its outline there)");
+            // evaluated on the plane: its image, and how long it took to be there (for measurements, with the revision)
+            if (slices && es_plane_images_supported(state, es)) {
+                const ElectronicStructurePlaneImage& im = es.plane_images[i];
+                const Volume& v = im.img[im.front];
+                ImGui::Separator();
+                if (im.key[im.front] && v.tex_id) {
+                    ImGui::Text("Image %d x %d at %.3f \xc3\x85, there after %.0f ms (" ES_PLANE_IMAGES_REVISION ")", v.dim[0], v.dim[1], im.spacing[im.front], im.ms);
+                }
+                if (im.pending) ImGui::TextUnformatted("Being evaluated: drawn from the volume until it is there");
+                else if (!im.current) ImGui::TextUnformatted("Drawn from the volume");
+            }
+            ImGui::EndTooltip();
+        }
+        ImGui::SetCursorPos(row_start);
+        prop::row(label);
+        bool& shown = set.items[i].enabled;
+        if (ImGui::Button(shown ? ICON_FA_EYE : ICON_FA_EYE_SLASH, ImVec2(bw, 0))) {
+            shown = !shown;
+            changed = true;
+        }
+        ImGui::SetItemTooltip(slices ? (shown ? "Hide it" : "Show it") : (shown ? "It cuts the volume: click to stop it" : "It does not cut: click to make it"));
+        ImGui::SameLine(0.0f, gap);
+        if (!slices) {
+            if (ImGui::Button(ICON_FA_RIGHT_LEFT, ImVec2(bw, 0))) {
+                plane_flip(&plane);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Flip it: keep the other side");
+            ImGui::SameLine(0.0f, gap);
+        }
+        // what it turns about: a slice's rectangle's middle, a cut's point nearest the middle of the box
+        const bool has_rect = slices && set.items[i].extent.x > 0.0f;
+        const vec3_t at = has_rect ? set.items[i].center : plane_project(plane, centre);
+        ImGui::BeginDisabled(num_selected == 0);
+        if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
+            PlaneFitInfo fit;
+            vec3_t atoms = at;
+            const Plane fitted = es_plane_fit_selection(state, plane, &fit, &atoms);
+            if (fit.kind != PlaneFitKind::None) {
+                plane = fitted;
+                // a slice's rectangle moved to the atoms' middle (its size kept: its sides are the gizmo's)
+                if (has_rect) set.items[i].center = plane_project(plane, atoms);
+                changed = true;
+            }
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+            // what the selected atoms would make of it, found while the tooltip is up
+            PlaneFitInfo fit;
+            es_plane_fit_selection(state, plane, &fit);
+            switch (fit.kind) {
+            case PlaneFitKind::None:  ImGui::SetTooltip("Through the selected atoms: select some first"); break;
+            case PlaneFitKind::Point: ImGui::SetTooltip("Through the selected atom, facing as it does"); break;
+            case PlaneFitKind::Line:  ImGui::SetTooltip("The selected atoms are in a line: the plane through it nearest to this one"); break;
+            case PlaneFitKind::Kept:  ImGui::SetTooltip("The selected atoms are spread alike every way (rms %.2f Å off any plane):\n"
+                                                        "they set no direction, the plane only moves through their centre", fit.rms); break;
+            case PlaneFitKind::Loose: ImGui::SetTooltip("The selected atoms fit planes of a range of directions about as well:\n"
+                                                        "of those, the one nearest to this (rms %.2f Å)", fit.rms); break;
+            case PlaneFitKind::Fit:   ImGui::SetTooltip(num_selected == 3 ? "Through the 3 selected atoms" :
+                                                        "The best fit through the selected atoms (rms %.2f Å)", fit.rms); break;
+            }
+        }
+        static const char* axes[3] = {"x", "y", "z"};
+        for (int k = 0; k < 3; ++k) {
+            ImGui::SameLine(0.0f, gap);
+            if (ImGui::Button(axes[k], ImVec2(bw, 0))) {
+                vec3_t n = vec3_zero();
+                n.elem[k] = vec3_dot(plane.normal, vec3_set(k == 0, k == 1, k == 2)) < 0.0f ? -1.0f : 1.0f;
+                plane = plane_from_point_normal(at, n);
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Face along the %s axis", axes[k]);
+        }
+        if (slices) {
+            ImGui::SameLine(0.0f, gap);
+            ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x - bw - gap, bw));
+            changed |= ImGui::SliderFloat("##opacity", &set.items[i].opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SetItemTooltip("Its opacity: how much of what is behind it it hides");
+        }
+        ImGui::SameLine(0.0f, gap);
+        if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(bw, 0))) remove = i;
+        ImGui::SetItemTooltip("Remove it (or Delete in the view, while it is picked)");
+        ImGui::PopID();
+    }
+    if (remove >= 0) {
+        es_planes_remove(state, &rep, remove);
+        changed = true;
+    }
+    if (count < ES_MAX_PLANES) {
+        prop::row(count == 0 ? "plane" : "");
+        ImGui::BeginDisabled(!have_box);
+        if (ImGui::Button(ICON_FA_PLUS, ImVec2(bw, 0))) {
+            changed |= es_planes_add(state, &es, rep.node.id) >= 0;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(have_box ? (slices ? "Add a plane through the middle, facing the view" : "Add a plane through the middle, facing along the view")
+                                       : "The volume is not there yet");
+    }
+    return changed;
+}
 
 // The properties of an electronic structure representation: what the volume is of (Source), the surfaces drawn from
 // it (Surface) and how they are coloured (Color)
@@ -2837,95 +3132,167 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const double iso_min = 1.0e-2;
     const double iso_max = 5.0;
 
-    if (prop::section("Surface")) {
-        if (electronic_structure_is_density_property(es)) {
-            // Its isosurfaces as a list: the value and the colour of each, at least one of them
-            const int cap = (int)ARRAY_SIZE(es.density_property.values);
-            const int num_isos = CLAMP(es.density_property.num_isos, 1, cap);
-            if (num_isos != es.density_property.num_isos) {
-                es.density_property.num_isos = num_isos;
-                update_rep = true;
-            }
-            const ImGuiStyle& style = ImGui::GetStyle();
-            const float btn_w = ImGui::GetFrameHeight();
-            const float gap   = style.ItemInnerSpacing.x;
-            int remove = -1;
-            for (int i = 0; i < es.density_property.num_isos; ++i) {
-                ImGui::PushID(i);
-                prop::row(i == 0 ? "isovalues" : "");
-                ImGui::SetNextItemWidth(MAX(prop::control_width() - 2.0f * (btn_w + gap), 1.0f));
-                update_rep |= ImGui::DragScalar("##value", ImGuiDataType_Double, &es.density_property.values[i], 0.001f, NULL, NULL, "%.6g");
-                ImGui::SameLine(0.0f, gap);
-                update_rep |= ImGui::ColorEdit4("##color", es.density_property.colors[i].elem, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaPreviewHalf);
-                ImGui::SameLine(0.0f, gap);
-                ImGui::BeginDisabled(es.density_property.num_isos <= 1);
-                if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(btn_w, 0))) remove = i;
-                ImGui::EndDisabled();
-                ImGui::SetItemTooltip("Remove the isosurface");
-                ImGui::PopID();
-            }
-            if (remove >= 0) {
-                for (int i = remove; i + 1 < es.density_property.num_isos; ++i) {
-                    es.density_property.values[i] = es.density_property.values[i + 1];
-                    es.density_property.colors[i] = es.density_property.colors[i + 1];
+    if (prop::section("Display")) {
+        prop::row("display", "How the field is drawn:\n"
+                             "Isosurface: surfaces where it takes given values\n"
+                             "Volume: the whole field, its values through a colour map and an opacity ramp, cut by planes\n"
+                             "Plane: the field on a plane");
+        if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
+            for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
+                const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
+                // ELF and LOL are about how they vary through space, which a surface of one value does not show
+                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
+                ImGui::BeginDisabled(disabled);
+                if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
+                    es.display = d;
+                    if (es.display == ElectronicStructureDisplay::Planes && es.slices.count == 0) {
+                        es_planes_add(state, &es, rep.node.id);
+                    }
+                    // what is drawn, and whether the volume is evaluated (part of its hash): an update, not a dirtying,
+                    // which would evaluate it again whatever (flag_representation_as_dirty)
+                    rep.needs_update = true;
                 }
-                es.density_property.num_isos -= 1;
-                update_rep = true;
+                ImGui::EndDisabled();
+                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
+                if (es.display == d) ImGui::SetItemDefaultFocus();
             }
-            prop::row("");
-            ImGui::BeginDisabled(es.density_property.num_isos >= cap);
-            if (ImGui::Button(ICON_FA_PLUS, ImVec2(btn_w, 0))) {
-                const int n = es.density_property.num_isos;
-                es.density_property.values[n] = es.density_property.values[n - 1] + 0.05;
-                es.density_property.colors[n] = electronic_structure_density_property_default_color(es, n);
-                es.density_property.num_isos += 1;
-                update_rep = true;
-            }
-            ImGui::EndDisabled();
-            ImGui::SetItemTooltip("Add an isosurface");
-            prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
-            ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-        } else {
-            // The band a field is evaluated in follows the isovalue
-            prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
-            update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
-            prop::row("optical density", "Optical density of the isosurfaces: how much they absorb of what they enclose");
-            ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-        }
-        prop::row("resolution", mesh_mode ? "The size of the cells the surfaces are extracted at" : "The resolution of the volume the surfaces are drawn from");
-        if (ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
-            update_rep = true;
+            ImGui::EndCombo();
         }
         prop::section_end();
     }
 
-    if (prop::section("Color")) {
-        const bool density_property = electronic_structure_is_density_property(es);
-        update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
-        if (es.coloring == SurfaceColoring::AtomColors) {
-            update_rep |= draw_representation_coloring(state, rep);
+    if (es.display == ElectronicStructureDisplay::Isosurface) {
+        if (prop::section("Surface")) {
+            if (electronic_structure_is_density_property(es)) {
+                // Its isosurfaces as a list: the value and the colour of each, at least one of them
+                const int cap = (int)ARRAY_SIZE(es.density_property.values);
+                const int num_isos = CLAMP(es.density_property.num_isos, 1, cap);
+                if (num_isos != es.density_property.num_isos) {
+                    es.density_property.num_isos = num_isos;
+                    update_rep = true;
+                }
+                const ImGuiStyle& style = ImGui::GetStyle();
+                const float btn_w = ImGui::GetFrameHeight();
+                const float gap   = style.ItemInnerSpacing.x;
+                int remove = -1;
+                for (int i = 0; i < es.density_property.num_isos; ++i) {
+                    ImGui::PushID(i);
+                    prop::row(i == 0 ? "isovalues" : "");
+                    ImGui::SetNextItemWidth(MAX(prop::control_width() - 2.0f * (btn_w + gap), 1.0f));
+                    update_rep |= ImGui::DragScalar("##value", ImGuiDataType_Double, &es.density_property.values[i], 0.001f, NULL, NULL, "%.6g");
+                    ImGui::SameLine(0.0f, gap);
+                    update_rep |= ImGui::ColorEdit4("##color", es.density_property.colors[i].elem, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaPreviewHalf);
+                    ImGui::SameLine(0.0f, gap);
+                    ImGui::BeginDisabled(es.density_property.num_isos <= 1);
+                    if (ImGui::DeleteButton(ICON_FA_XMARK, ImVec2(btn_w, 0))) remove = i;
+                    ImGui::EndDisabled();
+                    ImGui::SetItemTooltip("Remove the isosurface");
+                    ImGui::PopID();
+                }
+                if (remove >= 0) {
+                    for (int i = remove; i + 1 < es.density_property.num_isos; ++i) {
+                        es.density_property.values[i] = es.density_property.values[i + 1];
+                        es.density_property.colors[i] = es.density_property.colors[i + 1];
+                    }
+                    es.density_property.num_isos -= 1;
+                    update_rep = true;
+                }
+                prop::row("");
+                ImGui::BeginDisabled(es.density_property.num_isos >= cap);
+                if (ImGui::Button(ICON_FA_PLUS, ImVec2(btn_w, 0))) {
+                    const int n = es.density_property.num_isos;
+                    es.density_property.values[n] = es.density_property.values[n - 1] + 0.05;
+                    es.density_property.colors[n] = electronic_structure_density_property_default_color(es, n);
+                    es.density_property.num_isos += 1;
+                    update_rep = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip("Add an isosurface");
+                prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
+                ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+            } else {
+                // The band a field is evaluated in follows the isovalue
+                prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                prop::row("optical density", "Optical density of the isosurfaces: how much they absorb of what they enclose");
+                ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+            }
+            prop::row("resolution", mesh_mode ? "The size of the cells the surfaces are extracted at" : "The resolution of the volume the surfaces are drawn from");
+            if (ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                update_rep = true;
+            }
+            prop::section_end();
         }
 
-        // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
-        if (!density_property) {
-            const bool tint = es.coloring != SurfaceColoring::Uniform;
-            const bool attachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-            const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
-            const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
-            if (electronic_structure_is_signed(es)) {
-                prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
-                prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
-                prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
-                prop::color("##neg", tint ? es.tint_psi_neg.elem : es.col_psi_neg.elem, true);
-            } else {
-                vec4_t& col = attachment ? (tint ? es.tint_att : es.col_att) :
-                              detachment ? (tint ? es.tint_det : es.col_det) :
-                                           (tint ? es.tint_den : es.col_den);
-                prop::row(tint ? "surface tint" : "color", tint ? tint_tooltip : nullptr);
-                prop::color("##color", col.elem, true);
+        if (prop::section("Color")) {
+            const bool density_property = electronic_structure_is_density_property(es);
+            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
+            if (es.coloring == SurfaceColoring::AtomColors) {
+                update_rep |= draw_representation_coloring(state, rep);
             }
+
+            // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
+            if (!density_property) {
+                const bool tint = es.coloring != SurfaceColoring::Uniform;
+                const bool attachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
+                if (electronic_structure_is_signed(es)) {
+                    prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
+                    prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
+                    prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
+                    prop::color("##neg", tint ? es.tint_psi_neg.elem : es.col_psi_neg.elem, true);
+                } else {
+                    vec4_t& col = attachment ? (tint ? es.tint_att : es.col_att) :
+                                  detachment ? (tint ? es.tint_det : es.col_det) :
+                                               (tint ? es.tint_den : es.col_den);
+                    prop::row(tint ? "surface tint" : "color", tint ? tint_tooltip : nullptr);
+                    prop::color("##color", col.elem, true);
+                }
+            }
+            prop::section_end();
         }
-        prop::section_end();
+    } else {
+        // Below, what is read where it is drawn (the colour map and its opacity, the planes): nothing to update, the
+        // scene's hash has them. The resolution is the volume's, which its hash has: an update evaluates it again.
+        if (es.display != ElectronicStructureDisplay::Isosurface && prop::section(es.display == ElectronicStructureDisplay::Volume ? "Volume" : "Colors")) {
+            // The transfer function's editor over the volume's values: its histogram over what is in view
+            const bool colors_only = es.display == ElectronicStructureDisplay::Planes;
+            float lo = 0.0f, hi = 0.0f;
+            const bool have_range = es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi);
+            TransferFunctionHistogram hist = {};
+            enum { HIST_BINS = 128 };
+            const float* counts = have_range ? volume::histogram(es.density_vol.tex_id, (float)es.volume.view.x_min, (float)es.volume.view.x_max, HIST_BINS) : nullptr;
+            if (counts) {
+                hist.counts = counts;
+                hist.bins = HIST_BINS;
+                hist.lo = (float)es.volume.view.x_min;
+                hist.hi = (float)es.volume.view.x_max;
+            }
+            ImGui::Indent(ImGui::GetStyle().IndentSpacing * 0.5f);
+            transfer_function_editor("##tf", &es.volume.tf, &es.volume.view, counts ? &hist : nullptr, have_range ? lo : 0.0f, have_range ? hi : 0.0f,
+                                     colors_only, ImGui::GetContentRegionAvail().x, colors_only ? 90.0f : 150.0f);
+            ImGui::Unindent(ImGui::GetStyle().IndentSpacing * 0.5f);
+            if (colors_only) {
+                // Each plane evaluated on itself, an image of its own (read where it is drawn: nothing to update). The
+                // volume it is drawn from until then, while it is dragged, and without the GPU, is at Mid
+                // (electronic_structure_volume_resolution), not a setting
+                static const char* detail_str[(int)PlaneDetail::Count] = {"Coarse (0.05 \xc3\x85)", "Fine (0.02 \xc3\x85)", "Finest (0.01 \xc3\x85)"};
+                prop::row("detail", "The spacing of the points each plane is evaluated at (at most 2048 a side)");
+                ImGui::Combo("##detail", (int*)&es.plane_detail, detail_str, IM_ARRAYSIZE(detail_str));
+                if (!es_plane_images_supported(state, es)) {
+                    prop::hint("Not without the GPU (or its ELF / LOL kernel): sampled from a volume");
+                }
+            } else {
+                prop::row("resolution", "The resolution of the volume");
+                rep.needs_update |= ImGui::Combo("##resolution", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
+            }
+            prop::section_end();
+        }
+        if (prop::section(es.display == ElectronicStructureDisplay::Volume ? "Cutting planes" : "Planes")) {
+            draw_electronic_structure_planes(state, rep);
+            prop::section_end();
+        }
     }
 
     return update_rep;

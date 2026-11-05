@@ -178,10 +178,46 @@ struct DvrRenderDesc {
         float min_value = 0.0f;
         float max_value = 1.0f;
     } tf;
+
+    // Up to 8 planes the volume is cut by, in its model space ([0,1]^3): n . x + d >= 0 is kept (x, y, z: n, w: d)
+    struct {
+        int count = 0;
+        const vec4_t* equations = NULL;
+    } planes;
+
+    // The transfer function's colours decoded from sRGB to linear radiance: for an HDR target (the isosurfaces')
+    bool linear_output = false;
+    // The volume on the planes instead of through their cut (slices): where each ray meets each plane in front of the
+    // depth, within its rectangle (slice_rect_from_model[i]: model space to the rectangle's unit square, x and y in
+    // [0, 1] on it; not limited to the clip box: past the volume, its values at the faces carry on), the transfer
+    // function's colour of the value there with the plane's opacity (slice_opacity[i], 1 when NULL; 0 draws its
+    // edge only), composited front to back. Each slice's edge (slice_edge[i]: rgb, alpha; alpha 0 or NULL none), a
+    // line of slice_edge_px pixels each way of the rectangle's border on a darker halo a pixel wider, in front of its
+    // plane's colour where the ray meets the plane: behind what is in front of it, as the planes are.
+    bool slice = false;
+    const float* slice_opacity = nullptr;
+    const mat4_t* slice_rect_from_model = nullptr;
+    const vec4_t* slice_edge = nullptr;
+    float slice_edge_px = 1.0f;
+    // Slices with images of their own (evaluated on each plane, covering its rectangle exactly): slice i's value read
+    // from slice_images[i] (a W x H x 1 R32F 3D texture) at the point's place on the rectangle, instead of from the
+    // density volume; where slice_images[i] is 0, from the volume. The volume may be 0 when every slice drawn has one.
+    const uint32_t* slice_images = nullptr;
 };
 
 // Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)
 void render_dvr(const DvrRenderDesc& desc);
+
+// The smallest and largest value of a volume, from the coarse min/max grid the isosurface renderer keeps (made if it
+// is not there, or its texels changed since: notify_data_changed): a read back of a few thousand texels. False when
+// it cannot be made.
+bool value_range(uint32_t volume_texture, float* out_min, float* out_max);
+
+// The histogram of the values of a volume (an R32F 3D texture) over [lo, hi]: bins counts, evenly spaced, of the
+// texels in each (those outside the interval not counted). Made on the GPU, one point per texel added into a row of
+// bins (GL 3.3: no compute), and kept until the volume's texels change (notify_data_changed) or another interval or
+// number of bins is asked for. The counts until the next call, or NULL when it cannot be made. Exact to 2^24 per bin.
+const float* histogram(uint32_t volume_texture, float lo, float hi, int bins);
 
 
 }  // namespace volume

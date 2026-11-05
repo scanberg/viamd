@@ -55,6 +55,7 @@ static struct {
         GLint tex_volume = -1;
         GLint tex_depth = -1;
         GLint tex_tf = -1;
+        GLint tex_slices = -1;
         GLint block_index = -1;
     } dvr_loc;
 
@@ -74,8 +75,17 @@ struct DvrUniformData {
     vec2_t inv_res;
     float  time;
     float  use_depth;
+    vec4_t planes[8];
+    int    num_planes;
+    float  linear_out;
+    float  slice;
+    float  edge_px;
+    vec4_t slice_opacity[2];
+    vec4_t slice_image[2];              // 1 where slice i is read from its image
+    mat4_t slice_rect_from_model[8];
+    vec4_t slice_edge[8];
 };
-static_assert(sizeof(DvrUniformData) == 64 + 3 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16 + 2 * 16 + 8 * 64 + 8 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // Isosurfaces
@@ -182,6 +192,9 @@ struct BlockGrid {
     int      block_dim[3] = {};
     int      block_size = 0;
     uint64_t last_used = 0;
+    float    range_min = 0.0f;      // value_range: what minmax was read back as, for range_version
+    float    range_max = 0.0f;
+    uint64_t range_version = 0;
 };
 
 static struct {
@@ -871,6 +884,7 @@ void initialize() {
             gl.dvr_loc.tex_volume  = glGetUniformLocation(gl.program.dvr, "u_tex_volume");
             gl.dvr_loc.tex_depth   = glGetUniformLocation(gl.program.dvr, "u_tex_depth");
             gl.dvr_loc.tex_tf      = glGetUniformLocation(gl.program.dvr, "u_tex_tf");
+            gl.dvr_loc.tex_slices  = glGetUniformLocation(gl.program.dvr, "u_tex_slices[0]");
             gl.dvr_loc.block_index = glGetUniformBlockIndex(gl.program.dvr, "DvrUniforms");
         } else {
             MD_LOG_ERROR("DVR shader compilation failed, the DVR program will not be updated");
@@ -1181,8 +1195,199 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
 // Direct volume rendering
 // -----------------------------------------------------------------------------
 
+bool value_range(uint32_t volume_texture, float* out_min, float* out_max) {
+    if (!volume_texture || !out_min || !out_max) return false;
+    const SavedState saved = save_state();
+    int dim[3] = {0, 0, 0};
+    glBindTexture(GL_TEXTURE_3D, volume_texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &dim[0]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &dim[1]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &dim[2]);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    bool ok = false;
+    BlockGrid* g = (dim[0] > 0 && dim[1] > 0 && dim[2] > 0) ? (BlockGrid*)block_grid_update(volume_texture, dim) : NULL;
+    if (g && g->minmax) {
+        if (g->range_version != g->built_version) {
+            const int bs = g->block_size;
+            const size_t n = (size_t)DIV_UP(dim[0], bs) * (size_t)DIV_UP(dim[1], bs) * (size_t)DIV_UP(dim[2], bs);
+            md_temp_scope_t temp = md_temp_begin();
+            float* mm = (float*)md_temp_alloc(temp, sizeof(float) * 2 * n);
+            glBindTexture(GL_TEXTURE_3D, g->minmax);
+            glGetTexImage(GL_TEXTURE_3D, 0, GL_RG, GL_FLOAT, mm);
+            glBindTexture(GL_TEXTURE_3D, 0);
+            float lo = FLT_MAX, hi = -FLT_MAX;
+            for (size_t i = 0; i < n; ++i) {
+                lo = MIN(lo, mm[2 * i]);
+                hi = MAX(hi, mm[2 * i + 1]);
+            }
+            md_temp_end(temp);
+            g->range_min = lo;
+            g->range_max = hi;
+            g->range_version = g->built_version;
+        }
+        *out_min = g->range_min;
+        *out_max = g->range_max;
+        ok = *out_min <= *out_max;
+    }
+    restore_state(saved);
+    return ok;
+}
+
+// The histogram's program: every texel a point, at the column of its bin, added (GL_ONE, GL_ONE) into a bins x 1 R32F
+// target. A texel outside the interval (or not a number) is put outside the target, and so not counted.
+static const char* histogram_vert = R"(#version 330 core
+uniform sampler3D u_tex_volume;
+uniform ivec3 u_dim;
+uniform float u_lo;
+uniform float u_inv_ext;
+uniform int   u_bins;
+void main() {
+    int i = gl_VertexID;
+    ivec3 c = ivec3(i % u_dim.x, (i / u_dim.x) % u_dim.y, i / (u_dim.x * u_dim.y));
+    float t = (texelFetch(u_tex_volume, c, 0).r - u_lo) * u_inv_ext;
+    if (!(t >= 0.0 && t <= 1.0)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    float b = min(floor(t * float(u_bins)), float(u_bins - 1));
+    gl_Position = vec4((b + 0.5) / float(u_bins) * 2.0 - 1.0, 0.0, 0.0, 1.0);
+    gl_PointSize = 1.0;
+}
+)";
+
+static const char* histogram_frag = R"(#version 330 core
+layout(location = 0) out vec4 out_count;
+void main() {
+    out_count = vec4(1.0);
+}
+)";
+
+static struct {
+    GLuint program = 0;
+    GLint  loc_volume = -1, loc_dim = -1, loc_lo = -1, loc_inv_ext = -1, loc_bins = -1;
+    GLuint fbo = 0;
+    GLuint target = 0;
+    int    target_bins = 0;
+    bool   failed = false;
+    // what was made last: one volume's, the one being edited
+    GLuint   volume = 0;
+    uint64_t version = 0;
+    float    lo = 0.0f, hi = 0.0f;
+    int      bins = 0;
+    float*   counts = nullptr;
+} hist;
+
+const float* histogram(uint32_t volume_texture, float lo, float hi, int bins) {
+    if (!volume_texture || bins <= 0 || bins > 4096 || !(hi > lo) || hist.failed) return nullptr;
+    const uint64_t version = data_version(volume_texture);
+    if (hist.counts && hist.volume == volume_texture && hist.version == version && hist.lo == lo && hist.hi == hi && hist.bins == bins) {
+        return hist.counts;
+    }
+    if (!hist.program) {
+        const GLuint vs = gl::compile_shader_from_source({histogram_vert, strlen(histogram_vert)}, GL_VERTEX_SHADER);
+        const GLuint fs = gl::compile_shader_from_source({histogram_frag, strlen(histogram_frag)}, GL_FRAGMENT_SHADER);
+        if (vs && fs) {
+            hist.program = glCreateProgram();
+            const GLuint shaders[] = {vs, fs};
+            gl::attach_link_detach(hist.program, shaders, 2);
+            hist.loc_volume  = glGetUniformLocation(hist.program, "u_tex_volume");
+            hist.loc_dim     = glGetUniformLocation(hist.program, "u_dim");
+            hist.loc_lo      = glGetUniformLocation(hist.program, "u_lo");
+            hist.loc_inv_ext = glGetUniformLocation(hist.program, "u_inv_ext");
+            hist.loc_bins    = glGetUniformLocation(hist.program, "u_bins");
+            glGenFramebuffers(1, &hist.fbo);
+        }
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        if (!hist.program) {
+            MD_LOG_ERROR("Volume histogram shader compilation failed");
+            hist.failed = true;
+            return nullptr;
+        }
+    }
+
+    const SavedState saved = save_state();
+    GLint read_fbo = 0;     // (the saved state is the draw framebuffer's)
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+    int dim[3] = {0, 0, 0};
+    glBindTexture(GL_TEXTURE_3D, volume_texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &dim[0]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &dim[1]);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &dim[2]);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    const int64_t count = (int64_t)dim[0] * dim[1] * dim[2];
+    bool ok = count > 0 && count < INT32_MAX;
+
+    if (ok && hist.target_bins != bins) {
+        if (!hist.target) glGenTextures(1, &hist.target);
+        glBindTexture(GL_TEXTURE_2D, hist.target);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, bins, 1, 0, GL_RED, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        hist.target_bins = bins;
+        glBindFramebuffer(GL_FRAMEBUFFER, hist.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hist.target, 0);
+        ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        if (!ok) {
+            MD_LOG_ERROR("Volume histogram: the R32F target cannot be drawn to");
+            hist.failed = true;
+        }
+    }
+    if (ok) {
+        PUSH_GPU_SECTION("Volume histogram");
+        glBindFramebuffer(GL_FRAMEBUFFER, hist.fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, bins, 1);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_PROGRAM_POINT_SIZE);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glUseProgram(hist.program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, volume_texture);
+        glUniform1i(hist.loc_volume, 0);
+        glUniform3i(hist.loc_dim, dim[0], dim[1], dim[2]);
+        glUniform1f(hist.loc_lo, lo);
+        glUniform1f(hist.loc_inv_ext, 1.0f / (hi - lo));
+        glUniform1i(hist.loc_bins, bins);
+        glBindVertexArray(gl.vao);
+        glDrawArrays(GL_POINTS, 0, (GLsizei)count);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        if (hist.bins != bins || !hist.counts) {
+            free(hist.counts);
+            hist.counts = (float*)malloc(sizeof(float) * bins);
+        }
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, bins, 1, GL_RED, GL_FLOAT, hist.counts);
+        POP_GPU_SECTION();
+        hist.volume = volume_texture;
+        hist.version = version;
+        hist.lo = lo;
+        hist.hi = hi;
+        hist.bins = bins;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read_fbo);
+    restore_state(saved);
+    return ok ? hist.counts : nullptr;
+}
+
 void render_dvr(const DvrRenderDesc& desc) {
-    if (!desc.texture.density_volume || !desc.texture.transfer_function || !gl.program.dvr ||
+    const bool slices = desc.slice && desc.slice_rect_from_model;
+    const bool images = slices && desc.slice_images;
+    // the volume is read by every slice drawn without an image (those of opacity 0 read nothing)
+    bool needs_volume = !desc.slice;
+    for (int i = 0; slices && i < MIN(desc.planes.count, 8); ++i) {
+        const float a = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
+        needs_volume |= a > 0.0f && !(images && desc.slice_images[i]);
+    }
+    if ((desc.slice && !slices) || (needs_volume && !desc.texture.density_volume) || !desc.texture.transfer_function || !gl.program.dvr ||
         desc.render_target.width == 0 || desc.render_target.height == 0) {
         return;
     }
@@ -1203,6 +1408,17 @@ void render_dvr(const DvrRenderDesc& desc) {
     data.inv_res    = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.time       = time;
     data.use_depth  = desc.render_target.depth ? 1.0f : 0.0f;
+    data.num_planes = desc.planes.equations ? CLAMP(desc.planes.count, 0, 8) : 0;
+    for (int i = 0; i < data.num_planes; ++i) data.planes[i] = desc.planes.equations[i];
+    data.linear_out = desc.linear_output ? 1.0f : 0.0f;
+    data.slice      = desc.slice ? 1.0f : 0.0f;
+    data.edge_px    = desc.slice_edge_px;
+    for (int i = 0; i < data.num_planes; ++i) data.slice_opacity[i / 4].elem[i % 4] = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
+    for (int i = 0; slices && i < data.num_planes; ++i) {
+        data.slice_image[i / 4].elem[i % 4] = images && desc.slice_images[i] ? 1.0f : 0.0f;
+        data.slice_rect_from_model[i] = desc.slice_rect_from_model[i];
+        data.slice_edge[i] = desc.slice_edge ? desc.slice_edge[i] : vec4_set(0, 0, 0, 0);
+    }
 
     const SavedState saved = save_state();
 
@@ -1219,6 +1435,13 @@ void render_dvr(const DvrRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+        // the slices' images at 3.. (every one bound: the slots past the last take the first)
+        // (every unit bound to a 3D texture, which the shader may sample: those without an image take the volume)
+        for (int i = 0; i < 8; ++i) {
+            const uint32_t img = images && i < data.num_planes ? desc.slice_images[i] : 0;
+            glActiveTexture(GL_TEXTURE3 + i);
+            glBindTexture(GL_TEXTURE_3D, img ? img : desc.texture.density_volume);
+        }
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(gl.program.dvr);
@@ -1226,6 +1449,8 @@ void render_dvr(const DvrRenderDesc& desc) {
         glUniform1i(gl.dvr_loc.tex_volume, 0);
         glUniform1i(gl.dvr_loc.tex_depth, 1);
         glUniform1i(gl.dvr_loc.tex_tf, 2);
+        static const GLint image_units[8] = {3, 4, 5, 6, 7, 8, 9, 10};
+        if (gl.dvr_loc.tex_slices >= 0) glUniform1iv(gl.dvr_loc.tex_slices, 8, image_units);
 
         // Premultiplied colour over whatever is in the target
         glDisable(GL_DEPTH_TEST);
@@ -1241,6 +1466,11 @@ void render_dvr(const DvrRenderDesc& desc) {
         POP_GPU_SECTION();
         glBindVertexArray(0);
         glUseProgram(0);
+        for (int i = 0; i < 8; ++i) {
+            glActiveTexture(GL_TEXTURE3 + i);
+            glBindTexture(GL_TEXTURE_3D, 0);
+        }
+        glActiveTexture(GL_TEXTURE0);
     }
     POP_GPU_SECTION()
 

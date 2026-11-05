@@ -7,6 +7,8 @@
 #include <core/md_array.h>
 
 #include <md_system.h>
+#include <plane.h>
+#include <transfer_function_widget.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
 #include <script_engine.h>
@@ -157,6 +159,8 @@ enum class ElectronicStructureSource {
     TransitionDensity,
     ElectronDensity,
     DensityProperty,
+    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
+    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
     Count
 };
 
@@ -297,6 +301,8 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Transition Density",
     "Electron Density",
     "Density Property",
+    "Electron Localization (ELF)",
+    "Localized Orbital Locator (LOL)",
 };
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -305,6 +311,8 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
     ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
+    ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
+    ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -395,6 +403,58 @@ inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "Low",
     "Mid",
     "High",
+};
+
+
+// How an electronic structure representation draws its field
+enum class ElectronicStructureDisplay {
+    Isosurface,     // surfaces where the field takes given values
+    Volume,         // direct volume rendering through a transfer function, cut by planes
+    Planes,         // the field on a set of planes, each of its own opacity
+    Count
+};
+
+inline const char* electronic_structure_display_str[(int)ElectronicStructureDisplay::Count] = {
+    "Isosurface",
+    "Volume",
+    "Planes",
+};
+
+#define ES_MAX_PLANES 8
+
+// The spacing of the planes display's images (each plane evaluated on itself)
+enum class PlaneDetail {
+    Coarse,
+    Fine,
+    Finest,
+    Count,
+};
+
+// Angstrom per pixel of a plane's image for each PlaneDetail; an image is at most GPU_PLANE_DIM pixels a side, the
+// spacing made coarser where the plane is larger than that
+inline const float plane_detail_spacing_angstrom[(int)PlaneDetail::Count] = {
+    0.05f,
+    0.02f,
+    0.01f,
+};
+
+// A plane of an electronic structure representation: a cut of its volume display, or a slice of its planes display
+struct ElectronicStructurePlane {
+    Plane plane = {};
+    bool  enabled = true;       // a cut cuts, a slice is drawn
+    float opacity = 1.0f;       // a slice's
+    // A slice's rectangle on its plane (a cut has none: it is the plane through the box): its centre, its first side's
+    // direction (u, unit, along the plane; v = normal x u) and its half sizes along u and v (Angstrom). Not limited
+    // to the box: outside it the volume's values at the box's faces carry on. An extent of 0: not set yet (the
+    // rectangle around where the plane cuts the box, once the box is there: es_slices_conform).
+    vec3_t center = {};
+    vec3_t axis = {};
+    vec2_t extent = {};
+};
+
+struct ElectronicStructurePlaneSet {
+    ElectronicStructurePlane items[ES_MAX_PLANES] = {};
+    int count = 0;
 };
 
 // Samples per Angstrom for each VolumeResolution. Beside the enum, because a value per enumerator
@@ -568,6 +628,21 @@ struct IsoDesc {
     float optical_densities[8];
 };
 
+// The image of a slice evaluated on its plane (the planes display; viamd.cpp, electronic_structure_plane_images_update): two, the one drawn and the one being evaluated, swapped when it is there. Drawn only while it is of the
+// plane as it is (current): until then, and while the plane is dragged, the plane is drawn from the volume (and so is
+// anything of it outside the image's rectangle).
+struct ElectronicStructurePlaneImage {
+    Volume    img[2] = {};      // W x H x 1 R32F, the texture to world of its rectangle (texture_to_world)
+    uint64_t  key[2] = {};      // of what each is of (the source and the slice's rectangle): 0 none
+    float     spacing[2] = {};  // each one's (Angstrom; it covers the rectangle exactly, its pixels near this square)
+    int       front = 0;        // the one drawn
+    uint32_t  serial = 0;       // counted up as the front changes: what the scene's hash takes
+    bool      pending = false;  // the other is being evaluated
+    bool      current = false;  // the front one is of the plane, the source and the frame as they are
+    double    issued = 0.0;     // when the pending one was issued (s), and how long the front one took (ms)
+    float     ms = 0.0f;
+};
+
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
@@ -631,7 +706,51 @@ struct ElectronicStructureRepresentation {
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
+
+    ElectronicStructureDisplay display = ElectronicStructureDisplay::Isosurface;
+
+    // The planes of each display, apart, so that one is switched to and from without changing the other's
+    // (electronic_structure_planes picks the display's). Volume: the cuts (what is drawn is the box of the volume on
+    // the kept side of every enabled one). Planes: the slices, each drawn with its opacity, the direction of its
+    // normal of no matter. Edited in the view with a gizmo (es_planes.h).
+    ElectronicStructurePlaneSet cuts;
+    ElectronicStructurePlaneSet slices;
+
+    // Planes: each slice evaluated on itself (plane_images, at plane_detail's spacing); drawn from the volume, at Mid
+    // (electronic_structure_volume_resolution), where its image is not there, while it is dragged, and without the GPU
+    PlaneDetail   plane_detail = PlaneDetail::Fine;
+    ElectronicStructurePlaneImage plane_images[ES_MAX_PLANES] = {};
+
+    // The box the volume is (or would be) evaluated in: its unit cube to the world (Angstrom), as the volume's
+    // texture_to_world; set whenever the representation is updated, with or without a volume (es_volume_box)
+    mat4_t box_to_world = {};
+    bool   has_box = false;
+
+    // Volume and Planes: what a value is drawn as, a colour map's colour over a range and an opacity curve over it
+    // (transfer_function.h, edited with transfer_function_widget.h); the planes take the colours alone
+    struct {
+        TransferFunction tf = {};
+        bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
+        int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
+        uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
+        uint64_t tf_hash = 0;
+        TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
+    } volume;
 };
+
+// The resolution the representation's volume is evaluated at: the planes display's is Mid (what a plane is drawn from
+// until its own image is there, while it is dragged, and without the GPU), not a setting; else the representation's
+static inline VolumeResolution electronic_structure_volume_resolution(const ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? VolumeResolution::Mid : es.resolution;
+}
+
+// The planes of the representation's display: its slices in the planes display, its cuts otherwise
+static inline ElectronicStructurePlaneSet& electronic_structure_planes(ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? es.slices : es.cuts;
+}
+static inline const ElectronicStructurePlaneSet& electronic_structure_planes(const ElectronicStructureRepresentation& es) {
+    return es.display == ElectronicStructureDisplay::Planes ? es.slices : es.cuts;
+}
 
 static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {
     return 1u << (uint32_t)source;
@@ -643,6 +762,20 @@ static inline bool electronic_structure_source_supported(ElectronicStructureSour
 
 static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
     return rep.source == ElectronicStructureSource::DensityProperty;
+}
+
+// What the values of a representation's field are, which its colour map is set up for (es_volume_map_update)
+enum class ElectronicStructureValueKind {
+    Density,        // >= 0, largest at the nuclei
+    Signed,         // an orbital, a difference: about 0
+    Localization,   // in [0, 1]: ELF, LOL
+};
+
+// ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
+// how it varies through space), so they are drawn as a volume or on a plane only.
+static inline bool electronic_structure_is_localization(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::ElectronLocalization ||
+           rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
@@ -678,6 +811,11 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
         return true;
     }
     return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+}
+
+static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
+    return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
 static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
@@ -814,6 +952,15 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         rep->spin = ElectronicStructureSpin::Total;
         rep->use_magnitude = false;
         break;
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
+        // of both spins together, and drawn only as a volume or on a plane
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        if (rep->display == ElectronicStructureDisplay::Isosurface) {
+            rep->display = ElectronicStructureDisplay::Volume;
+        }
+        break;
     case ElectronicStructureSource::DensityProperty:
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
@@ -907,6 +1054,8 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     case ElectronicStructureSource::ElectronDensity:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     case ElectronicStructureSource::DensityProperty:
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
         ASSERT(false);
@@ -1144,6 +1293,10 @@ struct ScriptVisJob;
 // grid any evaluation on the device can write, which is the largest compute_dim makes.
 inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 
+// Edge length of the device scratch the images of planes are evaluated into (ApplicationState::gpu_plane): a
+// GPU_PLANE_DIM^2 x 1 R32F texture, the largest plane image (es_plane_images.h)
+inline constexpr uint32_t GPU_PLANE_DIM = 2048;
+
 // What is derived from the core a loader gives (the bonds, what the residues are, the structures, the chemistry:
 // md_util_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
 // then the system is shown as loaded: its atoms, as spheres where a representation needs what is not there yet. One
@@ -1176,6 +1329,10 @@ struct ApplicationState {
     // reason. Whoever evaluates borrows these; nobody else frees them.
     md_gpu_stream_t gpu_stream  = nullptr;   // the device's default compute stream
     md_gpu_texture_t gpu_volume = nullptr;   // 3d R32F scratch for an evaluated orbital / density
+    md_gpu_texture_t gpu_plane  = nullptr;   // GPU_PLANE_DIM^2 x 1 R32F scratch for the image of a plane
+    // Where the evaluations write and their readbacks read: gpu_volume when null. An evaluation into another
+    // scratch sets it for its call (gpu_eval_target_scope, viamd.cpp); a readback queued records its own.
+    md_gpu_texture_t gpu_eval_target = nullptr;
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
@@ -1187,6 +1344,7 @@ struct ApplicationState {
         bool              in_flight = false;
         ApplicationState* owner     = nullptr;
         uint32_t          tex_id    = 0;        // GL texture to receive the data
+        md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
         // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
@@ -1384,6 +1542,10 @@ struct ApplicationState {
         // one that could not be (made where it is asked for instead)
         void*               gpu_dmat_build = nullptr;
         uint64_t            gpu_dmat_failed_key = 0;
+        // What the ELF and LOL kernel reads (viamd.cpp, LocalizationGpu): a GPU basis at their AO cutoff and the
+        // spins' density matrices in tiles, made by a pool task; and the key of one that could not be made
+        void*               gpu_localization = nullptr;
+        uint64_t            gpu_localization_failed_key = 0;
         // Any other density a representation evaluates (a transition density, made by its provider on every
         // read; a density property, read from its file) as the packed triangle the kernel reads, extracted on a
         // worker thread straight into a device buffer of its own (viamd.cpp, DensityPackBuild) and kept: the
@@ -1653,6 +1815,11 @@ struct ApplicationState {
         bool atom_visibility_mask_dirty = false;
         uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
         bool show_window = false;
+        // The plane the gizmo in the view edits: of the representation of this id (its node id), at this index
+        struct {
+            uint32_t rep_id = 0;
+            int      plane = -1;
+        } gizmo;
     } representation;
 
     struct {
@@ -2446,7 +2613,23 @@ void electronic_structure_field_poll(Representation* rep);
 // atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.
 // False when something it waits for without blocking (the volume's last readback, a density matrix made on a
 // worker thread, the density a field update reads) is not there yet: it is to be called again next frame.
+// The planes display evaluated on its planes (on the GPU): each slice's image, made again where
+// the plane, the source or the frame changed (not while the plane is dragged), one at a time per plane. A plane whose
+// image is not current is drawn from the volume, which this display keeps too. Called every frame; false while one is
+// under way.
+bool electronic_structure_plane_images_update(ApplicationState* state, Representation* rep);
+// For measurements (the timings shown with it): bumped with each change to how the images are evaluated
+#define ES_PLANE_IMAGES_REVISION "plane-images r5"
+// Whether it is: the planes display, and the source on the GPU
+bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
+
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
+
+// The evaluations of ELF and LOL run as pool tasks (viamd.cpp, localization_poll), polled by the representations'
+// updates: those nobody wants any more are let go of here once they have stopped, once a frame; all of them (waited
+// for) at the shutdown, before the GPU device goes.
+void es_jobs_collect(ApplicationState* state);
+void es_jobs_shutdown(ApplicationState* state);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
