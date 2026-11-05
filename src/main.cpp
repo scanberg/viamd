@@ -7912,25 +7912,34 @@ static void draw_representations_opaque(ApplicationState* state) {
                         immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
                         immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                        const vec3_t org = dipole_org;
+                        const vec3_t beg = rep.dipole.offset + dipole_org;
                         const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
+                        const float  len = vec3_length(vec);
 
-                        // cylinder body
-                        const float body_scale = 0.8f;
+                        // The head is a fixed shape in units of the shaft radius, never a share of the
+                        // length: a longer dipole is a longer shaft under the same head. Below the length
+                        // where the head would take more than its share of the arrow, the arrow is that
+                        // shortest one scaled down whole, radii included, so a small dipole is a small arrow
+                        // of the same shape rather than a disc.
+                        const float HEAD_RADIUS   = 2.0f;   // x shaft radius
+                        const float HEAD_LENGTH   = 5.0f;   // x shaft radius
+                        const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
 
-                        const float body_radius = rep.dipole.radius;
-                        const float head_radius = body_radius * 1.5f;
+                        float shaft_radius = rep.dipole.radius;
+                        float head_radius  = shaft_radius * HEAD_RADIUS;
+                        float head_length  = shaft_radius * HEAD_LENGTH;
+                        const float min_len = head_length / HEAD_FRACTION;
+                        if (len < min_len) {
+                            const float s = len / min_len;
+                            shaft_radius *= s;
+                            head_radius  *= s;
+                            head_length  *= s;
+                        }
 
-                        vec3_t cyl_beg = rep.dipole.offset + org;
-                        vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
-                        vec3_t arrow_end = rep.dipole.offset + org + vec;
+                        const uint32_t color_u32   = convert_color(rep.dipole.color);
+                        const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
 
-                        uint32_t color_u32 = convert_color(rep.dipole.color);
-
-                        uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
-
-                        immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
-                        immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                        immediate::arrow(scope, beg, beg + vec, shaft_radius, head_radius, head_length, color_u32, picking_idx);
                     }
                 }
             } else if (rep.type == RepresentationType::SimulationBox) {

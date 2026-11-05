@@ -110,7 +110,8 @@ vec4 encode_u32(uint index) {
 
 void main() {
     out_color_alpha = color;
-    out_normal = encode_normal(normal);
+    // Interpolated across a triangle the normal is shorter than unit, and the encoding assumes unit
+    out_normal = encode_normal(normalize(normal));
     out_velocity = vec2(0,0);
     out_picking_idx = encode_u32(picking_idx);
 }
@@ -173,6 +174,7 @@ void draw_cylinder(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t co
 void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, int segments);
 void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments);
 void draw_cone_wireframe(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments);
+void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments);
 void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx);
 
 // All queue APIs require an explicit queue; this helper enforces that contract
@@ -246,6 +248,11 @@ void cone(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color, u
 void cone_wireframe(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
     Queue& q = require_queue(queue);
     draw_cone_wireframe(q, base, tip, radius, color, segments);
+}
+
+void arrow(Queue* queue, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
+    Queue& q = require_queue(queue);
+    draw_arrow(q, from, to, shaft_radius, head_radius, head_length, color, picking_idx, segments);
 }
 
 void capsule(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
@@ -1021,71 +1028,154 @@ void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, u
     }
 }
 
+// Surfaces of revolution (the cone, the arrow) are built from bands between two rings around an axis. A ring
+// is a height h along the axis and a radius r; a band carries one normal per ring in the (radial, axial)
+// plane, (nr, na), rotated around the axis with the vertex, so the shading is smooth around the axis while
+// the creases between bands (shaft to underside to head) stay sharp, each band having its own vertices.
+#define LATHE_MAX_SEGMENTS 128
+
+struct Lathe {
+    vec3_t origin;
+    vec3_t axis;
+    vec3_t u, v;
+    int    segments;
+    float  cs[LATHE_MAX_SEGMENTS + 1][2];   // cos, sin of each angle; the last repeats the first (the seam)
+};
+
+static Lathe lathe_init(vec3_t origin, vec3_t axis, int segments) {
+    Lathe l;
+    l.origin   = origin;
+    l.axis     = axis;
+    l.segments = CLAMP(segments, 3, LATHE_MAX_SEGMENTS);
+    build_tangent_frame(axis, l.u, l.v);
+    const float tau = 6.28318530717958647692f;
+    for (int i = 0; i < l.segments; ++i) {
+        const float th = tau * ((float)i / (float)l.segments);
+        l.cs[i][0] = cosf(th);
+        l.cs[i][1] = sinf(th);
+    }
+    l.cs[l.segments][0] = l.cs[0][0];
+    l.cs[l.segments][1] = l.cs[0][1];
+    return l;
+}
+
+static inline vec3_t lathe_radial(const Lathe& l, int i) {
+    return vec3_add(vec3_mul1(l.u, l.cs[i][0]), vec3_mul1(l.v, l.cs[i][1]));
+}
+
+// The band from ring (h0, r0) to ring (h1, r1), facing outward when it runs from the tail toward the tip on
+// the outside (or inward toward the axis on a cap facing back). (nr, na) need not be normalized.
+// A ring of radius 0 is a point: the band ending there is a fan, each triangle with the normal of its middle
+// angle at the point, since interpolating toward one normal per angle at a single vertex is not possible
+// within a triangle; the band before it should then be short, so that the approximation covers little.
+static void lathe_band(Queue& ctx, const Lathe& l, float h0, float r0, float nr0, float na0, float h1, float r1, float nr1, float na1, uint32_t color, uint32_t picking_idx) {
+    const int n = l.segments;
+    const vec3_t c0 = vec3_add(l.origin, vec3_mul1(l.axis, h0));
+    const vec3_t c1 = vec3_add(l.origin, vec3_mul1(l.axis, h1));
+    const float len0 = sqrtf(nr0 * nr0 + na0 * na0);
+    const float len1 = sqrtf(nr1 * nr1 + na1 * na1);
+    nr0 /= len0; na0 /= len0;
+    nr1 /= len1; na1 /= len1;
+
+    if (r1 == 0.0f) {
+        // A fan to the point c1
+        const Index base = (Index)md_array_size(ctx.vertices);
+        for (int i = 0; i < n; ++i) {
+            const vec3_t ra = lathe_radial(l, i);
+            const vec3_t rb = lathe_radial(l, i + 1);
+            const vec3_t rm = vec3_normalize(vec3_add(ra, rb));
+            Vertex vs[3] = {
+                {vec3_add(c0, vec3_mul1(ra, r0)), color, vec3_add(vec3_mul1(ra, nr0), vec3_mul1(l.axis, na0)), picking_idx},
+                {vec3_add(c0, vec3_mul1(rb, r0)), color, vec3_add(vec3_mul1(rb, nr0), vec3_mul1(l.axis, na0)), picking_idx},
+                {c1,                              color, vec3_add(vec3_mul1(rm, nr1), vec3_mul1(l.axis, na1)), picking_idx},
+            };
+            md_array_push_array(ctx.vertices, vs, 3, ctx.arena);
+            const Index b = base + (Index)(i * 3);
+            md_array_push(ctx.indices, b + 0, ctx.arena);
+            md_array_push(ctx.indices, b + 1, ctx.arena);
+            md_array_push(ctx.indices, b + 2, ctx.arena);
+        }
+        append_draw_command(ctx, (size_t)n * 3, GL_TRIANGLES);
+        return;
+    }
+
+    // Two rings of n + 1 vertices each (the seam repeated), then a quad per segment
+    const Index base = (Index)md_array_size(ctx.vertices);
+    for (int i = 0; i <= n; ++i) {
+        const vec3_t ra = lathe_radial(l, i);
+        Vertex vs[2] = {
+            {vec3_add(c0, vec3_mul1(ra, r0)), color, vec3_add(vec3_mul1(ra, nr0), vec3_mul1(l.axis, na0)), picking_idx},
+            {vec3_add(c1, vec3_mul1(ra, r1)), color, vec3_add(vec3_mul1(ra, nr1), vec3_mul1(l.axis, na1)), picking_idx},
+        };
+        md_array_push_array(ctx.vertices, vs, 2, ctx.arena);
+    }
+    for (int i = 0; i < n; ++i) {
+        const Index a0 = base + (Index)(i * 2), b0 = a0 + 1;
+        const Index a1 = a0 + 2,                b1 = a0 + 3;
+        md_array_push(ctx.indices, a0, ctx.arena);
+        md_array_push(ctx.indices, a1, ctx.arena);
+        md_array_push(ctx.indices, b1, ctx.arena);
+        md_array_push(ctx.indices, a0, ctx.arena);
+        md_array_push(ctx.indices, b1, ctx.arena);
+        md_array_push(ctx.indices, b0, ctx.arena);
+    }
+    append_draw_command(ctx, (size_t)n * 6, GL_TRIANGLES);
+}
+
+// The slanted side of a cone of base radius 'radius' at height h0 and its tip at h0 + height. Its outward
+// normal is the same along the whole slant at an angle: (height, radius) in (radial, axial), tilted toward
+// the tip by the half-angle. The rings halve the remaining height each step, so the fan at the tip, where
+// the normals cannot be interpolated per angle, is 1/32 of the height.
+static void lathe_cone_side(Queue& ctx, const Lathe& l, float h0, float radius, float height, uint32_t color, uint32_t picking_idx) {
+    const int rings = 5;
+    const float nr = height;
+    const float na = radius;
+    float t0 = 0.0f;
+    for (int k = 1; k <= rings; ++k) {
+        const float t1 = (k == rings) ? 1.0f : 1.0f - ldexpf(1.0f, -k);
+        lathe_band(ctx, l, h0 + t0 * height, radius * (1.0f - t0), nr, na,
+                           h0 + t1 * height, radius * (1.0f - t1), nr, na, color, picking_idx);
+        t0 = t1;
+    }
+}
+
 void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     ASSERT(segments >= 3);
-    const float tau = 6.28318530717958647692f;
+    const vec3_t axis_vec = vec3_sub(tip, base);
+    const float height = vec3_length(axis_vec);
+    if (!(height > 0.0f) || !(radius > 0.0f)) return;
 
-    vec3_t axis_vec = vec3_sub(tip, base);
-    float height    = vec3_length(axis_vec);
-    vec3_t axis     = vec3_mul1(axis_vec, 1.f / height);
-    vec3_t u, v;
-    build_tangent_frame(axis, u, v);
+    const Lathe l = lathe_init(base, vec3_mul1(axis_vec, 1.0f / height), segments);
+    // The base disc, facing away from the tip, from its centre out
+    lathe_band(ctx, l, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, radius, 0.0f, -1.0f, color, picking_idx);
+    lathe_cone_side(ctx, l, 0.0f, radius, height, color, picking_idx);
+}
 
-    // Slant length and trig for cone normal
-    const float slant = sqrtf(height * height + radius * radius);
-    const float cos_a = height / slant;   // cos of half-angle
-    const float sin_a = radius / slant;   // sin of half-angle
+// One closed surface: the tail's disc, the shaft, the ring under the head between the shaft and the head's
+// rim, and the head. No faces hidden inside one another, so nothing to fight in depth where shaft meets head.
+// The head is given in world units and is shortened to the arrow's length if it does not fit.
+void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
+    ASSERT(segments >= 3);
+    const vec3_t axis_vec = vec3_sub(to, from);
+    const float length = vec3_length(axis_vec);
+    if (!(length > 0.0f)) return;
 
-    vec3_t base_cap_n = vec3_mul1(axis, -1.f);
+    head_length  = CLAMP(head_length, 0.0f, length);
+    head_radius  = MAX(head_radius, shaft_radius);
+    const float shaft_length = length - head_length;
 
-    for (int i = 0; i < segments; ++i) {
-        const float th0 = tau * ((float) i      / (float)segments);
-        const float th1 = tau * ((float)(i + 1) / (float)segments);
-
-        const float c0 = cosf(th0), s0 = sinf(th0);
-        const float c1 = cosf(th1), s1 = sinf(th1);
-
-        // Radial direction at each angle
-        vec3_t rad0 = vec3_add(vec3_mul1(u, c0), vec3_mul1(v, s0));
-        vec3_t rad1 = vec3_add(vec3_mul1(u, c1), vec3_mul1(v, s1));
-
-        // Smooth outward lateral normals: tilt radial inward by the cone half-angle
-        vec3_t ln0 = vec3_sub(vec3_mul1(rad0, cos_a), vec3_mul1(axis, sin_a));
-        vec3_t ln1 = vec3_sub(vec3_mul1(rad1, cos_a), vec3_mul1(axis, sin_a));
-
-        vec3_t a0 = vec3_add(base, vec3_mul1(rad0, radius));
-        vec3_t a1 = vec3_add(base, vec3_mul1(rad1, radius));
-
-        // Lateral face – smooth normals at base ring; use average at apex for continuity
-        vec3_t apex_n = vec3_normalize(vec3_add(ln0, ln1));
-        {
-            const Index base_idx = (Index)md_array_size(ctx.vertices);
-            Vertex sv[3] = {
-                {a0,  color, ln0,    picking_idx},
-                {tip, color, apex_n, picking_idx},
-                {a1,  color, ln1,    picking_idx},
-            };
-            md_array_push_array(ctx.vertices, sv, 3, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 0, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 2, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 1, ctx.arena);
-            append_draw_command(ctx, 3, GL_TRIANGLES);
+    const Lathe l = lathe_init(from, vec3_mul1(axis_vec, 1.0f / length), segments);
+    if (shaft_length > 0.0f) {
+        lathe_band(ctx, l, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, shaft_radius, 0.0f, -1.0f, color, picking_idx);
+        lathe_band(ctx, l, 0.0f, shaft_radius, 1.0f, 0.0f, shaft_length, shaft_radius, 1.0f, 0.0f, color, picking_idx);
+        if (head_radius > shaft_radius) {
+            lathe_band(ctx, l, shaft_length, shaft_radius, 0.0f, -1.0f, shaft_length, head_radius, 0.0f, -1.0f, color, picking_idx);
         }
-
-        // Base cap – flat normal pointing away from tip
-        {
-            const Index base_idx = (Index)md_array_size(ctx.vertices);
-            Vertex cv[3] = {
-                {base, color, base_cap_n, picking_idx},
-                {a0,   color, base_cap_n, picking_idx},
-                {a1,   color, base_cap_n, picking_idx},
-            };
-            md_array_push_array(ctx.vertices, cv, 3, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 0, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 2, ctx.arena);
-            md_array_push(ctx.indices, base_idx + 1, ctx.arena);
-            append_draw_command(ctx, 3, GL_TRIANGLES);
-        }
+    } else {
+        lathe_band(ctx, l, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, head_radius, 0.0f, -1.0f, color, picking_idx);
+    }
+    if (head_length > 0.0f) {
+        lathe_cone_side(ctx, l, shaft_length, head_radius, head_length, color, picking_idx);
     }
 }
 

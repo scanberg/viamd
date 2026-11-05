@@ -75,6 +75,10 @@ void cylinder_wireframe(Queue* queue, vec3_t from, vec3_t to, float radius, uint
 void cone(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
 void cone_wireframe(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 
+// A solid arrow from 'from' to 'to': a shaft and a conical head, all in world units, as one closed surface.
+// The head is shortened to the arrow's length if it is longer; its radius is at least the shaft's.
+void arrow(Queue* queue, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 32);
+
 void capsule(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
 void capsule_wireframe(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 
