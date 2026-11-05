@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
+
 // ---------------------------------------------------------------------------------------------------------
 // The tree, as representation_tree.h sees it
 // ---------------------------------------------------------------------------------------------------------
@@ -644,6 +646,7 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
         op.args.licorice.bond_orders = rep.bond_orders;
         op.args.licorice.chain_gaps = rep.chain_gaps;
         op.args.licorice.elastic_bonds = rep.elastic_bonds;
+        op.args.licorice.solid_coordinate_bonds = !rep.coordinate_bonds_dashed;
         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
             tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
         }
@@ -657,6 +660,7 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
         op.args.ball_and_stick.bond_orders = rep.bond_orders;
         op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
         op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
+        op.args.ball_and_stick.solid_coordinate_bonds = !rep.coordinate_bonds_dashed;
         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
             tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
         }
@@ -945,10 +949,12 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
     const md_system_t& sys = state->mold.sys;
 
     const md_atom_pair_t* pairs = nullptr;
+    const md_bond_flags_t* flags = nullptr;   // Of the bonds, which give their dashes
     size_t count = 0;
     if (rep->type == RepresentationType::Licorice || rep->type == RepresentationType::BallAndStick) {
         pairs = sys.bond.pairs ? sys.bond.pairs + sys.bond.count : nullptr;
-        count = sys.bond.noncovalent_count;
+        flags = sys.bond.flags ? sys.bond.flags + sys.bond.count : nullptr;
+        count = pairs && flags ? sys.bond.noncovalent_count : 0;
     } else if (rep->type == RepresentationType::Bonds) {
         pairs = rep->bond_pairs;
         count = md_array_size(rep->bond_pairs);
@@ -962,12 +968,44 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         atom_a[i] = (uint32_t)pairs[i].idx[0];
         atom_b[i] = (uint32_t)pairs[i].idx[1];
     }
-    md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr);
+    if (count && !flags) {
+        // The bonds a filter picked are pairs of atoms: their kinds are those of the bonds of the system between them. A
+        // pair without one (a bond formed in a frame) counts as covalent.
+        md_bond_flags_t* found = (md_bond_flags_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_bond_flags_t) * count);
+        // The non-covalent bonds have no connectivity: sorted by their atoms once, to be found by bisection
+        const size_t nc_count = sys.bond.pairs && sys.bond.flags ? sys.bond.noncovalent_count : 0;
+        uint64_t* nc_keys = nc_count ? (uint64_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint64_t) * nc_count) : nullptr;
+        auto pair_key = [](int32_t a, int32_t b) -> uint64_t {
+            const uint32_t lo = (uint32_t)MIN(a, b), hi = (uint32_t)MAX(a, b);
+            return ((uint64_t)lo << 32) | hi;
+        };
+        for (size_t i = 0; i < nc_count; ++i) {
+            // Unique: an atom pair has one bond at most
+            const md_atom_pair_t p = sys.bond.pairs[sys.bond.count + i];
+            nc_keys[i] = pair_key(p.idx[0], p.idx[1]);
+        }
+        size_t* nc_order = nc_count ? (size_t*)md_vm_arena_push(state->allocator.frame, sizeof(size_t) * nc_count) : nullptr;
+        for (size_t i = 0; i < nc_count; ++i) nc_order[i] = i;
+        std::sort(nc_order, nc_order + nc_count, [nc_keys](size_t x, size_t y) { return nc_keys[x] < nc_keys[y]; });
+        for (size_t i = 0; i < count; ++i) {
+            found[i] = (md_bond_flags_t)MD_BOND_KIND_COVALENT;
+            const int32_t a = pairs[i].idx[0], b = pairs[i].idx[1];
+            if (a < 0 || b < 0 || (size_t)a >= sys.atom.count || (size_t)b >= sys.atom.count) continue;
+            const md_bond_idx_t bond = md_bond_find(&sys.bond, a, b);
+            if (bond != -1) {
+                found[i] = sys.bond.flags[bond];
+                continue;
+            }
+            const uint64_t key = pair_key(a, b);
+            const size_t* it = std::lower_bound(nc_order, nc_order + nc_count, key, [nc_keys](size_t x, uint64_t k) { return nc_keys[x] < k; });
+            if (it != nc_order + nc_count && nc_keys[*it] == key) {
+                found[i] = sys.bond.flags[sys.bond.count + *it];
+            }
+        }
+        flags = found;
+    }
+    md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr, flags);
 }
-
-// The dashes of a weak bond drawn dashed, and the gaps between them, as multiples of its radius
-#define WEAK_BOND_DASH_LENGTH 2.0f
-#define WEAK_BOND_GAP_LENGTH  1.5f
 
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
     ASSERT(ops);
@@ -976,37 +1014,32 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
         .args = {},
         .rep = rep.md_rep,
     };
-    bool dashed = true;
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-        // The non-covalent bonds of the system among its atoms, thinner than its sticks, in their colours
+        // The non-covalent bonds of the system among its atoms, in their colours: thinner than its sticks, each in the
+        // style of its kind (md_gl), between the joints or the balls
         if (!rep.noncovalent_bonds || state.mold.sys.bond.noncovalent_count == 0) return;
         const md_gl_draw_op_t sticks = representation_draw_op(rep);
         const bool licorice = rep.type == RepresentationType::Licorice;
-        op.args.weak_bonds.radius = 0.5f * 0.2f * (licorice ? rep.scale.x : rep.scale.y);
+        op.args.weak_bonds.radius = 0.2f * (licorice ? rep.scale.x : rep.scale.y);
+        op.args.weak_bonds.dashes = MD_GL_DASHES_BY_KIND;
+        op.args.weak_bonds.end_radius = op.args.weak_bonds.radius;
+        op.args.weak_bonds.end_radius_scale = licorice ? 0.0f : 0.2f * rep.scale.x;
         op.args.weak_bonds.color_mode    = licorice ? sticks.args.licorice.color_mode    : sticks.args.ball_and_stick.color_mode;
         op.args.weak_bonds.sharpness     = licorice ? sticks.args.licorice.sharpness     : sticks.args.ball_and_stick.sharpness;
         op.args.weak_bonds.uniform_color = licorice ? sticks.args.licorice.uniform_color : sticks.args.ball_and_stick.uniform_color;
     } else if (rep.type == RepresentationType::Bonds) {
         if (md_array_size(rep.bond_pairs) == 0) return;
-        // As thick as the sticks of a licorice of the same scale
+        // As thick as the sticks of a licorice of the same scale, the dashed ones as its dashed bonds are relative to them
         op.args.weak_bonds.radius = 0.2f * rep.scale.x;
+        op.args.weak_bonds.dashes = (md_gl_dashes_t)rep.bond_dashes;
         op.args.weak_bonds.color_mode = (md_gl_bond_mode_t)rep.bond_color;
         op.args.weak_bonds.sharpness = rep.bond_sharpness;
         op.args.weak_bonds.uniform_color = convert_color(rep.bond_base_color);
         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
             tint_colors(&op.args.weak_bonds.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
         }
-        dashed = rep.bonds_dashed;
     } else {
         return;
-    }
-    if (dashed) {
-        op.args.weak_bonds.dash_length = WEAK_BOND_DASH_LENGTH * op.args.weak_bonds.radius;
-        op.args.weak_bonds.gap_length  = WEAK_BOND_GAP_LENGTH  * op.args.weak_bonds.radius;
-    } else {
-        // Solid: md_gl draws two dashes at least, so one too long for any bond with a gap too small to see
-        op.args.weak_bonds.dash_length = 1.0e6f;
-        op.args.weak_bonds.gap_length  = 1.0e-6f;
     }
     md_array_push(*ops, op, alloc);
 }
@@ -1075,14 +1108,14 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
         return true;
     }
 
-    // Distinct from what draws the bond already: one colour, dashed as a weak bond is, and a stick over that of a
-    // licorice (whose non-covalent bonds are half as thick as its sticks)
+    // Distinct from what draws the bond already: one colour, dashed as its kind is (the default of a Bonds representation),
+    // and over what a licorice draws: a stick over its stick, dashes twice as thick as its dashes
     Representation* rep = create_representation(app, RepresentationType::Bonds, ColorMapping::Uniform, str_from_cstr(expr));
     if (!rep) return false;
-    const bool noncovalent = md_bond_is_noncovalent(flags);
+    const bool dashed = md_bond_kind(flags) != MD_BOND_KIND_COVALENT && md_bond_kind(flags) != MD_BOND_KIND_ELASTIC && md_bond_kind(flags) != MD_BOND_KIND_METALLIC;
     snprintf(rep->name, sizeof(rep->name), "bond %d-%d", pair.idx[0] + 1, pair.idx[1] + 1);
-    rep->bonds_dashed    = noncovalent;
-    rep->scale.x         = noncovalent ? 1.0f : 1.25f;
+    rep->bond_dashes     = BondDashes::ByKind;
+    rep->scale.x         = dashed ? 2.0f : 1.25f;
     rep->bond_color      = BondColorMode::Uniform;
     rep->bond_base_color = {1.0f, 0.55f, 0.1f, 1.0f};
     rep->open_properties = true;
@@ -1905,8 +1938,15 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_vec4(rep->bond_base_color, arg);
     } else if (str_eq(ident, STR_LIT("BondOrders"))) {
         viamd::extract_bool(rep->bond_orders, arg);
+    } else if (str_eq(ident, STR_LIT("BondDashes"))) {
+        viamd::extract_enum(rep->bond_dashes, arg, (int)BondDashes::Count);
     } else if (str_eq(ident, STR_LIT("BondsDashed"))) {
-        viamd::extract_bool(rep->bonds_dashed, arg);
+        // Of workspaces from before the dashes by kind: all or none, as they were drawn
+        bool dashed = false;
+        viamd::extract_bool(dashed, arg);
+        rep->bond_dashes = dashed ? BondDashes::All : BondDashes::None;
+    } else if (str_eq(ident, STR_LIT("CoordinateBondsDashed"))) {
+        viamd::extract_bool(rep->coordinate_bonds_dashed, arg);
     } else if (str_eq(ident, STR_LIT("ChainGaps"))) {
         viamd::extract_bool(rep->chain_gaps, arg);
     } else if (str_eq(ident, STR_LIT("ElasticBonds"))) {
@@ -2144,11 +2184,12 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     viamd::write_vec4(state, STR_LIT("BondBaseColor"), rep.bond_base_color);
     viamd::write_bool(state, STR_LIT("BondOrders"), rep.bond_orders);
     if (rep.type == RepresentationType::Bonds) {
-        viamd::write_bool(state, STR_LIT("BondsDashed"), rep.bonds_dashed);
+        viamd::write_int(state, STR_LIT("BondDashes"), (int)rep.bond_dashes);
     }
     viamd::write_bool(state, STR_LIT("ChainGaps"), rep.chain_gaps);
     viamd::write_bool(state, STR_LIT("ElasticBonds"), rep.elastic_bonds);
     viamd::write_bool(state, STR_LIT("NoncovalentBonds"), rep.noncovalent_bonds);
+    viamd::write_bool(state, STR_LIT("CoordinateBondsDashed"), rep.coordinate_bonds_dashed);
     viamd::write_bool(state, STR_LIT("TwoHeadSpheres"), rep.two_head_spheres);
     viamd::write_flt(state,  STR_LIT("NucleicBandRadius"), rep.nucleic_band_radius);
     viamd::write_flt(state,  STR_LIT("NucleicRingRadius"), rep.nucleic_ring_radius);
@@ -3260,19 +3301,20 @@ static bool system_has_chain_breaks(const md_system_t& sys) {
     return false;
 }
 
-// Whether the system has elastic bonds (an elastic network, restraints), kept per topology: a system may have millions
-// of bonds, and the properties of a representation are drawn every frame
-static bool system_has_elastic_bonds(const md_system_t& sys) {
+// Whether the bond graph of the system (with its elastic and metallic bonds) has bonds of a kind: elastic bonds (an
+// elastic network, restraints), coordinate bonds. Kept per topology: a system may have millions of bonds, and the
+// properties of a representation are drawn every frame.
+static bool system_has_bond_kind(const md_system_t& sys, md_bond_kind_t kind) {
     static uint64_t version = 0;
-    static bool     result  = false;
+    static uint32_t kinds   = 0;    // Bit per kind, the kind shifted down to 0..7
     if (version != sys.topology_version || version == 0) {
         version = sys.topology_version;
-        result = false;
-        for (size_t i = 0; i < sys.bond.count && sys.bond.flags && !result; ++i) {
-            result = md_bond_kind(sys.bond.flags[i]) == MD_BOND_KIND_ELASTIC;
+        kinds = 0;
+        for (size_t i = 0; i < sys.bond.count && sys.bond.flags; ++i) {
+            kinds |= 1u << ((uint32_t)md_bond_kind(sys.bond.flags[i]) >> 5);
         }
     }
-    return result;
+    return (kinds >> ((uint32_t)kind >> 5)) & 1u;
 }
 
 // The sizes of what a representation draws, as rows of its Geometry section: scales of the defaults, so 1 is as is
@@ -3291,8 +3333,16 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     case RepresentationType::Bonds:
         prop::row("radius", "As the sticks of a licorice of the same scale");
         update_rep |= ImGui::SliderFloat("##radius", &rep.scale[0], 0.1f, 4.0f, scale_fmt);
-        prop::row("dashed", "Drawn as dashes rather than sticks, as weak bonds often are");
-        update_rep |= ImGui::Checkbox("##bonds_dashed", &rep.bonds_dashed);
+        {
+            prop::row("dashed", "Which bonds are drawn as dashes rather than sticks, each in the style of its kind: coordinate bonds thick with long dashes, hydrogen bonds with even dashes, interactions with short sparse ones (and covalent bonds thick with long dashes, where all are)");
+            const char* items[] = {"By kind (not covalent)", "None", "All"};
+            static_assert(ARRAY_SIZE(items) == (size_t)BondDashes::Count, "One item per BondDashes");
+            int dashes = (int)rep.bond_dashes;
+            if (ImGui::Combo("##bond_dashes", &dashes, items, (int)ARRAY_SIZE(items))) {
+                rep.bond_dashes = (BondDashes)dashes;
+                update_rep = true;
+            }
+        }
         break;
     case RepresentationType::BallAndStick:
         prop::row("balls");
@@ -3344,10 +3394,14 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
         if (state->mold.sys.bond.noncovalent_count > 0) {
-            prop::row("non-covalent bonds", "The non-covalent bonds of the system among its atoms (hydrogen bonds and interactions a file gives or a user marks), dashed and thinner than the sticks. Off to leave them to a Bonds representation");
+            prop::row("non-covalent bonds", "The non-covalent bonds of the system among its atoms (hydrogen bonds and interactions a file gives or a user marks), dashed and thinner than the sticks: hydrogen bonds with even dashes, interactions with short sparse ones. Off to leave them to a Bonds representation");
             update_rep |= ImGui::Checkbox("##noncovalent_bonds", &rep.noncovalent_bonds);
         }
-        if (system_has_elastic_bonds(state->mold.sys)) {
+        if (system_has_bond_kind(state->mold.sys, MD_BOND_KIND_COORDINATE)) {
+            prop::row("dashed coordinate bonds", "The coordinate bonds (between a metal and a non-metal) as thick dashes with long dashes and narrow gaps, which tell them from covalent bonds and from the weaker non-covalent ones. Off to draw them as sticks");
+            update_rep |= ImGui::Checkbox("##coordinate_bonds_dashed", &rep.coordinate_bonds_dashed);
+        }
+        if (system_has_bond_kind(state->mold.sys, MD_BOND_KIND_ELASTIC)) {
             prop::row("elastic bonds", "The springs of the force field which are not bonds of the molecules: the elastic network of a coarse grained protein or nucleic acid, restraints. Drawn as plain bonds when shown");
             update_rep |= ImGui::Checkbox("##elastic_bonds", &rep.elastic_bonds);
         }

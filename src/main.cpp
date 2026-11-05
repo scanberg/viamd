@@ -3229,8 +3229,9 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::BeginMenu(buf)) {
-                    // Of the bond graph, or a non-covalent bond: those are drawn dashed, and are not followed by the
-                    // structures, the rings or the bonds tracked. A kind chosen is kept as given.
+                    // Of the bond graph, or a non-covalent bond: those are not followed by the structures, the rings or the
+                    // bonds tracked. Each kind but covalent is drawn dashed, in a style of its own. A kind chosen is kept
+                    // as given.
                     struct BondKind {
                         const char* label;
                         md_bond_flags_t flags;
@@ -3238,11 +3239,11 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     };
                     static const BondKind kinds[] = {
                         {"Bond",          MD_BOND_FLAG_NONE,
-                         "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal.\nIt joins the molecules of its atoms."},
+                         "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal\n(drawn dashed, thick with long dashes). It joins the molecules of its atoms."},
                         {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
-                         "Non-covalent, drawn dashed. bond(kind='hydrogen') in the script."},
+                         "Non-covalent, drawn with even dashes. bond(kind='hydrogen') in the script."},
                         {"Interaction",   md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION),
-                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn dashed.\nbond(kind='interaction') in the script."},
+                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn with\nshort, sparse dashes. bond(kind='interaction') in the script."},
                     };
                     for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
@@ -7990,8 +7991,9 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
         h = md_hash64(&rep.noncovalent_bonds, sizeof(rep.noncovalent_bonds), h);
+        h = md_hash64(&rep.coordinate_bonds_dashed, sizeof(rep.coordinate_bonds_dashed), h);
         if (rep.type == RepresentationType::Bonds) {
-            h = md_hash64(&rep.bonds_dashed, sizeof(rep.bonds_dashed), h);
+            h = md_hash64(&rep.bond_dashes, sizeof(rep.bond_dashes), h);
         }
         h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
         if (rep.type == RepresentationType::Cartoon) {
