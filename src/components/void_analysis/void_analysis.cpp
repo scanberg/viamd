@@ -24,8 +24,6 @@
 
 #include "void_analysis_core.h"
 
-#include <core/md_str_builder.h>
-
 #include <float.h>
 #include <atomic>
 #include <memory>
@@ -279,14 +277,21 @@ struct Pass {
     std::atomic<bool> cancel{false};
     std::atomic<int>  state{Pass_Running};
     std::atomic<int>  phase{Phase_Setup};
-    task_system::ID   task_work = task_system::INVALID_ID;
+    task_system::Job  job;                      // The pass's own: it deletes itself in the job's on_main
     std::atomic<uint32_t> work_done{0};         // Tiles or patches, counted one at a time: the pool
     uint32_t          work_total = 0;           // hands out ranges of hundreds, too coarse to report
     md_tick_t         t0 = 0;
     double            seconds = 0.0;
     char              error[256] = "";
 
-    bool cancelled() const { return cancel.load(std::memory_order_relaxed); }
+    // Abandoned by the window, or its job stopped from outside (a load: task_system::cancel_all). The latter is seen
+    // on the job's own threads only, which is where this is asked.
+    bool cancelled() const { return cancel.load(std::memory_order_relaxed) || task_system::cancelled(); }
+
+    // In the job's on_main, before the install: a job stopped from outside did not finish, whatever its body saw
+    void settle(task_system::Status s) {
+        if (s != task_system::Status::Completed && state == Pass_Done) state = Pass_Failed;
+    }
 
     // Called from a pool thread; the main thread only reads error once the pass is finished
     void fail(const char* msg) {
@@ -627,7 +632,7 @@ struct VoidAnalysis : viamd::EventHandler {
             case viamd::EventType_ViamdPickingTooltipTextRequest: {
                 if (e.payload_type != viamd::EventPayloadType_PickingTooltipTextRequest) break;
                 PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)e.payload;
-                if (req->hit.domain == PickingDomain_PoreNetwork) network_tooltip(&req->sb, req->hit.local_idx);
+                if (req->hit.domain == PickingDomain_PoreNetwork) network_tooltip(req, req->hit.local_idx);
                 break;
             }
             default:
@@ -741,14 +746,14 @@ struct VoidAnalysis : viamd::EventHandler {
     void cancel_field_pass() {
         if (!field_pass) return;
         field_pass->cancel = true;
-        task_system::task_interrupt(field_pass->task_work);
+        field_pass->job.cancel();
         field_pass = nullptr;
     }
 
     void cancel_height_pass() {
         if (!height_pass) return;
         height_pass->cancel = true;
-        task_system::task_interrupt(height_pass->task_work);
+        height_pass->job.cancel();
         height_pass = nullptr;
     }
 
@@ -796,60 +801,31 @@ struct VoidAnalysis : viamd::EventHandler {
         p->planes_per_slab = void_profile_planes_per_slab(g.dim[2], MAX_SLABS);
         p->num_slabs       = void_profile_num_slabs(g.dim[2], p->planes_per_slab);
 
-        // Thread 0 is the main thread, which does not take part here but is counted so that any
-        // thread index the pool reports has an accumulator of its own.
-        p->num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
+        // One accumulator for every thread the pool reports an index for (task_system::thread_index), the main
+        // thread's included
+        p->num_threads = MAX((size_t)1, (size_t)task_system::num_threads());
 
         const uint32_t num_tiles = void_field_num_tiles(&g);
-
-        const task_system::ID setup = task_system::create_pool_task(STR_LIT("Void field setup"), [p, num_voxels]() {
-            if (p->cancelled()) return;
-            md_allocator_i* heap = md_get_heap_allocator();
-            p->in.build();
-            if (p->materialize) {
-                md_array_resize(p->field, num_voxels, heap);
-                if (!p->field) { p->fail("Could not allocate the materialized field"); return; }
-            }
-
-            const size_t hist_stride = (size_t)p->num_slabs * NUM_BINS;
-            const size_t per_thread  = hist_stride + 2 * (size_t)p->num_slabs;
-            md_array_resize(p->accum_mem, p->num_threads * per_thread, heap);
-            md_array_resize(p->accum, p->num_threads, heap);
-            for (size_t i = 0; i < p->num_threads; ++i) {
-                uint64_t* base = p->accum_mem + i * per_thread;
-                p->accum[i] = {};
-                p->accum[i].hist  = base;
-                p->accum[i].solid = base + hist_stride;
-                p->accum[i].total = base + hist_stride + p->num_slabs;
-                void_field_accum_reset(&p->accum[i], p->num_slabs, NUM_BINS);
-            }
-
-            // The bins are the resolution in R of every accessible volume reported later, so they
-            // are deliberately finer than the voxel spacing: R is a continuous parameter and the
-            // voxelization, not the binning, is what should be limiting.
-            p->desc = {};
-            p->desc.beads           = p->in.beads;
-            p->desc.cell            = &p->in.cell;
-            p->desc.grid            = &p->grid;
-            p->desc.max_dist        = p->max_dist;
-            p->desc.planes_per_slab = p->planes_per_slab;
-            p->desc.num_bins        = NUM_BINS;
-            p->desc.field           = p->field;
-            p->phase = Phase_Work;
-        });
-
-        // Per thread accumulators: nothing is shared while the tiles run
-        // One tile at a time within a range, so a cancel lands within a tile rather than a range
         p->work_total = num_tiles;
-        p->task_work = task_system::create_pool_task(STR_LIT("Void distance field"), num_tiles, [p](uint32_t beg, uint32_t end, uint32_t thread_num) {
-            const size_t ti = MIN(p->num_threads - 1, (size_t)thread_num);
-            for (uint32_t t = beg; t < end && !p->cancelled(); ++t) {
-                void_field_eval_tiles(&p->accum[ti], &p->desc, t, t + 1);
-                p->work_done.fetch_add(1, std::memory_order_relaxed);
-            }
-        }, 1);
 
-        const task_system::ID finish = task_system::create_pool_task(STR_LIT("Void field reduce"), [p, num_voxels]() {
+        // One job: the setup, which builds the structure and is not divisible; the tiles, over the pool, one at a
+        // time within a range so that a cancel lands within a tile rather than a range; the reduction of the per
+        // thread accumulators. The install is its follow-up on the main thread.
+        field_pass = p;
+        p->job.start(STR_LIT("Void distance field"), [p, num_voxels, num_tiles]() {
+            setup_field_pass(p, num_voxels);
+
+            // Per thread accumulators: nothing is shared while the tiles run
+            if (!p->cancelled()) {
+                task_system::parallel_for(num_tiles, 1, [p](uint32_t beg, uint32_t end) {
+                    const size_t ti = MIN(p->num_threads - 1, (size_t)task_system::thread_index());
+                    for (uint32_t t = beg; t < end && !p->cancelled(); ++t) {
+                        void_field_eval_tiles(&p->accum[ti], &p->desc, t, t + 1);
+                        p->work_done.fetch_add(1, std::memory_order_relaxed);
+                    }
+                });
+            }
+
             p->phase = Phase_Finish;
             if (!p->cancelled()) finish_field_pass(p, num_voxels);
             p->in.release();
@@ -859,18 +835,47 @@ struct VoidAnalysis : viamd::EventHandler {
             p->accum_mem = 0;
             p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
             if (p->state == Pass_Running) p->state = p->cancelled() ? Pass_Failed : Pass_Done;
-        });
-
-        const task_system::ID install = task_system::create_main_task(STR_LIT("Void field install"), [this, p]() {
+        }, [this, p](task_system::Status s) {
+            p->settle(s);
             install_field_pass(p);
         });
+    }
 
-        task_system::set_task_dependency(p->task_work, setup);
-        task_system::set_task_dependency(finish, p->task_work);
-        task_system::set_task_dependency(install, finish);
+    // Pool thread, the job's. Stops early, leaving the rest to see cancelled(), if the pass is abandoned or fails.
+    static void setup_field_pass(FieldPass* p, size_t num_voxels) {
+        if (p->cancelled()) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+        p->in.build();
+        if (p->materialize) {
+            md_array_resize(p->field, num_voxels, heap);
+            if (!p->field) { p->fail("Could not allocate the materialized field"); return; }
+        }
 
-        field_pass = p;
-        task_system::enqueue_task(setup);
+        const size_t hist_stride = (size_t)p->num_slabs * NUM_BINS;
+        const size_t per_thread  = hist_stride + 2 * (size_t)p->num_slabs;
+        md_array_resize(p->accum_mem, p->num_threads * per_thread, heap);
+        md_array_resize(p->accum, p->num_threads, heap);
+        for (size_t i = 0; i < p->num_threads; ++i) {
+            uint64_t* base = p->accum_mem + i * per_thread;
+            p->accum[i] = {};
+            p->accum[i].hist  = base;
+            p->accum[i].solid = base + hist_stride;
+            p->accum[i].total = base + hist_stride + p->num_slabs;
+            void_field_accum_reset(&p->accum[i], p->num_slabs, NUM_BINS);
+        }
+
+        // The bins are the resolution in R of every accessible volume reported later, so they
+        // are deliberately finer than the voxel spacing: R is a continuous parameter and the
+        // voxelization, not the binning, is what should be limiting.
+        p->desc = {};
+        p->desc.beads           = p->in.beads;
+        p->desc.cell            = &p->in.cell;
+        p->desc.grid            = &p->grid;
+        p->desc.max_dist        = p->max_dist;
+        p->desc.planes_per_slab = p->planes_per_slab;
+        p->desc.num_bins        = NUM_BINS;
+        p->desc.field           = p->field;
+        p->phase = Phase_Work;
     }
 
     // Pool thread. Everything here reads and writes the pass only.
@@ -1141,31 +1146,32 @@ struct VoidAnalysis : viamd::EventHandler {
         p->result_gen = result_gen;
         snapshot_beads(&p->in);
 
-        const task_system::ID setup = task_system::create_pool_task(STR_LIT("Void topography setup"), [p, n]() {
-            if (p->cancelled()) return;
-            md_allocator_i* heap = md_get_heap_allocator();
-            p->in.build();
-            md_array_resize(p->top, n, heap);
-            md_array_resize(p->bot, n, heap);
-            md_array_resize(p->thk, n, heap);
-            p->desc = {};
-            p->desc.beads        = p->in.beads;
-            p->desc.grid         = &p->grid;
-            p->desc.probe_radius = p->probe;
-            p->desc.max_dist     = p->max_dist;
-            p->phase = Phase_Work;
-        });
-
         p->work_total = void_heightmap_num_patches(&p->grid);
-        p->task_work = task_system::create_pool_task(STR_LIT("Void surface topography"), p->work_total,
-            [p](uint32_t beg, uint32_t end, uint32_t) {
-                for (uint32_t i = beg; i < end && !p->cancelled(); ++i) {
-                    void_heightmap_eval_patches(p->top, p->bot, &p->desc, i, i + 1);
-                    p->work_done.fetch_add(1, std::memory_order_relaxed);
-                }
-            }, 1);
+        const uint32_t num_patches = p->work_total;
 
-        const task_system::ID finish = task_system::create_pool_task(STR_LIT("Void topography reduce"), [p, n]() {
+        height_pass = p;
+        p->job.start(STR_LIT("Void surface topography"), [p, n, num_patches]() {
+            if (!p->cancelled()) {
+                md_allocator_i* heap = md_get_heap_allocator();
+                p->in.build();
+                md_array_resize(p->top, n, heap);
+                md_array_resize(p->bot, n, heap);
+                md_array_resize(p->thk, n, heap);
+                p->desc = {};
+                p->desc.beads        = p->in.beads;
+                p->desc.grid         = &p->grid;
+                p->desc.probe_radius = p->probe;
+                p->desc.max_dist     = p->max_dist;
+                p->phase = Phase_Work;
+
+                task_system::parallel_for(num_patches, 1, [p](uint32_t beg, uint32_t end) {
+                    for (uint32_t i = beg; i < end && !p->cancelled(); ++i) {
+                        void_heightmap_eval_patches(p->top, p->bot, &p->desc, i, i + 1);
+                        p->work_done.fetch_add(1, std::memory_order_relaxed);
+                    }
+                });
+            }
+
             p->phase = Phase_Finish;
             if (!p->cancelled()) {
                 for (size_t i = 0; i < n; ++i) {
@@ -1180,18 +1186,10 @@ struct VoidAnalysis : viamd::EventHandler {
             p->in.release();
             p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
             if (p->state == Pass_Running) p->state = p->cancelled() ? Pass_Failed : Pass_Done;
-        });
-
-        const task_system::ID install = task_system::create_main_task(STR_LIT("Void topography install"), [this, p]() {
+        }, [this, p](task_system::Status s) {
+            p->settle(s);
             install_height_pass(p);
         });
-
-        task_system::set_task_dependency(p->task_work, setup);
-        task_system::set_task_dependency(finish, p->task_work);
-        task_system::set_task_dependency(install, finish);
-
-        height_pass = p;
-        task_system::enqueue_task(setup);
     }
 
     void install_height_pass(HeightPass* p) {
@@ -1318,8 +1316,8 @@ struct VoidAnalysis : viamd::EventHandler {
             defer { md_free(md_get_heap_allocator(), buf, bytes); };
 
             const float* src = field;
-            task_system::ID task = task_system::create_pool_task(STR_LIT("Void field downsample"), (uint32_t)dd[2],
-                [buf, src, d, dd, s](uint32_t range_beg, uint32_t range_end, uint32_t) {
+            task_system::parallel_for((uint32_t)dd[2], 1,
+                [buf, src, d, dd, s](uint32_t range_beg, uint32_t range_end) {
                     for (uint32_t k = range_beg; k < range_end; ++k) {
                         for (int j = 0; j < dd[1]; ++j) {
                             for (int i = 0; i < dd[0]; ++i) {
@@ -1338,9 +1336,7 @@ struct VoidAnalysis : viamd::EventHandler {
                             }
                         }
                     }
-                }, 1);
-            task_system::enqueue_task(task);
-            task_system::task_wait_for(task);
+                });
 
             gl::set_texture_3D_data(vol_tex, 0, buf, GL_R32F);
         }
@@ -1407,7 +1403,7 @@ struct VoidAnalysis : viamd::EventHandler {
             clip_max.z = CLAMP((float)((void_profile_z_hi(&p, region_end - 1) - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
         }
 
-        volume::RenderDesc desc = {};
+        volume::DvrRenderDesc desc = {};
         desc.render_target.depth  = state.gbuffer.tex.depth;
         desc.render_target.color  = state.gbuffer.tex.transparency;
         desc.render_target.width  = state.gbuffer.width;
@@ -1424,22 +1420,13 @@ struct VoidAnalysis : viamd::EventHandler {
         desc.clip_volume.min = clip_min;
         desc.clip_volume.max = clip_max;
 
-        desc.temporal.enabled = state.visuals.temporal_aa.enabled;
+        // Jittered when the frame is: taa_active() in main.cpp
+        desc.temporal.enabled = state.visuals.anti_aliasing.enabled && state.visuals.anti_aliasing.mode == AntiAliasingMode::TAA;
 
-        desc.dvr.enabled      = true;
-        desc.dvr.min_tf_value = 0.0f;
-        desc.dvr.max_tf_value = (float)vol_tf_max();
+        desc.tf.min_value = 0.0f;
+        desc.tf.max_value = (float)vol_tf_max();
 
-        desc.shading.env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f;
-        desc.shading.roughness    = 0.3f;
-        desc.shading.dir_radiance = {10, 10, 10};
-        desc.shading.ior          = 1.5f;
-        desc.shading.exposure     = state.visuals.tonemapping.exposure;
-        desc.shading.gamma        = state.visuals.tonemapping.gamma;
-
-        desc.voxel_spacing = vol_spacing;
-
-        volume::render_volume(desc);
+        volume::render_dvr(desc);
     }
 
     // A(r) = -dV_acc/dr, and with |grad d| = 1 almost everywhere the coarea formula makes that
@@ -1642,7 +1629,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const size_t num_sampled = (state.num_atoms + stride - 1) / stride;
         const size_t num_types   = MAX((size_t)1, sys.atom.type.count);
 
-        const size_t num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
+        const size_t num_threads = MAX((size_t)1, (size_t)task_system::num_threads());
         double* acc_area  = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
         double* acc_area2 = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
         double* acc_mass  = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
@@ -1656,9 +1643,9 @@ struct VoidAnalysis : viamd::EventHandler {
         // within two radii. Bounding the query here keeps the traversal to the immediate neighborhood.
         const double query_max_dist = 2.0 * max_rad + 1.0;
 
-        task_system::ID task = task_system::create_pool_task(STR_LIT("Accessible surface area"), (uint32_t)num_sampled,
-            [&](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                const size_t ti = MIN(num_threads - 1, (size_t)thread_num);
+        task_system::parallel_for((uint32_t)num_sampled, 64,
+            [&](uint32_t range_beg, uint32_t range_end) {
+                const size_t ti = MIN(num_threads - 1, (size_t)task_system::thread_index());
                 double* my_type = acc_type + ti * num_types;
 
                 float px[SASA_MAX_POINTS], py[SASA_MAX_POINTS], pz[SASA_MAX_POINTS];
@@ -1687,13 +1674,10 @@ struct VoidAnalysis : viamd::EventHandler {
                     acc_area2[ti] += area * area;
                     acc_mass [ti] += (double)md_atom_mass(&sys.atom, i);
 
-                    const size_t type = (size_t)md_atom_type_idx(&sys.atom, i);
+                    const size_t type = (size_t)md_atom_particle_type_idx(&sys.atom, i);
                     if (type < num_types) my_type[type] += area;
                 }
-            }, 64);
-
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
+            });
 
         md_array_resize(sasa.type_area, num_types, arena);
         MEMSET(sasa.type_area, 0, num_types * sizeof(double));
@@ -1758,6 +1742,7 @@ struct VoidAnalysis : viamd::EventHandler {
     void cancel_network_pass() {
         if (!net_pass) return;
         net_pass->cancel = true;
+        net_pass->job.cancel();
         net_pass = nullptr;
     }
 
@@ -1815,7 +1800,8 @@ struct VoidAnalysis : viamd::EventHandler {
         p->result_gen = result_gen;
         p->work_total = 1000;
 
-        p->task_work = task_system::create_pool_task(STR_LIT("Void pore network"), [p]() {
+        net_pass = p;
+        p->job.start(STR_LIT("Void pore network"), [p]() {
             md_allocator_i* heap = md_get_heap_allocator();
             p->phase = Phase_Work;
             if (!p->cancelled() && !pore_network_build(&p->net, &p->f, p->r_min, p->merge, heap, network_progress, p)) {
@@ -1861,15 +1847,10 @@ struct VoidAnalysis : viamd::EventHandler {
 
             p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
             p->state   = p->cancelled() ? Pass_Failed : Pass_Done;
-        });
-
-        const task_system::ID install = task_system::create_main_task(STR_LIT("Void pore network install"), [this, p]() {
+        }, [this, p](task_system::Status s) {
+            p->settle(s);
             install_network_pass(p);
         });
-        task_system::set_task_dependency(install, p->task_work);
-
-        net_pass = p;
-        task_system::enqueue_task(p->task_work);
     }
 
     // Main thread. The previous network stays up until this replaces it.
@@ -1934,7 +1915,7 @@ struct VoidAnalysis : viamd::EventHandler {
     // near white on a dark one. No hue survives both, and every hue is already spent on the classes.
     static uint32_t focus_color(const ApplicationState& state) {
         const vec3_t c = state.visuals.background.color;
-        const float  lum = (0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z) * state.visuals.background.intensity;
+        const float  lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
         return (lum > 0.5f) ? PORE_FOCUS_ON_LIGHT : PORE_FOCUS_ON_DARK;
     }
 
@@ -2207,16 +2188,17 @@ struct VoidAnalysis : viamd::EventHandler {
         immediate::points(scope, pts, md_array_size(pts));
     }
 
-    void network_tooltip(md_strb_t* sb, uint32_t i) const {
+    // PICKING TOOLTIP in viamd.cpp: a title, then a row per property, keys and our own words in lower case
+    void network_tooltip(PickingTooltipTextRequest* req, uint32_t i) const {
         if (!has_net || i >= md_array_size(net.vertices)) return;
         const pore_vertex_t& v = net.vertices[i];
         const double nm  = (double)ANGSTROM_PER_NM;
         const double nm3 = nm * nm * nm;
 
-        md_strb_fmt(sb, "Pore %u\n", i);
-        md_strb_fmt(sb, "Radius: %.2f nm (largest sphere that fits)\n", v.radius / nm);
-        md_strb_fmt(sb, "Volume: %.4g nm^3\n", (double)v.num_voxels * net.voxel_volume / nm3);
-        md_strb_fmt(sb, "Centre: %.1f, %.1f, %.1f nm\n", v.pos[0] / nm, v.pos[1] / nm, v.pos[2] / nm);
+        tooltip_title(req, "pore %u", i);
+        tooltip_row(req, STR_LIT("radius"), "%.2f nm (largest sphere that fits)", v.radius / nm);
+        tooltip_row(req, STR_LIT("volume"), "%.4g nm\xC2\xB3", (double)v.num_voxels * net.voxel_volume / nm3);
+        tooltip_row(req, STR_LIT("centre"), "%.1f, %.1f, %.1f nm", v.pos[0] / nm, v.pos[1] / nm, v.pos[2] / nm);
 
         const uint32_t deg = net.adj_offset[i + 1] - net.adj_offset[i];
         if (deg > 0) {
@@ -2228,19 +2210,23 @@ struct VoidAnalysis : viamd::EventHandler {
                 t_max = MAX(t_max, r);
                 passable += (r >= probe_radius);
             }
-            md_strb_fmt(sb, "Throats: %u, %.2f to %.2f nm, %u wide enough for the probe\n", deg, t_min / nm, t_max / nm, passable);
+            tooltip_row(req, STR_LIT("throats"), "%u, %.2f to %.2f nm, %u wide enough for the probe", deg, t_min / nm, t_max / nm, passable);
         } else {
-            md_strb_fmt(sb, "Throats: none\n");
+            tooltip_row(req, STR_LIT("throats"), "none");
         }
-        if (v.face_top    >= 0.0f) md_strb_fmt(sb, "Opens on the top face, %.2f nm wide\n", v.face_top / nm);
-        if (v.face_bottom >= 0.0f) md_strb_fmt(sb, "Opens on the bottom face, %.2f nm wide\n", v.face_bottom / nm);
+        if (v.face_top    >= 0.0f) tooltip_row(req, STR_LIT("top face"),    "open, %.2f nm wide", v.face_top / nm);
+        if (v.face_bottom >= 0.0f) tooltip_row(req, STR_LIT("bottom face"), "open, %.2f nm wide", v.face_bottom / nm);
 
         if (i < md_array_size(net_class)) {
-            md_strb_fmt(sb, "Probe %.2f nm: %s", probe_radius / nm, pore_class_lbl[net_class[i]]);
+            // The legend's label, which is capitalised
+            char cls[64];
+            const int len = snprintf(cls, sizeof(cls), "%s", pore_class_lbl[net_class[i]]);
+            convert_to_lower(cls, (size_t)CLAMP(len, 0, (int)sizeof(cls) - 1));
+            tooltip_row(req, STR_LIT("class"), "%s at probe %.2f nm", cls, probe_radius / nm);
         }
         for (size_t k = 0; k < md_array_size(net_route); ++k) {
             if (net_route[k] == i) {
-                md_strb_fmt(sb, "\nOn the widest route, pore %zu of %zu from the top", k + 1, md_array_size(net_route));
+                tooltip_row(req, STR_LIT("widest route"), "pore %zu of %zu from the top", k + 1, md_array_size(net_route));
                 break;
             }
         }
@@ -2860,7 +2846,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
                 // Per bead type. This is the differential hydration question: if the trajectory does not preserve
                 // face identity, every bead lands in one bucket and that shows up here first.
-                const md_atom_type_data_t& type = app_state->mold.sys.atom.type;
+                const md_particle_type_data_t& type = app_state->mold.sys.atom.type;
                 if (md_array_size(sasa.type_area) > 1 && type.name) {
                     if (ImGui::BeginTable("##type_area", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp)) {
                         ImGui::TableSetupColumn("Type");
@@ -2871,7 +2857,8 @@ struct VoidAnalysis : viamd::EventHandler {
                             if (sasa.type_area[k] <= 0.0) continue;
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0);
-                            ImGui::Text("%.*s", (int)type.name[k].len, type.name[k].buf);
+                            const str_t name = LBL_TO_STR(type.name[k]);
+                            ImGui::Text("%.*s", (int)name.len, name.ptr);
                             ImGui::TableSetColumnIndex(1);
                             ImGui::Text("%.4g", sasa.type_area[k] / (double)(ANGSTROM_PER_NM * ANGSTROM_PER_NM));
                             ImGui::TableSetColumnIndex(2);

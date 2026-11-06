@@ -27,12 +27,11 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_hash.h>
 #include <core/md_fft.h>
 
 #include <md_gisaxs.h>
-#include <md_filter.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <md_csv.h>
@@ -378,10 +377,8 @@ struct ScatteringComponent : viamd::EventHandler {
     // --- Structure stage ---
     md_gisaxs_t* ctx = nullptr;              // Owned. Valid for evaluation when compute_state == Done
     std::atomic<int> compute_state{ComputeState_Idle};
-    std::atomic<bool> compute_cancel{false};
-    task_system::ID task_slices = task_system::INVALID_ID;
-    task_system::ID task_rings  = task_system::INVALID_ID;
-    task_system::ID task_finish = task_system::INVALID_ID;
+    std::atomic<bool> compute_failed{false}; // A worker could not get its scratch
+    task_system::Job compute_job;            // Slices, then rings; its on_main settles compute_state
     md_array(void*) scratch = nullptr;       // per worker thread slice scratch
     size_t scratch_bytes = 0;
     uint64_t structure_hash = 0;             // Hash of the inputs used for the current ctx
@@ -394,8 +391,7 @@ struct ScatteringComponent : viamd::EventHandler {
     double compute_time = 0.0;
 
     // --- Model stage ---
-    task_system::ID task_eval_range = task_system::INVALID_ID;   // The evaluation itself
-    task_system::ID task_eval = task_system::INVALID_ID;         // Completion of the evaluation (sets eval_ready)
+    task_system::Job eval_job;               // The evaluation; its on_main sets eval_ready when it completed
     std::atomic<bool> eval_ready{false};
     uint64_t eval_hash_pending = 0;          // Hash of the model currently being evaluated
     uint64_t eval_hash_shown = 0;            // Hash of the model currently shown
@@ -729,19 +725,13 @@ struct ScatteringComponent : viamd::EventHandler {
     // ---------------------------------------------------------------------------------------------
 
     void cancel_all() {
-        compute_cancel = true;
-        task_system::task_interrupt_and_wait_for(task_slices);
-        task_system::task_interrupt_and_wait_for(task_rings);
-        task_system::task_wait_for(task_finish);
-        // A partial evaluation still completes (and sets eval_ready), it is discarded below
-        task_system::task_interrupt(task_eval_range);
-        task_system::task_wait_for(task_eval);
-        task_slices = task_rings = task_finish = task_eval_range = task_eval = task_system::INVALID_ID;
+        compute_job.cancel_and_wait();
+        // A cancelled evaluation is partial: its on_main leaves eval_ready alone
+        eval_job.cancel_and_wait();
         if (compute_state.load() == ComputeState_Running) {
             compute_state = ComputeState_Idle;
         }
         eval_ready = false;
-        compute_cancel = false;
     }
 
     void free_scratch() {
@@ -972,12 +962,12 @@ struct ScatteringComponent : viamd::EventHandler {
         size_t size() const { return x.size(); }
     };
 
-    bool gather_particles(Particles* p, const md_bitfield_t& mask) {
+    bool gather_particles(Particles* p, md_bitset_t mask) {
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& state = app_state->mold.state;
         const size_t num_atoms = sys.atom.count;
         const bool has_types = sys.atom.type_idx != nullptr;
-        const size_t count = md_bitfield_popcount(&mask);
+        const size_t count = (size_t)md_bitset_count(mask);
         p->x.reserve(count); p->y.reserve(count); p->z.reserve(count);
         p->w.reserve(count); p->gw.reserve(count); p->s.reserve(count);
         p->atom_idx.reserve(count);
@@ -1005,9 +995,9 @@ struct ScatteringComponent : viamd::EventHandler {
 #endif
 
         size_t num_zero_weight = 0;
-        md_bitfield_iter_t it = md_bitfield_iter_create(&mask);
-        while (md_bitfield_iter_next(&it)) {
-            const size_t idx = md_bitfield_iter_idx(&it);
+        md_bitset_iter_t it = md_bitset_iter(mask);
+        while (md_bitset_iter_next(&it)) {
+            const size_t idx = it.idx;
             if (idx >= num_atoms) continue;
             float w = 0.0f, gw = 0.0f;
 #if VIAMD_SCATTERING_NEUTRON
@@ -1105,15 +1095,16 @@ struct ScatteringComponent : viamd::EventHandler {
         }
 
         // Selection
-        md_bitfield_t mask = {0};
-        md_bitfield_init(&mask, alloc);
-        defer { md_bitfield_free(&mask); };
-        filter_valid = md_filter(&mask, str_from_cstr(filter), &sys, &state, app_state->script.ir, NULL, filter_err, sizeof(filter_err));
+        md_bitset_t mask = md_bitset_empty_set();
+        defer { md_bitset_free(&mask, alloc); };
+        const script::FilterResult fr = script::filter(app_state->script.language, &mask, str_from_cstr(filter), filter_context(app_state), alloc);
+        filter_valid = fr.success;
+        snprintf(filter_err, sizeof(filter_err), "%s", fr.error);
         if (!filter_valid) {
             snprintf(status, sizeof(status), "Invalid selection: %s", filter_err);
             return false;
         }
-        if (md_bitfield_popcount(&mask) == 0) {
+        if (md_bitset_count(mask) == 0) {
             snprintf(status, sizeof(status), "Selection is empty");
             return false;
         }
@@ -1202,39 +1193,50 @@ struct ScatteringComponent : viamd::EventHandler {
             info.num_particles, info.nx, info.ny, info.dx, info.num_slices, info.dz, info.num_rings, info.num_classes,
             info.spectra_bytes / (1024.0 * 1024.0), info.matrix_bytes / (1024.0 * 1024.0));
 
-        // Per thread scratch, allocated lazily by each worker
-        const size_t num_threads = MAX(task_system::pool_num_threads(), 1);
+        // Per thread scratch, allocated lazily by each worker, indexed by task_system::thread_index()
+        const size_t num_threads = MAX((size_t)task_system::num_threads(), (size_t)1);
         md_array_resize(scratch, num_threads, alloc);
         for (size_t i = 0; i < num_threads; ++i) scratch[i] = nullptr;
         scratch_bytes = md_gisaxs_slice_scratch_bytes(ctx);
 
         compute_state = ComputeState_Running;
-        compute_cancel = false;
+        compute_failed = false;
         compute_time_start = ImGui::GetTime();
 
-        task_slices = task_system::create_pool_task(STR_LIT("Scattering slices"), (uint32_t)info.num_slices, [this](uint32_t beg, uint32_t end, uint32_t thread_num) {
-            if (compute_cancel) return;
-            if (thread_num >= md_array_size(scratch)) return;   // Should not happen
-            if (!scratch[thread_num]) {
-                scratch[thread_num] = md_fft_alloc(scratch_bytes);
-                if (!scratch[thread_num]) { compute_cancel = true; return; }
+        // Slices, then rings, which read every slice: each over the pool, the slices 80% of the progress. The
+        // spectra are released whatever happened, as a failed or cancelled ctx is destroyed in update().
+        const uint32_t num_slices = (uint32_t)info.num_slices;
+        const uint32_t num_rings  = (uint32_t)info.num_rings;
+        compute_job.start(STR_LIT("Scattering"), [this, num_slices, num_rings]() {
+            std::atomic<uint32_t> done{0};
+            task_system::parallel_for(num_slices, 1, [this, num_slices, &done](uint32_t beg, uint32_t end) {
+                if (compute_failed) return;
+                const uint32_t thread_num = task_system::thread_index();
+                if (thread_num >= md_array_size(scratch)) { compute_failed = true; return; }   // Should not happen
+                if (!scratch[thread_num]) {
+                    scratch[thread_num] = md_fft_alloc(scratch_bytes);
+                    if (!scratch[thread_num]) { compute_failed = true; return; }
+                }
+                md_gisaxs_compute_slices(ctx, beg, end, scratch[thread_num]);
+                const uint32_t d = done.fetch_add(end - beg, std::memory_order_relaxed) + (end - beg);
+                task_system::set_progress(0.8f * (float)d / (float)num_slices);
+            });
+
+            if (!compute_failed && !task_system::cancelled()) {
+                done = 0;
+                task_system::parallel_for(num_rings, 1, [this, num_rings, &done](uint32_t beg, uint32_t end) {
+                    md_gisaxs_compute_rings(ctx, beg, end);
+                    const uint32_t d = done.fetch_add(end - beg, std::memory_order_relaxed) + (end - beg);
+                    task_system::set_progress(0.8f + 0.2f * (float)d / (float)num_rings);
+                });
             }
-            md_gisaxs_compute_slices(ctx, beg, end, scratch[thread_num]);
-        });
 
-        task_rings = task_system::create_pool_task(STR_LIT("Scattering rings"), (uint32_t)info.num_rings, [this](uint32_t beg, uint32_t end, uint32_t) {
-            if (compute_cancel) return;
-            md_gisaxs_compute_rings(ctx, beg, end);
-        });
-
-        task_finish = task_system::create_pool_task(STR_LIT("##Scattering finalize"), [this]() {
             md_gisaxs_release_spectra(ctx);
-            compute_state = compute_cancel ? ComputeState_Failed : ComputeState_Done;
+        }, [this](task_system::Status s) {
+            // Set back by cancel_all since: not this job's to settle
+            if (compute_state.load() != ComputeState_Running) return;
+            compute_state = (s == task_system::Status::Completed && !compute_failed) ? ComputeState_Done : ComputeState_Failed;
         });
-
-        task_system::set_task_dependency(task_rings, task_slices);
-        task_system::set_task_dependency(task_finish, task_rings);
-        task_system::enqueue_task(task_slices);
 
         snprintf(status, sizeof(status), "Computing: %zu particles, %i x %i grid, %zu slices, %zu rings",
             info.num_particles, info.nx, info.ny, info.num_slices, info.num_rings);
@@ -1260,15 +1262,12 @@ struct ScatteringComponent : viamd::EventHandler {
         eval_hash_pending = hash;
         eval_ready = false;
 
-        task_eval_range = task_system::create_pool_task(STR_LIT("Scattering evaluate"), (uint32_t)Nq, [this](uint32_t beg, uint32_t end, uint32_t) {
+        eval_job.start_for(STR_LIT("Scattering evaluate"), (uint32_t)Nq, 4, [this](uint32_t beg, uint32_t end) {
             md_gisaxs_evaluate_range(ctx, &eval_model, eval_qz.data(), beg, end, eval_out.data());
-        }, 4);
-        // Bookkeeping only, hidden from the async task overlay ("##")
-        task_eval = task_system::create_pool_task(STR_LIT("##Scattering evaluate done"), [this]() {
-            eval_ready = true;
+        }, [this](task_system::Status s) {
+            // A cancelled evaluation is partial: dropped, and update() starts it again if it is still wanted
+            if (s == task_system::Status::Completed) eval_ready = true;
         });
-        task_system::set_task_dependency(task_eval, task_eval_range);
-        task_system::enqueue_task(task_eval_range);
     }
 
     void accept_eval() {
@@ -1326,7 +1325,6 @@ struct ScatteringComponent : viamd::EventHandler {
         eval_hash_shown = eval_hash_pending;
         res_dirty = true;
         eval_ready = false;
-        task_eval_range = task_eval = task_system::INVALID_ID;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1339,7 +1337,6 @@ struct ScatteringComponent : viamd::EventHandler {
             // Structure stage finished
             free_scratch();
             compute_time = ImGui::GetTime() - compute_time_start;
-            task_slices = task_rings = task_finish = task_system::INVALID_ID;
             md_gisaxs_info_t info;
             md_gisaxs_get_info(ctx, &info);
             snprintf(status, sizeof(status), "%zu particles, %i x %i grid (%.1f Å), %zu slices (%.1f Å), %zu rings, %zu class(es) - %.2f s",
@@ -1360,7 +1357,7 @@ struct ScatteringComponent : viamd::EventHandler {
         // The particle weights depend on the radiation, a result computed for the other one is not re-evaluated
         ctx_matches = ctx_matches && ctx_radiation == radiation;
 #endif
-        if (ctx_matches && !task_system::task_is_running(task_eval) && !eval_ready.load()) {
+        if (ctx_matches && !eval_job.running() && !eval_ready.load()) {
             const md_gisaxs_model_t model = build_model();
             const uint64_t h = hash_model(model);
             if (h != eval_hash_shown) {
@@ -1557,19 +1554,12 @@ struct ScatteringComponent : viamd::EventHandler {
     void draw_compute_bar() {
         const bool running = compute_state.load() == ComputeState_Running;
         if (running) {
-            float frac = 1.0f;
-            if (task_system::task_is_running(task_slices)) {
-                frac = 0.8f * task_system::task_fraction_complete(task_slices);
-            } else if (task_system::task_is_running(task_rings)) {
-                frac = 0.8f + 0.2f * task_system::task_fraction_complete(task_rings);
-            }
+            const float frac = MAX(compute_job.progress(), 0.0f);    // negative until the first slices are done
             const float bw = ImGui::GetContentRegionAvail().x;
             ImGui::ProgressBar(frac, ImVec2(bw * 0.7f, 0));
             ImGui::SameLine();
             if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
-                compute_cancel = true;
-                task_system::task_interrupt(task_slices);
-                task_system::task_interrupt(task_rings);
+                compute_job.cancel();
             }
         } else {
             const bool inputs_changed = ctx && (hash_structure_inputs() != structure_hash);
