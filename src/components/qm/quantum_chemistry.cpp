@@ -3,14 +3,18 @@
 #include <event.h>
 #include <viamd_event.h>
 #include <viamd.h>
+#include <representation.h>
 #include <task_system.h>
 #include <color_utils.h>
 
 #include <gfx/volumerender_utils.h>
+#include <gfx/isomesh_utils.h>
+#include <iso_meshes.h>
 #include <gfx/gl_utils.h>
 #include <gfx/immediate_draw_utils.h>
 
 #include <md_gto.h>
+#include <md_gto_iso.h>
 #include <md_util.h>
 #include <md_topo.h>
 #include <md_vector_graphics.h>
@@ -21,6 +25,7 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_os.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -37,6 +42,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <app/IconsFontAwesome6.h>
 
 #define BLK_DIM 8
@@ -95,6 +101,311 @@ constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
+
+// How a critical point of the electron density is shown, by type (md_topo_critical_point_type_t). Named as in
+// Bader's QTAIM (and AIMAll): attractor, bond, ring and cage critical point, with the rank and signature of the
+// Hessian there, (3,-3) to (3,+3); beside it the topological name md_topo uses (maximum, split saddle, join
+// saddle, minimum). An attractor is not called nuclear: non-nuclear attractors exist. The colours are Okabe and
+// Ito's, told apart with each common colour vision deficiency, and none of them is the selection's blue or the
+// highlight's yellow: those mark a point with a ring around it, so a marked point keeps the colour of its type.
+// Size tells the type too: the attractors, at the nuclei, are the largest.
+struct CriticalPointStyle {
+    const char* name;       // QTAIM, as a title
+    const char* label;      // QTAIM, short, for the table and the legend
+    const char* plural;
+    const char* signature;  // (rank, signature)
+    const char* topology;   // md_topo's name
+    const char* topology_plural;
+    vec4_t      color;      // display referred: the overlay goes over the image after the display transform
+    float       radius;     // Å, at a point size of 1
+};
+
+static const CriticalPointStyle critical_point_styles[5] = {
+    { "Undefined",            "Undefined", "Undefined",  "",       "undefined",    "undefined",     {0.60f, 0.60f, 0.60f, 1.0f}, 0.09f },
+    { "Attractor",            "Attractor", "Attractors", "(3,-3)", "maximum",      "maxima",        {0.80f, 0.47f, 0.65f, 1.0f}, 0.12f },   // MD_TOPO_MAXIMUM: reddish purple
+    { "Bond critical point",  "BCP",       "BCPs",       "(3,-1)", "split saddle", "split saddles", {0.90f, 0.62f, 0.00f, 1.0f}, 0.09f },   // MD_TOPO_SPLIT_SADDLE: orange
+    { "Cage critical point",  "CCP",       "CCPs",       "(3,+3)", "minimum",      "minima",        {0.00f, 0.45f, 0.70f, 1.0f}, 0.09f },   // MD_TOPO_MINIMUM: blue
+    { "Ring critical point",  "RCP",       "RCPs",       "(3,+1)", "join saddle",  "join saddles",  {0.00f, 0.62f, 0.45f, 1.0f}, 0.09f },   // MD_TOPO_JOIN_SADDLE: bluish green
+};
+
+static inline const CriticalPointStyle& critical_point_style(int type) {
+    return critical_point_styles[(type >= 0 && type < (int)ARRAY_SIZE(critical_point_styles)) ? type : 0];
+}
+
+// The order the types are listed and sorted in: attractors, bond, ring and cage critical points
+static constexpr int critical_point_type_order[4] = { MD_TOPO_MAXIMUM, MD_TOPO_SPLIT_SADDLE, MD_TOPO_JOIN_SADDLE, MD_TOPO_MINIMUM };
+
+static inline int critical_point_type_rank(int type) {
+    for (int k = 0; k < 4; ++k) if (critical_point_type_order[k] == type) return k;
+    return 4;
+}
+
+// The type's marker as a swatch of the text's height, for a legend or a table cell
+static void critical_point_swatch(int type) {
+    const vec4_t c = critical_point_style(type).color;
+    const float h = ImGui::GetTextLineHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 center = ImVec2(p.x + 0.5f * h, p.y + 0.5f * h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddCircleFilled(center, 0.40f * h, IM_COL32(26, 26, 26, 230));
+    dl->AddCircleFilled(center, 0.31f * h, ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0f)));
+    ImGui::Dummy(ImVec2(h, h));
+}
+
+// --- Export of the critical points (QuantumChemistry::critical_points_export)
+//
+// Every number is written at the precision it was computed in, so that it reads back to the same bits: the
+// analytic search's points come in double (md_topo_extremum_graph_t::vertices_f64: positions, density and the
+// Hessian there), written with 17 significant digits; the volume pipeline's in float, with 9. Lengths in bohr,
+// the units of the computation, the density in au (e bohr^-3), its second derivatives in e bohr^-5.
+struct CriticalPointsExport {
+    const md_topo_extremum_graph_t* graph = nullptr;
+    bool   analytic  = false;   // else the volume pipeline
+    double rho_min   = 0.0;     // analytic: the threshold of the search
+    bool   complete  = false;   // analytic: every critical point above the threshold is there
+    bool   cancelled = false;
+    str_t  field     = {};      // the density's attribute path
+};
+
+// The Morse index (negative eigenvalues of the Hessian): TTK's CellDimension of a critical point
+static int critical_point_morse_index(int type) {
+    switch (type) {
+    case MD_TOPO_MAXIMUM:      return 3;
+    case MD_TOPO_SPLIT_SADDLE: return 2;
+    case MD_TOPO_JOIN_SADDLE:  return 1;
+    case MD_TOPO_MINIMUM:      return 0;
+    default:                   return -1;
+    }
+}
+
+// A point's position and density in double, from vertices_f64 where the graph has it
+static void critical_point_xyzv(double out[4], const md_topo_extremum_graph_t& g, size_t i) {
+    if (g.vertices_f64) {
+        out[0] = g.vertices_f64[i].x; out[1] = g.vertices_f64[i].y; out[2] = g.vertices_f64[i].z; out[3] = g.vertices_f64[i].value;
+    } else {
+        out[0] = g.vertices[i].x; out[1] = g.vertices[i].y; out[2] = g.vertices[i].z; out[3] = g.vertices[i].value;
+    }
+}
+
+// A number as JSON and VTK read it back exactly: 17 significant digits of a double, 9 of a float. Not finite
+// (which neither format has a literal for in common): JSON null, VTK 0.
+static void write_number(md_file_t file, double x, bool f64, bool json) {
+    if (!isfinite(x)) {
+        md_file_printf(file, json ? "null" : "0");
+    } else {
+        md_file_printf(file, f64 ? "%.17g" : "%.9g", x);
+    }
+}
+
+static void critical_points_write_json(md_file_t f, const CriticalPointsExport& ex) {
+    const md_topo_extremum_graph_t& g = *ex.graph;
+    const bool f64 = g.vertices_f64 != nullptr;
+    md_file_printf(f, "{\n");
+    md_file_printf(f, "  \"format\": \"viamd-critical-points\",\n");
+    md_file_printf(f, "  \"format_version\": 1,\n");
+    md_file_printf(f, "  \"description\": \"Critical points of the electron density and the paths between them, as VIAMD found them (QTAIM terms; md_topo's in topology)\",\n");
+    md_file_printf(f, "  \"units\": {\"length\": \"bohr\", \"density\": \"e bohr^-3\", \"hessian\": \"e bohr^-5\"},\n");
+    md_file_printf(f, "  \"precision\": \"%s\",\n", f64 ? "float64" : "float32");
+    md_file_printf(f, "  \"field\": \"" STR_FMT "\",\n", STR_ARG(ex.field));
+    md_file_printf(f, "  \"method\": \"%s\",\n", ex.analytic ? "analytic" : "volume");
+    if (ex.analytic) {
+        md_file_printf(f, "  \"rho_min\": ");
+        write_number(f, ex.rho_min, true, true);
+        md_file_printf(f, ",\n  \"complete\": %s,\n", ex.complete ? "true" : "false");
+        md_file_printf(f, "  \"cancelled\": %s,\n", ex.cancelled ? "true" : "false");
+    }
+    md_file_printf(f, "  \"critical_points\": [");
+    for (size_t i = 0; i < g.num_vertices; ++i) {
+        const int type = g.types[i];
+        const CriticalPointStyle& s = critical_point_style(type);
+        const int index = critical_point_morse_index(type);
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "%s\n    {\"index\": %zu, \"type\": \"%s\", \"name\": \"%s\", \"rank\": 3, \"signature\": %d, \"topology\": \"%s\", \"morse_index\": %d, \"position\": [",
+                       i ? "," : "", i, s.label, s.name, index >= 0 ? 3 - 2 * index : 0, s.topology, index);
+        for (int k = 0; k < 3; ++k) {
+            if (k) md_file_printf(f, ", ");
+            write_number(f, p[k], f64, true);
+        }
+        md_file_printf(f, "], \"rho\": ");
+        write_number(f, p[3], f64, true);
+        if (f64) {
+            const md_topo_vert_f64_t& d = g.vertices_f64[i];
+            const double* ev = d.hessian_eigenvalues;
+            md_file_printf(f, ", \"laplacian\": ");
+            write_number(f, ev[0] + ev[1] + ev[2], true, true);
+            md_file_printf(f, ", \"hessian_eigenvalues\": [");
+            for (int k = 0; k < 3; ++k) {
+                if (k) md_file_printf(f, ", ");
+                write_number(f, ev[k], true, true);
+            }
+            md_file_printf(f, "], \"hessian_eigenvectors\": [");
+            for (int k = 0; k < 3; ++k) {
+                md_file_printf(f, "%s[", k ? ", " : "");
+                for (int j = 0; j < 3; ++j) {
+                    if (j) md_file_printf(f, ", ");
+                    write_number(f, d.hessian_eigenvectors[k][j], true, true);
+                }
+                md_file_printf(f, "]");
+            }
+            md_file_printf(f, "]");
+            if (type == MD_TOPO_SPLIT_SADDLE) {
+                // lambda1 / lambda2 - 1 of the two negative eigenvalues, |lambda1| >= |lambda2|
+                md_file_printf(f, ", \"ellipticity\": ");
+                write_number(f, ev[0] / ev[1] - 1.0, true, true);
+            }
+        }
+        md_file_printf(f, "}");
+    }
+    md_file_printf(f, "\n  ],\n");
+    md_file_printf(f, "  \"paths\": [");
+    for (size_t i = 0; i < g.num_edges; ++i) {
+        const md_topo_edge_t e = g.edges[i];
+        const bool bond = e.from < g.num_vertices && g.types[e.from] == MD_TOPO_SPLIT_SADDLE;
+        md_file_printf(f, "%s\n    {\"index\": %zu, \"type\": \"%s\", \"saddle\": %u, \"extremum\": %u}",
+                       i ? "," : "", i, bond ? "bond path" : "RCP attractor path", e.from, e.to);
+    }
+    md_file_printf(f, "\n  ],\n");
+    md_file_printf(f, "  \"notes\": [\n");
+    md_file_printf(f, "    \"index: the point's index in this file, which paths refer to. position: bohr.\",\n");
+    md_file_printf(f, "    \"rank, signature: QTAIM's (rank, signature) of the Hessian; morse_index: its number of negative eigenvalues.\",\n");
+    md_file_printf(f, "    \"hessian_eigenvalues: ascending; hessian_eigenvectors[k]: the unit eigenvector of eigenvalue k. ellipticity: bond critical points only.\",\n");
+    md_file_printf(f, "    \"paths: which points a gradient path joins (a bond path from a BCP to an attractor, an RCP attractor path between an RCP and a CCP), not the path's geometry.\"\n");
+    md_file_printf(f, "  ]\n");
+    md_file_printf(f, "}\n");
+}
+
+// VTK XML PolyData: a vertex cell per critical point, a line cell per path, from the saddle to the extremum.
+// The arrays are named as the Topology ToolKit names those of a Morse-Smale complex where they mean the same
+// (CellDimension, CellId; SeparatrixType, SeparatrixId, SourceId, DestinationId), and after QTAIM where TTK
+// has none. A cell array is per cell, vertices first: -1 for a vertex where it is a path's.
+static void critical_points_write_vtp(md_file_t f, const CriticalPointsExport& ex) {
+    const md_topo_extremum_graph_t& g = *ex.graph;
+    const bool f64 = g.vertices_f64 != nullptr;
+    const size_t n = g.num_vertices, m = g.num_edges;
+    const char* real = f64 ? "Float64" : "Float32";
+
+    md_file_printf(f, "<?xml version=\"1.0\"?>\n");
+    md_file_printf(f, "<!-- Critical points of the electron density (" STR_FMT ") and the paths between them, as VIAMD found them\n", STR_ARG(ex.field));
+    md_file_printf(f, "     (%s). Lengths in bohr, the density in au (e bohr^-3), the Hessian in e bohr^-5; %s.\n",
+                   ex.analytic ? "the analytic search" : "the volume pipeline", f64 ? "every number in double, to 17 digits" : "in float, to 9 digits");
+    if (ex.analytic) {
+        md_file_printf(f, "     The search: rho_min %.17g, %s.\n", ex.rho_min, ex.cancelled ? "cancelled" : (ex.complete ? "complete" : "incomplete"));
+    }
+    md_file_printf(f, "     CellDimension: the Morse index (3 attractor, 2 BCP, 1 RCP, 0 CCP); Signature: QTAIM's (3, Signature).\n");
+    md_file_printf(f, "     SeparatrixType: 2 a bond path, 0 an RCP attractor path; the lines join their points, they are not the paths' geometry. -->\n");
+    md_file_printf(f, "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n");
+    md_file_printf(f, "  <PolyData>\n");
+    md_file_printf(f, "    <Piece NumberOfPoints=\"%zu\" NumberOfVerts=\"%zu\" NumberOfLines=\"%zu\" NumberOfStrips=\"0\" NumberOfPolys=\"0\">\n", n, n, m);
+
+    // --- per point
+    md_file_printf(f, "      <PointData Scalars=\"Density\">\n");
+    md_file_printf(f, "        <DataArray type=\"%s\" Name=\"Density\" format=\"ascii\">\n", real);
+    for (size_t i = 0; i < n; ++i) {
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "          ");
+        write_number(f, p[3], f64, false);
+        md_file_printf(f, "\n");
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int32\" Name=\"CellDimension\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %d\n", critical_point_morse_index(g.types[i]));
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int32\" Name=\"Signature\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) {
+        const int index = critical_point_morse_index(g.types[i]);
+        md_file_printf(f, "          %d\n", index >= 0 ? 3 - 2 * index : 0);
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"CellId\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i);
+    md_file_printf(f, "        </DataArray>\n");
+    if (f64) {
+        md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"Laplacian\" format=\"ascii\">\n");
+        for (size_t i = 0; i < n; ++i) {
+            const double* ev = g.vertices_f64[i].hessian_eigenvalues;
+            md_file_printf(f, "          ");
+            write_number(f, ev[0] + ev[1] + ev[2], true, false);
+            md_file_printf(f, "\n");
+        }
+        md_file_printf(f, "        </DataArray>\n");
+        md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"HessianEigenvalues\" NumberOfComponents=\"3\" format=\"ascii\">\n");
+        for (size_t i = 0; i < n; ++i) {
+            md_file_printf(f, "          ");
+            for (int k = 0; k < 3; ++k) {
+                if (k) md_file_printf(f, " ");
+                write_number(f, g.vertices_f64[i].hessian_eigenvalues[k], true, false);
+            }
+            md_file_printf(f, "\n");
+        }
+        md_file_printf(f, "        </DataArray>\n");
+        for (int k = 0; k < 3; ++k) {
+            md_file_printf(f, "        <DataArray type=\"Float64\" Name=\"HessianEigenvector%d\" NumberOfComponents=\"3\" format=\"ascii\">\n", k);
+            for (size_t i = 0; i < n; ++i) {
+                md_file_printf(f, "          ");
+                for (int j = 0; j < 3; ++j) {
+                    if (j) md_file_printf(f, " ");
+                    write_number(f, g.vertices_f64[i].hessian_eigenvectors[k][j], true, false);
+                }
+                md_file_printf(f, "\n");
+            }
+            md_file_printf(f, "        </DataArray>\n");
+        }
+    }
+    md_file_printf(f, "      </PointData>\n");
+
+    // --- per cell: the vertices, then the lines
+    struct { const char* name; } cell_arrays[] = { {"SeparatrixType"}, {"SeparatrixId"}, {"SourceId"}, {"DestinationId"} };
+    md_file_printf(f, "      <CellData>\n");
+    for (int a = 0; a < 4; ++a) {
+        md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"%s\" format=\"ascii\">\n", cell_arrays[a].name);
+        for (size_t i = 0; i < n; ++i) md_file_printf(f, "          -1\n");
+        for (size_t i = 0; i < m; ++i) {
+            const md_topo_edge_t e = g.edges[i];
+            const bool bond = e.from < n && g.types[e.from] == MD_TOPO_SPLIT_SADDLE;
+            const int64_t v = a == 0 ? (bond ? 2 : 0) : a == 1 ? (int64_t)i : a == 2 ? (int64_t)e.from : (int64_t)e.to;
+            md_file_printf(f, "          %lld\n", (long long)v);
+        }
+        md_file_printf(f, "        </DataArray>\n");
+    }
+    md_file_printf(f, "      </CellData>\n");
+
+    md_file_printf(f, "      <Points>\n");
+    md_file_printf(f, "        <DataArray type=\"%s\" Name=\"Points\" NumberOfComponents=\"3\" format=\"ascii\">\n", real);
+    for (size_t i = 0; i < n; ++i) {
+        double p[4];
+        critical_point_xyzv(p, g, i);
+        md_file_printf(f, "          ");
+        for (int k = 0; k < 3; ++k) {
+            if (k) md_file_printf(f, " ");
+            write_number(f, p[k], f64, false);
+        }
+        md_file_printf(f, "\n");
+    }
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Points>\n");
+
+    md_file_printf(f, "      <Verts>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n");
+    for (size_t i = 0; i < n; ++i) md_file_printf(f, "          %zu\n", i + 1);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Verts>\n");
+    md_file_printf(f, "      <Lines>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n");
+    for (size_t i = 0; i < m; ++i) md_file_printf(f, "          %u %u\n", g.edges[i].from, g.edges[i].to);
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n");
+    for (size_t i = 0; i < m; ++i) md_file_printf(f, "          %zu\n", 2 * (i + 1));
+    md_file_printf(f, "        </DataArray>\n");
+    md_file_printf(f, "      </Lines>\n");
+    md_file_printf(f, "    </Piece>\n");
+    md_file_printf(f, "  </PolyData>\n");
+    md_file_printf(f, "</VTKFile>\n");
+}
 
 // This is the internal storage order of volumes and textures related to NTOs
 enum NTO {
@@ -214,6 +525,78 @@ enum OrbitalColumn {
     OrbitalColumn_EneBeta,
 };
 
+// The panels' isosurfaces as meshes (IsosurfaceRendering_Mesh): a field per panel, all extracted together
+// (iso_meshes.h), and the running mean of each panel's image
+struct PanelMeshes {
+    static constexpr int MAX = (int)ISO_MESHES_MAX_SLOTS;
+    md_gto_iso_field_t* field[MAX] = {};
+    uint64_t  field_key[MAX] = {};
+    int       slot[MAX] = {};       // the panel's slot in 'meshes', -1 for none
+    IsoMeshes meshes = {};
+    isomesh::Target target[MAX] = {};
+    bool      converged = true;     // every panel's image is final: the panels need not be redrawn
+};
+
+static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
+    iso_meshes_free(&pm->meshes, state);
+    for (int i = 0; i < PanelMeshes::MAX; ++i) {
+        iso_field_release(pm->field[i]);
+        isomesh::target_free(&pm->target[i]);
+    }
+    *pm = {};
+}
+
+// Where the atoms are: a field is of one geometry
+static uint64_t panel_positions_hash(const ApplicationState& state) {
+    const md_system_state_t& st = state.mold.state;
+    return (st.xyz && st.num_atoms) ? md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, 0x9a7e1) : 0x9a7e1;
+}
+
+// Panel i's field, made by 'make' when its key changed (0: none)
+template <typename F>
+static void panel_meshes_field(PanelMeshes* pm, ApplicationState* state, int i, uint64_t key, F make) {
+    if (pm->field_key[i] == key) return;
+    // The extraction state holds the fields: let it go before one of them does
+    iso_meshes_free(&pm->meshes, state);
+    iso_field_release(pm->field[i]);
+    pm->field[i] = key ? make() : nullptr;
+    pm->field_key[i] = key;
+}
+
+// The meshes of the first 'count' panels at one isovalue
+static void panel_meshes_update(PanelMeshes* pm, ApplicationState* state, int count, double iso, uint32_t sheets) {
+    IsoMeshSlot slots[PanelMeshes::MAX];
+    uint32_t n = 0;
+    uint64_t key = 0x5107;
+    for (int i = 0; i < PanelMeshes::MAX; ++i) {
+        pm->slot[i] = -1;
+        if (i < count && pm->field[i] && iso > 0.0) {
+            pm->slot[i] = (int)n;
+            slots[n++] = {pm->field[i], iso, sheets};
+            key = md_hash64(&pm->field_key[i], sizeof(pm->field_key[i]), key);
+        }
+    }
+    iso_meshes_update(&pm->meshes, state, slots, n, iso_meshes_cell_size(VolumeResolution::Mid), key);
+}
+
+// Panel i's surfaces: the positive sheet in colors[0], the negative one in colors[1]
+static size_t panel_meshes_surfaces(isomesh::Surface out[2], const PanelMeshes& pm, int i, const vec4_t colors[2]) {
+    const int k = pm.slot[i];
+    if (k < 0 || !pm.meshes.ok) return 0;
+    size_t n = 0;
+    for (int s = 0; s < 2; ++s) {
+        if (pm.meshes.index_count[k][s] == 0) continue;
+        isomesh::Surface& surf = out[n++];
+        surf = {};
+        surf.mesh = &pm.meshes.mesh;
+        surf.index_offset = pm.meshes.index_offset[k][s];
+        surf.index_count  = pm.meshes.index_count[k][s];
+        surf.model = iso_meshes_model_matrix();
+        surf.color = colors[s];
+    }
+    return n;
+}
+
 // Fills row_to_mo with the mo indices in the order the table lists them, and mo_to_row with its
 // inverse. The grid shows a span of table ROWS rather than a span of mo indices, so both views
 // agree by construction whatever the sort is - see draw_orb_window.
@@ -289,6 +672,141 @@ struct FlowData {
     const double* C_nto_part  = nullptr; // {K,A}
 };
 
+// The density whose critical points are reported. QTAIM is defined on the total density; a
+// calculation that publishes a single spin channel publishes only the alpha one, and that one is then
+// the total.
+static str_t critical_points_density_path(const md_system_t& sys) {
+    return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+}
+
+// One run of the analytic critical point search (md_topo_compute_extremum_graph_gto) on the task pool.
+// Everything the run reads - basis, geometry, density matrix - is copied in here before it starts, so
+// it never touches the attribute table, the component's arena or the system while the main thread
+// carries on, and a system freed or reloaded underneath it takes nothing away from it. The main thread
+// reads graph and info only once 'done' is set, and frees the job only after waiting for the task.
+struct GtoCriticalPointJob {
+    md_allocator_i*    arena    = nullptr;   // owns the input copies below
+    md_gto_basis_t     basis    = {};
+    float*             atom_xyz = nullptr;   // [3 * num_atoms] Bohr
+    double*            density  = nullptr;   // [num_ao * num_ao]
+    md_topo_gto_desc_t desc     = {};
+
+    md_topo_extremum_graph_t graph   = {};   // heap, filled by the run
+    md_topo_gto_info_t       info    = {};
+    bool                     ok      = false;
+    double                   seconds = 0.0;
+
+    uint64_t          hash    = 0;           // the inputs this run was started for
+    md_tick_t         start   = 0;
+    bool              dropped = false;       // main thread only: superseded, never to be shown
+    volatile int32_t  cancel  = 0;
+    volatile float    progress = 0.0f;       // written by the run: 0 to 1, an estimate (md_topo_gto_desc_t)
+    std::atomic<bool> done    = false;
+    task_system::Job  task;
+#if MD_ENABLE_GPU
+    md_gpu_stream_t   stream  = nullptr;   // own stream: the sweep runs on the GPU, used by the task only
+#endif
+};
+
+// Starts a search of the system as it is now. Returns null, with the reason logged, when the system
+// does not carry what the search needs.
+static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
+    const md_system_t& sys = app.mold.sys;
+    const md_system_state_t& state = app.mold.state;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        MD_LOG_ERROR("Critical points: the system carries no GTO basis");
+        return nullptr;
+    }
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+
+    size_t num_atoms = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, sys, state);
+    if (!atom_pos || num_atoms != md_gto_basis_num_atoms(&basis)) {
+        MD_LOG_ERROR("Critical points: no positions for the atoms the basis is centred on");
+        return nullptr;
+    }
+
+    const str_t path = critical_points_density_path(sys);
+    size_t dim = 0;
+    const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
+    if (!density || dim != num_ao) {
+        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" STR_FMT "'", num_ao, STR_ARG(path));
+        return nullptr;
+    }
+
+    GtoCriticalPointJob* job = new GtoCriticalPointJob();
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = job->arena;
+
+    job->basis.num_shells     = basis.num_shells;
+    job->basis.num_primitives = basis.num_primitives;
+    job->basis.shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
+    job->basis.alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    job->basis.coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
+    MEMCPY(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
+    MEMCPY(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
+    MEMCPY(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
+
+    job->atom_xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        job->atom_xyz[3 * i + 0] = atom_pos[i].x;
+        job->atom_xyz[3 * i + 1] = atom_pos[i].y;
+        job->atom_xyz[3 * i + 2] = atom_pos[i].z;
+    }
+
+    job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
+    MEMCPY(job->density, density, sizeof(double) * num_ao * num_ao);
+
+    job->desc.basis              = &job->basis;
+    job->desc.atom_xyz           = job->atom_xyz;
+    job->desc.atom_xyz_stride    = sizeof(float) * 3;
+    job->desc.density_matrix     = job->density;
+    job->desc.rho_min            = rho_min;
+    job->desc.trace_separatrices = true;
+    job->desc.cancel             = &job->cancel;
+    job->desc.executor           = task_system::executor();   // its loops on the pool, stopped with the job
+    job->desc.progress           = &job->progress;
+
+    job->graph.alloc = md_get_heap_allocator();
+    job->hash  = hash;
+    job->start = md_tick_now();
+#if MD_ENABLE_GPU
+    // The octree sweep goes to the GPU when there is one; the CPU keeps the double precision parts.
+    if (use_gpu && app.gpu_device) job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
+#endif
+
+    // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
+    // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
+    // instead (EventType_ViamdTaskProgressRequest), as does the Critical Points window, each with a cancel button.
+    job->task.start({}, [job]() {
+#if MD_ENABLE_GPU
+        if (job->stream) {
+            job->ok = md_topo_compute_extremum_graph_gto_gpu(&job->graph, &job->info, &job->desc, job->stream);
+        } else
+#endif
+        job->ok = md_topo_compute_extremum_graph_gto(&job->graph, &job->info, &job->desc);
+        job->seconds = md_tick_to_seconds(md_tick_now() - job->start);
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
+    if (!job) return;
+    job->cancel = 1;
+    job->task.wait();
+#if MD_ENABLE_GPU
+    if (job->stream) md_gpu_stream_destroy(job->stream);
+#endif
+    md_topo_extremum_graph_free(&job->graph);
+    if (job->arena) md_arena_allocator_destroy(job->arena);
+    delete job;
+}
+
 // Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
 // no second parse of the file: whatever loaded the system published what it carried, and these
 // windows are consumers of that table like any other - which is what lets a system published by
@@ -354,17 +872,43 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // Version of the coefficient attribute the setup above last ran for. See the load event.
     uint64_t qm_version = 0;
-    md_bitfield_t* qm_mask = nullptr;
+    md_bitset_t* qm_mask = nullptr;
 
     struct Summary {
         bool show_window = false;
     } summary;
 
     struct CriticalPoints {
+        bool show_window = false;       // its window (draw_critical_points_window)
         bool enabled = false;
+
+        // How they are found. Analytic searches the GTO density itself and proves what it reports
+        // (md_topo_compute_extremum_graph_gto); Volume samples the density onto a grid first and can
+        // place a critical point no better than to the voxel it falls in.
+        enum Method : int { Method_Analytic = 0, Method_Volume = 1 };
+        int method = Method_Analytic;
 
         uint64_t raw_hash = 0;
         uint64_t simp_hash = 0;
+
+        // Analytic: the threshold, the run in flight, the inputs wanted now and the inputs the shown
+        // graph was computed for, and what that run reported about itself.
+        float                rho_min     = 1.0e-4f;
+        bool                 rho_min_editing = false; // its slider is held: no search is started for every value
+        bool                 gto_use_gpu = true;      // only consulted when the app has a GPU device
+        GtoCriticalPointJob* gto_job     = nullptr;
+        uint64_t             gto_want    = 0;
+        uint64_t             gto_have    = 0;
+        md_topo_gto_info_t   gto_info    = {};
+        bool                 gto_failed  = false;
+        double               gto_seconds = 0.0;
+        double               gto_rho_min = 0.0;       // the threshold the shown graph was searched with
+
+        // Volume: the grid, and what is left out of the graph of its samples
+        VolumeResolution vol_res            = VolumeResolution::Mid;
+        bool             vol_per_frame      = false;  // sampled and extracted again every frame
+        bool             vol_simplify       = true;
+        float            vol_simp_threshold = 1.0E-4f;
 
 #if MD_ENABLE_GPU
         md_topo_gpu_context_t* topo_ctx      = nullptr;
@@ -373,10 +917,15 @@ struct QuantumChemistry : viamd::EventHandler {
         md_topo_extremum_graph_t raw_graph  = { 0 };
         md_topo_extremum_graph_t simp_graph = { 0 };
 
+        // How they are drawn (draw_critical_points)
+        float point_scale = 1.0f;       // the markers' size, times critical_point_styles' radii
+        bool  show_paths  = true;       // the bond paths and RCP attractor paths (the graph's edges)
+
         PickingRange picking_range = {};
 
-        md_bitfield_t selection_mask = {};
-        md_bitfield_t highlight_mask = {};
+        // Over the critical points, in the persistent allocator (initialized with the component)
+        md_bitmask_t selection_mask = {};
+        md_bitmask_t highlight_mask = {};
     } critical_points;
 
     struct Opt {
@@ -398,8 +947,10 @@ struct QuantumChemistry : viamd::EventHandler {
         Volume   vol[16] = {};
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
         SpinChannel vol_mo_type[16] = {};
-        uint32_t iso_tex[16] = {};
-        task_system::ID vol_task[16] = {};
+        uint32_t iso_tex[16] = {};      // RGBA16F: the panel's isosurfaces, premultiplied HDR
+        uint32_t out_tex[16] = {};      // RGBA8: the finished panel
+        uint32_t out_fbo = 0;
+        uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
@@ -409,6 +960,8 @@ struct QuantumChemistry : viamd::EventHandler {
         // it was sortable, so it stays the default.
         int  sort_column    = OrbitalColumn_Idx;
         bool sort_ascending = false;
+
+        PanelMeshes mesh = {};
 
         IsoDesc iso = {
             .count = 2,
@@ -428,7 +981,11 @@ struct QuantumChemistry : viamd::EventHandler {
     struct Nto {
         bool show_window = false;
         Volume   vol[2] = {};
-        uint32_t iso_tex[2] = {};
+        uint32_t iso_tex[2] = {};       // RGBA16F: the panel's isosurfaces, premultiplied HDR
+        uint32_t out_tex[2] = {};       // RGBA8: the finished panel
+        uint32_t out_fbo = 0;
+        uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
+        PanelMeshes mesh = {};
 
         int sel_nto_idx = -1;
 
@@ -590,7 +1147,7 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t count = 0;
         char   label[MAX_NTO_GROUPS][64] = {};
         vec4_t color[MAX_NTO_GROUPS] = {};
-        md_bitfield_t atoms[MAX_NTO_GROUPS] = {};
+        md_bitset_t atoms[MAX_NTO_GROUPS] = {};
         bool   atoms_initialized = false;
     } pending_groups;
 
@@ -775,6 +1332,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // away. Nothing the attribute table owns is allocated from it - those pointers belong to the
     // system - so what lives here is this component's own derived state.
     md_allocator_i* arena = 0;
+    ApplicationState* app = nullptr;    // for what has to be released with the GPU stream (the panels' meshes)
 
     // The GTO basis, built from the system's basis/ attributes. One shell per contracted radial
     // shell,
@@ -802,6 +1360,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(4));
+                app = &state;
+                md_bitmask_init(&critical_points.selection_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
+                md_bitmask_init(&critical_points.highlight_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
 
                 // Reservation only, pages are committed on demand. The high-water mark is a single
                 // RIXS map (num_photon_energies * num_grid_samples doubles, the latter capped at
@@ -819,6 +1380,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdShutdown:
+                if (app) {
+                    panel_meshes_free(&orb.mesh, app);
+                    panel_meshes_free(&nto.mesh, app);
+                }
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
@@ -826,7 +1391,11 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Nothing is freed here: the device scratch and the dataset's uploaded basis are
                 // both the application's, and it destroys them.
 #endif
+                gto_critical_point_job_destroy(critical_points.gto_job);
+                critical_points.gto_job = nullptr;
                 md_arena_allocator_destroy(arena);
+                md_bitmask_free(&critical_points.selection_mask);
+                md_bitmask_free(&critical_points.highlight_mask);
                 if (rixs.alloc) {
                     md_vm_arena_destroy(rixs.alloc);
                     rixs.alloc = nullptr;
@@ -835,6 +1404,10 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
+
+                // Here rather than in the window that started it, so a result lands whether or not
+                // that window is open.
+                critical_points_poll_gto();
 
                 // What the SYSTEM holds, not what this component parsed. Orbitals are what every
                 // window here is ultimately about, and the transition windows want their own data on
@@ -845,8 +1418,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     // neither has to be open for the other to have data.
                     update_nto_derived_data(state.mold.sys);
 
+                    update_critical_points(state);
+
                     draw_orb_window(state);
                     draw_summary_window(state);
+                    draw_critical_points_window(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
                         draw_nto_window(state);
@@ -860,6 +1436,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     if (ImGui::BeginMenu("Quantum Chemistry")) {
                         ImGui::Checkbox("Summary", &summary.show_window);
+                        ImGui::Checkbox("Critical Points", &critical_points.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
                         if (num_excited > 0) {
@@ -879,80 +1456,31 @@ struct QuantumChemistry : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
-                    // Render topology as points if available
-                    immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
-
-                    glDisable(GL_DEPTH_TEST);
-
-                    for (size_t i = 0; i < critical_points.simp_graph.num_edges; ++i) {
-						uint32_t i0 = critical_points.simp_graph.edges[i].from;
-						uint32_t i1 = critical_points.simp_graph.edges[i].to;
-                        vec3_t p0 = { critical_points.simp_graph.vertices[i0].x,
-                                      critical_points.simp_graph.vertices[i0].y,
-									  critical_points.simp_graph.vertices[i0].z };
-                        vec3_t p1 = { critical_points.simp_graph.vertices[i1].x,
-									  critical_points.simp_graph.vertices[i1].y,
-                                      critical_points.simp_graph.vertices[i1].z };
-						p0 *= BOHR_TO_ANGSTROM;
-						p1 *= BOHR_TO_ANGSTROM;
-                        immediate::line(scope, p0, p1, immediate::COLOR_BLACK);
-                    }
-
-                    /*
-                        MD_TOPO_UNDEFINED = 0,
-                        MD_TOPO_MAXIMUM = 1,
-                        MD_TOPO_SPLIT_SADDLE = 2,
-                        MD_TOPO_MINIMUM = 3,
-                        MD_TOPO_JOIN_SADDLE = 4,
-                    */
-                    const uint32_t type_colors[5] = {
-                        0xFF7A7A7A, // unknown
-                        0xFF5B5BD9, // maximum
-                        0xFF5FAE5C, // split saddle
-                        0xFFD49A4C, // minimum
-                        0xFFB9A14A  // join saddle
-                    };
-
-                    size_t num_verts = critical_points.simp_graph.num_vertices;
-                    immediate::Vertex* vertices = md_temp_alloc_array(temp, immediate::Vertex, num_verts);
-
-                    vec4_t selection_color = state.selection.color.selection.visible;
-                    vec4_t highlight_color = state.selection.color.highlight.visible;
-                    highlight_color.w += (float)(sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE);
-                    highlight_color.w = CLAMP(highlight_color.w, 0.0f, 1.0f);
-
-                    float saturation_scale = md_bitfield_popcount(&critical_points.selection_mask) > 0 ? state.selection.color.saturation : 1.0f;
-
-                    for (size_t i = 0; i < num_verts; ++i) {
-                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
-                        vec4_t base_color = vec4_from_u32(type_colors[type]);
-
-                        bool selected = md_bitfield_test_bit(&critical_points.selection_mask, i);
-                        bool highlighted = md_bitfield_test_bit(&critical_points.highlight_mask, i);
-
-                        vec4_t color = selected ? selection_color : tint_color(base_color, base_color, 0.0f, saturation_scale);
-                        color = highlighted ? vec4_lerp(color, highlight_color, highlight_color.w) : color;
-
-                        vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        vertices[i].coord *= BOHR_TO_ANGSTROM;
-                        vertices[i].color = u32_from_vec4(color);
-                        vertices[i].picking_idx = (uint32_t)i;
-                    }
-
-                    // Sort on view Z to improve picking, since we cannot use depth testing
-                    const mat4_t view = camera_world_to_view_matrix(state.view.camera);
-                    std::sort(vertices, vertices + num_verts, [&view](const immediate::Vertex& a, const immediate::Vertex& b) {
-                        float za = view[0][2] * a.coord.x + view[1][2] * a.coord.y + view[2][2] * a.coord.z + view[3][2];
-                        float zb = view[0][2] * b.coord.x + view[1][2] * b.coord.y + view[2][2] * b.coord.z + view[3][2];
-                        return za < zb;
-                    });
-
-                    immediate::points(scope, vertices, num_verts);
+                    draw_critical_points(state, temp);
                 }
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;
                 //draw_orb_volume(state);
+                break;
+            }
+            case viamd::EventType_ViamdRenderKey: {
+                // What the critical points are drawn from (RenderTransparent): they are selected and highlighted
+                // by hovering and clicking them
+                ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
+                RenderKey* rk = (RenderKey*)e.payload;
+                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+                    const md_topo_extremum_graph_t& g = critical_points.simp_graph;
+                    const uint64_t counts[2] = {(uint64_t)g.num_vertices, (uint64_t)g.num_edges};
+                    uint64_t h = md_hash64(counts, sizeof(counts), rk->key);
+                    h = md_hash64(&g.vertices, sizeof(g.vertices), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.selection_mask), h);
+                    h = md_bitset_hash64(md_bitmask_view(&critical_points.highlight_mask), h);
+                    h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
+                    h = md_hash64(&critical_points.point_scale, sizeof(critical_points.point_scale), h);
+                    h = md_hash64(&critical_points.show_paths, sizeof(critical_points.show_paths), h);
+                    h = md_hash64(&rk->state->visuals.background.color, sizeof(rk->state->visuals.background.color), h);
+                    rk->key = h;
+                }
                 break;
             }
             case viamd::EventType_ViamdInteractionSurface: {
@@ -960,35 +1488,38 @@ struct QuantumChemistry : viamd::EventHandler {
                 ASSERT(e.payload);
                 InteractionSurfaceEvent* event = (InteractionSurfaceEvent*)e.payload;
                 if (event->surface_id == interaction_surface_main) {
-                    if (critical_points.enabled && md_bitfield_validate(&critical_points.highlight_mask)) {
+                    if (critical_points.enabled && arena) {
                         switch (event->kind) {
                         case InteractionSurfaceEventKind::Hover: [[fallthrough]];
                         case InteractionSurfaceEventKind::Click: {
-                            md_bitfield_clear(&critical_points.highlight_mask);
+                            md_bitmask_clear(&critical_points.highlight_mask);
                             if (event->hit.domain == PickingDomain_CriticalPoints) {
-                                md_bitfield_set_bit(&critical_points.highlight_mask, event->hit.local_idx);
+                                md_bitmask_or(&critical_points.highlight_mask, md_bitset_range((uint32_t)(event->hit.local_idx), (uint32_t)(event->hit.local_idx) + 1));
                             }
+
                             if (event->kind == InteractionSurfaceEventKind::Click && event->selection_mode == InteractionSelectionMode::None && event->hit.domain == 0) {
                                 // A plain click on empty space clears the selection
-                                md_bitfield_clear(&critical_points.selection_mask);
+                                md_bitmask_clear(&critical_points.selection_mask);
                             } else if (event->selection_mode == InteractionSelectionMode::Append) {
-                                md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                md_bitmask_or(&critical_points.selection_mask, md_bitmask_view(&critical_points.highlight_mask));
                             } else if (event->selection_mode == InteractionSelectionMode::Remove) {
                                 if (event->hit.domain == PickingDomain_CriticalPoints) {
-                                    md_bitfield_andnot_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                    md_bitmask_andnot(&critical_points.selection_mask, md_bitmask_view(&critical_points.highlight_mask));
                                 } else if (event->hit.domain == 0) {
-                                    md_bitfield_clear(&critical_points.selection_mask);
+                                    md_bitmask_clear(&critical_points.selection_mask);
                                 }
                             }
                             break;
                         }
                         case InteractionSurfaceEventKind::RegionSelect: {
-                            md_bitfield_clear(&critical_points.highlight_mask);
+                            // The selection is read (Remove) while the highlight is written: two masks
+                            md_bitmask_t* region = &critical_points.highlight_mask;
+                            md_bitmask_clear(region);
                             if (event->selection_mode == InteractionSelectionMode::Remove) {
                                 // When removing, only consider currently selected items as candidates for region selection
-                                md_bitfield_iter_t it = md_bitfield_iter_create(&critical_points.selection_mask);
-                                while (md_bitfield_iter_next(&it)) {
-                                    size_t idx = md_bitfield_iter_idx(&it);
+                                md_bitset_iter_t it = md_bitmask_iter(&critical_points.selection_mask);
+                                while (md_bitset_iter_next(&it)) {
+                                    size_t idx = it.idx;
                                     vec3_t xyz = { critical_points.simp_graph.vertices[idx].x,
                                                    critical_points.simp_graph.vertices[idx].y,
                                                    critical_points.simp_graph.vertices[idx].z };
@@ -997,7 +1528,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
                                     {
-                                        md_bitfield_set_bit(&critical_points.highlight_mask, idx);
+                                        md_bitmask_set_bit(region, (uint32_t)idx);
                                     }
                                 }
                             } else {
@@ -1010,7 +1541,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
                                     {
-                                        md_bitfield_set_bit(&critical_points.highlight_mask, i);
+                                        md_bitmask_set_bit(region, (uint32_t)i);
                                     }
                                 }
                             }
@@ -1018,12 +1549,12 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (event->region_phase == InteractionSurfaceEventPhase::Commit) {
                                 // Merge highlight into selection
                                 if (event->selection_mode == InteractionSelectionMode::Append) {
-                                    md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                    md_bitmask_or(&critical_points.selection_mask, md_bitmask_view(&critical_points.highlight_mask));
                                 }
                                 else if (event->selection_mode == InteractionSelectionMode::Remove) {
-                                    md_bitfield_andnot_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                    md_bitmask_andnot(&critical_points.selection_mask, md_bitmask_view(&critical_points.highlight_mask));
                                 }
-                                md_bitfield_clear(&critical_points.highlight_mask);
+                                md_bitmask_clear(&critical_points.highlight_mask);
                             }
                             break;
                         }
@@ -1041,10 +1572,19 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (req->hit.domain == PickingDomain_CriticalPoints) {
                     uint32_t cp_idx = req->hit.local_idx;
                     if (cp_idx < critical_points.simp_graph.num_vertices) {
-                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
-                        const char* str = md_topo_critical_point_type_str(type);
-                        float value = critical_points.simp_graph.vertices[cp_idx].value;
-                        md_strb_fmt(&req->sb, "Type: %s\nValue: %.7f", str, value);
+                        const md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
+                        const md_topo_vert_t& v = critical_points.simp_graph.vertices[cp_idx];
+                        // The title in lower case, as the tooltips have them ("bond critical point")
+                        const CriticalPointStyle& style = critical_point_style(type);
+                        char type_str[32];
+                        const int type_len = snprintf(type_str, sizeof(type_str), "%s", style.name);
+                        convert_to_lower(type_str, (size_t)CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
+                        tooltip_title(req, "%s", type_str);
+                        tooltip_row(req, STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
+                        tooltip_row(req, STR_LIT("density"), "%.6g au", v.value);
+                        // The graph is in bohr
+                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
+                                    v.x * BOHR_TO_ANGSTROM, v.y * BOHR_TO_ANGSTROM, v.z * BOHR_TO_ANGSTROM);
                     }
                 }
                 break;
@@ -1158,11 +1698,22 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 break;
             }
+            case viamd::EventType_ViamdTaskProgressRequest: {
+                // The analytic critical point search, for the task overlay: once it has run for a moment, with the
+                // flag its cancel button raises (collected as usual: what was found so far is shown, marked)
+                ASSERT(e.payload_type == viamd::EventPayloadType_TaskProgressRequest);
+                TaskProgressRequest* req = (TaskProgressRequest*)e.payload;
+                GtoCriticalPointJob* job = critical_points.gto_job;
+                if (job && !job->cancel && !job->dropped && md_tick_to_seconds(md_tick_now() - job->start) >= 0.25) {
+                    task_progress_add(req, "Critical points", job->progress, &job->cancel);
+                }
+                break;
+            }
             case viamd::EventType_ViamdViewFit: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ViewFitRequest);
                 ViewFitRequest* req = (ViewFitRequest*)e.payload;
                 if (req && req->surface_id == interaction_surface_main) {
-                    md_bitfield_t* bf = nullptr;
+                    const md_bitmask_t* bf = nullptr;
                     switch (req->round) {
                     case ViewFitRound_Highlight:
                         bf = &critical_points.highlight_mask; break;
@@ -1175,13 +1726,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     // Add highlighted atoms to the mask used for view fitting, so that they are included in the computed optimal view
                     if (critical_points.enabled) {
-                        size_t popcount = bf ? md_bitfield_popcount(bf) : 0;
+                        size_t popcount = bf ? md_bitmask_count(bf) : 0;
                         if (popcount > 0) {
                             vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                             if (dst_xyzw) {
-                                md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-                                while (md_bitfield_iter_next(&it)) {
-                                    size_t idx = md_bitfield_iter_idx(&it);
+                                md_bitset_iter_t it = md_bitmask_iter(bf);
+                                while (md_bitset_iter_next(&it)) {
+                                    size_t idx = it.idx;
                                     dst_xyzw->x = (float)(critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM);
                                     dst_xyzw->y = (float)(critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM);
                                     dst_xyzw->z = (float)(critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM);
@@ -1200,7 +1751,125 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
+    // The critical points over the image, in the overlay: neither hidden by the atoms around them nor hiding them
+    // except where a marker is drawn, and picked wherever it is seen. Back to front: the paths as thin strips,
+    // then a disc per point facing the camera, in its type's colour (critical_point_styles) inside an outline
+    // that stands out from the background. The highlighted point is drawn larger, inside a ring of the
+    // highlight's colour, a selected one inside a ring of the selection's; while any are selected, the others
+    // keep only part of their colour, as atoms do. Sizes are in Å, so they scale with the view as the atoms do
+    // (and an orthographic view does not make them huge, as points of a size by depth did).
+    void draw_critical_points(const ApplicationState& state, md_temp_scope_t temp) {
+        const md_topo_extremum_graph_t& g = critical_points.simp_graph;
+        const size_t num_cp = g.num_vertices;
+
+        immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
+        immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
+
+        const mat4_t view = camera_world_to_view_matrix(state.view.camera);
+        const vec3_t right = {view[0][0], view[1][0], view[2][0]};
+        const vec3_t up    = {view[0][1], view[1][1], view[2][1]};
+        const vec3_t back  = {view[0][2], view[1][2], view[2][2]};    // towards the camera
+
+        const vec3_t bg = state.visuals.background.color;
+        const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
+        const vec4_t outline_color = dark_bg ? vec4_t{0.92f, 0.92f, 0.92f, 0.90f} : vec4_t{0.10f, 0.10f, 0.10f, 0.90f};
+        const vec4_t bond_path_color = dark_bg ? vec4_t{0.80f, 0.80f, 0.80f, 0.85f} : vec4_t{0.25f, 0.25f, 0.25f, 0.85f};
+        vec4_t rcp_path_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
+        rcp_path_color.w = 0.75f;
+        const float scale = critical_points.point_scale;
+
+        auto pos = [&g](size_t i) {
+            return vec3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
+        };
+
+        // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
+        // paths, from a ring critical point to the cage critical points beside it (md_topo traces each from the
+        // saddle, so a graph's edge runs from it)
+        if (critical_points.show_paths && g.num_edges > 0) {
+            immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, 6 * g.num_edges);
+            size_t n = 0;
+            for (size_t i = 0; i < g.num_edges; ++i) {
+                const uint32_t i0 = g.edges[i].from, i1 = g.edges[i].to;
+                if (i0 >= num_cp || i1 >= num_cp) continue;
+                const bool bond = md_topo_vertex_type(&g, i0) == MD_TOPO_SPLIT_SADDLE;
+                const vec3_t p0 = pos(i0), p1 = pos(i1);
+                const vec3_t side = vec3_cross(p1 - p0, back);
+                const float len = vec3_length(side);
+                if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
+                const vec3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
+                const uint32_t col = convert_color(bond ? bond_path_color : rcp_path_color);
+                const vec3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
+                const int tri[6] = {0, 1, 2, 0, 2, 3};
+                for (int k = 0; k < 6; ++k) {
+                    v[n].coord = q[tri[k]];
+                    v[n].color = col;
+                    v[n].normal = back;
+                    v[n].picking_idx = 0xFFFFFFFF;   // a path is not a point to pick
+                    n++;
+                }
+            }
+            immediate::triangles(scope, v, n);
+        }
+
+        // The points, farthest first
+        uint32_t* order = md_temp_alloc_array(temp, uint32_t, num_cp);
+        float* depth = md_temp_alloc_array(temp, float, num_cp);
+        for (size_t i = 0; i < num_cp; ++i) {
+            order[i] = (uint32_t)i;
+            depth[i] = vec3_dot(pos(i), back);
+        }
+        std::sort(order, order + num_cp, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
+
+        constexpr int SEG = 16;
+        vec2_t circle[SEG + 1];
+        for (int k = 0; k <= SEG; ++k) {
+            const float a = (float)(2.0 * PI * k / SEG);
+            circle[k] = {cosf(a), sinf(a)};
+        }
+
+        const vec4_t selection_color = state.selection.color.selection.outline;
+        const vec4_t highlight_color = state.selection.color.highlight.outline;
+        const bool any_selected = md_bitmask_count(&critical_points.selection_mask) > 0;
+        const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
+
+        // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
+        immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
+        size_t n = 0;
+        auto disc = [&](vec3_t c, float r, vec4_t color, uint32_t picking_idx) {
+            const uint32_t col = convert_color(color);
+            const vec3_t u = right * r, w = up * r;
+            for (int k = 0; k < SEG; ++k) {
+                const vec3_t e[3] = {c, c + u * circle[k].x + w * circle[k].y, c + u * circle[k + 1].x + w * circle[k + 1].y};
+                for (int j = 0; j < 3; ++j) {
+                    v[n].coord = e[j];
+                    v[n].color = col;
+                    v[n].normal = back;
+                    v[n].picking_idx = picking_idx;
+                    n++;
+                }
+            }
+        };
+        for (size_t j = 0; j < num_cp; ++j) {
+            const uint32_t i = order[j];
+            const CriticalPointStyle& style = critical_point_style(md_topo_vertex_type(&g, i));
+            const bool selected    = md_bitmask_test_bit(&critical_points.selection_mask, i);
+            const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
+            const float r = style.radius * scale * (highlighted ? 1.3f : 1.0f);
+            const vec3_t c = pos(i);
+            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), highlight_color, i);
+            if (selected)    disc(c, r * 1.4f, selection_color, i);
+            disc(c, r, outline_color, i);
+            const vec4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
+            disc(c, r * 0.78f, fill, i);
+        }
+        immediate::triangles(scope, v, n);
+    }
+
     void reset_data() {
+        // First: the run holds nothing of the system's, but its result would land in a graph that
+        // belongs to the next one.
+        gto_critical_point_job_destroy(critical_points.gto_job);
+        critical_points.gto_job = nullptr;
 #if MD_ENABLE_GPU
         // The topo context is the only GPU object this component owns. The uploaded basis goes with
         // the system it was built from, released by free_system_data.
@@ -1215,7 +1884,24 @@ struct QuantumChemistry : viamd::EventHandler {
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
+        // The masks are made once, at initialisation, in the persistent allocator: carried across the
+        // value-initialisation and emptied. Zeroed, a mask has an empty domain and drops every index
+        // set in it, which left hovering, clicking and region-selecting critical points doing nothing
+        // once a system had been freed (any load after the first).
+        // The window and how the points are drawn are the user's, not the system's: carried across too.
+        const md_bitmask_t cp_selection = critical_points.selection_mask;
+        const md_bitmask_t cp_highlight = critical_points.highlight_mask;
+        const bool  cp_show_window = critical_points.show_window;
+        const float cp_point_scale = critical_points.point_scale;
+        const bool  cp_show_paths  = critical_points.show_paths;
         critical_points = {};
+        critical_points.selection_mask = cp_selection;
+        critical_points.highlight_mask = cp_highlight;
+        critical_points.show_window    = cp_show_window;
+        critical_points.point_scale    = cp_point_scale;
+        critical_points.show_paths     = cp_show_paths;
+        md_bitmask_clear(&critical_points.selection_mask);
+        md_bitmask_clear(&critical_points.highlight_mask);
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
@@ -1223,6 +1909,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // than freed through td_cache_free().
         td_cache = TransitionDensityCache{};
         atom_xyzw = nullptr;
+        if (app) {
+            panel_meshes_free(&orb.mesh, app);
+            panel_meshes_free(&nto.mesh, app);
+        }
         orb = QuantumChemistry::Orb{};
         nto = QuantumChemistry::Nto{};
         // The arena reset above already released everything these held.
@@ -1262,6 +1952,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         md_gl_rep_set_atom_colors(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
+        nto.render_hash = 0;
     }
 
     // Everything this component needs about a quantum chemistry system, out of the system's own
@@ -1325,9 +2016,8 @@ struct QuantumChemistry : viamd::EventHandler {
         color_atoms_type(colors, num_colors, state.mold.sys);
 
         if (qm.system_index) {
-            md_bitfield_t mask = md_bitfield_create(state.allocator.frame);
-            md_bitfield_set_indices_u32(&mask, (uint32_t*)qm.system_index, qm.count);
-            filter_colors(colors, num_colors, &mask);
+            md_bitset_t mask = md_bitset_from_indices((uint32_t*)qm.system_index, qm.count, state.allocator.frame);
+            filter_colors(colors, num_colors, mask);
             reset_view(&default_view, state.mold.state, &mask);
         } else {
             reset_view(&default_view, state.mold.state);
@@ -1335,6 +2025,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         gl_rep = md_gl_rep_create(state.mold.gl_mol);
         md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
+        orb.render_hash = 0;
 
 					const md_element_t* atom_z = qm.atomic_number;
 					dvec3_t nucl_dipole = { 0, 0, 0 };
@@ -1444,8 +2135,8 @@ struct QuantumChemistry : viamd::EventHandler {
         export_state.mo.idx = initial_mo;
 
         // CriPoAl
-        md_bitfield_init(&critical_points.selection_mask, arena);
-        md_bitfield_init(&critical_points.highlight_mask, arena);
+        md_bitmask_clear(&critical_points.selection_mask);
+        md_bitmask_clear(&critical_points.highlight_mask);
 
         // Last, so it overrides the placeholder grouping that init sets up.
         apply_pending_groups(state.mold.sys);
@@ -2251,7 +2942,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < md_array_size(nto->atom_group_idx); atom_i++) {
                         if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
-                            md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
+                            md_bitmask_set_bit(&state->selection.highlight_mask, (uint32_t)atom_i);
                         }
                     }
                 }
@@ -3762,7 +4453,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // which is what VeloxChem plots anyway.
             peaks_y[i] = (xps.weight_by_contribution && tbl.contribution) ? tbl.contribution[e] : 1.0;
             const int32_t atom = xps_atom_index(qm, tbl.atom_index ? tbl.atom_index[e] : -1, state);
-            peaks_selected[i]  = (atom >= 0) && md_bitfield_test_bit(&state.selection.selection_mask, (uint64_t)atom);
+            peaks_selected[i]  = (atom >= 0) && md_bitmask_test_bit(&state.selection.selection_mask, (uint64_t)atom);
         }
 
         // ---- Energy range ------------------------------------------------------------------------
@@ -3836,9 +4527,9 @@ struct QuantumChemistry : viamd::EventHandler {
             // moving off a peak but staying inside the plot drops the highlight rather than leaving
             // the last atom lit up.
             if (plot_hovered) {
-                md_bitfield_clear(&state.selection.highlight_mask);
+                md_bitmask_clear(&state.selection.highlight_mask);
                 if (hov_atom >= 0) {
-                    md_bitfield_set_bit(&state.selection.highlight_mask, (uint64_t)hov_atom);
+                    md_bitmask_or(&state.selection.highlight_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                 }
             }
 
@@ -3881,16 +4572,16 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (hov_atom >= 0) {
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                            md_bitfield_clear(&state.selection.selection_mask);
+                            md_bitmask_clear(&state.selection.selection_mask);
                         }
-                        md_bitfield_set_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                        md_bitmask_or(&state.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                     else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                        md_bitfield_clear_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                        md_bitmask_andnot(&state.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                 }
                 else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                    md_bitfield_clear(&state.selection.selection_mask);
+                    md_bitmask_clear(&state.selection.selection_mask);
                 }
             }
 
@@ -4132,6 +4823,625 @@ struct QuantumChemistry : viamd::EventHandler {
         if (str_eq(s, STR_LIT("transition_state"))) return OPT_TS;
         if (str_eq(s, STR_LIT("irc")))              return OPT_IRC;
         return OPT_NONE;
+    }
+
+    // Forgets the shown graph and whatever produced it, so the next frame starts from nothing. A run
+    // in flight is told to stop and is dropped when the poll collects it.
+    void critical_points_reset() {
+        CriticalPoints& cp = critical_points;
+        if (cp.gto_job) {
+            cp.gto_job->cancel  = 1;
+            cp.gto_job->dropped = true;
+        }
+        cp.gto_want  = 0;
+        cp.gto_have  = 0;
+        cp.raw_hash  = 0;
+        cp.simp_hash = 0;
+        md_topo_extremum_graph_free(&cp.raw_graph);
+        md_topo_extremum_graph_free(&cp.simp_graph);
+        // Indices into the graph just freed
+        md_bitmask_clear(&cp.selection_mask);
+        md_bitmask_clear(&cp.highlight_mask);
+    }
+
+    // Collects a finished analytic run: shown if it is still what is wanted, dropped otherwise.
+    void critical_points_poll_gto() {
+        CriticalPoints& cp = critical_points;
+        GtoCriticalPointJob* job = cp.gto_job;
+        if (!job || !job->done.load(std::memory_order_acquire)) return;
+        cp.gto_job = nullptr;
+
+        if (!job->dropped && job->hash == cp.gto_want) {
+            md_topo_extremum_graph_free(&cp.raw_graph);
+            md_topo_extremum_graph_free(&cp.simp_graph);
+            if (job->graph.num_vertices > 0) {
+                md_topo_extremum_graph_copy(&cp.raw_graph,  &job->graph);
+                // Nothing to simplify: every vertex is a proven critical point, and two saddles
+                // between the same pair of maxima are two saddles, not a sampling artefact.
+                md_topo_extremum_graph_copy(&cp.simp_graph, &job->graph);
+            }
+            cp.gto_have    = job->hash;
+            cp.gto_info    = job->info;
+            cp.gto_failed  = !job->ok && !job->info.cancelled;
+            cp.gto_seconds = job->seconds;
+            cp.gto_rho_min = job->desc.rho_min;
+        }
+        gto_critical_point_job_destroy(job);
+    }
+
+    // The analytic search, once a frame while it is enabled, whether or not its window is open. A new run starts
+    // whenever what the result depends on changes - the geometry the basis sits on, the threshold, the orbitals -
+    // and a run made stale by such a change is stopped and dropped, never shown.
+    void update_critical_points_gto(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        size_t num_atoms = 0;
+        const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
+        uint64_t hash = md_hash64(&cp.rho_min, sizeof(cp.rho_min), qm_version);
+        hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
+        if (atom_pos) hash = md_hash64(atom_pos, sizeof(vec3_t) * num_atoms, hash);
+
+        // Every threshold is a new search, so none is started while its slider is held.
+        if (!cp.rho_min_editing && hash != cp.gto_want) {
+            // A point drawn where it was for other inputs would read as a result.
+            critical_points_reset();
+            cp.gto_want = hash;
+        }
+        if (!cp.gto_job && cp.gto_have != cp.gto_want) {
+            cp.gto_job = gto_critical_point_job_start(state, cp.rho_min, cp.gto_use_gpu, cp.gto_want);
+            if (!cp.gto_job) {
+                // Logged by the start. Remembered, so it is not retried every frame.
+                cp.gto_have    = cp.gto_want;
+                cp.gto_info    = {};
+                cp.gto_failed  = true;
+                cp.gto_seconds = 0.0;
+            }
+        }
+    }
+
+    // The discrete pipeline, once a frame while it is enabled: the density sampled onto a grid, the critical
+    // points of the samples (md_topo), then md_topo_simplify.
+    void update_critical_points_volume(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        if (cp.vol_per_frame) {
+            cp.raw_hash = 0;
+        }
+
+        // Update volume if required
+        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)cp.vol_res] * BOHR_TO_ANGSTROM);
+        md_grid_t grid = { 0 };
+#if USE_OABB_GRID
+        init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
+#else
+        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#endif
+
+        // Compute a hash of the current state
+        size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+        uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
+
+        if (cp.raw_hash != raw_hash) {
+            cp.raw_hash = raw_hash;
+            md_topo_extremum_graph_free(&cp.raw_graph);
+
+            // The density comes out of the attribute table, evaluated by the same code
+            // path a representation uses. The only thing special here is the tail: the
+            // topology pass reads what the density pass wrote, on the same stream, so
+            // the volume is never read back to the host at all.
+#if MD_ENABLE_GPU
+            // Ensure the topo context exists with the correct volume dimensions
+            uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
+            if (!cp.topo_ctx ||
+                cp.topo_dims[0] != new_dims[0] ||
+                cp.topo_dims[1] != new_dims[1] ||
+                cp.topo_dims[2] != new_dims[2])
+            {
+                md_topo_gpu_context_destroy(cp.topo_ctx);
+                cp.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
+                cp.topo_dims[0] = new_dims[0];
+                cp.topo_dims[1] = new_dims[1];
+                cp.topo_dims[2] = new_dims[2];
+            }
+
+            if (!cp.topo_ctx) {
+                MD_LOG_ERROR("Failed to create topo GPU context for electron density");
+            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                // Program order on the stream is the only dependency needed.
+                md_topo_gpu_record(state.gpu_stream, cp.topo_ctx, state.gpu_volume, &grid, 0.0f);
+                md_gpu_stream_sync(state.gpu_stream);
+                md_topo_gpu_context_extract(&cp.raw_graph, cp.topo_ctx);
+            } else {
+                MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
+            }
+#else
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+            uint32_t tex_id = 0;
+            if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
+                size_t num_atom_pos = 0;
+                const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
+                if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+                    if (!md_topo_compute_extremum_graph_GPU(&cp.raw_graph, tex_id, &grid, 0.0f)) {
+                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+                    }
+                }
+                glDeleteTextures(1, &tex_id);
+            }
+#endif
+        }
+
+        uint64_t simp_hash = raw_hash;
+        if (cp.vol_simplify) {
+            simp_hash = md_hash64(&cp.vol_simp_threshold, sizeof(cp.vol_simp_threshold), raw_hash);
+        }
+
+        if (cp.simp_hash != simp_hash) {
+            cp.simp_hash = simp_hash;
+
+            md_topo_extremum_graph_free(&cp.simp_graph);
+            if (cp.vol_simplify && cp.raw_graph.num_vertices > 0) {
+                md_topo_simplify(&cp.simp_graph, &cp.raw_graph, cp.vol_simp_threshold, true);
+            } else {
+                md_topo_extremum_graph_copy(&cp.simp_graph, &cp.raw_graph);
+            }
+        }
+    }
+
+    // Once a frame: the search of the selected method while enabled, whether or not the window is open, so what
+    // is drawn follows the geometry and the orbitals.
+    void update_critical_points(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        if (!cp.enabled) {
+            // Switched off mid search: nothing is going to show the result.
+            if (cp.gto_job) critical_points_reset();
+            return;
+        }
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            update_critical_points_gto(state);
+        } else {
+            update_critical_points_volume(state);
+        }
+    }
+
+    // Where the analytic search is: its progress and a cancel button while it runs, else its outcome and what it took
+    void draw_critical_points_gto_status() {
+        CriticalPoints& cp = critical_points;
+        if (cp.gto_job) {
+            const GtoCriticalPointJob* job = cp.gto_job;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Searching %.0f%% (%.0f s)", job->progress * 100.0f, md_tick_to_seconds(md_tick_now() - job->start));
+            const float cancel_width = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+            ImGui::ProgressBar(job->progress, ImVec2(ImGui::GetContentRegionAvail().x - cancel_width, 0), buf);
+            ImGui::SetItemTooltip("How far the search is: an estimate, as the work of the search unfolds as it goes");
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                cp.gto_job->cancel = 1;   // collected as usual: what was found so far is shown, marked
+            }
+            return;
+        }
+
+        const ImVec4 amber = ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+        const md_topo_gto_info_t& info = cp.gto_info;
+        if (cp.gto_failed) {
+            ImGui::TextColored(IM_RED, "The search could not run, see the log");
+            return;
+        }
+        if (cp.gto_have == 0) {
+            return;     // nothing searched yet
+        }
+        if (info.cancelled) {
+            ImGui::TextColored(amber, "Cancelled: only what was found so far is shown");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Restart")) {
+                cp.gto_have = 0;
+            }
+        } else if (info.complete) {
+            ImGui::TextColored(IM_GREEN, "Complete");
+            ImGui::SetItemTooltip("Every critical point above the threshold is shown. Each was proven to be the only\n"
+                                  "critical point in the cube it was found in, and every other cube to hold none.");
+        } else {
+            ImGui::TextColored(amber, "Incomplete: %u region%s left undecided", info.num_clusters, info.num_clusters == 1 ? "" : "s");
+            ImGui::SetItemTooltip("Everything outside these regions is decided. Inside one, the gradient is too close to\n"
+                                  "zero to separate critical points at the smallest cube size - typically a nearly\n"
+                                  "degenerate pair, such as a bond and a ring critical point about to annihilate.");
+        }
+        ImGui::SameLine();
+        if (info.used_gpu) {
+            ImGui::TextDisabled("%.2f s on the GPU, %llu cubes", cp.gto_seconds, (unsigned long long)info.num_box_evals);
+        } else {
+            ImGui::TextDisabled("%.2f s on %u CPU threads, %llu cubes", cp.gto_seconds, info.num_threads, (unsigned long long)info.num_box_evals);
+        }
+        if (ImGui::BeginItemTooltip()) {
+            // where the time went, to see which part to work on
+            ImGui::Text("Setup: %.1f ms", info.ms_setup);
+            ImGui::Text("Octree sweep: %.1f ms", info.ms_sweep);
+            if (info.used_gpu) {
+                const double host = info.ms_sweep - info.ms_sweep_gpu_wait - info.ms_sweep_polish - info.ms_sweep_cpu;
+                ImGui::BulletText("GPU: %.1f ms, %llu cubes in %u dispatches", info.ms_sweep_gpu_wait, (unsigned long long)info.num_gpu_box_evals, info.num_gpu_dispatches);
+                ImGui::BulletText("Root polish (CPU, double): %.1f ms", info.ms_sweep_polish);
+                ImGui::BulletText("Escalated subtrees (CPU, double): %.1f ms, %llu cubes from %u", info.ms_sweep_cpu,
+                                  (unsigned long long)(info.num_box_evals - info.num_gpu_box_evals), info.num_escalated_boxes);
+                ImGui::BulletText("Other host work: %.1f ms", host > 0.0 ? host : 0.0);
+            }
+            ImGui::Text("Separatrices: %.1f ms", info.ms_separatrices);
+            ImGui::Text("Clusters: %.1f ms", info.ms_clusters);
+            if (info.used_gpu && info.num_escalated_boxes > 0) {
+                ImGui::TextDisabled("Escalated: cubes too close to a critical point for fp32, finished in double on the CPU.");
+            }
+            ImGui::EndTooltip();
+        }
+        if (!info.cancelled && !info.complete && info.num_clusters > 0 && ImGui::TreeNode("Undecided regions")) {
+            for (uint32_t i = 0; i < info.num_clusters; ++i) {
+                const md_topo_gto_cluster_t& c = info.clusters[i];
+                const double x = 0.5 * (c.lo[0] + c.hi[0]) * BOHR_TO_ANGSTROM;
+                const double y = 0.5 * (c.lo[1] + c.hi[1]) * BOHR_TO_ANGSTROM;
+                const double z = 0.5 * (c.lo[2] + c.hi[2]) * BOHR_TO_ANGSTROM;
+                if (c.degree_residual < 0.1f) {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum %+d", x, y, z, c.degree);
+                } else {
+                    ImGui::BulletText("(%.3f, %.3f, %.3f): index sum undetermined", x, y, z);
+                }
+                ImGui::SetItemTooltip("Centre of the region in \xC3\x85, %u cubes.\n"
+                                      "The index sum is the degree of the density gradient on the region's boundary\n"
+                                      "(computed numerically): the sum over the critical points inside of -1 for an\n"
+                                      "attractor (maximum) or RCP (join saddle) and +1 for a BCP (split saddle) or CCP\n"
+                                      "(minimum). Non-zero proves at least one critical point is in there; zero means\n"
+                                      "none, or pairs that cancel.", c.num_boxes);
+            }
+            if (info.clusters_truncated) {
+                ImGui::BulletText("...");
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    // The critical points of the density in a window of their own: what is searched and how, how the points are
+    // drawn and the export on two lines, where the search is, the legend, and the rest for the table of the points
+    // (hovered and selected with the 3D view, both ways). The search runs whether or not this window is open
+    // (update_critical_points).
+    void draw_critical_points_window(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        cp.rho_min_editing = false;
+        if (!cp.show_window) {
+            return;
+        }
+        ImGui::SetNextWindowSize({ 640, 600 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Critical Points", &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_critical_points_window_contents(state);
+        }
+        ImGui::End();
+    }
+
+    void draw_critical_points_window_contents(ApplicationState& state) {
+        CriticalPoints& cp = critical_points;
+        const float em = ImGui::GetFontSize();
+        const md_topo_extremum_graph_t& graph = cp.simp_graph;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        // --- what is searched, and how
+        ImGui::Checkbox("Enabled", &cp.enabled);
+        ImGui::SetItemTooltip("Search the electron density for its critical points, and show them");
+        ImGui::SameLine();
+        static const char* method_str[] = { "Analytic", "Volume" };
+        ImGui::SetNextItemWidth(6.5f * em);
+        if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
+            critical_points_reset();   // what is shown came from the other method
+        }
+        ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
+                              "found and placed to numerical precision, with a proof that none was missed.\n"
+                              "Volume: samples the density onto a grid and finds critical points of the samples,\n"
+                              "placed no better than to the voxel.");
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(8.0f * em);
+            ImGui::SliderFloat("##Density threshold", &cp.rho_min, 1.0e-5f, 1.0e-1f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+            cp.rho_min_editing = ImGui::IsItemActive();
+            ImGui::SetItemTooltip("The density threshold: critical points where the total electron density is below this (au)\n"
+                                  "are neither searched for nor reported. A lower threshold searches a larger region and takes longer.");
+#if MD_ENABLE_GPU
+            if (state.gpu_device) {
+                ImGui::SameLine();
+                ImGui::Checkbox("GPU", &cp.gto_use_gpu);
+                ImGui::SetItemTooltip("On: the octree sweep runs on the GPU in fp32 with rounding margins, and the CPU polishes\n"
+                                      "the critical points in double. Off: everything runs on the CPU. Same result either way.");
+            }
+#endif
+        } else {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(5.5f * em);
+            ImGui::Combo("##Resolution", (int*)&cp.vol_res, volume_resolution_str, (int)VolumeResolution::Count);
+            ImGui::SetItemTooltip("The resolution of the grid the density is sampled on");
+            ImGui::SameLine();
+            ImGui::Checkbox("Per frame", &cp.vol_per_frame);
+            ImGui::SetItemTooltip("Sample the density and extract the graph again every frame");
+            ImGui::SameLine();
+            ImGui::Checkbox("Simplify", &cp.vol_simplify);
+            ImGui::SetItemTooltip("Leave out the critical points below a density threshold, and duplicate saddles");
+            if (cp.vol_simplify) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(7.0f * em);
+                ImGui::SliderFloat("##Simplification threshold", &cp.vol_simp_threshold, 0.0f, 1.0E-2f, "\xCF\x81 > %.1e", ImGuiSliderFlags_Logarithmic);
+                ImGui::SetItemTooltip("The density below which critical points are left out (au)");
+            }
+        }
+
+        // --- how they are drawn, and the export at the end of the line
+        ImGui::SetNextItemWidth(6.0f * em);
+        ImGui::SliderFloat("Size", &cp.point_scale, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The size of the markers");
+        ImGui::SameLine();
+        ImGui::Checkbox("Paths", &cp.show_paths);
+        ImGui::SetItemTooltip("The bond paths, from each bond critical point to the two attractors it joins, and the\n"
+                              "RCP attractor paths, from each ring critical point to the cage critical points beside it");
+        {
+            const char* lbl = "Export...";
+            const float w = ImGui::CalcTextSize(lbl).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+            ImGui::SameLine();
+            const float avail = ImGui::GetContentRegionAvail().x;
+            if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
+            ImGui::BeginDisabled(!cp.enabled || graph.num_vertices == 0 || cp.gto_job != nullptr);
+            if (ImGui::Button(lbl)) {
+                critical_points_export(state);
+            }
+            ImGui::EndDisabled();
+            ImGui::SetItemTooltip("The critical points and the paths between them, every number at the precision it was\n"
+                                  "computed in: positions (bohr), density and, from the analytic search, the Hessian there.\n"
+                                  ".json for scripts, .vtp (VTK PolyData, as the Topology ToolKit writes a Morse-Smale\n"
+                                  "complex) for ParaView");
+        }
+
+        if (!cp.enabled) {
+            ImGui::TextDisabled("Not searched: tick Enabled to search the density for its critical points");
+            return;
+        }
+
+        // --- where the search is
+        if (cp.method == CriticalPoints::Method_Analytic) {
+            draw_critical_points_gto_status();
+        }
+
+        // --- the counts, as the legend of the markers: two by two
+        uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
+        md_topo_count_vertex_types(vertex_count, &graph);
+        if (ImGui::BeginTable("##Critical point legend", 2, ImGuiTableFlags_SizingStretchSame)) {
+            for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
+                const int type = critical_point_type_order[k];
+                const CriticalPointStyle& style = critical_point_style(type);
+                ImGui::TableNextColumn();
+                critical_point_swatch(type);
+                ImGui::SameLine();
+                ImGui::Text("%s %s  %u", style.plural, style.signature, vertex_count[type]);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", style.topology_plural);
+                ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
+            }
+            ImGui::EndTable();
+        }
+
+        if (graph.num_vertices == 0) {
+            return;
+        }
+
+        // --- the table of the points, in the rest of the window
+        enum CriticalPointColumn {
+            CriticalPointColumn_Idx,
+            CriticalPointColumn_Type,
+            CriticalPointColumn_Value,
+            CriticalPointColumn_Laplacian,
+            CriticalPointColumn_X,
+            CriticalPointColumn_Y,
+            CriticalPointColumn_Z,
+            CriticalPointColumn_Count
+        };
+        // The Laplacian where the producer has the Hessian (the analytic search)
+        const md_topo_vert_f64_t* f64 = graph.vertices_f64;
+
+        uint32_t* row_indices = md_temp_alloc_array(temp, uint32_t, graph.num_vertices);
+        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+            row_indices[i] = i;
+        }
+
+        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
+                                                   ImGuiTableFlags_Borders |
+                                                   ImGuiTableFlags_ScrollY |
+                                                   ImGuiTableFlags_Sortable |
+                                                   ImGuiTableFlags_SortMulti |
+                                                   ImGuiTableFlags_Resizable |
+                                                   ImGuiTableFlags_SizingStretchProp;
+
+        if (ImGui::IsWindowHovered()) {
+            md_bitmask_clear(&critical_points.highlight_mask);
+        }
+
+        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y))) {
+            ImGui::TableSetupColumn("Idx",          ImGuiTableColumnFlags_DefaultSort, 0.55f, CriticalPointColumn_Idx);
+            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_None,        1.15f, CriticalPointColumn_Type);
+            ImGui::TableSetupColumn("\xCF\x81 (au)", ImGuiTableColumnFlags_None,       1.0f,  CriticalPointColumn_Value);
+            ImGui::TableSetupColumn("Laplacian",    f64 ? ImGuiTableColumnFlags_None : ImGuiTableColumnFlags_Disabled, 1.25f, CriticalPointColumn_Laplacian);
+            ImGui::TableSetupColumn("X (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_X);
+            ImGui::TableSetupColumn("Y (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Y);
+            ImGui::TableSetupColumn("Z (\xC3\x85)", ImGuiTableColumnFlags_None,        0.9f,  CriticalPointColumn_Z);
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableHeadersRow();
+
+            if (ImGui::IsWindowHovered()) {
+                md_bitmask_clear(&critical_points.highlight_mask);
+            }
+
+            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                if (sort_specs->SpecsCount > 0) {
+                    auto laplacian = [f64](uint32_t i) {
+                        return f64 ? f64[i].hessian_eigenvalues[0] + f64[i].hessian_eigenvalues[1] + f64[i].hessian_eigenvalues[2] : 0.0;
+                    };
+                    auto compare_rows = [&graph, sort_specs, &laplacian](uint32_t lhs_idx, uint32_t rhs_idx) {
+                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
+                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
+
+                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
+                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
+                            int cmp = 0;
+                            switch ((CriticalPointColumn)spec.ColumnUserID) {
+                            case CriticalPointColumn_Idx:
+                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Type: {
+                                const int a = critical_point_type_rank(graph.types[lhs_idx]), b = critical_point_type_rank(graph.types[rhs_idx]);
+                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
+                                break;
+                            }
+                            case CriticalPointColumn_Value:
+                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Laplacian: {
+                                const double a = laplacian(lhs_idx), b = laplacian(rhs_idx);
+                                cmp = (a < b) ? -1 : (a > b ? 1 : 0);
+                                break;
+                            }
+                            case CriticalPointColumn_X:
+                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Y:
+                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
+                                break;
+                            case CriticalPointColumn_Z:
+                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
+                                break;
+                            default:
+                                break;
+                            }
+
+                            if (cmp != 0) {
+                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+                            }
+                        }
+
+                        return lhs_idx < rhs_idx;
+                    };
+
+                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
+                    sort_specs->SpecsDirty = false;
+                }
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+
+            ImGuiListClipper clipper;
+            clipper.Begin((int)graph.num_vertices);
+            while (clipper.Step()) {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                    const uint32_t idx = row_indices[row];
+                    const md_topo_vert_t& v = graph.vertices[idx];
+                    const int type = graph.types[idx];
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    bool is_sel = md_bitmask_test_bit(&critical_points.selection_mask, idx);
+                    bool is_hov = md_bitmask_test_bit(&critical_points.highlight_mask, idx);
+
+                    if (is_hov) {
+                        ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
+                    }
+                    else {
+                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                    }
+
+                    char lbl[16];
+                    snprintf(lbl, sizeof(lbl), "%u", idx);
+                    ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
+
+                    // The selectable spans the row: hovered anywhere on it (a clipped table's row numbers are not the rows')
+                    if (ImGui::IsItemHovered()) {
+                        md_bitmask_clear(&critical_points.highlight_mask);
+                        md_bitmask_or(&critical_points.highlight_mask, md_bitset_range(idx, idx + 1));
+
+                        //Selection
+                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
+                                md_bitmask_or(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
+                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
+                                md_bitmask_andnot(&critical_points.selection_mask, md_bitset_range(idx, idx + 1));
+                            }
+                        }
+                    }
+                    ImGui::PopStyleColor(1);
+
+                    ImGui::TableNextColumn();
+                    {
+                        const CriticalPointStyle& style = critical_point_style(type);
+                        critical_point_swatch(type);
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(style.label);
+                        ImGui::SetItemTooltip("%s %s" TOOLTIP_SEP "%s", style.name, style.signature, style.topology);
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.6g", f64 ? f64[idx].value : (double)v.value);
+                    ImGui::TableNextColumn();
+                    if (f64) {
+                        const double* ev = f64[idx].hessian_eigenvalues;
+                        ImGui::Text("%.6g", ev[0] + ev[1] + ev[2]);
+                        ImGui::SetItemTooltip("The Laplacian of the density, the sum of the Hessian's eigenvalues:\n%.6g, %.6g, %.6g (au)", ev[0], ev[1], ev[2]);
+                    }
+                    // Positions in \xC3\x85, as everywhere else in the application (the graph's are in bohr). Shown to
+                    // four decimals; the export has them in full.
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].x : (double)v.x) * BOHR_TO_ANGSTROM);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].y : (double)v.y) * BOHR_TO_ANGSTROM);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.4f", (f64 ? f64[idx].z : (double)v.z) * BOHR_TO_ANGSTROM);
+                }
+            }
+
+            ImGui::PopStyleColor(2);
+            ImGui::EndTable();
+        }
+    }
+
+    // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
+    void critical_points_export(const ApplicationState& state) {
+        char path_buf[2048];
+        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("json,vtp"))) {
+            critical_points_write(state, str_from_cstr(path_buf));
+        }
+    }
+
+    // The critical points and the paths between them, in the file at path: .vtp for VTK PolyData as the Topology
+    // ToolKit writes a Morse-Smale complex (ParaView, TTK), anything else as JSON. No format for this is standard:
+    // QTAIM programs have their own (AIMAll's .sum), and VTK is what topological data analysis exchanges.
+    bool critical_points_write(const ApplicationState& state, str_t path) {
+        const CriticalPoints& cp = critical_points;
+        str_t ext = {};
+        const bool vtp = extract_ext(&ext, path) && str_eq_cstr_ignore_case(ext, "vtp");
+
+        md_file_t file = {};
+        if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+            MD_LOG_ERROR("Critical points: could not open '" STR_FMT "' for writing", STR_ARG(path));
+            return false;
+        }
+        defer { md_file_close(&file); };
+
+        CriticalPointsExport ex = {};
+        ex.graph     = &cp.simp_graph;
+        ex.analytic  = cp.method == CriticalPoints::Method_Analytic;
+        ex.rho_min   = cp.gto_rho_min;
+        ex.complete  = cp.gto_info.complete;
+        ex.cancelled = cp.gto_info.cancelled;
+        ex.field     = critical_points_density_path(state.mold.sys);
+        if (vtp) {
+            critical_points_write_vtp(file, ex);
+        } else {
+            critical_points_write_json(file, ex);
+        }
+        MD_LOG_INFO("Critical points: %u points and %u paths written to '" STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, STR_ARG(path));
+        return true;
     }
 
     void draw_summary_window(ApplicationState& state) {
@@ -4427,8 +5737,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     for (size_t row_n = 0; row_n < num_atoms; row_n++) {
 
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                        bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
+                        bool is_sel = md_bitmask_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                        bool is_hov = md_bitmask_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
@@ -4444,17 +5754,17 @@ struct QuantumChemistry : viamd::EventHandler {
                         ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + 1)) {
                             if (state.mold.sys.atom.count > row_n) {
-                                md_bitfield_clear(&state.selection.highlight_mask);
-                                md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
+                                md_bitmask_clear(&state.selection.highlight_mask);
+                                md_bitmask_or(&state.selection.highlight_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 item_hovered = true;
 
                                 //Selection
                                 if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitfield_set_bit(&state.selection.selection_mask, row_n);
+                                    md_bitmask_or(&state.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                                 //Deselect
                                 else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
+                                    md_bitmask_andnot(&state.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                             }
                         }
@@ -4481,278 +5791,12 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     if (!item_hovered && ImGui::IsWindowHovered()) {
                         //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                        md_bitfield_clear(&state.selection.highlight_mask);
+                        md_bitmask_clear(&state.selection.highlight_mask);
                     }
 
                     ImGui::PopStyleColor(2);
                     ImGui::EndTable();
                 }
-                ImGui::TreePop();
-            }
-            if (ImGui::TreeNode("Critical Points")) {
-                ImGui::Checkbox("Enable Critical Points Analysis", &critical_points.enabled);
-
-                static VolumeResolution vol_res = VolumeResolution::Mid;
-                ImGui::Combo("Volume Resolution", (int*)&vol_res, volume_resolution_str, (int)VolumeResolution::Count);
-
-                if (critical_points.enabled) {
-                    static bool  reevaluate_graph_per_frame = false;
-                    static bool  enable_simplification = true;
-                    static float simp_threshold = 1.0E-4f;
-
-                    ImGui::Checkbox("Extract graph per frame", &reevaluate_graph_per_frame);
-                    if (reevaluate_graph_per_frame) {
-                        critical_points.raw_hash = 0;
-                    }
-
-                    // Update volume if required
-                    const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
-                    md_grid_t grid = { 0 };
-#if USE_OABB_GRID
-                    init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
-#else
-                    init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
-#endif
-
-                    // Compute a hash of the current state
-                    size_t frame_idx = (size_t)(state.animation.frame + 0.5);
-                    uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
-
-                    if (critical_points.raw_hash != raw_hash) {
-                        critical_points.raw_hash = raw_hash;
-                        md_topo_extremum_graph_free(&critical_points.raw_graph);
-
-                        // The density comes out of the attribute table, evaluated by the same code
-                        // path a representation uses. The only thing special here is the tail: the
-                        // topology pass reads what the density pass wrote, on the same stream, so
-                        // the volume is never read back to the host at all.
-#if MD_ENABLE_GPU
-                        // Ensure the topo context exists with the correct volume dimensions
-                        uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
-                        if (!critical_points.topo_ctx ||
-                            critical_points.topo_dims[0] != new_dims[0] ||
-                            critical_points.topo_dims[1] != new_dims[1] ||
-                            critical_points.topo_dims[2] != new_dims[2])
-                        {
-                            md_topo_gpu_context_destroy(critical_points.topo_ctx);
-                            critical_points.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
-                            critical_points.topo_dims[0] = new_dims[0];
-                            critical_points.topo_dims[1] = new_dims[1];
-                            critical_points.topo_dims[2] = new_dims[2];
-                        }
-
-                        if (!critical_points.topo_ctx) {
-                            MD_LOG_ERROR("Failed to create topo GPU context for electron density");
-                        } else if (density_evaluate_to_gpu_volume(&state, grid, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
-                            // Program order on the stream is the only dependency needed.
-                            md_topo_gpu_record(state.gpu_stream, critical_points.topo_ctx, state.gpu_volume, &grid, 0.0f);
-                            md_gpu_stream_sync(state.gpu_stream);
-                            md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
-                        } else {
-                            MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
-                        }
-#else
-                        uint32_t tex_id = 0;
-                        if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                            size_t num_atom_pos = 0;
-                            const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
-                            if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
-                                if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
-                                    MD_LOG_ERROR("Failed to compute extremum graph for electron density");
-                                }
-                            }
-                            glDeleteTextures(1, &tex_id);
-                        }
-#endif
-                    }
-
-                    ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
-
-                    uint64_t simp_hash = raw_hash;
-                    if (enable_simplification) {
-                        ImGui::SliderFloat("CP threshold", &simp_threshold, 0.0f, 1.0E-2f, "%.6f", ImGuiSliderFlags_Logarithmic);
-                        simp_hash = md_hash64(&simp_threshold, sizeof(simp_threshold), raw_hash);
-                    }
-
-                    if (critical_points.simp_hash != simp_hash) {
-                        critical_points.simp_hash = simp_hash;
-
-                        md_topo_extremum_graph_free(&critical_points.simp_graph);
-                        if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
-                            md_topo_simplify(&critical_points.simp_graph, &critical_points.raw_graph, simp_threshold, true);
-                        } else {
-                            md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
-                        }
-                    }
-
-                    uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
-                    md_topo_count_vertex_types(vertex_count, &critical_points.simp_graph);
-
-                    const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
-                    ImGui::Text("Number of Edges:           %u", graph.num_edges);
-                    ImGui::Text("Number of Critical Points: %u", graph.num_vertices);
-                    ImGui::Text("\tNumber of Maxima:        %u", vertex_count[MD_TOPO_MAXIMUM]);
-                    ImGui::Text("\tNumber of Split Saddles: %u", vertex_count[MD_TOPO_SPLIT_SADDLE]);
-                    ImGui::Text("\tNumber of Minima:        %u", vertex_count[MD_TOPO_MINIMUM]);
-                    ImGui::Text("\tNumber of Join Saddles:  %u", vertex_count[MD_TOPO_JOIN_SADDLE]);
-                    if (ImGui::Button("Print Critical Points Info")) {
-                        for (size_t i = 0; i < graph.num_vertices; ++i) {
-                            const md_topo_vert_t& v = graph.vertices[i];
-                            const md_topo_critical_point_type_t type = md_topo_vertex_type(&graph, i);
-                            const char* type_cstr = md_topo_critical_point_type_str(type);
-                            printf("Vertex %zu: Type=%s, Value=%.6f, Pos=(%.4f, %.4f, %.4f)\n", i, type_cstr, v.value, v.x, v.y, v.z);
-                        }
-                    }
-
-                    if (graph.num_vertices > 0) {
-                        enum CriticalPointColumn {
-                            CriticalPointColumn_Idx,
-                            CriticalPointColumn_X,
-                            CriticalPointColumn_Y,
-                            CriticalPointColumn_Z,
-                            CriticalPointColumn_Type,
-                            CriticalPointColumn_Value,
-							CriticalPointColumn_Count
-                        };
-
-                        uint32_t* row_indices = md_temp_alloc_array(temp, uint32_t, graph.num_vertices);
-                        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
-                            row_indices[i] = i;
-                        }
-
-                        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
-                                                                   ImGuiTableFlags_Borders |
-                                                                   ImGuiTableFlags_ScrollY |
-                                                                   ImGuiTableFlags_Sortable |
-                                                                   ImGuiTableFlags_SortMulti |
-                                                                   ImGuiTableFlags_SizingStretchProp;
-
-                        if (ImGui::IsWindowHovered()) {
-                            md_bitfield_clear(&critical_points.highlight_mask);
-                        }
-
-                        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags)) {
-							ImGui::TableSetupColumn("Idx",   ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_Idx);
-                            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_X);
-                            ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Y);
-                            ImGui::TableSetupColumn("Z",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Z);
-                            ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Type);
-                            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Value);
-                            ImGui::TableSetupScrollFreeze(0, 1);
-                            ImGui::TableHeadersRow();
-
-                            if (ImGui::IsWindowHovered()) {
-                                md_bitfield_clear(&critical_points.highlight_mask);
-                            }
-
-                            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
-                                if (sort_specs->SpecsCount > 0) {
-                                    auto compare_rows = [&graph, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
-                                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
-                                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
-
-                                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
-                                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
-                                            int cmp = 0;
-                                            switch ((CriticalPointColumn)spec.ColumnUserID) {
-                                            case CriticalPointColumn_Idx:
-                                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
-												break;
-                                            case CriticalPointColumn_X:
-                                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Y:
-                                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Z:
-                                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Type:
-                                                cmp = (graph.types[lhs_idx] < graph.types[rhs_idx]) ? -1 : (graph.types[lhs_idx] > graph.types[rhs_idx] ? 1 : 0);
-                                                break;
-                                            case CriticalPointColumn_Value:
-                                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
-                                                break;
-                                            default:
-                                                break;
-                                            }
-
-                                            if (cmp != 0) {
-                                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
-                                            }
-                                        }
-
-                                        return lhs_idx < rhs_idx;
-                                    };
-
-                                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
-                                    sort_specs->SpecsDirty = false;
-                                }
-                            }
-
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-
-                            for (size_t row = 0; row < graph.num_vertices; ++row) {
-                                const uint32_t idx = row_indices[row];
-                                const md_topo_vert_t& v = graph.vertices[idx];
-                                const int type = graph.types[idx];
-
-                                ImGui::TableNextRow();
-                                ImGui::TableNextColumn();
-
-                                ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                                bool is_sel = md_bitfield_test_bit(&critical_points.selection_mask, idx);
-                                bool is_hov = md_bitfield_test_bit(&critical_points.highlight_mask, idx);
-
-                                if (is_hov) {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
-                                }
-                                else {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                                }
-
-                                char lbl[16];
-                                snprintf(lbl, sizeof(lbl), "%u", idx);
-                                ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
-
-                                if (ImGui::TableGetHoveredRow() == (int)(row + 1)) {
-                                    if (idx < graph.num_vertices) {
-                                        md_bitfield_clear(&critical_points.highlight_mask);
-                                        md_bitfield_set_bit(&critical_points.highlight_mask, idx);
-
-                                        //Selection
-                                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
-                                                md_bitfield_set_bit(&critical_points.selection_mask, idx);
-                                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
-                                                md_bitfield_clear_bit(&critical_points.selection_mask, idx);
-                                            }
-                                        }
-                                    }
-                                }
-                                ImGui::PopStyleColor(1);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.x);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.y);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.z);
-                                ImGui::TableNextColumn();
-                                ImGui::TextUnformatted(md_topo_critical_point_type_str(type));
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%.8f", v.value);                                
-                            }
-
-                            ImGui::PopStyleColor(2);
-
-                            ImGui::EndTable();
-                        }
-                    }
-
-
-                }
-
                 ImGui::TreePop();
             }
         }
@@ -6398,6 +7442,24 @@ struct QuantumChemistry : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
 
+            // The render targets, sized before the panels go into the draw list: it records the texture
+            // names, and a texture reallocated later in the frame would be drawn under a dead name
+            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
+            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
+
+            auto& gbuf = orb.gbuf;
+            if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                gbuffer_init(&gbuf, width, height);
+                for (int i = 0; i < (int)ARRAY_SIZE(orb.iso_tex); ++i) {
+                    if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
+                    if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
+                }
+            }
+            for (int i = 0; i < num_mos; ++i) {
+                if (!orb.iso_tex[i]) gl::init_texture_2D(&orb.iso_tex[i], width, height, GL_RGBA16F);
+                if (!orb.out_tex[i]) gl::init_texture_2D(&orb.out_tex[i], width, height, GL_RGBA8);
+            }
+
             for (int i = 0; i < num_mos; ++i) {
                 ImGui::PushID(i);
                 defer { ImGui::PopID(); };
@@ -6476,8 +7538,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
-                    draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)orb.out_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
                     // The energy label is dropped, not faked, when the file carries no energies
@@ -6512,17 +7573,6 @@ struct QuantumChemistry : viamd::EventHandler {
             const ImVec2 origin(canvas_min.x, canvas_min.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
-            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
-
-            auto& gbuf = orb.gbuf;
-            if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                gbuffer_init(&gbuf, width, height);
-                for (int i = 0; i < num_mos; ++i) {
-                    gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
-                }
-            }
-
             if (orb.show_coordinate_system_widget) {
                 float ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
                 float pad = 20.0f;
@@ -6537,11 +7587,65 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
 
-            if (gl_rep.id) {
-                const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-                mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
-                mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
-                mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
+            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
+            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
+            mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
+            mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
+
+            // The mesh rendering mode: each panel's orbital as a field, the meshes of all of them extracted together
+            const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+            if (mesh_mode) {
+                const uint64_t pos_hash = panel_positions_hash(state);
+                for (int i = 0; i < PanelMeshes::MAX; ++i) {
+                    const int mo_idx = (i < num_mos) ? orb.vol_mo_idx[i] : -1;
+                    const SpinChannel mo_type = orb.vol_mo_type[i];
+                    uint64_t key = 0;
+                    if (-1 < mo_idx && mo_idx < num_tot_mos) {
+                        const int id[2] = {mo_idx, (int)mo_type};
+                        key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                    }
+                    panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
+                        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+                        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
+                        return iso_field_create_orbital(&state, path, &slice);
+                    });
+                }
+                panel_meshes_update(&orb.mesh, &state, num_mos, fabs((double)orb.iso.values[0]), MD_GTO_ISO_SHEET_BOTH);
+            } else if (orb.mesh.meshes.key) {
+                panel_meshes_free(&orb.mesh, &state);
+            }
+
+            // The panels are only redrawn when something they show changed, or while their meshes are refined
+            // over the frames: a static grid costs nothing
+            uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)gl_rep.id);
+            {
+                render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
+                if (mesh_mode) {
+                    render_hash = md_hash64(&orb.mesh.meshes.mesh.version, sizeof(orb.mesh.meshes.mesh.version), render_hash);
+                }
+                const int layout[3] = { width, height, num_mos };
+                render_hash = md_hash64(layout, sizeof(layout), render_hash);
+                for (int i = 0; i < num_mos; ++i) {
+                    const uint64_t vol_version = volume::data_version(orb.vol[i].tex_id);
+                    render_hash = md_hash64(&orb.vol[i].tex_id, sizeof(orb.vol[i].tex_id), render_hash);
+                    render_hash = md_hash64(&vol_version, sizeof(vol_version), render_hash);
+                    render_hash = md_hash64(&orb.vol[i].texture_to_world, sizeof(orb.vol[i].texture_to_world), render_hash);
+                }
+                render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
+                render_hash = md_hash64(&orb.iso, sizeof(orb.iso), render_hash);
+                render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
+                render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+                render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
+                render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                // Baked into the picking buffer, which hovering reads
+                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
+                render_hash = render_hash ? render_hash : 1;
+            }
+
+            if (gl_rep.id && (render_hash != orb.render_hash || (mesh_mode && !orb.mesh.converged))) {
+                orb.render_hash = render_hash;
 
                 gbuffer_clear(&gbuf);
 
@@ -6565,6 +7669,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 draw_op.type = MD_GL_REP_BALL_AND_STICK;
                 draw_op.args.ball_and_stick.ball_scale   = 1.0f;
                 draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.args.ball_and_stick.bond_orders  = true;
                 draw_op.rep = gl_rep;
 
                 md_gl_draw_args_t draw_args = {
@@ -6577,37 +7682,31 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = {
-                       .atom_base = state.picking_range_atom.beg,
-                       .bond_base = state.picking_range_bond.beg,
-                    },
+                    .picking_offset = gl_picking_offset(state),
                 };
 
                 md_gl_draw(&draw_args);
 
-                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-                glClearColor(1, 1, 1, 0);
-                glClear(GL_COLOR_BUFFER_BIT);
+                glDisable(GL_SCISSOR_TEST);
 
-                PUSH_GPU_SECTION("Postprocessing")
                 postprocess_pipeline::Settings postprocess_settings = {};
-                postprocess_pipeline::Inputs postprocess_inputs = {};
-
-                postprocess_settings.background_color = {24.f, 24.f, 24.f};
+                postprocess_settings.background_color = {1.f, 1.f, 1.f};
+                postprocess_settings.shading.mode = state.visuals.shading.mode;
+                postprocess_settings.shading.ambient = state.visuals.shading.ambient;
+                postprocess_settings.shading.specular = state.visuals.shading.specular;
+                postprocess_settings.shading.colors = state.visuals.shading.colors;
+                postprocess_settings.shading.light = state.visuals.shading.light;
+                postprocess_settings.shading.environment = state.visuals.shading.environment;
                 postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
                 postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                postprocess_settings.shadows.enabled = false;
                 postprocess_settings.ssao.enabled = false;
                 postprocess_settings.dof.enabled = false;
                 postprocess_settings.fxaa.enabled = true;
                 postprocess_settings.taa.enabled = false;
                 postprocess_settings.sharpen.enabled = false;
-
-                postprocess_inputs.depth = orb.gbuf.tex.depth;
-                postprocess_inputs.color = orb.gbuf.tex.color;
-                postprocess_inputs.normal = orb.gbuf.tex.normal;
-                postprocess_inputs.velocity = orb.gbuf.tex.velocity;
 
                 ViewParam view_param = {
                     .matrix = {
@@ -6628,16 +7727,52 @@ struct QuantumChemistry : viamd::EventHandler {
                     .fov_y = orb.camera.fov_y,
                 };
 
-                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
-                POP_GPU_SECTION()
+                if (!orb.out_fbo) glGenFramebuffers(1, &orb.out_fbo);
 
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                glDrawBuffer(GL_BACK);
-                glDisable(GL_SCISSOR_TEST);
-
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                    for (int i = 0; i < num_mos; ++i) {
-                        volume::RenderDesc vol_desc = {
+                // Every panel is its own orbital's isosurfaces over the one opaque image they share, put
+                // through post-processing on its own: the surfaces are composited in HDR, before tone mapping
+                PUSH_GPU_SECTION("ORB GRID PANELS")
+                bool converged = true;
+                for (int i = 0; i < num_mos; ++i) {
+                    bool iso_written = false;
+                    if (mesh_mode) {
+                        // The sheet of each sign in the colour of the isovalue of that sign
+                        const bool pos_first = orb.iso.values[0] >= 0.0f;
+                        const vec4_t colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
+                        isomesh::Surface surfaces[2];
+                        const size_t num_surfaces = panel_meshes_surfaces(surfaces, orb.mesh, i, colors);
+                        const isomesh::RenderDesc mesh_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .matrix = {
+                                .view = view_mat,
+                                .proj = proj_mat,
+                                .proj_no_jitter = proj_mat,
+                            },
+                            .surfaces = surfaces,
+                            .num_surfaces = num_surfaces,
+                            .shading = {
+                                .roughness = 0.3f,
+                                .ior = 1.5f,
+                                .mode = state.visuals.shading.mode,
+                                .ambient = state.visuals.shading.ambient,
+                                .specular = state.visuals.shading.specular,
+                                .colors = state.visuals.shading.colors,
+                                .light = state.visuals.shading.light,
+                                .environment = state.visuals.shading.environment,
+                            },
+                            .scene_hash = render_hash,
+                        };
+                        bool panel_converged = true;
+                        iso_written = isomesh::render(&orb.mesh.target[i], mesh_desc, &panel_converged);
+                        converged &= panel_converged;
+                    } else {
+                        volume::IsoRenderDesc vol_desc = {
                             .render_target = {
                                 .depth  = orb.gbuf.tex.depth,
                                 .color  = orb.iso_tex[i],
@@ -6655,22 +7790,43 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .inv_proj = inv_proj_mat,
                             },
                             .iso = {
-                                .enabled = true,
                                 .count  = (size_t)orb.iso.count,
                                 .values = orb.iso.values,
                                 .colors = orb.iso.colors,
+                                .exact  = state.settings.exact_isosurfaces,
                             },
                             .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
                                 .roughness = 0.3f,
-                                .dir_radiance = {10,10,10},
                                 .ior = 1.5f,
+                                .mode = state.visuals.shading.mode,
+                                .ambient = state.visuals.shading.ambient,
+                                .specular = state.visuals.shading.specular,
+                                .colors = state.visuals.shading.colors,
+                                .light = state.visuals.shading.light,
+                                .environment = state.visuals.shading.environment,
                             },
-                            .voxel_spacing = orb.vol[i].voxel_size,
                         };
-                        volume::render_volume(vol_desc);
+                        iso_written = volume::render_isosurfaces(vol_desc);
                     }
-                POP_GPU_SECTION();
+
+                    postprocess_pipeline::Inputs postprocess_inputs = {};
+                    postprocess_inputs.depth = orb.gbuf.tex.depth;
+                    postprocess_inputs.color = orb.gbuf.tex.color;
+                    postprocess_inputs.normal = orb.gbuf.tex.normal;
+                    postprocess_inputs.velocity = orb.gbuf.tex.velocity;
+                    postprocess_inputs.transparency_hdr = iso_written ? orb.iso_tex[i] : 0;
+
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.out_fbo);
+                    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, orb.out_tex[i], 0);
+                    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                    glViewport(0, 0, orb.gbuf.width, orb.gbuf.height);
+                    postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
+                }
+                orb.mesh.converged = converged;
+                POP_GPU_SECTION()
+
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                glDrawBuffer(GL_BACK);
             }
         }
         ImGui::End();
@@ -6864,7 +8020,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 // tail of the ragged lambda axis stops it.
                 const double LAMBDA_CUTOFF = 1.0e-3;
                 double lambdas[4] = {0};
-                size_t lambda_count = es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF);
+                const bool nto_ready = es_nto_ready(&state, (size_t)export_state.nto.idx);
+                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
+                if (!nto_ready) ImGui::TextDisabled("Lambda Idx: computing...");
                 if (lambda_count > 0) {
                     if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
                         export_state.nto.lambda_idx = (int)lambda_count - 1;
@@ -7128,7 +8286,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         
                         // XYZ
                         md_file_printf(xyz_file, "%zu\n", natoms);
-                        md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", state.files.molecule);
+                        const FileEntry* system_file = file_list_system_file(&state.files.list);
+                        md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
                             str_t sym = md_util_element_symbol(qm_numbers[i]);
                             md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, qm_coords[i].x, qm_coords[i].y, qm_coords[i].z);
@@ -7423,21 +8582,24 @@ struct QuantumChemistry : viamd::EventHandler {
                         ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
-                            md_bitfield_clear(&state.selection.highlight_mask);
-                            for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
-                                if (nto.atom_group_idx[j] == (uint32_t)row_n) {
-                                    //Add j to highlight mask
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
+                            {
+                                md_bitmask_t* hb = &state.selection.highlight_mask;
+                                md_bitmask_clear(hb);
+                                for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
+                                    if (nto.atom_group_idx[j] == (uint32_t)row_n) {
+                                        //Add j to highlight mask
+                                        md_bitmask_set_bit(hb, (uint32_t)j); //TODO: Hover only works if you hold leftMouseBtn
+                                    }
                                 }
                             }
 
                             //Selection
                             if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                             }
                             //Deselect
                             else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                             }
                         }
                     }
@@ -7615,6 +8777,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     NTO_Detachment,
                 };
 
+                // The render targets, sized before the panels go into the draw list: it records the texture
+                // names, and a texture reallocated later in the frame would be drawn under a dead name
+                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
+                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
+
+                auto& gbuf = nto.gbuf;
+                if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                    gbuffer_init(&gbuf, width, height);
+                    for (int i = 0; i < (int)ARRAY_SIZE(nto.iso_tex); ++i) {
+                        if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
+                        if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
+                    }
+                }
+                for (int i : nto_target_idx) {
+                    if (!nto.iso_tex[i]) gl::init_texture_2D(&nto.iso_tex[i], width, height, GL_RGBA16F);
+                    if (!nto.out_tex[i]) gl::init_texture_2D(&nto.out_tex[i], width, height, GL_RGBA8);
+                }
+
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {
 					ImGui::PushID(i);
@@ -7668,10 +8848,11 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
                             open_context_menu = true;
                         } else if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
-                            const md_bitfield_t* candidate_mask = nullptr;
+                            const md_bitset_t selected = md_bitmask_view(&state.selection.selection_mask);
+                            const md_bitset_t* candidate_mask = nullptr;
                             if (event.selection_mode == InteractionSelectionMode::Remove) {
                                 // When removing, only consider currently selected atoms as candidates for region selection
-                                candidate_mask = &state.selection.selection_mask;
+                                candidate_mask = &selected;
                             }
                             point_set_region_mask_compute(&state.selection.highlight_mask,
                                 state.mold.state.xyz, state.mold.state.num_atoms,
@@ -7681,12 +8862,12 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                                 // Merge highlight into selection
                                 if (event.selection_mode == InteractionSelectionMode::Append) {
-                                    md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                    md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                                 }
                                 else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                                    md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                    md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                                 }
-                                md_bitfield_clear(&state.selection.highlight_mask);
+                                md_bitmask_clear(&state.selection.highlight_mask);
                             }
                         } else {
                             viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
@@ -7701,8 +8882,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     //char buf[32];
                     //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[idx], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.out_tex[idx], p0, p1, { 0,1 }, { 1,0 });
                     //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
@@ -7820,17 +9000,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
                 const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
-                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
-
-                auto& gbuf = nto.gbuf;
-                if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                    gbuffer_init(&gbuf, width, height);
-                    for (int i : nto_target_idx) {
-                        gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
-                    }
-                }
-
                 if (is_hovered) {
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         reset_view = true;
@@ -7857,261 +9026,305 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                 }
 
-                gbuffer_clear(&gbuf);
+                // The mesh rendering mode: the attachment and detachment densities as fields, extracted together
+                const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+                if (mesh_mode) {
+                    const uint64_t pos_hash = panel_positions_hash(state);
+                    for (int i : nto_target_idx) {
+                        const int id[2] = {nto.sel_nto_idx, i};
+                        uint64_t key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                        panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
+                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
+                            const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
+                            return iso_field_create_density_matrix(&state, D, td_cache.dim);
+                        });
+                    }
+                    panel_meshes_update(&nto.mesh, &state, 2, nto.iso_val * nto.iso_val, MD_GTO_ISO_SHEET_POSITIVE);
+                } else if (nto.mesh.meshes.key) {
+                    panel_meshes_free(&nto.mesh, &state);
+                }
 
-                const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+                // The panels are only redrawn when something they show changed, or while their meshes are
+                // refined over the frames: a static view costs nothing
+                uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)nto.gl_rep.id);
+                {
+                    render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
+                    if (mesh_mode) {
+                        render_hash = md_hash64(&nto.mesh.meshes.mesh.version, sizeof(nto.mesh.meshes.mesh.version), render_hash);
+                    }
+                    const int layout[2] = { width, height };
+                    render_hash = md_hash64(layout, sizeof(layout), render_hash);
+                    for (int i : nto_target_idx) {
+                        const uint64_t vol_version = volume::data_version(nto.vol[i].tex_id);
+                        render_hash = md_hash64(&i, sizeof(i), render_hash);
+                        render_hash = md_hash64(&nto.vol[i].tex_id, sizeof(nto.vol[i].tex_id), render_hash);
+                        render_hash = md_hash64(&vol_version, sizeof(vol_version), render_hash);
+                        render_hash = md_hash64(&nto.vol[i].texture_to_world, sizeof(nto.vol[i].texture_to_world), render_hash);
+                    }
+                    render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
+                    render_hash = md_hash64(&nto.iso_val, sizeof(nto.iso_val), render_hash);
+                    render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
+                    const vec4_t iso_colors[5] = { nto.col_pos, nto.col_neg, nto.col_den, nto.col_att, nto.col_det };
+                    render_hash = md_hash64(iso_colors, sizeof(iso_colors), render_hash);
+                    render_hash = md_hash64(&nto.link_attachment_detachment_density, sizeof(nto.link_attachment_detachment_density), render_hash);
+                    render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
+                    render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+                    render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
+                    render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
+                    render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                    // Baked into the picking buffer, which hovering reads
+                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                    render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
+                    render_hash = render_hash ? render_hash : 1;
+                }
 
-                glEnable(GL_CULL_FACE);
-                glCullFace(GL_BACK);
+                if (render_hash != nto.render_hash || (mesh_mode && !nto.mesh.converged)) {
+                    nto.render_hash = render_hash;
 
-                glEnable(GL_DEPTH_TEST);
-                glDepthFunc(GL_LESS);
-                glDepthMask(GL_TRUE);
-                glEnable(GL_SCISSOR_TEST);
+                    gbuffer_clear(&gbuf);
 
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-                glViewport(0, 0, gbuf.width, gbuf.height);
-                glScissor(0, 0, gbuf.width, gbuf.height);
+                    const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
-                auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, mat4_t& view_mat, mat4_t& proj_mat, uint32_t atom_mask = 0) {
-                    md_gl_draw_op_t draw_op = {};
-                    draw_op.type = MD_GL_REP_BALL_AND_STICK;
-                    draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-                    draw_op.args.ball_and_stick.stick_radius = 1.0f;
-                    draw_op.rep = rep;
+                    glEnable(GL_CULL_FACE);
+                    glCullFace(GL_BACK);
 
-                    md_gl_draw_args_t draw_args = {
-                        .shaders = shaders,
-                        .draw_operations = {
-                            .count = 1,
-                            .ops = &draw_op
-                        },
-                        .view_transform = {
-                            .view_matrix = (const float*)view_mat.elem,
-                            .proj_matrix = (const float*)proj_mat.elem,
-                        },
+                    glEnable(GL_DEPTH_TEST);
+                    glDepthFunc(GL_LESS);
+                    glDepthMask(GL_TRUE);
+                    glEnable(GL_SCISSOR_TEST);
 
-                        .picking_offset = {
-                            .atom_base = state.picking_range_atom.beg,
-                            .bond_base = state.picking_range_bond.beg,
-                        },
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                    glViewport(0, 0, gbuf.width, gbuf.height);
+                    glScissor(0, 0, gbuf.width, gbuf.height);
 
-                        .atom_mask = atom_mask,
+                    auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, mat4_t& view_mat, mat4_t& proj_mat, uint32_t atom_mask = 0) {
+                        md_gl_draw_op_t draw_op = {};
+                        draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                        draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                        draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                        draw_op.args.ball_and_stick.bond_orders  = true;
+                        draw_op.rep = rep;
+
+                        md_gl_draw_args_t draw_args = {
+                            .shaders = shaders,
+                            .draw_operations = {
+                                .count = 1,
+                                .ops = &draw_op
+                            },
+                            .view_transform = {
+                                .view_matrix = (const float*)view_mat.elem,
+                                .proj_matrix = (const float*)proj_mat.elem,
+                            },
+
+                            .picking_offset = gl_picking_offset(state),
+
+                            .atom_mask = atom_mask,
+                        };
+
+                        md_gl_draw(&draw_args);
                     };
 
-                    md_gl_draw(&draw_args);
-                };
+                    draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
-                draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
-
-                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-                glClearColor(1, 1, 1, 0);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                if (true) {
-                    PUSH_GPU_SECTION("Selection")
-                    const bool atom_selection_empty = md_bitfield_popcount(&state.selection.selection_mask) == 0;
-                    const bool atom_highlight_empty = md_bitfield_popcount(&state.selection.highlight_mask) == 0;
-
-                    glDepthMask(0);
-
-                    // @NOTE(Robin): This is a b*tch to get right, What we want is to separate in a single pass, the visible selected from the
-                    // non visible selected. In order to achieve this, we start with a cleared stencil of value 1 then either set it to zero selected and not visible
-                    // and to two if it is selected and visible. But the visible atoms should always be able to write over a non visible 0, but not the other way around.
-                    // Hence the GL_GREATER stencil test against the reference value of 2.
-
-                    if (!atom_selection_empty) {
-                        glColorMask(0, 0, 0, 0);
-
-                        glEnable(GL_DEPTH_TEST);
-                        glDepthFunc(GL_EQUAL);
-
-                        glEnable(GL_STENCIL_TEST);
-                        glStencilMask(0xFF);
-
-                        glClearStencil(1);
-                        glClear(GL_STENCIL_BUFFER_BIT);
-
-                        glStencilFunc(GL_GREATER, 0x02, 0xFF);
-                        glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                        draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Selected);
-
-                        glDisable(GL_DEPTH_TEST);
-
-                        glStencilMask(0x0);
-                        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                        glColorMask(1, 1, 1, 1);
-
-                        glStencilFunc(GL_EQUAL, 2, 0xFF);
-                        postprocessing::blit_color(state.selection.color.selection.visible);
-
-                        glStencilFunc(GL_EQUAL, 0, 0xFF);
-                        postprocessing::blit_color(state.selection.color.selection.hidden);
+                    // The marks of the selection and the highlight, put over each panel as it is presented
+                    const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+                    if (draw_marks) {
+                        PUSH_GPU_SECTION("Marks")
+                        gbuffer_marks_begin(&gbuf);
+                        draw_rep(nto.gl_rep, state.gl.shaders_marks, view_mat, proj_mat, AtomBit_Marked);
+                        gbuffer_marks_end(&gbuf);
+                        POP_GPU_SECTION()
                     }
 
-                    if (!atom_highlight_empty) {
-                        glColorMask(0, 0, 0, 0);
-
-                        glEnable(GL_DEPTH_TEST);
-                        glDepthFunc(GL_EQUAL);
-
-                        glEnable(GL_STENCIL_TEST);
-                        glStencilMask(0xFF);
-
-                        glClearStencil(1);
-                        glClear(GL_STENCIL_BUFFER_BIT);
-
-                        glStencilFunc(GL_GREATER, 0x02, 0xFF);
-                        glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                        draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Highlighted);
-
-                        glDisable(GL_DEPTH_TEST);
-
-                        glStencilMask(0x0);
-                        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-                        glColorMask(1, 1, 1, 1);
-
-                        glStencilFunc(GL_EQUAL, 2, 0xFF);
-                        postprocessing::blit_color(state.selection.color.highlight.visible);
-
-                        glStencilFunc(GL_EQUAL, 0, 0xFF);
-                        postprocessing::blit_color(state.selection.color.highlight.hidden);
-                    }
-
-                    glDisable(GL_STENCIL_TEST);
-
-                    /*
-                    if (!atom_selection_empty) {
-                    PUSH_GPU_SECTION("Desaturate") {
-                    glColorMask(1, 1, 1, 1);
-                    glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-                    postprocessing::scale_hsv(nto.gbuf.tex.color, vec3_t{1, state.selection.color.saturation, 1});
-                    } POP_GPU_SECTION()
-                    }
-                    */
-
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                    glViewport(0, 0, gbuf.width, gbuf.height);
+                    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+                    glClearColor(0, 0, 0, 0);   // premultiplied: nothing
+                    glClear(GL_COLOR_BUFFER_BIT);
                     glDepthFunc(GL_LESS);
                     glDepthMask(0);
                     glColorMask(1,1,1,1);
-                    POP_GPU_SECTION()
-                }
 
-                PUSH_GPU_SECTION("Postprocessing")
-                postprocess_pipeline::Settings postprocess_settings = {};
-                postprocess_pipeline::Inputs postprocess_inputs = {};
+                    PUSH_GPU_SECTION("Postprocessing")
+                    postprocess_pipeline::Settings postprocess_settings = {};
+                    postprocess_pipeline::Inputs postprocess_inputs = {};
 
-                postprocess_settings.background_color = state.visuals.background.color * state.visuals.background.intensity;
-                postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
-                postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
-                postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
-                postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
-                postprocess_settings.ssao.enabled = false;
-                postprocess_settings.dof.enabled = false;
-                postprocess_settings.fxaa.enabled = true;
-                postprocess_settings.taa.enabled = false;
-                postprocess_settings.sharpen.enabled = false;
+                    postprocess_settings.background_color = state.visuals.background.color;
+                    postprocess_settings.shading.mode = state.visuals.shading.mode;
+                    postprocess_settings.shading.ambient = state.visuals.shading.ambient;
+                    postprocess_settings.shading.specular = state.visuals.shading.specular;
+                    postprocess_settings.shading.colors = state.visuals.shading.colors;
+                    postprocess_settings.shading.light = state.visuals.shading.light;
+                    postprocess_settings.shading.environment = state.visuals.shading.environment;
+                    postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
+                    postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
+                    postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
+                    postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                    postprocess_settings.shadows.enabled = false;
+                    postprocess_settings.ssao.enabled = false;
+                    postprocess_settings.dof.enabled = false;
+                    postprocess_settings.fxaa.enabled = true;
+                    postprocess_settings.taa.enabled = false;
+                    postprocess_settings.sharpen.enabled = false;
 
-                postprocess_inputs.depth = nto.gbuf.tex.depth;
-                postprocess_inputs.color = nto.gbuf.tex.color;
-                postprocess_inputs.normal = nto.gbuf.tex.normal;
-                postprocess_inputs.velocity = nto.gbuf.tex.velocity;
-                postprocess_inputs.transparency = nto.gbuf.tex.transparency;
-
-                ViewParam view_param = {
-                    .matrix = {
-                        .curr = {
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .norm = view_mat,
-                    },
-                    .inv = {
-                        .proj = inv_proj_mat,
+                    postprocess_inputs.depth = nto.gbuf.tex.depth;
+                    postprocess_inputs.color = nto.gbuf.tex.color;
+                    postprocess_inputs.normal = nto.gbuf.tex.normal;
+                    postprocess_inputs.velocity = nto.gbuf.tex.velocity;
+                    postprocess_inputs.transparency = nto.gbuf.tex.transparency;
+                    if (draw_marks) {
+                        postprocess_inputs.marks = nto.gbuf.tex.marks;
+                        postprocess_inputs.marks_group = nto.gbuf.tex.marks_group;
+                        marks_settings(&postprocess_settings, state, 1.0f, MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
                     }
-                    },
-                    .clip_planes = {
-                        .near = nto.camera.near_plane,
-                        .far  = nto.camera.far_plane,
-                    },
-                    .resolution = {win_sz.x, win_sz.y},
-                    .fov_y = nto.camera.fov_y,
-                };
 
-                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
-                POP_GPU_SECTION()
-
-                PUSH_GPU_SECTION("NTO RAYCAST")
-                for (int i : nto_target_idx) {
-                    bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
-                    
-                    bool enabled = true;
-                    size_t count = is_density ? 1 : 2;
-                    float  values[2];
-                    vec4_t colors[2];
-                    
-                    if (is_density) {
-                        if (nto.link_attachment_detachment_density) {
-                            colors[0] = nto.col_den;
-                        } else {
-                            if (i == NTO_Attachment) {
-                                colors[0] = nto.col_att;
-                            } else {
-                                colors[0] = nto.col_det;
-                            }
+                    ViewParam view_param = {
+                        .matrix = {
+                            .curr = {
+                            .view = view_mat,
+                            .proj = proj_mat,
+                            .norm = view_mat,
+                        },
+                        .inv = {
+                            .proj = inv_proj_mat,
                         }
-                        values[0] = (float)(nto.iso_val * nto.iso_val);
-                    } else {
-                        colors[0] = nto.col_pos;
-                        colors[1] = nto.col_neg;
-                        values[0] =  (float)nto.iso_val;
-                        values[1] = -(float)nto.iso_val;
-                    }
+                        },
+                        .clip_planes = {
+                            .near = nto.camera.near_plane,
+                            .far  = nto.camera.far_plane,
+                        },
+                        .resolution = {win_sz.x, win_sz.y},
+                        .fov_y = nto.camera.fov_y,
+                    };
+                    POP_GPU_SECTION()
 
-                    if (enabled) {
-                        volume::RenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = nto.gbuf.tex.depth,
-                                .color  = nto.iso_tex[i],
-                                .width  = nto.gbuf.width,
-                                .height = nto.gbuf.height,
-                                .clear_color = true,
-                            },
-                            .texture = {
-                                .density_volume = nto.vol[i].tex_id,
-                            },
-                            .matrix = {
-                                .model = nto.vol[i].texture_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                            },
-                            .iso = {
-                                .enabled = enabled,
-                                .count   = count,
-                                .values  = values,
-                                .colors  = colors,
-                            },
-                            .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                .roughness = 0.3f,
-                                .dir_radiance = {10,10,10},
-                                .ior = 1.5f,
-                            },
-                            .voxel_spacing = nto.vol[i].voxel_size,
-                        };
-                        volume::render_volume(vol_desc);
+                    glDisable(GL_SCISSOR_TEST);
+                    if (!nto.out_fbo) glGenFramebuffers(1, &nto.out_fbo);
+
+                    // Every panel is its own density's isosurfaces over the opaque image (and selection) the two
+                    // share, put through post-processing on its own: the surfaces are composited in HDR
+                    PUSH_GPU_SECTION("NTO PANELS")
+                    bool converged = true;
+                    for (int i : nto_target_idx) {
+                        bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
+                    
+                        bool enabled = true;
+                        bool iso_written = false;
+                        size_t count = is_density ? 1 : 2;
+                        float  values[2];
+                        vec4_t colors[2];
+                    
+                        if (is_density) {
+                            if (nto.link_attachment_detachment_density) {
+                                colors[0] = nto.col_den;
+                            } else {
+                                if (i == NTO_Attachment) {
+                                    colors[0] = nto.col_att;
+                                } else {
+                                    colors[0] = nto.col_det;
+                                }
+                            }
+                            values[0] = (float)(nto.iso_val * nto.iso_val);
+                        } else {
+                            colors[0] = nto.col_pos;
+                            colors[1] = nto.col_neg;
+                            values[0] =  (float)nto.iso_val;
+                            values[1] = -(float)nto.iso_val;
+                        }
+
+                        if (enabled && mesh_mode) {
+                            const vec4_t sheet_colors[2] = {colors[0], colors[0]};
+                            isomesh::Surface surfaces[2];
+                            const size_t num_surfaces = panel_meshes_surfaces(surfaces, nto.mesh, i, sheet_colors);
+                            const isomesh::RenderDesc mesh_desc = {
+                                .render_target = {
+                                    .depth  = nto.gbuf.tex.depth,
+                                    .color  = nto.iso_tex[i],
+                                    .width  = nto.gbuf.width,
+                                    .height = nto.gbuf.height,
+                                    .clear_color = true,
+                                },
+                                .matrix = {
+                                    .view = view_mat,
+                                    .proj = proj_mat,
+                                    .proj_no_jitter = proj_mat,
+                                },
+                                .surfaces = surfaces,
+                                .num_surfaces = num_surfaces,
+                                .shading = {
+                                    .roughness = 0.3f,
+                                    .ior = 1.5f,
+                                    .mode = postprocess_settings.shading.mode,
+                                    .ambient = postprocess_settings.shading.ambient,
+                                    .specular = postprocess_settings.shading.specular,
+                                    .colors = postprocess_settings.shading.colors,
+                                    .light = postprocess_settings.shading.light,
+                                    .environment = postprocess_settings.shading.environment,
+                                },
+                                .scene_hash = render_hash,
+                            };
+                            bool panel_converged = true;
+                            iso_written = isomesh::render(&nto.mesh.target[i], mesh_desc, &panel_converged);
+                            converged &= panel_converged;
+                        } else if (enabled) {
+                            volume::IsoRenderDesc vol_desc = {
+                                .render_target = {
+                                    .depth  = nto.gbuf.tex.depth,
+                                    .color  = nto.iso_tex[i],
+                                    .width  = nto.gbuf.width,
+                                    .height = nto.gbuf.height,
+                                    .clear_color = true,
+                                },
+                                .texture = {
+                                    .density_volume = nto.vol[i].tex_id,
+                                },
+                                .matrix = {
+                                    .model = nto.vol[i].texture_to_world,
+                                    .view  = view_mat,
+                                    .proj  = proj_mat,
+                                    .inv_proj = inv_proj_mat,
+                                },
+                                .iso = {
+                                    .count   = count,
+                                    .values  = values,
+                                    .colors  = colors,
+                                    .exact   = state.settings.exact_isosurfaces,
+                                },
+                                .shading = {
+                                    .roughness = 0.3f,
+                                    .ior = 1.5f,
+                                    .mode = postprocess_settings.shading.mode,
+                                    .ambient = postprocess_settings.shading.ambient,
+                                    .specular = postprocess_settings.shading.specular,
+                                    .colors = postprocess_settings.shading.colors,
+                                    .light = postprocess_settings.shading.light,
+                                    .environment = postprocess_settings.shading.environment,
+                                },
+                            };
+                            iso_written = volume::render_isosurfaces(vol_desc);
+                        }
+
+                        postprocess_inputs.transparency_hdr = iso_written ? nto.iso_tex[i] : 0;
+                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.out_fbo);
+                        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nto.out_tex[i], 0);
+                        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                        glViewport(0, 0, nto.gbuf.width, nto.gbuf.height);
+                        postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                     }
+                    nto.mesh.converged = converged;
+                    POP_GPU_SECTION();
+
+                    // Reset state
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                    glDrawBuffer(GL_BACK);
+                    glDisable(GL_SCISSOR_TEST);
                 }
-                POP_GPU_SECTION();
-
-                // Reset state
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                glDrawBuffer(GL_BACK);
-                glDisable(GL_SCISSOR_TEST);
             }
             if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
-                md_bitfield_clear(&state.selection.highlight_mask);
+                md_bitmask_clear(&state.selection.highlight_mask);
             }
         }
         ImGui::End();
@@ -8121,7 +9334,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-			size_t count = md_bitfield_popcount(&state.selection.selection_mask);
+			size_t count = md_bitmask_count(&state.selection.selection_mask);
 			if (count == 0) {
                 ImGui::Text("No atoms selected");
             } else {
@@ -8130,7 +9343,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::MenuItem(nto.group.label[i])) {
                             for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                 //Is the atom selected?
-                                if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
+                                if (md_bitmask_test_bit(&state.selection.selection_mask, j)) {
                                     //If so, set its group to the selected group index
                                     nto.atom_group_idx[j] = (uint32_t)i;
                                 }
@@ -8144,7 +9357,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         //Create a new group and add an item to it
                         uint32_t group_idx = (uint32_t)(nto.group.count++);
                         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
-                            if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
                                 //If so, set its group to the selected group index
                                 nto.atom_group_idx[i] = group_idx;
                             }
@@ -8170,7 +9383,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void ensure_pending_group_storage() {
         if (pending_groups.atoms_initialized) return;
         for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
-            md_bitfield_init(&pending_groups.atoms[i], md_get_heap_allocator());
+            pending_groups.atoms[i] = md_bitset_empty_set();    // payloads on the heap
         }
         pending_groups.atoms_initialized = true;
     }
@@ -8209,19 +9422,21 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // One bitfield per group rather than one index per atom: the same information, but it
         // survives being looked at in a text editor.
-        md_bitfield_t mask = md_bitfield_create(md_get_heap_allocator());
-        defer { md_bitfield_free(&mask); };
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
         for (size_t g = 0; g < nto.group.count; ++g) {
-            md_bitfield_clear(&mask);
+            md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, temp_alloc);
             for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
                 if (nto.atom_group_idx[i] == (uint32_t)g) {
-                    md_bitfield_set_bit(&mask, i);
+                    md_bitmask_set_bit(&b, (uint32_t)i);
                 }
             }
+            const md_bitset_t mask = md_bitmask_view(&b);
             viamd::write_str(ser, STR_LIT("GroupLabel"), str_from_cstr(nto.group.label[g]));
             viamd::write_vec4(ser, STR_LIT("GroupColor"), nto.group.color[g]);
-            viamd::write_bitfield(ser, STR_LIT("GroupAtoms"), &mask);
+            viamd::write_bitset(ser, STR_LIT("GroupAtoms"), &mask);
         }
     }
 
@@ -8231,7 +9446,7 @@ struct QuantumChemistry : viamd::EventHandler {
         pending_groups.pending = true;
         pending_groups.count = 0;
         for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
-            md_bitfield_clear(&pending_groups.atoms[i]);
+            md_bitset_free(&pending_groups.atoms[i], md_get_heap_allocator());
             pending_groups.label[i][0] = '\0';
             pending_groups.color[i] = vec4_t{0.5f, 0.5f, 0.5f, 1.0f};
         }
@@ -8303,7 +9518,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             } else if (str_eq_cstr(ident, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
-                    viamd::extract_bitfield(&pending_groups.atoms[group_idx], arg);
+                    md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
+                    viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
                 }
             }
         }
@@ -8332,7 +9548,7 @@ struct QuantumChemistry : viamd::EventHandler {
             nto.group.color[g] = pending_groups.color[g];
 
             for (size_t i = 0; i < num_atoms; ++i) {
-                if (md_bitfield_test_bit(&pending_groups.atoms[g], i)) {
+                if (md_bitset_test(pending_groups.atoms[g], i)) {
                     nto.atom_group_idx[i] = (uint32_t)g;
                 }
             }
@@ -9178,7 +10394,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
         if (group_idx >= nto.group.count) return;
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
                 nto.atom_group_idx[i] = group_idx;
             }
         }
@@ -9229,42 +10445,45 @@ struct QuantumChemistry : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
-        md_bitfield_t mask = md_bitfield_create(md_temp_allocator(temp));
-        flow_node_atom_mask(&mask, cut_idx);
+        const md_bitset_t mask = flow_node_atom_mask(cut_idx, md_temp_allocator(temp));
         if (selected) {
-            md_bitfield_or_inplace(&state.selection.selection_mask, &mask);
+            md_bitmask_or(&state.selection.selection_mask, mask);
         } else {
-            md_bitfield_andnot_inplace(&state.selection.selection_mask, &mask);
+            md_bitmask_andnot(&state.selection.selection_mask, mask);
         }
     }
 
     void flow_clear_selection(ApplicationState& state) {
-        md_bitfield_clear(&state.selection.selection_mask);
+        md_bitmask_clear(&state.selection.selection_mask);
         md_array_shrink(flow.selected_orbital_keys, 0);
     }
 
     // Atoms belonging to a visible node, for the two-way link with the viewport.
-    void flow_node_atom_mask(md_bitfield_t* out_mask, uint32_t cut_idx) {
-        md_bitfield_clear(out_mask);
+    // Allocated with alloc
+    md_bitset_t flow_node_atom_mask(uint32_t cut_idx, md_allocator_i* alloc) {
         const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
-        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER)) return;
+        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER)) return md_bitset_empty_set();
 
         // Orbitals own no atoms; selecting "all the atoms an NTO touches" would be the whole
         // molecule and mean nothing. Gated on the LEVEL rather than the column, because in the
         // Orbitals route the outer columns are orbitals too.
         const md_flow_node_t* n = node;
-        if (!flow_level_has_atoms(n->level)) return;
+        if (!flow_level_has_atoms(n->level)) return md_bitset_empty_set();
 
         const uint32_t index = flow_key_index(n->key);
         if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
-            md_bitfield_set_bit(out_mask, index);
-            return;
+            return md_bitset_range(index, index + 1);
         }
+        md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+        md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
             if (nto.atom_group_idx[i] == index) {
-                md_bitfield_set_bit(out_mask, i);
+                md_bitmask_set_bit(&b, (uint32_t)i);
             }
         }
+        const md_bitset_t result = md_bitmask_extract(&b, alloc);
+        md_temp_end(temp);
+        return result;
     }
 
     void draw_flow_window(ApplicationState& state) {
@@ -9297,7 +10516,9 @@ struct QuantumChemistry : viamd::EventHandler {
             const size_t dim = nto.transition_matrix_dim;
             hash = md_hash64(nto.transition_matrix, sizeof(float) * dim * (dim + 2), hash);
         }
-        if (hash != flow.data_hash) {
+        // the NTO diagram not until the state's NTOs have been read (on a worker thread): the last one stays
+        const bool nto_pending = flow.mode == FLOW_MODE_NTO && rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
+        if (hash != flow.data_hash && !nto_pending) {
             flow.data_hash = hash;
 
             // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
@@ -9538,8 +10759,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (size_t a = 0; a < num_atoms; ++a) {
                 const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
-                const bool sel = md_bitfield_test_bit(&state.selection.selection_mask, a);
-                const bool hi  = md_bitfield_test_bit(&state.selection.highlight_mask, a);
+                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, a);
+                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, a);
                 group_total[g] += 1;
                 group_sel[g]   += sel ? 1 : 0;
                 group_hi[g]    += hi  ? 1 : 0;
@@ -9556,8 +10777,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     const uint32_t index = flow_key_index(n->key);
                     if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
                         if (index < num_atoms) {
-                            if (md_bitfield_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
-                            if (md_bitfield_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
+                            if (md_bitmask_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
+                            if (md_bitmask_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
                         }
                     } else if (index < MAX_NTO_GROUPS && group_total[index] > 0) {
                         // A group is only "selected" when all of it is. Anything less is partial -
@@ -9661,11 +10882,9 @@ struct QuantumChemistry : viamd::EventHandler {
                             md_array(uint32_t) nodes = 0;
                             flow_nodes_in_region(&nodes, view, rect_min, rect_max, ralloc);
 
-                            md_bitfield_t node_mask = md_bitfield_create(ralloc);
-                            md_bitfield_clear(&state.selection.highlight_mask);
+                            md_bitmask_clear(&state.selection.highlight_mask);
                             for (size_t i = 0; i < md_array_size(nodes); ++i) {
-                                flow_node_atom_mask(&node_mask, nodes[i]);
-                                md_bitfield_or_inplace(&state.selection.highlight_mask, &node_mask);
+                                md_bitmask_or(&state.selection.highlight_mask, flow_node_atom_mask(nodes[i], ralloc));
                             }
                         }
                     } else {
@@ -9700,7 +10919,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (ImGui::BeginPopup("##flow_context")) {
-                const size_t num_selected = md_bitfield_popcount(&state.selection.selection_mask);
+                const size_t num_selected = md_bitmask_count(&state.selection.selection_mask);
                 if (num_selected == 0) {
                     ImGui::TextDisabled("No atoms selected");
                     ImGui::Separator();
@@ -9763,7 +10982,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // is open it owns the preview, or the node under the cursor would keep overwriting
                 // what the band is about to do.
                 if (!region_preview) {
-                    flow_node_atom_mask(&state.selection.highlight_mask, (uint32_t)hit.node);
+                    md_bitmask_assign(&state.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
                 }
 
                 // Double click opens or closes a node - including an "Others", which opens by
@@ -9790,7 +11009,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // the highlight mask is stale. Cleared only under those two conditions: clearing it
                 // unconditionally would stamp on the 3D viewport's own hover.
                 if (!region_preview) {
-                    md_bitfield_clear(&state.selection.highlight_mask);
+                    md_bitmask_clear(&state.selection.highlight_mask);
                 }
 
                 // Empty space: double click reframes. A button for this would occupy toolbar room

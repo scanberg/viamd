@@ -1,0 +1,7 @@
+# Water oxygens in a shell of 3 to 5 Å around the catalyst: v1's range of a radius is two withins in VIAL
+# data: catalyst.gro catalyst.xtc
+=== v1
+ns = count(within(3.0:5.0, resname("R2M")) and element("O"));
+=== vial
+cat = particle(resname='R2M')
+ns = count(within(5.0, of=cat) and not within(3.0, of=cat) and particle(element='O') and not cat)

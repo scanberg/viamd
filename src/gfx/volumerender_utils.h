@@ -3,10 +3,28 @@
 #include <core/md_vec_math.h>
 #include <core/md_str.h>
 
+#include <gfx/postprocessing_utils.h>
+#include <gfx/isolines.h>
+
 namespace volume {
 
 void initialize();
 void shutdown();
+
+// GPU time: the passes are profiler sections ("Block min/max", "Entry / exit", "Raycast"), see gfx/profiler.h
+
+// The isosurface renderer keeps a coarse min/max grid per density volume to skip empty space, and has to
+// be told when a volume's texels change: call this after every upload into (or evaluation onto) a density
+// volume texture, and after (re)allocating one. A volume that is never announced still works, but its
+// grid is built once and then not again.
+void notify_data_changed(uint32_t volume_texture);
+
+// Changes every time notify_data_changed() is called for the texture, and never repeats for it; 0 for a
+// texture never announced. For callers that cache what they render from a volume.
+uint64_t data_version(uint32_t volume_texture);
+// Changes every time notify_data_changed() is called, for any texture: for a view that caches what it renders from
+// the volumes it shows
+uint64_t data_version_any();
 
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
@@ -29,22 +47,31 @@ void compute_transfer_function_texture(uint32_t* texture, int implot_colormap, r
 // It uses Shepard interpolation combined with RDFs encoded as gaussians to interpolate the colors of the points onto a regular grid.
 void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power = 4.0f);
 
-/*
-    Renders a volumetric texture using OpenGL.
-    - volume_texture: An OpenGL 3D texture containing the data
-    - tf_texture:     An OpenGL 1D texture containing the transfer function
-    - depth_texture:  An OpenGL 2D texture containing the depth data in the frame (for stopping ray traversal)
-    - model_matrix:   Matrix containing model to world transformation of the volume, which is assumed to occupy a unit cube [0,1] in its model-space
-    - view_matrix:    Matrix containing world to view transformation of the camera
-    - proj_matrix:    Matrix containing view to clip transformation of the camera
-    - density_scale:  global scaling of density
-    - alpha_scale:    global alpha scaling of the transfer function
-    - isosurface:     information on isovalues and associated colors
-    - voxel_spacing:  spacing of voxels in world space
-    - clip_planes:    define a subvolume (min, max)[0-1] which represents the visible portion of the volume
-*/
+// The two renderers below share no state and are never combined in one pass: a view shows either
+// the isosurfaces of a volume or a direct volume rendering of it.
+//
+// Common to both:
+//  - render_target.depth: the depth of the opaque scene (optional), rays stop there
+//  - render_target.color: the texture to blend into (0 = the currently bound framebuffer)
+//  - matrix.model: places the volume, which occupies the unit cube [0,1] of its model (= texture) space
+//  - clip_volume: the visible sub-box of the volume, in its model space
 
-struct RenderDesc {
+// ISOSURFACES
+// Up to 8 isovalues, each a surface with its own colour and an optional optical density (tau): the
+// absorption accumulated while the ray is inside that surface. The surfaces are those of the trilinearly
+// interpolated field. A point is inside the surface of value v when the density d >= v (v >= 0) or d <= v
+// (v < 0). Two ways to find them along a ray (iso.exact):
+//  - fast: one filtered sample per voxel, crossings refined between samples. A part of a surface thinner
+//    than about a voxel along the ray can be missed, and up close or at grazing angles the sampling can
+//    show. A finer volume makes both smaller.
+//  - exact: every cell the ray passes through is intersected exactly, so no part of a surface is missed
+//    and where a crossing lies does not depend on any sampling. Roughly twice the cost of fast.
+//
+// The output is linear, premultiplied radiance with coverage in alpha, blended over the target with
+// (ONE, ONE_MINUS_SRC_ALPHA). It is meant for an HDR target (RGBA16F) that is composited over the
+// scene before tone mapping (postprocess_pipeline::Inputs::transparency_hdr), and it is lit with the
+// same model as the deferred compose pass so that it matches the opaque geometry.
+struct IsoRenderDesc {
     struct {
         uint32_t depth = 0;
         uint32_t color = 0;
@@ -55,8 +82,9 @@ struct RenderDesc {
 
     struct {
         uint32_t density_volume = 0;
-        uint32_t color_volume   = 0;
-        uint32_t transfer_function = 0;
+        uint32_t color_volume   = 0;    // optional, see iso.use_color_volume
+        uint32_t field_volume   = 0;    // the box of density_volume at any resolution, see iso.use_field
+        uint32_t field_colormap = 0;    // 2D, N x 1
     } texture;
 
     struct {
@@ -72,51 +100,124 @@ struct RenderDesc {
     } clip_volume;
 
     struct {
-        // Enables temporal jittering of the ray-casting offset
+        size_t count = 0;
+        const float* values = NULL;
+        const vec4_t* colors = NULL;
+        const float* optical_densities = NULL;  // optional, 0 per surface when not given
+        bool use_color_volume = false;          // the surfaces take their colour from the colour volume instead of iso.colors
+        bool use_field = false;                 // the surfaces are coloured by the field volume through the field colormap, over field.range_*
+        bool exact = false;                     // exact intersection instead of one sample per voxel, see above
+    } iso;
+
+    // The range of the field the colour map spans, when iso.use_field
+    struct {
+        float range_beg = 0.0f;
+        float range_end = 1.0f;
+    } field;
+
+    // Lines where the field takes given values, when iso.use_field (gfx/isolines.h). Their width in pixels comes
+    // from the gradient of the field volume and ray differentials: see isosurface.frag.
+    IsolineDesc isolines = {};
+
+    // The model of the deferred compose pass for mode, under its lights (postprocess_pipeline::lighting).
+    // Physically based: a simplified Cook-Torrance model of the colours as albedo, with the roughness in [0,1]
+    // and the ior of the surfaces (1.5 ~ plastic, which is the F0 = 0.04 the compose pass uses). Basic: the
+    // colours as given, darkened away from the light down to ambient, with a highlight of strength specular
+    // (postprocess_pipeline::Settings::shading); roughness and ior are not used.
+    struct {
+        float roughness = 0.4f;
+        float ior = 1.5f;
+        postprocess_pipeline::ShadingMode mode = postprocess_pipeline::ShadingMode_PhysicallyBased;
+        float ambient = 0.3f;
+        float specular = 0.25f;
+        postprocess_pipeline::ColorSpace colors = postprocess_pipeline::ColorSpace_Linear;  // how the colours are read
+        float light = 1.0f;         // strength of the directional light (postprocess_pipeline::Settings::shading)
+        float environment = 1.0f;   // strength of the light from the surroundings
+    } shading;
+};
+
+// Returns true when the colour target holds this pass's result (cleared and/or drawn into), false when
+// nothing was done (no valid volume or program), in which case a requested clear did not happen either.
+bool render_isosurfaces(const IsoRenderDesc& desc);
+
+// DIRECT VOLUME RENDERING
+// Emission-absorption through a 1D transfer function (a colour map with an alpha ramp), applied to
+// the density mapped from [tf.min_value, tf.max_value] to [0,1]. The colours are the colour map's
+// own, blended in display space.
+struct DvrRenderDesc {
+    struct {
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool clear_color = false;
+    } render_target;
+
+    struct {
+        uint32_t density_volume = 0;
+        uint32_t transfer_function = 0;    // 2D, N x 1
+    } texture;
+
+    struct {
+        mat4_t model = {};
+        mat4_t view = {};
+        mat4_t proj = {};
+        mat4_t inv_proj = {};
+    } matrix;
+
+    struct {
+        vec3_t min = {0, 0, 0};
+        vec3_t max = {1, 1, 1};
+    } clip_volume;
+
+    struct {
         bool enabled = false;
     } temporal;
 
     struct {
-        bool enabled = false;
-        size_t count = 0;
-        const float* values = NULL;
-        const vec4_t* colors = NULL;
-        const float* optical_densities = NULL; // Optional per-iso surface optical density (τ) to modulate the absorption when inside the surface (if not provided, a value of 0 is used per iso surface)
-        bool use_color_volume = false;  // If true, the color of the iso surfaces will determined by the color volume instead of the provided iso.colors
-    } iso;
+        float min_value = 0.0f;
+        float max_value = 1.0f;
+    } tf;
 
+    // Up to 8 planes the volume is cut by, in its model space ([0,1]^3): n . x + d >= 0 is kept (x, y, z: n, w: d)
     struct {
-        bool enabled = false;
-        float min_tf_value = 0.0f;
-        float max_tf_value = 1.0f;
-    } dvr;
+        int count = 0;
+        const vec4_t* equations = NULL;
+    } planes;
 
-    // A simplified shading model based on Cook-Torrance
-    // Static enviromental radiance (uniformly lit from all directions)
-    // 1 directional light positioned at {1,1,1} in viewspace
-
-    // env_radiance: The uniformly incomming radiance from all directions
-    // dir_radiance: The directional radiance incomming from a directional light
-    // roughness: Approximates the micro-roughness of the surface
-    // A value of 0.0 would approximate a perfectly smooth surface
-    // A value of 1.0 would approximate a perfectly 'diffuse' surface
-
-    // ior: corresponds to the Index of refraction of the iso surfaces.
-    // A value of 1.5 is recommended and roughly approximates plastic
-
-    struct {
-        vec3_t env_radiance = {0,0,0};
-        float roughness = 0.4f;
-        vec3_t dir_radiance = {1,1,1};
-        float ior = 1.5f;
-        float exposure = 1.0f;
-        float gamma = 2.2f;
-    } shading;
-
-    vec3_t voxel_spacing = {};
+    // The transfer function's colours decoded from sRGB to linear radiance: for an HDR target (the isosurfaces')
+    bool linear_output = false;
+    // The volume on the planes instead of through their cut (slices): where each ray meets each plane in front of the
+    // depth, within its rectangle (slice_rect_from_model[i]: model space to the rectangle's unit square, x and y in
+    // [0, 1] on it; not limited to the clip box: past the volume, its values at the faces carry on), the transfer
+    // function's colour of the value there with the plane's opacity (slice_opacity[i], 1 when NULL; 0 draws its
+    // edge only), composited front to back. Each slice's edge (slice_edge[i]: rgb, alpha; alpha 0 or NULL none), a
+    // line of slice_edge_px pixels each way of the rectangle's border on a darker halo a pixel wider, in front of its
+    // plane's colour where the ray meets the plane: behind what is in front of it, as the planes are.
+    bool slice = false;
+    const float* slice_opacity = nullptr;
+    const mat4_t* slice_rect_from_model = nullptr;
+    const vec4_t* slice_edge = nullptr;
+    float slice_edge_px = 1.0f;
+    // Slices with images of their own (evaluated on each plane, covering its rectangle exactly): slice i's value read
+    // from slice_images[i] (a W x H x 1 R32F 3D texture) at the point's place on the rectangle, instead of from the
+    // density volume; where slice_images[i] is 0, from the volume. The volume may be 0 when every slice drawn has one.
+    const uint32_t* slice_images = nullptr;
 };
 
-void render_volume(const RenderDesc& desc);
+// Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)
+void render_dvr(const DvrRenderDesc& desc);
+
+// The smallest and largest value of a volume, from the coarse min/max grid the isosurface renderer keeps (made if it
+// is not there, or its texels changed since: notify_data_changed): a read back of a few thousand texels. False when
+// it cannot be made.
+bool value_range(uint32_t volume_texture, float* out_min, float* out_max);
+
+// The histogram of the values of a volume (an R32F 3D texture) over [lo, hi]: bins counts, evenly spaced, of the
+// texels in each (those outside the interval not counted). Made on the GPU, one point per texel added into a row of
+// bins (GL 3.3: no compute), and kept until the volume's texels change (notify_data_changed) or another interval or
+// number of bins is asked for. The counts until the next call, or NULL when it cannot be made. Exact to 2^24 per bin.
+const float* histogram(uint32_t volume_texture, float lo, float hi, int bins);
 
 
 }  // namespace volume

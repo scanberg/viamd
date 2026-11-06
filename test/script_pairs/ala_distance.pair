@@ -1,0 +1,7 @@
+# Between the CAs of the first and last residue, per frame
+# data: 1ALA-560ns.pdb
+=== v1
+d = distance(name("CA") in residue(1), name("CA") in residue(15));
+=== vial
+ca = particle(name='CA')
+d = distance(ca[0], ca[14])

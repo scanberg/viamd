@@ -1,0 +1,7 @@
+# Atoms near the first residue. v1's within leaves out the atoms it is around; VIAL's does not, which and not says
+# data: 1ALA-560ns.pdb
+=== v1
+n = count(within(6.0, residue(1)));
+=== vial
+r0 = residue[0]
+n = count(within(6.0, of=r0) and not r0)

@@ -1,0 +1,7 @@
+# Water molecules near the catalyst per frame: v1 counts by molecule, VIAL counts the molecules a selector gives
+# data: catalyst.gro catalyst.xtc
+=== v1
+nm = count(within(5.0, resname("R2M")) and water(), "molecule");
+=== vial
+cat = particle(resname='R2M')
+nm = len(molecule(within(5.0, of=cat) and water))

@@ -17,7 +17,7 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
 
@@ -42,13 +42,19 @@
 
 namespace {
 
+// What the particles are grouped by: residues, molecules (md_molecule_data_t: atoms joined by bonds, each residue and
+// polymer chain whole), chains (md_chain_data_t: all that the data gives a chain id) or parts (md_part_data_t: the
+// covalent pieces of a molecule, a strand with its caps, a glycan, a ligand). A particle in no group of the kind (an
+// ion in no chain) is left out. The values are those a workspace stores.
 enum GroupBy {
     GroupBy_Residue,
     GroupBy_Molecule,
+    GroupBy_Chain,
+    GroupBy_Part,
     GroupBy_Count
 };
 
-static const char* group_by_lbl[] = { "Residue", "Molecule / chain" };
+static const char* group_by_lbl[] = { "Residue", "Molecule", "Chain", "Part" };
 
 struct GroupResult {
     uint32_t contacts = 0;      // Groups in contact with
@@ -64,7 +70,8 @@ struct Result {
     double energy_cutoff = 0;   // Å
     GroupBy group_by = GroupBy_Residue;
     std::vector<GroupResult> groups;
-    std::vector<md_urange_t> ranges;    // Particles of each group
+    std::vector<uint32_t> group_off;    // Particles of group g: group_atom[group_off[g], group_off[g + 1])
+    std::vector<uint32_t> group_atom;
     uint64_t num_group_pairs = 0;       // Pairs of groups in contact
     uint64_t num_pairs = 0;
     double   e_lj = 0, e_coul = 0;      // Between groups, each pair once
@@ -117,8 +124,7 @@ struct Contacts : viamd::EventHandler {
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
 
     // Computation
-    task_system::ID task = 0;
-    std::atomic<bool> busy = false;
+    task_system::Job task;
     Result result;
     Result pending;
     std::atomic<bool> pending_ready = false;
@@ -141,7 +147,7 @@ struct Contacts : viamd::EventHandler {
                 cutoff = 1.0f;
                 break;
             case viamd::EventType_ViamdShutdown:
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
                 md_system_state_free(&frame);
                 break;
             case viamd::EventType_ViamdFrameTick:
@@ -152,7 +158,8 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit:
                 // A new system: whatever was computed or loaded belongs to the old one
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
+                pending_ready = false;
                 result = Result{};
                 break;
             case viamd::EventType_ViamdSerialize: {
@@ -183,7 +190,7 @@ struct Contacts : viamd::EventHandler {
     }
 
     void compute() {
-        if (busy) return;
+        if (task.running()) return;
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& cur = app_state->mold.state;
         const size_t N = sys.atom.count;
@@ -196,15 +203,38 @@ struct Contacts : viamd::EventHandler {
         pending = Result{};
         pending.group_by = group_by;
         pending.cutoff = cutoff;
+        std::vector<uint32_t>& off = pending.group_off;
+        std::vector<uint32_t>& atoms = pending.group_atom;
+        auto push_range = [&](md_urange_t r) { for (uint32_t k = r.beg; k < r.end && k < N; ++k) atoms.push_back(k); };
+        off.push_back(0);
         if (group_by == GroupBy_Residue) {
-            for (size_t c = 0; c < md_system_component_count(&sys); ++c) pending.ranges.push_back(md_system_component_atom_range(&sys, c));
+            for (size_t c = 0; c < md_system_residue_count(&sys); ++c) {
+                push_range(md_system_residue_atom_range(&sys, c));
+                off.push_back((uint32_t)atoms.size());
+            }
+        } else if (group_by == GroupBy_Part) {
+            for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
+                push_range(md_system_part_atom_range(&sys, p));
+                off.push_back((uint32_t)atoms.size());
+            }
+        } else if (group_by == GroupBy_Chain) {
+            for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
+                const md_urange_t* end = md_system_chain_run_end(&sys, c);
+                for (const md_urange_t* it = md_system_chain_run_beg(&sys, c); it && it < end; ++it) {
+                    push_range(md_system_chain_run_atom_range(&sys, *it));
+                }
+                off.push_back((uint32_t)atoms.size());
+            }
         } else {
-            for (size_t c = 0; c < md_system_instance_count(&sys); ++c) pending.ranges.push_back(md_system_instance_atom_range(&sys, c));
+            for (size_t m = 0; m < md_system_molecule_count(&sys); ++m) {
+                const md_molecule_t mol = md_system_molecule(&sys, m);
+                for (size_t k = 0; k < mol.count; ++k) atoms.push_back((uint32_t)mol.atom_idx[k]);
+                off.push_back((uint32_t)atoms.size());
+            }
         }
-        pending.groups.resize(pending.ranges.size());
+        pending.groups.resize(off.size() - 1);
 
-        busy = true;
-        task = task_system::create_pool_task(STR_LIT("Contacts"), [this]() {
+        task.start(STR_LIT("Contacts"), [this]() {
             const md_system_t& sys = app_state->mold.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;
@@ -220,13 +250,17 @@ struct Contacts : viamd::EventHandler {
             for (float r : radius) max_radius = std::max(max_radius, r);
 
             std::vector<uint32_t> label(N);
-            md_bitfield_t set = md_bitfield_create(md_get_heap_allocator());
+            md_bitmask_t set_m = md_bitmask_create(0, (uint32_t)N, md_get_heap_allocator());
             // Particles in no group get a label of their own and are left out of the set
-            for (size_t k = 0; k < N; ++k) label[k] = (uint32_t)(res.ranges.size() + k);
-            for (size_t g = 0; g < res.ranges.size(); ++g) {
-                for (uint32_t k = res.ranges[g].beg; k < res.ranges[g].end; ++k) label[k] = (uint32_t)g;
-                md_bitfield_set_range(&set, res.ranges[g].beg, res.ranges[g].end);
+            const size_t num_groups = res.groups.size();
+            for (size_t k = 0; k < N; ++k) label[k] = (uint32_t)(num_groups + k);
+            for (size_t g = 0; g < num_groups; ++g) {
+                for (uint32_t k = res.group_off[g]; k < res.group_off[g + 1]; ++k) {
+                    label[res.group_atom[k]] = (uint32_t)g;
+                    md_bitmask_set_bit(&set_m, res.group_atom[k]);
+                }
             }
+            const md_bitset_t set = md_bitmask_view(&set_m);
 
             md_contact_pairs_desc_t desc = {};
             desc.set_a = &set;
@@ -250,12 +284,11 @@ struct Contacts : viamd::EventHandler {
                 md_contact_pairs_free(&pairs);
             }
             md_arena_allocator_destroy(arena);
-            md_bitfield_free(&set);
+            md_bitmask_free(&set_m);
             res.seconds = md_tick_to_seconds(md_tick_now() - t0);
-            pending_ready = true;
-            busy = false;
+            // A cancelled one (a new system) is for the old system: not taken
+            if (!task_system::cancelled()) pending_ready = true;
         });
-        task_system::enqueue_task(task);
     }
 
     void draw_window() {
@@ -270,7 +303,11 @@ struct Contacts : viamd::EventHandler {
             ImGui::PushItemWidth(200);
             int gb = (int)group_by;
             if (ImGui::Combo("Groups", &gb, group_by_lbl, GroupBy_Count)) group_by = (GroupBy)gb;
-            ImGui::InputFloat((const char*)u8"Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("Residue: each residue.\nMolecule: atoms joined by bonds, each residue and polymer chain whole.\n"
+                                  "Chain: all that the file gives one chain id (none where it gives no ids: see Part).\n"
+                                  "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
+                                  "Particles in no group of the kind are left out.");
+            ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
             cutoff = CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
@@ -284,6 +321,7 @@ struct Contacts : viamd::EventHandler {
                 ImGui::TextDisabled("Energy: not available, the system carries no non-bonded force field");
             }
 
+            const bool busy = task.running();
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(busy ? "Computing..." : "Compute for current frame")) compute();
             ImGui::EndDisabled();
@@ -300,7 +338,7 @@ struct Contacts : viamd::EventHandler {
             ImGui::TextDisabled("No result");
             return;
         }
-        ImGui::Text((const char*)u8"%zu groups (%s), surfaces within %.2f Å: %llu group pairs in contact, %llu particle pairs (%.2f s)",
+        ImGui::Text("%zu groups (%s), surfaces within %.2f Å: %llu group pairs in contact, %llu particle pairs (%.2f s)",
             res.groups.size(), group_by_lbl[res.group_by], res.cutoff, (unsigned long long)res.num_group_pairs, (unsigned long long)res.num_pairs, res.seconds);
         if (res.has_energy) {
             ImGui::Text("Energy between groups: LJ %.3f, Coulomb %.3f, total %.3f kJ/mol (pairs within %.2f nm)",
@@ -385,9 +423,10 @@ struct Contacts : viamd::EventHandler {
             ImGui::EndTable();
         }
 
-        if (hovered_group >= 0 && hovered_group < (int)res.ranges.size()) {
-            md_bitfield_clear(&app_state->selection.highlight_mask);
-            md_bitfield_set_range(&app_state->selection.highlight_mask, res.ranges[hovered_group].beg, res.ranges[hovered_group].end);
+        if (hovered_group >= 0 && hovered_group < (int)res.groups.size()) {
+            md_bitmask_t* mask = &app_state->selection.highlight_mask;
+            md_bitmask_clear(mask);
+            for (uint32_t k = res.group_off[hovered_group]; k < res.group_off[hovered_group + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
         }
     }
 };

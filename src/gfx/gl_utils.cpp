@@ -3,7 +3,7 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 
 #include <string.h>
 #include <stdlib.h>
@@ -34,7 +34,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir, md_allocator_i* alloc) {
+bool build_shader_src(md_writer_i* w, str_t src, str_t base_include_dir, md_allocator_i* alloc) {
     str_t line;
     while (str_extract_line(&line, &src)) {
         if (str_eq_cstr_n(line, "#include ", 9)) {
@@ -50,14 +50,14 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir, md_
             if (inc_src) {
                 str_t base = {};
                 extract_folder_path(&base, path);
-                build_shader_src(builder, inc_src, base, alloc);
+                build_shader_src(w, inc_src, base, alloc);
             } else {
                 MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
                 return false;
             }
         } else {
-            md_strb_push_str(builder, line);
-            md_strb_push_char(builder, '\n');
+            md_write_str(w, line);
+            md_write_char(w, '\n');
         }
     }
 
@@ -72,7 +72,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
     defer { md_temp_end(temp); };
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(alloc);
+    md_str_writer_t sb = md_str_writer_create(alloc);
     
     if (defines) {
         str_t version_str = {};
@@ -92,9 +92,9 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
         }
     }
 
-    build_shader_src(&sb, src, base_include_dir, alloc);
+    build_shader_src(&sb.w, src, base_include_dir, alloc);
 
-    str_t final_src = md_strb_to_str(sb);
+    str_t final_src = md_str_writer_to_str(&sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
 
     glCompileShader(shader);
@@ -106,7 +106,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
         shader = 0;
     }
 
-    md_strb_free(&sb);
+    md_str_writer_free(&sb);
 
     return shader;
 }
@@ -125,7 +125,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     }
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(alloc);
+    md_str_writer_t sb = md_str_writer_create(alloc);
 
     if (defines) {
         str_t version_str = {};
@@ -147,11 +147,11 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
 
     str_t folder_path;
     extract_folder_path(&folder_path, filename);
-    build_shader_src(&sb, src, folder_path, alloc);
+    build_shader_src(&sb.w, src, folder_path, alloc);
 
-    str_t final_src = md_strb_to_str(sb);
+    str_t final_src = md_str_writer_to_str(&sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
-    md_strb_free(&sb);
+    md_str_writer_free(&sb);
 
     glCompileShader(shader);
 

@@ -1,0 +1,9 @@
+# RMSD of each residue fitted on its own: v1's rmsd keeps an array's sets apart; in VIAL a def with a group parameter
+# maps over the residues
+# data: 1ALA-560ns.pdb
+=== v1
+rr = rmsd(residue(:));
+=== vial
+def fitted(r: group):
+    return rmsd(r, at(r.xyz, frame=0), weights='mass')
+rr = fitted(residue)

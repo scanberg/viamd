@@ -218,7 +218,7 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
     const bool mouse_move = mouse_coord_delta != vec2_t{0, 0};
 
     if ((flags & TrackballFlags_RotateEnabled) && input.rotate_button && mouse_move) {
-        const quat_t q = trackball(ndc_prev, ndc_curr);
+        const quat_t q = trackball(ndc_prev - input.ndc_center, ndc_curr - input.ndc_center);
         const vec3_t look_at = camera_get_look_at(*transform);
         transform->orientation = quat_normalize(transform->orientation * q);
         transform->position = camera_position_from_look_at(look_at, transform->orientation, transform->distance);
@@ -279,19 +279,57 @@ ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext,
     return result;
 }
 
+// We use an exponential interpolation of the deltas with a common factor
+static double animate_interpolation_factor(double dt, double target_factor) {
+    dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
+    const double INV_TARGET_DT = 100.0;
+    return target_factor * dt * INV_TARGET_DT;
+}
+
+// Within these of the target, an animation is at the target: the exponential approach would go on in the last bits
+// for ever, and a view that never stops moving is never still enough to keep (lazy rendering). Far below a pixel.
+static const double SNAP_SHIFT    = 1.0e-5;     // of the shift, in clip space (a pixel is about 1e-3)
+static const double SNAP_RELATIVE = 1.0e-5;     // of the position and the distance, relative to the distance
+static const double SNAP_ANGLE    = 1.0e-5;     // of the orientation, in radians (a pixel is about 1e-4 at most)
+
+void camera_animate_shift(vec2_t* current, vec2_t target, double dt, double target_factor) {
+    ASSERT(current);
+    const float t = (float)CLAMP(animate_interpolation_factor(dt, target_factor), 0.0, 1.0);
+    *current = *current + (target - *current) * t;
+    if (fabs((double)current->x - (double)target.x) < SNAP_SHIFT && fabs((double)current->y - (double)target.y) < SNAP_SHIFT) {
+        *current = target;
+    }
+}
+
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor) {
     ASSERT(current);
 
-    dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
-
-    // We use an exponential interpolation of the deltas with a common factor
-    const double INV_TARGET_DT = 100.0;
-    double interpolation_factor = target_factor * dt * INV_TARGET_DT;
+    double interpolation_factor = animate_interpolation_factor(dt, target_factor);
 
     vec3_t pos[2] = {current->position, target.position};
     quat_t ori[2] = {current->orientation, target.orientation};
     float dist[2] = {current->distance, target.distance};
     camera_interpolate_look_at(&current->position, &current->orientation, &current->distance, pos, ori, dist, interpolation_factor);
+
+    // At the target when within a fraction of a pixel of it. The angle between the orientations by the length of their
+    // difference (about half the angle), which floats resolve where the dot product does not.
+    const double scale = MAX((double)target.distance, 1.0e-3);
+    double d_pos = 0.0, dot = 0.0, d_ori_minus = 0.0, d_ori_plus = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const double d = (double)current->position.elem[i] - (double)target.position.elem[i];
+        d_pos += d * d;
+    }
+    for (int i = 0; i < 4; ++i) {
+        const double a = current->orientation.elem[i], b = target.orientation.elem[i];
+        dot += a * b;
+        d_ori_minus += (a - b) * (a - b);
+        d_ori_plus  += (a + b) * (a + b);
+    }
+    const double angle = 2.0 * sqrt(dot < 0.0 ? d_ori_plus : d_ori_minus);
+    if (sqrt(d_pos) < SNAP_RELATIVE * scale && fabs((double)current->distance - (double)target.distance) < SNAP_RELATIVE * scale &&
+        angle < SNAP_ANGLE) {
+        *current = target;
+    }
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -316,7 +354,7 @@ void camera_animate(ViewTransform* current, const ViewTransform& target, double 
 //
 // Signs and in-plane rotations that the shape leaves open are settled by the world view, so the same input
 // always gives the same view. In every case the view is centered on the projected extent and the camera is
-// backed off until every atom fits.
+// backed off until every atom fits, in the region of the view it is made for.
 
 static const float  DV_AZIMUTH          = 25.0f * (3.14159265f / 180.0f); // Swing from the face towards screen right
 static const float  DV_ELEVATION        = 20.0f * (3.14159265f / 180.0f); // Swing up from the horizontal
@@ -577,21 +615,24 @@ static DvFrame dv_frame_about_face(vec3_t b, const vec3_t* p, size_t n) {
     return f;
 }
 
-float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y) {
+float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y, const ViewRegion& region) {
     const vec3_t s = quat_mul_vec3(orientation, DV_X);
     const vec3_t u = quat_mul_vec3(orientation, DV_Y);
     const vec3_t b = quat_mul_vec3(orientation, DV_Z);
-    const float tan_half_fov = tanf(fov_y * 0.5f) * DV_FILL;
+    // The shift moves the picture over without changing it, so only the size of the region matters: half the
+    // side of the largest square in it, as the tangent of an angle off the view axis
+    const vec2_t half_ext = (region.max - region.min) * 0.5f;
+    const float tan_half_side = MIN(half_ext.x * region.aspect_ratio, half_ext.y) * tanf(fov_y * 0.5f) * DV_FILL;
     float dist = DV_MIN_DISTANCE;
     for (size_t i = 0; i < count; ++i) {
         const vec3_t p = vec3_sub(dv_load(xyz, indices, i), look_at);
         const float lateral = MAX(fabsf(vec3_dot(p, s)), fabsf(vec3_dot(p, u))) + DV_ATOM_RADIUS;
-        dist = MAX(dist, vec3_dot(p, b) + lateral / tan_half_fov);
+        dist = MAX(dist, vec3_dot(p, b) + lateral / tan_half_side);
     }
     return dist;
 }
 
-ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y) {
+ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y, const ViewRegion& region) {
     ViewTransform result = {};
     if (!indices) count = num_atoms;
     if (!count) return result;
@@ -683,7 +724,7 @@ ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, c
     const vec3_t center = vec3_add(mean, vec3_add(vec3_add(vec3_mul1(s, mid.x), vec3_mul1(u, mid.y)), vec3_mul1(b, mid.z)));
 
     const quat_t orientation = quat_from_mat4(mat4_look_at(vec3_add(center, b), center, u));
-    const float  dist = camera_fit_distance(xyz, indices, count, center, orientation, fov_y);
+    const float  dist = camera_fit_distance(xyz, indices, count, center, orientation, fov_y, region);
 
     result.orientation = orientation;
     result.position    = vec3_add(center, vec3_mul1(b, dist));

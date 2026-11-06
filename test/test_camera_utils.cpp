@@ -5,6 +5,7 @@
 
 #include <core/md_vec_math.h>
 
+#include <float.h>
 #include <math.h>
 
 /* camera_utils is where a sign or a transposition goes unnoticed for a long time: a projection that
@@ -283,4 +284,99 @@ UTEST(viamd_camera, default_view_is_independent_of_the_structure_sign) {
     const ViewTransform b = camera_compute_default_view(m.xyz, m.n, NULL, m.n, NULL, 0.785f);
     EXPECT_GT(vec3_dot(dv_view_up(a), dv_view_up(b)), 0.99f);
     EXPECT_GT(vec3_dot(dv_view_dir(a), dv_view_dir(b)), 0.99f);
+}
+
+/* Framing in a region of the view, the part that windows leave uncovered. The camera looks at what it frames
+ * and the projection is shifted so that it is seen at the region's center, so these project through that. */
+
+static vec2_t dv_project(const ViewTransform& v, const mat4_t& P, vec3_t x) {
+    const vec4_t p = mat4_mul_vec4(P * camera_world_to_view_matrix(v), vec4_from_vec3(x, 1.0f));
+    return vec2_set(p.x / p.w, p.y / p.w);
+}
+
+UTEST(viamd_camera, shifted_projection_shows_the_look_at_at_the_region_center) {
+    const Camera c = test_camera();
+    const float aspect = 16.0f / 9.0f;
+    const ViewRegion region = {.min = {0.1f, -0.9f}, .max = {0.9f, 0.3f}, .aspect_ratio = aspect};
+    const vec2_t center = view_region_center(region);
+    const mat4_t shift = mat4_translate(center.x, center.y, 0.0f);
+    const vec3_t look_at = camera_get_look_at(c);
+
+    const vec2_t persp = dv_project(c, shift * camera_view_to_clip_matrix_persp(c, aspect), look_at);
+    EXPECT_NEAR( 0.5f, persp.x, 1.0e-4f);
+    EXPECT_NEAR(-0.3f, persp.y, 1.0e-4f);
+
+    const float h = c.distance * tanf(c.fov_y * 0.5f);
+    const float w = aspect * h;
+    const vec2_t ortho = dv_project(c, shift * camera_view_to_clip_matrix_ortho(-w, w, -h, h, c.near_plane, c.far_plane), look_at);
+    EXPECT_NEAR( 0.5f, ortho.x, 1.0e-4f);
+    EXPECT_NEAR(-0.3f, ortho.y, 1.0e-4f);
+
+    /* And back: the shifted inverse sends the region center to the view axis */
+    const mat4_t inv = camera_clip_to_view_matrix_persp(c, aspect) * mat4_translate(-center.x, -center.y, 0.0f);
+    const vec4_t v = mat4_mul_vec4(inv, vec4_set(center.x, center.y, 0.5f, 1.0f));
+    EXPECT_NEAR(0.0f, v.x / v.w, 1.0e-4f);
+    EXPECT_NEAR(0.0f, v.y / v.w, 1.0e-4f);
+}
+
+UTEST(viamd_camera, default_view_in_a_region_fits_in_it) {
+    static DvSys s; s.n = 0;
+    uint32_t seed = 4;
+    for (int i = 0; i < 2000; ++i) {
+        s.add(vec3_set(60 * (dv_rand(&seed) - 0.5f), 25 * (dv_rand(&seed) - 0.5f), 25 * (dv_rand(&seed) - 0.5f)));
+    }
+    const float fov = 0.785f;
+    const float aspect = 16.0f / 9.0f;
+    const mat4_t P = mat4_persp(fov, aspect, 1.0f, 10000.0f);
+
+    /* Windows to the left and at the bottom; then windows over most of the view, which leave a tall column */
+    const ViewRegion regions[2] = {
+        {.min = {-0.3f, -0.5f}, .max = {1.0f, 1.0f}, .aspect_ratio = aspect},
+        {.min = { 0.5f, -1.0f}, .max = {1.0f, 1.0f}, .aspect_ratio = aspect},
+    };
+    for (const ViewRegion& region : regions) {
+        const ViewTransform v = camera_compute_default_view(s.xyz, s.n, NULL, s.n, NULL, fov, region);
+        const vec2_t center = view_region_center(region);
+        const mat4_t shifted = mat4_translate(center.x, center.y, 0.0f) * P;
+        vec2_t lo = vec2_set( FLT_MAX,  FLT_MAX);
+        vec2_t hi = vec2_set(-FLT_MAX, -FLT_MAX);
+        for (size_t i = 0; i < s.n; ++i) {
+            const vec2_t p = dv_project(v, shifted, s.xyz[i]);
+            lo = vec2_set(fminf(lo.x, p.x), fminf(lo.y, p.y));
+            hi = vec2_set(fmaxf(hi.x, p.x), fmaxf(hi.y, p.y));
+        }
+        EXPECT_GE(lo.x, region.min.x);
+        EXPECT_GE(lo.y, region.min.y);
+        EXPECT_LE(hi.x, region.max.x);
+        EXPECT_LE(hi.y, region.max.y);
+        /* In the middle of it, and not lost in it */
+        const vec2_t mid = (lo + hi) * 0.5f;
+        EXPECT_LT(fabsf(mid.x - center.x), 0.1f);
+        EXPECT_LT(fabsf(mid.y - center.y), 0.1f);
+        EXPECT_GT(fmaxf((hi.x - lo.x) / (region.max.x - region.min.x), (hi.y - lo.y) / (region.max.y - region.min.y)), 0.5f);
+    }
+}
+
+UTEST(viamd_camera, trackball_rotates_about_the_shifted_center) {
+    /* A vertical drag straight through where the look-at is seen tilts the view about its right axis, and does
+     * not roll it - which a drag off the trackball's center would */
+    const Camera c = test_camera();
+    TrackballControllerInput input = {};
+    input.rotate_button    = true;
+    input.screen_size      = vec2_set(200, 100);
+    input.ndc_center       = vec2_set(0.5f, 0.0f);   /* pixel x 150 */
+    input.mouse_coord_prev = vec2_set(150, 40);
+    input.mouse_coord_curr = vec2_set(150, 60);
+
+    ViewTransform v = c;
+    EXPECT_TRUE(camera_controller_trackball(&v, input, {}, TrackballFlags_RotateEnabled | TrackballFlags_RotateReturnsTrue));
+    const vec3_t right_before = quat_mul_vec3(c.orientation, vec3_set(1, 0, 0));
+    const vec3_t right_after  = quat_mul_vec3(v.orientation, vec3_set(1, 0, 0));
+    EXPECT_NEAR(1.0f, vec3_dot(right_before, right_after), 1.0e-5f);
+    EXPECT_LT(vec3_dot(dv_view_dir(c), dv_view_dir(v)), 0.9999f);   /* it did turn */
+    /* About the look-at, which stays put */
+    const vec3_t a = camera_get_look_at(c), b = camera_get_look_at(v);
+    EXPECT_NEAR(a.x, b.x, 1.0e-3f);
+    EXPECT_NEAR(a.y, b.y, 1.0e-3f);
+    EXPECT_NEAR(a.z, b.z, 1.0e-3f);
 }

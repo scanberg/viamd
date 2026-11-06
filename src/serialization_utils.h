@@ -2,10 +2,10 @@
 
 #include <stdint.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 #include <core/md_vec_math.h>
 
-struct md_bitfield_t;
+struct md_bitset_t;
 
 // Reading and writing the workspace text format:
 //
@@ -23,6 +23,10 @@ struct md_bitfield_t;
 // Readers are forgiving and writers are exact: numbers are written with the digits it takes to read
 // back the same value, an extract_* that cannot parse its argument returns false and leaves the
 // destination untouched, and an entry nobody reads is skipped.
+//
+// The decimal point is '.', in every locale. A vector is read only when it has exactly the components
+// asked for: one written with decimal commas has more, and is logged and left unread rather than
+// read as other values.
 
 namespace viamd {
 
@@ -34,7 +38,7 @@ struct deserialization_state_t {
 
 struct serialization_state_t {
 	str_t filename;
-	md_strb_t sb;
+	md_str_writer_t sw;
 };
 
 // Advances to the next section header, skipping whatever the current section's reader left unread.
@@ -54,7 +58,7 @@ void write_dbl(serialization_state_t& state, str_t ident, double val);
 void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem, size_t len);
 void write_str(serialization_state_t& state, str_t ident, str_t str);
 // Base64 between ### markers: any bit pattern survives the line based format
-void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf);
+void write_bitset(serialization_state_t& state, str_t ident, const md_bitset_t* bs);
 
 static inline void write_vec3(serialization_state_t& state, str_t ident, vec3_t v)  { write_flt_vec(state, ident, v.elem, 3); }
 static inline void write_vec4(serialization_state_t& state, str_t ident, vec4_t v)  { write_flt_vec(state, ident, v.elem, 4); }
@@ -71,7 +75,9 @@ bool extract_flt (float& val, str_t arg);
 bool extract_flt_vec (float* elem, size_t len, str_t arg);
 bool extract_str (str_t& str, str_t arg);
 bool extract_to_char_buf(char* buf, size_t cap, str_t arg);
-bool extract_bitfield(md_bitfield_t* bf, str_t arg);
+// The set is allocated with alloc. Reads the byte format of the former md_bitfield masks, and the one for sets
+// reaching beyond 2^24 (see md_bitset_serialize)
+bool extract_bitset(md_bitset_t* bs, str_t arg, struct md_allocator_i* alloc);
 
 // An integer into an enum, accepted only within [0, count)
 template <typename T>

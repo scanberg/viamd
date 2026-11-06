@@ -2,7 +2,7 @@
 
 #include <core/md_os.h>
 #include <core/md_str.h>
-#include <core/md_str_builder.h>
+#include <core/md_writer.h>
 
 namespace viamd {
 
@@ -15,7 +15,7 @@ namespace viamd {
 //
 // Returns an empty string when the executable path cannot be determined or does not fit, which the
 // caller has to treat as "the resource is not there" rather than as a path.
-static inline str_t resource_path(md_strb_t* sb, str_t relative) {
+static inline str_t resource_path(md_str_writer_t* sb, str_t relative) {
     ASSERT(sb);
 
     char exe[2048];
@@ -31,10 +31,10 @@ static inline str_t resource_path(md_strb_t* sb, str_t relative) {
         return {};
     }
 
-    md_strb_reset(sb);
-    md_strb_push_str(sb, dir);
-    md_strb_push_str(sb, relative);
-    return md_strb_to_str(*sb);
+    md_str_writer_reset(sb);
+    md_str_writer_push_str(sb, dir);
+    md_str_writer_push_str(sb, relative);
+    return md_str_writer_to_str(sb);
 }
 
 }  // namespace viamd

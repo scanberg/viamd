@@ -15,6 +15,10 @@ enum : EventType {
 
 	EventType_ViamdRenderOpaque				= HASH_STR_LIT("VIAMD Render Opaque"),			// Render opaque geometry into GBuffer
 	EventType_ViamdRenderTransparent		= HASH_STR_LIT("VIAMD Render Transparent"),		// Render transparent geometry (Occurs after opaque render pass)
+	// Before the main view is rendered, every frame: a handler that draws into it (RenderOpaque, RenderTransparent) folds
+	// what it draws from into the key (payload RenderKey), as it changes without input (a hover, a result arriving). The
+	// view is made again when the key changes, and else shown as it was made (lazy rendering).
+	EventType_ViamdRenderKey				= HASH_STR_LIT("VIAMD Render Key"),
 
 	EventType_ViamdWindowDrawMenu			= HASH_STR_LIT("VIAMD Draw Window Menu"),		// Draw the menu
 
@@ -53,6 +57,10 @@ enum : EventType {
 	// InteractionSurface
     EventType_ViamdInteractionSurface				= HASH_STR_LIT("VIAMD Interaction Surface"),
     EventType_ViamdViewFit							= HASH_STR_LIT("VIAMD View Fit"),
+
+	// Every frame, for the task overlay (draw_async_task_window in main.cpp): a handler with long work under way that the
+	// task system does not show adds a line to the request (payload TaskProgressRequest)
+	EventType_ViamdTaskProgressRequest				= HASH_STR_LIT("VIAMD Task Progress Request"),
 };
 
 enum : EventPayloadType {
@@ -67,6 +75,8 @@ enum : EventPayloadType {
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
+	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
+	EventPayloadType_TaskProgressRequest		= HASH_STR_LIT("Payload Task Progress Request"),
 };
 
 }

@@ -16,6 +16,7 @@
 
 // The document is baked into the executable at configure time (see CMakeLists.txt, create_resources).
 #include <script_reference.inl>
+#include <vial_reference.inl>
 
 // Everything the viewer knows about the document is a view into the embedded text, except for the few strings that
 // have to be generated (heading titles without markup, anchors). Those are made once, when the document is loaded,
@@ -75,6 +76,7 @@ struct Renderer : imgui_md {
 
 struct State {
     bool loaded = false;
+    bool vial = false;              // VIAL's reference (vial_reference.md): its functions are rows of tables
     md_allocator_i* arena = nullptr;
 
     str_t    doc = {};
@@ -116,7 +118,9 @@ struct State {
     Renderer renderer;
 };
 
-State g;
+// One per language: mdscript's reference and VIAL's, each with its own place and history. gp is the one shown.
+State states[2];
+State* gp = &states[0];
 
 ////////////////////////////////////////////////////////////////////////////////
 // String helpers
@@ -220,7 +224,7 @@ struct Fence {
 ////////////////////////////////////////////////////////////////////////////////
 
 void load(str_t doc) {
-    State& s = g;
+    State& s = *gp;
     ASSERT(!s.loaded);
     s.loaded = true;
     s.arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
@@ -299,6 +303,31 @@ void load(str_t doc) {
         const int cur = (int)md_array_size(s.sections) - 1;  // metadata attaches to the last heading
         Section& sec = s.sections[cur];
 
+        // VIAL's functions and names are the first cells of its tables: `angle(a, b, c: point)`, `protein`. Each leads
+        // to the section of the first table that has it.
+        if (s.vial && line.len > 1 && line.ptr[0] == '|') {
+            size_t e = 1;
+            while (e < line.len && !(line.ptr[e] == '|' && line.ptr[e - 1] != '\\')) ++e;
+            const str_t cell = str_substr(line, 1, e - 1);
+            for (size_t b = 0; b < cell.len; ++b) {
+                if (cell.ptr[b] != '`') continue;
+                size_t q = b + 1;
+                while (q < cell.len && cell.ptr[q] != '`') ++q;
+                const str_t span = str_substr(cell, b + 1, q - b - 1);
+                size_t k = 0;
+                while (k < span.len && (is_alnum(span.ptr[k]) || span.ptr[k] == '_')) ++k;
+                const bool call = k > 0 && k < span.len && span.ptr[k] == '(';
+                if (k > 0 && !is_digit(span.ptr[0]) && (call || k == span.len)) {
+                    const str_t name = str_substr(span, 0, k);
+                    bool dup = false;
+                    for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) dup = str_eq(aliases[j].name, name);
+                    if (!dup) md_array_push(aliases, (Anchor{name, cur, AnchorKind_Proc}), arena);
+                }
+                b = q;
+            }
+            continue;
+        }
+
         // <!-- proc name=x aliases=a,b category=c -->
         if (str_begins_with(line, STR_LIT("<!-- proc"))) {
             const str_t name = meta_value(line, STR_LIT("name"));
@@ -352,17 +381,19 @@ void load(str_t doc) {
 }
 
 void ensure_loaded() {
-    if (!g.loaded) {
-        load({(const char*)script_reference_md, script_reference_md_size - 1});  // drop the terminating zero
+    if (!gp->loaded) {
+        // Without the terminating zero
+        if (gp->vial) load({(const char*)vial_reference_md, vial_reference_md_size - 1});
+        else          load({(const char*)script_reference_md, script_reference_md_size - 1});
     }
 }
 
 int find_anchor(str_t name) {
-    for (size_t i = 0; i < md_array_size(g.anchors); ++i) {
-        if (str_eq(g.anchors[i].name, name)) return g.anchors[i].section;
+    for (size_t i = 0; i < md_array_size(gp->anchors); ++i) {
+        if (str_eq(gp->anchors[i].name, name)) return gp->anchors[i].section;
     }
-    for (size_t i = 0; i < md_array_size(g.anchors); ++i) {
-        if (str_eq_ignore_case(g.anchors[i].name, name)) return g.anchors[i].section;
+    for (size_t i = 0; i < md_array_size(gp->anchors); ++i) {
+        if (str_eq_ignore_case(gp->anchors[i].name, name)) return gp->anchors[i].section;
     }
     return -1;
 }
@@ -372,7 +403,7 @@ int find_anchor(str_t name) {
 ////////////////////////////////////////////////////////////////////////////////
 
 void navigate(int section, bool push_history = true) {
-    State& s = g;
+    State& s = *gp;
     if (section < 0 || section >= (int)md_array_size(s.sections)) return;
     const Section& sec = s.sections[section];
     s.page = sec.page;
@@ -393,15 +424,15 @@ void navigate(int section, bool push_history = true) {
 }
 
 void history_step(int dir) {
-    const int p = g.history_pos + dir;
-    if (p < 0 || p >= g.history_len) return;
-    g.history_pos = p;
-    navigate(g.history[p], false);
+    const int p = gp->history_pos + dir;
+    if (p < 0 || p >= gp->history_len) return;
+    gp->history_pos = p;
+    navigate(gp->history[p], false);
 }
 
 void set_query(str_t q) {
-    str_copy_to_char_buf(g.query, sizeof(g.query), q);
-    g.query_dirty = true;
+    str_copy_to_char_buf(gp->query, sizeof(gp->query), q);
+    gp->query_dirty = true;
 }
 
 void follow_link(const char* url, const char* url_end) {
@@ -410,7 +441,7 @@ void follow_link(const char* url, const char* url_end) {
         const str_t name = str_substr(u, 1);
         const int idx = find_anchor(name);
         if (idx >= 0) {
-            g.query[0] = '\0';
+            gp->query[0] = '\0';
             navigate(idx);
         } else {
             set_query(name);
@@ -421,7 +452,7 @@ void follow_link(const char* url, const char* url_end) {
 }
 
 void update_search_results() {
-    State& s = g;
+    State& s = *gp;
     const str_t q = str_trim(str_from_cstr(s.query));
     if (!s.query_dirty && str_eq_cstr(q, s.query_applied)) return;
     s.query_dirty = false;
@@ -505,11 +536,13 @@ bool is_one_of(str_t word, const char* const* list, size_t count) {
 
 bool is_keyword(str_t w) {
     static const char* const kw[] = {"in", "out", "and", "or", "not", "xor", "true", "false"};
-    return is_one_of(w, kw, ARRAY_SIZE(kw));
+    static const char* const vial_kw[] = {"and", "or", "not", "in", "is", "if", "else", "elif", "for", "def", "return", "True", "False",
+                                          "None", "assert", "pass"};
+    return gp->vial ? is_one_of(w, vial_kw, ARRAY_SIZE(vial_kw)) : is_one_of(w, kw, ARRAY_SIZE(kw));
 }
 
 bool is_type_name(str_t w) {
-    static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "bitfield", "position",
+    static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "atomset", "bondset", "position",
                                         "distribution", "volume", "vec2", "vec3", "vec4", "mat3", "mat4", "any"};
     return is_one_of(w, types, ARRAY_SIZE(types));
 }
@@ -576,9 +609,9 @@ void draw_code_line(ImDrawList* dl, ImVec2 pos, str_t line, bool script, const P
 }
 
 void set_feedback(int id, Feedback f) {
-    g.feedback_id = id;
-    g.feedback = f;
-    g.feedback_until = ImGui::GetTime() + 1.2;
+    gp->feedback_id = id;
+    gp->feedback = f;
+    gp->feedback_until = ImGui::GetTime() + 1.2;
 }
 
 // Blocks of code that come from the reference get Copy / Insert buttons and colouring.
@@ -590,7 +623,8 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     const float header_h = fs + style.FramePadding.y * 2.0f + 4.0f;
     const str_t lang = {lang_beg, (size_t)(lang_end - lang_beg)};
     const str_t code = {code_beg, (size_t)(code_end - code_beg)};
-    const bool script = str_eq(lang, STR_LIT("mdscript"));
+    // Examples: mdscript's, and VIAL's, which are Python
+    const bool script = str_eq(lang, STR_LIT("mdscript")) || str_eq(lang, STR_LIT("python"));
 
     // Measure
     int num_lines = 0;
@@ -625,9 +659,9 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
                 str_empty(lang) ? "code" : lang_beg, str_empty(lang) ? nullptr : lang_end);
 
     const int id = m_code_index;
-    const bool feedback = (g.feedback_id == id) && ImGui::GetTime() < g.feedback_until;
-    const char* copy_label = (feedback && g.feedback == Feedback_Copied)   ? "Copied"   : "Copy";
-    const char* ins_label  = (feedback && g.feedback == Feedback_Inserted) ? "Inserted" : "Insert";
+    const bool feedback = (gp->feedback_id == id) && ImGui::GetTime() < gp->feedback_until;
+    const char* copy_label = (feedback && gp->feedback == Feedback_Copied)   ? "Copied"   : "Copy";
+    const char* ins_label  = (feedback && gp->feedback == Feedback_Inserted) ? "Inserted" : "Insert";
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     const float bh = fs + 2.0f;
@@ -643,11 +677,11 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
         if (ImGui::Button(ins_label)) {
             // Handed to the host through draw_window(), as one or more complete lines
             md_allocator_i* heap = md_get_heap_allocator();
-            md_array_shrink(g.insert_buf, 0);
-            md_array_push_array(g.insert_buf, code.ptr, code.len, heap);
-            if (code.len == 0 || code.ptr[code.len - 1] != '\n') md_array_push(g.insert_buf, '\n', heap);
-            md_array_push(g.insert_buf, '\0', heap);
-            g.insert_pending = true;
+            md_array_shrink(gp->insert_buf, 0);
+            md_array_push_array(gp->insert_buf, code.ptr, code.len, heap);
+            if (code.len == 0 || code.ptr[code.len - 1] != '\n') md_array_push(gp->insert_buf, '\n', heap);
+            md_array_push(gp->insert_buf, '\0', heap);
+            gp->insert_pending = true;
             set_feedback(id, Feedback_Inserted);
         }
     }
@@ -673,12 +707,12 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
 }
 
 void Renderer::on_heading(int, float screen_y) {
-    if (g.target_heading == g.headings_rendered) {
+    if (gp->target_heading == gp->headings_rendered) {
         // The target stays armed for a few frames: text wraps differently once the scrollbar has appeared, so the
         // position of the heading can still move after the first frame.
         ImGui::SetScrollY(screen_y - ImGui::GetWindowPos().y + ImGui::GetScrollY() - ImGui::GetStyle().WindowPadding.y);
     }
-    ++g.headings_rendered;
+    ++gp->headings_rendered;
 }
 
 void Renderer::open_url(const char* url, const char* url_end) {
@@ -686,7 +720,7 @@ void Renderer::open_url(const char* url, const char* url_end) {
 }
 
 void draw_toolbar() {
-    State& s = g;
+    State& s = *gp;
     const float fs = ImGui::GetFontSize();
 
     ImGui::BeginDisabled(s.history_pos <= 0);
@@ -721,7 +755,7 @@ void draw_toolbar() {
 }
 
 void draw_sidebar() {
-    State& s = g;
+    State& s = *gp;
     const float fs = ImGui::GetFontSize();
     const ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
 
@@ -784,7 +818,7 @@ void draw_sidebar() {
 }
 
 void draw_content() {
-    State& s = g;
+    State& s = *gp;
     if (s.page < 0 || s.page >= (int)md_array_size(s.pages)) return;
     const Page& page = s.pages[s.page];
 
@@ -818,7 +852,7 @@ void draw_content() {
 }
 
 void draw() {
-    State& s = g;
+    State& s = *gp;
     if (md_array_size(s.sections) == 0) {
         ImGui::TextDisabled("The script reference is not available in this build.");
         return;
@@ -858,12 +892,21 @@ void draw() {
 // Interface
 ////////////////////////////////////////////////////////////////////////////////
 
+void set_language(script::Language lang) {
+    State* want = &states[lang == script::Language::V2 ? 1 : 0];
+    if (want == gp) return;
+    want->vial = lang == script::Language::V2;
+    want->reveal = gp->reveal;      // a request to show the window holds for the other reference
+    want->focus_search = gp->focus_search;
+    gp = want;
+}
+
 bool show(str_t topic) {
     ensure_loaded();
     if (str_empty(topic)) return false;
     const int idx = find_anchor(topic);
     if (idx < 0) return false;
-    g.query[0] = '\0';
+    gp->query[0] = '\0';
     navigate(idx);
     return true;
 }
@@ -871,31 +914,31 @@ bool show(str_t topic) {
 void search(str_t query) {
     ensure_loaded();
     set_query(query);
-    g.focus_search = false;
+    gp->focus_search = false;
 }
 
 void focus_search() {
-    g.focus_search = true;
+    gp->focus_search = true;
 }
 
 void reveal(bool take_focus) {
-    g.reveal = take_focus ? State::Reveal_Focus : State::Reveal_Show;
+    gp->reveal = take_focus ? State::Reveal_Focus : State::Reveal_Show;
 }
 
 Action draw_window(bool* p_open) {
     ensure_loaded();
-    g.insert_pending = false;
+    gp->insert_pending = false;
 
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 60.0f, ImGui::GetFontSize() * 40.0f), ImGuiCond_FirstUseEver);
     ImGuiWindowFlags flags = ImGuiWindowFlags_None;
-    if (g.reveal == State::Reveal_Focus) {
+    if (gp->reveal == State::Reveal_Focus) {
         ImGui::SetNextWindowFocus();
-    } else if (g.reveal == State::Reveal_Show) {
+    } else if (gp->reveal == State::Reveal_Show) {
         flags |= ImGuiWindowFlags_NoFocusOnAppearing;
     }
 
     const bool visible = ImGui::Begin("Script Reference", p_open, flags);
-    if (g.reveal == State::Reveal_Show) {
+    if (gp->reveal == State::Reveal_Show) {
         // Show the window without taking the keyboard focus from whoever has it
         ImGuiWindow* window = ImGui::GetCurrentWindow();
         if (window->DockNode && window->DockNode->TabBar) {
@@ -903,14 +946,14 @@ Action draw_window(bool* p_open) {
         }
         ImGui::BringWindowToDisplayFront(window->RootWindowDockTree);
     }
-    g.reveal = State::Reveal_None;
+    gp->reveal = State::Reveal_None;
     if (visible) {
         draw();
     }
     ImGui::End();
 
     Action action;
-    if (g.insert_pending) action.insert_code = {g.insert_buf, md_array_size(g.insert_buf) - 1};
+    if (gp->insert_pending) action.insert_code = {gp->insert_buf, md_array_size(gp->insert_buf) - 1};
     return action;
 }
 

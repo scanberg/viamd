@@ -1,16 +1,10 @@
-﻿cmake_minimum_required(VERSION 3.26)
+﻿cmake_minimum_required(VERSION 3.27)
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
 # Must be set before project() so the toolchain picks it up.
-#
-# 13.0 is the floor the code actually holds to: the Metal backend guards its one
-# macOS 13 API with @available and reaches MTLResidencySet (macOS 15) through
-# NSClassFromString/performSelector precisely so it can be built against an older
-# target. release.yml passes the same value, so a local build and a released build
-# agree on what they are allowed to call.
 if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment version")
 endif()
 
 project(viamd LANGUAGES C CXX)
@@ -124,7 +118,6 @@ add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
-add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 add_subdirectory(ext/md4c)
 add_subdirectory(ext/imgui_md)
@@ -173,34 +166,77 @@ endif()
 
 set(SRC_FILES
     src/app_settings.cpp
+    src/cartoon_glyphs.cpp
+    src/color_scale.cpp
     src/color_utils.cpp
+    src/density_map.cpp
+    src/layer_groups.cpp
     src/display_units.cpp
+    src/display_units_settings.cpp
+    src/surface_field.cpp
     src/event.cpp
+    src/file_list.cpp
+    src/load_order.h
+    src/load_order.cpp
+    src/filter_input.cpp
     src/image.cpp
     src/imgui_widgets.cpp
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
     src/plot_series.cpp
+    src/plot_periodic.cpp
+    src/plot_periodic_core.cpp
+    src/property_grid.cpp
+    src/representation.cpp
+    src/representation_tree.cpp
     src/script_editor.cpp
+    src/script_engine.h
+    src/script_engine_impl.h
+    src/script_engine.cpp
+    src/script_engine_v1.cpp
+    src/script_engine_v2.cpp
     src/script_reference.cpp
+    src/script_suggestions.cpp
+    src/script_suggestions_vial.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
+    src/timeline_periods.cpp
+    src/timeline_periods_ui.cpp
     src/viamd.cpp
+    src/iso_meshes.cpp
+    src/es_planes.cpp
+    src/plane.cpp
+    src/transfer_function.cpp
+    src/transfer_function_widget.cpp
 
     src/app_settings.h
+    src/cartoon_glyphs.h
+    src/color_scale.h
     src/color_utils.h
     src/display_units.h
+    src/surface_field.h
+    src/iso_meshes.h
     src/event.h
+    src/file_list.h
+    src/filter_input.h
     src/image.h
     src/imgui_widgets.h
     src/implot_widgets.h
     src/loader.h
     src/plot_series.h
+    src/plot_periodic.h
+    src/plot_periodic_core.h
+    src/property_grid.h
+    src/representation.h
+    src/representation_tree.h
     src/script_editor.h
     src/script_reference.h
+    src/script_suggestions.h
     src/serialization_utils.h
     src/task_system.h
+    src/timeline_periods.h
+    src/timeline_periods_ui.h
     src/viamd.h
     src/viamd_event.h
 )
@@ -224,6 +260,8 @@ set(GFX_FILES
     src/gfx/immediate_draw_utils.cpp
     src/gfx/postprocessing_utils.cpp
     src/gfx/volumerender_utils.cpp
+    src/gfx/isomesh_utils.cpp
+    src/gfx/profiler.cpp
 
     src/gfx/camera.h
     src/gfx/camera_utils.h
@@ -234,6 +272,8 @@ set(GFX_FILES
     src/gfx/postprocessing_utils.h
     src/gfx/view_param.h
     src/gfx/volumerender_utils.h
+    src/gfx/isomesh_utils.h
+    src/gfx/profiler.h
 )
 
 # One folder per component under src/components. Adding a component means adding its folder; there
@@ -250,29 +290,41 @@ if (NOT VIAMD_ENABLE_QM)
 endif()
 
 set(SHADER_FILES 
-    src/shaders/highlight.frag
-    src/shaders/scale_hsv.frag
     src/shaders/compose_deferred.frag
     src/shaders/temporal.frag
     src/shaders/luma.frag
     src/shaders/fxaa.frag
-    src/shaders/tonemap/passthrough.frag
-    src/shaders/tonemap/exposure_gamma.frag
-    src/shaders/tonemap/uncharted.frag
-    src/shaders/tonemap/aces.frag
+    src/shaders/tonemap/display.frag
     src/shaders/tonemap/fast_reversible.frag
-    src/shaders/dof/dof_half_res_prepass.frag
-    src/shaders/dof/dof.frag
+    src/shaders/dof/dof_prepass.frag
+    src/shaders/dof/dof_tile.frag
+    src/shaders/dof/dof_gather.frag
+    src/shaders/dof/dof_near_down.frag
+    src/shaders/dof/dof_near.frag
+    src/shaders/dof/dof_fill.frag
+    src/shaders/dof/dof_composite.frag
     src/shaders/velocity/blit_velocity.frag
     src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
-    src/shaders/volume/entryexit.vert
-    src/shaders/volume/entryexit.frag
-    src/shaders/volume/raycaster.frag
+    src/shaders/volume/dvr.frag
+    src/shaders/volume/isosurface.frag
+    src/shaders/volume/isosurface_fast.frag
+    src/shaders/volume/block_minmax.frag
+    src/shaders/volume/cell_minmax.frag
+    src/shaders/volume/block_proxy.vert
+    src/shaders/volume/block_proxy.frag
     src/shaders/volume/splat_color.comp
+    src/shaders/volume/isomesh.vert
+    src/shaders/volume/isomesh.frag
+    src/shaders/volume/isomesh_accumulate.frag
+    src/shaders/ssao/depth_downsample.frag
     src/shaders/ssao/ssao.frag
+    src/shaders/ssao/ssao_temporal.frag
+    src/shaders/ssao/ssao_bitmask.frag
     src/shaders/ssao/blur.frag
+    src/shaders/ssao/upsample.frag
+    src/shaders/shadows/screen_space.frag
 )
 
 # Bake shaders into a single header file
@@ -283,6 +335,9 @@ create_resources("${SHADER_FILES}" "gen/shaders.inl")
 set(SCRIPT_REFERENCE_MD "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/docs/script_reference.md")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SCRIPT_REFERENCE_MD}")
 create_resources("${SCRIPT_REFERENCE_MD}" "gen/script_reference.inl")
+set(VIAL_REFERENCE_MD "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/docs/vial_reference.md")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VIAL_REFERENCE_MD}")
+create_resources("${VIAL_REFERENCE_MD}" "gen/vial_reference.inl")
 
 source_group("src" FILES ${SRC_FILES})
 source_group("src/app" FILES ${APP_FILES})
@@ -306,12 +361,12 @@ if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     )
 endif()
 
+# What viamd finds relative to itself -- the basis sets and the default dataset -- is installed
+# beside it, in the same layout as the build tree's bin directory (see the copies below). The
+# install tree is the one to ship: unlike the build tree it holds no tests, benchmarks or debug
+# files. On Linux this puts data under bin/, which suits a self-contained install prefix but not
+# a system-wide one; that would need a share/ lookup in the code as well.
 install(TARGETS viamd DESTINATION bin)
-
-# The question is how this should be treated on Linux...
-# For now we simply don't copy the datasets
-# Install datasets
-#install(FILES datasets/1ALA-500.pdb DESTINATION datasets)
 
 if (UNIX AND NOT APPLE)
     # Linux metadata
@@ -346,6 +401,7 @@ if (VIAMD_ENABLE_QM)
     else()
         create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis" "${VIAMD_BIN_DIR}/basis")
         add_dependencies(viamd viamd_copy_basis)
+        install(DIRECTORY ext/mdlib/ext/veloxchem/basis/ DESTINATION bin/basis)
     endif()
 endif()
 
@@ -359,6 +415,7 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
     else()
         create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
         add_dependencies(viamd viamd_copy_datasets)
+        install(DIRECTORY datasets/ DESTINATION bin/datasets)
     endif()
     # The resource names itself completely: the folder and the file were split between this
     # file and main.cpp, so the identity of the default dataset lived in two places.
@@ -406,7 +463,6 @@ target_link_libraries(viamd
     enkiTS
     ImGuiColorTextEdit
     implot
-    atomic_queue
     imgui_notify
     imgui_md
     ${VIAMD_EXTRA_LIBS}
@@ -414,5 +470,16 @@ target_link_libraries(viamd
 
 if (VIAMD_UNITTEST)
     add_subdirectory(test)
+endif()
+
+# Every executable in the bin directory that reads VeloxChem files looks for the basis sets beside
+# itself (md_vlx.c), not only viamd. mdlib leaves the copy to us when embedded, so its tests and
+# benchmarks wait for this one too.
+if (TARGET viamd_copy_basis)
+    foreach(_exe viamd_test md_unittest md_benchmark)
+        if (TARGET ${_exe})
+            add_dependencies(${_exe} viamd_copy_basis)
+        endif()
+    endforeach()
 endif()
 

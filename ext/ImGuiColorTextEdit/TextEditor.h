@@ -140,6 +140,9 @@ public:
 	inline size_t GetDecorationLeftMargin() const { return config.decorationMargin; }
 	inline void SetTextLeftMargin(size_t value) { config.textMargin = value; }
 	inline size_t GetTextLeftMargin() const { return config.textMargin; }
+	// line decorations to the left of the line numbers instead of between them and the text
+	inline void SetDecorationsBeforeLineNumbers(bool value) { config.decorationsBeforeLineNumbers = value; }
+	inline bool AreDecorationsBeforeLineNumbers() const { return config.decorationsBeforeLineNumbers; }
 
 	// load new text into editor (see note below on cursor and scroll manipulation after setting new text)
 	//
@@ -251,6 +254,12 @@ public:
 	inline bool IsMousePosOverTextArea(const ImVec2& mousePos) const { return isMousePosOverTextArea(mousePos); }
 	inline DocPos GetDocPosAtMousePos(const ImVec2& mousePos) const {return  getDocPosAtMousePos(mousePos); }
 	inline std::string GetWordAtMousePos(const ImVec2& mousePos) const { return getWordAtMousePos(mousePos); }
+
+	// viamd addition, to carry over when updating: where a click at the mouse position would put the cursor (between
+	// the glyphs closest to it rather than on the glyph under it), and the top left corner in screen coordinates of
+	// the glyph at a position, where the caret is drawn for it. Both as of the last Render().
+	inline DocPos GetCursorPosAtMousePos(const ImVec2& mousePos) const { return getCursorPosAtMousePos(mousePos); }
+	inline ImVec2 GetScreenPosOfDocPos(DocPos pos) const { return getScreenPosOfDocPos(normalizePos(pos)); }
 
 	// scrolling support
 	enum class Scroll {
@@ -997,6 +1006,7 @@ protected:
 		size_t leftMargin = 1; // margins are expressed in number of glyphs
 		size_t decorationMargin = 1;
 		size_t textMargin = 2;
+		bool decorationsBeforeLineNumbers = false;
 
 		// language support
 		const Language* language = nullptr;
@@ -1901,6 +1911,8 @@ protected:
 	bool isMousePosOverTextArea(const ImVec2& mousePos) const;
 	DocPos getDocPosAtMousePos(const ImVec2& mousePos) const;
 	std::string getWordAtMousePos(const ImVec2& mousePos) const;
+	DocPos getCursorPosAtMousePos(const ImVec2& mousePos) const;
+	ImVec2 getScreenPosOfDocPos(DocPos pos) const;
 
 	// scrolling support
 	void setCursor(DocPos pos);

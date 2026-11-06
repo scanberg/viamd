@@ -1,6 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.15)
-
-project(viamd_test VERSION 0.1 LANGUAGES C CXX)
+﻿project(viamd_test VERSION 0.1 LANGUAGES C CXX)
 
 # viamd is one executable with no library to link against, so the translation units under test are
 # compiled into the test binary directly. Only units which are free of ImGui, OpenGL and
@@ -14,8 +12,23 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/serialization_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/event.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_system.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/timeline_periods.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/representation_tree.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/file_list.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/load_order.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/gfx/camera_utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/cartoon_glyphs.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/color_utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v1.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_engine_v2.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions_vial.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/display_units.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/transfer_function.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it
@@ -61,6 +74,8 @@ target_compile_features(viamd_test PRIVATE cxx_std_20)
 # that dispatch are themselves tested against.
 target_compile_definitions(viamd_test PRIVATE UTEST_USE_OLD_QPC
     VIAMD_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/test_data"
+    VIAMD_SCRIPT_PAIRS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/script_pairs"
+    VIAMD_ASE_TRAJ_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/unittest/ase_traj_data"
     ${VIAMD_DEFINES} ${MD_DEFINES})
 target_compile_options(viamd_test PRIVATE ${VIAMD_FLAGS} $<$<CONFIG:Debug>:${VIAMD_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_FLAGS_REL}>)
 
@@ -69,7 +84,6 @@ target_include_directories(viamd_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/components          # a component includes as <foo/foo_core.h>
     ${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/unittest      # utest.h, shared with mdlib's own suite
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ext/atomic_queue
     ${CMAKE_CURRENT_SOURCE_DIR}/../ext/enkiTS/src
 )
 

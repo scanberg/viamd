@@ -1,106 +1,124 @@
 #version 430 core
 
 // --------------------------------------------------------
-//  Gaussian RDF color volume precompute
+//  Colour volume: the colours of a set of points (atoms) carried into a 3D texture.
 //
-//  One workgroup per voxel slab (z-layer).
-//  Dispatch: (vol_size.x / 8, vol_size.y / 8, vol_size.z / 8)
+//  Every voxel takes the average of the point colours weighted by Gaussians, w_i = exp(e_i) with
+//  e_i = -|x - p_i|^2 * power / (2 sigma_i^2), normalised (Shepard). The weights are evaluated
+//  relative to the largest one (log-sum-exp, streamed), so a voxel far from every point still gets
+//  the colour of the nearest ones rather than underflowing to nothing.
+//
+//  One workgroup per 8^3 block. A point is skipped for the whole block when even at its closest it
+//  weighs less than exp(-CUTOFF) of what the best point weighs at its farthest, which keeps the
+//  per voxel work at the few points that can matter. Mirrored on the CPU in volumerender_utils.cpp.
+//
+//  Dispatch: ceil(vol_size / 8)
 // --------------------------------------------------------
 
-
-// Output — RGBA8 image3D
 layout(binding = 0, rgba8) writeonly uniform image3D u_color_volume;
 
-// Voxel grid → world space transform
-// Maps integer voxel coords to world-space positions (Å or Bohr)
-// Typically: world = u_origin + ivec3(coord) * u_voxelSize
-uniform mat4  u_voxel_to_world; // 4x4 transform matrix
-uniform mat4  u_world_to_model; // world space → model space transform, translate and rotate to volume. But no scaling. Want to preserve distance measurements
-uniform vec3  u_voxel_spacing;  // voxel spacing in world space (Å or Bohr)
-uniform ivec3 u_volume_dim;     // voxel dimensions (x, y, z)
+uniform mat4  u_voxel_to_world;     // voxel index -> world (the voxel centre)
+uniform ivec3 u_volume_dim;
 uniform int   u_num_points;
 uniform float u_power;
 
 layout(std430, binding = 0) readonly buffer PointXYZW {
-    vec4 in_points_xyzw[];  // xyz = position, w = sigma
+    vec4 in_points_xyzw[];          // xyz = position, w = sigma
 };
 
 layout(std430, binding = 1) readonly buffer PointColor {
     uint in_points_color[];
 };
 
+#define WG_SIZE    512
 #define MAX_POINTS 1024
-shared int s_num_points;
-shared vec4 s_points_xyzw[MAX_POINTS];
-shared uint s_points_color[MAX_POINTS];
+const float CUTOFF = 20.0;
 
-// --------------------------------------------------------
+shared float s_reduce[WG_SIZE];
+shared int   s_num_points;
+shared vec4  s_points[MAX_POINTS];  // xyz = position, w = power / (2 sigma^2)
+shared uint  s_colors[MAX_POINTS];
+
+float point_scale(float sigma) {
+    float s = max(sigma, 0.1);
+    return u_power / (2.0 * s * s);
+}
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 void main() {
-    const int wg_size = int(gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z);
-    ivec3 voxel_idx = ivec3(gl_GlobalInvocationID);
+    const int lid = int(gl_LocalInvocationIndex);
+    const ivec3 voxel_idx = ivec3(gl_GlobalInvocationID);
 
-    if (gl_LocalInvocationIndex == 0) {
-        s_num_points = 0;
+    // World space bounds of the voxel centres of this block (the volume may be rotated)
+    ivec3 lo = ivec3(gl_WorkGroupID) * 8;
+    ivec3 hi = min(lo + 7, u_volume_dim - 1);
+    vec3 bmin = vec3( 3.4e38);
+    vec3 bmax = vec3(-3.4e38);
+    for (int c = 0; c < 8; ++c) {
+        ivec3 corner = ivec3((c & 1) != 0 ? hi.x : lo.x, (c & 2) != 0 ? hi.y : lo.y, (c & 4) != 0 ? hi.z : lo.z);
+        vec3 p = (u_voxel_to_world * vec4(vec3(corner), 1.0)).xyz;
+        bmin = min(bmin, p);
+        bmax = max(bmax, p);
     }
 
-    // Calculate aabb min + max of workgroup
-    vec3 aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * u_voxel_spacing;
-    vec3 aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * u_voxel_spacing;
+    // The best exponent some point is guaranteed everywhere in the block
+    float e_lo = -3.4e38;
+    for (int i = lid; i < u_num_points; i += WG_SIZE) {
+        vec4  pt  = in_points_xyzw[i];
+        vec3  far = max(abs(pt.xyz - bmin), abs(pt.xyz - bmax));
+        e_lo = max(e_lo, -dot(far, far) * point_scale(pt.w));
+    }
+    s_reduce[lid] = e_lo;
+    barrier();
+    for (int s = WG_SIZE / 2; s > 0; s >>= 1) {
+        if (lid < s) s_reduce[lid] = max(s_reduce[lid], s_reduce[lid + s]);
+        barrier();
+    }
+    const float e_best = s_reduce[0];
 
+    if (lid == 0) s_num_points = 0;
     barrier();
 
-    // Radius where Gaussian weight falls to 0.1% of peak value
-    const float radius_factor = (3.7169 / sqrt(u_power));
-
-    for (int i = int(gl_LocalInvocationIndex); i < u_num_points; i += wg_size) {
-        vec4 point = in_points_xyzw[i];
-        float radius = point.w * radius_factor;
-
-        vec3 coord = vec3(u_world_to_model * vec4(point.xyz, 1.0));
-        vec3 delta = coord - clamp(coord, aabb_min, aabb_max);
-        float d2 = dot(delta, delta);
-
-        if (d2 < radius * radius) {
+    // The points that can matter somewhere in the block
+    for (int i = lid; i < u_num_points; i += WG_SIZE) {
+        vec4  pt   = in_points_xyzw[i];
+        float k    = point_scale(pt.w);
+        vec3  near = pt.xyz - clamp(pt.xyz, bmin, bmax);
+        if (-dot(near, near) * k >= e_best - CUTOFF) {
             int idx = atomicAdd(s_num_points, 1);
             if (idx < MAX_POINTS) {
-                s_points_xyzw[idx]  = in_points_xyzw[i];
-                s_points_color[idx] = in_points_color[i];
-            } else {
-                break;
+                s_points[idx] = vec4(pt.xyz, k);
+                s_colors[idx] = in_points_color[i];
             }
         }
     }
-    
     barrier();
 
-    if (any(greaterThanEqual(voxel_idx, u_volume_dim)))
-        return;
+    if (any(greaterThanEqual(voxel_idx, u_volume_dim))) return;
 
-    // Map voxel centre to world space
-    vec3 voxel_xyz = vec3(u_voxel_to_world * vec4(voxel_idx, 1.0));
+    vec3 x = (u_voxel_to_world * vec4(vec3(voxel_idx), 1.0)).xyz;
 
-    vec4  acc = vec4(0.0);
+    // Streamed log-sum-exp: weights relative to the largest exponent so far
+    float m   = -3.4e38;
     float sum = 0.0;
-
-    int num_points = min(s_num_points, MAX_POINTS);
-
-    for (int i = 0; i < num_points; ++i) {
-        vec3  point_xyz  = s_points_xyzw[i].xyz;
-        float sigma      = s_points_xyzw[i].w;
-        vec4  point_rgba = unpackUnorm4x8(s_points_color[i]);
-        vec3  delta      = voxel_xyz - point_xyz;
-        float dist2      = dot(delta, delta);
-        float inv2sig2   = 1.0 / (2.0 * sigma * sigma);
-
-        float w = exp(-dist2 * inv2sig2 * u_power);
-
-        acc += w * point_rgba;
-        sum += w;
+    vec4  acc = vec4(0.0);
+    const int n = min(s_num_points, MAX_POINTS);
+    for (int i = 0; i < n; ++i) {
+        vec3  d = x - s_points[i].xyz;
+        float e = -dot(d, d) * s_points[i].w;
+        vec4  c = unpackUnorm4x8(s_colors[i]);
+        if (e > m) {
+            float scale = exp(m - e);
+            sum = sum * scale + 1.0;
+            acc = acc * scale + c;
+            m = e;
+        } else {
+            float w = exp(e - m);
+            sum += w;
+            acc += w * c;
+        }
     }
 
-    vec4 color = (sum > 0.0) ? acc / sum : vec4(1.0, 1.0, 1.0, 0.0);
-    color = clamp(color, 0.0, 1.0);
-
+    vec4 color = (sum > 0.0) ? clamp(acc / sum, 0.0, 1.0) : vec4(1.0, 1.0, 1.0, 0.0);
     imageStore(u_color_volume, voxel_idx, color);
 }

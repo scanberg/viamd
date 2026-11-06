@@ -1,0 +1,6 @@
+# N-CA-C of every residue per frame
+# data: 1ALA-560ns.pdb
+=== v1
+a = angle(name("N"), name("CA"), name("C")) in residue(:);
+=== vial
+a = angle(residue and particle(name='N'), residue and particle(name='CA'), residue and particle(name='C'))

@@ -27,7 +27,16 @@ void initialize();
 void bind(str_t key, bool*  value);
 void bind(str_t key, int*   value);
 void bind(str_t key, float* value);
+void bind(str_t key, float* values, size_t count);  // A vector (a colour), written as count numbers, comma separated
 void bind(str_t key, char*  buf, size_t cap);
+
+// An enum, as its value: the enums of the settings are plain C enums the size of an int. Its range is the
+// caller's to check (on_apply), a .ini can hold anything.
+template <typename E>
+inline void bind_enum(str_t key, E* value) {
+    static_assert(sizeof(E) == sizeof(int), "app_settings::bind_enum: an enum the size of an int");
+    bind(key, (int*)value);
+}
 
 // Runs from initialize(), after the .ini has been read, for settings that have to
 // be pushed somewhere before they take effect. Runs whether or not a .ini existed,

@@ -51,6 +51,18 @@
 #ifndef MINMAX_4TAP_VARYING
 #define MINMAX_4TAP_VARYING 0
 #endif
+// The current frame smoothed where its detail is finer than a pixel, before the blend (PREFILTER below; MINMAX_3X3*)
+#ifndef USE_PREFILTER
+#define USE_PREFILTER 1
+#endif
+// Upscaling: the current frame (u_tex_main, the depth, the velocity) is smaller than the output and the history
+#ifndef UPSCALE
+#define UPSCALE 0
+#endif
+// Tints what the prefilter smooths, red by how much
+#ifndef DEBUG_PREFILTER
+#define DEBUG_PREFILTER 0
+#endif
 
 uniform sampler2D u_tex_main;
 uniform sampler2D u_tex_prev;
@@ -58,13 +70,35 @@ uniform sampler2D u_tex_linear_depth;
 uniform sampler2D u_tex_vel;
 uniform sampler2D u_tex_vel_neighbormax;
 
-uniform vec4 u_texel_size;
+uniform vec4 u_texel_size;         // of the current frame's textures (but its velocity, the G-buffer's own)
+uniform vec2 u_in_size;            // the current frame's size: in the corner of its textures, which can be larger
+uniform vec4 u_out_texel_size;     // of the output and the history: the current frame's size, unless upscaling
 uniform vec4 u_jitter_uv;
 
 uniform float u_time;
 uniform float u_feedback_min = 0.88;
 uniform float u_feedback_max = 0.97;
 uniform float u_motion_scale = 0.1;
+
+// A pixel's height in view space: x at linear depth 1 (y = 1, perspective) or at any (y = 0, orthographic)
+uniform vec2  u_pixel_size = vec2(0.0, 1.0);
+
+float g_prefilter_debug = 0.0;
+
+// The current frame lies in the corner of its textures, which can be larger: they are shared with views smaller than
+// it. A point is in its pixels, and turned into their uv as it is read; its velocity, the G-buffer's own, is the
+// frame's size. The output and the history are uv (tc) as they are.
+vec2 tex_uv(vec2 px)   { return px * u_texel_size.xy; }
+vec2 frame_uv(vec2 px) { return px / u_in_size; }
+
+// Set first thing in main: the output pixel's centre in the current frame's pixels, and the centre of the texel the
+// 3x3 is read around. Upscaling, that is the texel whose sample lies nearest the centre: texel q holds the scene at
+// q + 0.5 + j (j the jitter), and g_offset is where its sample lies from the centre.
+vec2 g_px     = vec2(0.0);
+vec2 g_px_cur = vec2(0.0);
+#if UPSCALE
+vec2 g_offset = vec2(0.0);
+#endif
 
 const float FLT_EPS = 0.00000001f;
 
@@ -155,36 +189,94 @@ vec2 sample_velocity(vec2 uv) {
 	return texture(u_tex_vel, uv).xy;
 }
 
-vec3 find_closest_fragment_3x3(vec2 uv) {
+// The linear depths of the 3x3 around uv, row by row from (-1,-1): what the dilation of the velocity and the prefilter
+// both read
+void depth_neighbourhood(vec2 uv, out float d[9]) {
 	vec2 dd = abs(u_texel_size.xy);
 	vec2 du = vec2(dd.x, 0.0);
 	vec2 dv = vec2(0.0, dd.y);
+	d[0] = depth_sample_linear(uv - dv - du);
+	d[1] = depth_sample_linear(uv - dv     );
+	d[2] = depth_sample_linear(uv - dv + du);
+	d[3] = depth_sample_linear(uv      - du);
+	d[4] = depth_sample_linear(uv          );
+	d[5] = depth_sample_linear(uv      + du);
+	d[6] = depth_sample_linear(uv + dv - du);
+	d[7] = depth_sample_linear(uv + dv     );
+	d[8] = depth_sample_linear(uv + dv + du);
+}
 
-	vec3 dtl = vec3(-1, -1, depth_sample_linear(uv - dv - du));
-	vec3 dtc = vec3( 0, -1, depth_sample_linear(uv - dv     ));
-	vec3 dtr = vec3( 1, -1, depth_sample_linear(uv - dv + du));
+// The nearest of the 3x3: its uv and depth. The first of equals, in the order of d.
+vec3 find_closest_fragment_3x3(vec2 uv, float d[9]) {
+	int imin = 0;
+	for (int i = 1; i < 9; ++i) {
+		if (d[i] < d[imin]) imin = i;
+	}
+	vec2 offset = vec2(float(imin % 3) - 1.0, float(imin / 3) - 1.0);
+	return vec3(uv + abs(u_texel_size.xy) * offset, d[imin]);
+}
 
-	vec3 dml = vec3(-1, 0,  depth_sample_linear(uv - du));
-	vec3 dmc = vec3( 0, 0,  depth_sample_linear(uv     ));
-	vec3 dmr = vec3( 1, 0,  depth_sample_linear(uv + du));
+// PREFILTER
+// Geometry finer than a pixel (atoms far away, thin lines, one pixel gaps) comes and goes from one frame's samples to
+// the next as the jitter moves them: the history is clipped to whatever this frame caught, and it flickers. Where the
+// 3x3 shows such detail, the current frame is taken from all nine samples, weighted by where each lies in the scene,
+// rather than from one: it varies far less from frame to frame. Elsewhere it is left as it is, so resolved geometry
+// keeps its edges. Measured, still view, against the average of the jittered frames: on a protein with atoms of about
+// a pixel, the flicker a quarter lower, as much as FXAA before the blend lowered it, with less softening; on a peptide
+// with atoms of 20 pixels, a quarter of FXAA's softening there. What it cannot reach: a feature no sample caught this
+// frame, as nothing in the 3x3 shows it.
 
-	vec3 dbl = vec3(-1, 1,  depth_sample_linear(uv + dv - du));
-	vec3 dbc = vec3( 0, 1,  depth_sample_linear(uv + dv     ));
-	vec3 dbr = vec3( 1, 1,  depth_sample_linear(uv + dv + du));
+// How far c stands out from both a and b the same way (both above it or both below): a peak or a dip one sample wide.
+// 0 on a step, where one of them is on c's side, and on a slope.
+float ridge(float a, float b, float c) {
+	float da = a - c;
+	float db = b - c;
+	return (da * db > 0.0) ? min(abs(da), abs(db)) : 0.0;
+}
 
-	vec3 dmin = dtl;
-	if (dmin.z > dtc.z) dmin = dtc;
-	if (dmin.z > dtr.z) dmin = dtr;
+// Both at once, each in its unit (luminance 0.1; depth half a pixel's size): a ridge in luminance alone is often
+// resolved, as the dark rim of a shaded cylinder against a light background (on a step in depth), and one in depth
+// alone too, as the crease where two atoms meet (on a step in colour). Smoothing either would only soften it.
+float ridge_both(int a, int b, int c, float l[9], float d[9], vec2 unit) {
+	return min(ridge(l[a], l[b], l[c]) * unit.x, ridge(d[a], d[b], d[c]) * unit.y);
+}
 
-	if (dmin.z > dml.z) dmin = dml;
-	if (dmin.z > dmc.z) dmin = dmc;
-	if (dmin.z > dmr.z) dmin = dmr;
+// How much the 3x3 holds detail finer than a pixel, 0 to 1: a ridge through the centre in any of four directions, or
+// across one of the four samples beside it (a dot next to the centre)
+float fine_detail(float l[9], float d[9]) {
+	float px = u_pixel_size.x * (u_pixel_size.y > 0.0 ? d[4] : 1.0);
+	vec2 unit = vec2(1.0 / 0.1, 1.0 / max(0.5 * px, 1e-8));
+	float r = ridge_both(3, 5, 4, l, d, unit);
+	r = max(r, ridge_both(1, 7, 4, l, d, unit));
+	r = max(r, ridge_both(0, 8, 4, l, d, unit));
+	r = max(r, ridge_both(2, 6, 4, l, d, unit));
+	r = max(r, ridge_both(0, 2, 1, l, d, unit));
+	r = max(r, ridge_both(6, 8, 7, l, d, unit));
+	r = max(r, ridge_both(0, 6, 3, l, d, unit));
+	r = max(r, ridge_both(2, 8, 5, l, d, unit));
+	return smoothstep(0.5, 1.0, r);
+}
 
-	if (dmin.z > dbl.z) dmin = dbl;
-	if (dmin.z > dbc.z) dmin = dbc;
-	if (dmin.z > dbr.z) dmin = dbr;
+// The nine samples weighted, a row and a column of weights (separable), normalised
+vec4 weighted_3x3(vec4 c[9], vec3 wx, vec3 wy) {
+	vec4 row0 = wx.x * c[0] + wx.y * c[1] + wx.z * c[2];
+	vec4 row1 = wx.x * c[3] + wx.y * c[4] + wx.z * c[5];
+	vec4 row2 = wx.x * c[6] + wx.y * c[7] + wx.z * c[8];
+	return (wy.x * row0 + wy.y * row1 + wy.z * row2) / (dot(wx, vec3(1.0)) * dot(wy, vec3(1.0)));
+}
 
-	return vec3(uv + dd.xy * dmin.xy, dmin.z);
+// The prefilter's width: a Gaussian, exp(-K d^2) with d in the current frame's pixels. K = 1.2 is wider than a fit of
+// Blackman-Harris (2.29, Karis 2014); it gave the least flicker for the softness on atoms of a pixel's size.
+const float PREFILTER_K = 1.2;
+
+// The current frame at the pixel's centre from the nine samples, each weighted by its distance from it in the scene:
+// texel k holds the scene at k + j, j the jitter in pixels
+vec4 reconstruct_3x3(vec4 c[9]) {
+	const vec3 offs = vec3(-1.0, 0.0, 1.0);
+	vec2 j  = u_jitter_uv.xy * u_texel_size.zw;
+	vec3 dx = offs + j.x;
+	vec3 dy = offs + j.y;
+	return weighted_3x3(c, exp(-PREFILTER_K * dx * dx), exp(-PREFILTER_K * dy * dy));
 }
 
 vec4 sample_color(sampler2D tex, vec2 uv) {
@@ -371,13 +463,14 @@ vec4 reconstruct_color(sampler2D color_tex, vec2 uv0, vec2 ss_vel_max) {
     return accu / wsum;
 }
 
-vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
+vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist, float d[9])
 {
 	// read texels
+	vec2 jitter_px = u_jitter_uv.xy * u_texel_size.zw;
 #if UNJITTER_COLORSAMPLES
-	vec4 texel0 = sample_color(u_tex_main, ss_txc - u_jitter_uv.xy);
+	vec4 texel0 = sample_color(u_tex_main, tex_uv(g_px - jitter_px));
 #else
-	vec4 texel0 = sample_color(u_tex_main, ss_txc);
+	vec4 texel0 = sample_color(u_tex_main, tex_uv(g_px));
 #endif
 
 #if UNJITTER_PREV_SAMPLES
@@ -387,10 +480,10 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
 #endif
 
 	// calc min-max of current neighbourhood
-#if UNJITTER_NEIGHBORHOOD
-	vec2 uv = ss_txc - u_jitter_uv.xy;
+#if UNJITTER_NEIGHBORHOOD && !UPSCALE
+	vec2 uv = tex_uv(g_px_cur - jitter_px);
 #else
-	vec2 uv = ss_txc;
+	vec2 uv = tex_uv(g_px_cur);
 #endif
 
 #if MINMAX_3X3 || MINMAX_3X3_ROUNDED
@@ -422,6 +515,48 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
 		cmin = 0.5 * (cmin + cmin5);
 		cmax = 0.5 * (cmax + cmax5);
 		cavg = 0.5 * (cavg + cavg5);
+	#endif
+
+	#if UPSCALE
+	// The current frame at the output pixel's centre: the samples weighted by their distance from it in output pixels
+	// (Blackman-Harris, as a Gaussian), sharp. How near a sample came is how much this frame counts against the
+	// history: over the jitter's positions every output pixel gets near ones, and a still image converges to the
+	// output's resolution. Where the detail is finer than the current frame's pixels, the prefilter's width over them
+	// instead, and the frame counts fully: the history would otherwise keep what one sample caught.
+	float confidence = 1.0;
+	{
+		vec4 c[9] = vec4[9](ctl, ctc, ctr, cml, cmc, cmr, cbl, cbc, cbr);
+		vec2 scale = u_out_texel_size.zw / u_in_size;     // output pixels per pixel of the current frame
+		vec3 ox = g_offset.x + vec3(-1.0, 0.0, 1.0);
+		vec3 oy = g_offset.y + vec3(-1.0, 0.0, 1.0);
+		vec3 dx = ox * scale.x;
+		vec3 dy = oy * scale.y;
+		vec3 wx = exp(-2.29 * dx * dx);
+		vec3 wy = exp(-2.29 * dy * dy);
+		texel0 = weighted_3x3(c, wx, wy);
+		confidence = min(dot(wx, vec3(1.0)) * dot(wy, vec3(1.0)), 1.0);
+		#if USE_PREFILTER
+		float l[9];
+		for (int i = 0; i < 9; ++i) l[i] = luminance(c[i].rgb);
+		float k = fine_detail(l, d);
+		if (k > 0.0) {
+			texel0 = mix(texel0, weighted_3x3(c, exp(-PREFILTER_K * ox * ox), exp(-PREFILTER_K * oy * oy)), k);
+			confidence = mix(confidence, 1.0, k);
+		}
+		g_prefilter_debug = k;
+		#endif
+	}
+	#elif USE_PREFILTER
+	{
+		vec4 c[9] = vec4[9](ctl, ctc, ctr, cml, cmc, cmr, cbl, cbc, cbr);
+		float l[9];
+		for (int i = 0; i < 9; ++i) l[i] = luminance(c[i].rgb);
+		float k = fine_detail(l, d);
+		if (k > 0.0) {
+			texel0 = mix(texel0, reconstruct_3x3(c), k);
+		}
+		g_prefilter_debug = k;
+	}
 	#endif
 
 #elif MINMAX_4TAP_VARYING// this is the method used in v2 (PDTemporalReprojection2)
@@ -480,7 +615,11 @@ vec4 temporal_reprojection(vec2 ss_txc, vec2 ss_vel, float vs_dist)
 	float k_feedback = mix(u_feedback_min, u_feedback_max, unbiased_weight_sqr);
 
 	// output
+#if UPSCALE
+	return mix(texel1, texel0, (1.0 - k_feedback) * confidence);
+#else
 	return mix(texel0, texel1, k_feedback);
+#endif
 }
 
 in vec2 tc;
@@ -496,6 +635,20 @@ void main() {
 	vec2 uv = tc;
 #endif
 
+	// Where the current frame's 3x3 (depth, velocity, colour) is read around
+	g_px = tc * u_in_size;
+#if UPSCALE
+	{
+		vec2 j  = u_jitter_uv.xy * u_texel_size.zw;
+		vec2 q0 = floor(g_px - j);
+		g_px_cur = q0 + 0.5;
+		g_offset = q0 + 0.5 + j - g_px;
+	}
+#else
+	g_px_cur = g_px;
+#endif
+	vec2 uv_cur = tex_uv(g_px_cur);
+
 #if USE_DILATION
 	//--- 3x3 norm (sucks)
 	//vec2 ss_vel = sample_velocity_dilated(_VelocityBuffer, uv, 1);
@@ -507,39 +660,43 @@ void main() {
 	//float vs_dist = depth_resolve_linear(c_frag.z);
 
 	//--- 3x3 nearest (good)
-	vec3 c_frag = find_closest_fragment_3x3(uv);
-	vec2 ss_vel = texture(u_tex_vel, c_frag.xy).xy;
+	float d[9];
+	depth_neighbourhood(uv_cur, d);
+	vec3 c_frag = find_closest_fragment_3x3(uv_cur, d);
+	vec2 ss_vel = texture(u_tex_vel, frame_uv(c_frag.xy * u_texel_size.zw)).xy;
 	float vs_dist = c_frag.z;
 #else
-	vec2 ss_vel = texture(u_tex_vel, uv).xy;
-	float vs_dist = depth_sample_linear(uv);
+	float d[9];
+	depth_neighbourhood(uv_cur, d);
+	vec2 ss_vel = texture(u_tex_vel, frame_uv(g_px_cur)).xy;
+	float vs_dist = d[4];
 #endif
 
 	// temporal resolve
-	vec4 color_temporal = temporal_reprojection(uv, ss_vel, vs_dist);
+	vec4 color_temporal = temporal_reprojection(uv, ss_vel, vs_dist, d);
 
 	// prepare outputs
 	vec4 to_buffer = resolve_color(color_temporal);
 	
 #if USE_MOTION_BLUR
   #if USE_MOTION_BLUR_NEIGHBORMAX
-    ss_vel = u_motion_scale * texture(u_tex_vel_neighbormax, uv).xy;
+    ss_vel = u_motion_scale * texture(u_tex_vel_neighbormax, tex_uv(g_px)).xy;
   #else
     ss_vel = u_motion_scale * ss_vel;
   #endif
 
-	float vel_mag = length(ss_vel * u_texel_size.zw);
+	float vel_mag = length(ss_vel * u_out_texel_size.zw);
 	const float vel_trust_full = 2.0;  // 2.0
 	const float vel_trust_none = 15.0; // 15.0
 	const float vel_trust_span = vel_trust_none - vel_trust_full;
 	float trust = 1.0 - clamp(vel_mag - vel_trust_full, 0.0, vel_trust_span) / vel_trust_span;
 
+	// The velocity is the frame's uv: in its textures' uv for the steps along it
+	vec2 vel_tex = ss_vel * u_in_size * u_texel_size.xy;
 	#if UNJITTER_COLORSAMPLES
-	vec4 color_motion = sample_color_motion(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
-	//vec4 color_motion = reconstruct_color(u_tex_main, uv - u_jitter_uv.xy, ss_vel);
+	vec4 color_motion = sample_color_motion(u_tex_main, tex_uv(g_px - u_jitter_uv.xy * u_texel_size.zw), vel_tex);
 	#else
-	vec4 color_motion = sample_color_motion(u_tex_main, uv, ss_vel);
-	//vec4 color_motion = reconstruct_color(u_tex_main, uv, ss_vel);
+	vec4 color_motion = sample_color_motion(u_tex_main, tex_uv(g_px), vel_tex);
 	#endif
 
 	vec4 to_screen = resolve_color(mix(color_motion, color_temporal, trust));
@@ -554,6 +711,9 @@ void main() {
 
 	out_buff = to_buffer;
 	out_frag = to_screen;
+#if DEBUG_PREFILTER
+	out_frag.rgb = mix(out_frag.rgb, vec3(1.0, 0.0, 0.0), 0.8 * g_prefilter_debug);
+#endif
 
 	//out_frag = texture(u_tex_vel_neighbormax, uv);
 

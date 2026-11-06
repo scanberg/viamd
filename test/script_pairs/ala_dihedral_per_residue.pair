@@ -1,0 +1,6 @@
+# One dihedral per residue per frame: v1's context in residue(:) is an array of sets with one set, set by set
+# data: 1ALA-560ns.pdb
+=== v1
+t = dihedral(name("N"), name("CA"), name("C"), name("O")) in residue(:);
+=== vial
+t = dihedral(residue and particle(name='N'), residue and particle(name='CA'), residue and particle(name='C'), residue and particle(name='O'))

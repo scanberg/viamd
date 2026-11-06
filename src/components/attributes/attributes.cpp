@@ -3,7 +3,9 @@
 // The system's table (topology columns, the run and everything loaded along it) and the script
 // evaluations' tables (script/<ident> and its siblings) are listed side by side, one row per
 // attribute, with what it is, how it is stored and whether the Timelines and Distributions windows
-// can show it. A row that can be shown is dragged from here into a subplot of either window.
+// can show it. A row that can be shown is dragged from here into a subplot of either window, and one
+// of the system that the script reads (attr()) into the Script Editor, where it goes in as the
+// expression that reads it.
 //
 // Opened with KEY_SHOW_ATTRIBUTE_WINDOW (Ctrl+Shift+A) from anywhere, or from the Windows menu.
 
@@ -11,6 +13,7 @@
 #include <viamd.h>
 #include <event.h>
 #include <plot_series.h>
+#include <timeline_periods_ui.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -23,6 +26,7 @@
 #include <app/IconsFontAwesome6.h>
 
 #include <stdio.h>
+#include <string.h>
 
 namespace attributes {
 
@@ -49,12 +53,13 @@ static const char* storage_name(const md_attribute_t& attr) {
     return "resident";
 }
 
-static const char* source_name(SeriesSource source) {
-    switch (source) {
-    case SeriesSource_System:         return "System";
-    case SeriesSource_Script:         return "Script";
-    case SeriesSource_ScriptFiltered: return "Script (filtered)";
-    default: return "?";
+// "System", "Script", "Script (Production)": the script over a timeline period
+static void source_label(char* buf, size_t cap, const ApplicationState& state, SeriesSource source, uint32_t period) {
+    const char* name = source == SeriesSource_System ? "System" : source == SeriesSource_Script ? "Script" : "?";
+    if (period != 0) {
+        snprintf(buf, cap, "%s (%s)", name, series_period_name(&state, period));
+    } else {
+        snprintf(buf, cap, "%s", name);
     }
 }
 
@@ -83,6 +88,16 @@ static bool contains_ignore_case(str_t haystack, str_t needle) {
     return false;
 }
 
+// An attribute of a distribution or a volume of the script ("script/<ident>", "script/<ident>/weight")
+static bool script_aggregate_path(const ApplicationState& state, str_t path) {
+    const str_t prefix = STR_LIT("script/");
+    if (!state.script.eval_ir || !str_begins_with(path, prefix)) return false;
+    str_t ident = str_substr(path, prefix.len);
+    size_t loc;
+    if (str_find_char(&loc, ident, '/')) ident = str_substr(ident, 0, loc);
+    return script::output_flags(state.script.eval_ir, ident) & (script::OUTPUT_DISTRIBUTION | script::OUTPUT_VOLUME);
+}
+
 // Every whitespace separated word of the filter occurs in the path, the label or the source
 static bool matches_filter(str_t filter, str_t path, str_t label, const char* source) {
     const str_t src = str_from_cstr(source);
@@ -104,6 +119,7 @@ static bool matches_filter(str_t filter, str_t path, str_t label, const char* so
 
 struct Row {
     SeriesSource source;
+    uint32_t period;        // a timeline period the script is taken over, 0 for every frame
     const md_attributes_t* table;
     const md_attribute_t* attr;  // valid for the frame: nothing publishes while the window draws
     uint32_t views;         // SeriesView_*
@@ -170,29 +186,47 @@ struct Attributes : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* alloc = md_temp_allocator(temp);
 
-        // The tables there are right now. The filtered evaluation only while the timeline has a filter,
-        // otherwise it repeats the full one row for row.
-        const SeriesSource sources[] = { SeriesSource_System, SeriesSource_Script, SeriesSource_ScriptFiltered };
+        // The tables there are right now, and the script's over each timeline period, with only what it has of its
+        // own over a period: the distributions and volumes, over the period's frames. Everything else in the table is
+        // the same over every frame.
+        struct Source {
+            SeriesSource source;
+            uint32_t period;
+        };
+        Source sources[2 + TIMELINE_MAX_PERIODS];
+        int num_sources = 0;
+        sources[num_sources++] = { SeriesSource_System, 0 };
+        sources[num_sources++] = { SeriesSource_Script, 0 };
+        for (int i = 0; i < state.timeline.periods.count; ++i) {
+            sources[num_sources++] = { SeriesSource_Script, state.timeline.periods.items[i].id };
+        }
         md_array(Row) rows = 0;
         size_t total = 0;
         const str_t filter_str = str_from_cstr(filter);
-        for (SeriesSource source : sources) {
-            if (source == SeriesSource_ScriptFiltered && !state.timeline.filter.enabled) continue;
+        for (int si = 0; si < num_sources; ++si) {
+            const SeriesSource source = sources[si].source;
+            const uint32_t period = sources[si].period;
             const md_attributes_t* table = series_table(&state, source);
             if (!table) continue;
-            total += md_attributes_count(table);
+            if (period == 0) total += md_attributes_count(table);
+            char src_label[96];
+            source_label(src_label, sizeof(src_label), state, source, period);
             for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
                 const md_attribute_t& attr = *it.attr;
-                if (!matches_filter(filter_str, attr.path, attr.label, source_name(source))) continue;
-                Row row = { source, table, it.attr, 0, nullptr };
-                const SeriesKey key = series_key(source, attr.path);
+                if (period != 0 && !script_aggregate_path(state, attr.path)) continue;
+                if (period != 0) total += 1;
+                if (!matches_filter(filter_str, attr.path, attr.label, src_label)) continue;
+                Row row = { source, period, table, it.attr, 0, nullptr };
+                const SeriesKey key = series_key(source, attr.path, SeriesVariant_Values, period);
                 row.views = series_views(&state, key, &row.reason);
                 if (plottable_only && !row.views) continue;
                 md_array_push(rows, row, alloc);
             }
         }
 
-        ImGui::TextDisabled("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot.", md_array_size(rows), total);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
+        ImGui::PopStyleColor();
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Hideable;
@@ -201,12 +235,12 @@ struct Attributes : viamd::EventHandler {
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableSetupColumn(ICON_FA_CHART_LINE,   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
             ImGui::TableSetupColumn(ICON_FA_CHART_COLUMN, ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, icon_w);
-            ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch, 4.0f);
-            ImGui::TableSetupColumn("Label",   ImGuiTableColumnFlags_WidthStretch, 2.0f);
-            ImGui::TableSetupColumn("Format",  ImGuiTableColumnFlags_WidthStretch, 1.6f);
-            ImGui::TableSetupColumn("Unit",    ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Path",    ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableSetupColumn("Label",   ImGuiTableColumnFlags_WidthStretch, 1.6f);
+            ImGui::TableSetupColumn("Format",  ImGuiTableColumnFlags_WidthStretch, 1.5f);
+            ImGui::TableSetupColumn("Unit",    ImGuiTableColumnFlags_WidthStretch, 0.9f);
             ImGui::TableSetupColumn("Storage", ImGuiTableColumnFlags_WidthStretch, 0.9f);
-            ImGui::TableSetupColumn("Source",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Source",  ImGuiTableColumnFlags_WidthStretch, 2.6f);
 
             // Header, with what the two marks mean
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
@@ -226,7 +260,7 @@ struct Attributes : viamd::EventHandler {
                 for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                     const Row& row = rows[r];
                     const md_attribute_t& attr = *row.attr;
-                    const SeriesKey key = series_key(row.source, attr.path);
+                    const SeriesKey key = series_key(row.source, attr.path, SeriesVariant_Values, row.period);
                     const bool timeline = row.views & SeriesView_Timeline;
                     const bool distribution = row.views & SeriesView_Distribution;
 
@@ -245,13 +279,24 @@ struct Attributes : viamd::EventHandler {
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
                     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort);
 
-                    if (row.views && ImGui::BeginDragDropSource()) {
-                        char label[96];
-                        series_label(label, sizeof(label), &state, key);
-                        // As a timeline series when it is one, which a distribution subplot accepts
-                        // as well; otherwise as what only a distribution subplot takes
-                        const char* dnd_type = timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
-                        series_set_drag_payload(dnd_type, key, -1, label, series_default_color(&state, key));
+                    // How the script reads it, if it does: an attribute of the system the script is compiled against
+                    char expr[sizeof(path_buf) + 16];
+                    const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
+
+                    if ((row.views || scriptable) && ImGui::BeginDragDropSource()) {
+                        if (row.views) {
+                            char label[96];
+                            series_label(label, sizeof(label), &state, key);
+                            // As a timeline series when it is one, which a distribution subplot accepts
+                            // as well; otherwise as what only a distribution subplot takes. The Script
+                            // Editor takes either as the expression that reads it.
+                            const char* dnd_type = timeline ? TIMELINE_SERIES_DND : DISTRIBUTION_SERIES_DND;
+                            series_set_drag_payload(dnd_type, key, -1, label, series_default_color(&state, key));
+                        } else {
+                            // What only the Script Editor takes
+                            ImGui::SetDragDropPayload(SCRIPT_TEXT_DND, expr, strlen(expr) + 1);
+                            ImGui::TextUnformatted(expr);
+                        }
                         ImGui::EndDragDropSource();
                     }
 
@@ -269,6 +314,9 @@ struct Attributes : viamd::EventHandler {
                             char buf[512];
                             snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(attr.path));
                             ImGui::SetClipboardText(buf);
+                        }
+                        if (scriptable && ImGui::MenuItem("Copy script expression", expr)) {
+                            ImGui::SetClipboardText(expr);
                         }
                         ImGui::EndPopup();
                     }
@@ -295,11 +343,19 @@ struct Attributes : viamd::EventHandler {
                     ImGui::TextUnformatted(storage_name(attr));
 
                     ImGui::TableSetColumnIndex(7);
-                    ImGui::TextUnformatted(source_name(row.source));
+                    {
+                        char buf[96];
+                        source_label(buf, sizeof(buf), state, row.source, row.period);
+                        ImGui::TextUnformatted(buf);
+                        if (row.period != 0 && ImGui::IsItemHovered()) timeline_periods_highlight(row.period);
+                    }
 
                     if (hovered) {
                         ImGui::BeginTooltip();
                         ImGui::TextUnformatted(attr.path.ptr, attr.path.ptr + attr.path.len);
+                        if (row.period != 0) {
+                            ImGui::TextDisabled("Over the frames of %s", series_period_name(&state, row.period));
+                        }
                         if (!str_empty(attr.description)) {
                             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
                             ImGui::TextDisabled(STR_FMT, STR_ARG(attr.description));
@@ -310,14 +366,18 @@ struct Attributes : viamd::EventHandler {
                             ImGui::Text("Value: " STR_FMT, STR_ARG(value));
                         }
                         ImGui::Separator();
-                        if (timeline && distribution) {
-                            ImGui::TextUnformatted("Drag into a Timelines or Distributions subplot");
-                        } else if (timeline) {
-                            ImGui::TextUnformatted("Drag into a Timelines subplot");
-                        } else if (distribution) {
-                            ImGui::TextUnformatted("Drag into a Distributions subplot");
-                            if (row.reason) ImGui::TextDisabled("Not over time: %s", row.reason);
-                        } else if (row.reason) {
+                        const char* plots = timeline && distribution ? "a Timelines or Distributions subplot" :
+                                            timeline ? "a Timelines subplot" : distribution ? "a Distributions subplot" : nullptr;
+                        if (plots && scriptable) {
+                            ImGui::Text("Drag into %s, or into the Script Editor as %s", plots, expr);
+                        } else if (plots) {
+                            ImGui::Text("Drag into %s", plots);
+                        } else if (scriptable) {
+                            ImGui::Text("Drag into the Script Editor as %s", expr);
+                        }
+                        if (distribution && !timeline && row.reason) {
+                            ImGui::TextDisabled("Not over time: %s", row.reason);
+                        } else if (!plots && row.reason) {
                             ImGui::TextDisabled("Cannot be plotted: %s", row.reason);
                         }
                         ImGui::EndTooltip();

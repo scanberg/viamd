@@ -103,7 +103,16 @@ bool TextEditor::render(const char* title, const ImVec2& size, ImGuiChildFlags c
 			lineNumberRightOffset += glyphSize.x;
 		}
 
-		if (decoratorWidth) {
+		if (decoratorWidth && config.decorationsBeforeLineNumbers) {
+			// decorations first, then the fold indicators and line numbers moved along to make room for them
+			auto shift = (decoratorWidth + config.decorationMargin) * glyphSize.x;
+			decorationOffset = config.leftMargin * glyphSize.x;
+			lineNumberLeftOffset += shift;
+			lineNumberRightOffset += shift;
+			if (config.lineFolding) { foldIndicatorOffset += shift; }
+			textLeftOffset = lineNumberRightOffset + config.textMargin * glyphSize.x;
+
+		} else if (decoratorWidth) {
 			decorationOffset = lineNumberRightOffset + config.decorationMargin * glyphSize.x;
 			textLeftOffset = decorationOffset + (decoratorWidth + config.textMargin) * glyphSize.x;
 
@@ -2026,6 +2035,42 @@ std::string TextEditor::getWordAtMousePos(const ImVec2& mousePos) const {
 	} else {
 		return "";
 	}
+}
+
+
+//
+//	TextEditor::getCursorPosAtMousePos (viamd addition)
+//
+
+TextEditor::DocPos TextEditor::getCursorPosAtMousePos(const ImVec2& mousePos) const {
+	if (firstFrame) {
+		return DocPos();
+
+	} else {
+		// as a left click places the cursor (see handleMouseInteractions)
+		auto local = mousePos - cursorScreenPos;
+		DocPos glyphPos;
+		DocPos cursorPos;
+
+		typeSetter.screenPos2DocPos(
+			document,
+			ImVec2(std::max(0.0f, (local.x - textLeftOffset) / glyphSize.x), local.y / glyphSize.y),
+			glyphPos,
+			cursorPos);
+
+		return cursorPos;
+	}
+}
+
+
+//
+//	TextEditor::getScreenPosOfDocPos (viamd addition)
+//
+
+ImVec2 TextEditor::getScreenPosOfDocPos(DocPos pos) const {
+	// as the caret is drawn (see renderCursorCarets)
+	auto visPos = docPos2VisPos(pos);
+	return ImVec2(cursorScreenPos.x + textLeftOffset + visPos.column * glyphSize.x, cursorScreenPos.y + visPos.row * glyphSize.y);
 }
 
 

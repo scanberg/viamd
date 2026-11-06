@@ -2,6 +2,9 @@
 
 #include <core/md_vec_math.h>
 
+struct ImRect;
+struct ImGuiWindow;
+
 namespace ImGui {
 
 IMGUI_API bool RangeSliderFloat(const char* label, float* v1, float* v2, float v_min, float v_max, const char* display_format = "(%.3f, %.3f)", ImGuiSliderFlags flags = 0);
@@ -11,6 +14,11 @@ bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
 void CreateDockspace();
 void BeginCanvas(const char* id, bool allow_inputs = false);
 void EndCanvas();
+
+// The largest rectangle of bounds that no window covers: what the windows leave in view of a canvas behind
+// them, such as the one of BeginCanvas, passed as ignore. Windows that show what is behind them (no background),
+// popups, tooltips and notifications do not count. An empty rectangle when the windows cover all of bounds.
+ImRect LargestUncoveredRect(const ImRect& bounds, const ImGuiWindow* ignore = nullptr);
 
 inline void PushInvalid() {
 	ImGui::PushStyleColor(ImGuiCol_FrameBg, 0xAA222299);

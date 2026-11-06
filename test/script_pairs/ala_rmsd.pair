@@ -1,0 +1,7 @@
+# RMSD of the CAs after fitting to the first frame: v1 weighs by mass, VIAL equally unless told
+# data: 1ALA-560ns.pdb
+=== v1
+r = rmsd(name("CA"));
+=== vial
+ca = particle(name='CA')
+r = rmsd(ca, at(ca.xyz, frame=0), weights='mass')
