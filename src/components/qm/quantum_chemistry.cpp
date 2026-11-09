@@ -1877,6 +1877,9 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
+        gl_rep = {};
+        // Zeroed with nto below, which would leave its slot taken for good: one for each system loaded
+        md_gl_rep_destroy(nto.gl_rep);
         num_qm_atoms = 0;
         num_mos = 0;
         num_excited = 0;

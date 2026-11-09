@@ -1926,6 +1926,10 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemInit: {
+                // Also when the system is refreshed after its structure was inferred (system_inferred_refresh), when
+                // there is no ViamdSystemFree first: the glyphs of the cartoon are made again then, of a new molecule,
+                // so the glyph subsets and representations made of the previous one name a molecule that is gone
+                release_all_rep_resources();
                 dirty_rep = true;
                 break;
             }

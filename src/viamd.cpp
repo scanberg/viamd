@@ -1850,9 +1850,15 @@ static void system_inferred_refresh(ApplicationState* app) {
         app->representation.reps[i].md_rep = {};
     }
     assembly_subsets_free(app);
-    md_gl_mol_destroy(app->mold.gl_mol);
     cartoon_glyphs_free(&app->mold.cartoon_glyphs);
-    app->mold.gl_mol = md_gl_mol_create(&app->mold.sys);
+    // Made again in place: the handle stays, so what components made of the molecule when the system was loaded (the
+    // representations of the QM windows) stays valid without their knowing it was. Destroyed and created, it had a new
+    // id, and those were left drawing a molecule which no longer existed. The atoms are those it was made of; should
+    // they not be, it is a new molecule after all.
+    if (!md_gl_mol_rebuild(app->mold.gl_mol, &app->mold.sys)) {
+        md_gl_mol_destroy(app->mold.gl_mol);
+        app->mold.gl_mol = md_gl_mol_create(&app->mold.sys);
+    }
     cartoon_glyphs_init(&app->mold.cartoon_glyphs, app->mold.sys, app->mold.gl_mol, app->allocator.persistent);
     if (md_util_state_backbone_compute(&app->mold.state, &app->mold.sys)) {
         upload_secondary_structure_weights(app);
