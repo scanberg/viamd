@@ -34,7 +34,7 @@ static void escape_unit_for_format(char* dst, size_t cap, const char* unit_str) 
 // ---------------------------------------------------------------------------
 
 int color_scale_isolines_add(ColorScaleIsolines* lines, float value) {
-    ASSERT(lines);
+    MD_ASSERT(lines);
     if (lines->count < 0 || lines->count >= ISOLINES_MAX) return -1;
     int i = lines->count;
     while (i > 0 && lines->values[i - 1] > value) {
@@ -77,17 +77,17 @@ static int isolines_sort(ColorScaleIsolines* lines, int idx) {
 IsolineDesc color_scale_isoline_desc(const ColorScaleIsolines& lines, float px_per_point) {
     IsolineDesc desc;
     if (lines.show) {
-        desc.count = (uint32_t)CLAMP(lines.count, 0, ISOLINES_MAX);
+        desc.count = (uint32_t)MD_CLAMP(lines.count, 0, ISOLINES_MAX);
         for (uint32_t i = 0; i < desc.count; ++i) desc.values[i] = lines.values[i];
     }
     desc.hover       = lines.hover;
     desc.hover_value = lines.hover_value;
-    desc.width       = MAX(lines.width, 0.25f) * MAX(px_per_point, 0.25f);
+    desc.width       = MD_MAX(lines.width, 0.25f) * MD_MAX(px_per_point, 0.25f);
     return desc;
 }
 
 bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorScale& scale, md_unit_t unit) {
-    ASSERT(lines);
+    MD_ASSERT(lines);
     bool changed = false;
     ImGui::PushID("isolines");
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -119,7 +119,7 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
         ImGui::PushID(i);
         prop::row(i == 0 ? "values" : "");
         float v = lines->values[i] * fscl;
-        ImGui::SetNextItemWidth(MAX(prop::control_width() - btn_w - gap, 1.0f));
+        ImGui::SetNextItemWidth(MD_MAX(prop::control_width() - btn_w - gap, 1.0f));
         if (ImGui::DragFloat("##value", &v, speed, 0.0f, 0.0f, "%.4g")) {
             lines->values[i] = v / fscl;
             changed = true;
@@ -144,7 +144,7 @@ bool color_scale_draw_isoline_controls(ColorScaleIsolines* lines, const ColorSca
     ImGui::BeginDisabled(lines->count >= ISOLINES_MAX);
     if (ImGui::Button(ICON_FA_PLUS, ImVec2(btn_w, 0))) {
         // Zero where the range holds it (the neutral contour of a potential), else the middle of the range
-        const float lo = MIN(scale.range_beg, scale.range_end), hi = MAX(scale.range_beg, scale.range_end);
+        const float lo = MD_MIN(scale.range_beg, scale.range_end), hi = MD_MAX(scale.range_beg, scale.range_end);
         const float v = (lo <= 0.0f && 0.0f <= hi) ? 0.0f : 0.5f * (lo + hi);
         changed |= color_scale_isolines_add(lines, v) >= 0;
     }
@@ -206,7 +206,7 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
     // labels leave, whose widths are in the ticker it has just filled
     const ImPlotStyle& ps = ImPlot::GetStyle();
     const float pad   = ps.LabelPadding.x + GImPlot->CTicker.MaxSize.x;
-    const float bar_w = MAX(frame_size.x - (pad + 2.0f * ps.PlotPadding.x), ps.MajorTickLen.y);
+    const float bar_w = MD_MAX(frame_size.x - (pad + 2.0f * ps.PlotPadding.x), ps.MajorTickLen.y);
     const ImRect frame(frame_min, ImVec2(frame_min.x + frame_size.x, frame_min.y + frame_size.y));
     const ImRect bar(ImVec2(frame_min.x + ps.PlotPadding.x, frame_min.y + ps.PlotPadding.y),
                      ImVec2(frame_min.x + ps.PlotPadding.x + bar_w, frame_min.y + frame_size.y - ps.PlotPadding.y));
@@ -215,13 +215,13 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
     const float beg = scale.range_beg, end = scale.range_end;
     const float bar_h = bar.GetHeight();
     if (!(bar_h > 1.0f) || beg == end) return;
-    const float lo = MIN(beg, end), hi = MAX(beg, end);
+    const float lo = MD_MIN(beg, end), hi = MD_MAX(beg, end);
 
     // range_beg at the bottom of the bar and range_end at the top, as ColormapScale draws them, also when the
     // range runs backwards
     auto y_of = [&](float v) { return bar.Max.y - (v - beg) / (end - beg) * bar_h; };
     auto v_of = [&](float y) {
-        const float t = CLAMP((bar.Max.y - y) / bar_h, 0.0f, 1.0f);
+        const float t = MD_CLAMP((bar.Max.y - y) / bar_h, 0.0f, 1.0f);
         return beg + t * (end - beg);
     };
 
@@ -241,7 +241,7 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
         float v = v_of(y);
         if (step > 0.0) {
             v = (float)(round((double)v * scl / step) * step / scl);
-            v = CLAMP(v, lo, hi);
+            v = MD_CLAMP(v, lo, hi);
         }
         return v;
     };
@@ -407,7 +407,7 @@ static void legend_isolines(ColorScaleIsolines* lines, const ColorScale& scale, 
 }
 
 bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip) {
-    ASSERT(scale);
+    MD_ASSERT(scale);
     bool changed = false;
 
     ImGui::PushID("color_scale");
@@ -459,9 +459,9 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (scale->symmetric) {
         // From zero to half as far again as the largest magnitude, and never short of the range itself
-        float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
-        float limit = span.valid ? 1.5f * MAX(fabsf(span.min), fabsf(span.max)) : 0.0f;
-        limit = MAX(limit, r);
+        float r = MD_MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
+        float limit = span.valid ? 1.5f * MD_MAX(fabsf(span.min), fabsf(span.max)) : 0.0f;
+        limit = MD_MAX(limit, r);
         if (!(limit > 0.0f)) limit = 1.0f;
         float r_disp = r * fscl;
         if (ImGui::SliderFloat("##range", &r_disp, 0.0f, limit * fscl, fmt)) {
@@ -475,9 +475,9 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
         float lo = scale->range_beg, hi = scale->range_end;
         if (span.valid) {
             float pad = 0.5f * (span.max - span.min);
-            if (!(pad > 0.0f)) pad = MAX(0.5f * fabsf(span.max), 1.0f);
-            lo = MIN(lo, span.min - pad);
-            hi = MAX(hi, span.max + pad);
+            if (!(pad > 0.0f)) pad = MD_MAX(0.5f * fabsf(span.max), 1.0f);
+            lo = MD_MIN(lo, span.min - pad);
+            hi = MD_MAX(hi, span.max + pad);
         }
         if (!(hi > lo)) { lo -= 1.0f; hi += 1.0f; }
         float beg = scale->range_beg * fscl;
@@ -494,7 +494,7 @@ bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md
     mode_changed |= ImGui::Checkbox("##symmetric", &scale->symmetric);
     if (mode_changed) {
         if (scale->symmetric && !scale->auto_range) {
-            const float r = MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
+            const float r = MD_MAX(fabsf(scale->range_beg), fabsf(scale->range_end));
             scale->range_beg = -r;
             scale->range_end =  r;
         }
@@ -527,19 +527,19 @@ void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const float width = MAX(ImGui::CalcTextSize(header).x + 2.0f * style.WindowPadding.x, 120.0f);
+    const float width = MD_MAX(ImGui::CalcTextSize(header).x + 2.0f * style.WindowPadding.x, 120.0f);
     const float height = 300.0f;
     // Where a legend starts out, the first time: down the right edge of the view in the order the
     // legends are drawn, a new column to the left of the last when the view is full
     const float top = 60.0f, gap = 10.0f;
-    const int per_column = MAX(1, (int)((viewport->WorkSize.y - top) / (height + gap)));
-    const int column = MAX(slot, 0) / per_column, row = MAX(slot, 0) % per_column;
+    const int per_column = MD_MAX(1, (int)((viewport->WorkSize.y - top) / (height + gap)));
+    const int column = MD_MAX(slot, 0) / per_column, row = MD_MAX(slot, 0) % per_column;
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - (float)(column + 1) * (width + 20.0f),
                                    viewport->WorkPos.y + top + (float)row * (height + gap)), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_FirstUseEver);
     // Never narrower than its heading: the size is the user's and kept in the .ini, and what it heads
     // changes - another attribute, another unit - without the user having resized anything
-    ImGui::SetNextWindowSizeConstraints(ImVec2(MAX(width, 80.0f), 120), ImVec2(MAX(width, 1000.0f), 2000));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(MD_MAX(width, 80.0f), 120), ImVec2(MD_MAX(width, 1000.0f), 2000));
 
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
     // With isolines the scale takes the mouse where the cursor is over it (as it was drawn the frame before) and
@@ -568,7 +568,7 @@ void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char
         const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
         const ImVec2 lo = viewport->WorkPos;
         const ImVec2 hi = ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - size.x, viewport->WorkPos.y + viewport->WorkSize.y - size.y);
-        const ImVec2 clamped = ImVec2(MAX(lo.x, MIN(pos.x, hi.x)), MAX(lo.y, MIN(pos.y, hi.y)));
+        const ImVec2 clamped = ImVec2(MD_MAX(lo.x, MD_MIN(pos.x, hi.x)), MD_MAX(lo.y, MD_MIN(pos.y, hi.y)));
         if (clamped.x != pos.x || clamped.y != pos.y) {
             ImGui::SetWindowPos(clamped);
         }

@@ -113,7 +113,7 @@ static void warn_once(const char* what) {
 static int node_get(int parent, const char* name) {
     const uint64_t seed = parent >= 0 ? g.nodes[parent].key : 0;
     const uint64_t key  = hash_name(seed, name);
-    const int mask = (int)ARRAY_SIZE(g.table) - 1;
+    const int mask = (int)MD_COUNTOF(g.table) - 1;
     int slot = (int)(key & (uint64_t)mask);
     while (g.table[slot]) {
         const int i = g.table[slot] - 1;
@@ -194,7 +194,7 @@ static void collect() {
 }
 
 static void publish() {
-    const double cpu_frames = (double)MAX(g.cpu_frames, 1);
+    const double cpu_frames = (double)MD_MAX(g.cpu_frames, 1);
     const double gpu_frames = (double)g.gpu_frames;
     for (int i = 0; i < g.node_count; ++i) {
         Node& n = g.nodes[i];
@@ -340,7 +340,7 @@ static void time_cell(float ms, float frame_ms) {
     const float  w = ImGui::GetContentRegionAvail().x;
     const float  h = ImGui::GetTextLineHeight();
     if (frame_ms > 0.0f && ms > 0.0f) {
-        const float f = MIN(ms / frame_ms, 1.0f);
+        const float f = MD_MIN(ms / frame_ms, 1.0f);
         ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram);
         c.w *= 0.35f;
         ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + w * f, p.y + h), ImGui::GetColorU32(c));
@@ -439,13 +439,13 @@ static void write_csv_rows(md_writer_i* w, int i) {
     static char path[MAX_DEPTH * NAME_LEN];
     int chain[MAX_DEPTH + 1];
     int count = 0;
-    for (int p = i; p >= 0 && count < (int)ARRAY_SIZE(chain); p = g.nodes[p].parent) chain[count++] = p;
+    for (int p = i; p >= 0 && count < (int)MD_COUNTOF(chain); p = g.nodes[p].parent) chain[count++] = p;
     size_t len = 0;
     path[0] = '\0';
     for (int k = count - 1; k >= 0 && len + 1 < sizeof(path); --k) {
         const int m = snprintf(path + len, sizeof(path) - len, k == count - 1 ? "%s" : "/%s", g.nodes[chain[k]].name);
         if (m < 0) break;
-        len = MIN(len + (size_t)m, sizeof(path) - 1);
+        len = MD_MIN(len + (size_t)m, sizeof(path) - 1);
     }
     write_csv_field(w, path);
     md_writef(w, ",%.4f,%.4f,%.4f,%.2f\n", n.gpu_ms, n.gpu_self_ms, n.cpu_ms, n.calls);

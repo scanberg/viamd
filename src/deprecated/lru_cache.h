@@ -1,7 +1,6 @@
 #pragma once
 
 #include <core/md_common.h> // assert
-#include <core/md_intrinsics.h>
 
 template <typename Key, typename Type, int Size>
 struct Cache {
@@ -60,7 +59,7 @@ struct Cache {
 	}
 
 	void put(Key key, const Type& item) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = pop_back();
 		push_front(idx);
 		keys[idx] = key;
@@ -68,7 +67,7 @@ struct Cache {
 	}
 
 	Type* reserve(Key key) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = pop_back();
 		push_front(idx);
 		keys[idx] = key;
@@ -114,7 +113,7 @@ struct LRU_Cache_4 {
 		if ((ref_matrix & 0x00F0) == 0) return 1;
 		if ((ref_matrix & 0x0F00) == 0) return 2;
 		if ((ref_matrix & 0xF000) == 0) return 3;
-		ASSERT(false && "Corrupted ref matrix!");
+		MD_ASSERT(false && "Corrupted ref matrix!");
 		return -1;
 	}
 
@@ -140,7 +139,7 @@ struct LRU_Cache_4 {
 	}
 
 	void put(Key key, const Type& item) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = get_lru_idx();
 		mark_lru_idx(idx);
 		keys[idx] = key;
@@ -148,7 +147,7 @@ struct LRU_Cache_4 {
 	}
 
 	Type* reserve(Key key) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = get_lru_idx();
 		mark_lru_idx(idx);
 		keys[idx] = key;
@@ -168,8 +167,8 @@ struct LRU_Cache_8 {
 	}
 
 	int get_lru_idx() {
-		int result = (int)find_first_zero_byte64(ref_matrix);
-		ASSERT(result < 8);
+		int result = (int)md_find_first_zero_byte64(ref_matrix);
+		MD_ASSERT(result < 8);
 		return result;
 	}
 
@@ -195,7 +194,7 @@ struct LRU_Cache_8 {
 	}
 
 	void set(Key key, const Type val) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = get_lru_idx();
 		mark_lru_idx(idx);
 		keys[idx] = key;
@@ -203,7 +202,7 @@ struct LRU_Cache_8 {
 	}
 
 	Type* reserve(Key key) {
-		ASSERT(find(key) == -1);
+		MD_ASSERT(find(key) == -1);
 		int idx = get_lru_idx();
 		mark_lru_idx(idx);
 		keys[idx] = key;

@@ -188,7 +188,7 @@ static LoaderType type_from_content(str_t filepath, str_t ext, LoaderType from_e
 }
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
-    ASSERT(state);
+    MD_ASSERT(state);
 	*state = { 0 };
 
     str_t ext = {0};
@@ -241,8 +241,8 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
 }
 
 bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state) {
-    ASSERT(out_sys);
-    ASSERT(out_state);
+    MD_ASSERT(out_sys);
+    MD_ASSERT(out_state);
 
     switch (state.type) {
         case LoaderType_PDB: {
@@ -318,7 +318,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
 }
 
 bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& state, str_t run) {
-    ASSERT(out_sys);
+    MD_ASSERT(out_sys);
 
     switch (state.type) {
 #if MD_HDF5
@@ -399,7 +399,7 @@ LoaderType type_from_ext(str_t ext) {
         { "ncdf", LoaderType_AMBER_NETCDF }, { "netcdf", LoaderType_AMBER_NETCDF },
         { "mden", LoaderType_AMBER_ENERGY },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(aliases); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(aliases); ++i) {
         if (str_eq_cstr_ignore_case(ext, aliases[i].ext)) return aliases[i].type;
     }
     for (size_t i = 1; i < LoaderType_COUNT; ++i) {
@@ -428,8 +428,8 @@ size_t atom_count(str_t filepath, const LoaderState& state) {
 }
 
 bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t filepath) {
-    ASSERT(out_state && out_state->alloc);
-    ASSERT(sys);
+    MD_ASSERT(out_state && out_state->alloc);
+    MD_ASSERT(sys);
     const size_t N = sys->atom.count;
     LoaderState cs;
     init(&cs, filepath, nullptr);
@@ -450,7 +450,7 @@ bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t file
 
     if ((cs.flags & LoaderFlag_System) && !(cs.flags & LoaderFlag_NeedsCoordinates)) {
         // A structure file of the same atoms: its coordinates. The atoms are the topology's, which names them.
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         md_system_t tmp_sys = {};
         tmp_sys.alloc = arena;
         md_system_state_t tmp_state = {};

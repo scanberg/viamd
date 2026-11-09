@@ -156,7 +156,7 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         // The code first, as the reference lists it
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), nullptr};
         if (dg[i].severity == MD_VIAL_SEVERITY_ERROR) md_array_push(p->errs, d, alloc);
         else md_array_push(p->warns, d, alloc);
     }
@@ -168,11 +168,11 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         if (!md_vial_expr_info(x->prog, mk[i].expr, &h)) continue;
         char buf[256];
         const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
-        Mark m = {range_of(mk[i].span), (int)mk[i].depth, str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), Ref{x->id, mk[i].expr}};
+        Mark m = {range_of(mk[i].span), (int)mk[i].depth, str_copy(str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), Ref{x->id, mk[i].expr}};
         m.unit = h.unit;
         m.unit_at = h.unit_at;
         m.unit_len = h.unit_len;
-        m.type_len = (uint32_t)MIN(strlen(h.type), m.text.len);
+        m.type_len = (uint32_t)MD_MIN(strlen(h.type), m.text.len);
         m.has_number = h.has_number;
         m.number = h.number;
         md_array_push(p->marks, m, alloc);
@@ -242,7 +242,7 @@ void write_diagnostics(md_writer_i* w, const Program* p) {
         const Diagnostic* d = pass == 0 ? p->errs : p->warns;
         for (size_t i = 0; i < md_array_size(d); ++i) {
             const int len = snprintf(buf, sizeof(buf), "%s [%d, %d): %.*s\n", pass == 0 ? "error" : "warning", d[i].range.beg, d[i].range.end, (int)d[i].text.len, d[i].text.ptr);
-            if (len > 0) md_write(w, buf, (size_t)MIN(len, (int)sizeof(buf) - 1));
+            if (len > 0) md_write(w, buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1));
         }
     }
 }
@@ -450,7 +450,7 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
     for (size_t i = 0; i < nd; ++i) {
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, e->alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, e->alloc), nullptr};
         // R0101 and R0102 leave a value missing and fail nothing (the reference's "a value can be missing")
         const bool missing = !strncmp(dg[i].code, "R0101", 5) || !strncmp(dg[i].code, "R0102", 5);
         if (missing) md_array_push(x->warns, d, e->alloc);
@@ -726,7 +726,7 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         if (len <= 0.0f) break;
         vec3_t u, w;
         basis_of(dir, &u, &w);
-        const float h = MIN(0.25f * len, 1.0f);
+        const float h = MD_MIN(0.25f * len, 1.0f);
         const vec3_t back = vec3_sub(b, vec3_mul1(vec3_normalize(dir), h));
         line(d, b, vec3_add(back, vec3_mul1(u, 0.4f * h)));
         line(d, b, vec3_sub(back, vec3_mul1(u, 0.4f * h)));
@@ -746,14 +746,14 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         const vec3_t x = vec3_sub(b, a), y = vec3_sub(c, a);
         const float lx = vec3_length(x), ly = vec3_length(y);
         if (lx <= 0.0f || ly <= 0.0f) break;
-        const float r = 0.33f * MIN(lx, ly);
+        const float r = 0.33f * MD_MIN(lx, ly);
         const vec3_t ux = vec3_div1(x, lx), uy = vec3_div1(y, ly);
-        const float ang = acosf(CLAMP(vec3_dot(ux, uy), -1.0f, 1.0f));
+        const float ang = acosf(MD_CLAMP(vec3_dot(ux, uy), -1.0f, 1.0f));
         vec3_t perp = vec3_sub(uy, vec3_mul1(ux, vec3_dot(ux, uy)));
         const float lp = vec3_length(perp);
         if (lp <= 1e-6f) break;
         perp = vec3_div1(perp, lp);
-        const int N = MAX(4, (int)(ang * 16.0f));
+        const int N = MD_MAX(4, (int)(ang * 16.0f));
         vec3_t prev = vec3_add(a, vec3_mul1(ux, r));
         line(d, a, prev);
         for (int i = 1; i <= N; ++i) {
@@ -801,7 +801,7 @@ static void group(Drawing* out, const uint32_t* atoms, size_t n) {
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags) {
     if (!out || !v2::ref_valid(ctx.prog, ref) || !ctx.sys) return false;
     const bool all = flags == DRAW_DEFAULT;
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
     md_vial_drawing_t dr;
     const bool ok = md_vial_draw(&dr, &d, ref.node, temp);
@@ -837,7 +837,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
 bool draw_text(Drawing* out, str_t expr, const DrawCtx& ctx, uint32_t flags) {
     // What an expression picks, as a filter of the program's language picks it
     if (!out || !ctx.sys || (flags != DRAW_DEFAULT && !(flags & DRAW_ATOMS))) return false;
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_vial_filter_desc_t fd = {};
     fd.sys = ctx.sys;
     fd.state = ctx.state;
@@ -944,7 +944,7 @@ struct Filtered {
 };
 
 static void run_filter(Filtered* out, str_t expr, const FilterCtx& ctx) {
-    out->temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    out->temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_vial_filter_desc_t d = {};
     d.sys = ctx.sys;
     d.state = ctx.state;

@@ -135,7 +135,7 @@ bool cube_parse(Cube* out, str_t text, md_allocator_i* alloc, char* err, size_t 
 }
 
 bool cube_read(Cube* out, str_t path, md_allocator_i* alloc, char* err, size_t err_cap) {
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const str_t text = load_textfile(path, temp);
     bool ok = false;
     if (!text.len) {
@@ -163,7 +163,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
     *out = Alignment{};
     if (!sys || !atoms || !count || !xyz) return fail(err, err_cap, "this volume has no reference structure");
     if (!other.num_atoms) return fail(err, err_cap, "the cube has no atoms to place it by");
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     // The cube's atoms as a system of their own: elements and the bonds their distances give
     md_array(char) text = nullptr;
@@ -290,7 +290,7 @@ double resample(float* out, const Grid& to, const Grid& from, const Alignment& a
                     float wt = 1.0f;
                     for (int a = 0; a < 3; ++a) {
                         const int up = (corner >> a) & 1;
-                        idx[a] = MIN(lo[a] + up, dims[a] - 1);
+                        idx[a] = MD_MIN(lo[a] + up, dims[a] - 1);
                         wt *= up ? w[a] : 1.0f - w[a];
                     }
                     if (wt != 0.0f) v += wt * V[(idx[0] * d1 + idx[1]) * d2 + idx[2]];

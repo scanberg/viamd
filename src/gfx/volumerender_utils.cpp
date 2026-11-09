@@ -243,7 +243,7 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_
     }
     if (!p->program) p->program = glCreateProgram();
     const GLuint shaders[] = {v_shader, f_shader};
-    gl::attach_link_detach(p->program, shaders, (int)ARRAY_SIZE(shaders));
+    gl::attach_link_detach(p->program, shaders, (int)MD_COUNTOF(shaders));
     glDeleteShader(f_shader);
 
     const GLuint prog = p->program;
@@ -311,7 +311,7 @@ static void iso_initialize() {
         if (f_shader) {
             if (!iso.minmax.program) iso.minmax.program = glCreateProgram();
             const GLuint shaders[] = {v_shader, f_shader};
-            gl::attach_link_detach(iso.minmax.program, shaders, (int)ARRAY_SIZE(shaders));
+            gl::attach_link_detach(iso.minmax.program, shaders, (int)MD_COUNTOF(shaders));
             glDeleteShader(f_shader);
             iso.minmax.loc_volume     = glGetUniformLocation(iso.minmax.program, "u_tex_volume");
             iso.minmax.loc_layer      = glGetUniformLocation(iso.minmax.program, "u_layer");
@@ -328,7 +328,7 @@ static void iso_initialize() {
         if (v_proxy && f_proxy) {
             if (!iso.proxy.program) iso.proxy.program = glCreateProgram();
             const GLuint shaders[] = {v_proxy, f_proxy};
-            gl::attach_link_detach(iso.proxy.program, shaders, (int)ARRAY_SIZE(shaders));
+            gl::attach_link_detach(iso.proxy.program, shaders, (int)MD_COUNTOF(shaders));
             const GLuint prog = iso.proxy.program;
             iso.proxy.loc_minmax        = glGetUniformLocation(prog, "u_tex_minmax");
             iso.proxy.loc_model_to_clip = glGetUniformLocation(prog, "u_model_to_clip");
@@ -428,10 +428,10 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
     }
 
     int bs = BLOCK_MIN_SIZE;
-    while (DIV_UP(MAX(dim[0], MAX(dim[1], dim[2])), bs) > BLOCK_MAX_PER_AXIS) {
+    while (MD_DIV_UP(MD_MAX(dim[0], MD_MAX(dim[1], dim[2])), bs) > BLOCK_MAX_PER_AXIS) {
         bs *= 2;
     }
-    const int bd[3] = { DIV_UP(dim[0], bs), DIV_UP(dim[1], bs), DIV_UP(dim[2], bs) };
+    const int bd[3] = { MD_DIV_UP(dim[0], bs), MD_DIV_UP(dim[1], bs), MD_DIV_UP(dim[2], bs) };
 
     if (!g->minmax) {
         glGenTextures(1, &g->minmax);
@@ -489,8 +489,8 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
         return NULL;
     }
 
-    MEMCPY(g->dim, dim, sizeof(g->dim));
-    MEMCPY(g->block_dim, bd, sizeof(g->block_dim));
+    MD_MEMCPY(g->dim, dim, sizeof(g->dim));
+    MD_MEMCPY(g->block_dim, bd, sizeof(g->block_dim));
     g->block_size = bs;
     g->built_version = g->version;
     return g;
@@ -514,8 +514,8 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
     if (!iso.proxy.program || !iso.proxy.fbo) return false;
 
     if (iso.proxy.width < width || iso.proxy.height < height) {
-        iso.proxy.width  = MAX(iso.proxy.width, width);
-        iso.proxy.height = MAX(iso.proxy.height, height);
+        iso.proxy.width  = MD_MAX(iso.proxy.width, width);
+        iso.proxy.height = MD_MAX(iso.proxy.height, height);
         GLuint* texs[2] = { &iso.proxy.tex_entry, &iso.proxy.tex_exit };
         for (GLuint* t : texs) {
             if (!*t) glGenTextures(1, t);
@@ -678,7 +678,7 @@ static bool bind_color_target(GLuint fbo, uint32_t color, uint32_t width, uint32
 }
 
 bool render_isosurfaces(const IsoRenderDesc& desc) {
-    const int count = CLAMP((int)desc.iso.count, 0, ISO_MAX_COUNT);
+    const int count = MD_CLAMP((int)desc.iso.count, 0, ISO_MAX_COUNT);
     if (!desc.texture.density_volume || (count > 0 && (!desc.iso.values || !desc.iso.colors)) || desc.render_target.width == 0 || desc.render_target.height == 0) {
         return false;
     }
@@ -704,10 +704,10 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     float  values[ISO_MAX_COUNT] = {};
     vec4_t colors[ISO_MAX_COUNT] = {};
     float  tau[ISO_MAX_COUNT] = {};
-    MEMCPY(values, desc.iso.values, count * sizeof(float));
-    MEMCPY(colors, desc.iso.colors, count * sizeof(vec4_t));
+    MD_MEMCPY(values, desc.iso.values, count * sizeof(float));
+    MD_MEMCPY(colors, desc.iso.colors, count * sizeof(vec4_t));
     if (desc.iso.optical_densities) {
-        MEMCPY(tau, desc.iso.optical_densities, count * sizeof(float));
+        MD_MEMCPY(tau, desc.iso.optical_densities, count * sizeof(float));
     }
 
     const mat4_t model_to_view = desc.matrix.view * desc.matrix.model;
@@ -722,7 +722,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         vec3_length(vec3_from_vec4(desc.matrix.model.col[1])) / (float)dim[1],
         vec3_length(vec3_from_vec4(desc.matrix.model.col[2])) / (float)dim[2],
     };
-    const float h = MAX(1.0e-6f, MIN(voxel_ext.x, MIN(voxel_ext.y, voxel_ext.z)));
+    const float h = MD_MAX(1.0e-6f, MD_MIN(voxel_ext.x, MD_MIN(voxel_ext.y, voxel_ext.z)));
 
     const float n1 = 1.0f;
     const float n2 = desc.shading.ior;
@@ -737,22 +737,22 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.clip_max          = desc.clip_volume.max;
     data.use_depth         = desc.render_target.depth ? 1.0f : 0.0f;
     const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);    // as in compose_deferred
-    data.sky_radiance      = light.sky_radiance * MAX(desc.shading.environment, 0.0f);
+    data.sky_radiance      = light.sky_radiance * MD_MAX(desc.shading.environment, 0.0f);
     data.roughness         = desc.shading.roughness;
     data.dir_radiance      = light.light_irradiance;
     data.F0                = powf((n1 - n2) / (n1 + n2), 2.0f);
     data.light_dir         = light.light_dir;
-    data.ground_radiance   = light.ground_radiance * MAX(desc.shading.environment, 0.0f);
+    data.ground_radiance   = light.ground_radiance * MD_MAX(desc.shading.environment, 0.0f);
     data.field_beg         = desc.field.range_beg;
     data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
     data.optical_scale     = ISO_OPTICAL_SCALE;
     data.entry_from_near   = near_plane_cuts(model_to_clip, desc.clip_volume.min, desc.clip_volume.max) ? 1.0f : 0.0f;
     data.basic             = desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f;
-    data.basic_ambient     = CLAMP(desc.shading.ambient, 0.0f, 1.0f);
-    data.basic_specular    = MAX(desc.shading.specular, 0.0f);
+    data.basic_ambient     = MD_CLAMP(desc.shading.ambient, 0.0f, 1.0f);
+    data.basic_specular    = MD_MAX(desc.shading.specular, 0.0f);
     data.linear_colors     = desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f;
-    data.light_strength    = MAX(desc.shading.light, 0.0f);
+    data.light_strength    = MD_MAX(desc.shading.light, 0.0f);
 
     const SavedState saved = save_state();
 
@@ -829,12 +829,12 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         if (p.loc_isoline_count != -1) {
             // Only the field variant has them; the field's gradient is taken over the normals' offsets, h apart
             const bool lines = use_field && isolines_active(desc.isolines);
-            const GLint line_count = lines ? (GLint)MIN(desc.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
+            const GLint line_count = lines ? (GLint)MD_MIN(desc.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
             glUniform1i(p.loc_isoline_count, line_count);
             if (line_count > 0) glUniform1fv(p.loc_isoline_values, line_count, desc.isolines.values);
             glUniform1i(p.loc_isoline_hover, lines && desc.isolines.hover ? 1 : 0);
             glUniform1f(p.loc_isoline_hover_value, desc.isolines.hover_value);
-            glUniform1f(p.loc_isoline_width, MAX(desc.isolines.width, 0.0f));
+            glUniform1f(p.loc_isoline_width, MD_MAX(desc.isolines.width, 0.0f));
             glUniform1f(p.loc_field_grad_scale, 0.5f / h);
         }
 
@@ -880,7 +880,7 @@ void initialize() {
         if (v_shader && f_shader) {
             if (!gl.program.dvr) gl.program.dvr = glCreateProgram();
             const GLuint shaders[] = {v_shader, f_shader};
-            gl::attach_link_detach(gl.program.dvr, shaders, (int)ARRAY_SIZE(shaders));
+            gl::attach_link_detach(gl.program.dvr, shaders, (int)MD_COUNTOF(shaders));
             gl.dvr_loc.tex_volume  = glGetUniformLocation(gl.program.dvr, "u_tex_volume");
             gl.dvr_loc.tex_depth   = glGetUniformLocation(gl.program.dvr, "u_tex_depth");
             gl.dvr_loc.tex_tf      = glGetUniformLocation(gl.program.dvr, "u_tex_tf");
@@ -963,24 +963,24 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
 }
 
 void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float alpha_scale, int res) {
-    ASSERT(tex);
+    MD_ASSERT(tex);
     if (res <= 0) {
         MD_LOG_ERROR("Bad input resolution");
         return;
     }
 
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     size_t bytes = sizeof(uint32_t) * res;
     uint32_t* pixel_data = (uint32_t*)md_temp_alloc(temp, bytes);
 
     // Update colormap texture
     for (int i = 0; i < res; ++i) {
-        float t = CLAMP((float)i / (float)(res - 1), 0.0f, 1.0f);
+        float t = MD_CLAMP((float)i / (float)(res - 1), 0.0f, 1.0f);
         ImVec4 col = ImPlot::SampleColormap(t, colormap);
 
-        col.w = MIN(160 * t*t, 0.341176f) * alpha_scale;
-        col.w = CLAMP(col.w, 0.0f, 1.0f);
+        col.w = MD_MIN(160 * t*t, 0.341176f) * alpha_scale;
+        col.w = MD_CLAMP(col.w, 0.0f, 1.0f);
 
         pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
     }
@@ -991,14 +991,14 @@ void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float
 }
 
 void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t type, float ramp_scale, float ramp_period, int res) {
-    ASSERT(tex);
+    MD_ASSERT(tex);
     if (res <= 0) {
         MD_LOG_ERROR("Bad input resolution");
         return;
     }
 
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     size_t bytes = sizeof(uint32_t) * res;
     uint32_t* pixel_data = (uint32_t*)md_temp_alloc(temp, bytes);
 
@@ -1023,7 +1023,7 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
             break;
         }
 
-        t = CLAMP(t, 0.0f, 1.0f);
+        t = MD_CLAMP(t, 0.0f, 1.0f);
         col.w = t;
 
         pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
@@ -1044,10 +1044,10 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     glUniform1f (glGetUniformLocation(gl.program.splat_color, "u_power"), power);
 
     size_t point_xyzw_offset    = 0;
-    size_t point_xyzw_size      = ALIGN_TO(sizeof(vec4_t) * point_count, 256);
+    size_t point_xyzw_size      = MD_ALIGN_TO(sizeof(vec4_t) * point_count, 256);
     size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
-    size_t point_color_size     = ALIGN_TO(sizeof(uint32_t) * point_count, 256);
-    size_t total_buffer_size    = ALIGN_TO(point_xyzw_size + point_color_size, 256);
+    size_t point_color_size     = MD_ALIGN_TO(sizeof(uint32_t) * point_count, 256);
+    size_t total_buffer_size    = MD_ALIGN_TO(point_xyzw_size + point_color_size, 256);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size , NULL, GL_DYNAMIC_DRAW);
@@ -1061,9 +1061,9 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     glBindImageTexture(0, vol_texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
     const int num_wg[3] = {
-        DIV_UP((int)volume_dim[0], 8),
-        DIV_UP((int)volume_dim[1], 8),
-        DIV_UP((int)volume_dim[2], 8),
+        MD_DIV_UP((int)volume_dim[0], 8),
+        MD_DIV_UP((int)volume_dim[1], 8),
+        MD_DIV_UP((int)volume_dim[2], 8),
     };
 
     glDispatchCompute(num_wg[0], num_wg[1], num_wg[2]);
@@ -1085,7 +1085,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     static constexpr float CUTOFF = 20.0f;  // a point weighing less than exp(-CUTOFF) of the best one is left out
 
     md_temp_scope_t temp_scope = md_temp_begin();
-    defer { md_temp_end(temp_scope); };
+    MD_DEFER { md_temp_end(temp_scope); };
 
     uint32_t* result = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * (size_t)dim_x * dim_y * dim_z);
     vec4_t*   points = (vec4_t*)  md_temp_alloc(temp_scope, sizeof(vec4_t) * point_count);    // xyz, power / (2 sigma^2)
@@ -1094,7 +1094,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     if (!result || !points || !colors || !cand) return;
 
     for (size_t i = 0; i < point_count; ++i) {
-        const float sigma = MAX(point_xyzw[i].w, 0.1f);
+        const float sigma = MD_MAX(point_xyzw[i].w, 0.1f);
         points[i] = vec4_set(point_xyzw[i].x, point_xyzw[i].y, point_xyzw[i].z, power / (2.0f * sigma * sigma));
         colors[i] = convert_color(point_color[i]);
     }
@@ -1105,7 +1105,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
         for (int by = 0; by < dim_y; by += BLOCK) {
             for (int bx = 0; bx < dim_x; bx += BLOCK) {
                 const int lo[3] = { bx, by, bz };
-                const int hi[3] = { MIN(bx + BLOCK, dim_x) - 1, MIN(by + BLOCK, dim_y) - 1, MIN(bz + BLOCK, dim_z) - 1 };
+                const int hi[3] = { MD_MIN(bx + BLOCK, dim_x) - 1, MD_MIN(by + BLOCK, dim_y) - 1, MD_MIN(bz + BLOCK, dim_z) - 1 };
 
                 // World space bounds of the voxel centres of the block (the volume may be rotated)
                 vec3_t bmin = vec3_set( FLT_MAX,  FLT_MAX,  FLT_MAX);
@@ -1122,7 +1122,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
                 for (size_t i = 0; i < point_count; ++i) {
                     const vec3_t p   = vec3_from_vec4(points[i]);
                     const vec3_t far = vec3_max(vec3_abs(vec3_sub(p, bmin)), vec3_abs(vec3_sub(p, bmax)));
-                    e_best = MAX(e_best, -vec3_dot(far, far) * points[i].w);
+                    e_best = MD_MAX(e_best, -vec3_dot(far, far) * points[i].w);
                 }
                 uint32_t num_cand = 0;
                 for (size_t i = 0; i < point_count; ++i) {
@@ -1209,7 +1209,7 @@ bool value_range(uint32_t volume_texture, float* out_min, float* out_max) {
     if (g && g->minmax) {
         if (g->range_version != g->built_version) {
             const int bs = g->block_size;
-            const size_t n = (size_t)DIV_UP(dim[0], bs) * (size_t)DIV_UP(dim[1], bs) * (size_t)DIV_UP(dim[2], bs);
+            const size_t n = (size_t)MD_DIV_UP(dim[0], bs) * (size_t)MD_DIV_UP(dim[1], bs) * (size_t)MD_DIV_UP(dim[2], bs);
             md_temp_scope_t temp = md_temp_begin();
             float* mm = (float*)md_temp_alloc(temp, sizeof(float) * 2 * n);
             glBindTexture(GL_TEXTURE_3D, g->minmax);
@@ -1217,8 +1217,8 @@ bool value_range(uint32_t volume_texture, float* out_min, float* out_max) {
             glBindTexture(GL_TEXTURE_3D, 0);
             float lo = FLT_MAX, hi = -FLT_MAX;
             for (size_t i = 0; i < n; ++i) {
-                lo = MIN(lo, mm[2 * i]);
-                hi = MAX(hi, mm[2 * i + 1]);
+                lo = MD_MIN(lo, mm[2 * i]);
+                hi = MD_MAX(hi, mm[2 * i + 1]);
             }
             md_temp_end(temp);
             g->range_min = lo;
@@ -1383,7 +1383,7 @@ void render_dvr(const DvrRenderDesc& desc) {
     const bool images = slices && desc.slice_images;
     // the volume is read by every slice drawn without an image (those of opacity 0 read nothing)
     bool needs_volume = !desc.slice;
-    for (int i = 0; slices && i < MIN(desc.planes.count, 8); ++i) {
+    for (int i = 0; slices && i < MD_MIN(desc.planes.count, 8); ++i) {
         const float a = desc.slice_opacity ? desc.slice_opacity[i] : 1.0f;
         needs_volume |= a > 0.0f && !(images && desc.slice_images[i]);
     }
@@ -1408,7 +1408,7 @@ void render_dvr(const DvrRenderDesc& desc) {
     data.inv_res    = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.time       = time;
     data.use_depth  = desc.render_target.depth ? 1.0f : 0.0f;
-    data.num_planes = desc.planes.equations ? CLAMP(desc.planes.count, 0, 8) : 0;
+    data.num_planes = desc.planes.equations ? MD_CLAMP(desc.planes.count, 0, 8) : 0;
     for (int i = 0; i < data.num_planes; ++i) data.planes[i] = desc.planes.equations[i];
     data.linear_out = desc.linear_output ? 1.0f : 0.0f;
     data.slice      = desc.slice ? 1.0f : 0.0f;

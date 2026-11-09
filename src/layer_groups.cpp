@@ -16,7 +16,7 @@
 // ## Groups
 
 void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t generation, bool follow_frame, bool want_sets) {
-    ASSERT(g && app);
+    MD_ASSERT(g && app);
     md_allocator_i* heap = md_get_heap_allocator();
 
     uint64_t key = md_hash64_combine(generation, (g->follow_selection ? 1 : 2) | (want_sets ? 4 : 0));
@@ -101,7 +101,7 @@ bool layer_group_compose_filter(char* layer_filter, size_t cap, const LayerGroup
     // right is made one (residue(2) in residue(1:5) would ask each of the five for a second residue)
     else                  n = snprintf(out, sizeof(out), "(%s) in union(%s)", layer_filter, g.filter.text);
     if (n < 0 || (size_t)n >= sizeof(out) || (size_t)n >= cap) return false;
-    MEMCPY(layer_filter, out, (size_t)n + 1);
+    MD_MEMCPY(layer_filter, out, (size_t)n + 1);
     return true;
 }
 
@@ -154,10 +154,10 @@ bool layer_tree_drop_target(const ImRect& row, float x0, LayerNodeRef target, bo
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(LAYER_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(LayerNodeRef)) {
         LayerNodeRef src;
-        MEMCPY(&src, payload->Data, sizeof(src));
+        MD_MEMCPY(&src, payload->Data, sizeof(src));
         const int si = representation_tree_find(nodes, count, src.group, src.id);
         const int ti = representation_tree_find(nodes, count, target.group, target.id);
-        const float t = (ImGui::GetMousePos().y - row.Min.y) / MAX(row.GetHeight(), 1.0f);
+        const float t = (ImGui::GetMousePos().y - row.Min.y) / MD_MAX(row.GetHeight(), 1.0f);
         const RepresentationDrop drop = drop_zone(t, target.group, open);
         if (src.window == target.window && si >= 0 && ti >= 0 && layer_tree_can_move(nodes, count, (size_t)si, ti, drop)) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -194,7 +194,7 @@ bool layer_tree_drop_target_end(const ImRect& rect, float x0, uint32_t window, u
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(LAYER_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(LayerNodeRef)) {
         LayerNodeRef src;
-        MEMCPY(&src, payload->Data, sizeof(src));
+        MD_MEMCPY(&src, payload->Data, sizeof(src));
         const int si = representation_tree_find(nodes, count, src.group, src.id);
         const int ti = parent ? representation_tree_find(nodes, count, true, parent) : -1;
         if (src.window == window && si >= 0 && (parent == 0 || ti >= 0) && layer_tree_can_move(nodes, count, (size_t)si, ti, RepresentationDrop_IntoLast)) {
@@ -273,7 +273,7 @@ LayerGroupRow layer_group_row(LayerGroup& g, uint32_t window, bool selected, con
     const float text_x = ImGui::GetItemRectMax().x + 6.0f;
     const float text_y = row_min.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     const float right = row_min.x + row_w - pad;
-    const float sum_w = summary && summary[0] ? MIN(ImGui::CalcTextSize(summary).x, (right - text_x) * 0.45f) : 0.0f;
+    const float sum_w = summary && summary[0] ? MD_MIN(ImGui::CalcTextSize(summary).x, (right - text_x) * 0.45f) : 0.0f;
     const ImVec4 clip_name = ImVec4(text_x, row_min.y, right - sum_w - 8.0f, row_min.y + h);
     dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(text_x, text_y), ImGui::GetColorU32(g.visible ? ImGuiCol_Text : ImGuiCol_TextDisabled),
                 label, nullptr, 0.0f, &clip_name);
@@ -299,10 +299,10 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
     char hint[96];
     {
         char saved[sizeof(g.name)];
-        MEMCPY(saved, g.name, sizeof(saved));
+        MD_MEMCPY(saved, g.name, sizeof(saved));
         g.name[0] = '\0';
         layer_group_label(hint, sizeof(hint), g);
-        MEMCPY(g.name, saved, sizeof(saved));
+        MD_MEMCPY(g.name, saved, sizeof(saved));
     }
     prop::row("group");
     ImGui::InputTextWithHint("##name", hint, g.name, sizeof(g.name));
@@ -313,7 +313,7 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
     prop::row("subset", tip);
     {
         const float btn_w = ImGui::GetFrameHeight() + 6;
-        ImGui::SetNextItemWidth(MAX(1.0f, prop::control_width() - btn_w - 2));
+        ImGui::SetNextItemWidth(MD_MAX(1.0f, prop::control_width() - btn_w - 2));
         ImGui::BeginDisabled(g.follow_selection);
         const bool invalid = !g.follow_selection && !g.valid && g.filter.text[0];
         if (invalid) ImGui::PushInvalid();

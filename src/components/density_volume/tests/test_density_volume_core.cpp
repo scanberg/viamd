@@ -18,7 +18,7 @@
 using namespace density_volume;
 
 UTEST(density_volume_core, cube_parse) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     // Two atoms in bohr, a 2 x 3 x 4 grid of 0.5 bohr steps, the values counting up, x outermost and z innermost
     std::string text = "EXPORTED DENSITY VOLUME FROM VIAMD, UNITS IN BOHR, BULK 0.0334\n"
                        "OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n"
@@ -69,7 +69,7 @@ const Peptide* peptide() {
     static Peptide p;
     static bool ok = false;
     if (!p.alloc) {
-        p.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(8));
+        p.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
         p.sys = {.alloc = p.alloc};
         p.state = {.alloc = p.alloc};
         ok = md_pdb_system_init_from_file(&p.sys, &p.state, STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb"), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
@@ -91,7 +91,7 @@ mat3_t rotation(float ax, float ay, float az) {
 UTEST(density_volume_core, align) {
     const Peptide* p = peptide();
     ASSERT_TRUE(p != nullptr);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     // The first three residues
     std::vector<int32_t> atoms;
     for (size_t r = 0; r < 3; ++r) {

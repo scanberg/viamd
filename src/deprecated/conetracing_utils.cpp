@@ -91,7 +91,7 @@ static void initialize(int version_major, int version_minor) {
     if (!gl.program) {
         if (version_major >= 4 && version_minor >= 3) {
             GLuint v_shader = gl::compile_shader_from_source(v_shader_src, GL_VERTEX_SHADER);
-            defer { glDeleteShader(v_shader); };
+            MD_DEFER { glDeleteShader(v_shader); };
             if (v_shader) {
                 gl.program = glCreateProgram();
                 if (gl::attach_link_detach(gl.program, &v_shader, 1)) {
@@ -374,7 +374,7 @@ void main() {
 static void initialize() {
     GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
     GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER);
-    defer{
+    MD_DEFER{
         glDeleteShader(v_shader);
         glDeleteShader(f_shader);
     };
@@ -421,13 +421,13 @@ void initialize() {
     }
     GLuint v_shader = gl::compile_shader_from_source(v_shader_fs_quad_src, GL_VERTEX_SHADER);
     GLuint f_shader = gl::compile_shader_from_file(STR(VIAMD_SHADER_DIR"/cone_tracing/directional_occlusion.frag"), GL_FRAGMENT_SHADER);
-    defer {
+    MD_DEFER {
         glDeleteShader(v_shader);
         glDeleteShader(f_shader);
     };
 
     const GLuint shaders[] = {v_shader, f_shader};
-    gl::attach_link_detach(program, shaders, (int)ARRAY_SIZE(shaders));
+    gl::attach_link_detach(program, shaders, (int)MD_COUNTOF(shaders));
 }
 
 void shutdown() {
@@ -458,7 +458,7 @@ void shutdown() {
 }
 
 void init_rgba_volume(GPUVolume* vol, int res_x, int res_y, int res_z, vec3_t min_box, vec3_t max_box) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     if (!vol->texture_id) glGenTextures(1, &vol->texture_id);
     vol->min_box = min_box;
     vol->max_box = max_box;
@@ -500,7 +500,7 @@ uint32_t ceil_power_of_two(uint32_t x) {
 }
 
 void init_occlusion_volume(GPUVolume* vol, vec3_t min_box, vec3_t max_box, float voxel_ext_target) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
 
     if (min_box == max_box) {
         return;
@@ -508,8 +508,8 @@ void init_occlusion_volume(GPUVolume* vol, vec3_t min_box, vec3_t max_box, float
 
     const float voxel_ext = voxel_ext_target;
     const vec3_t ext = (max_box - min_box);
-    const float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
-    int32_t dim = (int32_t)CLAMP(ceil_power_of_two((uint32_t)(max_ext / voxel_ext_target)), 1, 256);
+    const float max_ext = MD_MAX(ext.x, MD_MAX(ext.y, ext.z));
+    int32_t dim = (int32_t)MD_CLAMP(ceil_power_of_two((uint32_t)(max_ext / voxel_ext_target)), 1, 256);
     int res[3] = {dim, dim, dim};
 
     for (int i = 0; i < 3; i++) {
@@ -533,7 +533,7 @@ void init_occlusion_volume(GPUVolume* vol, vec3_t min_box, vec3_t max_box, float
         // @NOTE: Compute log2 (integer version) to find the amount of mipmaps required
         int mips = 1;
         {
-            int max_dim = MAX(res[0], MAX(res[1], res[2]));
+            int max_dim = MD_MAX(res[0], MD_MAX(res[1], res[2]));
             while (max_dim >>= 1) ++mips;
         }
         if (vol->texture_id) glDeleteTextures(1, &vol->texture_id);
@@ -567,9 +567,9 @@ struct ivec3_t {
 
 inline ivec3_t compute_voxel_coord(const GPUVolume& data, const vec3_t& coord) {
     ivec3_t c;
-    c.x = CLAMP((int)((coord.x - data.min_box.x) / data.voxel_ext.x), 0, data.res_x - 1);
-    c.y = CLAMP((int)((coord.y - data.min_box.y) / data.voxel_ext.y), 0, data.res_y - 1);
-    c.z = CLAMP((int)((coord.z - data.min_box.z) / data.voxel_ext.z), 0, data.res_z - 1);
+    c.x = MD_CLAMP((int)((coord.x - data.min_box.x) / data.voxel_ext.x), 0, data.res_x - 1);
+    c.y = MD_CLAMP((int)((coord.y - data.min_box.y) / data.voxel_ext.y), 0, data.res_y - 1);
+    c.z = MD_CLAMP((int)((coord.z - data.min_box.z) / data.voxel_ext.z), 0, data.res_z - 1);
     return c;
 }
 
@@ -595,7 +595,7 @@ void voxelize_spheres_cpu(const GPUVolume& vol, const float* x, const float* y, 
 
     uint32_t* voxel_data = (uint32_t*)md_alloc(default_allocator, voxel_count * sizeof(uint32_t));
     float* voxel_counter = (float*)md_alloc(default_allocator, voxel_count * sizeof(float));
-    defer {
+    MD_DEFER {
         md_free(default_allocator, voxel_counter, voxel_count * sizeof(float));
         md_free(default_allocator, voxel_data, voxel_count * sizeof(uint32_t));
     };
@@ -864,7 +864,7 @@ void compute_occupancy_volume(const GPUVolume& vol, const float* x, const float*
 
     const float inv_voxel_volume = 1.0f / (vol.voxel_ext.x * vol.voxel_ext.y * vol.voxel_ext.z);
     std::atomic_uint32_t* voxel_data = (std::atomic_uint32_t*)md_alloc(default_allocator, voxel_count * sizeof(std::atomic_uint32_t));
-    defer { md_free(default_allocator, voxel_data, voxel_count * sizeof(std::atomic_uint32_t)); };
+    MD_DEFER { md_free(default_allocator, voxel_data, voxel_count * sizeof(std::atomic_uint32_t)); };
 
 #if 0
     task_system::ID id = task_system::pool_enqueue(
@@ -907,7 +907,7 @@ void render_directional_occlusion(GLuint depth_tex, GLuint normal_tex, const GPU
     const vec3_t world_space_camera = mat4_mul_vec3(inv_view_mat, {0,0,0}, 1);
     const vec3_t voxel_grid_min = vol.min_box;
     const vec3_t voxel_grid_ext = vol.max_box - vol.min_box;
-    float voxel_ext = MAX(MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
+    float voxel_ext = MD_MAX(MD_MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
 
     GLuint program = directional_occlusion::program;
     glUseProgram(program);
@@ -969,7 +969,7 @@ void cone_trace_scene(GLuint depth_tex, GLuint normal_tex, GLuint color_alpha_te
     // printf("cam: %.2f %.2f %.2f\n", world_space_camera.x, world_space_camera.y, world_space_camera.z);
     vec3_t voxel_grid_min = vol.min_box;
     vec3_t voxel_grid_ext = vol.max_box - vol.min_box;
-    float voxel_ext = MAX(MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
+    float voxel_ext = MD_MAX(MD_MAX(vol.voxel_ext.x, vol.voxel_ext.y), vol.voxel_ext.z);
 
     // const float cone_angle = 0.07;  // 0.2 = 22.6 degrees, 0.1 = 11.4 degrees, 0.07 = 8 degrees angle
 

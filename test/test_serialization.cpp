@@ -162,7 +162,7 @@ UTEST(viamd_serialization, bitset_round_trip) {
     writer_t w(alloc);
 
     const uint32_t bits[] = { 0, 1, 5, 63, 64, 65, 1000, 4095 };
-    md_bitset_t src = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    md_bitset_t src = md_bitset_from_indices(bits, MD_COUNTOF(bits), alloc);
     md_bitset_t dst = {};
 
     viamd::write_section_header(w.state, STR_LIT("Selection"));
@@ -179,7 +179,7 @@ UTEST(viamd_serialization, bitset_round_trip) {
 
     EXPECT_EQ(md_bitset_count(src), md_bitset_count(dst));
     EXPECT_TRUE(md_bitset_equal(src, dst));
-    for (size_t i = 0; i < ARRAY_SIZE(bits); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(bits); ++i) {
         EXPECT_TRUE(md_bitset_test(dst, bits[i]));
     }
 
@@ -194,7 +194,7 @@ UTEST(viamd_serialization, bitset_round_trip_large_indices) {
     writer_t w(alloc);
 
     const uint32_t bits[] = { 5, 20000000, 20000001, 99999999 };
-    md_bitset_t src = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    md_bitset_t src = md_bitset_from_indices(bits, MD_COUNTOF(bits), alloc);
     md_bitset_t dst = {};
 
     viamd::write_section_header(w.state, STR_LIT("Selection"));
@@ -222,7 +222,7 @@ UTEST(viamd_serialization, bitset_reads_masks_written_by_md_bitfield) {
         { "JAEAAAD/IAAAAOAtAAQAAAAAAA==", {{0, 32}}, 1, 32 },
         { "KQQAAQACgAMACQDgAgAA/+BlAOACeeAjAA4BAAAAAAAAAAAAAAAAAAA=", {{600, 2000}, {5000, 5001}}, 2, 1401 },
     };
-    for (size_t k = 0; k < ARRAY_SIZE(golden); ++k) {
+    for (size_t k = 0; k < MD_COUNTOF(golden); ++k) {
         char arg[256];
         snprintf(arg, sizeof(arg), "###%s###", golden[k].b64);
         md_bitset_t s = {};

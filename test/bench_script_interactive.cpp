@@ -59,7 +59,7 @@ struct Bench {
 };
 
 bool load(Bench* b, const char* top, const char* traj) {
-    b->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    b->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     b->sys = {.alloc = b->alloc};
     b->state = {.alloc = b->alloc};
     const str_t t = str_from_cstr(top);
@@ -136,7 +136,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     // Compile: once per edit
     std::vector<double> times;
     script::Program* p = nullptr;
-    md_allocator_i* palloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* palloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     for (int r = 0; r < reps; ++r) {
         if (p) script::program_free(p);
         const auto t0 = clock_type::now();
@@ -173,7 +173,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     const script::Mark* marks = script::marks(p);
     t.marks = nm;
     std::vector<double> per_mark(nm, 0.0);
-    md_allocator_i* dalloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* dalloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     for (size_t m = 0; m < nm; ++m) {
         std::vector<double> mt;
         for (int r = 0; r < reps; ++r) {
@@ -204,7 +204,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     for (int i = 0; src[i]; ++i) if (src[i] == '\n') cursors.push_back(i);
     if (const char* paren = strchr(src, '(')) cursors.push_back((int)(paren - src) + 1);
     t.cursors = cursors.size();
-    md_allocator_i* calloc_ = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* calloc_ = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     double sum = 0;
     for (int cur : cursors) {
         std::vector<double> ct;
@@ -225,7 +225,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     fc.state = &b.state;
     fc.prog = p;
     fc.run = STR_LIT("run");
-    md_allocator_i* falloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* falloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     sum = 0;
     for (int i = 0; i < 4 && filters[i]; ++i) {
         std::vector<double> ft;

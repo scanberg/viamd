@@ -31,7 +31,7 @@ struct Loaded {
 bool load(Loaded* l, const char* file) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", VIAMD_TEST_DATA_DIR, file);
-    l->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    l->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     l->sys = { .alloc = l->alloc };
     md_system_state_t st = { .alloc = l->alloc };
     const str_t p = str_from_cstr(path);
@@ -137,7 +137,7 @@ md_array(ScriptSuggestion) measure(const Loaded& l, std::initializer_list<const 
     int32_t atoms[8];
     size_t n = 0;
     for (const char* p : picks) {
-        if (n < ARRAY_SIZE(atoms)) atoms[n++] = atom(l, p);
+        if (n < MD_COUNTOF(atoms)) atoms[n++] = atom(l, p);
     }
     return script_suggest_measurement(lang, STR_LIT("m1"), atoms, n, l.sys, l.alloc);
 }
@@ -348,7 +348,7 @@ UTEST(script_suggestions, glycans) {
         "HETATM  104  O9  ANE B   3     181.100 141.240   8.210  0.00  0.00           O\n"
         "END\n";
     Loaded l;
-    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     l.sys = { .alloc = l.alloc };
     md_system_state_t st = { .alloc = l.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
@@ -483,10 +483,10 @@ UTEST(script_suggestions, every_line_picks_the_selection) {
         "backbone()", "not element(\"H\") and residue(1:3)", "residue(3) or atom(1)", "lipid()", "ion()",
         "atom(1:5:400)", "name(\"CA\")", "within(5, atom(1))",
     };
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         Loaded l;
         ASSERT_TRUE(load(&l, files[f]));
-        for (size_t e = 0; e < ARRAY_SIZE(exprs); ++e) {
+        for (size_t e = 0; e < MD_COUNTOF(exprs); ++e) {
             const md_bitset_t sel = select(l, exprs[e]);
             if (md_bitset_empty(sel)) continue;
             md_array(ScriptSuggestion) s = suggest(l, sel);
@@ -509,7 +509,7 @@ UTEST(script_suggestions, every_line_picks_a_random_selection) {
         return (uint32_t)(rng % n);
     };
     size_t offered = 0;
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         Loaded l;
         ASSERT_TRUE(load(&l, files[f]));
         const md_system_t& sys = l.sys;
@@ -523,7 +523,7 @@ UTEST(script_suggestions, every_line_picks_a_random_selection) {
                 case 0: md_bitmask_set_range(&mask, r.beg, r.end); break;                            // a residue
                 case 1: md_bitmask_set_bit(&mask, r.beg + next(r.end - r.beg)); break;               // an atom of one
                 case 2: {                                                                            // a few residues
-                    const md_urange_t r2 = md_system_residue_atom_range(&sys, MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
+                    const md_urange_t r2 = md_system_residue_atom_range(&sys, MD_MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
                     md_bitmask_set_range(&mask, r.beg, r2.end);
                 } break;
                 default: {                                                                           // the same atom of several residues
@@ -547,7 +547,7 @@ UTEST(script_suggestions, every_line_picks_a_random_selection) {
         unload(&l);
     }
     // Small selections of residues and atoms are listed at the very least
-    EXPECT_EQ(ARRAY_SIZE(files) * 40, offered);
+    EXPECT_EQ(MD_COUNTOF(files) * 40, offered);
 }
 
 // The names of an XYZ file are the symbols it writes (mdlib used to pad them with zeros, which made them unwritable)
@@ -623,10 +623,10 @@ UTEST(script_suggestions, vial_every_line_picks_the_selection) {
         "atom(1:5:400)", "name(\"CA\")", "within(5, atom(1))",
     };
     size_t offered = 0, tried = 0;
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         Loaded l;
         ASSERT_TRUE(load(&l, files[f]));
-        for (size_t e = 0; e < ARRAY_SIZE(exprs); ++e) {
+        for (size_t e = 0; e < MD_COUNTOF(exprs); ++e) {
             const md_bitset_t sel = select(l, exprs[e]);
             if (md_bitset_empty(sel)) continue;
             md_array(ScriptSuggestion) s = suggest(l, sel, V2);
@@ -653,7 +653,7 @@ UTEST(script_suggestions, vial_every_line_picks_a_random_selection) {
         return (uint32_t)(rng % n);
     };
     size_t offered = 0;
-    for (size_t f = 0; f < ARRAY_SIZE(files); ++f) {
+    for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         Loaded l;
         ASSERT_TRUE(load(&l, files[f]));
         const md_system_t& sys = l.sys;
@@ -667,7 +667,7 @@ UTEST(script_suggestions, vial_every_line_picks_a_random_selection) {
                 case 0: md_bitmask_set_range(&mask, r.beg, r.end); break;
                 case 1: md_bitmask_set_bit(&mask, r.beg + next(r.end - r.beg)); break;
                 case 2: {
-                    const md_urange_t r2 = md_system_residue_atom_range(&sys, MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
+                    const md_urange_t r2 = md_system_residue_atom_range(&sys, MD_MIN(c + 1 + next(5), (uint32_t)sys.residue.count - 1));
                     md_bitmask_set_range(&mask, r.beg, r2.end);
                 } break;
                 default: {
@@ -690,7 +690,7 @@ UTEST(script_suggestions, vial_every_line_picks_a_random_selection) {
         }
         unload(&l);
     }
-    EXPECT_EQ(ARRAY_SIZE(files) * 40, offered);
+    EXPECT_EQ(MD_COUNTOF(files) * 40, offered);
 }
 
 // What the particles are comes first: a predefined set, then keywords
@@ -733,7 +733,7 @@ UTEST(script_suggestions, vial_smiles_of_the_selection) {
     const md_system_t& sys = l.sys;
     md_bitset_t gtp = select(l, "resname(\"GTP\")");
     md_bitset_t gdp = select(l, "resname(\"GDP\")");
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const str_t a = script_selection_smiles(gtp, sys, alloc);
     const str_t b = script_selection_smiles(gdp, sys, alloc);
     printf("    GTP %.*s\n    GDP %.*s\n", (int)a.len, a.ptr, (int)b.len, b.ptr);
@@ -775,7 +775,7 @@ UTEST(script_suggestions, vial_measurement_by_position) {
     fputs(pdb, f);
     fclose(f);
     Loaded l;
-    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    l.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     l.sys = {.alloc = l.alloc};
     md_system_state_t st = {.alloc = l.alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, str_from_cstr(file), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));

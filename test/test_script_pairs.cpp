@@ -78,7 +78,7 @@ const Data* load(const std::string& files) {
     for (std::string f; in >> f;) names.push_back(std::string(VIAMD_TEST_DATA_DIR) + "/" + f);
     if (names.empty()) return nullptr;
 
-    d->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    d->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     d->sys = {.alloc = d->alloc};
     d->state = {.alloc = d->alloc};
     const str_t top = {names[0].c_str(), names[0].size()};
@@ -252,7 +252,7 @@ UTEST(script_pairs, outputs_agree) {
         const std::string name = f.stem().string();
         const Data* d = load(h.data);
         if (!d) { printf("  %s: data %s does not load\n", name.c_str(), h.data.c_str()); EXPECT_TRUE(false); continue; }
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         script::Program* p1 = nullptr;
         script::Program* p2 = nullptr;
         script::Eval* e1 = run_script(script::Language::V1, v1, *d, &p1, alloc);
@@ -292,7 +292,7 @@ UTEST(script_pairs, filters_agree) {
         }
         const Data* d = load(h.data);
         if (!d) { printf("  %s: data %s does not load\n", f.stem().string().c_str(), h.data.c_str()); EXPECT_TRUE(false); continue; }
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         script::FilterCtx ctx;
         ctx.sys = &d->sys;
         ctx.state = &d->state;

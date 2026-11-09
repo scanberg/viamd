@@ -23,21 +23,21 @@ FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state) {
 }
 
 void file_list_free(FileList* list, md_allocator_i* alloc) {
-    ASSERT(list);
+    MD_ASSERT(list);
     md_array_free(list->entries, alloc);
     md_array_free(list->runs, alloc);
     *list = {};
 }
 
 void file_list_clear(FileList* list) {
-    ASSERT(list);
+    MD_ASSERT(list);
     md_array_shrink(list->entries, 0);
     md_array_shrink(list->runs, 0);
     list->atom_count = 0;
 }
 
 FileRole file_list_role(const FileList* list, size_t i) {
-    ASSERT(list);
+    MD_ASSERT(list);
     if (i >= md_array_size(list->entries)) return FileRole_None;
     const int run = list->entries[i].run;
     for (size_t j = 0; j < i; ++j) {
@@ -54,8 +54,8 @@ static bool same_file(const FileEntry& a, const FileEntry& b) {
 }
 
 bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocator_i* alloc) {
-    ASSERT(list);
-    ASSERT(alloc);
+    MD_ASSERT(list);
+    MD_ASSERT(alloc);
 
     switch (role) {
     case FileRole_System:
@@ -93,7 +93,7 @@ bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocat
 }
 
 void file_list_drop_runs(FileList* list) {
-    ASSERT(list);
+    MD_ASSERT(list);
     size_t n = 0;
     for (size_t i = 0; i < md_array_size(list->entries); ++i) {
         if (list->entries[i].run < 0) {
@@ -105,7 +105,7 @@ void file_list_drop_runs(FileList* list) {
 }
 
 const FileEntry* file_list_system_file(const FileList* list) {
-    ASSERT(list);
+    MD_ASSERT(list);
     for (size_t i = 0; i < md_array_size(list->entries); ++i) {
         if (list->entries[i].run < 0) return &list->entries[i];
     }
@@ -113,7 +113,7 @@ const FileEntry* file_list_system_file(const FileList* list) {
 }
 
 const FileEntry* file_list_run_file(const FileList* list) {
-    ASSERT(list);
+    MD_ASSERT(list);
     const int last_run = (int)md_array_size(list->runs) - 1;
     if (last_run >= 0) {
         for (size_t i = 0; i < md_array_size(list->entries); ++i) {
@@ -147,9 +147,9 @@ static void write_input(viamd::serialization_state_t& state, const FileEntry& e,
 }
 
 int file_list_serialize(viamd::serialization_state_t& state, const FileList* list, int system_id, int first_run_id) {
-    ASSERT(list);
+    MD_ASSERT(list);
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     viamd::write_section_header(state, STR_LIT("System"));
@@ -190,7 +190,7 @@ static bool resolve_path(char* buf, size_t cap, str_t folder, str_t arg) {
     if (str_empty(file)) return false;
 
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     md_allocator_i* alloc = md_temp_allocator(temp);
 
     md_str_writer_t joined = md_str_writer_create(alloc);
@@ -225,7 +225,7 @@ static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& s
     md_array(str_t) series = 0;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     str_t ident, arg;
     while (viamd::next_entry(ident, arg, state)) {
@@ -266,7 +266,7 @@ static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& s
 }
 
 bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t& state, str_t folder, md_allocator_i* alloc) {
-    ASSERT(files);
+    MD_ASSERT(files);
     const str_t section = viamd::section_header(state);
     str_t ident, arg;
 
@@ -339,8 +339,8 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
 }
 
 void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t max_runs, md_allocator_i* alloc) {
-    ASSERT(plan);
-    ASSERT(files);
+    MD_ASSERT(plan);
+    MD_ASSERT(files);
     *plan = {};
 
     const size_t num_systems = md_array_size(files->systems);
@@ -353,7 +353,7 @@ void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, size_t 
     plan->skipped_systems = num_systems - 1;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     // The system's runs in the order the workspace names them, as many as are loaded
     md_array(int) run_ids = 0;

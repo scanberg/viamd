@@ -114,20 +114,20 @@ static inline quat_t trackball(vec2_t prev_ndc, vec2_t curr_ndc) {
     const vec3_t p2 = vec3_from_vec2(curr_ndc, project_to_sphere(TRACKBALLSIZE, curr_ndc));
 
     const vec3_t axis = vec3_normalize(vec3_cross(p2, p1));
-    float t = CLAMP(vec3_length(p1 - p2) / (2.0f * TRACKBALLSIZE), -1.f, 1.f);
+    float t = MD_CLAMP(vec3_length(p1 - p2) / (2.0f * TRACKBALLSIZE), -1.f, 1.f);
     float angle = 2.f * asinf(t);
 
     return quat_axis_angle(axis, angle);
 }
 
 void camera_trackball(Camera* camera, vec2_t prev_ndc, vec2_t curr_ndc) {
-    ASSERT(camera);
+    MD_ASSERT(camera);
     const quat_t q = trackball(prev_ndc, curr_ndc);
     camera->orientation = camera->orientation * q;
 }
 
 void camera_move(Camera* camera, vec3_t t) {
-    ASSERT(camera);
+    MD_ASSERT(camera);
     camera->position = camera->position + camera->orientation * t;
 }
 
@@ -209,7 +209,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
 }
 
 bool camera_controller_trackball(ViewTransform* transform, const TrackballControllerInput& input, const TrackballControllerParam& param, TrackballFlags flags) {
-    ASSERT(transform);
+    MD_ASSERT(transform);
 
     const vec2_t half_res = input.screen_size * 0.5f;
     const vec2_t ndc_prev = (vec2_t{input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y} - half_res) / half_res;
@@ -234,7 +234,7 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
         float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(transform->distance * param.dolly_drag_scale, param.dolly_drag_exponent);
         delta -= input.dolly_delta * powf(transform->distance * param.dolly_delta_scale, param.dolly_delta_exponent);
         const vec3_t look_at = camera_get_look_at(*transform);
-        transform->distance = CLAMP(transform->distance + delta, param.min_distance, param.max_distance);
+        transform->distance = MD_CLAMP(transform->distance + delta, param.min_distance, param.max_distance);
         transform->position = camera_position_from_look_at(look_at, transform->orientation, transform->distance);
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
@@ -242,9 +242,9 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
 }
 
 ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext, const mat3_t& basis, float distance_scale) {
-    const float len = MAX(vec3_length(half_ext * 0.5f), 5.0f);
-    const float max_ext = MAX(MAX(half_ext.x, half_ext.y), half_ext.z);
-    const float min_ext = MIN(MIN(half_ext.x, half_ext.y), half_ext.z);
+    const float len = MD_MAX(vec3_length(half_ext * 0.5f), 5.0f);
+    const float max_ext = MD_MAX(MD_MAX(half_ext.x, half_ext.y), half_ext.z);
+    const float min_ext = MD_MIN(MD_MIN(half_ext.x, half_ext.y), half_ext.z);
 
 	vec3_t up  = vec3_set(0, 0, 1);
     vec3_t dir = vec3_normalize(vec3_set(0.6f, 0.5f, 1.0f));
@@ -281,7 +281,7 @@ ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext,
 
 // We use an exponential interpolation of the deltas with a common factor
 static double animate_interpolation_factor(double dt, double target_factor) {
-    dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
+    dt = MD_CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
     const double INV_TARGET_DT = 100.0;
     return target_factor * dt * INV_TARGET_DT;
 }
@@ -293,8 +293,8 @@ static const double SNAP_RELATIVE = 1.0e-5;     // of the position and the dista
 static const double SNAP_ANGLE    = 1.0e-5;     // of the orientation, in radians (a pixel is about 1e-4 at most)
 
 void camera_animate_shift(vec2_t* current, vec2_t target, double dt, double target_factor) {
-    ASSERT(current);
-    const float t = (float)CLAMP(animate_interpolation_factor(dt, target_factor), 0.0, 1.0);
+    MD_ASSERT(current);
+    const float t = (float)MD_CLAMP(animate_interpolation_factor(dt, target_factor), 0.0, 1.0);
     *current = *current + (target - *current) * t;
     if (fabs((double)current->x - (double)target.x) < SNAP_SHIFT && fabs((double)current->y - (double)target.y) < SNAP_SHIFT) {
         *current = target;
@@ -302,7 +302,7 @@ void camera_animate_shift(vec2_t* current, vec2_t target, double dt, double targ
 }
 
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor) {
-    ASSERT(current);
+    MD_ASSERT(current);
 
     double interpolation_factor = animate_interpolation_factor(dt, target_factor);
 
@@ -313,7 +313,7 @@ void camera_animate(ViewTransform* current, const ViewTransform& target, double 
 
     // At the target when within a fraction of a pixel of it. The angle between the orientations by the length of their
     // difference (about half the angle), which floats resolve where the dot product does not.
-    const double scale = MAX((double)target.distance, 1.0e-3);
+    const double scale = MD_MAX((double)target.distance, 1.0e-3);
     double d_pos = 0.0, dot = 0.0, d_ori_minus = 0.0, d_ori_plus = 0.0;
     for (int i = 0; i < 3; ++i) {
         const double d = (double)current->position.elem[i] - (double)target.position.elem[i];
@@ -455,7 +455,7 @@ static vec3_t dv_face_about_up(vec3_t up, const mat3_t* C) {
         const float b = vec3_dot(e1, mat3_mul_vec3(*C, e2));
         const float c = vec3_dot(e2, mat3_mul_vec3(*C, e2));
         const float h = 0.5f * (a + c);
-        const float r = sqrtf(MAX(0.0f, 0.25f * (a - c) * (a - c) + b * b));
+        const float r = sqrtf(MD_MAX(0.0f, 0.25f * (a - c) * (a - c) + b * b));
         const float l_major = h + r;
         const float l_minor = h - r;
         if (l_major > l_minor * DV_ANISOTROPY * DV_ANISOTROPY) {
@@ -496,10 +496,10 @@ static float dv_visibility(DvRaster& r, const vec3_t* p, size_t n, vec3_t d) {
         const float sx = vec3_dot(p[i], s);
         const float sy = vec3_dot(p[i], u);
         const float sz = vec3_dot(p[i], d);
-        const int x0 = MAX(0,       (int)floorf((sx - rad + r.R) / r.px));
-        const int x1 = MIN(dim - 1, (int)floorf((sx + rad + r.R) / r.px));
-        const int y0 = MAX(0,       (int)floorf((sy - rad + r.R) / r.px));
-        const int y1 = MIN(dim - 1, (int)floorf((sy + rad + r.R) / r.px));
+        const int x0 = MD_MAX(0,       (int)floorf((sx - rad + r.R) / r.px));
+        const int x1 = MD_MIN(dim - 1, (int)floorf((sx + rad + r.R) / r.px));
+        const int y0 = MD_MAX(0,       (int)floorf((sy - rad + r.R) / r.px));
+        const int y1 = MD_MIN(dim - 1, (int)floorf((sy + rad + r.R) / r.px));
         for (int py = y0; py <= y1; ++py) {
             const float dy = (py + 0.5f) * r.px - r.R - sy;
             for (int px = x0; px <= x1; ++px) {
@@ -532,11 +532,11 @@ static vec3_t dv_best_direction(const vec3_t* p, size_t n, const vec3_t axis[3])
     dv_world_camera(&pref_b, &pref_s, &pref_u);
 
     float R = 0.0f;
-    for (size_t i = 0; i < n; ++i) R = MAX(R, vec3_length(p[i]));
+    for (size_t i = 0; i < n; ++i) R = MD_MAX(R, vec3_length(p[i]));
     R += DV_ATOM_RADIUS;
 
     DvRaster r = {};
-    r.dim  = CLAMP((int)ceilf(2.0f * R / (DV_ATOM_RADIUS / 3.0f)), 32, 256);
+    r.dim  = MD_CLAMP((int)ceilf(2.0f * R / (DV_ATOM_RADIUS / 3.0f)), 32, 256);
     r.px   = 2.0f * R / (float)r.dim;
     r.R    = R;
     r.zbuf = (float*)  malloc(sizeof(float)   * r.dim * r.dim);
@@ -557,7 +557,7 @@ static vec3_t dv_best_direction(const vec3_t* p, size_t n, const vec3_t axis[3])
     const float golden_angle = 2.39996323f;
     for (int k = 0; k < DV_SEARCH_DIRS; ++k) {
         const float cz = 1.0f - (2.0f * k + 1.0f) / (float)DV_SEARCH_DIRS;
-        const float sr = sqrtf(MAX(0.0f, 1.0f - cz * cz));
+        const float sr = sqrtf(MD_MAX(0.0f, 1.0f - cz * cz));
         const vec3_t d = vec3_set(sr * cosf(golden_angle * k), sr * sinf(golden_angle * k), cz);
         const float  score = dv_visibility(r, p, n, d);
         if (score > best_score) { best_score = score; best = d; }
@@ -590,7 +590,7 @@ static DvFrame dv_frame_about_face(vec3_t b, const vec3_t* p, size_t n) {
         a += x * x; bb += x * y; c += y * y;
     }
     const float h = 0.5f * (a + c);
-    const float r = sqrtf(MAX(0.0f, 0.25f * (a - c) * (a - c) + bb * bb));
+    const float r = sqrtf(MD_MAX(0.0f, 0.25f * (a - c) * (a - c) + bb * bb));
     const float l_major = h + r;
     const float l_minor = h - r;
 
@@ -622,12 +622,12 @@ float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t coun
     // The shift moves the picture over without changing it, so only the size of the region matters: half the
     // side of the largest square in it, as the tangent of an angle off the view axis
     const vec2_t half_ext = (region.max - region.min) * 0.5f;
-    const float tan_half_side = MIN(half_ext.x * region.aspect_ratio, half_ext.y) * tanf(fov_y * 0.5f) * DV_FILL;
+    const float tan_half_side = MD_MIN(half_ext.x * region.aspect_ratio, half_ext.y) * tanf(fov_y * 0.5f) * DV_FILL;
     float dist = DV_MIN_DISTANCE;
     for (size_t i = 0; i < count; ++i) {
         const vec3_t p = vec3_sub(dv_load(xyz, indices, i), look_at);
-        const float lateral = MAX(fabsf(vec3_dot(p, s)), fabsf(vec3_dot(p, u))) + DV_ATOM_RADIUS;
-        dist = MAX(dist, vec3_dot(p, b) + lateral / tan_half_side);
+        const float lateral = MD_MAX(fabsf(vec3_dot(p, s)), fabsf(vec3_dot(p, u))) + DV_ATOM_RADIUS;
+        dist = MD_MAX(dist, vec3_dot(p, b) + lateral / tan_half_side);
     }
     return dist;
 }

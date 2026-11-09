@@ -70,11 +70,11 @@ static inline ImU32 flow_color_u32(vec4_t color, float alpha_scale) {
 }
 
 static inline md_vg_color_t flow_color_vg(vec4_t color, float alpha_scale) {
-    const float a = CLAMP(color.w * alpha_scale, 0.0f, 1.0f);
+    const float a = MD_CLAMP(color.w * alpha_scale, 0.0f, 1.0f);
     return MD_VG_COLOR_RGBA(
-        (uint32_t)(CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f),
-        (uint32_t)(CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f),
-        (uint32_t)(CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f),
+        (uint32_t)(MD_CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f),
+        (uint32_t)(MD_CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f),
+        (uint32_t)(MD_CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f),
         (uint32_t)(a * 255.0f + 0.5f));
 }
 
@@ -409,7 +409,7 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
         const float x1 = leftmost ? (min.x - out) : (max.x + out);
         const float x0 = leftmost ? (x1 - style.band_width_px) : (x1 + style.band_width_px);
 
-        md_vg_add_rect_filled(scene, vec2_t{MIN(x0, x1), min.y}, vec2_t{MAX(x0, x1), max.y},
+        md_vg_add_rect_filled(scene, vec2_t{MD_MIN(x0, x1), min.y}, vec2_t{MD_MAX(x0, x1), max.y},
                               flow_color_vg(node->color, 1.0f), style.band_width_px * 0.5f);
 
         if (!style.show_band_labels || (max.y - min.y) < style.label_min_px) continue;
@@ -419,7 +419,7 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
         const float font_size = 12.0f;
         const float text_w = font_size * 0.5f * (float)strlen(buf);
         const vec2_t pos = {
-            leftmost ? (MIN(x0, x1) - style.band_label_gap_px - text_w) : (MAX(x0, x1) + style.band_label_gap_px),
+            leftmost ? (MD_MIN(x0, x1) - style.band_label_gap_px - text_w) : (MD_MAX(x0, x1) + style.band_label_gap_px),
             (min.y + max.y) * 0.5f + font_size * 0.35f,
         };
         md_vg_add_text(scene, pos, font_size, MD_VG_COLOR_RGB(0, 0, 0), str_from_cstr(buf));

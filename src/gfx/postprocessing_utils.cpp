@@ -47,11 +47,11 @@ struct GLResetState {
 };
 
 static void record_gl_reset_state(GLResetState* state) {
-	ASSERT(state);
+	MD_ASSERT(state);
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &state->fbo);
 	glGetIntegerv(GL_VIEWPORT, state->viewport);
 	glGetIntegerv(GL_SCISSOR_BOX, state->scissor_rect);
-	for (size_t i = 0; i < ARRAY_SIZE(state->draw_buffers); ++i) {
+	for (size_t i = 0; i < MD_COUNTOF(state->draw_buffers); ++i) {
 		glGetIntegerv(GL_DRAW_BUFFER0 + i, &state->draw_buffers[i]);
 	}
 }
@@ -67,7 +67,7 @@ static void reset_gl_state(const GLResetState& state) {
 		// on a strict driver, so restore it through glDrawBuffer instead.
 		glDrawBuffer((GLenum)state.draw_buffers[0]);
 	} else {
-		glDrawBuffers((int)ARRAY_SIZE(state.draw_buffers), (const GLenum*)state.draw_buffers);
+		glDrawBuffers((int)MD_COUNTOF(state.draw_buffers), (const GLenum*)state.draw_buffers);
 	}
 	glViewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]);
 	glScissor(state.scissor_rect[0], state.scissor_rect[1], state.scissor_rect[2], state.scissor_rect[3]);
@@ -107,13 +107,13 @@ static Transform transform(const postprocess_pipeline::Settings& settings) {
         case postprocess_pipeline::Tonemapper_Filmic:  t.curve = Curve_Hable;   break;
         default:                                       t.curve = Curve_None;    break;
     }
-    t.exposure = MAX(settings.tonemap.exposure, 1.0e-6f);
-    t.gamma = CLAMP(settings.tonemap.gamma, 0.1f, 10.0f);
+    t.exposure = MD_MAX(settings.tonemap.exposure, 1.0e-6f);
+    t.gamma = MD_CLAMP(settings.tonemap.gamma, 0.1f, 10.0f);
     return t;
 }
 
 static inline float srgb_decode(float x) {
-    x = CLAMP(x, 0.0f, 1.0f);
+    x = MD_CLAMP(x, 0.0f, 1.0f);
     return (x <= 0.04045f) ? (x / 12.92f) : powf((x + 0.055f) / 1.055f, 2.4f);
 }
 
@@ -121,7 +121,7 @@ static inline float srgb_decode(float x) {
 // adjustment) shows as c
 static vec3_t background(vec3_t c, const Transform& t) {
     const float k = t.gamma / 2.2f;
-    return {srgb_decode(powf(CLAMP(c.x, 0.0f, 1.0f), k)), srgb_decode(powf(CLAMP(c.y, 0.0f, 1.0f), k)), srgb_decode(powf(CLAMP(c.z, 0.0f, 1.0f), k))};
+    return {srgb_decode(powf(MD_CLAMP(c.x, 0.0f, 1.0f), k)), srgb_decode(powf(MD_CLAMP(c.y, 0.0f, 1.0f), k)), srgb_decode(powf(MD_CLAMP(c.z, 0.0f, 1.0f), k))};
 }
 
 }  // namespace display
@@ -352,7 +352,7 @@ static GLuint setup_program_from_source(str_t name, str_t f_shader_src, str_t de
 }
 
 static void ensure_texture_2d(GLuint* tex, GLint internal_format, int width, int height, GLenum format, GLenum type, GLenum min_filter = GL_LINEAR, GLenum mag_filter = GL_LINEAR) {
-    ASSERT(tex);
+    MD_ASSERT(tex);
     if (!*tex) {
         glGenTextures(1, tex);
     }
@@ -368,7 +368,7 @@ static void ensure_texture_2d(GLuint* tex, GLint internal_format, int width, int
 
 // Texture with a full mip chain (filled by glGenerateMipmap)
 static void ensure_texture_2d_mipmapped(GLuint* tex, GLint internal_format, int width, int height, GLenum format, GLenum type) {
-    ASSERT(tex);
+    MD_ASSERT(tex);
     if (!*tex) {
         glGenTextures(1, tex);
     }
@@ -378,7 +378,7 @@ static void ensure_texture_2d_mipmapped(GLuint* tex, GLint internal_format, int 
 
     glBindTexture(GL_TEXTURE_2D, *tex);
     for (int level = 0; level < levels; ++level) {
-        glTexImage2D(GL_TEXTURE_2D, level, internal_format, MAX(width >> level, 1), MAX(height >> level, 1), 0, format, type, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, level, internal_format, MD_MAX(width >> level, 1), MD_MAX(height >> level, 1), 0, format, type, nullptr);
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
@@ -390,7 +390,7 @@ static void ensure_texture_2d_mipmapped(GLuint* tex, GLint internal_format, int 
 }
 
 static void ensure_framebuffer(GLuint* fbo) {
-    ASSERT(fbo);
+    MD_ASSERT(fbo);
     if (!*fbo) {
         glGenFramebuffers(1, fbo);
     }
@@ -398,8 +398,8 @@ static void ensure_framebuffer(GLuint* fbo) {
 
 // Best-effort GPU copy path. Drivers may schedule this on a copy engine when available.
 static void copy_texture_2d(GLuint dst_tex, GLuint src_tex, int width, int height) {
-    ASSERT(glIsTexture(dst_tex));
-    ASSERT(glIsTexture(src_tex));
+    MD_ASSERT(glIsTexture(dst_tex));
+    MD_ASSERT(glIsTexture(src_tex));
 
     if (glCopyImageSubData) {
         glCopyImageSubData(src_tex, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -476,8 +476,8 @@ static void initialize_targets(Gl_Visibility* v, int width, int height) {
     // RG32F: the depth channel feeds the bilateral weights and the history test, which work at the scale of a pixel
     // footprint. Half floats quantise depth to about 1e-3 of its value, more than a footprint at 4K, and the camera
     // jitter then moves depths across quantisation steps from frame to frame.
-    const int half_w = MAX(width / 2, 1);
-    const int half_h = MAX(height / 2, 1);
+    const int half_w = MD_MAX(width / 2, 1);
+    const int half_h = MD_MAX(height / 2, 1);
     for (int i = 0; i < 2; ++i) {
         ensure_texture_2d(&v->tex[i],         GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
         ensure_texture_2d(&v->tex_history[i], GL_RG32F, half_w, half_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
@@ -665,8 +665,8 @@ static GLuint setup(str_t name, const unsigned char* src, size_t size, str_t def
 // Coarsest near band for a viewport height: band L holds CoCs up to 2^(L + 1.5) half-res px (see dof_near.frag)
 static int band_top(int height) {
     const float max_coc_half = MAX_COC_FRACTION * (float)height * 0.5f;
-    const int top = (int)ceilf(log2f(MAX(max_coc_half, 1.0f)) - 1.5f);
-    return CLAMP(top, 1, MAX_BANDS - 1);
+    const int top = (int)ceilf(log2f(MD_MAX(max_coc_half, 1.0f)) - 1.5f);
+    return MD_CLAMP(top, 1, MAX_BANDS - 1);
 }
 
 // A texture with exactly the given number of levels (w, h halved per level)
@@ -674,7 +674,7 @@ static void ensure_texture_2d_levels(GLuint* tex, GLint internal_format, int wid
     if (!*tex) glGenTextures(1, tex);
     glBindTexture(GL_TEXTURE_2D, *tex);
     for (int level = 0; level < levels; ++level) {
-        glTexImage2D(GL_TEXTURE_2D, level, internal_format, MAX(width >> level, 1), MAX(height >> level, 1), 0, format, type, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, level, internal_format, MD_MAX(width >> level, 1), MD_MAX(height >> level, 1), 0, format, type, nullptr);
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
@@ -703,10 +703,10 @@ void initialize_programs() {
 }
 
 void initialize_targets(int32_t width, int32_t height) {
-    const int half_w = MAX(width / 2, 1);
-    const int half_h = MAX(height / 2, 1);
-    const int tile_w = DIV_UP(half_w, TILE);
-    const int tile_h = DIV_UP(half_h, TILE);
+    const int half_w = MD_MAX(width / 2, 1);
+    const int half_h = MD_MAX(height / 2, 1);
+    const int tile_w = MD_DIV_UP(half_w, TILE);
+    const int tile_h = MD_DIV_UP(half_h, TILE);
     for (int i = 0; i < 2; ++i) {
         ensure_texture_2d(&gl.bokeh_dof.tex_half[i], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
     }
@@ -720,7 +720,7 @@ void initialize_targets(int32_t width, int32_t height) {
 
     // Far fill
     ensure_texture_2d_mipmapped(&gl.bokeh_dof.tex_far_pull, GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT);
-    ensure_texture_2d_mipmapped(&gl.bokeh_dof.tex_far_push, GL_RGBA16F, MAX(half_w / 2, 1), MAX(half_h / 2, 1), GL_RGBA, GL_FLOAT);
+    ensure_texture_2d_mipmapped(&gl.bokeh_dof.tex_far_push, GL_RGBA16F, MD_MAX(half_w / 2, 1), MD_MAX(half_h / 2, 1), GL_RGBA, GL_FLOAT);
     // The push reads one level of it at a time (base = max level), bilinear within that level
     glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_far_push);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -732,8 +732,8 @@ void initialize_targets(int32_t width, int32_t height) {
     // Near bands 1..top at pyramid levels 1..top, padded to a multiple of the coarsest texel so every level covers
     // the whole viewport
     const int top = band_top(height);
-    const int band_w = DIV_UP(half_w, 1 << top) << (top - 1);
-    const int band_h = DIV_UP(half_h, 1 << top) << (top - 1);
+    const int band_w = MD_DIV_UP(half_w, 1 << top) << (top - 1);
+    const int band_h = MD_DIV_UP(half_h, 1 << top) << (top - 1);
     ensure_texture_2d_levels(&gl.bokeh_dof.tex_band_src, GL_RGBA16F, band_w, band_h, top, GL_RGBA, GL_FLOAT, GL_NEAREST_MIPMAP_NEAREST);
     ensure_texture_2d_levels(&gl.bokeh_dof.tex_band_coc, GL_R16F,    band_w, band_h, top, GL_RED,  GL_FLOAT, GL_NEAREST_MIPMAP_NEAREST);
     ensure_texture_2d_levels(&gl.bokeh_dof.tex_band_acc, GL_RGBA16F, band_w, band_h, top, GL_RGBA, GL_FLOAT, GL_LINEAR_MIPMAP_NEAREST);
@@ -1055,7 +1055,7 @@ void initialize_programs() {
 
     }
     {
-        str_t defines = STR_INIT("#define TILE_SIZE " STRINGIFY_VAL(VEL_TILE_SIZE));
+        str_t defines = STR_INIT("#define TILE_SIZE " MD_STRINGIFY_VAL(VEL_TILE_SIZE));
         blit_tilemax.program = setup_program_from_source(STR_LIT("tilemax"), {(const char*)blit_tilemax_frag, blit_tilemax_frag_size}, defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_tilemax.program, "u_tex_linear_depth");
@@ -1083,8 +1083,8 @@ void initialize_targets(int32_t width, int32_t height) {
     }
 
     // Clamp to at least one texel: a zero-sized attachment makes the FBO incomplete.
-    gl.velocity.tex_width  = MAX(width  / VEL_TILE_SIZE, 1);
-    gl.velocity.tex_height = MAX(height / VEL_TILE_SIZE, 1);
+    gl.velocity.tex_width  = MD_MAX(width  / VEL_TILE_SIZE, 1);
+    gl.velocity.tex_height = MD_MAX(height / VEL_TILE_SIZE, 1);
 
     glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_tilemax);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, gl.velocity.tex_width, gl.velocity.tex_height, 0, GL_RG, GL_FLOAT, nullptr);
@@ -1281,7 +1281,7 @@ void initialize(int width, int height, int out_width = 0, int out_height = 0) {
     {
         // R32F: R16F cannot hold the far plane (1e5 > 65504) and its ~11 bit mantissa quantises depth to about a pixel
         // footprint at Retina resolutions. Mip levels 1..MAX_MIP are rotated-grid subsamples used by the SSAO.
-        int max_dim = MAX(width, height);
+        int max_dim = MD_MAX(width, height);
         int levels = 1;
         while ((max_dim >> levels) > 0 && levels < ssao::MAX_MIP + 1) ++levels;
         gl.linear_depth.levels = levels;
@@ -1330,7 +1330,7 @@ void initialize(int width, int height, int out_width = 0, int out_height = 0) {
     ensure_texture_2d(&gl.rt.tex_out[1], GL_RGB10_A2, out_width, out_height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
-    ensure_texture_2d(&gl.rt.tex_half_dof, GL_RGBA16F, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_FLOAT);
+    ensure_texture_2d(&gl.rt.tex_half_dof, GL_RGBA16F, MD_MAX(width / 2, 1), MD_MAX(height / 2, 1), GL_RGBA, GL_FLOAT);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_color[0], 0);
@@ -1442,8 +1442,8 @@ static VisibilityFrame visibility_frame(const GLResetState& reset_state, const V
     VisibilityFrame f;
     f.width  = reset_state.viewport[2];
     f.height = reset_state.viewport[3];
-    f.half_w = MAX(f.width  / 2, 1);
-    f.half_h = MAX(f.height / 2, 1);
+    f.half_w = MD_MAX(f.width  / 2, 1);
+    f.half_h = MD_MAX(f.height / 2, 1);
     const float (*proj_mat)[4] = view_param.matrix.curr.proj.elem;
     f.variant   = is_orthographic_proj_matrix(proj_mat) ? 0 : 1;
     f.proj_info = compute_proj_info(proj_mat);
@@ -1628,16 +1628,16 @@ static void filter_visibility(Gl_Visibility* v, const VisibilityFrame& f, GLuint
 // with velocity_tex (filter_visibility). mode selects the estimator; everything after it is shared.
 void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, float intensity, bool temporal,
                   postprocess_pipeline::SsaoMode mode) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(normal_tex));
-    ASSERT(!temporal || glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(normal_tex));
+    MD_ASSERT(!temporal || glIsTexture(velocity_tex));
 
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
 
     Gl_Visibility* v = &gl.ssao.ao;
     const VisibilityFrame f = visibility_frame(reset_state, view_param, z_far);
-    const float r_max = MAX(ssao::R_MAX_FRACTION * (float)f.height, 2.0f * ssao::R_MIN_PX);
+    const float r_max = MD_MAX(ssao::R_MAX_FRACTION * (float)f.height, 2.0f * ssao::R_MIN_PX);
     const bool history_valid = visibility_history_valid(*v, f, view_param, temporal, (int)mode);
     const int frame = temporal ? (int)(v->frame++ & 15) : 0;
 
@@ -1647,7 +1647,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
         begin_estimator(v, f, linear_depth_tex, normal_tex);
         glUseProgram(program);
         set_estimator_uniforms(program, f, ssao::R_MIN_PX, r_max, frame);
-        glUniform1f(glGetUniformLocation(program, "u_intensity"), MAX(intensity, 0.0f));
+        glUniform1f(glGetUniformLocation(program, "u_intensity"), MD_MAX(intensity, 0.0f));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
@@ -1663,16 +1663,16 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
 // is (filter_visibility), into gl.ssao.shadow.tex_visibility, which the compose pass applies to the key light.
 // light_dir: toward the light, in the view space (GL: z toward the viewer); light_radius: its angular radius (radians).
 void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, vec3_t light_dir, float light_radius, bool temporal) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(normal_tex));
-    ASSERT(!temporal || glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(normal_tex));
+    MD_ASSERT(!temporal || glIsTexture(velocity_tex));
 
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
 
     Gl_Visibility* v = &gl.ssao.shadow;
     const VisibilityFrame f = visibility_frame(reset_state, view_param, z_far);
-    const float r_max = MAX(ssao::SHADOW_R_MAX_FRACTION * (float)f.height, 2.0f * ssao::SHADOW_R_MIN_PX);
+    const float r_max = MD_MAX(ssao::SHADOW_R_MAX_FRACTION * (float)f.height, 2.0f * ssao::SHADOW_R_MIN_PX);
     const bool history_valid = visibility_history_valid(*v, f, view_param, temporal, 0);
     const int frame = temporal ? (int)(v->frame++ & 15) : 0;
 
@@ -1686,7 +1686,7 @@ void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity
         glUseProgram(program);
         set_estimator_uniforms(program, f, ssao::SHADOW_R_MIN_PX, r_max, frame);
         glUniform3f(glGetUniformLocation(program, "u_light_dir"), L.x, L.y, L.z);
-        glUniform1f(glGetUniformLocation(program, "u_light_radius"), MAX(light_radius, 1.0e-3f));
+        glUniform1f(glGetUniformLocation(program, "u_light_radius"), MD_MAX(light_radius, 1.0e-3f));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     POP_GPU_SECTION()
@@ -1722,9 +1722,9 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
 // ao_tex: the visibility of the surroundings, the ambient occlusion (0: none); shadow_tex: the visibility of the key
 // light, its shadows (0: none)
 static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint normal_tex, GLuint ao_tex, GLuint shadow_tex, const float proj_mat[4][4], bool orthographic, int width, int height, const postprocess_pipeline::Settings& settings, float time) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(color_tex));
-    ASSERT(glIsTexture(normal_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(normal_tex));
 
     const bool basic = settings.shading.mode == postprocess_pipeline::ShadingMode_Basic;
 
@@ -1736,20 +1736,20 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
     compose::ubo_data_t data = {
         .proj_info = compute_proj_info(proj_mat),
         .linear_colors = settings.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f,
-        .light_strength = MAX(settings.shading.light, 0.0f),
+        .light_strength = MD_MAX(settings.shading.light, 0.0f),
         .use_shadow = shadow_tex ? 1.0f : 0.0f,
         .time = time,
-        .sky_radiance = light.sky_radiance * MAX(settings.shading.environment, 0.0f),
+        .sky_radiance = light.sky_radiance * MD_MAX(settings.shading.environment, 0.0f),
         .roughness = roughness,
         .dir_radiance = light.light_irradiance,
         .F0 = F0,
         .light_dir = light.light_dir,
         .basic = basic ? 1.0f : 0.0f,
-        .ground_radiance = light.ground_radiance * MAX(settings.shading.environment, 0.0f),
-        .basic_ambient = CLAMP(settings.shading.ambient, 0.0f, 1.0f),
-        .basic_specular = MAX(settings.shading.specular, 0.0f),
+        .ground_radiance = light.ground_radiance * MD_MAX(settings.shading.environment, 0.0f),
+        .basic_ambient = MD_CLAMP(settings.shading.ambient, 0.0f, 1.0f),
+        .basic_specular = MD_MAX(settings.shading.specular, 0.0f),
         .use_ao = ao_tex ? 1.0f : 0.0f,
-        .inv_viewport = {1.0f / (float)MAX(width, 1), 1.0f / (float)MAX(height, 1)},
+        .inv_viewport = {1.0f / (float)MD_MAX(width, 1), 1.0f / (float)MD_MAX(height, 1)},
     };
 
     glBindBuffer(GL_UNIFORM_BUFFER, compose::compose.ubo);
@@ -1791,22 +1791,22 @@ static void compose_deferred(GLuint linear_depth_tex, GLuint color_tex, GLuint n
 // Depth of field from color_tex into the currently bound color target.
 // aperture is the CoC of an object at infinity as a fraction of the viewport height (0.01 = 1% of the view height).
 void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, float aperture) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(color_tex));
 
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
 
     const int width  = reset_state.viewport[2];
     const int height = reset_state.viewport[3];
-    const int half_w = MAX(width  / 2, 1);
-    const int half_h = MAX(height / 2, 1);
-    const int tile_w = DIV_UP(half_w, dof::TILE);
-    const int tile_h = DIV_UP(half_h, dof::TILE);
+    const int half_w = MD_MAX(width  / 2, 1);
+    const int half_h = MD_MAX(height / 2, 1);
+    const int tile_w = MD_DIV_UP(half_w, dof::TILE);
+    const int tile_h = MD_DIV_UP(half_h, dof::TILE);
 
-    const float aperture_px = MAX(aperture, 0.0f) * (float)height;   // full-res px
+    const float aperture_px = MD_MAX(aperture, 0.0f) * (float)height;   // full-res px
     const float max_coc_px  = dof::MAX_COC_FRACTION * (float)height;
-    const float focus       = MAX(focus_depth, 1.0e-3f);
+    const float focus       = MD_MAX(focus_depth, 1.0e-3f);
 
     glBindVertexArray(gl.vao);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.bokeh_dof.fbo);
@@ -2016,8 +2016,8 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glActiveTexture(GL_TEXTURE1);
         const int top = gl.bokeh_dof.pull_levels - 1;
         for (int level = top; level >= 0; --level) {
-            const int w = MAX(gl.bokeh_dof.src_width  >> level, 1);
-            const int h = MAX(gl.bokeh_dof.src_height >> level, 1);
+            const int w = MD_MAX(gl.bokeh_dof.src_width  >> level, 1);
+            const int h = MD_MAX(gl.bokeh_dof.src_height >> level, 1);
             if (level > 0) {
                 glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_far_push, level - 1);
             } else {
@@ -2038,7 +2038,7 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         }
         glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_far_push);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,  MAX(top - 1, 0));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,  MD_MAX(top - 1, 0));
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
     }
@@ -2076,8 +2076,8 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
 // color_tex: premultiplied radiance of the scene. coverage_tex (r): coverage of the geometry. iso_tex (a, optional): the
 // isosurfaces' coverage. background: display referred linear, put behind the scene after the curve.
 void apply_display_transform(GLuint color_tex, GLuint coverage_tex, GLuint iso_tex, const display::Transform& t, vec3_t background) {
-    ASSERT(glIsTexture(color_tex));
-    ASSERT(glIsTexture(coverage_tex));
+    MD_ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(coverage_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
@@ -2105,7 +2105,7 @@ void apply_display_transform(GLuint color_tex, GLuint coverage_tex, GLuint iso_t
 }
 
 void apply_aa_tonemapping(GLuint color_tex) {
-    ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(color_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
@@ -2120,7 +2120,7 @@ void apply_aa_tonemapping(GLuint color_tex) {
 }
 
 void apply_inverse_aa_tonemapping(GLuint color_tex) {
-    ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(color_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
@@ -2157,8 +2157,8 @@ void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
 }
 
 void blit_tilemax(GLuint velocity_tex, GLuint linear_depth_tex) {
-    ASSERT(glIsTexture(velocity_tex));
-    ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
@@ -2176,8 +2176,8 @@ void blit_tilemax(GLuint velocity_tex, GLuint linear_depth_tex) {
 }
 
 void blit_neighbormax(GLuint velocity_tex, GLuint linear_depth_tex, int tex_width, int tex_height) {
-    ASSERT(glIsTexture(velocity_tex));
-    ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
     const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
@@ -2197,7 +2197,7 @@ void blit_neighbormax(GLuint velocity_tex, GLuint linear_depth_tex, int tex_widt
 }
 
 void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
-    ASSERT(glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(velocity_tex));
     const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
@@ -2219,10 +2219,10 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_hi
                        const vec2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time,
                        vec2_t pixel_size, int width, int height, int out_width, int out_height) {
     const bool upscale = width != out_width || height != out_height;
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(color_tex));
-    ASSERT(glIsTexture(velocity_tex));
-    ASSERT(glIsTexture(velocity_neighbormax_tex));
+    MD_ASSERT(glIsTexture(linear_depth_tex));
+    MD_ASSERT(glIsTexture(color_tex));
+    MD_ASSERT(glIsTexture(velocity_tex));
+    MD_ASSERT(glIsTexture(velocity_neighbormax_tex));
 
     const vec2_t res = {(float)gl.tex_width, (float)gl.tex_height};
     const vec2_t inv_res = 1.0f / res;
@@ -2286,7 +2286,7 @@ static void upscale_texture(GLuint src, int src_width, int src_height) {
 }
 
 void blit_texture(GLuint tex) {
-    ASSERT(glIsTexture(tex));
+    MD_ASSERT(glIsTexture(tex));
     glUseProgram(blit::program_tex);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -2298,7 +2298,7 @@ void blit_texture(GLuint tex) {
 }
 
 static void blit_texture_dither(GLuint tex, float time) {
-    ASSERT(glIsTexture(tex));
+    MD_ASSERT(glIsTexture(tex));
     glUseProgram(blit::program_tex_dither);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -2312,9 +2312,9 @@ static void blit_texture_dither(GLuint tex, float time) {
 
 // The final copy, with the marks over it (Settings::marks)
 static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const postprocess_pipeline::Settings& settings, float time) {
-    ASSERT(glIsTexture(tex));
-    ASSERT(glIsTexture(marks));
-    ASSERT(glIsTexture(marks_group));
+    MD_ASSERT(glIsTexture(tex));
+    MD_ASSERT(glIsTexture(marks));
+    MD_ASSERT(glIsTexture(marks_group));
     const GLuint p = blit::program_marks;
     glUseProgram(p);
     glActiveTexture(GL_TEXTURE0);
@@ -2332,7 +2332,7 @@ static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const po
     glUniform4fv(glGetUniformLocation(p, "u_hidden"),  2, settings.marks.hidden[0].elem);
     glUniform4fv(glGetUniformLocation(p, "u_outline"), 2, settings.marks.outline[0].elem);
     glUniform1f(glGetUniformLocation(p, "u_highlight"), settings.marks.highlight);
-    glUniform1i(glGetUniformLocation(p, "u_outline_step"), MAX(settings.marks.outline_step, 1));
+    glUniform1i(glGetUniformLocation(p, "u_outline_step"), MD_MAX(settings.marks.outline_step, 1));
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -2342,7 +2342,7 @@ static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const po
 
 // The coverage of the geometry in the G-buffer colour gbuffer_color, into r
 static void blit_coverage(GLuint gbuffer_color) {
-    ASSERT(glIsTexture(gbuffer_color));
+    MD_ASSERT(glIsTexture(gbuffer_color));
     glUseProgram(blit::program_coverage);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gbuffer_color);
@@ -2354,8 +2354,8 @@ static void blit_coverage(GLuint gbuffer_color) {
 }
 
 void blur_texture_gaussian(GLuint tex, int num_passes) {
-    ASSERT(glIsTexture(tex));
-    ASSERT(num_passes > 0);
+    MD_ASSERT(glIsTexture(tex));
+    MD_ASSERT(num_passes > 0);
 
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
@@ -2397,8 +2397,8 @@ void blur_texture_gaussian(GLuint tex, int num_passes) {
 }
 
 void blur_texture_box(GLuint tex, int num_passes) {
-    ASSERT(glIsTexture(tex));
-    ASSERT(num_passes > 0);
+    MD_ASSERT(glIsTexture(tex));
+    MD_ASSERT(num_passes > 0);
 
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
@@ -2469,11 +2469,11 @@ static void compute_fxaa(GLuint tex_rgbl, int width, int height) {
 }
 
 void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline::Settings& settings, const ViewParam& view_param) {
-    ASSERT(glIsTexture(in.depth));
-    ASSERT(glIsTexture(in.color));
-    ASSERT(glIsTexture(in.normal));
+    MD_ASSERT(glIsTexture(in.depth));
+    MD_ASSERT(glIsTexture(in.color));
+    MD_ASSERT(glIsTexture(in.normal));
     if (settings.taa.enabled) {
-        ASSERT(glIsTexture(in.velocity));
+        MD_ASSERT(glIsTexture(in.velocity));
     }
 
     const bool do_compose = true;
@@ -2506,7 +2506,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     // The targets are shared by the views (the main one and the component windows'), of different sizes: here they only
     // grow, and each view uses their corner. The main view sets them to its size when it changes (initialize()).
     if (width > (int)gl.tex_width || height > (int)gl.tex_height || out_width > (int)gl.out_width || out_height > (int)gl.out_height) {
-        initialize(MAX(width, (int)gl.tex_width), MAX(height, (int)gl.tex_height), MAX(out_width, (int)gl.out_width), MAX(out_height, (int)gl.out_height));
+        initialize(MD_MAX(width, (int)gl.tex_width), MD_MAX(height, (int)gl.tex_height), MD_MAX(out_width, (int)gl.out_width), MD_MAX(out_height, (int)gl.out_height));
     }
 
     // Postprocessing targets have no depth attachment – disable depth test so no
@@ -2540,8 +2540,8 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
             for (int level = 1; level < gl.linear_depth.levels; ++level) {
-                const int w = MAX((int)gl.tex_width  >> level, 1);
-                const int h = MAX((int)gl.tex_height >> level, 1);
+                const int w = MD_MAX((int)gl.tex_width  >> level, 1);
+                const int h = MD_MAX((int)gl.tex_height >> level, 1);
                 glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, level);
                 glViewport(0, 0, w, h);
                 glScissor(0, 0, w, h);
@@ -2606,7 +2606,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         PUSH_GPU_SECTION("Shadows")
         const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(settings.shading.mode);
         const bool temporal = settings.shadows.temporal && in.velocity != 0;
-        compute_shadows(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, light.light_dir, (float)DEG_TO_RAD(settings.shadows.softness), temporal);
+        compute_shadows(gl.linear_depth.texture, in.normal, in.velocity, view_param, far_dist, light.light_dir, (float)MD_DEG_TO_RAD(settings.shadows.softness), temporal);
         POP_GPU_SECTION()
     }
 
@@ -2792,7 +2792,7 @@ namespace postprocess_pipeline {
 void initialize(int width, int height, int out_width, int out_height) {
     // glTexStorage2D rejects zero dimensions outright (GL_INVALID_VALUE), so guard the
     // 0x0 startup/iconified case here as well. See gbuffer_init().
-    postprocessing::initialize(MAX(width, 1), MAX(height, 1), MAX(out_width, 0), MAX(out_height, 0));
+    postprocessing::initialize(MD_MAX(width, 1), MD_MAX(height, 1), MD_MAX(out_width, 0), MD_MAX(out_height, 0));
 }
 
 void shutdown() {
@@ -2814,7 +2814,7 @@ Lighting lighting(ShadingMode mode) {
     // close to their full colour. The radiances are not used.
     Lighting l = {
         .light_dir        = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f)),
-        .light_irradiance = vec3_set1(0.87f * (float)PI),
+        .light_irradiance = vec3_set1(0.87f * (float)MD_PI),
         .sky_radiance     = vec3_set1(0.59f),
         .ground_radiance  = vec3_set1(0.49f),
     };
@@ -2825,18 +2825,18 @@ Lighting lighting(ShadingMode mode) {
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {
-    ASSERT(glIsTexture(in.depth));
-    ASSERT(glIsTexture(in.color));
-    ASSERT(glIsTexture(in.normal));
+    MD_ASSERT(glIsTexture(in.depth));
+    MD_ASSERT(glIsTexture(in.color));
+    MD_ASSERT(glIsTexture(in.normal));
     if (settings.taa.enabled) {
-        ASSERT(glIsTexture(in.velocity));
+        MD_ASSERT(glIsTexture(in.velocity));
     }
 
     postprocessing::execute(in, settings, view);
 }
 
 void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings) {
-    ASSERT(glIsTexture(image));
+    MD_ASSERT(glIsTexture(image));
     // For the dither, as execute() seeds it
     static float time = 0.f;
     time = time + 0.01f;

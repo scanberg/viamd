@@ -42,10 +42,10 @@ static Activity*  g_activity_head = nullptr;
 static Activity*  g_activity_tail = nullptr;
 
 void activity_begin(Activity* a, str_t label) {
-    ASSERT(a);
+    MD_ASSERT(a);
     str_copy_to_char_buf(a->label, sizeof(a->label), label);
     std::lock_guard<std::mutex> lock(g_activity_mutex);
-    ASSERT(!a->listed);
+    MD_ASSERT(!a->listed);
     a->prev = g_activity_tail;
     a->next = nullptr;
     if (g_activity_tail) g_activity_tail->next = a;
@@ -55,7 +55,7 @@ void activity_begin(Activity* a, str_t label) {
 }
 
 void activity_end(Activity* a) {
-    ASSERT(a);
+    MD_ASSERT(a);
     std::lock_guard<std::mutex> lock(g_activity_mutex);
     if (!a->listed) return;
     if (a->prev) a->prev->next = a->next;
@@ -72,7 +72,7 @@ size_t activity_list(ActivityInfo* out, size_t cap) {
     for (const Activity* a = g_activity_head; a && n < cap; a = a->next) {
         ActivityInfo& info = out[n++];
         info.id = (uint64_t)(uintptr_t)a;
-        MEMCPY(info.label, a->label, sizeof(info.label));
+        MD_MEMCPY(info.label, a->label, sizeof(info.label));
         info.progress = a->progress.load(std::memory_order_relaxed);
         info.cancellable = a->cancellable;
     }
@@ -228,23 +228,23 @@ void Job::release() {
 }
 
 void Job::start(str_t label, Body body, OnMain on_main) {
-    ASSERT(body);
+    MD_ASSERT(body);
     release();
     m_state = job_create(label, std::move(body), std::move(on_main), false);
     job_launch(m_state);
 }
 
 void Job::start_for(str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main) {
-    ASSERT(body);
+    MD_ASSERT(body);
     auto run = [count, grain, body = std::move(body)]() {
         JobState* s = tl_ctx.job;
-        ASSERT(s);
+        MD_ASSERT(s);
         s->activity.progress.store(0.0f, std::memory_order_relaxed);
         std::atomic<uint32_t> done{0};
         parallel_for(count, grain, [&](uint32_t beg, uint32_t end) {
             body(beg, end);
             const uint32_t d = done.fetch_add(end - beg, std::memory_order_relaxed) + (end - beg);
-            s->activity.progress.store((float)d / (float)MAX(count, 1u), std::memory_order_relaxed);
+            s->activity.progress.store((float)d / (float)MD_MAX(count, 1u), std::memory_order_relaxed);
         });
     };
     start(label, std::move(run), std::move(on_main));
@@ -277,7 +277,7 @@ uint64_t Job::activity_id() const {
 }
 
 void detach(str_t label, std::function<void()> body) {
-    ASSERT(body);
+    MD_ASSERT(body);
     reap_detached();
     JobState* s = job_create(label, std::move(body), {}, true);
     {
@@ -347,10 +347,10 @@ struct ParallelSet : enki::ITaskSet {
 };
 
 bool parallel_for(uint32_t count, uint32_t grain, RangeFn fn, void* user) {
-    ASSERT(fn);
+    MD_ASSERT(fn);
     const Context ctx = tl_ctx;
     if (count == 0) return !(ctx.job && job_cancelled(ctx.job));
-    grain = MAX(grain, 1u);
+    grain = MD_MAX(grain, 1u);
 
     const bool serial = !g_initialized || count <= grain || g_ts.GetNumTaskThreads() < 2 || g_ts.GetThreadNum() == enki::NO_THREAD_NUM;
     if (serial) {
@@ -359,10 +359,10 @@ bool parallel_for(uint32_t count, uint32_t grain, RangeFn fn, void* user) {
             return true;
         }
         // In pieces still, for a cancel to be seen between them
-        const uint32_t step = MAX(grain, count / 64);
+        const uint32_t step = MD_MAX(grain, count / 64);
         for (uint32_t beg = 0; beg < count; beg += step) {
             if (job_cancelled(ctx.job)) return false;
-            fn(user, beg, MIN(beg + step, count));
+            fn(user, beg, MD_MIN(beg + step, count));
         }
         return true;
     }
@@ -386,7 +386,7 @@ static thread_local bool tl_in_executor_piece = false;
 static bool executor_parallel_for(void* user, uint32_t count, uint32_t grain, md_range_fn body, void* arg) {
     (void)user;
     return parallel_for(count, grain, [body, arg](uint32_t beg, uint32_t end) {
-        ASSERT(!tl_in_executor_piece && "a piece of an executor loop issued or waited for parallel work (md_executor.h)");
+        MD_ASSERT(!tl_in_executor_piece && "a piece of an executor loop issued or waited for parallel work (md_executor.h)");
         tl_in_executor_piece = true;
         body(arg, beg, end, thread_index());
         tl_in_executor_piece = false;
@@ -414,7 +414,7 @@ void set_progress(float fraction) {
 // ---------------------------------------------------------------------------------------------------------------------
 
 void initialize(uint32_t num_threads) {
-    ASSERT(!g_initialized);
+    MD_ASSERT(!g_initialized);
     g_ts.Initialize(num_threads);
     g_initialized = true;
     g_executor = {executor_parallel_for, nullptr, g_ts.GetNumTaskThreads()};

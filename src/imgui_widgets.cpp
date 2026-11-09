@@ -707,7 +707,7 @@ bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientatio
             col.z /= max_rgb;
         }
 
-        dl.AddConvexPolyFilled(p[i], (int)ARRAY_SIZE(p[i]), ImColor(col));
+        dl.AddConvexPolyFilled(p[i], (int)MD_COUNTOF(p[i]), ImColor(col));
     }
 
     if (hovered_plane_idx != -1) {

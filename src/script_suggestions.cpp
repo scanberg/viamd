@@ -183,7 +183,7 @@ static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocat
     c->sel  = sel;
     const size_t num_chains = md_system_chain_count(&sys);
     c->chain_seq = (uint8_t*)md_alloc(temp, num_chains + 1);
-    MEMSET(c->chain_seq, 0, num_chains + 1);
+    MD_MEMSET(c->chain_seq, 0, num_chains + 1);
 }
 
 // The chain of a residue (md_chain_data_t), -1 for none
@@ -446,7 +446,7 @@ static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)*
     const size_t num_chains = md_system_chain_count(c.sys);
     // [chain] 0 not seen, 1 whole, 2 not whole
     uint8_t* state = (uint8_t*)md_alloc(c.temp, num_chains + 1);
-    MEMSET(state, 0, num_chains + 1);
+    MD_MEMSET(state, 0, num_chains + 1);
     for (size_t k = 0; k < md_array_size(b.res); ++k) {
         const int32_t chain = res_chain(c, b.res[k]);
         if (chain < 0 || state[chain]) continue;
@@ -575,7 +575,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     // Written whole already
     const size_t num_chains = md_system_chain_count(c->sys);
     uint8_t* chain_written = (uint8_t*)md_alloc(temp, num_chains + 1);
-    MEMSET(chain_written, 0, num_chains + 1);
+    MD_MEMSET(chain_written, 0, num_chains + 1);
     for (size_t i = 0; i < md_array_size(whole_chains); ++i) chain_written[whole_chains[i]] = 1;
 
     // The residues of a chain by their sequence ids within it, gathered over all of its parts (they need not be
@@ -836,8 +836,8 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
 
     s->res_touched   = (uint8_t*)md_alloc(temp, num_residues + 1);
     s->res_in_scope = (uint8_t*)md_alloc(temp, num_residues + 1);
-    MEMSET(s->res_touched, 0, num_residues + 1);
-    MEMSET(s->res_in_scope, 0, num_residues + 1);
+    MD_MEMSET(s->res_touched, 0, num_residues + 1);
+    MD_MEMSET(s->res_in_scope, 0, num_residues + 1);
     for (size_t i = 0; i < md_array_size(b.res); ++i) s->res_touched[b.res[i]] = 1;
 
     // The chains which hold the selection, all of their residues, and the molecules in no chain which hold it
@@ -847,7 +847,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     {
         const size_t num_chains = md_system_chain_count(&sys);
         uint8_t* chain_seen = (uint8_t*)md_alloc(temp, num_chains + 1);
-        MEMSET(chain_seen, 0, num_chains + 1);
+        MD_MEMSET(chain_seen, 0, num_chains + 1);
         for (size_t k = 0; k < md_array_size(b.res); ++k) {
             const int32_t chain = res_chain(*c, b.res[k]);
             if (chain < 0 || chain_seen[chain]) continue;
@@ -980,7 +980,7 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
 
     // The types of the atoms, and their names in the order the atoms have them (N, CA, C rather than C, CA, N)
     uint8_t* seen = (uint8_t*)md_alloc(temp, num_types);
-    MEMSET(seen, 0, num_types);
+    MD_MEMSET(seen, 0, num_types);
     md_array(str_t) names = 0;
     bool names_ok = true;
     uint32_t flags_all = ~0u;
@@ -1007,7 +1007,7 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
         {MD_ATOM_FLAG_NUCLEOSIDE, "nucleoside()"},
     };
     if (sys.atom.flags) {
-        for (size_t i = 0; i < ARRAY_SIZE(roles); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(roles); ++i) {
             if (flags_all & roles[i].flag) {
                 Pred p = {};
                 p.text = str_from_cstr(roles[i].text);
@@ -1114,7 +1114,7 @@ static md_array(str_t) describe(const Breakdown& b, Ctx* c) {
             break;
         }
     }
-    for (size_t i = 0; i < ARRAY_SIZE(best); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(best); ++i) {
         if (!str_empty(best[i])) md_array_push(out, best[i], temp);
     }
     return out;
@@ -1216,7 +1216,7 @@ md_array(ScriptSuggestion) script_suggest_selection(script::Language lang, str_t
     md_array(ScriptSuggestion) out = 0;
     if (md_bitset_empty(sel) || sys.atom.count == 0 || str_empty(ident)) return out;
 
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
 
     Ctx c = {};
     ctx_init(&c, sys, sel, temp);
@@ -1346,7 +1346,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, str
     static const char* procs[] = {nullptr, nullptr, "distance", "angle", "dihedral"};
     const char* proc = procs[count];
 
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     Ctx c = {};
     ctx_init(&c, sys, md_bitset_empty_set(), temp);
 
@@ -1413,7 +1413,7 @@ md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, str
         if (resid_context(&sb, &c, res)) contexts[1] = take(&sb, temp);
         md_str_writer_reset(&sb);
 
-        for (size_t k = 0; k < ARRAY_SIZE(contexts); ++k) {
+        for (size_t k = 0; k < MD_COUNTOF(contexts); ++k) {
             if (str_empty(contexts[k]) || !args_pick_atoms(pick, atoms, count, contexts[k], sys, temp)) continue;
             write_call(args);
             md_str_writer_fmt(&sb, " in " STR_FMT, STR_ARG(contexts[k]));

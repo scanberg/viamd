@@ -17,7 +17,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -296,7 +296,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     md_array(Found) fits = 0;
     md_bitmask_t picked = md_bitmask_create(0, (uint32_t)sys.atom.count, c.temp);
     for (uint32_t mask = 1; mask < (1u << Key_Count); ++mask) {
-        bool usable = popcnt32(mask) <= 3;
+        bool usable = md_popcnt32(mask) <= 3;
         for (int k = 0; k < Key_Count && usable; ++k) if (mask & (1u << k)) usable = kv[k].usable;
         if (!usable) continue;
         for (size_t ci = 0; ci < md_array_size(contexts); ++ci) {
@@ -474,7 +474,7 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
     md_array(ScriptSuggestion) out = 0;
     if (md_bitset_empty(sel) || sys.atom.count == 0 || str_empty(ident)) return out;
 
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     Ctx c = {&sys, temp};
 
     md_array(str_t) cand = 0;
@@ -686,7 +686,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     static const char* procs[] = {nullptr, nullptr, "distance", "angle", "dihedral"};
     const char* proc = procs[count];
 
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(256));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(256));
     Ctx c = {&sys, temp};
     md_array(Line) lines = 0;
     md_str_writer_t sb = md_str_writer_create(temp);

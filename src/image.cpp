@@ -14,7 +14,7 @@
 #endif
 
 static void write_func(void* context, void* data, int size) {
-    ASSERT(context);
+    MD_ASSERT(context);
     md_file_t* file = (md_file_t*)context;
     md_file_write(*file, data, size);
 }

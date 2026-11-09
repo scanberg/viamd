@@ -59,8 +59,8 @@ static Entry* find_entry(str_t key) {
 }
 
 static void add_entry(str_t key, EntryType type, void* ptr, size_t cap) {
-    ASSERT(ptr);
-    ASSERT(!s_initialized && "app_settings::bind must be called before initialize");
+    MD_ASSERT(ptr);
+    MD_ASSERT(!s_initialized && "app_settings::bind must be called before initialize");
 
     if (key.len == 0 || key.len > MAX_KEY_LEN) {
         MD_LOG_ERROR("app_settings: invalid key '" STR_FMT "', not bound", STR_ARG(key));
@@ -86,17 +86,17 @@ void bind(str_t key, bool*  value) { add_entry(key, EntryType_Bool,  value, 0); 
 void bind(str_t key, int*   value) { add_entry(key, EntryType_Int,   value, 0); }
 void bind(str_t key, float* value) { add_entry(key, EntryType_Float, value, 0); }
 void bind(str_t key, float* values, size_t count) {
-    ASSERT(count > 0 && count <= 16);
+    MD_ASSERT(count > 0 && count <= 16);
     add_entry(key, EntryType_FloatVec, values, count);
 }
 void bind(str_t key, char*  buf, size_t cap) {
-    ASSERT(cap > 0);
+    MD_ASSERT(cap > 0);
     add_entry(key, EntryType_Str, buf, cap);
 }
 
 void on_apply(void (*fn)(void* user_data), void* user_data) {
-    ASSERT(fn);
-    ASSERT(!s_initialized && "app_settings::on_apply must be called before initialize");
+    MD_ASSERT(fn);
+    MD_ASSERT(!s_initialized && "app_settings::on_apply must be called before initialize");
     if (s_hook_count == MAX_HOOKS) {
         MD_LOG_ERROR("app_settings: out of apply hook slots, hook will not run");
         return;
@@ -147,7 +147,7 @@ static void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* l
         ok = true;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 
     if (!ok) {
@@ -189,7 +189,7 @@ static void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
         }
         case EntryType_Str:   out_buf->appendf("%s=%s\n", entry.key, (const char*)entry.ptr);          break;
         default:
-            ASSERT(false);
+            MD_ASSERT(false);
         }
     }
 
@@ -197,10 +197,10 @@ static void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 }
 
 void initialize() {
-    ASSERT(ImGui::GetCurrentContext() && "app_settings::initialize requires an ImGui context");
-    ASSERT(!s_initialized && "app_settings::initialize must be called once");
+    MD_ASSERT(ImGui::GetCurrentContext() && "app_settings::initialize requires an ImGui context");
+    MD_ASSERT(!s_initialized && "app_settings::initialize must be called once");
     // Past the first frame the .ini has already been read and the bindings would never be filled in.
-    ASSERT(!ImGui::GetCurrentContext()->SettingsLoaded && "app_settings::initialize must run before the first frame");
+    MD_ASSERT(!ImGui::GetCurrentContext()->SettingsLoaded && "app_settings::initialize must run before the first frame");
 
     ImGuiSettingsHandler handler;
     handler.TypeName   = "VIAMD";

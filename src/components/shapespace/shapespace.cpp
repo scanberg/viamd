@@ -243,7 +243,7 @@ struct Layer {
 // isotropic): what smooths a single gaussian best, and much of anything else well enough. From at most some 100k of them.
 static float scott_bandwidth(const Evaluation& e, uint32_t beg, uint32_t end) {
     const uint64_t total = (uint64_t)e.num_structures * (end - beg);
-    const uint32_t step = (uint32_t)MAX((uint64_t)1, total / 100000);
+    const uint32_t step = (uint32_t)MD_MAX((uint64_t)1, total / 100000);
     double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0;
     for (size_t s = 0; s < e.num_structures; ++s) {
         const vec2_t* c = e.coords + s * e.num_frames;
@@ -257,10 +257,10 @@ static float scott_bandwidth(const Evaluation& e, uint32_t beg, uint32_t end) {
         }
     }
     if (n < 2) return 0.02f;
-    const double var = MAX(0.0, (sxx - sx * sx / n) + (syy - sy * sy / n)) / (2.0 * (n - 1));
+    const double var = MD_MAX(0.0, (sxx - sx * sx / n) + (syy - sy * sy / n)) / (2.0 * (n - 1));
     // n: of all the samples, not of those the spread was taken from
     const double h = sqrt(var) * pow((double)total, -1.0 / 6.0);
-    return CLAMP((float)h, 0.005f, MAX_BANDWIDTH);
+    return MD_CLAMP((float)h, 0.005f, MAX_BANDWIDTH);
 }
 
 struct Shapespace : viamd::EventHandler {
@@ -450,7 +450,7 @@ struct Shapespace : viamd::EventHandler {
 
     ImVec4 next_layer_color() const {
         int best = 0, best_uses = INT32_MAX;
-        for (int p = 0; p < (int)ARRAY_SIZE(layer_palette); ++p) {
+        for (int p = 0; p < (int)MD_COUNTOF(layer_palette); ++p) {
             int uses = 0;
             for (int i = 0; i < num_layers; ++i) {
                 const ImVec4 c = layers[i].color;
@@ -574,7 +574,7 @@ struct Shapespace : viamd::EventHandler {
     static void move_into(Layer& dst, Layer& src) {
         EvaluationRef e = std::move(src.eval);
         dst.eval.reset();
-        MEMCPY((void*)&dst, (const void*)&src, sizeof(Layer));
+        MD_MEMCPY((void*)&dst, (const void*)&src, sizeof(Layer));
         new (&dst.eval) EvaluationRef(std::move(e));
         new (&src.eval) EvaluationRef();
     }
@@ -587,7 +587,7 @@ struct Shapespace : viamd::EventHandler {
         num_layers -= 1;
         layers[num_layers].eval.reset();
         new (&layers[num_layers]) Layer();
-        if (selected_layer == id) selected_layer = num_layers > 0 ? layers[MIN(idx, num_layers - 1)].id : 0;
+        if (selected_layer == id) selected_layer = num_layers > 0 ? layers[MD_MIN(idx, num_layers - 1)].id : 0;
         tree_changed();
         density_map_canvas_invalidate(&canvas);
     }
@@ -599,8 +599,8 @@ struct Shapespace : viamd::EventHandler {
         Layer* l = add_layer(layers[idx].frames, layers[idx].style, -1, parent);
         if (!l) return nullptr;
         const Layer& src = layers[idx];
-        STATIC_ASSERT(sizeof(l->name) == sizeof(src.name), "");
-        MEMCPY(l->name, src.name, sizeof(l->name));
+        MD_STATIC_ASSERT(sizeof(l->name) == sizeof(src.name), "");
+        MD_MEMCPY(l->name, src.name, sizeof(l->name));
         l->visible = src.visible;
         l->filter = src.filter;
         l->use_mass = src.use_mass;
@@ -613,7 +613,7 @@ struct Shapespace : viamd::EventHandler {
         l->lines = src.lines;
         l->line_width = src.line_width;
         l->num_levels = src.num_levels;
-        MEMCPY(l->levels, src.levels, sizeof(l->levels));
+        MD_MEMCPY(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
         l->log_scale = src.log_scale;
@@ -669,7 +669,7 @@ struct Shapespace : viamd::EventHandler {
         if (!l || l->node.parent != 0) return;
         LayerGroup* g = add_group(l->node.order - 1);
         if (!g) return;
-        MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
+        MD_MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
         l->filter.text[0] = '\0';
         l->structs_key = 0;
         l->node.parent = g->node.id;
@@ -719,13 +719,13 @@ struct Shapespace : viamd::EventHandler {
         if (action == LayerGroupAction_Duplicate) {
             char name[sizeof(g->name)];
             char filter[sizeof(g->filter.text)];
-            MEMCPY(name, g->name, sizeof(name));
-            MEMCPY(filter, g->filter.text, sizeof(filter));
+            MD_MEMCPY(name, g->name, sizeof(name));
+            MD_MEMCPY(filter, g->filter.text, sizeof(filter));
             const bool visible = g->visible, open = g->open, follow = g->follow_selection;
             LayerGroup* copy = add_group(g->node.order + 1);
             if (!copy) return;
-            MEMCPY(copy->name, name, sizeof(name));
-            MEMCPY(copy->filter.text, filter, sizeof(filter));
+            MD_MEMCPY(copy->name, name, sizeof(name));
+            MD_MEMCPY(copy->filter.text, filter, sizeof(filter));
             copy->visible = visible;
             copy->open = open;
             copy->follow_selection = follow;
@@ -737,7 +737,7 @@ struct Shapespace : viamd::EventHandler {
                 RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
                 const size_t nn = tree_nodes(nodes);
                 int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-                const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, nn, id);
+                const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, nn, id);
                 for (size_t k = 0; k < nk; ++k) {
                     if (kids[k] < num_layers) ids[n++] = layers[kids[k]].id;
                 }
@@ -816,10 +816,10 @@ struct Shapespace : viamd::EventHandler {
 
     // The density of the shapes of the layer's evaluation over frames [beg, end)
     void launch_job(Layer& l, uint64_t hash, uint32_t beg, uint32_t end, float sigma) {
-        ASSERT(!l.job && l.eval && l.eval->complete());
+        MD_ASSERT(!l.job && l.eval && l.eval->complete());
         EvaluationRef eval = l.eval;
         const uint64_t num_samples = (uint64_t)eval->num_structures * (end - beg);
-        const uint32_t num_chunks = (uint32_t)MIN((uint64_t)MIN(8u, end - beg), (num_samples >> 20) + 1);
+        const uint32_t num_chunks = (uint32_t)MD_MIN((uint64_t)MD_MIN(8u, end - beg), (num_samples >> 20) + 1);
         auto source = [eval, beg, end](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
             const uint32_t n = end - beg;
             const uint32_t f0 = beg + (uint32_t)((uint64_t)n * chunk / chunks);
@@ -922,7 +922,7 @@ struct Shapespace : viamd::EventHandler {
         EvaluationRef e = std::make_shared<Evaluation>();
         e->key = key;
         e->use_mass = l.use_mass;
-        e->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        e->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         for (size_t i = 0; i < md_array_size(l.structures); ++i) {
             md_array_push(e->structures, md_bitset_copy(l.structures[i], e->arena), e->arena);
         }
@@ -937,22 +937,22 @@ struct Shapespace : viamd::EventHandler {
         e->task.start_for(STR_LIT("Shapespace"), (uint32_t)num_frames, 1, [ev, state](uint32_t beg, uint32_t end) {
             const md_system_t& sys = state->mold.sys;
             md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
-            vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * ALIGN_TO(sys.atom.count, 8));
+            MD_DEFER { md_temp_end(temp); };
+            vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MD_ALIGN_TO(sys.atom.count, 8));
             float* masses = nullptr;
             if (ev->use_mass) {
-                masses = (float*)md_temp_alloc(temp, sizeof(float) * ALIGN_TO(sys.atom.count, 8));
+                masses = (float*)md_temp_alloc(temp, sizeof(float) * MD_ALIGN_TO(sys.atom.count, 8));
                 md_atom_extract_masses(masses, 0, sys.atom.count, &sys.atom);
             }
             // One context for the range, so the run's files stay open across its frames
             const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(state->mold.run), paths, MD_COUNTOF(paths), md_get_heap_allocator());
             if (!ex) {
                 // Nothing to read them from: done, without shapes
                 ev->frames_done.fetch_add(end - beg);
                 return;
             }
-            defer { md_system_extract_end(ex); };
+            MD_DEFER { md_system_extract_end(ex); };
             for (uint32_t f = beg; f < end; ++f) {
                 if (task_system::cancelled()) return;
                 md_system_state_t frame = {};
@@ -994,7 +994,7 @@ struct Shapespace : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         float* masses = nullptr;
         if (l.use_mass) {
-            masses = (float*)md_temp_alloc(temp, sizeof(float) * ALIGN_TO(app->mold.sys.atom.count, 8));
+            masses = (float*)md_temp_alloc(temp, sizeof(float) * MD_ALIGN_TO(app->mold.sys.atom.count, 8));
             md_atom_extract_masses(masses, 0, app->mold.sys.atom.count, &app->mold.sys.atom);
         }
         for (size_t s = 0; s < n; ++s) {
@@ -1011,7 +1011,7 @@ struct Shapespace : viamd::EventHandler {
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1115,7 +1115,7 @@ struct Shapespace : viamd::EventHandler {
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
         const size_t n = tree_nodes(nodes);
         int top[MAX_LAYERS + LAYER_MAX_GROUPS];
-        const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+        const size_t nt = representation_tree_children(top, MD_COUNTOF(top), nodes, n, 0);
         for (size_t k = 0; k < nt; ++k) {
             if (top[k] < num_layers) {
                 serialize_layer(state, layers[top[k]]);
@@ -1124,7 +1124,7 @@ struct Shapespace : viamd::EventHandler {
             const LayerGroup& g = groups[top[k] - num_layers];
             layer_group_serialize(state, STR_LIT("ShapeSpaceGroup"), g);
             int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-            const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, n, g.node.id);
+            const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, n, g.node.id);
             for (size_t c = 0; c < nk; ++c) {
                 if (kids[c] < num_layers) serialize_layer(state, layers[kids[c]]);
             }
@@ -1245,7 +1245,7 @@ struct Shapespace : viamd::EventHandler {
                 l->frames = str_eq_cstr(s, "current") ? LayerFrames_Current : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
             } else if (str_eq_cstr(ident, "Period")) {
                 int id = 0;
-                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MAX(id, 0);
+                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
             } else if (str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
                 l->style = str_eq_cstr(s, "contours") ? LayerStyle_Contours : str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
             } else if (str_eq_cstr(ident, "Color")) {
@@ -1264,7 +1264,7 @@ struct Shapespace : viamd::EventHandler {
                 for (int k = MAX_LEVELS; k > 0; --k) {
                     if (viamd::extract_flt_vec(v, (size_t)k, arg)) {
                         l->num_levels = k;
-                        MEMCPY(l->levels, v, sizeof(float) * k);
+                        MD_MEMCPY(l->levels, v, sizeof(float) * k);
                         break;
                     }
                 }
@@ -1288,14 +1288,14 @@ struct Shapespace : viamd::EventHandler {
     }
 
     static void sanitize_layer(Layer& l) {
-        l.frames = (LayerFrames)CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
-        l.style = (LayerStyle)CLAMP((int)l.style, 0, LayerStyle_Count - 1);
-        l.opacity = CLAMP(l.opacity, 0.0f, 1.0f);
-        l.line_width = CLAMP(l.line_width, 0.5f, 8.0f);
-        l.bandwidth = l.bandwidth > 0.0f ? CLAMP(l.bandwidth, 0.005f, MAX_BANDWIDTH) : 0.0f;
-        l.point_size = CLAMP(l.point_size, 1.0f, 16.0f);
-        l.num_levels = CLAMP(l.num_levels, 1, MAX_LEVELS);
-        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = CLAMP(l.levels[i], 0.01f, 0.999f);
+        l.frames = (LayerFrames)MD_CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
+        l.style = (LayerStyle)MD_CLAMP((int)l.style, 0, LayerStyle_Count - 1);
+        l.opacity = MD_CLAMP(l.opacity, 0.0f, 1.0f);
+        l.line_width = MD_CLAMP(l.line_width, 0.5f, 8.0f);
+        l.bandwidth = l.bandwidth > 0.0f ? MD_CLAMP(l.bandwidth, 0.005f, MAX_BANDWIDTH) : 0.0f;
+        l.point_size = MD_CLAMP(l.point_size, 1.0f, 16.0f);
+        l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
+        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
         if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
     }
 
@@ -1311,8 +1311,8 @@ struct Shapespace : viamd::EventHandler {
         pts->use_mass = legacy.use_mass;
         pts->point_coloring = PointColoring_Structure;
         // ImPlot's marker size is a radius
-        pts->point_size = CLAMP(legacy.marker_size * 2.0f, 1.0f, 16.0f);
-        uint32_t period = (uint32_t)MAX(legacy.period, 0);
+        pts->point_size = MD_CLAMP(legacy.marker_size * 2.0f, 1.0f, 16.0f);
+        uint32_t period = (uint32_t)MD_MAX(legacy.period, 0);
         if (period == 0 && app) period = app->timeline.periods.legacy_filter_id;
         if (period != 0) {
             pts->frames = LayerFrames_Period;
@@ -1352,7 +1352,7 @@ struct Shapespace : viamd::EventHandler {
         const char* what = n == 1 ? "structure" : "structures";
         if (l.frames != LayerFrames_Current && run_num_frames(app) >= 2) {
             if (l.eval && !l.eval->complete()) {
-                snprintf(buf, cap, "%zu %s \xc2\xb7 %u%% evaluated", n, what, (uint32_t)(100.0 * l.eval->frames_done.load() / MAX((size_t)1, l.eval->num_frames)));
+                snprintf(buf, cap, "%zu %s \xc2\xb7 %u%% evaluated", n, what, (uint32_t)(100.0 * l.eval->frames_done.load() / MD_MAX((size_t)1, l.eval->num_frames)));
                 return;
             }
             uint32_t beg = 0, end = 0;
@@ -1435,7 +1435,7 @@ struct Shapespace : viamd::EventHandler {
         if (!l.eval) return false;
         uint32_t beg = 0, end = 0;
         if (!layer_frame_range(l, &beg, &end)) return false;
-        end = MIN(end, (uint32_t)l.eval->num_frames);
+        end = MD_MIN(end, (uint32_t)l.eval->num_frames);
         if (end <= beg) return false;
         ps->coords = l.eval->coords;
         ps->stride = l.eval->num_frames;
@@ -1443,7 +1443,7 @@ struct Shapespace : viamd::EventHandler {
         ps->frame_beg = beg;
         ps->frame_end = end;
         const uint64_t total = (uint64_t)ps->num_structures * (end - beg);
-        ps->frame_step = (uint32_t)MAX((uint64_t)1, (total + MAX_POINTS - 1) / MAX_POINTS);
+        ps->frame_step = (uint32_t)MD_MAX((uint64_t)1, (total + MAX_POINTS - 1) / MAX_POINTS);
         ps->current = false;
         l.point_stride = ps->frame_step;
         return true;
@@ -1531,7 +1531,7 @@ struct Shapespace : viamd::EventHandler {
             const ImVec2 mouse = ImGui::GetMousePos();
             for (int i = 0; i < num_layers && hover.layer < 0; ++i) {
                 if (!has_source[i]) continue;
-                const float r = MAX(8.0f, layers[i].point_size);
+                const float r = MD_MAX(8.0f, layers[i].point_size);
                 float best = r * r;
                 for_each_point(sources[i], [&](uint32_t s, uint32_t frame, vec2_t c) {
                     const ImVec2 p = to_pixels(c);
@@ -1562,8 +1562,8 @@ struct Shapespace : viamd::EventHandler {
                 md_bitmask_or(highlight_mask, structure_atoms(layers[box.click_layer], sources[box.click_layer], (uint32_t)box.click_structure));
             }
         } else if (box.active) {
-            const double x0 = MIN(box.p0.x, box.p1.x), x1 = MAX(box.p0.x, box.p1.x);
-            const double y0 = MIN(box.p0.y, box.p1.y), y1 = MAX(box.p0.y, box.p1.y);
+            const double x0 = MD_MIN(box.p0.x, box.p1.x), x1 = MD_MAX(box.p0.x, box.p1.x);
+            const double y0 = MD_MIN(box.p0.y, box.p1.y), y1 = MD_MAX(box.p0.y, box.p1.y);
             for (int i = 0; i < num_layers; ++i) {
                 if (!has_source[i]) continue;
                 // A structure once, however many of its points are in
@@ -1606,7 +1606,7 @@ struct Shapespace : viamd::EventHandler {
         for (int i = num_layers - 1; i >= 0 && (any_sel || any_hl); --i) {
             if (!has_source[i] || !sources[i].current) continue;
             const Layer& l = layers[i];
-            const float r = MAX(l.point_size * 0.5f + 3.0f, 5.0f);
+            const float r = MD_MAX(l.point_size * 0.5f + 3.0f, 5.0f);
             for_each_point(sources[i], [&](uint32_t s, uint32_t, vec2_t c) {
                 const md_bitset_t atoms = structure_atoms(l, sources[i], s);
                 const uint32_t first = md_bitset_first(atoms);
@@ -1619,7 +1619,7 @@ struct Shapespace : viamd::EventHandler {
         }
         // The point under the pointer
         if (hover.layer >= 0) {
-            density_map_mark(dl, to_pixels(hover.coord), MAX(layers[hover.layer].point_size * 0.5f + 3.0f, 5.0f), DensityMapMark_Ring, ImGui::ColorConvertFloat4ToU32(vec_cast(hl_col)));
+            density_map_mark(dl, to_pixels(hover.coord), MD_MAX(layers[hover.layer].point_size * 0.5f + 3.0f, 5.0f), DensityMapMark_Ring, ImGui::ColorConvertFloat4ToU32(vec_cast(hl_col)));
         }
         density_map_marks_end(dl);
         ImPlot::PopPlotClipRect();
@@ -1714,12 +1714,12 @@ struct Shapespace : viamd::EventHandler {
         char filter[sizeof(AtomFilter::text)] = "";
         bool use_mass = true;
         if (like) {
-            if (group == 0 && like->node.parent == 0) MEMCPY(filter, like->filter.text, sizeof(filter));
+            if (group == 0 && like->node.parent == 0) MD_MEMCPY(filter, like->filter.text, sizeof(filter));
             use_mass = like->use_mass;
         }
         Layer* l = add_layer(frames, style, 0, group);
         if (!l) return nullptr;
-        MEMCPY(l->filter.text, filter, sizeof(filter));
+        MD_MEMCPY(l->filter.text, filter, sizeof(filter));
         l->use_mass = use_mass;
         selected_layer = l->id;
         selected_group = 0;
@@ -1733,11 +1733,11 @@ struct Shapespace : viamd::EventHandler {
         const float mt = line * 1.6f + 6.0f;
         const float mb = line * 1.4f + 6.0f;
         const double h_tri = tri_iso.y;
-        const double s = MAX(1.0, MIN((size.x - 2.0 * mx) / 1.0, (size.y - mt - mb) / h_tri));     // Pixels per unit
+        const double s = MD_MAX(1.0, MD_MIN((size.x - 2.0 * mx) / 1.0, (size.y - mt - mb) / h_tri));     // Pixels per unit
         const double w = size.x / s;
         const double h = size.y / s;
         const double extra = (size.y - s * h_tri - mt - mb) * 0.5;
-        const double y0 = -(mb + MAX(0.0, extra)) / s;
+        const double y0 = -(mb + MD_MAX(0.0, extra)) / s;
         return ImPlotRect(0.5 - w * 0.5, 0.5 + w * 0.5, y0, y0 + h);
     }
 
@@ -1787,7 +1787,7 @@ struct Shapespace : viamd::EventHandler {
             const ImPlotRect lim = ImPlot::GetPlotLimits();
             const bool reshaped = fabsf(size.x - plot_size.x) > 0.5f || fabsf(size.y - plot_size.y) > 0.5f;
             if (view_fitted && !fit_view) {
-                const double eps = 1e-6 * MAX(1e-6, fitted_rect.X.Size());
+                const double eps = 1e-6 * MD_MAX(1e-6, fitted_rect.X.Size());
                 const bool moved = fabs(lim.X.Min - fitted_rect.X.Min) > eps || fabs(lim.X.Max - fitted_rect.X.Max) > eps ||
                                    fabs(lim.Y.Min - fitted_rect.Y.Min) > eps || fabs(lim.Y.Max - fitted_rect.Y.Max) > eps;
                 if (reshaped) fit_view = true;
@@ -1814,7 +1814,7 @@ struct Shapespace : viamd::EventHandler {
 
         md_temp_scope_t temp_scope = md_temp_begin();
         md_allocator_i* temp = md_temp_allocator(temp_scope);
-        defer { md_temp_end(temp_scope); };
+        MD_DEFER { md_temp_end(temp_scope); };
 
         // The time column is timeline.x_values, held in display units: its label is from the same place
         const md_unit_t time_unit = app->timeline.time_unit;
@@ -1880,7 +1880,7 @@ struct Shapespace : viamd::EventHandler {
 
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
         if (ImGui::Button(ICON_FA_EXPAND)) fit_view = true;
         ImGui::SetItemTooltip("Fit the view (or double-click the plot)");
         ImGui::SameLine();
@@ -2091,7 +2091,7 @@ struct Shapespace : viamd::EventHandler {
         // What is within a hidden group is dimmed: hidden too, whatever its own eye says
         if (!g.visible) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
         int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-        const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, num_nodes, g.node.id);
+        const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, num_nodes, g.node.id);
         for (size_t k = 0; k < nk; ++k) {
             if (kids[k] < num_layers) draw_layer_row(layers[kids[k]], ImGui::GetStyle().IndentSpacing, nodes, num_nodes, act);
         }
@@ -2154,10 +2154,10 @@ struct Shapespace : viamd::EventHandler {
         char auto_name[128];
         {
             char saved[sizeof(l.name)];
-            MEMCPY(saved, l.name, sizeof(saved));
+            MD_MEMCPY(saved, l.name, sizeof(saved));
             l.name[0] = '\0';
             layer_label(auto_name, sizeof(auto_name), l);
-            MEMCPY(l.name, saved, sizeof(saved));
+            MD_MEMCPY(l.name, saved, sizeof(saved));
         }
         prop::row("name");
         ImGui::InputTextWithHint("##name", auto_name, l.name, sizeof(l.name));
@@ -2285,7 +2285,7 @@ struct Shapespace : viamd::EventHandler {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("LAYERS");
         ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
         if (ImGui::Button(ICON_FA_PLUS "##add", ImVec2(ImGui::GetFrameHeight(), 0))) ImGui::OpenPopup("##add_menu");
         ImGui::SetItemTooltip("Add a layer, in the group of what is selected, or a group");
         if (ImGui::BeginPopup("##add_menu")) {
@@ -2299,7 +2299,7 @@ struct Shapespace : viamd::EventHandler {
             RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
             const size_t n = tree_nodes(nodes);
             int top[MAX_LAYERS + LAYER_MAX_GROUPS];
-            const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+            const size_t nt = representation_tree_children(top, MD_COUNTOF(top), nodes, n, 0);
             for (size_t k = 0; k < nt; ++k) {
                 if (top[k] < num_layers) draw_layer_row(layers[top[k]], 0.0f, nodes, n, &act);
                 else                     draw_group(groups[top[k] - num_layers], nodes, n, &act);

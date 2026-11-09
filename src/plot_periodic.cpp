@@ -73,7 +73,7 @@ static int periodic_format(double value, char* buf, int size, void* user_data) {
 }
 
 void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImPlotAxisFlags flags) {
-    ASSERT(view);
+    MD_ASSERT(view);
     const double len = periodic_view_length(*view);
     double span = view->max - view->min;
     if (!(span > 0.0) || span > len) span = len;
@@ -125,7 +125,7 @@ void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImP
 }
 
 bool periodic_axis_popup(ImAxis axis, PeriodicView* view) {
-    ASSERT(view);
+    MD_ASSERT(view);
     char id[48];
     snprintf(id, sizeof(id), "##periodic_axis_%d", (int)axis);
     // Its margin, or where its labels are within the plot (DrawInsetAxes): there it is over the plot, whose menu the
@@ -224,7 +224,7 @@ bool periodic_views_deserialize(viamd::deserialization_state_t& state) {
         PeriodicView* v = periodic_view(p, unit);
         if (v && has_min && has_max && max > min) {
             v->min = min;
-            v->max = MIN(max, min + series_periodic_length(p));
+            v->max = MD_MIN(max, min + series_periodic_length(p));
         }
     }
     return true;

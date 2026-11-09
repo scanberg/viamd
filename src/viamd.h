@@ -835,13 +835,13 @@ static inline vec4_t electronic_structure_density_property_default_color(const E
 }
 
 static inline void electronic_structure_density_property_init_defaults(ElectronicStructureRepresentation* rep) {
-    ASSERT(rep);
+    MD_ASSERT(rep);
     rep->density_property.num_isos = 2;
     rep->density_property.values[0] =  0.05;
     rep->density_property.values[1] = -0.05;
     rep->density_property.colors[0] = rep->col_psi_pos;
     rep->density_property.colors[1] = rep->col_psi_neg;
-    for (int i = 2; i < (int)ARRAY_SIZE(rep->density_property.values); ++i) {
+    for (int i = 2; i < (int)MD_COUNTOF(rep->density_property.values); ++i) {
         rep->density_property.values[i] = 0.05 * (double)(i + 1);
         rep->density_property.colors[i] = electronic_structure_density_property_default_color(*rep, i);
     }
@@ -866,11 +866,11 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
 }
 
 static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const ElectronicStructureRepresentation& rep) {
-    ASSERT(iso);
+    MD_ASSERT(iso);
     *iso = {};    
 
     if (electronic_structure_is_density_property(rep)) {
-        const int num_isos = CLAMP(rep.density_property.num_isos, 0, (int)ARRAY_SIZE(rep.density_property.values));
+        const int num_isos = MD_CLAMP(rep.density_property.num_isos, 0, (int)MD_COUNTOF(rep.density_property.values));
         iso->count = (size_t)num_isos;
         for (int i = 0; i < num_isos; ++i) {
             iso->values[i] = (float)rep.density_property.values[i];
@@ -925,14 +925,14 @@ static inline ElectronicStructureField electronic_structure_legacy_field(const E
 }
 
 static inline void electronic_structure_set_legacy_field(ElectronicStructureRepresentation* rep, int field) {
-    ASSERT(rep);
+    MD_ASSERT(rep);
     rep->use_magnitude = (rep->source == ElectronicStructureSource::MolecularOrbital ||
                           rep->source == ElectronicStructureSource::NaturalTransitionOrbital) &&
                          (ElectronicStructureField)field == ElectronicStructureField::Density;
 }
 
 static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
-    ASSERT(rep);
+    MD_ASSERT(rep);
     switch (rep->source) {
     case ElectronicStructureSource::MolecularOrbital:
         if (rep->spin != ElectronicStructureSpin::Alpha && rep->spin != ElectronicStructureSpin::Beta) {
@@ -974,13 +974,13 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         }
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
 }
 
 static inline void electronic_structure_set_legacy_type(ElectronicStructureRepresentation* rep, int type) {
-    ASSERT(rep);
+    MD_ASSERT(rep);
     switch ((ElectronicStructureLegacyType)type) {
     case ElectronicStructureLegacyType::MolecularOrbital:
         rep->source = ElectronicStructureSource::MolecularOrbital;
@@ -1026,7 +1026,7 @@ static inline void electronic_structure_set_legacy_type(ElectronicStructureRepre
         rep->spin = ElectronicStructureSpin::Total;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
 }
@@ -1058,7 +1058,7 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     case ElectronicStructureSource::LocalizedOrbitalLocator:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         return 0;
     }
 }
@@ -2050,7 +2050,7 @@ struct ViamdEventHandler : viamd::EventHandler {
     ApplicationState* state = nullptr;
 
     explicit ViamdEventHandler(ApplicationState* s) : state(s) {
-        ASSERT(state);
+        MD_ASSERT(state);
         viamd::event_system_register_handler(*this);
     }
 
@@ -2167,7 +2167,7 @@ static inline void modify_field(md_bitmask_t* m, md_bitset_t s, SelectionOperato
         md_bitmask_assign(m, s);
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 }
 
@@ -2205,7 +2205,7 @@ static inline void mask_set_chain_of_res(md_bitmask_t* mask, size_t res_idx, con
 // Grows the mask to whole residues, parts, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
 // filed under a chain come after every polymer), so what is touched is found first and set after.
 static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
-    ASSERT(mask);
+    MD_ASSERT(mask);
     if (granularity == SelectionGranularity::Atom || md_bitmask_empty(mask)) return;
 
     switch(granularity) {
@@ -2274,7 +2274,7 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
         break;
     }
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 }
 
@@ -2282,7 +2282,7 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
 // where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
 // grow_mask_by_selection_granularity, as it only looks up the owner.
 static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
-    ASSERT(mask);
+    MD_ASSERT(mask);
     if (atom_idx >= sys.atom.count) return;
 
     md_urange_t range = {(uint32_t)atom_idx, (uint32_t)atom_idx + 1};
@@ -2325,7 +2325,7 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
         break;
     }
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
     md_bitmask_set_range(mask, range.beg, range.end);
 }
@@ -2334,7 +2334,7 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
 // than an atom (a backbone segment of the cartoon or ribbons). There is no atom to pick there, so Atom granularity
 // selects the residue as well.
 static inline void mask_set_residue_by_selection_granularity(md_bitmask_t* mask, size_t res_idx, SelectionGranularity granularity, const md_system_t& sys) {
-    ASSERT(mask);
+    MD_ASSERT(mask);
     if (res_idx >= sys.residue.count) return;
 
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
@@ -2349,7 +2349,7 @@ static inline void mask_set_residue_by_selection_granularity(md_bitmask_t* mask,
 // Sets the bits of the atoms of a ring (count atoms), each grown by the granularity, for a hit on the circle of an
 // aromatic ring (picked_ring): at Atom granularity the ring itself, at coarser ones what its atoms are in
 static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, const int32_t* atoms, size_t count, SelectionGranularity granularity, const md_system_t& sys) {
-    ASSERT(mask);
+    MD_ASSERT(mask);
     for (size_t i = 0; i < count; ++i) {
         if (atoms[i] >= 0 && (size_t)atoms[i] < sys.atom.count) {
             mask_set_atom_by_selection_granularity(mask, (size_t)atoms[i], granularity, sys);
@@ -2358,13 +2358,13 @@ static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, co
 }
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
-    ASSERT(seq);
-    MEMSET(seq->idx, -1, sizeof(seq->idx));
+    MD_ASSERT(seq);
+    MD_MEMSET(seq->idx, -1, sizeof(seq->idx));
 }
 
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
-    ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+    MD_ASSERT(seq);
+    for (size_t i = 0; i < MD_COUNTOF(seq->idx); ++i) {
         // Already in the sequence: keep the position it was first picked at. Appending it again
         // would desync the sequence from the selection mask, which is an OR and does not grow.
         if (seq->idx[i] == idx) {
@@ -2378,22 +2378,22 @@ static inline void single_selection_sequence_push_idx(SingleSelectionSequence* s
 }
 
 static inline void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int32_t idx) {
-    ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+    MD_ASSERT(seq);
+    for (size_t i = 0; i < MD_COUNTOF(seq->idx); ++i) {
         if (seq->idx[i] == idx) {
-            for (size_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
+            for (size_t j = i; j < MD_COUNTOF(seq->idx) - 1; ++j) {
                 seq->idx[j] = seq->idx[j+1];
             }
-            seq->idx[ARRAY_SIZE(seq->idx)-1] = -1;
+            seq->idx[MD_COUNTOF(seq->idx)-1] = -1;
             break;
         }
     }
 }
 
 static inline void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
-    ASSERT(seq);
+    MD_ASSERT(seq);
     size_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (; i < MD_COUNTOF(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
     if (i > 0) {
@@ -2402,9 +2402,9 @@ static inline void single_selection_sequence_pop_back(SingleSelectionSequence* s
 }
 
 static inline int32_t single_selection_sequence_last(const SingleSelectionSequence* seq) {
-    ASSERT(seq);
+    MD_ASSERT(seq);
     size_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (; i < MD_COUNTOF(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
     if (i > 0) {
@@ -2415,7 +2415,7 @@ static inline int32_t single_selection_sequence_last(const SingleSelectionSequen
 
 static inline size_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
     size_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+    for (; i < MD_COUNTOF(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
     return i;
@@ -2674,7 +2674,7 @@ void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* at
 // fast math every float spelling of the test (v != v, isnan) may be folded away.
 static inline bool atom_attribute_value_absent(float v) {
     uint32_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    MD_MEMCPY(&u, &v, sizeof(u));
     return (u & 0x7fffffffu) > 0x7f800000u;
 }
 
@@ -2753,8 +2753,8 @@ struct TaskProgressRequest {
 };
 
 static inline void task_progress_add(TaskProgressRequest* req, const char* label, float fraction, volatile int32_t* cancel) {
-    if (req->count < ARRAY_SIZE(req->items)) {
-        req->items[req->count++] = TaskProgress{ label, CLAMP(fraction, 0.0f, 1.0f), cancel };
+    if (req->count < MD_COUNTOF(req->items)) {
+        req->items[req->count++] = TaskProgress{ label, MD_CLAMP(fraction, 0.0f, 1.0f), cancel };
     }
 }
 
@@ -3245,7 +3245,7 @@ struct AssemblyGroup {
 };
 
 static inline AssemblyGroup assembly_group(const md_assembly_data_t& a, size_t g) {
-    ASSERT(g < a.group_count);
+    MD_ASSERT(g < a.group_count);
     return {a.inst + a.group_inst_offset[g], a.inst + a.group_inst_offset[g + 1], a.oper + a.group_oper_offset[g], a.oper + a.group_oper_offset[g + 1]};
 }
 

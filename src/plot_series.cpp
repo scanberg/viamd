@@ -106,7 +106,7 @@ static bool is_script(SeriesSource source) {
 // The script's is the evaluation's table. Over a period, a temporal property is taken over the period's frames, and a
 // distribution or a volume from the slot over them (series_slot).
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source) {
-    ASSERT(app);
+    MD_ASSERT(app);
     if (source == SeriesSource_System) {
         return &app->mold.sys.attributes;
     }
@@ -125,7 +125,7 @@ static bool key_period_frames(uint32_t* beg, uint32_t* end, const ApplicationSta
 }
 
 bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, md_allocator_i* alloc) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const script::Eval* eval = is_script(key.source) ? app->script.eval : nullptr;
     if (!eval) return false;
     md_bitset_t held = script::eval_output_frames(eval, series_script_ident(key), alloc);
@@ -181,9 +181,9 @@ SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
         // it holds and does not want: of what it holds, (wanted + held - pending) / 2 are wanted.
         script::AggregateInfo info;
         if (script::aggregate_info(&info, eval, SCRIPT_SLOT_PERIOD(key.period), ident)) {
-            const uint32_t both = (st.num_wanted + info.num_frames - MIN(info.num_pending, st.num_wanted + info.num_frames)) / 2;
-            st.num_frames = MIN(both, st.num_wanted);
-            st.num_extra  = info.num_frames - MIN(both, info.num_frames);
+            const uint32_t both = (st.num_wanted + info.num_frames - MD_MIN(info.num_pending, st.num_wanted + info.num_frames)) / 2;
+            st.num_frames = MD_MIN(both, st.num_wanted);
+            st.num_extra  = info.num_frames - MD_MIN(both, info.num_frames);
             if (info.num_pending > 0) st.status = SeriesStatus_Partial;
         }
         return st;
@@ -240,7 +240,7 @@ static str_t path_leaf(str_t path) {
 }
 
 void series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key) {
-    ASSERT(buf && cap > 0);
+    MD_ASSERT(buf && cap > 0);
     str_t base = {};
     if (is_script(key.source)) {
         base = series_script_ident(key);
@@ -271,7 +271,7 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
     } else {
         idx = (size_t)md_hash64_str(str_from_cstr(key.path), 0);
     }
-    ImVec4 color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[idx % ARRAY_SIZE(PROPERTY_COLORS)]);
+    ImVec4 color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[idx % MD_COUNTOF(PROPERTY_COLORS)]);
     if (key.variant == SeriesVariant_Sigma)  color.w *= 0.4f;
     if (key.variant == SeriesVariant_Extent) color.w *= 0.2f;
     return color;
@@ -593,7 +593,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
 // ## Over time
 
 bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, const SeriesKey& key) {
-    ASSERT(out && app);
+    MD_ASSERT(out && app);
     *out = SeriesTemporalView{};
     fill_names(out, app, key);
 
@@ -679,7 +679,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
 
     switch (key.variant) {
     case SeriesVariant_Values:
-        out->dim = (int)MIN(stride, (size_t)PLOT_MAX_POPULATION);
+        out->dim = (int)MD_MIN(stride, (size_t)PLOT_MAX_POPULATION);
         break;
     case SeriesVariant_Mean:
         out->dim = 1;
@@ -698,7 +698,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
 void series_temporal_band(const SeriesTemporalView& v, int i, double* lo, double* hi) {
     if (v.y2) {
         const double mean = v.y[i];
-        const double sd   = sqrt(MAX(0.0, (double)v.y2[i]));
+        const double sd   = sqrt(MD_MAX(0.0, (double)v.y2[i]));
         *lo = (mean - sd) * v.y_scale;
         *hi = (mean + sd) * v.y_scale;
     } else {
@@ -764,12 +764,12 @@ static double kde_bandwidth(const float* bins, int num_bins, double lo, double h
     if (periodic) {
         double c = 0.0, s = 0.0;
         for (int b = 0; b < num_bins; ++b) {
-            const double a = 2.0 * PI * (b + 0.5) / num_bins;
+            const double a = 2.0 * MD_PI * (b + 0.5) / num_bins;
             c += bins[b] * cos(a);
             s += bins[b] * sin(a);
         }
         const double R = sqrt(c * c + s * s) / mass;
-        sd = (R > 0.0 ? sqrt(MIN(-2.0 * log(R), PI * PI)) : PI) * (hi - lo) / (2.0 * PI);
+        sd = (R > 0.0 ? sqrt(MD_MIN(-2.0 * log(R), MD_PI * MD_PI)) : MD_PI) * (hi - lo) / (2.0 * MD_PI);
     } else {
         double mean = 0.0;
         for (int b = 0; b < num_bins; ++b) mean += bins[b] * (lo + (b + 0.5) * w);
@@ -794,7 +794,7 @@ static double kde_bandwidth(const float* bins, int num_bins, double lo, double h
         }
         iqr = q[1] - q[0];
     }
-    const double spread = (iqr > 0.0) ? MIN(sd, iqr / 1.34) : sd;
+    const double spread = (iqr > 0.0) ? MD_MIN(sd, iqr / 1.34) : sd;
     return 0.9 * spread * pow((double)n, -0.2);
 }
 
@@ -802,7 +802,7 @@ static double kde_bandwidth(const float* bins, int num_bins, double lo, double h
 // period for periodic values, which then lose nothing over the ends
 static void gaussian_smooth(float* bins, int num_bins, double sigma, bool periodic) {
     if (sigma < 0.25 || num_bins < 2) return;
-    const int r = MIN((int)ceil(4.0 * sigma), num_bins);
+    const int r = MD_MIN((int)ceil(4.0 * sigma), num_bins);
     md_temp_scope_t temp = md_temp_begin();
     float* kernel = md_temp_alloc_array(temp, float, 2 * r + 1);
     float* src    = md_temp_alloc_array(temp, float, num_bins);
@@ -812,7 +812,7 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
         ksum += kernel[i + r];
     }
     for (int i = 0; i <= 2 * r; ++i) kernel[i] = (float)(kernel[i] / ksum);
-    MEMCPY(src, bins, sizeof(float) * num_bins);
+    MD_MEMCPY(src, bins, sizeof(float) * num_bins);
     for (int b = 0; b < num_bins; ++b) {
         double acc = 0.0;
         for (int i = -r; i <= r; ++i) {
@@ -837,11 +837,11 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
 static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride,
                          const md_bitset_t* mask, bool periodic, float smoothing) {
     const bool aggregate = dim_out == 1 && stride > 1;
-    MEMSET(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
+    MD_MEMSET(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
 
     md_temp_scope_t temp = md_temp_begin();
     size_t* count = md_temp_alloc_array(temp, size_t, dim_out);
-    MEMSET(count, 0, sizeof(size_t) * dim_out);
+    MD_MEMSET(count, 0, sizeof(size_t) * dim_out);
 
     const double inv_range = hi > lo ? 1.0 / (hi - lo) : 0.0;
     auto add_frame = [&](size_t f) {
@@ -855,7 +855,7 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
             } else if (!(lo <= val && val <= hi)) {
                 continue;
             }
-            const int b = CLAMP((int)((val - lo) * inv_range * num_bins), 0, num_bins - 1);
+            const int b = MD_CLAMP((int)((val - lo) * inv_range * num_bins), 0, num_bins - 1);
             const size_t d = aggregate ? 0 : k;
             bins[d * num_bins + b] += 1.0f;
             count[d] += 1;
@@ -894,7 +894,7 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
 // A distribution evaluated at num_src bins, averaged down to num_dst (a divisor of it): each
 // destination bin is the weighted mean of the source bins it covers
 static void downsample_bins(float* dst, int num_dst, const float* src, const float* weights, int num_src) {
-    const int factor = MAX(1, num_src / num_dst);
+    const int factor = MD_MAX(1, num_src / num_dst);
     for (int d = 0; d < num_dst; ++d) {
         double sum = 0.0;
         double weight = 0.0;
@@ -918,7 +918,7 @@ static bool read_range(double out[2], const md_attribute_t* range) {
 // ## Periodic values
 
 bool series_periodic_equal(const SeriesPeriodic& a, const SeriesPeriodic& b) {
-    const double tol = 1.0e-5 * MAX(series_periodic_length(a), series_periodic_length(b));
+    const double tol = 1.0e-5 * MD_MAX(series_periodic_length(a), series_periodic_length(b));
     return fabs(a.beg - b.beg) <= tol && fabs(a.end - b.end) <= tol;
 }
 
@@ -939,7 +939,7 @@ static bool read_periodic(SeriesPeriodic* out, const md_attributes_t* table, str
 }
 
 bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const SeriesKey& key, double scale) {
-    ASSERT(out);
+    MD_ASSERT(out);
     const str_t path = str_from_cstr(key.path);
     if (!(scale > 0.0) || !read_periodic(out, series_table(app, key.source, path), path)) {
         *out = SeriesPeriodic{};
@@ -970,7 +970,7 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
 }
 
 bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins, uint32_t period, float smoothing) {
-    ASSERT(out && app);
+    MD_ASSERT(out && app);
     *out = SeriesHistogramView{};
     fill_names(out, app, key);
 
@@ -1003,12 +1003,12 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
 
     int dim = 1;
     if (temporal) {
-        dim = (key.variant == SeriesVariant_Aggregate) ? 1 : (int)MIN(stride, (size_t)PLOT_MAX_POPULATION);
-        num_bins = CLAMP(num_bins, 2, 4096);
+        dim = (key.variant == SeriesVariant_Aggregate) ? 1 : (int)MD_MIN(stride, (size_t)PLOT_MAX_POPULATION);
+        num_bins = MD_CLAMP(num_bins, 2, 4096);
     } else {
         // Evaluated at a resolution of its own; only coarser is on offer
         if (stride != 1 || key.variant != SeriesVariant_Values) return false;
-        num_bins = CLAMP(num_bins, 1, (int)n);
+        num_bins = MD_CLAMP(num_bins, 1, (int)n);
         while (n % (size_t)num_bins) --num_bins;
     }
 
@@ -1037,7 +1037,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     const bool is_periodic = series_periodic_valid(periodic);
     // A script distribution is shown as evaluated
     if (!temporal) smoothing = 0.0f;
-    smoothing = MAX(smoothing, 0.0f);
+    smoothing = MD_MAX(smoothing, 0.0f);
 
     // ### Cached bins
     uint64_t hkey = md_hash64_str(path, (uint64_t)key.source * 31 + key.variant);
@@ -1088,10 +1088,10 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
                     double lo = DBL_MAX, hi = -DBL_MAX;
                     for (size_t i = 0; i < n * stride; ++i) {
                         const double v = values[i];
-                        if (v == v) { lo = MIN(lo, v); hi = MAX(hi, v); }
+                        if (v == v) { lo = MD_MIN(lo, v); hi = MD_MAX(hi, v); }
                     }
                     if (lo > hi) { lo = 0; hi = 1; }
-                    if (hi <= lo) { const double pad = MAX(fabs(lo) * 1e-3, 1e-6); lo -= pad; hi += pad; }
+                    if (hi <= lo) { const double pad = MD_MAX(fabs(lo) * 1e-3, 1e-6); lo -= pad; hi += pad; }
                     range[0] = lo;
                     range[1] = hi;
                 }
@@ -1107,8 +1107,8 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
 
             float y_min = FLT_MAX, y_max = -FLT_MAX;
             for (size_t i = 0; i < (size_t)num_bins * dim; ++i) {
-                y_min = MIN(y_min, entry->bins[i]);
-                y_max = MAX(y_max, entry->bins[i]);
+                y_min = MD_MIN(y_min, entry->bins[i]);
+                y_max = MD_MAX(y_max, entry->bins[i]);
             }
             entry->y_min = entry->valid ? y_min : 0.0f;
             entry->y_max = entry->valid ? y_max : 0.0f;
@@ -1154,7 +1154,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
 
 bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins,
                                       const uint32_t* periods, int num_periods, float smoothing) {
-    ASSERT(out && app);
+    MD_ASSERT(out && app);
     const bool over_periods = is_script(key.source) && (num_periods > 1 || (num_periods == 1 && periods[0] != 0));
     if (!over_periods) {
         return series_resolve_histogram(out, app, key, num_bins, 0, smoothing);
@@ -1169,7 +1169,7 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
         }
     }
 
-    num_periods = MIN(num_periods, PLOT_MAX_PERIODS);
+    num_periods = MD_MIN(num_periods, PLOT_MAX_PERIODS);
     SeriesHistogramView views[PLOT_MAX_PERIODS];
     bool any = false;
     int first = -1;
@@ -1204,11 +1204,11 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
         if (bins) {
             float* dst = bins + (size_t)p * ref.num_bins;
             if (info.valid) {
-                MEMCPY(dst, v.bins, (size_t)ref.num_bins * sizeof(float));
-                y_min = MIN(y_min, v.y_min);
-                y_max = MAX(y_max, v.y_max);
+                MD_MEMCPY(dst, v.bins, (size_t)ref.num_bins * sizeof(float));
+                y_min = MD_MIN(y_min, v.y_min);
+                y_max = MD_MAX(y_max, v.y_max);
             } else {
-                MEMSET(dst, 0, (size_t)ref.num_bins * sizeof(float));
+                MD_MEMSET(dst, 0, (size_t)ref.num_bins * sizeof(float));
             }
         }
 
@@ -1230,8 +1230,8 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
                 script::AggregateInfo si;
                 if (script::aggregate_info(&si, eval, SCRIPT_SLOT_PERIOD(period), ident)) {
                     // Of what it holds, what it wants (see series_state)
-                    const uint32_t both = (info.num_wanted + si.num_frames - MIN(si.num_pending, info.num_wanted + si.num_frames)) / 2;
-                    info.num_frames = MIN(both, info.num_wanted);
+                    const uint32_t both = (info.num_wanted + si.num_frames - MD_MIN(si.num_pending, info.num_wanted + si.num_frames)) / 2;
+                    info.num_frames = MD_MIN(both, info.num_wanted);
                 }
             } else {
                 const md_bitset_t held = script::eval_output_frames(eval, ident, app->allocator.frame);
@@ -1268,7 +1268,7 @@ uint32_t series_volume_count(const ApplicationState* app, const SeriesKey& key) 
 }
 
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key, uint32_t member) {
-    ASSERT(out && app);
+    MD_ASSERT(out && app);
     *out = SeriesVolumeView{};
     series_label(out->label, sizeof(out->label), app, key);
     if (!is_script(key.source)) return false;
@@ -1282,7 +1282,7 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     if (!attr || !attr->data) return false;
     out->count = volume_shape(out->dim, attr);
     if (out->count == 0) return false;
-    out->member = MIN(member, out->count - 1);
+    out->member = MD_MIN(member, out->count - 1);
     if (out->count > 1) {
         // As the script names it: v[2]
         if (key.period != 0) {
@@ -1460,7 +1460,7 @@ void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subpl
 // ## Series loaded along the run
 
 size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationState* app) {
-    ASSERT(app);
+    MD_ASSERT(app);
     if (app->mold.run[0] == '\0') return 0;
     const md_attributes_t* table = &app->mold.sys.attributes;
     const str_t run = str_from_cstr(app->mold.run);
@@ -1486,7 +1486,7 @@ str_t system_series_group_source(const ApplicationState* app, str_t group) {
 }
 
 void system_series_group_label(char* buf, size_t cap, const ApplicationState* app, str_t group) {
-    ASSERT(buf && cap > 0);
+    MD_ASSERT(buf && cap > 0);
     str_t rel = group;
     const str_t run = str_from_cstr(app->mold.run);
     if (!str_empty(run) && str_begins_with(group, run) && group.len > run.len + 1) {
@@ -1505,7 +1505,7 @@ void system_series_group_label(char* buf, size_t cap, const ApplicationState* ap
 }
 
 size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationState* app, str_t group) {
-    ASSERT(app);
+    MD_ASSERT(app);
     const md_attributes_t* table = &app->mold.sys.attributes;
 
     size_t count = 0;
@@ -1567,7 +1567,7 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
             if (str_eq_cstr(ident, "NumSubplots")) {
                 int n;
                 if (viamd::extract_int(n, arg)) {
-                    *num_subplots = CLAMP(n, 1, PLOT_MAX_SUBPLOTS);
+                    *num_subplots = MD_CLAMP(n, 1, PLOT_MAX_SUBPLOTS);
                 }
             }
         }
@@ -1587,7 +1587,7 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
             } else if (str_eq_cstr(ident, "Source") && viamd::extract_str(str, arg)) {
                 series_source_from_name(&s.key.source, str, &s.key.period);
             } else if (str_eq_cstr(ident, "Period") && viamd::extract_int(i, arg)) {
-                s.key.period = (uint32_t)MAX(i, 0);
+                s.key.period = (uint32_t)MD_MAX(i, 0);
             } else if (str_eq_cstr(ident, "Variant") && viamd::extract_str(str, arg)) {
                 for (int k = 0; k < SeriesVariant_Count; ++k) {
                     if (str_eq_cstr(str, variant_name[k])) s.key.variant = (SeriesVariant)k;
@@ -1604,16 +1604,16 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
                     if (str_eq_cstr(str, plot_type_name[k])) s.plot_type = (PlotType)k;
                 }
             } else if (str_eq_cstr(ident, "Marker") && viamd::extract_int(i, arg)) {
-                s.marker = (ImPlotMarker)CLAMP(i, 0, ImPlotMarker_COUNT - 1);
+                s.marker = (ImPlotMarker)MD_CLAMP(i, 0, ImPlotMarker_COUNT - 1);
             } else if (str_eq_cstr(ident, "MarkerSize")) {
                 viamd::extract_flt(s.marker_size, arg);
             } else if (str_eq_cstr(ident, "BarWidth")) {
                 viamd::extract_flt(s.bar_width, arg);
             } else if (str_eq_cstr(ident, "NumBins") && viamd::extract_int(i, arg)) {
-                s.num_bins = CLAMP(i, 2, 4096);
+                s.num_bins = MD_CLAMP(i, 2, 4096);
             } else if (str_eq_cstr(ident, "Smoothing")) {
                 viamd::extract_flt(s.smoothing, arg);
-                s.smoothing = CLAMP(s.smoothing, 0.0f, 16.0f);
+                s.smoothing = MD_CLAMP(s.smoothing, 0.0f, 16.0f);
             } else if (str_eq_cstr(ident, "UseColormap")) {
                 viamd::extract_bool(s.use_colormap, arg);
             } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_int(i, arg)) {

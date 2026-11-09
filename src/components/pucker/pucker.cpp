@@ -222,8 +222,8 @@ struct Pucker : viamd::EventHandler {
     }
 
     void init_tables() {
-        md_pucker_canonical(canon5, ARRAY_SIZE(canon5), 5);
-        md_pucker_canonical(canon6, ARRAY_SIZE(canon6), 6);
+        md_pucker_canonical(canon5, MD_COUNTOF(canon5), 5);
+        md_pucker_canonical(canon6, MD_COUNTOF(canon6), 6);
         // The region of each kind on the (phi, theta) map: the kind nearest the centre of each cell, as the names are
         // given (md_pucker_conformer)
         regions6.resize(REGION_PHI * REGION_THETA);
@@ -569,8 +569,8 @@ struct Pucker : viamd::EventHandler {
             ImPlot::SetupAxesLimits(0, 360, -8, 188, ImPlotCond_Always);
             static const double xt[] = { 0, 60, 120, 180, 240, 300, 360 };
             static const double yt[] = { 0, 45, 90, 135, 180 };
-            ImPlot::SetupAxisTicks(ImAxis_X1, xt, ARRAY_SIZE(xt));
-            ImPlot::SetupAxisTicks(ImAxis_Y1, yt, ARRAY_SIZE(yt));
+            ImPlot::SetupAxisTicks(ImAxis_X1, xt, MD_COUNTOF(xt));
+            ImPlot::SetupAxisTicks(ImAxis_Y1, yt, MD_COUNTOF(yt));
             ImPlot::SetupFinish();
 
             ImDrawList* dl = ImPlot::GetPlotDrawList();

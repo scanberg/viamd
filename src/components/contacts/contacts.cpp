@@ -267,7 +267,7 @@ struct Contacts : viamd::EventHandler {
             desc.radius = std::max(res.cutoff + 2.0 * max_radius, res.energy_cutoff);
             desc.particle_label = label.data();
             md_contact_pairs_t pairs = {};
-            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
             std::vector<uint64_t> keys;
             if (md_contact_pairs_init(&pairs, &desc, &sys, arena)) {
                 StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
@@ -308,7 +308,7 @@ struct Contacts : viamd::EventHandler {
                                   "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
                                   "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
-            cutoff = CLAMP(cutoff, -10.0f, 100.0f);
+            cutoff = MD_CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
 

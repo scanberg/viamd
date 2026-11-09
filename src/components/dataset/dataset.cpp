@@ -244,7 +244,7 @@ struct Dataset : viamd::EventHandler {
 
     void init_dataset_items(ApplicationState& data) {
         if (!arena) {
-            arena = md_arena_allocator_create(data.allocator.persistent, MEGABYTES(1));
+            arena = md_arena_allocator_create(data.allocator.persistent, MD_MEGABYTES(1));
         }
         clear_dataset_items();
 
@@ -1072,7 +1072,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableHeadersRow();
 
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
 
         for (size_t i = 0; i < file_list_count(list); ++i) {
             const FileEntry& e = *file_list_get(list, i);
@@ -1239,7 +1239,7 @@ struct Dataset : viamd::EventHandler {
         c.key = composition_key(data);
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         // Charges, when the file has them (a topology does)
         float* charge = nullptr;
@@ -1269,7 +1269,7 @@ struct Dataset : viamd::EventHandler {
         // The molecule of each part (a part is within one), and the parts of each molecule in order
         const size_t num_mols = sys.molecule.count;
         md_array_resize(c.mol_part_offset, num_mols + 1, alloc);
-        MEMSET(c.mol_part_offset, 0, (num_mols + 1) * sizeof(uint32_t));
+        MD_MEMSET(c.mol_part_offset, 0, (num_mols + 1) * sizeof(uint32_t));
         int32_t* part_mol = md_temp_alloc_array(temp, int32_t, md_system_part_count(&sys) + 1);
         for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
             const md_urange_t atoms = md_system_part_atom_range(&sys, p);
@@ -1281,7 +1281,7 @@ struct Dataset : viamd::EventHandler {
         md_array_resize(c.mol_part, c.mol_part_offset[num_mols], alloc);
         {
             uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_mols + 1);
-            MEMCPY(fill, c.mol_part_offset, (num_mols + 1) * sizeof(uint32_t));
+            MD_MEMCPY(fill, c.mol_part_offset, (num_mols + 1) * sizeof(uint32_t));
             for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
                 if (part_mol[p] >= 0) c.mol_part[fill[part_mol[p]]++] = (uint32_t)p;
             }
@@ -1292,7 +1292,7 @@ struct Dataset : viamd::EventHandler {
         for (size_t a = 0; a < sys.atom.count; ++a) atom_row[a] = (int32_t)rest_row;
         uint32_t* mol_res = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
         md_array_resize(c.row_mol_offset, num_types + 2, alloc);
-        MEMSET(c.row_mol_offset, 0, (num_types + 2) * sizeof(uint32_t));
+        MD_MEMSET(c.row_mol_offset, 0, (num_types + 2) * sizeof(uint32_t));
         for (size_t m = 0; m < num_mols; ++m) {
             const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
             if (t < 0 || (size_t)t >= num_types) continue;
@@ -1313,8 +1313,8 @@ struct Dataset : viamd::EventHandler {
                 row.polymer |= md_part_kind_is_polymer(md_system_part_kind(&sys, c.mol_part[k]));
             }
             row.num_residues += mol_res[m];
-            row.res_min = MIN(row.res_min, mol_res[m]);
-            row.res_max = MAX(row.res_max, mol_res[m]);
+            row.res_min = MD_MIN(row.res_min, mol_res[m]);
+            row.res_max = MD_MAX(row.res_max, mol_res[m]);
             // What the type is: the kinds of the parts of its first molecule, the strand (the largest part) first
             if (row.num_molecules == 1) {
                 const char* kinds[2] = {};
@@ -1340,7 +1340,7 @@ struct Dataset : viamd::EventHandler {
         md_array_resize(c.row_mol, c.row_mol_offset[num_types + 1], alloc);
         {
             uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_types + 1);
-            MEMCPY(fill, c.row_mol_offset, (num_types + 1) * sizeof(uint32_t));
+            MD_MEMCPY(fill, c.row_mol_offset, (num_types + 1) * sizeof(uint32_t));
             for (size_t m = 0; m < num_mols; ++m) {
                 const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
                 if (t >= 0 && (size_t)t < num_types) c.row_mol[fill[t]++] = (uint32_t)m;
@@ -1478,7 +1478,7 @@ struct Dataset : viamd::EventHandler {
         const ImGuiStyle& style = ImGui::GetStyle();
         const md_urange_t range = md_system_part_residue_range(&sys, part_idx);
         const uint32_t max_shown = 4000;
-        const uint32_t end = MIN(range.end, range.beg + max_shown);
+        const uint32_t end = MD_MIN(range.end, range.beg + max_shown);
 
         for (uint32_t res_idx = range.beg; res_idx < end; ++res_idx) {
             str_t res_name = md_system_residue_name(&sys, res_idx);
@@ -1624,7 +1624,7 @@ struct Dataset : viamd::EventHandler {
                 draw_molecule_sequences(data, c, mols[0]);
             } else {
                 const float line = ImGui::GetTextLineHeightWithSpacing();
-                const float height = line * (float)MIN(count, 10) + ImGui::GetStyle().WindowPadding.y * 2;
+                const float height = line * (float)MD_MIN(count, 10) + ImGui::GetStyle().WindowPadding.y * 2;
                 if (ImGui::BeginChild("##molecules", ImVec2(0, height), ImGuiChildFlags_Borders)) {
                     ImGuiListClipper clipper;
                     clipper.Begin(count);
@@ -1856,8 +1856,8 @@ struct Dataset : viamd::EventHandler {
             for (size_t i = 1; i < n; ++i) {
                 const double dt = t[i] - t[i - 1];
                 if (dt < 0 && !traj.backwards_at) traj.backwards_at = i;
-                traj.dt_min = MIN(traj.dt_min, dt);
-                traj.dt_max = MAX(traj.dt_max, dt);
+                traj.dt_min = MD_MIN(traj.dt_min, dt);
+                traj.dt_max = MD_MAX(traj.dt_max, dt);
             }
             traj.dt_mean = n > 1 ? (t[n - 1] - t[0]) / (double)(n - 1) : 0.0;
             if (n < 2) traj.dt_min = traj.dt_max = 0;
@@ -1896,8 +1896,8 @@ struct Dataset : viamd::EventHandler {
                     const double v = fabs(det);
                     if (v <= 0) continue;
                     traj.has_box = true;
-                    traj.vol_min = MIN(traj.vol_min, v);
-                    traj.vol_max = MAX(traj.vol_max, v);
+                    traj.vol_min = MD_MIN(traj.vol_min, v);
+                    traj.vol_max = MD_MAX(traj.vol_max, v);
                 }
             }
             md_temp_end(temp);
@@ -1962,7 +1962,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         const double frame = data.animation.frame;
-        const size_t fi = (size_t)CLAMP(frame + 0.5, 0.0, (double)(traj.num_frames - 1));
+        const size_t fi = (size_t)MD_CLAMP(frame + 0.5, 0.0, (double)(traj.num_frames - 1));
         const double* t = run_frame_times(&data);
         if (traj.has_time && t) {
             ImGui::Text("Showing frame %zu, %.6g %s", fi, t[fi] * ts, tu);
@@ -1972,7 +1972,7 @@ struct Dataset : viamd::EventHandler {
 
         // What was loaded along the frames, and how it lines up with them
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
         for (size_t g = 0; g < num_groups; ++g) {
             const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], STR_LIT("time"));
             char label[256];
@@ -2013,7 +2013,7 @@ struct Dataset : viamd::EventHandler {
     // it, attr("edr/potential").
     void draw_series(ApplicationState& data) {
         str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
         if (num_groups == 0) return;
 
         if (!ImGui::CollapsingHeader("Series", ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -2026,7 +2026,7 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t g = 0; g < num_groups; ++g) {
             md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
+            MD_DEFER { md_temp_end(temp); };
 
             const size_t num = system_series_members(nullptr, 0, &data, groups[g]);
             str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
@@ -2036,12 +2036,12 @@ struct Dataset : viamd::EventHandler {
             system_series_group_label(group_label, sizeof(group_label), &data, groups[g]);
 
             ImGui::PushID((int)md_hash64_str(groups[g], 0));
-            defer { ImGui::PopID(); };
+            MD_DEFER { ImGui::PopID(); };
 
             if (!ImGui::TreeNodeEx("##group", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth, "%s   %zu series", group_label, num)) {
                 continue;
             }
-            defer { ImGui::TreePop(); };
+            MD_DEFER { ImGui::TreePop(); };
 
             const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
             if (!ImGui::BeginTable("##series", 4, table_flags)) {
@@ -2258,7 +2258,7 @@ struct Dataset : viamd::EventHandler {
         const float opt_w = ImGui::CalcTextSize(opt_lbl).x + style.FramePadding.x * 2;
 
         ImGui::PushID(id);
-        defer { ImGui::PopID(); };
+        MD_DEFER { ImGui::PopID(); };
         if (show_filter) {
             ImGui::SetNextItemWidth(-(reset_w + opt_w + style.ItemSpacing.x));
             ImGui::InputTextWithHint("##filter", filter_hint, filter, filter_cap);
@@ -2462,7 +2462,7 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::PushID("##atom_type_editor");
         ImGui::PushID((int)i);
-        defer { ImGui::PopID(); ImGui::PopID(); };
+        MD_DEFER { ImGui::PopID(); ImGui::PopID(); };
 
         {
             char title[64];
@@ -2546,7 +2546,7 @@ struct Dataset : viamd::EventHandler {
         if (num_types == 0 || md_array_size(particle_types) != num_types) return;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_array(ColorOptimizeItem) items = 0;
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
@@ -2670,7 +2670,7 @@ struct Dataset : viamd::EventHandler {
         const float  row_h    = frame_h + style.CellPadding.y * 2.0f;
         const float  header_h = ImGui::GetFontSize() + style.CellPadding.y * 2.0f;
         const size_t max_rows = 12;
-        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MIN(num_rows, max_rows) + 2.0f);
+        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MD_MIN(num_rows, max_rows) + 2.0f);
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
@@ -2717,7 +2717,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_array(int) rows = 0;
         md_array_ensure(rows, num_rows, md_temp_allocator(temp));
         for (size_t k = 0; k < num_types; ++k) {
@@ -2835,7 +2835,7 @@ struct Dataset : viamd::EventHandler {
         if (!ImGui::CollapsingHeader("Element Defaults")) return;
 
         ImGui::Indent();
-        defer { ImGui::Unindent(); };
+        MD_DEFER { ImGui::Unindent(); };
 
         const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
         if (table_res.hovered) {
@@ -2867,11 +2867,11 @@ struct Dataset : viamd::EventHandler {
             bool edited = false;
             edited |= ImGui::ColorEdit3("Color", def.color.elem);
             if (ImGui::InputFloat("Van der Waals Radius", &def.radius)) {
-                def.radius = MAX(def.radius, 0.01f);
+                def.radius = MD_MAX(def.radius, 0.01f);
                 edited = true;
             }
             if (ImGui::InputFloat("Atomic Mass", &def.mass)) {
-                def.mass = MAX(def.mass, 0.001f);
+                def.mass = MD_MAX(def.mass, 0.001f);
                 edited = true;
             }
             if (compute_element_default_delta((md_atomic_number_t)z)) {
@@ -3022,7 +3022,7 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::PushID("##comp_type_editor");
         ImGui::PushID((int)i);
-        defer { ImGui::PopID(); ImGui::PopID(); };
+        MD_DEFER { ImGui::PopID(); ImGui::PopID(); };
 
         {
             char title[64];
@@ -3083,7 +3083,7 @@ struct Dataset : viamd::EventHandler {
         const float  row_h    = frame_h + style.CellPadding.y * 2.0f;
         const float  header_h = ImGui::GetFontSize() + style.CellPadding.y * 2.0f;
         const size_t max_rows = 12;
-        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MIN(num_rows, max_rows) + 2.0f);
+        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MD_MIN(num_rows, max_rows) + 2.0f);
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
@@ -3126,7 +3126,7 @@ struct Dataset : viamd::EventHandler {
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_array(int) rows = 0;
         md_array_ensure(rows, num_rows, md_temp_allocator(temp));
         for (size_t k = 0; k < num_types; ++k) {
@@ -3221,7 +3221,7 @@ struct Dataset : viamd::EventHandler {
         if (num_types == 0 || md_array_size(res_types) != num_types) return;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_array(ColorOptimizeItem) items = 0;
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
@@ -3368,7 +3368,7 @@ struct Dataset : viamd::EventHandler {
         if (!ImGui::CollapsingHeader("Residue Defaults")) return;
 
         ImGui::Indent();
-        defer { ImGui::Unindent(); };
+        MD_DEFER { ImGui::Unindent(); };
 
         const ImGuiStyle& style = ImGui::GetStyle();
         const float spacing = style.ItemSpacing.x * 0.25f;

@@ -140,7 +140,7 @@ static struct {
 static void gl_debug_group_path(char* buf, size_t cap) {
     size_t off = 0;
     buf[0] = '\0';
-    int depth = MIN(gl_debug_state.depth, GL_DEBUG_GROUP_STACK_SIZE);
+    int depth = MD_MIN(gl_debug_state.depth, GL_DEBUG_GROUP_STACK_SIZE);
     for (int i = 0; i < depth; ++i) {
         int n = snprintf(buf + off, cap - off, "%s%s", (i > 0) ? " > " : "", gl_debug_state.group[i]);
         if (n < 0 || (size_t)n >= cap - off) break;
@@ -226,7 +226,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 }
 
@@ -257,7 +257,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 #endif
     // Zero terminated
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     str_t ztitle = str_copy(title, md_temp_allocator(temp));
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
@@ -385,14 +385,14 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 
     GLFWdropfun drop_cb = [](GLFWwindow* window, int num_files, const char** paths) {
         Context* ctx = (Context*)glfwGetWindowUserPointer(window);
-        ASSERT(ctx);
+        MD_ASSERT(ctx);
         
         for (int i = 0; i < num_files; ++i) {
             MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         str_t* str_paths = md_temp_alloc_array(temp, str_t, num_files);
         for (int i = 0; i < num_files; ++i) {
@@ -426,7 +426,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         MD_LOG_ERROR("Failed to initialize NativeFileDialog: %s", NFD_GetError());
     }
 
-    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    MD_MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
@@ -441,7 +441,7 @@ void shutdown(Context* ctx) {
     ImGui::DestroyContext();
     glfwTerminate();
 
-    MEMSET(ctx, 0, sizeof(Context));
+    MD_MEMSET(ctx, 0, sizeof(Context));
 }
 
 void update(Context* ctx) {
@@ -485,7 +485,7 @@ void update(Context* ctx) {
     data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
     data.internal_ctx.timing.total_s = t;
 
-    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    MD_MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void render_imgui(Context* ctx) {
@@ -510,7 +510,7 @@ void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr);
 bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
     md_temp_scope_t temp = md_temp_begin();
     nfdu8char_t* out_path = NULL;
-    defer {
+    MD_DEFER {
         md_temp_end(temp);
         if (out_path) NFD_FreePathU8(out_path);
     };

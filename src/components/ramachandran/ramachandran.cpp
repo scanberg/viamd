@@ -151,7 +151,7 @@ static double ref_density(int type, double phi, double psi) {
 }
 
 static inline Region ref_region(int type, float phi_rad, float psi_rad) {
-    const double d = ref_density(type, RAD_TO_DEG(phi_rad), RAD_TO_DEG(psi_rad));
+    const double d = ref_density(type, MD_RAD_TO_DEG(phi_rad), MD_RAD_TO_DEG(psi_rad));
     return d >= ref_favored[type] ? Region_Favored : d >= ref_allowed[type] ? Region_Allowed : Region_Outlier;
 }
 
@@ -459,9 +459,9 @@ struct Ramachandran : viamd::EventHandler {
     // The reference densities, resampled onto the grid of the densities (texel centres) and smoothed a little: they are
     // tabulated at 2 degrees
     static void init_reference(uint32_t tex) {
-        STATIC_ASSERT(NUM_TYPES == DENSITY_MAP_CHANNELS, "a channel for each class");
+        MD_STATIC_ASSERT(NUM_TYPES == DENSITY_MAP_CHANNELS, "a channel for each class");
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         const int dim = DENSITY_MAP_DIM;
         float* data = (float*)md_temp_alloc_aligned(temp, sizeof(float) * 4 * dim * dim, 16);
         for (int y = 0; y < dim; ++y) {
@@ -504,7 +504,7 @@ struct Ramachandran : viamd::EventHandler {
     vec4_t next_layer_color() const {
         int best = 0;
         int best_uses = INT32_MAX;
-        for (int p = 0; p < (int)ARRAY_SIZE(layer_palette); ++p) {
+        for (int p = 0; p < (int)MD_COUNTOF(layer_palette); ++p) {
             int uses = 0;
             for (int i = 0; i < num_layers; ++i) {
                 if (layers[i].source == LayerSource_System && vec4_equal(layers[i].color, layer_palette[p])) ++uses;
@@ -635,7 +635,7 @@ struct Ramachandran : viamd::EventHandler {
         num_layers -= 1;
         layers[num_layers] = Layer{};
         if (selected_layer == id) {
-            selected_layer = num_layers > 0 ? layers[MIN(idx, num_layers - 1)].id : 0;
+            selected_layer = num_layers > 0 ? layers[MD_MIN(idx, num_layers - 1)].id : 0;
         }
         tree_changed();
         panel_hash_reset();
@@ -709,7 +709,7 @@ struct Ramachandran : viamd::EventHandler {
         if (!l || l->node.parent != 0) return;
         LayerGroup* g = add_group(l->node.order - 1);
         if (!g) return;
-        MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
+        MD_MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
         g->follow_selection = l->follow_selection;
         l->filter.text[0] = '\0';
         l->follow_selection = false;
@@ -767,17 +767,17 @@ struct Ramachandran : viamd::EventHandler {
             const RepresentationNode node = copy->node;
             *copy = LayerGroup{};
             copy->node = node;
-            MEMCPY(copy->name, src.name, sizeof(copy->name));
+            MD_MEMCPY(copy->name, src.name, sizeof(copy->name));
             copy->visible = src.visible;
             copy->open = src.open;
             copy->filter.text[0] = '\0';
-            MEMCPY(copy->filter.text, src.filter.text, sizeof(copy->filter.text));
+            MD_MEMCPY(copy->filter.text, src.filter.text, sizeof(copy->filter.text));
             copy->follow_selection = src.follow_selection;
             // In the order they are in, each last in the copy
             RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
             const size_t n = tree_nodes(nodes);
             int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-            const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, n, id);
+            const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, n, id);
             for (size_t k = 0; k < nk; ++k) {
                 if (kids[k] < num_layers) copy_layer(layers[kids[k]], copy_id, LAYER_TREE_LAST);
             }
@@ -867,9 +867,9 @@ struct Ramachandran : viamd::EventHandler {
     // The density of the angles of the layer's residues over frames [frame_beg, frame_end): a channel for each class.
     // Where the samples fall in the reference is counted along, by chunk.
     void launch_job(Layer& l, uint64_t hash, uint32_t frame_beg, uint32_t frame_end) {
-        ASSERT(!l.job);
+        MD_ASSERT(!l.job);
         const md_backbone_angles_t* angles = app->trajectory_data.backbone_angles.data;
-        ASSERT(angles && frame_end > frame_beg);
+        MD_ASSERT(angles && frame_end > frame_beg);
 
         struct Input {
             const md_backbone_angles_t* angles = nullptr;
@@ -891,7 +891,7 @@ struct Ramachandran : viamd::EventHandler {
         }
         num_samples *= (frame_end - frame_beg);
         // A chunk for every 2M samples, no more than there are frames
-        const uint32_t num_chunks = (uint32_t)MIN((uint64_t)MIN(8u, frame_end - frame_beg), (num_samples >> 21) + 1);
+        const uint32_t num_chunks = (uint32_t)MD_MIN((uint64_t)MD_MIN(8u, frame_end - frame_beg), (num_samples >> 21) + 1);
 
         auto source = [in](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
             const uint32_t n = in->frame_end - in->frame_beg;
@@ -906,7 +906,7 @@ struct Ramachandran : viamd::EventHandler {
                     for (size_t i = 0; i < num; ++i) {
                         const md_backbone_angles_t ang = a[segs[i]];
                         if (!has_angles(ang)) continue;
-                        bins.add(t, RAD_TO_DEG(ang.phi), RAD_TO_DEG(ang.psi));
+                        bins.add(t, MD_RAD_TO_DEG(ang.phi), MD_RAD_TO_DEG(ang.psi));
                         in->regions[chunk][t][ref_region(t, ang.phi, ang.psi)] += 1;
                     }
                 }
@@ -958,9 +958,9 @@ struct Ramachandran : viamd::EventHandler {
 
         md_allocator_i* heap = md_get_heap_allocator();
         md_array_resize(seg_type, num_segments, heap);
-        MEMSET(seg_count, 0, sizeof(seg_count));
+        MD_MEMSET(seg_count, 0, sizeof(seg_count));
         if (num_segments > 0) {
-            MEMSET(seg_type, -1, num_segments);
+            MD_MEMSET(seg_type, -1, num_segments);
             md_temp_scope_t temp = md_temp_begin();
             md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
             md_util_backbone_ramachandran_classify(types, num_segments, &sys);
@@ -1066,7 +1066,7 @@ struct Ramachandran : viamd::EventHandler {
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1165,7 +1165,7 @@ struct Ramachandran : viamd::EventHandler {
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
         const size_t n = tree_nodes(nodes);
         int top[MAX_LAYERS + LAYER_MAX_GROUPS];
-        const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+        const size_t nt = representation_tree_children(top, MD_COUNTOF(top), nodes, n, 0);
         for (size_t k = 0; k < nt; ++k) {
             if (top[k] < num_layers) {
                 serialize_layer(state, layers[top[k]]);
@@ -1174,7 +1174,7 @@ struct Ramachandran : viamd::EventHandler {
             const LayerGroup& g = groups[top[k] - num_layers];
             layer_group_serialize(state, STR_LIT("RamachandranGroup"), g);
             int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-            const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, n, g.node.id);
+            const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, n, g.node.id);
             for (size_t c = 0; c < nk; ++c) {
                 if (kids[c] < num_layers) serialize_layer(state, layers[kids[c]]);
             }
@@ -1217,7 +1217,7 @@ struct Ramachandran : viamd::EventHandler {
         while (viamd::next_entry(ident, arg, state)) {
             if (str_eq_cstr(ident, "View")) {
                 int v = -1;
-                if (viamd::extract_int(v, arg)) view = CLAMP(v, -1, NUM_PANELS - 1);
+                if (viamd::extract_int(v, arg)) view = MD_CLAMP(v, -1, NUM_PANELS - 1);
             } else if (str_eq_cstr(ident, "ShowLayers")) {
                 viamd::extract_bool(show_sidebar, arg);
             } else if (str_eq_cstr(ident, "ShowTicks")) {
@@ -1319,7 +1319,7 @@ struct Ramachandran : viamd::EventHandler {
                 l->frames = str_eq_cstr(s, "all") ? LayerFrames_All : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_Current;
             } else if (str_eq_cstr(ident, "Period")) {
                 int id = 0;
-                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MAX(id, 0);
+                if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
             } else if (str_eq_cstr(ident, "Filter")) {
                 viamd::extract_to_char_buf(l->filter.text, sizeof(l->filter.text), arg);
             } else if (str_eq_cstr(ident, "FollowSelection")) {
@@ -1348,7 +1348,7 @@ struct Ramachandran : viamd::EventHandler {
                 }
                 if (n > 0) {
                     l->num_levels = n;
-                    MEMCPY(l->levels, v, sizeof(float) * n);
+                    MD_MEMCPY(l->levels, v, sizeof(float) * n);
                 }
             } else if (str_eq_cstr(ident, "Bandwidth")) {
                 viamd::extract_flt(l->bandwidth, arg);
@@ -1380,16 +1380,16 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     static void sanitize_layer(Layer& l) {
-        l.source = (LayerSource)CLAMP((int)l.source, 0, LayerSource_Count - 1);
-        l.frames = (LayerFrames)CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
-        l.style = (LayerStyle)CLAMP((int)l.style, 0, LayerStyle_Count - 1);
+        l.source = (LayerSource)MD_CLAMP((int)l.source, 0, LayerSource_Count - 1);
+        l.frames = (LayerFrames)MD_CLAMP((int)l.frames, 0, LayerFrames_Count - 1);
+        l.style = (LayerStyle)MD_CLAMP((int)l.style, 0, LayerStyle_Count - 1);
         if (l.source == LayerSource_Reference && l.style == LayerStyle_Points) l.style = LayerStyle_Contours;
-        l.opacity = CLAMP(l.opacity, 0.0f, 1.0f);
-        l.line_width = CLAMP(l.line_width, 0.5f, 8.0f);
-        l.bandwidth = CLAMP(l.bandwidth, 0.5f, 30.0f);
-        l.point_size = CLAMP(l.point_size, 1.0f, 16.0f);
-        l.num_levels = CLAMP(l.num_levels, 1, MAX_LEVELS);
-        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = CLAMP(l.levels[i], 0.01f, 0.999f);
+        l.opacity = MD_CLAMP(l.opacity, 0.0f, 1.0f);
+        l.line_width = MD_CLAMP(l.line_width, 0.5f, 8.0f);
+        l.bandwidth = MD_CLAMP(l.bandwidth, 0.5f, 30.0f);
+        l.point_size = MD_CLAMP(l.point_size, 1.0f, 16.0f);
+        l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
+        for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
         sort_levels(l);
         if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
     }
@@ -1404,20 +1404,20 @@ struct Ramachandran : viamd::EventHandler {
             selected_layer = cur->id;
         }
 
-        uint32_t period = (uint32_t)MAX(legacy.period, 0);
+        uint32_t period = (uint32_t)MD_MAX(legacy.period, 0);
         if (period == 0 && app) period = app->timeline.periods.legacy_filter_id;
-        const float bandwidth = legacy.blur_sigma > 0.0f ? CLAMP(legacy.blur_sigma * 1.4f, 1.0f, 20.0f) : 5.0f;
+        const float bandwidth = legacy.blur_sigma > 0.0f ? MD_CLAMP(legacy.blur_sigma * 1.4f, 1.0f, 20.0f) : 5.0f;
 
         // Each under the points, over the ones before it: the reference at the bottom, the period on top
         for (int i = 0; i < 3; ++i) {
             if (i == 2 && period == 0) continue;
             const LayerSource source = i == 0 ? LayerSource_Reference : LayerSource_System;
             const LayerFrames frames = i == 2 ? LayerFrames_Period : LayerFrames_All;
-            const int mode = CLAMP(legacy.mode[i], 0, 2);
+            const int mode = MD_CLAMP(legacy.mode[i], 0, 2);
             Layer* l = add_layer(source, frames, mode == 2 ? LayerStyle_Heatmap : LayerStyle_Contours, i == 0 ? -1 : 1);
             if (!l) continue;
             l->visible = legacy.show[i] != 0;
-            l->opacity = CLAMP(legacy.alpha[i], 0.0f, 1.0f);
+            l->opacity = MD_CLAMP(legacy.alpha[i], 0.0f, 1.0f);
             l->period = period;
             l->bandwidth = bandwidth;
             l->colormap = legacy.colormap[i] >= 0 && legacy.colormap[i] < ImPlot::GetColormapCount() ? legacy.colormap[i] : ImPlotColormap_Viridis;
@@ -1474,7 +1474,7 @@ struct Ramachandran : viamd::EventHandler {
         const int type = panel == PANEL_ALL ? -1 : panel;
         d->opacity = l.opacity;
         d->line_width = l.line_width;
-        MEMCPY(d->line_color, l.color.elem, sizeof(d->line_color));
+        MD_MEMCPY(d->line_color, l.color.elem, sizeof(d->line_color));
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
@@ -1490,8 +1490,8 @@ struct Ramachandran : viamd::EventHandler {
             d->num_levels = 2;
             d->levels[0] = ref_favored[t];
             d->levels[1] = ref_allowed[t];
-            MEMCPY(d->fill_colors[0], ref_fill_favored[t].elem, sizeof(float) * 4);
-            MEMCPY(d->fill_colors[1], ref_fill_allowed[t].elem, sizeof(float) * 4);
+            MD_MEMCPY(d->fill_colors[0], ref_fill_favored[t].elem, sizeof(float) * 4);
+            MD_MEMCPY(d->fill_colors[1], ref_fill_allowed[t].elem, sizeof(float) * 4);
             d->cmap_max = 1.0f;
             d->content = 1;
             return true;
@@ -1565,7 +1565,7 @@ struct Ramachandran : viamd::EventHandler {
         ps->frame_beg = beg;
         ps->frame_end = end;
         const uint64_t total = (uint64_t)num_segs * (end - beg);
-        ps->frame_step = (uint32_t)MAX((uint64_t)1, (total + MAX_POINTS - 1) / MAX_POINTS);
+        ps->frame_step = (uint32_t)MD_MAX((uint64_t)1, (total + MAX_POINTS - 1) / MAX_POINTS);
         ps->current = false;
         l.point_stride = ps->frame_step;
         return true;
@@ -1632,7 +1632,7 @@ struct Ramachandran : viamd::EventHandler {
         } else {
             ImGui::Text("CA atom[%d]", sys.protein_backbone.segment.atoms[h.seg].ca + 1);
         }
-        ImGui::Text("\xcf\x86 %.1f\xc2\xb0   \xcf\x88 %.1f\xc2\xb0", RAD_TO_DEG(h.ang.phi), RAD_TO_DEG(h.ang.psi));
+        ImGui::Text("\xcf\x86 %.1f\xc2\xb0   \xcf\x88 %.1f\xc2\xb0", MD_RAD_TO_DEG(h.ang.phi), MD_RAD_TO_DEG(h.ang.psi));
         const Region r = ref_region(h.type, h.ang.phi, h.ang.psi);
         ImGui::TextDisabled("%s \xc2\xb7", panel_names[h.type]);
         ImGui::SameLine();
@@ -1670,8 +1670,8 @@ struct Ramachandran : viamd::EventHandler {
         const bool images_x = lim.Size().x > 360.0;
         const bool images_y = lim.Size().y > 360.0;
         auto for_images = [&](md_backbone_angles_t a, auto&& fn) {
-            const double x = deperiodize_ortho(RAD_TO_DEG(a.phi), mid_x, 360.0);
-            const double y = deperiodize_ortho(RAD_TO_DEG(a.psi), mid_y, 360.0);
+            const double x = deperiodize_ortho(MD_RAD_TO_DEG(a.phi), mid_x, 360.0);
+            const double y = deperiodize_ortho(MD_RAD_TO_DEG(a.psi), mid_y, 360.0);
             for (int ix = images_x ? -1 : 0; ix <= (images_x ? 1 : 0); ++ix) {
                 const double xx = x + 360.0 * ix;
                 if (xx < lim.X.Min - margin_x || xx > lim.X.Max + margin_x) continue;
@@ -1699,7 +1699,7 @@ struct Ramachandran : viamd::EventHandler {
             float best = reach * reach;
             for (int i = 0; i < num_layers; ++i) {
                 if (!has_source[i]) continue;
-                const float r = MAX(reach, layers[i].point_size);
+                const float r = MD_MAX(reach, layers[i].point_size);
                 const float r2 = r * r;
                 for_each_point(layers[i], sources[i], panel, [&](int t, uint32_t seg, uint32_t frame, md_backbone_angles_t ang) {
                     for_images(ang, [&](ImVec2 p) {
@@ -1735,14 +1735,14 @@ struct Ramachandran : viamd::EventHandler {
                 grow_mask_by_selection_granularity(highlight_mask, app->selection.granularity, sys);
             }
         } else if (box.active && box.panel == panel) {
-            const double x0 = MIN(box.p0.x, box.p1.x), x1 = MAX(box.p0.x, box.p1.x);
-            const double y0 = MIN(box.p0.y, box.p1.y), y1 = MAX(box.p0.y, box.p1.y);
+            const double x0 = MD_MIN(box.p0.x, box.p1.x), x1 = MD_MAX(box.p0.x, box.p1.x);
+            const double y0 = MD_MIN(box.p0.y, box.p1.y), y1 = MD_MAX(box.p0.y, box.p1.y);
             const double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
             for (int i = 0; i < num_layers; ++i) {
                 if (!has_source[i]) continue;
                 for_each_point(layers[i], sources[i], panel, [&](int, uint32_t seg, uint32_t, md_backbone_angles_t ang) {
-                    const double x = deperiodize_ortho(RAD_TO_DEG(ang.phi), cx, 360.0);
-                    const double y = deperiodize_ortho(RAD_TO_DEG(ang.psi), cy, 360.0);
+                    const double x = deperiodize_ortho(MD_RAD_TO_DEG(ang.phi), cx, 360.0);
+                    const double y = deperiodize_ortho(MD_RAD_TO_DEG(ang.psi), cy, 360.0);
                     if (x0 <= x && x <= x1 && y0 <= y && y <= y1) {
                         mask_add_segment(highlight_mask, sys, seg);
                     }
@@ -1793,7 +1793,7 @@ struct Ramachandran : viamd::EventHandler {
             for (int i = num_layers - 1; i >= 0; --i) {
                 if (!has_source[i]) continue;
                 const Layer& l = layers[i];
-                const float r = MAX(l.point_size * 0.5f + 2.5f, 4.0f);
+                const float r = MD_MAX(l.point_size * 0.5f + 2.5f, 4.0f);
                 for_each_point(l, sources[i], panel, [&](int, uint32_t seg, uint32_t, md_backbone_angles_t ang) {
                     const md_atom_idx_t atom = segment_atom(sys, seg);
                     if (atom < 0) return;
@@ -1941,7 +1941,7 @@ struct Ramachandran : viamd::EventHandler {
         // A period from the timeline: a new layer of the density over it
         if (ImPlot::BeginDragDropTargetPlot()) {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
-                ASSERT(payload->DataSize == sizeof(uint32_t));
+                MD_ASSERT(payload->DataSize == sizeof(uint32_t));
                 add_period_layer(*(const uint32_t*)payload->Data);
             }
             ImPlot::EndDragDropTarget();
@@ -1977,9 +1977,9 @@ struct Ramachandran : viamd::EventHandler {
         const double mid_y = (viewrect.Y.Min + viewrect.Y.Max) * 0.5;
         // The shorter side within [10, 360] degrees, the other in proportion: all of the domain fits along the shorter
         // side, and the longer one shows some of it twice
-        double w = MAX(viewrect.Size().x, 1e-3);
-        double h = MAX(viewrect.Size().y, 1e-3);
-        const double short_side = MIN(w, h);
+        double w = MD_MAX(viewrect.Size().x, 1e-3);
+        double h = MD_MAX(viewrect.Size().y, 1e-3);
+        const double short_side = MD_MIN(w, h);
         const double scl = short_side > 360.0 ? 360.0 / short_side : short_side < 10.0 ? 10.0 / short_side : 1.0;
         w *= scl;
         h *= scl;
@@ -2009,16 +2009,16 @@ struct Ramachandran : viamd::EventHandler {
     void limit_zoom_rate(float* rate) const {
         const float wheel = ImGui::GetIO().MouseWheel;
         if (wheel == 0.0f || *rate <= 0.0f) return;
-        const double short_side = MIN(viewrect.Size().x, viewrect.Size().y);
+        const double short_side = MD_MIN(viewrect.Size().x, viewrect.Size().y);
         if (short_side <= 0.0) return;
         double r = *rate;
         if (wheel < 0.0f) {
             const double f = 360.0 / short_side;                // What is left to zoom out
-            r = f <= 1.0 + 1e-9 ? 0.0 : MIN(r, 2.0 * (sqrt(f) - 1.0));
+            r = f <= 1.0 + 1e-9 ? 0.0 : MD_MIN(r, 2.0 * (sqrt(f) - 1.0));
         } else {
             const double f = 10.0 / short_side;                 // What is left to zoom in
             const double q = f >= 1.0 - 1e-9 ? 0.0 : 1.0 - sqrt(f);
-            r = q <= 0.0 ? 0.0 : q < 0.25 ? MIN(r, 2.0 * q / (1.0 - 4.0 * q)) : r;
+            r = q <= 0.0 ? 0.0 : q < 0.25 ? MD_MIN(r, 2.0 * q / (1.0 - 4.0 * q)) : r;
         }
         *rate = (float)r;
     }
@@ -2026,8 +2026,8 @@ struct Ramachandran : viamd::EventHandler {
     void draw_plots() {
         // Counted again as the points are drawn
         for (int i = 0; i < num_layers; ++i) {
-            MEMSET(layers[i].point_regions, 0, sizeof(layers[i].point_regions));
-            MEMSET(layers[i].point_count, 0, sizeof(layers[i].point_count));
+            MD_MEMSET(layers[i].point_regions, 0, sizeof(layers[i].point_regions));
+            MD_MEMSET(layers[i].point_count, 0, sizeof(layers[i].point_count));
         }
 
         // Fitted to the shape of the plots of the last frame
@@ -2054,7 +2054,7 @@ struct Ramachandran : viamd::EventHandler {
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         if (view < 0) {
-            const bool small = MIN(avail.x, avail.y) * 0.5f < 260.0f;
+            const bool small = MD_MIN(avail.x, avail.y) * 0.5f < 260.0f;
             constexpr ImPlotSubplotFlags subplot_flags = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus | ImPlotSubplotFlags_NoLegend;
             if (ImPlot::BeginSubplots("##rama_grid", 2, 2, ImVec2(-1, -1), subplot_flags)) {
                 for (int t = 0; t < NUM_TYPES; ++t) {
@@ -2063,7 +2063,7 @@ struct Ramachandran : viamd::EventHandler {
                 ImPlot::EndSubplots();
             }
         } else {
-            draw_panel(view, ImVec2(-1, -1), MIN(avail.x, avail.y) < 220.0f);
+            draw_panel(view, ImVec2(-1, -1), MD_MIN(avail.x, avail.y) < 220.0f);
         }
         ImPlot::PopStyleVar(2);
         ImPlot::PopStyleColor();
@@ -2104,12 +2104,12 @@ struct Ramachandran : viamd::EventHandler {
         }
         ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
         ImGui::SameLine();
-        density_map_segmented("view", labels, values, (int)ARRAY_SIZE(labels), &view, tooltips);
+        density_map_segmented("view", labels, values, (int)MD_COUNTOF(labels), &view, tooltips);
 
         // On the right: fitting the view and the settings
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
         if (ImGui::Button(ICON_FA_EXPAND)) {
             fit_view = true;
         }
@@ -2461,7 +2461,7 @@ struct Ramachandran : viamd::EventHandler {
         // What is within a hidden group is dimmed: hidden too, whatever its own eye says
         if (!g.visible) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
         int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
-        const size_t nk = representation_tree_children(kids, ARRAY_SIZE(kids), nodes, num_nodes, g.node.id);
+        const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, num_nodes, g.node.id);
         for (size_t k = 0; k < nk; ++k) {
             if (kids[k] < num_layers) draw_layer_row(layers[kids[k]], ImGui::GetStyle().IndentSpacing, nodes, num_nodes, act);
         }
@@ -2550,10 +2550,10 @@ struct Ramachandran : viamd::EventHandler {
         char auto_name[128];
         {
             char saved[sizeof(l.name)];
-            MEMCPY(saved, l.name, sizeof(saved));
+            MD_MEMCPY(saved, l.name, sizeof(saved));
             l.name[0] = '\0';
             layer_label(auto_name, sizeof(auto_name), l);
-            MEMCPY(l.name, saved, sizeof(saved));
+            MD_MEMCPY(l.name, saved, sizeof(saved));
         }
         prop::row("name");
         ImGui::InputTextWithHint("##name", auto_name, l.name, sizeof(l.name));
@@ -2577,7 +2577,7 @@ struct Ramachandran : viamd::EventHandler {
             prop::row("residues", "The residues whose CA the filter picks, or those selected");
             {
                 const float btn_w = ImGui::GetFrameHeight() + 6;
-                ImGui::SetNextItemWidth(MAX(1.0f, prop::control_width() - btn_w - 2));
+                ImGui::SetNextItemWidth(MD_MAX(1.0f, prop::control_width() - btn_w - 2));
                 ImGui::BeginDisabled(l.follow_selection);
                 const bool invalid = !l.follow_selection && !l.segs_valid && l.filter.text[0];
                 if (invalid) ImGui::PushInvalid();
@@ -2710,7 +2710,7 @@ struct Ramachandran : viamd::EventHandler {
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("LAYERS");
         ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(0.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight()));
         if (ImGui::Button(ICON_FA_PLUS "##add", ImVec2(ImGui::GetFrameHeight(), 0))) ImGui::OpenPopup("##add_menu");
         ImGui::SetItemTooltip("Add a layer");
         if (ImGui::BeginPopup("##add_menu")) {
@@ -2724,7 +2724,7 @@ struct Ramachandran : viamd::EventHandler {
             RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
             const size_t n = tree_nodes(nodes);
             int top[MAX_LAYERS + LAYER_MAX_GROUPS];
-            const size_t nt = representation_tree_children(top, ARRAY_SIZE(top), nodes, n, 0);
+            const size_t nt = representation_tree_children(top, MD_COUNTOF(top), nodes, n, 0);
             for (size_t k = 0; k < nt; ++k) {
                 if (top[k] < num_layers) draw_layer_row(layers[top[k]], 0.0f, nodes, n, &act);
                 else                     draw_group(groups[top[k] - num_layers], nodes, n, &act);

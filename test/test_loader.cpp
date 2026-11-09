@@ -110,7 +110,7 @@ UTEST(viamd_loader, trajectory_only_formats_do_not_claim_to_be_systems) {
     /* A trajectory has no topology of its own, so offering one as a system would load atoms with no
      * elements or names. */
     const LoaderType traj_only[] = { LoaderType_XTC, LoaderType_TRR, LoaderType_DCD, LoaderType_LAMMPSTRJ };
-    for (size_t i = 0; i < ARRAY_SIZE(traj_only); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(traj_only); ++i) {
         EXPECT_NE(0u, loader::type_flags(traj_only[i]) & LoaderFlag_Trajectory);
         EXPECT_EQ(0u, loader::type_flags(traj_only[i]) & LoaderFlag_System);
     }
@@ -167,7 +167,7 @@ UTEST(viamd_loader, h5md_is_a_system_and_its_own_trajectory) {
     const LoaderFlags expected = LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_Topology;
     EXPECT_EQ(expected, state.flags & expected);
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {};
     sys.alloc = arena;
     md_system_state_t sys_state = {};
@@ -286,7 +286,7 @@ UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
     ASSERT_TRUE(write_file("viamd_test_water.rst7", water_rst7));
     ASSERT_TRUE(write_file("viamd_test_water.pdb", water_pdb));
     ASSERT_TRUE(write_file("viamd_test_water.lammpstrj", water_lammpstrj));
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
 
     loader::LoaderState ls = {};
     loader::init(&ls, STR_LIT("viamd_test_water.prmtop"));
@@ -297,7 +297,7 @@ UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
         { "viamd_test_water.pdb", 2.0f },           // a structure file of the same atoms
         { "viamd_test_water.lammpstrj", 3.0f },     // the first frame of a trajectory
     };
-    for (size_t i = 0; i < ARRAY_SIZE(coords); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(coords); ++i) {
         md_system_t sys = {};
         sys.alloc = arena;
         md_system_state_t state = {};

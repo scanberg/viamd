@@ -531,9 +531,9 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
     ImVec2 prev_inner = zero_inner;
     ImVec2 next_inner;
     const float PI_HALF = IM_PI * 0.5f;
-    const float TWO_PI = IM_PI * 2.f;
+    const float MD_TWO_PI = IM_PI * 2.f;
     for (int i = 1; i < count; i++) {
-        float angle = PI_HALF - TWO_PI * (i / (float)count);
+        float angle = PI_HALF - MD_TWO_PI * (i / (float)count);
         float radius = ImLerp(inner_radius, outer_radius, value[i] / max_val);
         next_line = ImVec2(center.x + cosf(angle) * radius, center.y - sinf(angle) * radius);
         next_inner = ImVec2(center.x + cosf(angle) * inner_radius, center.y - sinf(angle) * inner_radius);
@@ -554,9 +554,9 @@ IMGUI_API bool PlotPeriodic(const char* label, float outer_radius, float inner_r
             float angle = atan2f(delta.y, delta.x);
             // @TODO: FIX THIS!
             float a2 = (angle + PI_HALF);
-            if (a2 < 0) a2 += TWO_PI;
-            if (a2 > TWO_PI) a2 -= TWO_PI;
-            float t = a2 / TWO_PI;
+            if (a2 < 0) a2 += MD_TWO_PI;
+            if (a2 > MD_TWO_PI) a2 -= MD_TWO_PI;
+            float t = a2 / MD_TWO_PI;
             float val = value[ImClamp((int)(t * count), 0, count - 1)] / max_val;
 
             ImVec2 inner(center.x + inner_radius * cosf(angle), center.y + inner_radius * sinf(angle));

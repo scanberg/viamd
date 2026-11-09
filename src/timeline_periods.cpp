@@ -20,7 +20,7 @@ static vec4_t palette_color(int i) {
         {0.941f, 0.486f, 0.486f},   // red
         {0.373f, 0.827f, 0.776f},   // teal
     };
-    const int n = (int)ARRAY_SIZE(palette);
+    const int n = (int)MD_COUNTOF(palette);
     const float* c = palette[((i % n) + n) % n];
     return vec4_set(c[0], c[1], c[2], 1.0f);
 }
@@ -31,8 +31,8 @@ static bool same_color(vec4_t a, vec4_t b) {
 
 bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_frame, int num_frames) {
     if (num_frames <= 0) return false;
-    int64_t beg = MIN(r.beg, r.end);
-    int64_t end = MAX(r.beg, r.end);
+    int64_t beg = MD_MIN(r.beg, r.end);
+    int64_t end = MD_MAX(r.beg, r.end);
     if (r.follow) {
         const int64_t cur = (int64_t)llround(current_frame);
         beg += cur;
@@ -40,8 +40,8 @@ bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r,
     }
     const int64_t last = num_frames - 1;
     if (end < 0 || beg > last) return false;
-    if (out_beg) *out_beg = (int)CLAMP(beg, (int64_t)0, last);
-    if (out_end) *out_end = (int)CLAMP(end, (int64_t)0, last);
+    if (out_beg) *out_beg = (int)MD_CLAMP(beg, (int64_t)0, last);
+    if (out_end) *out_end = (int)MD_CLAMP(end, (int64_t)0, last);
     return true;
 }
 
@@ -64,9 +64,9 @@ void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_f
         r->end = extent / 2;
     } else {
         const int32_t cur  = (int32_t)llround(current_frame);
-        const int32_t last = MAX(num_frames - 1, 0);
-        r->beg = CLAMP(r->beg + cur, 0, last);
-        r->end = CLAMP(r->end + cur, 0, last);
+        const int32_t last = MD_MAX(num_frames - 1, 0);
+        r->beg = MD_CLAMP(r->beg + cur, 0, last);
+        r->end = MD_CLAMP(r->end + cur, 0, last);
     }
     r->follow = follow;
 }
@@ -121,8 +121,8 @@ TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, int3
     r.id     = rs->next_id++;
     r.color  = palette_color(best);
     r.follow = follow;
-    r.beg    = MIN(beg, end);
-    r.end    = MAX(beg, end);
+    r.beg    = MD_MIN(beg, end);
+    r.end    = MD_MAX(beg, end);
     if (name && name[0]) {
         str_copy_to_char_buf(r.name, sizeof(r.name), str_from_cstr(name));
     } else {
@@ -213,7 +213,7 @@ TimelinePeriodHit timeline_periods_hit_test(const TimelinePeriodBar* bars, const
         const int i = top_first[k];
         const TimelinePeriodBar& b = bars[i];
         if (b.marker || !within_y(b)) continue;
-        const float reach = CLAMP((b.x1 - b.x0) / 3.0f, 3.0f, handle_reach);
+        const float reach = MD_CLAMP((b.x1 - b.x0) / 3.0f, 3.0f, handle_reach);
         const struct { TimelinePeriodPart part; float x; } ends[2] = { { TimelinePeriodPart_Beg, b.x0 }, { TimelinePeriodPart_End, b.x1 } };
         for (const auto& e : ends) {
             const float d = fabsf(px - e.x);
@@ -283,7 +283,7 @@ bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, 
     // The id it was saved with, which what refers to it was saved with too, unless another period has it already
     if (id > 0 && timeline_periods_index(rs, (uint32_t)id) == -1) {
         dst->id = (uint32_t)id;
-        rs->next_id = MAX(rs->next_id, (uint32_t)id + 1);
+        rs->next_id = MD_MAX(rs->next_id, (uint32_t)id + 1);
     }
     str_copy_to_char_buf(dst->note, sizeof(dst->note), str_from_cstr(r.note));
     if (has_color) dst->color = r.color;

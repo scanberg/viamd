@@ -45,7 +45,7 @@ static const str_t ESP_MOLECULAR_CHARGE_PATH = STR_INIT("vlx/molecular_charge");
 // Read on the bits: viamd is built with fast math, where NAN need not compare as itself
 static inline bool is_finite_f64(double v) {
     uint64_t u;
-    MEMCPY(&u, &v, sizeof(u));
+    MD_MEMCPY(&u, &v, sizeof(u));
     return (u & 0x7FF0000000000000ull) != 0x7FF0000000000000ull;
 }
 
@@ -70,8 +70,8 @@ static const SurfaceFieldKindInfo* kind_table() {
 
 const SurfaceFieldKindInfo& surface_field_kind_info(SurfaceFieldKind kind) {
     const int k = (int)kind;
-    ASSERT(0 <= k && k < (int)SurfaceFieldKind::Count);
-    return kind_table()[CLAMP(k, 0, (int)SurfaceFieldKind::Count - 1)];
+    MD_ASSERT(0 <= k && k < (int)SurfaceFieldKind::Count);
+    return kind_table()[MD_CLAMP(k, 0, (int)SurfaceFieldKind::Count - 1)];
 }
 
 ColorScale surface_field_default_scale(SurfaceFieldKind kind) {
@@ -169,8 +169,8 @@ SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& 
     SurfaceFieldEmbeddingContent c = {};
     const size_t num_atoms = md_system_atom_count(&sys);
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    double* scratch = (double*)md_temp_alloc(temp, sizeof(double) * 6 * MAX(num_atoms, (size_t)1));
+    MD_DEFER { md_temp_end(temp); };
+    double* scratch = (double*)md_temp_alloc(temp, sizeof(double) * 6 * MD_MAX(num_atoms, (size_t)1));
     const md_unit_t e_bohr  = md_unit_elementary_charge_bohr();
     const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
     c.charges        = count_environment_sites(sys, scratch, STR_LIT("atom/charge"),        1, md_unit_elementary_charge());
@@ -193,7 +193,7 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
     const md_system_state_t& state = *desc.state;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     double* q = (double*)md_temp_alloc(temp, sizeof(double) * num_atoms);
     if (md_attribute_extract_f64(q, num_atoms, attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_atoms) {
@@ -230,8 +230,8 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
         xyz[3 * n + 1] = (float)(state.xyz[i].y * ANGSTROM_TO_BOHR_D);
         xyz[3 * n + 2] = (float)(state.xyz[i].z * ANGSTROM_TO_BOHR_D);
         charge[n] = q[i];
-        if (dipole) MEMCPY(dipole + 3 * n, m, sizeof(double) * 3);
-        if (quad)   MEMCPY(quad + 6 * n, m + 3, sizeof(double) * 6);
+        if (dipole) MD_MEMCPY(dipole + 3 * n, m, sizeof(double) * 3);
+        if (quad)   MD_MEMCPY(quad + 6 * n, m + 3, sizeof(double) * 6);
         n += 1;
     }
     if (n == 0) {
@@ -315,7 +315,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     const md_system_t& sys = *desc.sys;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
@@ -457,7 +457,7 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
         ratio_destroy(a);
         return nullptr;
     }
-    a->atom_xyz = (float*)malloc(sizeof(float) * 3 * MAX(a->num_atoms, (size_t)1));
+    a->atom_xyz = (float*)malloc(sizeof(float) * 3 * MD_MAX(a->num_atoms, (size_t)1));
     if (!a->atom_xyz) { ratio_destroy(a); return nullptr; }
     for (size_t i = 0; i < a->num_atoms; ++i) {
         for (int c = 0; c < 3; ++c) a->atom_xyz[3 * i + c] = desc.basis_atom_xyz[i].elem[c];
@@ -472,7 +472,7 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
             // the same orbitals: the numerator borrows the rows, with the energy weights
             nom.rows = den.rows; nom.w = we; nom.count = den.count; nom.num_ao = den.num_ao;
             a->floor_value = DBL_MAX;
-            for (size_t k = 0; k < den.count; ++k) a->floor_value = MIN(a->floor_value, we[k] / den.w[k]);   // |e_HOMO|
+            for (size_t k = 0; k < den.count; ++k) a->floor_value = MD_MIN(a->floor_value, we[k] / den.w[k]);   // |e_HOMO|
         }
     } else {
         den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, STR_LIT("orbital/total/density"), heap);
@@ -554,7 +554,7 @@ md_grid_t surface_field_grid(SurfaceFieldKind kind, const md_grid_t& density_gri
     for (int a = 0; a < 3; ++a) {
         const double extent = (double)density_grid.spacing.elem[a] * density_grid.dim[a];
         const int dim = (int)ceil(extent / ESP_GRID_SPACING - 1.0e-3);
-        grid.dim[a] = CLAMP(dim, MIN(2, density_grid.dim[a]), density_grid.dim[a]);
+        grid.dim[a] = MD_CLAMP(dim, MD_MIN(2, density_grid.dim[a]), density_grid.dim[a]);
         grid.spacing.elem[a] = (float)(extent / grid.dim[a]);
     }
     return grid;
@@ -565,7 +565,7 @@ md_grid_t surface_field_grid(SurfaceFieldKind kind, const md_grid_t& density_gri
 static bool grid_same(const md_grid_t& a, const md_grid_t& b) {
     for (int i = 0; i < 3; ++i) {
         if (a.dim[i] != b.dim[i]) return false;
-        if (fabsf(a.spacing.elem[i] - b.spacing.elem[i]) > 1.0e-6f * MAX(fabsf(a.spacing.elem[i]), 1.0f)) return false;
+        if (fabsf(a.spacing.elem[i] - b.spacing.elem[i]) > 1.0e-6f * MD_MAX(fabsf(a.spacing.elem[i]), 1.0f)) return false;
         if (fabsf(a.origin.elem[i] - b.origin.elem[i]) > 1.0e-4f) return false;
         for (int j = 0; j < 3; ++j) {
             if (fabsf(a.orientation.elem[i][j] - b.orientation.elem[i][j]) > 1.0e-6f) return false;
@@ -603,7 +603,7 @@ static void progress_set(FieldProgress* p, const char* label, float fraction, bo
         g_progress[g_num_progress++] = p;
     }
     p->label = label;
-    p->fraction = CLAMP(fraction, 0.0f, 1.0f);
+    p->fraction = MD_CLAMP(fraction, 0.0f, 1.0f);
     p->preparing = preparing;
 }
 
@@ -662,7 +662,7 @@ static uint64_t field_data_work_per_point(const FieldData& d) {
 // On the pool, in a job: a cancel is looked at every few points, and waits for no more than that
 static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const FieldData& d) {
     for (uint32_t b = beg; b < end && !task_system::cancelled(); b += 8) {
-        const uint32_t e = MIN(b + 8, end);
+        const uint32_t e = MD_MIN(b + 8, end);
         if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, d.charges);
         else if (d.ratio) ratio_evaluate(out + b, xyz + 3 * (size_t)b, e - b, d.ratio);
     }
@@ -711,14 +711,14 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     if (desc.basis_atom_xyz && desc.num_basis_atoms) {
         b->basis_atom_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.num_basis_atoms);
         if (b->basis_atom_xyz) {
-            MEMCPY(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(vec3_t) * desc.num_basis_atoms);
+            MD_MEMCPY(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(vec3_t) * desc.num_basis_atoms);
             b->num_basis_atoms = desc.num_basis_atoms;
         }
     }
     if (desc.state && desc.state->xyz && desc.state->num_atoms) {
         b->state_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.state->num_atoms);
         if (b->state_xyz) {
-            MEMCPY(b->state_xyz, desc.state->xyz, sizeof(vec3_t) * desc.state->num_atoms);
+            MD_MEMCPY(b->state_xyz, desc.state->xyz, sizeof(vec3_t) * desc.state->num_atoms);
             b->num_state_atoms = desc.state->num_atoms;
         }
     }
@@ -743,7 +743,7 @@ static void build_run(FieldBuild* b) {
         b->data.ratio = build_ratio(desc);
         b->ok = b->data.ratio != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
-        MEMSET(q, 0, sizeof(*q));
+        MD_MEMSET(q, 0, sizeof(*q));
         if (build_charges(q, desc, heap)) {
             b->data.charges = q;
             b->ok = true;
@@ -1021,9 +1021,9 @@ static void field_volume_reset(SurfaceFieldVolume* vol, const md_grid_t& grid) {
         w->want = (uint8_t*)malloc(n);
         w->got  = (uint8_t*)malloc(n);
     }
-    MEMSET(vol->values, 0, sizeof(float) * n);
-    MEMSET(vol->done, 0, sizeof(uint64_t) * ((n + 63) / 64));
-    MEMSET(w->want, 0, n);
+    MD_MEMSET(vol->values, 0, sizeof(float) * n);
+    MD_MEMSET(vol->done, 0, sizeof(uint64_t) * ((n + 63) / 64));
+    MD_MEMSET(w->want, 0, n);
     w->num_left = 0;
     w->num_samples = 0;
     vol->grid = grid;
@@ -1041,7 +1041,7 @@ static void field_volume_reset(SurfaceFieldVolume* vol, const md_grid_t& grid) {
 static void band_mask(uint8_t* mask, const float* d, const int dim[3], const float* iso, size_t num_iso) {
     const size_t nx = dim[0], ny = dim[1], nz = dim[2];
     const size_t sx = 1, sy = nx, sz = nx * ny;
-    MEMSET(mask, 0, nx * ny * nz);
+    MD_MEMSET(mask, 0, nx * ny * nz);
 
     for (size_t k = 0; k + 1 < nz; ++k) {
         for (size_t j = 0; j + 1 < ny; ++j) {
@@ -1052,7 +1052,7 @@ static void band_mask(uint8_t* mask, const float* d, const int dim[3], const flo
                     d[c + sz], d[c + sx + sz], d[c + sy + sz], d[c + sx + sy + sz],
                 };
                 float lo = v[0], hi = v[0];
-                for (int m = 1; m < 8; ++m) { lo = MIN(lo, v[m]); hi = MAX(hi, v[m]); }
+                for (int m = 1; m < 8; ++m) { lo = MD_MIN(lo, v[m]); hi = MD_MAX(hi, v[m]); }
                 bool crossed = false;
                 for (size_t t = 0; t < num_iso; ++t) {
                     if (lo <= iso[t] && iso[t] <= hi && lo < hi) { crossed = true; break; }
@@ -1096,8 +1096,8 @@ static inline void field_support(int* lo, int* hi, int i, int ddim, int fdim) {
     }
     const float u = ((float)i + 0.5f) * ((float)fdim / (float)ddim) - 0.5f;
     const int   f = (int)floorf(u);
-    *lo = CLAMP(f,     0, fdim - 1);
-    *hi = CLAMP(f + 1, 0, fdim - 1);
+    *lo = MD_CLAMP(f,     0, fdim - 1);
+    *hi = MD_CLAMP(f + 1, 0, fdim - 1);
 }
 
 // The field voxels a surface of the band can sample: the support of every density voxel of the band.
@@ -1105,7 +1105,7 @@ static inline void field_support(int* lo, int* hi, int i, int ddim, int fdim) {
 // is no finer than the density's, the support of any point between two density voxel centres lies
 // within the union of theirs.
 static void band_to_field(uint8_t* fmask, const uint8_t* dmask, const int ddim[3], const int fdim[3], md_temp_scope_t temp) {
-    MEMSET(fmask, 0, (size_t)fdim[0] * fdim[1] * fdim[2]);
+    MD_MEMSET(fmask, 0, (size_t)fdim[0] * fdim[1] * fdim[2]);
     int* lo[3];
     int* hi[3];
     for (int a = 0; a < 3; ++a) {
@@ -1137,9 +1137,9 @@ static bool field_sample(float* out, const SurfaceFieldVolume& vol, const float 
     int   i0[3], i1[3];
     float f[3];
     for (int a = 0; a < 3; ++a) {
-        const float c = CLAMP(u[a], 0.0f, (float)(dim[a] - 1));
-        i0[a] = MIN((int)c, dim[a] - 1);
-        i1[a] = MIN(i0[a] + 1, dim[a] - 1);
+        const float c = MD_CLAMP(u[a], 0.0f, (float)(dim[a] - 1));
+        i0[a] = MD_MIN((int)c, dim[a] - 1);
+        i1[a] = MD_MIN(i0[a] + 1, dim[a] - 1);
         f[a]  = c - (float)i0[a];
     }
     float acc = 0.0f;
@@ -1183,7 +1183,7 @@ static void surface_samples_collect(SurfaceFieldWork* w, const SurfaceFieldVolum
                         if ((d0 - iso[t]) * (d1 - iso[t]) >= 0.0f) continue;
                         const float s = (iso[t] - d0) / (d1 - d0);
                         if (w->num_samples == w->cap_samples) {
-                            const size_t cap = MAX(w->cap_samples * 2, (size_t)4096);
+                            const size_t cap = MD_MAX(w->cap_samples * 2, (size_t)4096);
                             float* bigger = (float*)realloc(w->samples, sizeof(float) * 3 * cap);
                             if (!bigger) return;
                             w->samples = bigger;
@@ -1203,8 +1203,8 @@ static void surface_samples_collect(SurfaceFieldWork* w, const SurfaceFieldVolum
 // The spread of the field over the samples that have values
 static void surface_statistics(SurfaceFieldVolume* vol, const SurfaceFieldWork& w) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    float* samples = (float*)md_temp_alloc(temp, sizeof(float) * MAX(w.num_samples, (size_t)1));
+    MD_DEFER { md_temp_end(temp); };
+    float* samples = (float*)md_temp_alloc(temp, sizeof(float) * MD_MAX(w.num_samples, (size_t)1));
     size_t count = 0;
     for (size_t i = 0; samples && i < w.num_samples; ++i) {
         float v;
@@ -1270,7 +1270,7 @@ static bool start_cpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     w->cpu_data = w->source.data;
     // A point of a QM density's potential is ~0.1-1 ms of work, of a few point charges microseconds
     const uint64_t work = field_data_work_per_point(w->cpu_data);
-    const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
+    const uint32_t grain = (uint32_t)MD_CLAMP(1000000 / MD_MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_task.start_for({}, m, grain, [w](uint32_t beg, uint32_t end) {
         evaluate_points_range(w->cpu_out, w->cpu_xyz, beg, end, w->cpu_data);
     });
@@ -1292,7 +1292,7 @@ static bool start_gpu_ratio(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     if (!set || !collect_wanted(vol, w)) return false;
     const size_t m = w->cpu_count;
     const size_t out_bytes = sizeof(float) * 2 * m + 16;
-    w->pts_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * MAX(m, (size_t)1));
+    w->pts_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * MD_MAX(m, (size_t)1));
     w->out_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, out_bytes);
     w->rb      = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, out_bytes);
     bool ok = m > 0 && w->pts_gpu.gpu && w->out_gpu.gpu && w->rb.cpu;
@@ -1339,7 +1339,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
 
     // What to evaluate, and what will have been
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     uint8_t* mask = (uint8_t*)md_temp_alloc(temp, vol->num_voxels);
     if (!mask) return false;
     for (size_t i = 0; i < vol->num_voxels; ++i) mask[i] = (w->want[i] && !bit_get(vol->done, i)) ? 1 : 0;
@@ -1347,7 +1347,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         const int bx = (nx + 3) / 4, by = (ny + 3) / 4, bz = (nz + 3) / 4;
         uint8_t* brick = (uint8_t*)md_temp_alloc(temp, (size_t)bx * by * bz);
         if (!brick) return false;
-        MEMSET(brick, 0, (size_t)bx * by * bz);
+        MD_MEMSET(brick, 0, (size_t)bx * by * bz);
         for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
             if (mask[((size_t)z * ny + y) * nx + x]) brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4] = 1;
         }
@@ -1355,7 +1355,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
             w->got[((size_t)z * ny + y) * nx + x] = brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4];
         }
     } else {
-        MEMSET(w->got, 1, vol->num_voxels);
+        MD_MEMSET(w->got, 1, vol->num_voxels);
     }
 
     md_gto_int_gpu_potential_desc_t pd = {};
@@ -1407,7 +1407,7 @@ static void field_upload(SurfaceFieldVolume* vol) {
     }
     const size_t bytes = sizeof(float) * vol->num_voxels;
     if (void* dst = gl::pbo_upload_begin(bytes)) {
-        MEMCPY(dst, vol->values, bytes);
+        MD_MEMCPY(dst, vol->values, bytes);
         if (!gl::pbo_upload_end_texture_3D(vol->tex_id, 0, GL_R32F)) {
             gl::set_texture_3D_data(vol->tex_id, 0, vol->values, GL_R32F);
         }
@@ -1440,7 +1440,7 @@ static void merge(SurfaceFieldVolume* vol, SurfaceFieldWork* w, const float* v, 
 }
 
 bool surface_field_poll(SurfaceFieldVolume* vol) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     SurfaceFieldWork* w = vol->work;
     if (!w) return false;
     const char* name = surface_field_kind_info(w->kind).label;
@@ -1472,7 +1472,7 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
         if (w->ratio_points) {
             // the points' values, to their voxels
             const size_t m = w->cpu_count;
-            float* v = (float*)malloc(sizeof(float) * MAX(m, (size_t)1));
+            float* v = (float*)malloc(sizeof(float) * MD_MAX(m, (size_t)1));
             if (v) {
                 ratio_gpu_values(v, w->rb.cpu, m, w->source.data.ratio);
                 size_t n = 0;
@@ -1503,7 +1503,7 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
 #endif
     case SurfaceFieldWork::Cpu: {
         if (w->cpu_task.running()) {
-            progress_set(&w->progress, name, MAX(0.0f, w->cpu_task.progress()), false);
+            progress_set(&w->progress, name, MD_MAX(0.0f, w->cpu_task.progress()), false);
             break;
         }
         if (w->cpu_task.status() == task_system::Status::Cancelled) {
@@ -1513,7 +1513,7 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
             break;
         }
         // the values for those voxels, as a field the size of the grid would be (merge reads got)
-        MEMSET(w->got, 0, vol->num_voxels);
+        MD_MEMSET(w->got, 0, vol->num_voxels);
         for (size_t m = 0; m < w->cpu_count; ++m) {
             vol->values[w->cpu_index[m]] = (float)w->cpu_out[m];
         }
@@ -1578,10 +1578,10 @@ bool surface_field_busy(const SurfaceFieldVolume& vol) {
 }
 
 bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc) {
-    ASSERT(vol);
-    ASSERT(desc.sys);
-    ASSERT(desc.grid);
-    ASSERT(desc.density);
+    MD_ASSERT(vol);
+    MD_ASSERT(desc.sys);
+    MD_ASSERT(desc.grid);
+    MD_ASSERT(desc.density);
 
     if (!vol->work) vol->work = new SurfaceFieldWork();
     SurfaceFieldWork* w = vol->work;
@@ -1608,7 +1608,7 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
     }
 
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     // The band on the density grid, which the surfaces are drawn from, and the voxels of the field grid
     // it needs
@@ -1617,7 +1617,7 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
     band_mask(dmask, desc.density, dgrid.dim, desc.iso_values, desc.num_iso);
     const bool same_dim = vol->grid.dim[0] == dgrid.dim[0] && vol->grid.dim[1] == dgrid.dim[1] && vol->grid.dim[2] == dgrid.dim[2];
     if (same_dim) {
-        MEMCPY(w->want, dmask, vol->num_voxels);
+        MD_MEMCPY(w->want, dmask, vol->num_voxels);
     } else {
         band_to_field(w->want, dmask, dgrid.dim, vol->grid.dim, temp);
     }
@@ -1632,7 +1632,7 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
 }
 
 void surface_field_invalidate(SurfaceFieldVolume* vol) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     vol->source_hash = 0;
     vol->band_hash = 0;
     if (vol->work) {
@@ -1653,7 +1653,7 @@ ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol) {
 }
 
 uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     if (vol->colormap_tex && vol->colormap == colormap) {
         return vol->colormap_tex;
     }
@@ -1673,7 +1673,7 @@ uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap) {
 }
 
 void surface_field_free(SurfaceFieldVolume* vol) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     md_allocator_i* heap = md_get_heap_allocator();
     work_destroy(vol->work);
     if (vol->values) md_free(heap, vol->values, sizeof(float) * vol->num_voxels);
@@ -1743,7 +1743,7 @@ static bool points_start_cpu(SurfaceFieldPointsWork* w) {
     if (!w->cpu_out) return false;
     const FieldData d = w->source.data;
     const uint64_t work = field_data_work_per_point(d);
-    const uint32_t grain = (uint32_t)CLAMP(1000000 / MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
+    const uint32_t grain = (uint32_t)MD_CLAMP(1000000 / MD_MAX(work, (uint64_t)1), (uint64_t)8, (uint64_t)1024);
     w->cpu_task.start_for({}, (uint32_t)w->count, grain, [w, d](uint32_t beg, uint32_t end) {
         evaluate_points_range(w->cpu_out, w->xyz, beg, end, d);
     });
@@ -1767,7 +1767,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
         w->gpu_xyz = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, bytes);
         void* dst = w->gpu_xyz.gpu ? md_gpu_upload_begin(w->stream, w->gpu_xyz.gpu, bytes) : nullptr;
         if (!dst) return false;
-        MEMCPY(dst, w->xyz, bytes);
+        MD_MEMCPY(dst, w->xyz, bytes);
         md_gpu_upload_end(w->stream);
         xyz = w->gpu_xyz.gpu;
         stride = 0;
@@ -1820,8 +1820,8 @@ static void points_start(SurfaceFieldPointsWork* w) {
 }
 
 bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointSet& points, const SurfaceFieldDesc& desc) {
-    ASSERT(fp);
-    ASSERT(desc.sys);
+    MD_ASSERT(fp);
+    MD_ASSERT(desc.sys);
     if (!fp->work) fp->work = new SurfaceFieldPointsWork();
     SurfaceFieldPointsWork* w = fp->work;
     if (desc.gpu_stream) w->stream = desc.gpu_stream;
@@ -1841,7 +1841,7 @@ bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointS
     // The points, copied: the mesh they come from may go before the evaluation is done
     if (points.xyz) {
         w->xyz = (float*)malloc(sizeof(float) * 3 * points.count);
-        if (w->xyz) MEMCPY(w->xyz, points.xyz, sizeof(float) * 3 * points.count);
+        if (w->xyz) MD_MEMCPY(w->xyz, points.xyz, sizeof(float) * 3 * points.count);
     }
 #if MD_ENABLE_GPU
     if (points.gpu_xyz && w->stream) {
@@ -1867,7 +1867,7 @@ bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointS
 }
 
 SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const float** values, size_t* count) {
-    ASSERT(fp);
+    MD_ASSERT(fp);
     SurfaceFieldPointsWork* w = fp->work;
     if (!w) return SurfaceFieldPointsStatus::None;
     const char* name = surface_field_kind_info(w->kind).label;
@@ -1906,10 +1906,10 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
     }
     case SurfaceFieldPointsWork::Readback:
         if (!md_gpu_sync_is_complete(w->rb_sync)) break;
-        w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
+        w->values = (float*)malloc(sizeof(float) * MD_MAX(w->count, (size_t)1));
         if (w->values) {
             if (w->ratio) ratio_gpu_values(w->values, w->rb.cpu, w->count, w->source.data.ratio);
-            else         MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
+            else         MD_MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
         }
         md_gpu_free(w->stream, w->rb.gpu);
         w->rb = {};
@@ -1920,7 +1920,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         if (w->cpu_task.running()) break;
         // stopped part of the way (a load): what it holds is not the field's
         if (w->cpu_task.status() == task_system::Status::Completed) {
-            w->values = (float*)malloc(sizeof(float) * MAX(w->count, (size_t)1));
+            w->values = (float*)malloc(sizeof(float) * MD_MAX(w->count, (size_t)1));
             if (w->values) for (size_t i = 0; i < w->count; ++i) w->values[i] = (float)w->cpu_out[i];
         }
         free(w->cpu_out);
@@ -1942,7 +1942,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         break;
 #endif
     case SurfaceFieldPointsWork::Cpu:
-        progress_set(&w->progress, name, MAX(0.0f, w->cpu_task.progress()), false);
+        progress_set(&w->progress, name, MD_MAX(0.0f, w->cpu_task.progress()), false);
         break;
     default:
         progress_clear(&w->progress);
@@ -1978,7 +1978,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
 }
 
 void surface_field_points_free(SurfaceFieldPoints* fp) {
-    ASSERT(fp);
+    MD_ASSERT(fp);
     if (SurfaceFieldPointsWork* w = fp->work) {
         points_cancel(w);
         source_free(&w->source, w->stream);
@@ -1992,9 +1992,9 @@ ColorScaleSpan surface_field_span_of(const float* values, size_t count) {
     ColorScaleSpan span;
     if (!values || count == 0) return span;
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     float* v = (float*)md_temp_alloc(temp, sizeof(float) * count);
-    MEMCPY(v, values, sizeof(float) * count);
+    MD_MEMCPY(v, values, sizeof(float) * count);
     const size_t lo_idx = (size_t)(0.01 * (double)(count - 1));
     const size_t hi_idx = (size_t)(0.99 * (double)(count - 1));
     span.valid = true;

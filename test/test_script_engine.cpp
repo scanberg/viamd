@@ -34,7 +34,7 @@ const Peptide* peptide() {
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
-        p.alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        p.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         p.sys = { .alloc = p.alloc };
         p.state = { .alloc = p.alloc };
         const str_t path = STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
@@ -158,7 +158,7 @@ UTEST(script_v2, diagnostics_and_sets) {
 
 UTEST(script_v2, editor) {
     ASSERT_TRUE(peptide() != nullptr);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const script::Language V2 = script::Language::V2;
     EXPECT_TRUE(has_name(script::keywords(V2), script::num_keywords(V2), "def"));
     const size_t nb = script::builtin_names(V2, nullptr, 0);
@@ -314,7 +314,7 @@ UTEST(script_v2, evaluate) {
 
 UTEST(script_v2, drawing) {
     ASSERT_TRUE(peptide() != nullptr);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const char* src =
         "ca = particle(name='CA')\n"
         "d  = distance(ca[0], ca[1])\n"
@@ -375,7 +375,7 @@ UTEST(script_v2, drawing) {
 
 UTEST(script_v2, filters) {
     ASSERT_TRUE(peptide() != nullptr);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const script::Language V2 = script::Language::V2;
     script::Program* p = compile_v2("ca = particle(name='CA')\nres = residue()\n", alloc);
     script::FilterCtx ctx;
@@ -471,7 +471,7 @@ UTEST(script_v2, runtime_errors) {
 // Who uses a program off its owner's thread: counted, from any thread, and nothing freed by the count
 UTEST(script_v2, program_users) {
     ASSERT_TRUE(peptide() != nullptr);
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     script::Program* p = compile_v2("ca = particle(name='CA')\n", alloc);
     EXPECT_EQ(0u, script::program_users(p));
     script::program_retain(p);
@@ -543,7 +543,7 @@ UTEST(script_v2, volumes) {
     ctx.run = STR_LIT("run");
     ctx.eval = e;
     script::Drawing dr;
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     script::drawing_init(&dr, arena);
     ASSERT_TRUE(script::draw_ref(&dr, script::output_ref(p, STR_LIT("s")), 0, ctx, script::DRAW_SDF));
     EXPECT_EQ(4u, md_array_size(dr.sdf.matrices));

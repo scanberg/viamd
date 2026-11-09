@@ -34,13 +34,13 @@ static void slice_fit_box(ElectronicStructurePlane* p, const mat4_t& box, vec3_t
     if (n >= 3) {
         for (int k = 0; k < n; ++k) {
             const float s = vec3_dot(poly[k], u), t = vec3_dot(poly[k], v);
-            r[0] = MIN(r[0], s); r[1] = MAX(r[1], s);
-            r[2] = MIN(r[2], t); r[3] = MAX(r[3], t);
+            r[0] = MD_MIN(r[0], s); r[1] = MD_MAX(r[1], s);
+            r[2] = MD_MIN(r[2], t); r[3] = MD_MAX(r[3], t);
         }
     } else {
         const vec3_t c = plane_project(p->plane, transform_point(box, vec3_set(0.5f, 0.5f, 0.5f)));
         float side = 0.0f;
-        for (int k = 0; k < 3; ++k) side = MAX(side, vec3_length(vec3_set(box.elem[k][0], box.elem[k][1], box.elem[k][2])));
+        for (int k = 0; k < 3; ++k) side = MD_MAX(side, vec3_length(vec3_set(box.elem[k][0], box.elem[k][1], box.elem[k][2])));
         r[0] = vec3_dot(c, u) - 0.5f * side; r[1] = r[0] + side;
         r[2] = vec3_dot(c, v) - 0.5f * side; r[3] = r[2] + side;
     }
@@ -48,7 +48,7 @@ static void slice_fit_box(ElectronicStructurePlane* p, const mat4_t& box, vec3_t
     const vec3_t on = vec3_mul1(p->plane.normal, -p->plane.d);
     p->center = vec3_add(on, vec3_add(vec3_mul1(u, 0.5f * (r[0] + r[1])), vec3_mul1(v, 0.5f * (r[2] + r[3]))));
     p->axis = u;
-    p->extent = vec2_set(MAX(0.5f * (r[1] - r[0]), 0.1f), MAX(0.5f * (r[3] - r[2]), 0.1f));
+    p->extent = vec2_set(MD_MAX(0.5f * (r[1] - r[0]), 0.1f), MD_MAX(0.5f * (r[3] - r[2]), 0.1f));
 }
 
 void es_slices_conform(ElectronicStructureRepresentation* es) {
@@ -103,10 +103,10 @@ mat4_t es_slice_rect_from_world(const EsSliceFrame& f) {
 }
 
 void es_slice_image_grid(md_grid_t* grid, const EsSliceFrame& f, float spacing) {
-    const int w = CLAMP((int)ceilf(2.0f * f.hu / spacing), 1, GPU_PLANE_DIM);
-    const int h = CLAMP((int)ceilf(2.0f * f.hv / spacing), 1, GPU_PLANE_DIM);
+    const int w = MD_CLAMP((int)ceilf(2.0f * f.hu / spacing), 1, GPU_PLANE_DIM);
+    const int h = MD_CLAMP((int)ceilf(2.0f * f.hv / spacing), 1, GPU_PLANE_DIM);
     // the pixels' edges on the rectangle's: each axis its own spacing, near the one asked
-    const float su = 2.0f * f.hu / (float)w, sv = 2.0f * f.hv / (float)h, sn = MIN(su, sv);
+    const float su = 2.0f * f.hu / (float)w, sv = 2.0f * f.hv / (float)h, sn = MD_MIN(su, sv);
     // Pixel centres on the plane: the one layer's centre (the kernels sample at voxel centres) a half spacing along n
     // from the corner
     const vec3_t corner = vec3_sub(vec3_sub(vec3_sub(f.c, vec3_mul1(f.u, f.hu)), vec3_mul1(f.v, f.hv)), vec3_mul1(f.n, 0.5f * sn));
@@ -200,13 +200,13 @@ int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& 
 }
 
 int es_volume_slices(vec4_t* out_plane, float* out_opacity, mat4_t* out_rect_from_model, const ElectronicStructureRepresentation& es) {
-    const int count = MIN(es.slices.count, ES_MAX_PLANES);
+    const int count = MD_MIN(es.slices.count, ES_MAX_PLANES);
     for (int i = 0; i < count; ++i) {
         const ElectronicStructurePlane& p = es.slices.items[i];
         out_plane[i] = es_volume_plane(es, p.plane);
         EsSliceFrame f;
         if (es_slice_frame(&f, p)) {
-            out_opacity[i] = p.enabled ? CLAMP(p.opacity, 0.0f, 1.0f) : 0.0f;
+            out_opacity[i] = p.enabled ? MD_CLAMP(p.opacity, 0.0f, 1.0f) : 0.0f;
             out_rect_from_model[i] = es_slice_rect_from_world(f) * es.box_to_world;
         } else {
             // no rectangle yet: nowhere
@@ -338,7 +338,7 @@ static inline bool project(ImVec2* out, const mat4_t& world_to_clip, vec3_t p, v
 static inline float segment_distance(ImVec2 p, ImVec2 a, ImVec2 b) {
     const ImVec2 ab = b - a, ap = p - a;
     const float l2 = ab.x * ab.x + ab.y * ab.y;
-    const float t = l2 > 0.0f ? CLAMP((ap.x * ab.x + ap.y * ab.y) / l2, 0.0f, 1.0f) : 0.0f;
+    const float t = l2 > 0.0f ? MD_CLAMP((ap.x * ab.x + ap.y * ab.y) / l2, 0.0f, 1.0f) : 0.0f;
     const ImVec2 d = ap - ab * t;
     return sqrtf(d.x * d.x + d.y * d.y);
 }
@@ -546,7 +546,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
                 const ImU32 col = selected ? IM_COL32(255, 200, 40, 255) : enabled ? IM_COL32(255, 255, 255, 220) : IM_COL32(200, 200, 200, 130);
                 const ImU32 halo = enabled || selected ? IM_COL32(0, 0, 0, 110) : IM_COL32(0, 0, 0, 60);
                 const float width = selected ? 2.0f : 1.5f;
-                for (int k = 0; k < n && outline_count < (int)ARRAY_SIZE(outline_segs); ++k) {
+                for (int k = 0; k < n && outline_count < (int)MD_COUNTOF(outline_segs); ++k) {
                     outline_segs[outline_count++] = OutlineSegment{ndc[k], ndc[(k + 1) % n], col, halo, width};
                 }
             }
@@ -680,7 +680,7 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
             if (arrow_px > 2.0f) {
                 const ImVec2 d = ImVec2((tip.x - sc.x) / arrow_px, (tip.y - sc.y) / arrow_px);
                 const ImVec2 o = ImVec2(-d.y, d.x);
-                const float head = MIN(12.0f, 0.4f * arrow_px);
+                const float head = MD_MIN(12.0f, 0.4f * arrow_px);
                 const ImVec2 base = ImVec2(tip.x - d.x * head, tip.y - d.y * head);
                 dl->AddLine(sc, base, IM_COL32(0, 0, 0, 110), 5.0f);
                 dl->AddLine(sc, base, arrow_col, 3.0f);
@@ -794,12 +794,12 @@ bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_s
                             float hu = gizmo_drag.hu0, hv = gizmo_drag.hv0, ou = 0.0f, ov = 0.0f;
                             if (gizmo_drag.su != 0) {
                                 const float grow = (float)gizmo_drag.su * ds;
-                                hu = MAX(min_half, io.KeyShift ? gizmo_drag.hu0 + grow : gizmo_drag.hu0 + 0.5f * grow);
+                                hu = MD_MAX(min_half, io.KeyShift ? gizmo_drag.hu0 + grow : gizmo_drag.hu0 + 0.5f * grow);
                                 ou = io.KeyShift ? 0.0f : (float)gizmo_drag.su * (hu - gizmo_drag.hu0);
                             }
                             if (gizmo_drag.sv != 0) {
                                 const float grow = (float)gizmo_drag.sv * dt;
-                                hv = MAX(min_half, io.KeyShift ? gizmo_drag.hv0 + grow : gizmo_drag.hv0 + 0.5f * grow);
+                                hv = MD_MAX(min_half, io.KeyShift ? gizmo_drag.hv0 + grow : gizmo_drag.hv0 + 0.5f * grow);
                                 ov = io.KeyShift ? 0.0f : (float)gizmo_drag.sv * (hv - gizmo_drag.hv0);
                             }
                             item.extent = vec2_set(hu, hv);
@@ -943,7 +943,7 @@ static bool outline_gl_init() {
 void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int fb_width, int fb_height, float px_per_point) {
     if (outline_count == 0 || fb_width <= 0 || fb_height <= 0 || !depth_tex || !outline_gl_init()) return;
     // two quads (halo, line) of 6 vertices per segment; the halos first
-    static OutlineVertex verts[ARRAY_SIZE(outline_segs) * 12];
+    static OutlineVertex verts[MD_COUNTOF(outline_segs) * 12];
     int nv = 0;
     const vec2_t half = vec2_set(0.5f * (float)fb_width, 0.5f * (float)fb_height);
     for (int pass = 0; pass < 2; ++pass) {

@@ -2,7 +2,7 @@
 
 #include "script_engine_impl.h"
 
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 
 #include <display_units.h>
 
@@ -215,12 +215,12 @@ str_t mark_text(char* buf, size_t cap, const Mark& mark) {
     str_t value = rest;
     if (mark.has_number && scl != 1.0 && rest.len) {
         const int n = snprintf(num, sizeof(num), " -> %.6g", mark.number * scl);
-        value = {num, (size_t)CLAMP(n, 0, (int)sizeof(num) - 1)};
+        value = {num, (size_t)MD_CLAMP(n, 0, (int)sizeof(num) - 1)};
     }
     const int len = snprintf(buf, cap, "%.*s%s%.*s%.*s", (int)mark.unit_at, type.ptr, label,
                              (int)(type.len - mark.unit_at - mark.unit_len), type.ptr + mark.unit_at + mark.unit_len,
                              (int)value.len, value.ptr);
-    return {buf, (size_t)CLAMP(len, 0, (int)cap - 1)};
+    return {buf, (size_t)MD_CLAMP(len, 0, (int)cap - 1)};
 }
 
 }  // namespace script

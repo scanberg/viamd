@@ -31,7 +31,7 @@ static size_t option_of(Quantity q, const char* label) {
 
 static void choose(Quantity q, const char* label) {
     const size_t i = option_of(q, label);
-    ASSERT(i < num_options(q));
+    MD_ASSERT(i < num_options(q));
     select(q, i);
 }
 

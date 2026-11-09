@@ -225,9 +225,9 @@ struct Fence {
 
 void load(str_t doc) {
     State& s = *gp;
-    ASSERT(!s.loaded);
+    MD_ASSERT(!s.loaded);
     s.loaded = true;
-    s.arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    s.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     md_allocator_i* arena = s.arena;
     s.doc = doc;
 
@@ -338,7 +338,7 @@ void load(str_t doc) {
                 str_find_char(&comma, list, ',');
                 const str_t alias = str_trim(str_substr(list, 0, comma));
                 if (!str_empty(alias)) md_array_push(aliases, (Anchor{alias, cur, AnchorKind_Alias}), arena);
-                list = str_substr(list, MIN(comma + 1, list.len));
+                list = str_substr(list, MD_MIN(comma + 1, list.len));
             }
         }
         // <a id="x"></a>
@@ -463,9 +463,9 @@ void update_search_results() {
     const int num_sections = (int)md_array_size(s.sections);
     auto consider = [&q](int* score, str_t name, int exact, int prefix, int contains) {
         if (str_empty(name)) return;
-        if (str_eq_ignore_case(name, q))            *score = MAX(*score, exact);
-        else if (begins_with_ignore_case(name, q))  *score = MAX(*score, prefix);
-        else if (find_ignore_case(nullptr, name, q)) *score = MAX(*score, contains);
+        if (str_eq_ignore_case(name, q))            *score = MD_MAX(*score, exact);
+        else if (begins_with_ignore_case(name, q))  *score = MD_MAX(*score, prefix);
+        else if (find_ignore_case(nullptr, name, q)) *score = MD_MAX(*score, contains);
     };
 
     for (int i = 0; i < num_sections; ++i) s.scores[i] = 0;
@@ -495,7 +495,7 @@ void update_search_results() {
     std::sort(s.hits, s.hits + md_array_size(s.hits), [](const Hit& a, const Hit& b) {
         return a.score != b.score ? a.score > b.score : a.section < b.section;
     });
-    md_array_shrink(s.hits, MIN((int)md_array_size(s.hits), MAX_HITS));
+    md_array_shrink(s.hits, MD_MIN((int)md_array_size(s.hits), MAX_HITS));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -538,13 +538,13 @@ bool is_keyword(str_t w) {
     static const char* const kw[] = {"in", "out", "and", "or", "not", "xor", "true", "false"};
     static const char* const vial_kw[] = {"and", "or", "not", "in", "is", "if", "else", "elif", "for", "def", "return", "True", "False",
                                           "None", "assert", "pass"};
-    return gp->vial ? is_one_of(w, vial_kw, ARRAY_SIZE(vial_kw)) : is_one_of(w, kw, ARRAY_SIZE(kw));
+    return gp->vial ? is_one_of(w, vial_kw, MD_COUNTOF(vial_kw)) : is_one_of(w, kw, MD_COUNTOF(kw));
 }
 
 bool is_type_name(str_t w) {
     static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "atomset", "bondset", "position",
                                         "distribution", "volume", "vec2", "vec3", "vec4", "mat3", "mat4", "any"};
-    return is_one_of(w, types, ARRAY_SIZE(types));
+    return is_one_of(w, types, MD_COUNTOF(types));
 }
 
 // Draws one line of code with simple colouring.
@@ -599,7 +599,7 @@ void draw_code_line(ImDrawList* dl, ImVec2 pos, str_t line, bool script, const P
             i = j;
         } else {
             if (c == '(' || c == '[') ++depth;
-            if (c == ')' || c == ']') depth = MAX(0, depth - 1);
+            if (c == ')' || c == ']') depth = MD_MAX(0, depth - 1);
             size_t j = i + 1;
             if (!script && c == '-' && j < n && s[j] == '>') { after_arrow = true; ++j; }
             emit(i, j, script ? pal.text : pal.punct);
@@ -632,10 +632,10 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     {
         str_t rest = code, line;
         while (str_extract_line(&line, &rest)) {
-            max_w = MAX(max_w, ImGui::CalcTextSize(line.ptr, line.ptr + line.len).x);
+            max_w = MD_MAX(max_w, ImGui::CalcTextSize(line.ptr, line.ptr + line.len).x);
             ++num_lines;
         }
-        num_lines = MAX(num_lines, 1);
+        num_lines = MD_MAX(num_lines, 1);
     }
 
     const float avail = ImGui::GetContentRegionAvail().x;
@@ -741,7 +741,7 @@ void draw_toolbar() {
         ImGui::SetKeyboardFocusHere();
         s.focus_search = false;
     }
-    ImGui::SetNextItemWidth(MAX(fs * 8.0f, ImGui::GetContentRegionAvail().x));
+    ImGui::SetNextItemWidth(MD_MAX(fs * 8.0f, ImGui::GetContentRegionAvail().x));
     const bool enter = ImGui::InputTextWithHint("##search", "Search the reference (procedure, keyword...)", s.query, sizeof(s.query),
                                                 ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_EnterReturnsTrue);
     if (enter) {
@@ -789,7 +789,7 @@ void draw_sidebar() {
         const char* label = pi == 0 ? "Overview" : page.title.ptr;
         ImGui::PushID(pi);
         ImVec4 page_col = ImGui::GetStyleColorVec4(open ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-        if (!open) page_col.w = MIN(1.0f, page_col.w * 1.6f);
+        if (!open) page_col.w = MD_MIN(1.0f, page_col.w * 1.6f);
         ImGui::PushStyleColor(ImGuiCol_Text, page_col);
         const bool clicked = ImGui::Selectable(label, open && s.current == head);
         ImGui::PopStyleColor();
@@ -865,7 +865,7 @@ void draw() {
 
     const float total_w = ImGui::GetContentRegionAvail().x;
     const float splitter_w = 6.0f;
-    s.nav_width = CLAMP(s.nav_width, fs * 8.0f, MAX(fs * 8.0f, total_w * 0.6f));
+    s.nav_width = MD_CLAMP(s.nav_width, fs * 8.0f, MD_MAX(fs * 8.0f, total_w * 0.6f));
 
     if (ImGui::BeginChild("##ref_nav", ImVec2(s.nav_width, 0.0f), ImGuiChildFlags_Borders)) {
         draw_sidebar();

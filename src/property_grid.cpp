@@ -62,17 +62,17 @@ void end() {
 
 float control_x() {
     // At most a little under half the panel to the labels: a long label is cut rather than the controls squeezed
-    const float max_end = g.base_x + 0.45f * MAX(g.right_x - g.base_x, 0.0f);
-    return MIN(g.label_end, max_end) + label_gap();
+    const float max_end = g.base_x + 0.45f * MD_MAX(g.right_x - g.base_x, 0.0f);
+    return MD_MIN(g.label_end, max_end) + label_gap();
 }
 
 float control_width() {
-    return MAX(g.right_x - control_x(), 1.0f);
+    return MD_MAX(g.right_x - control_x(), 1.0f);
 }
 
 float control_width_before(const char* text) {
     const float w = (text && text[0]) ? ImGui::CalcTextSize(text).x + ImGui::GetStyle().ItemInnerSpacing.x * 2.0f : 0.0f;
-    return MAX(control_width() - w, 1.0f);
+    return MD_MAX(control_width() - w, 1.0f);
 }
 
 // The header of a section: dimmed, unframed, with a rule from its name to the right edge - a divider that folds,

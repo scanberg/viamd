@@ -154,7 +154,7 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 
 void write_bitset(serialization_state_t& state, str_t ident, const md_bitset_t* bs) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
 	if (md_bitset_empty(*bs)) return;
 	void*  serialized_data = md_temp_alloc(temp, md_bitset_serialize_size_in_bytes(*bs));
@@ -217,7 +217,7 @@ bool extract_int64(int64_t& val, str_t arg) {
 bool extract_int_vec(int* elem, size_t len, str_t arg) {
 	// Exactly len integers, or nothing is written
 	int tmp[16];
-	if (len > ARRAY_SIZE(tmp)) return false;
+	if (len > MD_COUNTOF(tmp)) return false;
 	str_t tok;
 	size_t count = 0;
 	while (extract_token_delim(&tok, &arg, ',')) {
@@ -226,7 +226,7 @@ bool extract_int_vec(int* elem, size_t len, str_t arg) {
 		tmp[count++] = (int)parse_int(tok);
 	}
 	if (count != len) return false;
-	MEMCPY(elem, tmp, len * sizeof(int));
+	MD_MEMCPY(elem, tmp, len * sizeof(int));
 	return true;
 }
 
@@ -253,7 +253,7 @@ bool extract_flt_vec (float* elem, size_t len, str_t arg) {
 	// first len: that is what a vector written with decimal commas looks like ("0,5,0,25,1,1" for 0.5 0.25 1 1),
 	// and its first len would be values nobody wrote.
 	float tmp[16];
-	if (len > ARRAY_SIZE(tmp)) return false;
+	if (len > MD_COUNTOF(tmp)) return false;
 	const str_t all = arg;
 	str_t tok;
 	size_t count = 0;
@@ -269,7 +269,7 @@ bool extract_flt_vec (float* elem, size_t len, str_t arg) {
 	}
 	if (extra) log_decimal_comma(all);
 	if (count != len || extra) return false;
-	MEMCPY(elem, tmp, len * sizeof(float));
+	MD_MEMCPY(elem, tmp, len * sizeof(float));
 	return true;
 }
 
@@ -296,7 +296,7 @@ bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
 bool extract_bitset(md_bitset_t* bs, str_t arg, md_allocator_i* alloc) {
 	// Not alloc's arena: the result must outlive this scope
 	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-	defer { md_temp_end(temp); };
+	MD_DEFER { md_temp_end(temp); };
 
 	// Bitfield starts with ###
 	// and ends with ###

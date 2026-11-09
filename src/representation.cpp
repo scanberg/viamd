@@ -48,7 +48,7 @@ static TreeNodes tree_nodes(const ApplicationState& app, md_allocator_i* alloc) 
     TreeNodes t;
     t.count = num_reps + num_groups;
     t.num_reps = num_reps;
-    t.nodes = (RepresentationNode**)md_alloc(alloc, sizeof(RepresentationNode*) * MAX(t.count, (size_t)1));
+    t.nodes = (RepresentationNode**)md_alloc(alloc, sizeof(RepresentationNode*) * MD_MAX(t.count, (size_t)1));
     for (size_t i = 0; i < num_reps; ++i) {
         t.nodes[i] = const_cast<RepresentationNode*>(&app.representation.reps[i].node);
     }
@@ -313,7 +313,7 @@ static uint32_t push_copy(ApplicationState* state, const Representation& src, ui
 }
 
 Representation* create_representation(ApplicationState* state, RepresentationType type, ColorMapping color_mapping, str_t filter, uint32_t group) {
-    ASSERT(state);
+    MD_ASSERT(state);
     md_array_push(state->representation.reps, Representation(), state->allocator.persistent);
     Representation* rep = md_array_last(state->representation.reps);
     rep->node.id     = state->representation.next_rep_id++;
@@ -328,7 +328,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
     OrbitalFrontier frontier = {};
     es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
-    rep->electronic_structure.orbital_idx = MAX(frontier.homo_idx, 0);
+    rep->electronic_structure.orbital_idx = MD_MAX(frontier.homo_idx, 0);
     init_representation(state, rep);
 
     const uint32_t id = rep->node.id;
@@ -337,7 +337,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
 }
 
 Representation* clone_representation(ApplicationState* state, const Representation& rep) {
-    ASSERT(state);
+    MD_ASSERT(state);
     // Taken before anything moves: rep may be an element of the array
     const Representation src = rep;
     tree_normalize(state);
@@ -352,8 +352,8 @@ Representation* clone_representation(ApplicationState* state, const Representati
 }
 
 void remove_representation(ApplicationState* state, size_t idx) {
-    ASSERT(state);
-    ASSERT(idx < md_array_size(state->representation.reps));
+    MD_ASSERT(state);
+    MD_ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_array_free(rep.bond_pairs, state->allocator.persistent);
@@ -382,7 +382,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
 }
 
 static void free_group(ApplicationState* state, size_t idx) {
-    ASSERT(idx < md_array_size(state->representation.groups));
+    MD_ASSERT(idx < md_array_size(state->representation.groups));
     md_bitset_free(&state->representation.groups[idx].atom_mask, state->allocator.persistent);
     const size_t count = md_array_size(state->representation.groups);
     for (size_t i = idx; i + 1 < count; ++i) {
@@ -401,7 +401,7 @@ void remove_all_representations(ApplicationState* state) {
 }
 
 void recompute_atom_visibility_mask(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
     auto& mask = state->representation.visibility_mask;
 
     md_bitmask_clear(&mask);
@@ -418,7 +418,7 @@ void recompute_atom_visibility_mask(ApplicationState* state) {
 // ---------------------------------------------------------------------------------------------------------
 
 RepresentationGroup* create_representation_group(ApplicationState* state, str_t name, uint32_t parent) {
-    ASSERT(state);
+    MD_ASSERT(state);
     RepresentationGroup group = {};
     group.node.id     = state->representation.next_group_id++;
     group.node.parent = parent;
@@ -431,7 +431,7 @@ RepresentationGroup* create_representation_group(ApplicationState* state, str_t 
 }
 
 void clone_representation_group(ApplicationState* state, uint32_t id) {
-    ASSERT(state);
+    MD_ASSERT(state);
     tree_normalize(state);
     const RepresentationGroup* orig = find_representation_group(state, id);
     if (!orig) return;
@@ -488,7 +488,7 @@ void clone_representation_group(ApplicationState* state, uint32_t id) {
 }
 
 void remove_representation_group(ApplicationState* state, uint32_t id) {
-    ASSERT(state);
+    MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
 
@@ -512,7 +512,7 @@ void remove_representation_group(ApplicationState* state, uint32_t id) {
 }
 
 void ungroup_representation_group(ApplicationState* state, uint32_t id) {
-    ASSERT(state);
+    MD_ASSERT(state);
     // Normalized, everything within the group is numbered between the group and its next sibling: given the
     // group's parent, what it holds sorts exactly into its place
     tree_normalize(state);
@@ -685,7 +685,7 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
         op.args.cartoon.chain_gaps = rep.chain_gaps;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
     return op;
@@ -717,7 +717,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         };
         tubes.args.tubes.radius_scale = scale;
         // The bands of the nucleic acids are made with the default radius, a representation has its own
-        tubes.args.tubes.band_scale = MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
+        tubes.args.tubes.band_scale = MD_MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
         md_array_push(*ops, tubes, alloc);
     }
 
@@ -730,7 +730,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const Applica
         };
         // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
         // recessed to 60% of its thickness
-        slabs.args.slabs.radius = MAX(rep.nucleic_ring_radius, 0.01f) * scale;
+        slabs.args.slabs.radius = MD_MAX(rep.nucleic_ring_radius, 0.01f) * scale;
         slabs.args.slabs.plate  = 0.6f;
         md_array_push(*ops, slabs, alloc);
     }
@@ -795,7 +795,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             // Fixing the variant axis hands back exactly the atom axis, so there is no
             // offset arithmetic here to get wrong. A field with no variant axis is rank 1
             // and takes no indices at all.
-            const uint32_t variant = (uint32_t)CLAMP(coloring.variant_idx, 0, MAX(atom_attribute_variant_count(attr) - 1, 0));
+            const uint32_t variant = (uint32_t)MD_CLAMP(coloring.variant_idx, 0, MD_MAX(atom_attribute_variant_count(attr) - 1, 0));
             const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
             num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
         }
@@ -822,12 +822,12 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             if (attr) {
                 MD_LOG_DEBUG("Failed to extract values for the selected atom attribute");
             }
-            MEMSET(colors, 0xFFFFFFFFu, bytes);
+            MD_MEMSET(colors, 0xFFFFFFFFu, bytes);
         }
         break;
     }
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
 
@@ -838,8 +838,8 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
 }
 
 static void update_representation(ApplicationState* state, Representation* rep) {
-    ASSERT(state);
-    ASSERT(rep);
+    MD_ASSERT(state);
+    MD_ASSERT(rep);
 
     // A hidden one keeps what needs doing for when it is shown again
     if (!rep->needs_update) return;
@@ -850,7 +850,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
     md_allocator_i* frame_alloc = state->allocator.frame;
     md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     bool again = false;     // not all done: updated again next frame
     uint32_t* colors = 0;
@@ -923,7 +923,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = sys.atom.count > 0;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
         break;
     }
 
@@ -952,7 +952,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 }
 
 void representation_set_weak_bonds(ApplicationState* state, Representation* rep) {
-    ASSERT(state && rep);
+    MD_ASSERT(state && rep);
     if (!rep->md_rep.id) return;
     const md_system_t& sys = state->mold.sys;
 
@@ -969,7 +969,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
     }
 
     md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     uint32_t* atom_a = count ? (uint32_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint32_t) * count) : nullptr;
     uint32_t* atom_b = count ? (uint32_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint32_t) * count) : nullptr;
     for (size_t i = 0; i < count; ++i) {
@@ -984,7 +984,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         const size_t nc_count = sys.bond.pairs && sys.bond.flags ? sys.bond.noncovalent_count : 0;
         uint64_t* nc_keys = nc_count ? (uint64_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint64_t) * nc_count) : nullptr;
         auto pair_key = [](int32_t a, int32_t b) -> uint64_t {
-            const uint32_t lo = (uint32_t)MIN(a, b), hi = (uint32_t)MAX(a, b);
+            const uint32_t lo = (uint32_t)MD_MIN(a, b), hi = (uint32_t)MD_MAX(a, b);
             return ((uint64_t)lo << 32) | hi;
         };
         for (size_t i = 0; i < nc_count; ++i) {
@@ -1016,7 +1016,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
 }
 
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
-    ASSERT(ops);
+    MD_ASSERT(ops);
     md_gl_draw_op_t op = {
         .type = MD_GL_REP_WEAK_BONDS,
         .args = {},
@@ -1086,7 +1086,7 @@ void init_all_representations(ApplicationState* state) {
 }
 
 void flag_representation_as_dirty(Representation* rep) {
-    ASSERT(rep);
+    MD_ASSERT(rep);
     rep->filt_is_dirty = true;
     rep->needs_update  = true;
     rep->electronic_structure.vol_hash = 0;
@@ -1105,17 +1105,17 @@ bool representation_shows_bond(const Representation& rep, md_atom_pair_t pair) {
 }
 
 bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into) {
-    ASSERT(app);
+    MD_ASSERT(app);
     char expr[64];
     snprintf(expr, sizeof(expr), "bond(%d, %d)", pair.idx[0] + 1, pair.idx[1] + 1);
 
     if (into) {
-        ASSERT(representation_can_show_bond(*app, *into));
+        MD_ASSERT(representation_can_show_bond(*app, *into));
         char text[sizeof(into->filter.text)];
         const bool empty = str_empty(str_trim(str_from_cstr(into->filter.text)));
         const int n = empty ? snprintf(text, sizeof(text), "%s", expr) : snprintf(text, sizeof(text), "(%s) or %s", into->filter.text, expr);
         if (n < 0 || (size_t)n >= sizeof(text)) return false;
-        MEMCPY(into->filter.text, text, (size_t)n + 1);
+        MD_MEMCPY(into->filter.text, text, (size_t)n + 1);
         flag_representation_as_dirty(into);
         return true;
     }
@@ -1446,7 +1446,7 @@ bool target_finish(RepresentationTarget* t, md_bitmask_t* mask, const Applicatio
 }  // namespace
 
 bool representation_targets_from_hit(RepresentationTarget* target, RepresentationTarget* all, const ApplicationState& app, const PickingHit& hit) {
-    ASSERT(target);
+    MD_ASSERT(target);
     representation_target_free(target);
     if (all) representation_target_free(all);
 
@@ -1458,7 +1458,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
     size_t num_seeds = 0;
     bool cartoon = false;
     auto push = [&](int64_t atom) {
-        if (atom >= 0 && (size_t)atom < sys.atom.count && num_seeds < ARRAY_SIZE(seeds)) seeds[num_seeds++] = (int32_t)atom;
+        if (atom >= 0 && (size_t)atom < sys.atom.count && num_seeds < MD_COUNTOF(seeds)) seeds[num_seeds++] = (int32_t)atom;
     };
     auto push_residue = [&](int64_t res) {
         if (res >= 0 && (size_t)res < sys.residue.count) push(md_system_residue_atom_range(&sys, (size_t)res).beg);
@@ -1528,7 +1528,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
     }
 
     // Its name: that of the unit, or how many of them there are (a bond between two residues)
-    int64_t ids[ARRAY_SIZE(seeds)];
+    int64_t ids[MD_COUNTOF(seeds)];
     size_t num_ids = 0;
     for (size_t i = 0; i < num_seeds; ++i) {
         const int64_t id = target_unit_id(unit, (size_t)seeds[i], sys);
@@ -1580,7 +1580,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
 }
 
 bool representation_target_from_selection(RepresentationTarget* target, const ApplicationState& app) {
-    ASSERT(target);
+    MD_ASSERT(target);
     representation_target_free(target);
     if (md_bitmask_count(&app.selection.selection_mask) < 2) return false;
     target->atoms = md_bitmask_extract(&app.selection.selection_mask, md_get_heap_allocator());
@@ -1591,7 +1591,7 @@ bool representation_target_from_selection(RepresentationTarget* target, const Ap
 }
 
 void representation_target_free(RepresentationTarget* target) {
-    ASSERT(target);
+    MD_ASSERT(target);
     md_bitset_free(&target->atoms, md_get_heap_allocator());
     *target = RepresentationTarget{};
 }
@@ -1609,7 +1609,7 @@ bool representation_target_can_show(const ApplicationState& app, const Represent
 }
 
 Representation* create_representation_of_target(ApplicationState* app, const RepresentationTarget& target, RepresentationType type) {
-    ASSERT(app);
+    MD_ASSERT(app);
     if (md_bitset_empty(target.atoms)) return nullptr;
 
     // The most telling way of writing it which fits
@@ -1652,7 +1652,7 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
 }
 
 void flag_all_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
     for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
         state->representation.groups[i].filt_is_dirty = true;
     }
@@ -1662,7 +1662,7 @@ void flag_all_representations_as_dirty(ApplicationState* state) {
 }
 
 void flag_dynamic_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
     // A context that follows the frame is evaluated again; what is within it decides for itself whether to
     // follow, by its own auto-update
     for (size_t i = 0; i < md_array_size(state->representation.groups); ++i) {
@@ -1886,7 +1886,7 @@ done:
 		// The ground state is what a dipole means to someone who has not said otherwise; the rest
 		// are a representation away, and the index slider covers the excited states within each.
 		DipoleGroup groups[16];
-		size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+		size_t num_groups = MD_MIN(dipole_groups_gather(groups, MD_COUNTOF(groups), state->mold.sys), MD_COUNTOF(groups));
         for (size_t i = 0; i < num_groups; ++i) {
             // The group name is the identity here, the same string the path spells.
             if (!str_eq(groups[i].label, STR_LIT("ground_state"))) continue;
@@ -2119,7 +2119,7 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldIsolineCount"))) {
         int n;
         if (viamd::extract_int(n, arg)) {
-            rep->electronic_structure.field_isolines.count = CLAMP(n, 0, ISOLINES_MAX);
+            rep->electronic_structure.field_isolines.count = MD_CLAMP(n, 0, ISOLINES_MAX);
         }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
         viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
@@ -2140,17 +2140,17 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIsoCount"))) {
         int n;
         if (viamd::extract_int(n, arg)) {
-            rep->electronic_structure.density_property.num_isos = CLAMP(n, 0, (int)ARRAY_SIZE(rep->electronic_structure.density_property.values));
+            rep->electronic_structure.density_property.num_isos = MD_CLAMP(n, 0, (int)MD_COUNTOF(rep->electronic_structure.density_property.values));
         }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureDisplay"))) {
         int d;
         if (viamd::extract_int(d, arg) && d >= 0 && d < (int)ElectronicStructureDisplay::Count) rep->electronic_structure.display = (ElectronicStructureDisplay)d;
     } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneCount"))) {
         int n;
-        if (viamd::extract_int(n, arg)) rep->electronic_structure.cuts.count = CLAMP(n, 0, ES_MAX_PLANES);
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.cuts.count = MD_CLAMP(n, 0, ES_MAX_PLANES);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureSliceCount"))) {
         int n;
-        if (viamd::extract_int(n, arg)) rep->electronic_structure.slices.count = CLAMP(n, 0, ES_MAX_PLANES);
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.slices.count = MD_CLAMP(n, 0, ES_MAX_PLANES);
     } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneSampling"))) {
         // no longer a setting (the planes are evaluated on themselves): known, and passed over
     } else if (str_eq(ident, STR_LIT("ElectronicStructurePlaneDetail"))) {
@@ -2174,13 +2174,13 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
         viamd::extract_flt(rep->electronic_structure.volume.tf.opacity, arg);
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumePointCount"))) {
         int n;
-        if (viamd::extract_int(n, arg)) rep->electronic_structure.volume.tf.num_points = CLAMP(n, 1, TRANSFER_FUNCTION_MAX_POINTS);
+        if (viamd::extract_int(n, arg)) rep->electronic_structure.volume.tf.num_points = MD_CLAMP(n, 1, TRANSFER_FUNCTION_MAX_POINTS);
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureVolumePoint"))) {
         // ElectronicStructureVolumePoint<i>: t, alpha
         const int i = es_key_index(ident, STR_LIT("ElectronicStructureVolumePoint"), TRANSFER_FUNCTION_MAX_POINTS);
         float p[2];
         if (i >= 0 && viamd::extract_flt_vec(p, 2, arg)) {
-            rep->electronic_structure.volume.tf.points[i] = {CLAMP(p[0], 0.0f, 1.0f), CLAMP(p[1], 0.0f, 1.0f)};
+            rep->electronic_structure.volume.tf.points[i] = {MD_CLAMP(p[0], 0.0f, 1.0f), MD_CLAMP(p[1], 0.0f, 1.0f)};
         }
     } else if (str_eq(ident, STR_LIT("ElectronicStructureVolumeRamp"))) {
         // the ramp before the curve (its exponent not kept): the curve it was, near enough
@@ -2208,7 +2208,7 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceOpacity"))) {
         const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceOpacity"), ES_MAX_PLANES);
         float o;
-        if (i >= 0 && viamd::extract_flt(o, arg)) rep->electronic_structure.slices.items[i].opacity = CLAMP(o, 0.0f, 1.0f);
+        if (i >= 0 && viamd::extract_flt(o, arg)) rep->electronic_structure.slices.items[i].opacity = MD_CLAMP(o, 0.0f, 1.0f);
     } else if (str_begins_with(ident, STR_LIT("ElectronicStructureSliceCenter"))) {
         // its rectangle (a workspace without one: the rectangle around where it cuts the box, es_slices_conform)
         const int i = es_key_index(ident, STR_LIT("ElectronicStructureSliceCenter"), ES_MAX_PLANES);
@@ -2242,7 +2242,7 @@ bool representation_read_entry(Representation* rep, str_t ident, str_t arg) {
             viamd::extract_flt(rep->electronic_structure.field_isolines.values[i], arg);
         }
     } else {
-        for (int i = 0; i < (int)ARRAY_SIZE(rep->electronic_structure.density_property.values); ++i) {
+        for (int i = 0; i < (int)MD_COUNTOF(rep->electronic_structure.density_property.values); ++i) {
             char key[64];
             snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
             if (str_eq(ident, str_from_cstr(key))) {
@@ -2477,7 +2477,7 @@ static void deserialize_group(ApplicationState* data, viamd::deserialization_sta
     // group already has it, which only a workspace edited by hand can make happen
     if (id > 0 && !find_representation_group(data, (uint32_t)id)) {
         group.node.id = (uint32_t)id;
-        data->representation.next_group_id = MAX(data->representation.next_group_id, (uint32_t)id + 1);
+        data->representation.next_group_id = MD_MAX(data->representation.next_group_id, (uint32_t)id + 1);
     } else {
         group.node.id = data->representation.next_group_id++;
     }
@@ -2508,7 +2508,7 @@ static void serialize_group(viamd::serialization_state_t& state, const Applicati
 static void serialize_level(viamd::serialization_state_t& state, const ApplicationState* app, const TreeNodes& t, uint32_t parent, size_t depth) {
     if (depth > t.count) return;
     md_temp_scope_t temp = md_temp_begin();
-    int* kids = (int*)md_temp_alloc(temp, sizeof(int) * MAX(t.count, (size_t)1));
+    int* kids = (int*)md_temp_alloc(temp, sizeof(int) * MD_MAX(t.count, (size_t)1));
     const size_t n = representation_tree_children(kids, t.count, t.nodes, t.count, parent);
     for (size_t i = 0; i < n; ++i) {
         const size_t k = (size_t)kids[i];
@@ -2789,7 +2789,7 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         }
         if (slices) {
             ImGui::SameLine(0.0f, gap);
-            ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x - bw - gap, bw));
+            ImGui::SetNextItemWidth(MD_MAX(ImGui::GetContentRegionAvail().x - bw - gap, bw));
             changed |= ImGui::SliderFloat("##opacity", &set.items[i].opacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
             ImGui::SetItemTooltip("Its opacity: how much of what is behind it it hides");
         }
@@ -2823,8 +2823,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
     // with no label is named by its path's last segment already, which is the readable thing.
     auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* prop) {
-        ASSERT(buf);
-        ASSERT(buf_cap > 0);
+        MD_ASSERT(buf);
+        MD_ASSERT(buf_cap > 0);
         if (!prop || str_empty(prop->label)) {
             snprintf(buf, buf_cap, "None");
             return;
@@ -2863,7 +2863,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // Gathered here rather than kept in a list somewhere: it is a handful of entries borrowed
             // from the attribute table, and a stored copy would be one more thing to invalidate on load.
             DensityProperty density_props[64];
-            const int num_density_props = (int)MIN(density_properties_gather(density_props, ARRAY_SIZE(density_props), state->mold.sys), ARRAY_SIZE(density_props));
+            const int num_density_props = (int)MD_MIN(density_properties_gather(density_props, MD_COUNTOF(density_props), state->mold.sys), MD_COUNTOF(density_props));
             if (num_density_props > 0) {
                 // A key that names nothing in the current list - a fresh representation, or a workspace
                 // saved against a file whose properties differ - falls back to the first one rather
@@ -3016,7 +3016,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     }
                 };
 
-                es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
+                es.orbital_idx = MD_CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
 
                 char preview[48];
                 orbital_label(preview, sizeof(preview), es.orbital_idx, 0, 0);
@@ -3050,7 +3050,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (electronic_structure_uses_excited_state_idx(es)) {
             const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
             if (num_excited_states > 0) {
-                es.excited_state_idx = CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
+                es.excited_state_idx = MD_CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
                 char preview[16];
                 snprintf(preview, sizeof(preview), "%i", es.excited_state_idx + 1);
                 prop::row("state", "The excited state");
@@ -3078,14 +3078,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
                     const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
-                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
+                    const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), state->mold.sys,
                                                                             (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
                     if (!nto_ready) {
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
                         ImGui::TextDisabled("computing...");
                     }
                     if (num_lambdas > 0) {
-                        es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
+                        es.nto_lambda_idx = MD_CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
 
                         auto lambda_label = [&lambdas](char* buf, size_t cap, int n) {
                             // The bytes rather than a u8 literal: u8"" is const char8_t* in C++20 and
@@ -3165,8 +3165,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (prop::section("Surface")) {
             if (electronic_structure_is_density_property(es)) {
                 // Its isosurfaces as a list: the value and the colour of each, at least one of them
-                const int cap = (int)ARRAY_SIZE(es.density_property.values);
-                const int num_isos = CLAMP(es.density_property.num_isos, 1, cap);
+                const int cap = (int)MD_COUNTOF(es.density_property.values);
+                const int num_isos = MD_CLAMP(es.density_property.num_isos, 1, cap);
                 if (num_isos != es.density_property.num_isos) {
                     es.density_property.num_isos = num_isos;
                     update_rep = true;
@@ -3178,7 +3178,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 for (int i = 0; i < es.density_property.num_isos; ++i) {
                     ImGui::PushID(i);
                     prop::row(i == 0 ? "isovalues" : "");
-                    ImGui::SetNextItemWidth(MAX(prop::control_width() - 2.0f * (btn_w + gap), 1.0f));
+                    ImGui::SetNextItemWidth(MD_MAX(prop::control_width() - 2.0f * (btn_w + gap), 1.0f));
                     update_rep |= ImGui::DragScalar("##value", ImGuiDataType_Double, &es.density_property.values[i], 0.001f, NULL, NULL, "%.6g");
                     ImGui::SameLine(0.0f, gap);
                     update_rep |= ImGui::ColorEdit4("##color", es.density_property.colors[i].elem, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaPreviewHalf);
@@ -3464,9 +3464,9 @@ static void draw_drop_target(const ApplicationState& state, NodeRef node, bool o
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
         NodeRef src;
-        MEMCPY(&src, payload->Data, sizeof(src));
+        MD_MEMCPY(&src, payload->Data, sizeof(src));
 
-        const float t = (ImGui::GetMousePos().y - row.Min.y) / MAX(row.GetHeight(), 1.0f);
+        const float t = (ImGui::GetMousePos().y - row.Min.y) / MD_MAX(row.GetHeight(), 1.0f);
         const RepresentationDrop drop = drop_zone(t, node.group, open);
 
         if (representation_can_move(state, src.group, src.id, node.group, node.id, drop)) {
@@ -3576,7 +3576,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
         // The list of per atom fields IS the system's attribute table under atom/.
         // Queried here rather than cached anywhere, so it cannot disagree with the data.
         md_attribute_id_t prop_ids[64];
-        size_t num_props = MIN(atom_attribute_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
+        size_t num_props = MD_MIN(atom_attribute_query(prop_ids, MD_COUNTOF(prop_ids), state->mold.sys), MD_COUNTOF(prop_ids));
 
         const md_attributes_t& attributes = state->mold.sys.attributes;
         const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
@@ -3611,7 +3611,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
                 if (ImGui::SliderInt("##index", &idx, 1, num_variants)) {
                     update_rep = true;
                 }
-                rep.atom_attribute.variant_idx = CLAMP(idx - 1, 0, num_variants - 1);
+                rep.atom_attribute.variant_idx = MD_CLAMP(idx - 1, 0, num_variants - 1);
             }
 
             // The same scale an isosurface coloured by a field has. Its span is what
@@ -3652,7 +3652,7 @@ bool draw_representation_coloring(ApplicationState* state, Representation& rep) 
     const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
     const float swatch_w = 3.0f * ImGui::GetFrameHeight();
     prop::row("tint", "How far the colours go towards the tint colour: 0 not at all, 1 its hue and chroma");
-    ImGui::SetNextItemWidth(MAX(prop::control_width() - swatch_w - gap, 1.0f));
+    ImGui::SetNextItemWidth(MD_MAX(prop::control_width() - swatch_w - gap, 1.0f));
     update_rep |= ImGui::SliderFloat("##tint_scale", &rep.tint_scale, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SameLine(0.0f, gap);
     ImGui::SetNextItemWidth(swatch_w);
@@ -3709,9 +3709,9 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         {
             prop::row("dashed", "Which bonds are drawn as dashes rather than sticks, each in the style of its kind: coordinate bonds thick with long dashes, hydrogen bonds with even dashes, interactions with short sparse ones (and covalent bonds thick with long dashes, where all are)");
             const char* items[] = {"By kind (not covalent)", "None", "All"};
-            static_assert(ARRAY_SIZE(items) == (size_t)BondDashes::Count, "One item per BondDashes");
+            static_assert(MD_COUNTOF(items) == (size_t)BondDashes::Count, "One item per BondDashes");
             int dashes = (int)rep.bond_dashes;
-            if (ImGui::Combo("##bond_dashes", &dashes, items, (int)ARRAY_SIZE(items))) {
+            if (ImGui::Combo("##bond_dashes", &dashes, items, (int)MD_COUNTOF(items))) {
                 rep.bond_dashes = (BondDashes)dashes;
                 update_rep = true;
             }
@@ -3873,7 +3873,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             // moment per excited state is then picked apart by the index widget below, rather
             // than flattening every (group, element) pair into one list nobody can scan.
             DipoleGroup groups[16];
-            const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+            const size_t num_groups = MD_MIN(dipole_groups_gather(groups, MD_COUNTOF(groups), state->mold.sys), MD_COUNTOF(groups));
 
             // Asked of the key the representation holds, not searched for in the list: a key
             // that names nothing - a workspace pointed at a file without that group - simply
@@ -3917,7 +3917,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
                 int index = (int)rep.dipole.dipole_index + 1;
                 prop::row("index");
                 if (ImGui::SliderInt("##index", &index, 1, (int)selected.count)) {
-                    rep.dipole.dipole_index = (uint32_t)CLAMP(index - 1, 0, (int)selected.count - 1);
+                    rep.dipole.dipole_index = (uint32_t)MD_CLAMP(index - 1, 0, (int)selected.count - 1);
                     update_rep = true;
                 }
             }
@@ -4018,7 +4018,7 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
     // are often closed
     ImGui::SameLine();
     const float buttons_width = (tree.button_size + tree.button_spacing) * 3;
-    ImGui::SetNextItemWidth(MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
+    ImGui::SetNextItemWidth(MD_MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
     const bool flag_invalid = representation_uses_atom_colors(rep) && !rep.filter.result.success && !rep.filt_is_dirty && rep.filter.text[0] != '\0';
     if (flag_invalid) ImGui::PushInvalid();
     ImGui::InputText("##name", rep.name, sizeof(rep.name));
@@ -4120,7 +4120,7 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
 
     ImGui::SameLine();
     const float buttons_width = (tree.button_size + tree.button_spacing) * 3;
-    ImGui::SetNextItemWidth(MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
+    ImGui::SetNextItemWidth(MD_MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
     ImGui::InputText("##name", group.name, sizeof(group.name));
 
     draw_row_buttons(tree, &group.enabled, row.right_x, node, state, act);
@@ -4156,7 +4156,7 @@ static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uin
     const TreeNodes& t = tree.t;
     if (depth > t.count) return;    // A cycle; the tree breaks those when it is normalized
 
-    int* kids = (int*)md_alloc(state->allocator.frame, sizeof(int) * MAX(t.count, (size_t)1));
+    int* kids = (int*)md_alloc(state->allocator.frame, sizeof(int) * MD_MAX(t.count, (size_t)1));
     const size_t n = representation_tree_children(kids, t.count, t.nodes, t.count, parent);
     for (size_t i = 0; i < n; ++i) {
         const size_t k = (size_t)kids[i];
@@ -4193,7 +4193,7 @@ void draw_representations_window(ApplicationState* state) {
     // Removing everything at the far end, behind a question: it cannot be taken back
     ImGui::SameLine();
     const float trash_w = ImGui::CalcTextSize(ICON_FA_TRASH_CAN).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(ImGui::GetContentRegionAvail().x - trash_w, 0.0f));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(ImGui::GetContentRegionAvail().x - trash_w, 0.0f));
     ImGui::BeginDisabled(md_array_size(state->representation.reps) == 0 && md_array_size(state->representation.groups) == 0);
     if (ImGui::Button(ICON_FA_TRASH_CAN)) {
         ImGui::OpenPopup("##remove_all");
@@ -4222,8 +4222,8 @@ void draw_representations_window(ApplicationState* state) {
     tree.t = tree_nodes(*state, state->allocator.frame);
     tree.button_size = ImGui::GetFontSize() + 3.0f * 2;
     tree.button_spacing = 2.0f;
-    tree.handle_width = MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
-                        MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
+    tree.handle_width = MD_MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
+                        MD_MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 
     if (tree.t.count == 0) {
         ImGui::TextDisabled("Nothing to show. Add a representation with " ICON_FA_PLUS ".");
@@ -4231,13 +4231,13 @@ void draw_representations_window(ApplicationState* state) {
     draw_tree_level(state, tree, 0, 0, &act);
 
     // The space below the rows: dropping there puts it last at the top level, and a right click adds
-    const ImVec2 rest = {MAX(ImGui::GetContentRegionAvail().x, 1.0f), MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
+    const ImVec2 rest = {MD_MAX(ImGui::GetContentRegionAvail().x, 1.0f), MD_MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
     ImGui::InvisibleButton("##below", rest);
     if (ImGui::BeginDragDropTarget()) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
         if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
             NodeRef src;
-            MEMCPY(&src, payload->Data, sizeof(src));
+            MD_MEMCPY(&src, payload->Data, sizeof(src));
             if (representation_can_move(*state, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
                 const ImVec2 min = ImGui::GetItemRectMin();
                 ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);

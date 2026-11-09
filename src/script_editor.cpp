@@ -149,7 +149,7 @@ bool has_focus_after_render() {
 ////////////////////////////////////////////////////////////////////////////////
 
 bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attributes_t* attributes, const md_attribute_t* attr) {
-    ASSERT(buf && cap > 0);
+    MD_ASSERT(buf && cap > 0);
     buf[0] = '\0';
     const str_t path = script::attr_path(lang, attributes, attr);
     if (str_empty(path)) return false;
@@ -378,7 +378,7 @@ static const ImU32 SQUIGGLE_COLOR_WARNING = IM_COL32(255, 210,   0, 255);
 static const ImU32 SQUIGGLE_COLOR_HOVERED = IM_COL32(255, 255, 255, 255);
 
 void markers_clear(Markers* m) {
-    ASSERT(m);
+    MD_ASSERT(m);
     if (md_array_size(m->list) > 0) m->dirty = true;
     if (m->arena) md_arena_allocator_reset(m->arena);
     m->list = nullptr;
@@ -388,9 +388,9 @@ void markers_clear(Markers* m) {
 }
 
 void markers_set_source(Markers* m, str_t source) {
-    ASSERT(m);
+    MD_ASSERT(m);
     markers_clear(m);
-    if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     // Kept: markers are also added after the compilation, as the evaluation finds what fails
     m->source = str_copy(source, m->arena);
     md_array_push(m->line_offsets, 0u, m->arena);
@@ -403,7 +403,7 @@ void markers_set_source(Markers* m, str_t source) {
 static TextEditor::DocPos doc_pos(const Markers* m, int offset) {
     const uint32_t* lines = m->line_offsets;
     const size_t num_lines = md_array_size(lines);
-    const uint32_t off = (uint32_t)CLAMP(offset, 0, (int)m->source.len);
+    const uint32_t off = (uint32_t)MD_CLAMP(offset, 0, (int)m->source.len);
     // Last line that starts at or before the offset
     size_t lo = 0, hi = num_lines;
     while (hi - lo > 1) {
@@ -433,8 +433,8 @@ void markers_set_text(Markers* m, size_t index, str_t text) {
 
 void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str_t text,
                  const md_bitset_t* atoms, script::Ref vis_ref) {
-    ASSERT(m);
-    ASSERT(m->arena && "markers_set_source() must be called before markers are added");
+    MD_ASSERT(m);
+    MD_ASSERT(m->arena && "markers_set_source() must be called before markers are added");
     Marker marker = {};
     marker.type = type;
     marker.prio = prio;
@@ -452,8 +452,8 @@ void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str
 }
 
 const Marker* markers_update(Markers* m, TextEditor* editor, bool editor_hovered) {
-    ASSERT(m);
-    ASSERT(editor);
+    MD_ASSERT(m);
+    MD_ASSERT(editor);
     const int num_markers = (int)md_array_size(m->list);
 
     m->hovered = -1;
@@ -491,7 +491,7 @@ const Marker* markers_update(Markers* m, TextEditor* editor, bool editor_hovered
 }
 
 const Marker* markers_hovered(const Markers* m) {
-    ASSERT(m);
+    MD_ASSERT(m);
     return m->hovered != -1 ? &m->list[m->hovered] : nullptr;
 }
 

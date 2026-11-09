@@ -73,8 +73,8 @@ static LoadResult pending_wait(FileEntry* slot, const LoadOps& ops, str_t path, 
 }
 
 LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, str_t filepath, const loader::LoaderState& load_state) {
-    ASSERT(pending);
-    ASSERT(ops.load && ops.system_atoms && ops.run_frames && ops.files);
+    MD_ASSERT(pending);
+    MD_ASSERT(ops.load && ops.system_atoms && ops.run_frames && ops.files);
 
     // On its own the role follows from the loader flags, and a structure file opens its own frames as the run:
     // a multi model PDB or an XYZ trajectory is a system and a run in one file
