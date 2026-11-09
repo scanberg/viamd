@@ -1787,7 +1787,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::TableSetupColumn("Holds",    ImGuiTableColumnFlags_WidthStretch, 3.0f);
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
             const char* header_tips[4] = { "The group's name, as the index file or the tpr gives it",
-                                           "What the simulation used it for, by the mdp option which named it. A group of an index file alone has no use given",
+                                           "What the simulation used it for, by the mdp option which named it: from the tpr, or for the groups of an index file, from\nthe terms of the energy file",
                                            nullptr, "The molecules it holds, of each type, whole or a part of them" };
             for (int col = 0; col < 4; ++col) {
                 if (!ImGui::TableSetColumnIndex(col)) continue;

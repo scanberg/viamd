@@ -332,7 +332,10 @@ bool load_supplemental(md_system_t* out_sys, md_str_t filepath, const LoaderStat
         case LoaderType_ITP:
             return md_itp_system_supplement_from_file(out_sys, filepath);
         case LoaderType_NDX:
-            return md_ndx_system_supplement_from_file(out_sys, filepath);
+            if (!md_ndx_system_supplement_from_file(out_sys, filepath)) return false;
+            // An energy file loaded before it says which of its groups were the energy and T-coupling groups
+            md_edr_system_infer_group_roles_of_run(out_sys, run);
+            return true;
         case LoaderType_EDR:
             return md_edr_system_supplement_from_file(out_sys, filepath, run);
         case LoaderType_XVG:
