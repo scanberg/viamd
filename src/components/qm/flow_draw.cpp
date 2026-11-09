@@ -204,6 +204,7 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
     const size_t num_ribbons = md_array_size(layout->ribbons);
     for (size_t i = 0; i < num_ribbons; ++i) {
         const md_flow_layout_ribbon_t* r = layout->ribbons + i;
+        if (r->flags & MD_FLOW_RIBBON_FLAG_SELF) continue;     // drawn with the nodes
         const md_flow_link_t* link = cut->links + r->link_idx;
 
         const md_flow_node_t* src = md_flow_cut_node(cut, graph, link->src);
@@ -305,6 +306,21 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
         const vec4_t fill = flow_toward_white(node->color, style.node_fill_tint * (touched ? 1.0f : 0.5f));
         draw_list->AddRectFilled(min, max, flow_color_u32(fill, 1.0f), style.node_rounding);
 
+        // The node's self flow, solid over its stub: the part that stays put
+        for (size_t j = 0; j < num_ribbons; ++j) {
+            const md_flow_layout_ribbon_t* r = layout->ribbons + j;
+            if (!(r->flags & MD_FLOW_RIBBON_FLAG_SELF)) continue;
+            const md_flow_link_t* link = cut->links + r->link_idx;
+            vec2_t a, b;
+            if      (link->src == ln->cut_idx) { a = r->p0; b = r->p1; }
+            else if (link->dst == ln->cut_idx) { a = r->q0; b = r->q1; }
+            else continue;
+            const float y0 = flow_view_to_screen(view, a).y;
+            const float y1 = flow_view_to_screen(view, b).y;
+            draw_list->AddRectFilled({ min.x, ImMin(y0, y1) }, { max.x, ImMax(y0, y1) },
+                                     flow_color_u32(node->color, style.self_alpha * alpha));
+        }
+
         // Colour lives on the border now, and state is its weight: selection reads as a heavier
         // outline of the SAME colour rather than a different colour, so state and identity do not
         // compete for the one channel.
@@ -363,6 +379,7 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
     const size_t num_ribbons = md_array_size(layout->ribbons);
     for (size_t i = 0; i < num_ribbons; ++i) {
         const md_flow_layout_ribbon_t* r = layout->ribbons + i;
+        if (r->flags & MD_FLOW_RIBBON_FLAG_SELF) continue;     // drawn with the nodes
         const md_flow_link_t* link = cut->links + r->link_idx;
 
         const md_flow_node_t* src = md_flow_cut_node(cut, graph, link->src);
@@ -437,6 +454,18 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
         // Same treatment as the screen: near-white interior, colour on the border.
         md_vg_add_rect_filled(scene, min, max, flow_color_vg(flow_toward_white(node->color, style.node_fill_tint), 1.0f),
                               style.node_rounding);
+        for (size_t j = 0; j < num_ribbons; ++j) {
+            const md_flow_layout_ribbon_t* r = layout->ribbons + j;
+            if (!(r->flags & MD_FLOW_RIBBON_FLAG_SELF)) continue;
+            const md_flow_link_t* link = cut->links + r->link_idx;
+            vec2_t a, b;
+            if      (link->src == ln->cut_idx) { a = r->p0; b = r->p1; }
+            else if (link->dst == ln->cut_idx) { a = r->q0; b = r->q1; }
+            else continue;
+            const float y0 = to_vg(a).y, y1 = to_vg(b).y;
+            md_vg_add_rect_filled(scene, vec2_t{min.x, MD_MIN(y0, y1)}, vec2_t{max.x, MD_MAX(y0, y1)},
+                                  flow_color_vg(node->color, style.self_alpha), 0.0f);
+        }
         md_vg_add_rect(scene, min, max, flow_color_vg(flow_visible_border(node->color), 1.0f), style.node_rounding, style.border_width);
 
         if (max.y - min.y < style.label_min_px) continue;

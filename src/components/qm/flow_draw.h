@@ -25,6 +25,11 @@ struct FlowView {
 
 struct FlowDrawStyle {
     float ribbon_alpha     = 0.55f;
+
+    // A self flow (MD_FLOW_RIBBON_FLAG_SELF) is not a ribbon: it is the part of a node that stays
+    // where it is - local excitation in the charge transfer diagram - drawn as a solid fill over its
+    // stub inside the node, at this opacity of the node's colour.
+    float self_alpha       = 0.45f;
     int   ribbon_segments   = 24;
     float ribbon_curvature  = 0.5f;   // 0 = straight, 1 = fully S-shaped
     float node_rounding     = 3.0f;
