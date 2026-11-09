@@ -1482,7 +1482,6 @@ void init_trajectory_data(ApplicationState* data, str_t run_file, uint32_t traj_
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
         const double* frame_times = run_frame_times(data);
-        char path_buf[256];
 
         init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
