@@ -37,7 +37,7 @@ bool load(Loaded* l, const char* file) {
     const str_t p = str_from_cstr(path);
     bool ok = false;
     if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
-    if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p);
+    if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, MD_XYZ_OPTION_NONE);
     else                           ok = md_pdb_system_init_from_file(&l->sys, &st, p, MD_PDB_OPTION_NONE, NULL);

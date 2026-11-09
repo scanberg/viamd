@@ -268,7 +268,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             return md_xyz_system_init_from_file(out_sys, out_state, filepath, options);
         }
         case LoaderType_CIF:
-            return md_mmcif_system_init_from_file(out_sys, out_state, filepath);
+            return md_mmcif_system_init_from_file(out_sys, out_state, filepath, task_system::executor());
         case LoaderType_LAMMPSDATA: {
             const char* format = state.arg;
             return md_lammps_system_init_from_file(out_sys, out_state, filepath, format);
