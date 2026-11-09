@@ -105,8 +105,8 @@ static void blue_noise_generate(float* out, int n) {
     uint8_t* on     = (uint8_t*)md_alloc(md_get_heap_allocator(), N);
     float*   energy = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * N);
     int*     rank   = (int*)md_alloc(md_get_heap_allocator(), sizeof(int) * N);
-    MD_MEMSET(on, 0, N);
-    MD_MEMSET(energy, 0, sizeof(float) * N);
+    md_memset(on, 0, N);
+    md_memset(energy, 0, sizeof(float) * N);
 
     auto splat = [&](int i, float sign) {
         const int ix = i % n, iy = i / n;
@@ -152,16 +152,16 @@ static void blue_noise_generate(float* out, int n) {
     // Ranks below the initial: take the tightest clusters away, on a copy of the state
     uint8_t* on0     = (uint8_t*)md_alloc(md_get_heap_allocator(), N);
     float*   energy0 = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * N);
-    MD_MEMCPY(on0, on, N);
-    MD_MEMCPY(energy0, energy, sizeof(float) * N);
+    md_memcpy(on0, on, N);
+    md_memcpy(energy0, energy, sizeof(float) * N);
     for (int r = num_initial - 1; r >= 0; --r) {
         const int c = tightest_cluster();
         on[c] = 0;
         splat(c, -1.0f);
         rank[c] = r;
     }
-    MD_MEMCPY(on, on0, N);
-    MD_MEMCPY(energy, energy0, sizeof(float) * N);
+    md_memcpy(on, on0, N);
+    md_memcpy(energy, energy0, sizeof(float) * N);
     // and above: fill the largest voids
     for (int r = num_initial; r < N; ++r) {
         const int v = largest_void();
@@ -374,10 +374,10 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
 
 void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count) {
     MD_ASSERT(out);
-    MD_MEMSET(out, 0, sizeof(float) * 3 * vertex_count);
+    md_memset(out, 0, sizeof(float) * 3 * vertex_count);
     if (!xyz || !values || !index || vertex_count == 0) return;
     float* weight = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * vertex_count);
-    MD_MEMSET(weight, 0, sizeof(float) * vertex_count);
+    md_memset(weight, 0, sizeof(float) * vertex_count);
 
     for (uint32_t t = 0; t + 2 < index_count; t += 3) {
         const uint32_t i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];

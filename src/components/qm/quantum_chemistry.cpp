@@ -747,9 +747,9 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->basis.shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
     job->basis.alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
     job->basis.coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
-    MD_MEMCPY(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
-    MD_MEMCPY(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
-    MD_MEMCPY(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
+    md_memcpy(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
+    md_memcpy(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
+    md_memcpy(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
 
     job->atom_xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -759,7 +759,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     }
 
     job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    MD_MEMCPY(job->density, density, sizeof(double) * num_ao * num_ao);
+    md_memcpy(job->density, density, sizeof(double) * num_ao * num_ao);
 
     job->desc.basis              = &job->basis;
     job->desc.atom_xyz           = job->atom_xyz;
@@ -2063,7 +2063,7 @@ struct QuantumChemistry : viamd::EventHandler {
             nto.camera = nto.target;
 
 						nto.atom_group_idx = md_array_create(uint32_t, num_atoms, arena);
-            MD_MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
+            md_memset(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
             snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
             nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
@@ -2217,8 +2217,8 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         const size_t bytes = sizeof(double) * a_dim * a_dim;
-        MD_MEMCPY(td_cache.attach, attach, bytes);
-        MD_MEMCPY(td_cache.detach, detach, bytes);
+        md_memcpy(td_cache.attach, attach, bytes);
+        md_memcpy(td_cache.detach, detach, bytes);
         td_cache.state_idx = state_idx;
         return true;
     }
@@ -2807,7 +2807,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             hovered_flow_width = width;
                             hovered_flow_beg = start_pos;
                             hovered_flow_end = end_pos;
-                            MD_MEMCPY(mouse_label, label, sizeof(label));
+                            md_memcpy(mouse_label, label, sizeof(label));
                         }
 
                         // A ribbon narrower than its own label cannot carry one at all.
@@ -2929,11 +2929,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 bool index_hovered = false;
                 if (start_bar.Contains(mouse_pos)) {
-                    MD_MEMCPY(mouse_label, start_label1, sizeof(start_label1));
+                    md_memcpy(mouse_label, start_label1, sizeof(start_label1));
                     index_hovered = true;
                 }
                 else if (end_bar.Contains(mouse_pos)) {
-                    MD_MEMCPY(mouse_label, end_label1, sizeof(end_label1));
+                    md_memcpy(mouse_label, end_label1, sizeof(end_label1));
                     index_hovered = true;
                 }
 
@@ -8335,7 +8335,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // Guard against degenerate inputs (no charge to attribute).
         if (hole_sum <= 0.0 || part_sum <= 0.0) {
-            MD_MEMSET(out_matrix, 0, sizeof(float) * num_groups * num_groups);
+            md_memset(out_matrix, 0, sizeof(float) * num_groups * num_groups);
             return;
         }
 
@@ -8388,7 +8388,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         for (int i = index; i < (int)nto.group.count - 1; ++i) {
             nto.group.color[i] = nto.group.color[i + 1];
-            MD_MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
+            md_memcpy(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
         }
         nto.group.count--;
         snprintf(nto.group.label[nto.group.count], sizeof(nto.group.label[nto.group.count]), "Group %i", (int)nto.group.count);
@@ -8397,7 +8397,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void copy_group(int from_idx, int to_idx) {
         nto.group.color[to_idx] = nto.group.color[from_idx];
-        MD_MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
+        md_memcpy(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == to_idx) {
                 nto.atom_group_idx[i] = (uint32_t)from_idx;
@@ -8412,9 +8412,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
         char label_buf[sizeof(nto.group.label[a])];
         //sprintf(label_buf, nto.group.label[row_n]);
-        MD_MEMCPY(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
-        MD_MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
-        MD_MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
+        md_memcpy(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
+        md_memcpy(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
+        md_memcpy(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
 
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == a) {
@@ -9538,7 +9538,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!nto.atom_group_idx || pending_groups.count == 0) return;
 
         const size_t num_atoms = md_array_size(nto.atom_group_idx);
-        MD_MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
+        md_memset(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
         nto.group.count = pending_groups.count;
         for (size_t g = 0; g < pending_groups.count; ++g) {
@@ -9616,7 +9616,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t num_mo = num_mos;
         if (num_mo > 0 && !flow.mo_labels) {
             flow.mo_labels = (char*)md_alloc(arena, num_mo * FLOW_ATOM_LABEL_STRIDE);
-            MD_MEMSET(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
+            md_memset(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
             flow.num_mo_labels = num_mo;
         }
         flow_build_atom_labels(sys);
@@ -11123,7 +11123,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             // Clear all of the values to zero (matrix, group values)
-            MD_MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+            md_memset(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
 			if (rsp.selected != -1) {
 				const size_t nto_idx = (size_t)rsp.selected;

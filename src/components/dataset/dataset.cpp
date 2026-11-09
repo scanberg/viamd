@@ -1269,7 +1269,7 @@ struct Dataset : viamd::EventHandler {
         // The molecule of each part (a part is within one), and the parts of each molecule in order
         const size_t num_mols = sys.molecule.count;
         md_array_resize(c.mol_part_offset, num_mols + 1, alloc);
-        MD_MEMSET(c.mol_part_offset, 0, (num_mols + 1) * sizeof(uint32_t));
+        md_memset(c.mol_part_offset, 0, (num_mols + 1) * sizeof(uint32_t));
         int32_t* part_mol = md_temp_alloc_array(temp, int32_t, md_system_part_count(&sys) + 1);
         for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
             const md_urange_t atoms = md_system_part_atom_range(&sys, p);
@@ -1281,7 +1281,7 @@ struct Dataset : viamd::EventHandler {
         md_array_resize(c.mol_part, c.mol_part_offset[num_mols], alloc);
         {
             uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_mols + 1);
-            MD_MEMCPY(fill, c.mol_part_offset, (num_mols + 1) * sizeof(uint32_t));
+            md_memcpy(fill, c.mol_part_offset, (num_mols + 1) * sizeof(uint32_t));
             for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
                 if (part_mol[p] >= 0) c.mol_part[fill[part_mol[p]]++] = (uint32_t)p;
             }
@@ -1292,7 +1292,7 @@ struct Dataset : viamd::EventHandler {
         for (size_t a = 0; a < sys.atom.count; ++a) atom_row[a] = (int32_t)rest_row;
         uint32_t* mol_res = md_temp_alloc_zero_array(temp, uint32_t, num_mols + 1);
         md_array_resize(c.row_mol_offset, num_types + 2, alloc);
-        MD_MEMSET(c.row_mol_offset, 0, (num_types + 2) * sizeof(uint32_t));
+        md_memset(c.row_mol_offset, 0, (num_types + 2) * sizeof(uint32_t));
         for (size_t m = 0; m < num_mols; ++m) {
             const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
             if (t < 0 || (size_t)t >= num_types) continue;
@@ -1340,7 +1340,7 @@ struct Dataset : viamd::EventHandler {
         md_array_resize(c.row_mol, c.row_mol_offset[num_types + 1], alloc);
         {
             uint32_t* fill = md_temp_alloc_array(temp, uint32_t, num_types + 1);
-            MD_MEMCPY(fill, c.row_mol_offset, (num_types + 1) * sizeof(uint32_t));
+            md_memcpy(fill, c.row_mol_offset, (num_types + 1) * sizeof(uint32_t));
             for (size_t m = 0; m < num_mols; ++m) {
                 const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
                 if (t >= 0 && (size_t)t < num_types) c.row_mol[fill[t]++] = (uint32_t)m;

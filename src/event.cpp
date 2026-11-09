@@ -81,7 +81,7 @@ void event_system_process_event_queue() {
 		}
 		size_t num_events_left = num_events - num_events_to_process;
 		if (num_events_left) {
-			MD_MEMMOVE(beg, beg + num_events_to_process, sizeof(Event) * num_events_left);  // ranges overlap
+			md_memmove(beg, beg + num_events_to_process, sizeof(Event) * num_events_left);  // ranges overlap
 		}
 		md_array_shrink(event_system.queue, num_events_left);
 	}

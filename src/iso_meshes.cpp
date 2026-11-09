@@ -247,7 +247,7 @@ static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t*
     if (xyz && num_atoms) {
         b->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
         if (b->xyz) {
-            MD_MEMCPY(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+            md_memcpy(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
             b->num_atoms = num_atoms;
         }
     }
@@ -432,7 +432,7 @@ static void keep_index(IsoMeshes* m, const uint32_t* idx, uint32_t count) {
     free(m->tri_index);
     m->tri_index = count ? (uint32_t*)malloc(sizeof(uint32_t) * count) : nullptr;
     m->tri_index_count = m->tri_index ? count : 0;
-    if (m->tri_index) MD_MEMCPY(m->tri_index, idx, sizeof(uint32_t) * count);
+    if (m->tri_index) md_memcpy(m->tri_index, idx, sizeof(uint32_t) * count);
 }
 
 // The device copy of the vertices, which goes with the mesh it is of
@@ -663,8 +663,8 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
         size_t v0 = 0, i0 = 0;
         for (uint32_t k = 0; k < n && pos && nrm && idx; ++k) {
             const md_gto_iso_mesh_t& mk = meshes[k];
-            MD_MEMCPY(pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
-            MD_MEMCPY(nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
+            md_memcpy(pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
+            md_memcpy(nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
             for (uint32_t i = 0; i < mk.index_count; ++i) idx[i0 + i] = mk.index[i] + (uint32_t)v0;
             v0 += mk.vertex_count;
             i0 += mk.index_count;

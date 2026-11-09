@@ -10,7 +10,7 @@
 
 static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
     if (color == 0xFFFFFFFFU) {
-        MD_MEMSET(colors, 0xFF, sizeof(uint32_t) * count);
+        md_memset(colors, 0xFF, sizeof(uint32_t) * count);
     } else {
         for (size_t i = 0; i < count; ++i) {
             colors[i] = color;

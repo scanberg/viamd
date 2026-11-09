@@ -3141,7 +3141,7 @@ static const ScriptSuggestions& script_suggestions_get(ApplicationState* state, 
         bool picks = num_picked == num_selected;
         for (size_t i = 0; i < num_picked && picks; ++i) picks = md_bitset_test(sel, (uint32_t)seq.idx[i]);
         if (picks) {
-            MD_MEMCPY(atoms, seq.idx, num_picked * sizeof(int32_t));
+            md_memcpy(atoms, seq.idx, num_picked * sizeof(int32_t));
             num_atoms = num_picked;
         } else if (num_selected == 2) {
             md_bitset_iter_extract_indices(atoms, 2, md_bitset_iter(sel));
@@ -6686,7 +6686,7 @@ static void draw_property_export_window(ApplicationState* data) {
                         if (view.unit_str[0]) y_label = md_str_printf(alloc, "%s (%s)", label, view.unit_str);
 
                         float* x = md_temp_alloc_array(temp, float, num_rows);
-                        MD_MEMCPY(x, view.x, num_rows * sizeof(float));
+                        md_memcpy(x, view.x, num_rows * sizeof(float));
                         md_array_push(column_data, x, alloc);
                         md_array_push(column_labels, x_label, alloc);
                         push_columns(view.dim, [&](size_t r, int k) { return (float)series_temporal_point(view, (int)r, k).y; });
@@ -7064,7 +7064,7 @@ static void update_md_buffers(ApplicationState* data) {
         MD_DEFER { md_temp_end(tmp); };
 
         uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(uint8_t));
-        MD_MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
+        md_memset(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
             md_bitset_iter_t it = md_bitmask_iter(&data->selection.highlight_mask);
@@ -7114,12 +7114,12 @@ static void update_md_buffers(ApplicationState* data) {
         if (delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken))) {
             const size_t count = sys.bond.count + delta->num_formed;
             md_atom_pair_t* pairs = (md_atom_pair_t*)md_vm_arena_push(data->allocator.frame, sizeof(md_atom_pair_t) * count);
-            if (sys.bond.count) MD_MEMCPY(pairs, sys.bond.pairs, sizeof(md_atom_pair_t) * sys.bond.count);
+            if (sys.bond.count) md_memcpy(pairs, sys.bond.pairs, sizeof(md_atom_pair_t) * sys.bond.count);
             md_bitset_iter_t it = md_bitset_iter(delta->broken);
             while (md_bitset_iter_next(&it)) {
                 if (it.idx < sys.bond.count) pairs[it.idx].idx[1] = pairs[it.idx].idx[0];
             }
-            if (delta->num_formed) MD_MEMCPY(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
+            if (delta->num_formed) md_memcpy(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
             md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)count, pairs, sizeof(md_atom_pair_t));
         } else {
             md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
@@ -7183,9 +7183,9 @@ void create_screenshot(md_str_t path) {
             uint32_t* row_a = rgba + i * width;
             uint32_t* row_b = rgba + (height - 1 - i) * width;
             if (row_a != row_b) {
-                MD_MEMCPY(row_t, row_a, row_byte_size);  // tmp = a;
-                MD_MEMCPY(row_a, row_b, row_byte_size);  // a = b;
-                MD_MEMCPY(row_b, row_t, row_byte_size);  // b = tmp;
+                md_memcpy(row_t, row_a, row_byte_size);  // tmp = a;
+                md_memcpy(row_a, row_b, row_byte_size);  // a = b;
+                md_memcpy(row_b, row_t, row_byte_size);  // b = tmp;
             }
         }
     }

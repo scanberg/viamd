@@ -145,7 +145,7 @@ static bool split_head(HeadSplit* out, const md_system_t& sys, const int32_t* at
     if (any_center) {
         // The parts without the phosphates: those the tails hang off are the backbone, the rest and the phosphates the head group
         const int32_t num_parts = head_label_parts(label, keep, sys, atoms, n, stack);
-        MD_MEMSET(anchored, 0, n);
+        md_memset(anchored, 0, n);
         bool anchors_ok = true;
         for (size_t k = 0; k < num_anchors; ++k) {
             const int32_t a = head_local(atoms, n, anchors[k]);
@@ -392,7 +392,7 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
     const size_t num_rings = md_ring_data_count(&sys.ring);
     if (num_rings > 0) {
         in_ring = (uint8_t*)md_alloc(temp_alloc, sys.atom.count);
-        MD_MEMSET(in_ring, 0, sys.atom.count);
+        md_memset(in_ring, 0, sys.atom.count);
         for (size_t r = 0; r < num_rings; ++r) {
             const int32_t* ra = md_ring_atoms(&sys.ring, r);
             for (size_t k = 0; k < md_ring_size(&sys.ring, r); ++k) in_ring[ra[k]] = 1;
@@ -590,7 +590,7 @@ static AtomRings rings_by_atom(const md_system_t& sys, md_allocator_i* alloc) {
     const size_t num_atoms = sys.atom.count;
     const size_t num_rings = md_ring_data_count(&sys.ring);
     md_array_resize(out.offset, num_atoms + 1, alloc);
-    MD_MEMSET(out.offset, 0, sizeof(uint32_t) * (num_atoms + 1));
+    md_memset(out.offset, 0, sizeof(uint32_t) * (num_atoms + 1));
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* atoms = md_ring_atoms(&sys.ring, r);
         const size_t n = md_ring_size(&sys.ring, r);
@@ -600,7 +600,7 @@ static AtomRings rings_by_atom(const md_system_t& sys, md_allocator_i* alloc) {
     for (size_t i = 0; i < num_atoms; ++i) out.offset[i + 1] += out.offset[i];
     md_array_resize(out.ring, out.offset[num_atoms], alloc);
     uint32_t* cursor = (uint32_t*)md_alloc(alloc, sizeof(uint32_t) * (num_atoms + 1));
-    MD_MEMCPY(cursor, out.offset, sizeof(uint32_t) * num_atoms);
+    md_memcpy(cursor, out.offset, sizeof(uint32_t) * num_atoms);
     for (size_t r = 0; r < num_rings; ++r) {
         const int32_t* atoms = md_ring_atoms(&sys.ring, r);
         const size_t n = md_ring_size(&sys.ring, r);

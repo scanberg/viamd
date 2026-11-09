@@ -709,7 +709,7 @@ struct Ramachandran : viamd::EventHandler {
         if (!l || l->node.parent != 0) return;
         LayerGroup* g = add_group(l->node.order - 1);
         if (!g) return;
-        MD_MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
+        md_memcpy(g->filter.text, l->filter.text, sizeof(g->filter.text));
         g->follow_selection = l->follow_selection;
         l->filter.text[0] = '\0';
         l->follow_selection = false;
@@ -767,11 +767,11 @@ struct Ramachandran : viamd::EventHandler {
             const RepresentationNode node = copy->node;
             *copy = LayerGroup{};
             copy->node = node;
-            MD_MEMCPY(copy->name, src.name, sizeof(copy->name));
+            md_memcpy(copy->name, src.name, sizeof(copy->name));
             copy->visible = src.visible;
             copy->open = src.open;
             copy->filter.text[0] = '\0';
-            MD_MEMCPY(copy->filter.text, src.filter.text, sizeof(copy->filter.text));
+            md_memcpy(copy->filter.text, src.filter.text, sizeof(copy->filter.text));
             copy->follow_selection = src.follow_selection;
             // In the order they are in, each last in the copy
             RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
@@ -958,9 +958,9 @@ struct Ramachandran : viamd::EventHandler {
 
         md_allocator_i* heap = md_get_heap_allocator();
         md_array_resize(seg_type, num_segments, heap);
-        MD_MEMSET(seg_count, 0, sizeof(seg_count));
+        md_memset(seg_count, 0, sizeof(seg_count));
         if (num_segments > 0) {
-            MD_MEMSET(seg_type, -1, num_segments);
+            md_memset(seg_type, -1, num_segments);
             md_temp_scope_t temp = md_temp_begin();
             md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
             md_util_backbone_ramachandran_classify(types, num_segments, &sys);
@@ -1348,7 +1348,7 @@ struct Ramachandran : viamd::EventHandler {
                 }
                 if (n > 0) {
                     l->num_levels = n;
-                    MD_MEMCPY(l->levels, v, sizeof(float) * n);
+                    md_memcpy(l->levels, v, sizeof(float) * n);
                 }
             } else if (md_str_eq_cstr(ident, "Bandwidth")) {
                 viamd::extract_flt(l->bandwidth, arg);
@@ -1474,7 +1474,7 @@ struct Ramachandran : viamd::EventHandler {
         const int type = panel == PANEL_ALL ? -1 : panel;
         d->opacity = l.opacity;
         d->line_width = l.line_width;
-        MD_MEMCPY(d->line_color, l.color.elem, sizeof(d->line_color));
+        md_memcpy(d->line_color, l.color.elem, sizeof(d->line_color));
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
@@ -1490,8 +1490,8 @@ struct Ramachandran : viamd::EventHandler {
             d->num_levels = 2;
             d->levels[0] = ref_favored[t];
             d->levels[1] = ref_allowed[t];
-            MD_MEMCPY(d->fill_colors[0], ref_fill_favored[t].elem, sizeof(float) * 4);
-            MD_MEMCPY(d->fill_colors[1], ref_fill_allowed[t].elem, sizeof(float) * 4);
+            md_memcpy(d->fill_colors[0], ref_fill_favored[t].elem, sizeof(float) * 4);
+            md_memcpy(d->fill_colors[1], ref_fill_allowed[t].elem, sizeof(float) * 4);
             d->cmap_max = 1.0f;
             d->content = 1;
             return true;
@@ -2026,8 +2026,8 @@ struct Ramachandran : viamd::EventHandler {
     void draw_plots() {
         // Counted again as the points are drawn
         for (int i = 0; i < num_layers; ++i) {
-            MD_MEMSET(layers[i].point_regions, 0, sizeof(layers[i].point_regions));
-            MD_MEMSET(layers[i].point_count, 0, sizeof(layers[i].point_count));
+            md_memset(layers[i].point_regions, 0, sizeof(layers[i].point_regions));
+            md_memset(layers[i].point_count, 0, sizeof(layers[i].point_count));
         }
 
         // Fitted to the shape of the plots of the last frame
@@ -2550,10 +2550,10 @@ struct Ramachandran : viamd::EventHandler {
         char auto_name[128];
         {
             char saved[sizeof(l.name)];
-            MD_MEMCPY(saved, l.name, sizeof(saved));
+            md_memcpy(saved, l.name, sizeof(saved));
             l.name[0] = '\0';
             layer_label(auto_name, sizeof(auto_name), l);
-            MD_MEMCPY(l.name, saved, sizeof(saved));
+            md_memcpy(l.name, saved, sizeof(saved));
         }
         prop::row("name");
         ImGui::InputTextWithHint("##name", auto_name, l.name, sizeof(l.name));

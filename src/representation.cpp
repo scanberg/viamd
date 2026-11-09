@@ -822,7 +822,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             if (attr) {
                 MD_LOG_DEBUG("Failed to extract values for the selected atom attribute");
             }
-            MD_MEMSET(colors, 0xFFFFFFFFu, bytes);
+            md_memset(colors, 0xFFFFFFFFu, bytes);
         }
         break;
     }
@@ -1115,7 +1115,7 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
         const bool empty = md_str_empty(md_str_trim(md_str_from_cstr(into->filter.text)));
         const int n = empty ? snprintf(text, sizeof(text), "%s", expr) : snprintf(text, sizeof(text), "(%s) or %s", into->filter.text, expr);
         if (n < 0 || (size_t)n >= sizeof(text)) return false;
-        MD_MEMCPY(into->filter.text, text, (size_t)n + 1);
+        md_memcpy(into->filter.text, text, (size_t)n + 1);
         flag_representation_as_dirty(into);
         return true;
     }
@@ -3464,7 +3464,7 @@ static void draw_drop_target(const ApplicationState& state, NodeRef node, bool o
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
         NodeRef src;
-        MD_MEMCPY(&src, payload->Data, sizeof(src));
+        md_memcpy(&src, payload->Data, sizeof(src));
 
         const float t = (ImGui::GetMousePos().y - row.Min.y) / MD_MAX(row.GetHeight(), 1.0f);
         const RepresentationDrop drop = drop_zone(t, node.group, open);
@@ -4237,7 +4237,7 @@ void draw_representations_window(ApplicationState* state) {
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
         if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
             NodeRef src;
-            MD_MEMCPY(&src, payload->Data, sizeof(src));
+            md_memcpy(&src, payload->Data, sizeof(src));
             if (representation_can_move(*state, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
                 const ImVec2 min = ImGui::GetItemRectMin();
                 ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);

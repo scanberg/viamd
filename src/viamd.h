@@ -2359,7 +2359,7 @@ static inline void mask_set_ring_by_selection_granularity(md_bitmask_t* mask, co
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     MD_ASSERT(seq);
-    MD_MEMSET(seq->idx, -1, sizeof(seq->idx));
+    md_memset(seq->idx, -1, sizeof(seq->idx));
 }
 
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
@@ -2674,7 +2674,7 @@ void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* at
 // fast math every float spelling of the test (v != v, isnan) may be folded away.
 static inline bool atom_attribute_value_absent(float v) {
     uint32_t u;
-    MD_MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return (u & 0x7fffffffu) > 0x7f800000u;
 }
 

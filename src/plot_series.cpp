@@ -812,7 +812,7 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
         ksum += kernel[i + r];
     }
     for (int i = 0; i <= 2 * r; ++i) kernel[i] = (float)(kernel[i] / ksum);
-    MD_MEMCPY(src, bins, sizeof(float) * num_bins);
+    md_memcpy(src, bins, sizeof(float) * num_bins);
     for (int b = 0; b < num_bins; ++b) {
         double acc = 0.0;
         for (int i = -r; i <= r; ++i) {
@@ -837,11 +837,11 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
 static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride,
                          const md_bitset_t* mask, bool periodic, float smoothing) {
     const bool aggregate = dim_out == 1 && stride > 1;
-    MD_MEMSET(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
+    md_memset(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
 
     md_temp_scope_t temp = md_temp_begin();
     size_t* count = md_temp_alloc_array(temp, size_t, dim_out);
-    MD_MEMSET(count, 0, sizeof(size_t) * dim_out);
+    md_memset(count, 0, sizeof(size_t) * dim_out);
 
     const double inv_range = hi > lo ? 1.0 / (hi - lo) : 0.0;
     auto add_frame = [&](size_t f) {
@@ -1204,11 +1204,11 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
         if (bins) {
             float* dst = bins + (size_t)p * ref.num_bins;
             if (info.valid) {
-                MD_MEMCPY(dst, v.bins, (size_t)ref.num_bins * sizeof(float));
+                md_memcpy(dst, v.bins, (size_t)ref.num_bins * sizeof(float));
                 y_min = MD_MIN(y_min, v.y_min);
                 y_max = MD_MAX(y_max, v.y_max);
             } else {
-                MD_MEMSET(dst, 0, (size_t)ref.num_bins * sizeof(float));
+                md_memset(dst, 0, (size_t)ref.num_bins * sizeof(float));
             }
         }
 

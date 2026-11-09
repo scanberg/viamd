@@ -286,7 +286,7 @@ struct DensityVolume : viamd::EventHandler {
         const size_t kept = MD_MIN(count, DENSITY_VOLUME_MAX_SHOWN_STRUCTURES);
 
         md_array_resize(structure_mats, kept, heap);
-        if (kept) MD_MEMCPY(structure_mats, mats, kept * sizeof(mat4_t));
+        if (kept) md_memcpy(structure_mats, mats, kept * sizeof(mat4_t));
 
         uint64_t hash = md_hash64(&kept, sizeof(kept), 0);
         for (size_t i = 0; i < kept; ++i) {
@@ -501,8 +501,8 @@ struct DensityVolume : viamd::EventHandler {
         dvr.tf.dirty = true;
         iso.enabled = false;
         iso.count = 0;
-        MD_MEMSET(iso.values, 0, sizeof(iso.values));
-        MD_MEMSET(iso.colors, 0, sizeof(iso.colors));
+        md_memset(iso.values, 0, sizeof(iso.values));
+        md_memset(iso.colors, 0, sizeof(iso.colors));
         clip_volume.min = {0, 0, 0};
         clip_volume.max = {1, 1, 1};
         legend.enabled = true;
@@ -885,9 +885,9 @@ struct DensityVolume : viamd::EventHandler {
                 dirty_vol = false;
                 // Its innermost axis is the texture's width; v2's volumes differ in size, so the texture follows
                 int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
-                if (!volume_texture.id || MD_MEMCMP(volume_texture.dim, dim, sizeof(dim)) != 0) {
+                if (!volume_texture.id || md_memcmp(volume_texture.dim, dim, sizeof(dim)) != 0) {
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
-                    MD_MEMCPY(volume_texture.dim, dim, sizeof(dim));
+                    md_memcpy(volume_texture.dim, dim, sizeof(dim));
                 }
                 const size_t n = (size_t)dim[0] * dim[1] * dim[2];
                 const bool compared = cmp.placed && cmp.show != CompareShow_This && cmp.sampled_count == n;
@@ -927,9 +927,9 @@ struct DensityVolume : viamd::EventHandler {
 
     void compare_read() {
         char path[sizeof(cmp.path)];
-        MD_MEMCPY(path, cmp.path, sizeof(path));
+        md_memcpy(path, cmp.path, sizeof(path));
         compare_clear();
-        MD_MEMCPY(cmp.path, path, sizeof(path));
+        md_memcpy(cmp.path, path, sizeof(path));
         if (!path[0]) return;
         cmp.loaded = density_volume::cube_read(&cmp.cube, md_str_from_cstr(path), md_get_heap_allocator(), cmp.err, sizeof(cmp.err));
         cmp.generation += 1;
@@ -978,7 +978,7 @@ struct DensityVolume : viamd::EventHandler {
                 md_array_size(vis.sdf.matrices) > 0) {
                 const mat4_t M = vis.sdf.matrices[0];
                 xyz = (vec3_t*)md_alloc(temp, st0.num_atoms * sizeof(vec3_t));
-                MD_MEMCPY(xyz, st0.xyz, st0.num_atoms * sizeof(vec3_t));
+                md_memcpy(xyz, st0.xyz, st0.num_atoms * sizeof(vec3_t));
                 md_bitset_iter_t it = md_bitset_iter(vis.sdf.structures[0]);
                 while (md_bitset_iter_next(&it)) {
                     md_array_push(atoms, (int32_t)it.idx, temp);
@@ -1000,9 +1000,9 @@ struct DensityVolume : viamd::EventHandler {
             cmp.sampled_count = n;
         }
         density_volume::Grid to;
-        MD_MEMCPY(to.dim, v.dim, sizeof(to.dim));
+        md_memcpy(to.dim, v.dim, sizeof(to.dim));
         to.origin = v.origin;
-        MD_MEMCPY(to.basis, v.basis, sizeof(to.basis));
+        md_memcpy(to.basis, v.basis, sizeof(to.basis));
         cmp.covered = density_volume::resample(cmp.sampled, to, cmp.cube.grid, cmp.al);
         cmp.placed = true;
     }
@@ -1019,7 +1019,7 @@ struct DensityVolume : viamd::EventHandler {
             if (ImGui::Button(name.len ? base : "Open a cube file...", ImVec2(cmp.path[0] ? w - bw - ImGui::GetStyle().ItemSpacing.x : w, 0))) {
                 char buf[sizeof(cmp.path)] = "";
                 if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, MD_STR_LIT("cube"))) {
-                    MD_MEMCPY(cmp.path, buf, sizeof(buf));
+                    md_memcpy(cmp.path, buf, sizeof(buf));
                     cmp.load = true;
                 }
             }

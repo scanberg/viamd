@@ -72,7 +72,7 @@ size_t activity_list(ActivityInfo* out, size_t cap) {
     for (const Activity* a = g_activity_head; a && n < cap; a = a->next) {
         ActivityInfo& info = out[n++];
         info.id = (uint64_t)(uintptr_t)a;
-        MD_MEMCPY(info.label, a->label, sizeof(info.label));
+        md_memcpy(info.label, a->label, sizeof(info.label));
         info.progress = a->progress.load(std::memory_order_relaxed);
         info.cancellable = a->cancellable;
     }

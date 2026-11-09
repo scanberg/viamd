@@ -46,7 +46,7 @@ void density_map_mass_table(float table[DENSITY_MAP_TABLE], float* out_max, cons
     }
     *out_max = vmax;
     if (vmax <= 0.0f || total <= 0.0) {
-        MD_MEMSET(table, 0, sizeof(float) * DENSITY_MAP_TABLE);
+        md_memset(table, 0, sizeof(float) * DENSITY_MAP_TABLE);
         return;
     }
 
@@ -55,7 +55,7 @@ void density_map_mass_table(float table[DENSITY_MAP_TABLE], float* out_max, cons
     const double bins_per_decade = NUM_BINS / DECADES;
     md_allocator_i* heap = md_get_heap_allocator();
     double* hist = (double*)md_alloc(heap, sizeof(double) * NUM_BINS);
-    MD_MEMSET(hist, 0, sizeof(double) * NUM_BINS);
+    md_memset(hist, 0, sizeof(double) * NUM_BINS);
     const double inv_max = 1.0 / vmax;
     for (size_t i = 0; i < count; ++i) {
         if (mask && !mask[i]) continue;
@@ -263,7 +263,7 @@ static void job_bin_chunk(DensityMapJob* job, uint32_t c) {
     bins.data = job->bins[c];
     density_map_bins_init(&bins, job->domain, job->sigma);
     job->source(c, job->num_chunks, bins, job->cancel);
-    MD_MEMCPY(job->samples[c], bins.samples, sizeof(bins.samples));
+    md_memcpy(job->samples[c], bins.samples, sizeof(bins.samples));
     if (!job->cancel.load()) job->chunks_done.fetch_add(1);
 }
 
@@ -341,7 +341,7 @@ DensityMapJob* density_map_launch(md_str_t label, const DensityMapDomain& domain
     job->num_bufs = MD_MAX(job->num_chunks, 2u);
     for (uint32_t i = 0; i < job->num_bufs; ++i) {
         job->bins[i] = (float*)md_alloc(heap, grid_bytes());
-        MD_MEMSET(job->bins[i], 0, grid_bytes());
+        md_memset(job->bins[i], 0, grid_bytes());
     }
 
     job->task.start(label, [job]() {
@@ -577,14 +577,14 @@ void density_map_shutdown() {
 }
 
 void density_map_draw_init(DensityMapDraw* d) {
-    MD_MEMSET(d, 0, sizeof(DensityMapDraw));
+    md_memset(d, 0, sizeof(DensityMapDraw));
     d->opacity = 1.0f;
     d->line_width = 1.5f;
 }
 
 void density_map_draw_levels(DensityMapDraw* d, const DensityMapResult& r, int channel, const float* levels, int num_levels) {
     MD_ASSERT(0 <= channel && channel <= DENSITY_MAP_ALL);
-    MD_MEMSET(d->weights, 0, sizeof(d->weights));
+    md_memset(d->weights, 0, sizeof(d->weights));
     if (channel == DENSITY_MAP_ALL) {
         for (int t = 0; t < DENSITY_MAP_CHANNELS; ++t) d->weights[t] = r.weights_all[t];
     } else {

@@ -426,7 +426,7 @@ bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
         MD_LOG_ERROR("Failed to initialize NativeFileDialog: %s", NFD_GetError());
     }
 
-    MD_MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    md_memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
@@ -441,7 +441,7 @@ void shutdown(Context* ctx) {
     ImGui::DestroyContext();
     glfwTerminate();
 
-    MD_MEMSET(ctx, 0, sizeof(Context));
+    md_memset(ctx, 0, sizeof(Context));
 }
 
 void update(Context* ctx) {
@@ -485,7 +485,7 @@ void update(Context* ctx) {
     data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
     data.internal_ctx.timing.total_s = t;
 
-    MD_MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    md_memcpy(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void render_imgui(Context* ctx) {

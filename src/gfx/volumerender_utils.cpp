@@ -489,8 +489,8 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
         return NULL;
     }
 
-    MD_MEMCPY(g->dim, dim, sizeof(g->dim));
-    MD_MEMCPY(g->block_dim, bd, sizeof(g->block_dim));
+    md_memcpy(g->dim, dim, sizeof(g->dim));
+    md_memcpy(g->block_dim, bd, sizeof(g->block_dim));
     g->block_size = bs;
     g->built_version = g->version;
     return g;
@@ -704,10 +704,10 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     float  values[ISO_MAX_COUNT] = {};
     vec4_t colors[ISO_MAX_COUNT] = {};
     float  tau[ISO_MAX_COUNT] = {};
-    MD_MEMCPY(values, desc.iso.values, count * sizeof(float));
-    MD_MEMCPY(colors, desc.iso.colors, count * sizeof(vec4_t));
+    md_memcpy(values, desc.iso.values, count * sizeof(float));
+    md_memcpy(colors, desc.iso.colors, count * sizeof(vec4_t));
     if (desc.iso.optical_densities) {
-        MD_MEMCPY(tau, desc.iso.optical_densities, count * sizeof(float));
+        md_memcpy(tau, desc.iso.optical_densities, count * sizeof(float));
     }
 
     const mat4_t model_to_view = desc.matrix.view * desc.matrix.model;

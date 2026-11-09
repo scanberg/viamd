@@ -101,7 +101,7 @@ bool layer_group_compose_filter(char* layer_filter, size_t cap, const LayerGroup
     // right is made one (residue(2) in residue(1:5) would ask each of the five for a second residue)
     else                  n = snprintf(out, sizeof(out), "(%s) in union(%s)", layer_filter, g.filter.text);
     if (n < 0 || (size_t)n >= sizeof(out) || (size_t)n >= cap) return false;
-    MD_MEMCPY(layer_filter, out, (size_t)n + 1);
+    md_memcpy(layer_filter, out, (size_t)n + 1);
     return true;
 }
 
@@ -154,7 +154,7 @@ bool layer_tree_drop_target(const ImRect& row, float x0, LayerNodeRef target, bo
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(LAYER_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(LayerNodeRef)) {
         LayerNodeRef src;
-        MD_MEMCPY(&src, payload->Data, sizeof(src));
+        md_memcpy(&src, payload->Data, sizeof(src));
         const int si = representation_tree_find(nodes, count, src.group, src.id);
         const int ti = representation_tree_find(nodes, count, target.group, target.id);
         const float t = (ImGui::GetMousePos().y - row.Min.y) / MD_MAX(row.GetHeight(), 1.0f);
@@ -194,7 +194,7 @@ bool layer_tree_drop_target_end(const ImRect& rect, float x0, uint32_t window, u
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(LAYER_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (payload && payload->DataSize == (int)sizeof(LayerNodeRef)) {
         LayerNodeRef src;
-        MD_MEMCPY(&src, payload->Data, sizeof(src));
+        md_memcpy(&src, payload->Data, sizeof(src));
         const int si = representation_tree_find(nodes, count, src.group, src.id);
         const int ti = parent ? representation_tree_find(nodes, count, true, parent) : -1;
         if (src.window == window && si >= 0 && (parent == 0 || ti >= 0) && layer_tree_can_move(nodes, count, (size_t)si, ti, RepresentationDrop_IntoLast)) {
@@ -299,10 +299,10 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
     char hint[96];
     {
         char saved[sizeof(g.name)];
-        MD_MEMCPY(saved, g.name, sizeof(saved));
+        md_memcpy(saved, g.name, sizeof(saved));
         g.name[0] = '\0';
         layer_group_label(hint, sizeof(hint), g);
-        MD_MEMCPY(g.name, saved, sizeof(saved));
+        md_memcpy(g.name, saved, sizeof(saved));
     }
     prop::row("group");
     ImGui::InputTextWithHint("##name", hint, g.name, sizeof(g.name));

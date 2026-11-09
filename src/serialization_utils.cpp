@@ -226,7 +226,7 @@ bool extract_int_vec(int* elem, size_t len, md_str_t arg) {
 		tmp[count++] = (int)parse_int(tok);
 	}
 	if (count != len) return false;
-	MD_MEMCPY(elem, tmp, len * sizeof(int));
+	md_memcpy(elem, tmp, len * sizeof(int));
 	return true;
 }
 
@@ -269,7 +269,7 @@ bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
 	}
 	if (extra) log_decimal_comma(all);
 	if (count != len || extra) return false;
-	MD_MEMCPY(elem, tmp, len * sizeof(float));
+	md_memcpy(elem, tmp, len * sizeof(float));
 	return true;
 }
 

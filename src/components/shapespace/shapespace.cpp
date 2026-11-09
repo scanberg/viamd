@@ -574,7 +574,7 @@ struct Shapespace : viamd::EventHandler {
     static void move_into(Layer& dst, Layer& src) {
         EvaluationRef e = std::move(src.eval);
         dst.eval.reset();
-        MD_MEMCPY((void*)&dst, (const void*)&src, sizeof(Layer));
+        md_memcpy((void*)&dst, (const void*)&src, sizeof(Layer));
         new (&dst.eval) EvaluationRef(std::move(e));
         new (&src.eval) EvaluationRef();
     }
@@ -600,7 +600,7 @@ struct Shapespace : viamd::EventHandler {
         if (!l) return nullptr;
         const Layer& src = layers[idx];
         MD_STATIC_ASSERT(sizeof(l->name) == sizeof(src.name), "");
-        MD_MEMCPY(l->name, src.name, sizeof(l->name));
+        md_memcpy(l->name, src.name, sizeof(l->name));
         l->visible = src.visible;
         l->filter = src.filter;
         l->use_mass = src.use_mass;
@@ -613,7 +613,7 @@ struct Shapespace : viamd::EventHandler {
         l->lines = src.lines;
         l->line_width = src.line_width;
         l->num_levels = src.num_levels;
-        MD_MEMCPY(l->levels, src.levels, sizeof(l->levels));
+        md_memcpy(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
         l->log_scale = src.log_scale;
@@ -669,7 +669,7 @@ struct Shapespace : viamd::EventHandler {
         if (!l || l->node.parent != 0) return;
         LayerGroup* g = add_group(l->node.order - 1);
         if (!g) return;
-        MD_MEMCPY(g->filter.text, l->filter.text, sizeof(g->filter.text));
+        md_memcpy(g->filter.text, l->filter.text, sizeof(g->filter.text));
         l->filter.text[0] = '\0';
         l->structs_key = 0;
         l->node.parent = g->node.id;
@@ -719,13 +719,13 @@ struct Shapespace : viamd::EventHandler {
         if (action == LayerGroupAction_Duplicate) {
             char name[sizeof(g->name)];
             char filter[sizeof(g->filter.text)];
-            MD_MEMCPY(name, g->name, sizeof(name));
-            MD_MEMCPY(filter, g->filter.text, sizeof(filter));
+            md_memcpy(name, g->name, sizeof(name));
+            md_memcpy(filter, g->filter.text, sizeof(filter));
             const bool visible = g->visible, open = g->open, follow = g->follow_selection;
             LayerGroup* copy = add_group(g->node.order + 1);
             if (!copy) return;
-            MD_MEMCPY(copy->name, name, sizeof(name));
-            MD_MEMCPY(copy->filter.text, filter, sizeof(filter));
+            md_memcpy(copy->name, name, sizeof(name));
+            md_memcpy(copy->filter.text, filter, sizeof(filter));
             copy->visible = visible;
             copy->open = open;
             copy->follow_selection = follow;
@@ -1264,7 +1264,7 @@ struct Shapespace : viamd::EventHandler {
                 for (int k = MAX_LEVELS; k > 0; --k) {
                     if (viamd::extract_flt_vec(v, (size_t)k, arg)) {
                         l->num_levels = k;
-                        MD_MEMCPY(l->levels, v, sizeof(float) * k);
+                        md_memcpy(l->levels, v, sizeof(float) * k);
                         break;
                     }
                 }
@@ -1714,12 +1714,12 @@ struct Shapespace : viamd::EventHandler {
         char filter[sizeof(AtomFilter::text)] = "";
         bool use_mass = true;
         if (like) {
-            if (group == 0 && like->node.parent == 0) MD_MEMCPY(filter, like->filter.text, sizeof(filter));
+            if (group == 0 && like->node.parent == 0) md_memcpy(filter, like->filter.text, sizeof(filter));
             use_mass = like->use_mass;
         }
         Layer* l = add_layer(frames, style, 0, group);
         if (!l) return nullptr;
-        MD_MEMCPY(l->filter.text, filter, sizeof(filter));
+        md_memcpy(l->filter.text, filter, sizeof(filter));
         l->use_mass = use_mass;
         selected_layer = l->id;
         selected_group = 0;
@@ -2154,10 +2154,10 @@ struct Shapespace : viamd::EventHandler {
         char auto_name[128];
         {
             char saved[sizeof(l.name)];
-            MD_MEMCPY(saved, l.name, sizeof(saved));
+            md_memcpy(saved, l.name, sizeof(saved));
             l.name[0] = '\0';
             layer_label(auto_name, sizeof(auto_name), l);
-            MD_MEMCPY(l.name, saved, sizeof(saved));
+            md_memcpy(l.name, saved, sizeof(saved));
         }
         prop::row("name");
         ImGui::InputTextWithHint("##name", auto_name, l.name, sizeof(l.name));

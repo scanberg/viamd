@@ -183,7 +183,7 @@ static void ctx_init(Ctx* c, const md_system_t& sys, md_bitset_t sel, md_allocat
     c->sel  = sel;
     const size_t num_chains = md_system_chain_count(&sys);
     c->chain_seq = (uint8_t*)md_alloc(temp, num_chains + 1);
-    MD_MEMSET(c->chain_seq, 0, num_chains + 1);
+    md_memset(c->chain_seq, 0, num_chains + 1);
 }
 
 // The chain of a residue (md_chain_data_t), -1 for none
@@ -446,7 +446,7 @@ static void whole_chains_and_insts(md_array(int32_t)* chains, md_array(int32_t)*
     const size_t num_chains = md_system_chain_count(c.sys);
     // [chain] 0 not seen, 1 whole, 2 not whole
     uint8_t* state = (uint8_t*)md_alloc(c.temp, num_chains + 1);
-    MD_MEMSET(state, 0, num_chains + 1);
+    md_memset(state, 0, num_chains + 1);
     for (size_t k = 0; k < md_array_size(b.res); ++k) {
         const int32_t chain = res_chain(c, b.res[k]);
         if (chain < 0 || state[chain]) continue;
@@ -575,7 +575,7 @@ static bool write_structures(md_str_writer_t* out, const Breakdown& b, Ctx* c, b
     // Written whole already
     const size_t num_chains = md_system_chain_count(c->sys);
     uint8_t* chain_written = (uint8_t*)md_alloc(temp, num_chains + 1);
-    MD_MEMSET(chain_written, 0, num_chains + 1);
+    md_memset(chain_written, 0, num_chains + 1);
     for (size_t i = 0; i < md_array_size(whole_chains); ++i) chain_written[whole_chains[i]] = 1;
 
     // The residues of a chain by their sequence ids within it, gathered over all of its parts (they need not be
@@ -836,8 +836,8 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
 
     s->res_touched   = (uint8_t*)md_alloc(temp, num_residues + 1);
     s->res_in_scope = (uint8_t*)md_alloc(temp, num_residues + 1);
-    MD_MEMSET(s->res_touched, 0, num_residues + 1);
-    MD_MEMSET(s->res_in_scope, 0, num_residues + 1);
+    md_memset(s->res_touched, 0, num_residues + 1);
+    md_memset(s->res_in_scope, 0, num_residues + 1);
     for (size_t i = 0; i < md_array_size(b.res); ++i) s->res_touched[b.res[i]] = 1;
 
     // The chains which hold the selection, all of their residues, and the molecules in no chain which hold it
@@ -847,7 +847,7 @@ static void scopes_init(Scopes* s, const Breakdown& b, Ctx* c) {
     {
         const size_t num_chains = md_system_chain_count(&sys);
         uint8_t* chain_seen = (uint8_t*)md_alloc(temp, num_chains + 1);
-        MD_MEMSET(chain_seen, 0, num_chains + 1);
+        md_memset(chain_seen, 0, num_chains + 1);
         for (size_t k = 0; k < md_array_size(b.res); ++k) {
             const int32_t chain = res_chain(*c, b.res[k]);
             if (chain < 0 || chain_seen[chain]) continue;
@@ -980,7 +980,7 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
 
     // The types of the atoms, and their names in the order the atoms have them (N, CA, C rather than C, CA, N)
     uint8_t* seen = (uint8_t*)md_alloc(temp, num_types);
-    MD_MEMSET(seen, 0, num_types);
+    md_memset(seen, 0, num_types);
     md_array(md_str_t) names = 0;
     bool names_ok = true;
     uint32_t flags_all = ~0u;

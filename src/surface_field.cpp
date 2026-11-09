@@ -45,7 +45,7 @@ static const md_str_t ESP_MOLECULAR_CHARGE_PATH = MD_STR_INIT("vlx/molecular_cha
 // Read on the bits: viamd is built with fast math, where NAN need not compare as itself
 static inline bool is_finite_f64(double v) {
     uint64_t u;
-    MD_MEMCPY(&u, &v, sizeof(u));
+    md_memcpy(&u, &v, sizeof(u));
     return (u & 0x7FF0000000000000ull) != 0x7FF0000000000000ull;
 }
 
@@ -230,8 +230,8 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
         xyz[3 * n + 1] = (float)(state.xyz[i].y * ANGSTROM_TO_BOHR_D);
         xyz[3 * n + 2] = (float)(state.xyz[i].z * ANGSTROM_TO_BOHR_D);
         charge[n] = q[i];
-        if (dipole) MD_MEMCPY(dipole + 3 * n, m, sizeof(double) * 3);
-        if (quad)   MD_MEMCPY(quad + 6 * n, m + 3, sizeof(double) * 6);
+        if (dipole) md_memcpy(dipole + 3 * n, m, sizeof(double) * 3);
+        if (quad)   md_memcpy(quad + 6 * n, m + 3, sizeof(double) * 6);
         n += 1;
     }
     if (n == 0) {
@@ -711,14 +711,14 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     if (desc.basis_atom_xyz && desc.num_basis_atoms) {
         b->basis_atom_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.num_basis_atoms);
         if (b->basis_atom_xyz) {
-            MD_MEMCPY(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(vec3_t) * desc.num_basis_atoms);
+            md_memcpy(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(vec3_t) * desc.num_basis_atoms);
             b->num_basis_atoms = desc.num_basis_atoms;
         }
     }
     if (desc.state && desc.state->xyz && desc.state->num_atoms) {
         b->state_xyz = (vec3_t*)malloc(sizeof(vec3_t) * desc.state->num_atoms);
         if (b->state_xyz) {
-            MD_MEMCPY(b->state_xyz, desc.state->xyz, sizeof(vec3_t) * desc.state->num_atoms);
+            md_memcpy(b->state_xyz, desc.state->xyz, sizeof(vec3_t) * desc.state->num_atoms);
             b->num_state_atoms = desc.state->num_atoms;
         }
     }
@@ -743,7 +743,7 @@ static void build_run(FieldBuild* b) {
         b->data.ratio = build_ratio(desc);
         b->ok = b->data.ratio != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
-        MD_MEMSET(q, 0, sizeof(*q));
+        md_memset(q, 0, sizeof(*q));
         if (build_charges(q, desc, heap)) {
             b->data.charges = q;
             b->ok = true;
@@ -1021,9 +1021,9 @@ static void field_volume_reset(SurfaceFieldVolume* vol, const md_grid_t& grid) {
         w->want = (uint8_t*)malloc(n);
         w->got  = (uint8_t*)malloc(n);
     }
-    MD_MEMSET(vol->values, 0, sizeof(float) * n);
-    MD_MEMSET(vol->done, 0, sizeof(uint64_t) * ((n + 63) / 64));
-    MD_MEMSET(w->want, 0, n);
+    md_memset(vol->values, 0, sizeof(float) * n);
+    md_memset(vol->done, 0, sizeof(uint64_t) * ((n + 63) / 64));
+    md_memset(w->want, 0, n);
     w->num_left = 0;
     w->num_samples = 0;
     vol->grid = grid;
@@ -1041,7 +1041,7 @@ static void field_volume_reset(SurfaceFieldVolume* vol, const md_grid_t& grid) {
 static void band_mask(uint8_t* mask, const float* d, const int dim[3], const float* iso, size_t num_iso) {
     const size_t nx = dim[0], ny = dim[1], nz = dim[2];
     const size_t sx = 1, sy = nx, sz = nx * ny;
-    MD_MEMSET(mask, 0, nx * ny * nz);
+    md_memset(mask, 0, nx * ny * nz);
 
     for (size_t k = 0; k + 1 < nz; ++k) {
         for (size_t j = 0; j + 1 < ny; ++j) {
@@ -1105,7 +1105,7 @@ static inline void field_support(int* lo, int* hi, int i, int ddim, int fdim) {
 // is no finer than the density's, the support of any point between two density voxel centres lies
 // within the union of theirs.
 static void band_to_field(uint8_t* fmask, const uint8_t* dmask, const int ddim[3], const int fdim[3], md_temp_scope_t temp) {
-    MD_MEMSET(fmask, 0, (size_t)fdim[0] * fdim[1] * fdim[2]);
+    md_memset(fmask, 0, (size_t)fdim[0] * fdim[1] * fdim[2]);
     int* lo[3];
     int* hi[3];
     for (int a = 0; a < 3; ++a) {
@@ -1347,7 +1347,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         const int bx = (nx + 3) / 4, by = (ny + 3) / 4, bz = (nz + 3) / 4;
         uint8_t* brick = (uint8_t*)md_temp_alloc(temp, (size_t)bx * by * bz);
         if (!brick) return false;
-        MD_MEMSET(brick, 0, (size_t)bx * by * bz);
+        md_memset(brick, 0, (size_t)bx * by * bz);
         for (int z = 0; z < nz; ++z) for (int y = 0; y < ny; ++y) for (int x = 0; x < nx; ++x) {
             if (mask[((size_t)z * ny + y) * nx + x]) brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4] = 1;
         }
@@ -1355,7 +1355,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
             w->got[((size_t)z * ny + y) * nx + x] = brick[((size_t)(z / 4) * by + y / 4) * bx + x / 4];
         }
     } else {
-        MD_MEMSET(w->got, 1, vol->num_voxels);
+        md_memset(w->got, 1, vol->num_voxels);
     }
 
     md_gto_int_gpu_potential_desc_t pd = {};
@@ -1407,7 +1407,7 @@ static void field_upload(SurfaceFieldVolume* vol) {
     }
     const size_t bytes = sizeof(float) * vol->num_voxels;
     if (void* dst = gl::pbo_upload_begin(bytes)) {
-        MD_MEMCPY(dst, vol->values, bytes);
+        md_memcpy(dst, vol->values, bytes);
         if (!gl::pbo_upload_end_texture_3D(vol->tex_id, 0, GL_R32F)) {
             gl::set_texture_3D_data(vol->tex_id, 0, vol->values, GL_R32F);
         }
@@ -1513,7 +1513,7 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
             break;
         }
         // the values for those voxels, as a field the size of the grid would be (merge reads got)
-        MD_MEMSET(w->got, 0, vol->num_voxels);
+        md_memset(w->got, 0, vol->num_voxels);
         for (size_t m = 0; m < w->cpu_count; ++m) {
             vol->values[w->cpu_index[m]] = (float)w->cpu_out[m];
         }
@@ -1617,7 +1617,7 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
     band_mask(dmask, desc.density, dgrid.dim, desc.iso_values, desc.num_iso);
     const bool same_dim = vol->grid.dim[0] == dgrid.dim[0] && vol->grid.dim[1] == dgrid.dim[1] && vol->grid.dim[2] == dgrid.dim[2];
     if (same_dim) {
-        MD_MEMCPY(w->want, dmask, vol->num_voxels);
+        md_memcpy(w->want, dmask, vol->num_voxels);
     } else {
         band_to_field(w->want, dmask, dgrid.dim, vol->grid.dim, temp);
     }
@@ -1767,7 +1767,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
         w->gpu_xyz = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, bytes);
         void* dst = w->gpu_xyz.gpu ? md_gpu_upload_begin(w->stream, w->gpu_xyz.gpu, bytes) : nullptr;
         if (!dst) return false;
-        MD_MEMCPY(dst, w->xyz, bytes);
+        md_memcpy(dst, w->xyz, bytes);
         md_gpu_upload_end(w->stream);
         xyz = w->gpu_xyz.gpu;
         stride = 0;
@@ -1841,7 +1841,7 @@ bool surface_field_points_begin(SurfaceFieldPoints* fp, const SurfaceFieldPointS
     // The points, copied: the mesh they come from may go before the evaluation is done
     if (points.xyz) {
         w->xyz = (float*)malloc(sizeof(float) * 3 * points.count);
-        if (w->xyz) MD_MEMCPY(w->xyz, points.xyz, sizeof(float) * 3 * points.count);
+        if (w->xyz) md_memcpy(w->xyz, points.xyz, sizeof(float) * 3 * points.count);
     }
 #if MD_ENABLE_GPU
     if (points.gpu_xyz && w->stream) {
@@ -1909,7 +1909,7 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         w->values = (float*)malloc(sizeof(float) * MD_MAX(w->count, (size_t)1));
         if (w->values) {
             if (w->ratio) ratio_gpu_values(w->values, w->rb.cpu, w->count, w->source.data.ratio);
-            else         MD_MEMCPY(w->values, w->rb.cpu, sizeof(float) * w->count);
+            else         md_memcpy(w->values, w->rb.cpu, sizeof(float) * w->count);
         }
         md_gpu_free(w->stream, w->rb.gpu);
         w->rb = {};
@@ -1994,7 +1994,7 @@ ColorScaleSpan surface_field_span_of(const float* values, size_t count) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     float* v = (float*)md_temp_alloc(temp, sizeof(float) * count);
-    MD_MEMCPY(v, values, sizeof(float) * count);
+    md_memcpy(v, values, sizeof(float) * count);
     const size_t lo_idx = (size_t)(0.01 * (double)(count - 1));
     const size_t hi_idx = (size_t)(0.99 * (double)(count - 1));
     span.valid = true;

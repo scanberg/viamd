@@ -63,8 +63,8 @@ void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, si
     min_v -= pad;
     max_v += pad;
 
-    MD_MEMCPY(out_min, &min_v, sizeof(float) * 3);
-    MD_MEMCPY(out_max, &max_v, sizeof(float) * 3);
+    md_memcpy(out_min, &min_v, sizeof(float) * 3);
+    md_memcpy(out_max, &max_v, sizeof(float) * 3);
 }
 
 // Construct texture to world transformation matrix for Volume
@@ -120,7 +120,7 @@ void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext
 
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
     MD_ASSERT(vol);
-    MD_MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
+    md_memcpy(vol->dim, grid.dim, sizeof(vol->dim));
 
     // A grid is in BOHR and a Volume's transforms are in Angstrom; this is where the two meet.
     const float scl = (float)BOHR_TO_ANGSTROM;
@@ -193,7 +193,7 @@ static void tooltip_list_add(md_str_writer_t* sb, const char* item) {
 static md_str_t tooltip_lower(md_allocator_i* alloc, md_str_t str) {
     if (md_str_empty(str)) return {};
     char* buf = (char*)md_alloc(alloc, str.len + 1);
-    MD_MEMCPY(buf, str.ptr, str.len);
+    md_memcpy(buf, str.ptr, str.len);
     buf[str.len] = '\0';
     md_convert_to_lower(buf, str.len);
     return {buf, str.len};
@@ -1398,7 +1398,7 @@ static void trajectory_backbone_start(ApplicationState* data) {
         data->trajectory_data.secondary_structure_render.stride = data->mold.sys.protein_backbone.segment.count;
         data->trajectory_data.secondary_structure_render.count = data->mold.sys.protein_backbone.segment.count * num_frames;
         md_array_resize(data->trajectory_data.secondary_structure_render.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-        MD_MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
+        md_memset(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
 
         // Launch work to compute the values
         uint64_t time = (uint64_t)md_tick_now();
@@ -1695,13 +1695,13 @@ void free_system_data(ApplicationState* data) {
     es_nto_warm_free(data);     // its tasks were waited for above
 
     // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
-    // second handle to it: MD_MEMSET over md_system_t clears sys.alloc along with everything else, so
+    // second handle to it: md_memset over md_system_t clears sys.alloc along with everything else, so
     // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
     // next load reuses it.
     md_allocator_i* sys_alloc = data->mold.sys.alloc;
     md_arena_allocator_reset(sys_alloc);
-    MD_MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
-    MD_MEMSET(&data->mold.state, 0, sizeof(data->mold.state));
+    md_memset(&data->mold.sys, 0, sizeof(data->mold.sys));
+    md_memset(&data->mold.state, 0, sizeof(data->mold.state));
     data->mold.sys.alloc   = sys_alloc;
     data->mold.state.alloc = sys_alloc;
 
@@ -1724,7 +1724,7 @@ void free_system_data(ApplicationState* data) {
     file_list_clear(&data->files.list);
 
 
-    MD_MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
+    md_memset(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
     clear_frame_cache(&data->mold.frame_cache);
 
     md_bitmask_clear(&data->selection.selection_mask);
@@ -3729,7 +3729,7 @@ static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t si
     // The isosurface renderer's empty space grid follows the texels
     volume::notify_data_changed(vol_tex);
     if (void* dst = gl::pbo_upload_begin(size)) {
-        MD_MEMCPY(dst, src, size);
+        md_memcpy(dst, src, size);
         if (gl::pbo_upload_end_texture_3D(vol_tex, 0, GL_R32F)) return;
     }
     gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
@@ -4106,7 +4106,7 @@ vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, co
 // caller's decision and nothing down here is in a position to make it.
 static bool gto_basis_context(md_gto_basis_t* out_basis, md_temp_scope_t temp, const md_system_t& sys) {
     MD_ASSERT(out_basis);
-    MD_MEMSET(out_basis, 0, sizeof(*out_basis));
+    md_memset(out_basis, 0, sizeof(*out_basis));
     return md_gto_basis_extract_attributes(out_basis, &sys.attributes, md_temp_allocator(temp));
 }
 
@@ -4566,7 +4566,7 @@ static int localization_poll(ApplicationState* state, Representation* rep, uint6
         job->grid = grid;
         job->atom_xyz = atom_pos ? (float*)malloc(sizeof(vec3_t) * num_atoms) : nullptr;
         if (job->atom_xyz) {
-            MD_MEMCPY(job->atom_xyz, atom_pos, sizeof(vec3_t) * num_atoms);
+            md_memcpy(job->atom_xyz, atom_pos, sizeof(vec3_t) * num_atoms);
             job->num_atoms = num_atoms;
         }
         md_temp_end(temp);
@@ -4706,7 +4706,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
         delete L;
         return -1;
     }
-    MD_MEMCPY(L->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    md_memcpy(L->xyz, xyz, sizeof(vec3_t) * num_atoms);
     state->mold.gpu_localization = L;
     L->task.start(MD_STR_LIT("ELF/LOL density matrices"), [L]() { localization_gpu_build(L); });
     return 0;
@@ -4821,7 +4821,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
         MD_MAX(1, MD_DIV_UP((int)rep->electronic_structure.density_vol.dim[1], downsample_factor)),
         MD_MAX(1, MD_DIV_UP((int)rep->electronic_structure.density_vol.dim[2], downsample_factor)),
     };
-    MD_MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
+    md_memcpy(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
     rep->electronic_structure.color_vol.world_to_model   = rep->electronic_structure.density_vol.world_to_model;
     rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
     rep->electronic_structure.color_vol.voxel_size       = vec3_set(
@@ -5361,7 +5361,7 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
         delete b;
         return true;    // made where it is asked for
     }
-    MD_MEMCPY(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    md_memcpy(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
     b->task.start({}, [b]() {
         b->dmat = density_dmat_pattern(b->stream, *b->sys, b->xyz);
         if (b->dmat && !density_dmat_fill(b->stream, b->dmat, *b->sys, b->path, b->num_cgtos)) {
@@ -6165,7 +6165,7 @@ void interpolate_system_state(ApplicationState* app) {
         case InterpolationMode::Nearest: {
             {
                 data->dst_state->unitcell = data->src_states[0]->unitcell;
-                MD_MEMCPY(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(vec3_t) * data->dst_state->num_atoms);
+                md_memcpy(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(vec3_t) * data->dst_state->num_atoms);
             }
             break;
         }
@@ -6230,7 +6230,7 @@ void interpolate_system_state(ApplicationState* app) {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MD_MEMCPY(data->dst_angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                    md_memcpy(data->dst_angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
                 }
 
                 break;
@@ -6698,7 +6698,7 @@ static bool bond_coordinates(md_system_state_t* state, const ApplicationState* a
     }
     const md_system_state_t& shown = app->mold.state;
     if (!shown.xyz || shown.num_atoms != num_atoms) return false;
-    MD_MEMCPY(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
+    md_memcpy(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
     state->unitcell = shown.unitcell;
     if (!is_identity(app->operations.state_rotation)) {
         mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
@@ -6885,8 +6885,8 @@ void bond_tracking_update(ApplicationState* app) {
 
     // Uploaded again only when it changed: most frames of most runs have the bonds of the one before
     const bool same = bt.key != 0 && delta.num_formed == bt.delta.num_formed && md_bitset_equal(delta.broken, bt.delta.broken) &&
-        (delta.num_formed == 0 || (MD_MEMCMP(delta.formed_pair, bt.delta.formed_pair, delta.num_formed * sizeof(md_atom_pair_t)) == 0 &&
-                                   MD_MEMCMP(delta.formed_flags, bt.delta.formed_flags, delta.num_formed * sizeof(md_bond_flags_t)) == 0));
+        (delta.num_formed == 0 || (md_memcmp(delta.formed_pair, bt.delta.formed_pair, delta.num_formed * sizeof(md_atom_pair_t)) == 0 &&
+                                   md_memcmp(delta.formed_flags, bt.delta.formed_flags, delta.num_formed * sizeof(md_bond_flags_t)) == 0));
     md_bond_delta_free(&bt.delta, app->allocator.persistent);
     bt.delta = delta;
     bt.key = key;
@@ -6947,7 +6947,7 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
         curr_range->end = curr_range->beg + (uint32_t)count;
         curr_range->key = key;
         if (out_range) {
-            MD_MEMCPY(out_range, curr_range, sizeof(PickingRange));
+            md_memcpy(out_range, curr_range, sizeof(PickingRange));
         }
         return true;
     }
@@ -8113,7 +8113,7 @@ void script_set_hovered_property(ApplicationState* state, md_str_t label, int po
     char* dst = state->hovered_property_label;
     const size_t cap = sizeof(state->hovered_property_label);
     if (label.ptr && label.len < cap) {
-        MD_MEMCPY(dst, label.ptr, label.len);
+        md_memcpy(dst, label.ptr, label.len);
         dst[label.len] = '\0';
     } else {
         dst[0] = '\0';
