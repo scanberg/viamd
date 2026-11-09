@@ -935,18 +935,28 @@ static bool ct_state_job_ready(const CtStateJob* job) {
     return job && job->done.load(std::memory_order_acquire) && job->ok;
 }
 
-// The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
-static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
-    if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
+// A state's NTO pairs, read on the main thread from the attribute table into heap arrays the caller owns:
+// every pair above round off of the whole (with the cross terms in, a small pair can still move a large
+// share between two fragments). nto_dropped is the share of the excitation left out.
+struct NtoPairs {
+    size_t  K = 0;
+    double* lambda = nullptr;   // [K]
+    double* hole   = nullptr;   // {K,A}
+    double* part   = nullptr;   // {K,A}
+    float   nto_dropped = 0.0f;
+};
+
+static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int32_t state) {
+    *out = {};
+    if (state < 0 || A == 0) return false;
     const md_attribute_t* lambda_attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
     const md_attribute_t* hole_attr   = md_attributes_find(&sys.attributes, es_path::nto_hole);
     const md_attribute_t* part_attr   = md_attributes_find(&sys.attributes, es_path::nto_particle);
-    if (!lambda_attr || !hole_attr || !part_attr) return nullptr;
+    if (!lambda_attr || !hole_attr || !part_attr) return false;
 
-    const size_t A = lowdin->num_ao;
     const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state);
     const size_t L = md_attribute_slice_count(lambda_attr, slice);
-    if (L == 0 || md_attribute_slice_count(hole_attr, slice) < L * A || md_attribute_slice_count(part_attr, slice) < L * A) return nullptr;
+    if (L == 0 || md_attribute_slice_count(hole_attr, slice) < L * A || md_attribute_slice_count(part_attr, slice) < L * A) return false;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -956,37 +966,49 @@ static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* l
     if (md_attribute_extract_f64(lam,  L,     lambda_attr, slice, md_unit_none()) < L ||
         md_attribute_extract_f64(hole, L * A, hole_attr,   slice, md_unit_none()) < L * A ||
         md_attribute_extract_f64(part, L * A, part_attr,   slice, md_unit_none()) < L * A) {
-        return nullptr;
+        return false;
     }
 
-    // Every pair above round off of the whole: with the cross terms in, a small pair can still move a
-    // large share between two fragments.
     double lambda_all = 0.0;
     for (size_t k = 0; k < L; ++k) lambda_all += MD_MAX(0.0, lam[k]);
-    if (lambda_all <= 0.0) return nullptr;
+    if (lambda_all <= 0.0) return false;
     size_t K = 0;
     for (size_t k = 0; k < L; ++k) K += (lam[k] >= 1.0e-6 * lambda_all) ? 1 : 0;
-    if (K == 0) return nullptr;
+    if (K == 0) return false;
 
     md_allocator_i* heap = md_get_heap_allocator();
-    CtStateJob* job = new CtStateJob();
-    job->state     = state;
-    job->lowdin    = lowdin;
-    job->K         = K;
-    job->num_atoms = lowdin->num_atoms;
-    job->lambda = (double*)md_alloc(heap, sizeof(double) * K);
-    job->hole   = (double*)md_alloc(heap, sizeof(double) * K * A);
-    job->part   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    out->K = K;
+    out->lambda = (double*)md_alloc(heap, sizeof(double) * K);
+    out->hole   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    out->part   = (double*)md_alloc(heap, sizeof(double) * K * A);
     double lambda_kept = 0.0;
     for (size_t k = 0, j = 0; k < L; ++k) {
         if (!(lam[k] >= 1.0e-6 * lambda_all)) continue;
-        job->lambda[j] = lam[k];
+        out->lambda[j] = lam[k];
         lambda_kept += lam[k];
-        md_memcpy(job->hole + j * A, hole + k * A, sizeof(double) * A);
-        md_memcpy(job->part + j * A, part + k * A, sizeof(double) * A);
+        md_memcpy(out->hole + j * A, hole + k * A, sizeof(double) * A);
+        md_memcpy(out->part + j * A, part + k * A, sizeof(double) * A);
         j++;
     }
-    job->nto_dropped = (float)(1.0 - lambda_kept / lambda_all);
+    out->nto_dropped = (float)(1.0 - lambda_kept / lambda_all);
+    return true;
+}
+
+// The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
+static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
+    if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
+    NtoPairs pairs = {};
+    if (!nto_pairs_read(&pairs, sys, lowdin->num_ao, state)) return nullptr;
+
+    CtStateJob* job = new CtStateJob();
+    job->state       = state;
+    job->lowdin      = lowdin;
+    job->K           = pairs.K;
+    job->num_atoms   = lowdin->num_atoms;
+    job->lambda      = pairs.lambda;
+    job->hole        = pairs.hole;
+    job->part        = pairs.part;
+    job->nto_dropped = pairs.nto_dropped;
 
     job->task.start({}, [job]() {
         const LowdinJob* lw = job->lowdin;
@@ -1041,6 +1063,106 @@ static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* l
             }
         }
         job->ok = true;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// One state's entry in the state strip: its charge transfer between the automatic UNITS (a fixed level,
+// so states compare), the distance between its hole and particle centroids, and how many NTO pairs it
+// takes (the participation ratio of the lambdas). A light job: the transfer matrix over units, not atoms.
+struct StripJob {
+    int32_t state = -1;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    NtoPairs pairs = {};
+    const uint32_t* ao_unit = nullptr;  // [A], owned by the caller and kept until the job is destroyed
+    size_t  num_units = 0;
+    const double* atom_xyz = nullptr;   // [N*3] Angstrom, likewise
+    float   ct = 0.0f;
+    float   distance = 0.0f;
+    float   pr = 0.0f;
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void strip_job_destroy(StripJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0, K = job->pairs.K;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    delete job;
+}
+
+static StripJob* strip_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state,
+                                 const uint32_t* ao_unit, size_t num_units, const double* atom_xyz) {
+    if (!lowdin_job_ready(lowdin) || !ao_unit || num_units == 0) return nullptr;
+    StripJob* job = new StripJob();
+    job->state     = state;
+    job->lowdin    = lowdin;
+    job->ao_unit   = ao_unit;
+    job->num_units = num_units;
+    job->atom_xyz  = atom_xyz;
+    if (!nto_pairs_read(&job->pairs, sys, lowdin->num_ao, state)) {
+        job->done.store(true, std::memory_order_release);
+        return job;
+    }
+    job->task.start({}, [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const size_t A = lw->num_ao, M = lw->num_mo, N = lw->num_atoms, U = job->num_units, K = job->pairs.K;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* ht = md_temp_alloc_array(temp, double, K * A);
+        double* pt = md_temp_alloc_array(temp, double, K * A);
+        md_qm_lowdin_transform(ht, job->pairs.hole, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        md_qm_lowdin_transform(pt, job->pairs.part, K, lw->S, lw->C, lw->C_lowdin, M, A);
+
+        double* hb = md_temp_alloc_array(temp, double, U * K * K);
+        double* pb = md_temp_alloc_array(temp, double, U * K * K);
+        double* om = md_temp_alloc_array(temp, double, U * U);
+        md_qm_ct_group_blocks(hb, ht, K, A, job->ao_unit, U);
+        md_qm_ct_group_blocks(pb, pt, K, A, job->ao_unit, U);
+        md_qm_ct_omega(om, job->pairs.lambda, K, hb, U, pb, U);
+        double total = 0.0, local = 0.0;
+        for (size_t a = 0; a < U; ++a) {
+            for (size_t b = 0; b < U; ++b) total += om[a * U + b];
+            local += om[a * U + a];
+        }
+
+        // Centroids from the per atom hole and particle, which decompose exactly per pair
+        double rh[3] = {0, 0, 0}, rp[3] = {0, 0, 0}, sh = 0.0, sp = 0.0;
+        if (job->atom_xyz) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lw->ao_atom[mu];
+                if (atom >= N) continue;
+                double qh = 0.0, qp = 0.0;
+                for (size_t k = 0; k < K; ++k) {
+                    qh += job->pairs.lambda[k] * ht[k * A + mu] * ht[k * A + mu];
+                    qp += job->pairs.lambda[k] * pt[k * A + mu] * pt[k * A + mu];
+                }
+                for (int d = 0; d < 3; ++d) {
+                    rh[d] += qh * job->atom_xyz[atom * 3 + d];
+                    rp[d] += qp * job->atom_xyz[atom * 3 + d];
+                }
+                sh += qh;
+                sp += qp;
+            }
+        }
+        double l1 = 0.0, l2 = 0.0;
+        for (size_t k = 0; k < K; ++k) { l1 += job->pairs.lambda[k]; l2 += job->pairs.lambda[k] * job->pairs.lambda[k]; }
+
+        job->ct = total > 0.0 ? (float)(1.0 - local / total) : 0.0f;
+        if (sh > 0.0 && sp > 0.0) {
+            double d2 = 0.0;
+            for (int d = 0; d < 3; ++d) { const double x = rh[d] / sh - rp[d] / sp; d2 += x * x; }
+            job->distance = (float)sqrt(d2);
+        }
+        job->pr = l2 > 0.0 ? (float)(l1 * l1 / l2) : 0.0f;
+        job->ok = total > 0.0;
         job->done.store(true, std::memory_order_release);
     });
     return job;
@@ -1358,6 +1480,17 @@ struct QuantumChemistry : viamd::EventHandler {
         bool      frags_built   = false;
         int       ct_failed_state = -2;    // the state whose NTO pairs could not be read, not to be retried
 
+        // The state strip: one entry per excited state, filled one state at a time (StripJob)
+        struct StripEntry {
+            float ct = 0.0f, distance = 0.0f, pr = 0.0f;
+            bool  done = false, ok = false;
+        };
+        md_array(StripEntry) strip = nullptr;
+        uint32_t* ao_unit = nullptr;       // [A] the unit (leaf fragment, compacted) of each AO
+        size_t    num_units = 0;
+        double*   atom_xyz = nullptr;      // [N*3] the QM atoms, Angstrom
+        bool      show_strip = true;
+
         // The orbital pairs (block NTOs) of every visible ribbon, as shares of it: see FlowStripes
         md_array(uint32_t) stripe_offset = nullptr;
         md_array(float)    stripe_frac   = nullptr;
@@ -1402,6 +1535,8 @@ struct QuantumChemistry : viamd::EventHandler {
     LowdinJob* lowdin = nullptr;
     // The selected state's numbers per atom; replaced when another state is selected
     CtStateJob* ct_job = nullptr;
+    // The state strip's current state, one at a time
+    StripJob* strip_job = nullptr;
 
     // Workspace group assignments, waiting for a molecule.
     //
@@ -2153,6 +2288,13 @@ struct QuantumChemistry : viamd::EventHandler {
         num_mos = 0;
         num_excited = 0;
         qm_version = 0;
+        // The charge transfer jobs read the arena (the strip's AO to unit map) and the Lowdin job: they go first
+        ct_state_job_destroy(ct_job);
+        ct_job = nullptr;
+        strip_job_destroy(strip_job);
+        strip_job = nullptr;
+        lowdin_job_destroy(lowdin);
+        lowdin = nullptr;
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
@@ -2189,10 +2331,6 @@ struct QuantumChemistry : viamd::EventHandler {
         nto = QuantumChemistry::Nto{};
         // The arena reset above already released everything these held.
         flow = QuantumChemistry::Flow{};
-        ct_state_job_destroy(ct_job);     // before what it reads
-        ct_job = nullptr;
-        lowdin_job_destroy(lowdin);
-        lowdin = nullptr;
         rsp = QuantumChemistry::Rsp{};
         // The rixs arena outlives the VLX object, so carry it across the value-initialization.
         // Rewinding it first drops the cached arrays that the zeroed struct would otherwise orphan.
@@ -10790,6 +10928,138 @@ struct QuantumChemistry : viamd::EventHandler {
         md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
     }
 
+    // The strip's inputs, once the fragments and the Lowdin basis are there: the unit of every AO (the leaf
+    // fragments, numbered compactly) and the QM atoms' positions
+    void flow_build_strip_inputs(const md_system_t& sys) {
+        if (flow.ao_unit || !lowdin_job_ready(lowdin)) return;
+        const size_t A = lowdin->num_ao, N = lowdin->num_atoms;
+        const md_fragments_t& F = flow.frags;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        uint32_t* leaf_id = md_temp_alloc_array(temp, uint32_t, F.count ? F.count : 1);
+        uint32_t U = 0;
+        for (size_t f = 0; f < F.count; ++f) leaf_id[f] = md_fragment_is_leaf(&F, f) ? U++ : MD_FRAGMENT_NONE;
+
+        flow.ao_unit = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * A);
+        for (size_t mu = 0; mu < A; ++mu) {
+            const uint32_t atom = lowdin->ao_atom[mu];
+            const uint32_t f = atom < N ? flow_fragment_of(atom) : MD_FRAGMENT_NONE;
+            flow.ao_unit[mu] = (f != MD_FRAGMENT_NONE) ? leaf_id[f] : U;    // U and above: in no unit, left out
+        }
+        flow.num_units = U;
+
+        QmAtoms qm = {};
+        if (es_qm_atoms(&qm, sys) && qm.coordinate && qm.count == N) {
+            flow.atom_xyz = (double*)md_alloc(arena, sizeof(double) * 3 * N);
+            for (size_t a = 0; a < N; ++a) {
+                flow.atom_xyz[a * 3 + 0] = qm.coordinate[a].x;
+                flow.atom_xyz[a * 3 + 1] = qm.coordinate[a].y;
+                flow.atom_xyz[a * 3 + 2] = qm.coordinate[a].z;
+            }
+        }
+        md_array_resize(flow.strip, num_excited, arena);
+        for (size_t s = 0; s < num_excited; ++s) flow.strip[s] = {};
+    }
+
+    // One state at a time: collect what finished, start the next (the selected one first). Asking for a
+    // state's NTOs starts reading them on a worker (es_nto_ready); the strip job starts once they are in.
+    void flow_step_strip(ApplicationState& state) {
+        flow_build_strip_inputs(state.mold.sys);
+        if (!flow.ao_unit || md_array_size(flow.strip) == 0) return;
+
+        if (strip_job && strip_job->done.load(std::memory_order_acquire)) {
+            if ((size_t)strip_job->state < md_array_size(flow.strip)) {
+                QuantumChemistry::Flow::StripEntry& e = flow.strip[strip_job->state];
+                e.done = true;
+                e.ok = strip_job->ok;
+                e.ct = strip_job->ct;
+                e.distance = strip_job->distance;
+                e.pr = strip_job->pr;
+            }
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+        }
+        if (strip_job) return;
+
+        int32_t next = -1;
+        if (rsp.selected >= 0 && (size_t)rsp.selected < md_array_size(flow.strip) && !flow.strip[rsp.selected].done) {
+            next = rsp.selected;
+        } else {
+            for (size_t s = 0; s < md_array_size(flow.strip); ++s) {
+                if (!flow.strip[s].done) { next = (int32_t)s; break; }
+            }
+        }
+        if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
+        strip_job = strip_job_start(state.mold.sys, lowdin, next, flow.ao_unit, flow.num_units, flow.atom_xyz);
+        if (!strip_job) flow.strip[next].done = true;   // nothing to compute it from: not to be retried
+    }
+
+    // Every excited state at a glance, above the diagram: bar height the oscillator strength, colour the
+    // charge transfer between units (grey-blue local, orange transfer), hollow while not yet computed.
+    // Click to select a state.
+    void draw_flow_strip(ApplicationState& state) {
+        const size_t S = md_array_size(flow.strip);
+        if (S == 0) return;
+        size_t num_f = 0, num_e = 0;
+        const double* osc = attribute_series_f64(&num_f, state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength"));
+        const double* ene = attribute_series_f64(&num_e, state.mold.sys, MD_STR_LIT("vlx/rsp/frequency"));
+        double f_max = 0.0;
+        for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
+
+        const float h = 46.0f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = MD_MAX(ImGui::GetContentRegionAvail().x, 64.0f);
+        ImGui::InvisibleButton("##state_strip", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p0, p0 + ImVec2(w, h), IM_COL32(250, 250, 250, 255));
+
+        const float slot = w / (float)S;
+        const float bar_w = MD_CLAMP(slot * 0.6f, 2.0f, 14.0f);
+        const float base_y = p0.y + h - 12.0f;
+        const float max_h = h - 16.0f;
+        const vec4_t local_col = { 0.55f, 0.60f, 0.70f, 1.0f };
+        const vec4_t ct_col    = { 0.88f, 0.42f, 0.12f, 1.0f };
+        const ImVec2 mouse = ImGui::GetMousePos();
+        int32_t hover = -1;
+
+        for (size_t s = 0; s < S; ++s) {
+            const float cx = p0.x + slot * ((float)s + 0.5f);
+            const double f = (s < num_f && f_max > 0.0) ? osc[s] / f_max : 0.0;
+            // square root: a dark state is still a visible stub, a bright one does not flatten the rest
+            const float bh = MD_MAX(3.0f, (float)sqrt(MD_MAX(f, 0.0)) * max_h);
+            const ImVec2 b0 = { cx - bar_w * 0.5f, base_y - bh };
+            const ImVec2 b1 = { cx + bar_w * 0.5f, base_y };
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[s];
+            if (e.done && e.ok) {
+                const vec4_t c = vec4_lerp(local_col, ct_col, MD_CLAMP(e.ct, 0.0f, 1.0f));
+                dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 1.5f);
+            } else {
+                dl->AddRect(b0, b1, IM_COL32(150, 150, 150, 255), 1.5f);
+            }
+            if ((int32_t)s == rsp.selected) {
+                dl->AddTriangleFilled({ cx, base_y + 2.0f }, { cx - 4.0f, base_y + 9.0f }, { cx + 4.0f, base_y + 9.0f }, IM_COL32(30, 30, 30, 255));
+            }
+            if (hovered && mouse.x >= p0.x + slot * (float)s && mouse.x < p0.x + slot * (float)(s + 1)) hover = (int32_t)s;
+        }
+
+        if (hover >= 0) {
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[hover];
+            char details[160] = "computing...";
+            if (e.done && e.ok) {
+                snprintf(details, sizeof(details), "Charge transfer %.0f%% (between units)\nHole to particle %.2f \xc3\x85\nNTO pairs %.1f",
+                         100.0f * e.ct, e.distance, e.pr);
+            } else if (e.done) {
+                snprintf(details, sizeof(details), "no NTO pairs");
+            }
+            const double ev = (size_t)hover < num_e ? ene[hover] * HARTREE_TO_EV : 0.0;
+            const double fo = (size_t)hover < num_f ? osc[hover] : 0.0;
+            ImGui::SetTooltip("S%d   %.3f eV   f = %.4f\n%s\n\nClick to select", hover + 1, ev, fo, details);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rsp.selected = hover;
+        }
+    }
+
     void draw_flow_window(ApplicationState& state) {
         if (!flow.show_window) return;
 
@@ -10825,11 +11095,16 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool nto_pending = rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
         bool lowdin_pending = false;
         bool ct_pending = false;
-        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+        if (flow.mode == FLOW_MODE_FRAGMENTS || flow.show_strip) {
             flow_build_fragments(state.mold.sys);
             if (!lowdin && flow.num_qm_atoms > 0) {
                 lowdin = lowdin_job_start(state.mold.sys, basis, flow.num_qm_atoms);
             }
+        }
+        if (flow.show_strip) {
+            flow_step_strip(state);
+        }
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
             lowdin_pending = lowdin && !lowdin->done.load(std::memory_order_acquire);
             if (lowdin_job_ready(lowdin) && rsp.selected >= 0 && !nto_pending && (!ct_job || ct_job->state != rsp.selected) &&
                 flow.ct_failed_state != rsp.selected) {
@@ -10888,6 +11163,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndDisabled();
                     ImGui::SetItemTooltip("Only used by the 'Fewest crossings' row order.");
                     ImGui::Separator();
+                    ImGui::Checkbox("State strip", &flow.show_strip);
+                    ImGui::SetItemTooltip("Every excited state above the diagram: bar height the oscillator strength,\n"
+                                          "colour the charge transfer between the automatic units.");
                     ImGui::SliderFloat("Local fill opacity", &flow.style.self_alpha, 0.0f, 1.0f);
                     ImGui::SetItemTooltip("How strongly the local excitation inside a node is filled in.");
                     {
@@ -11030,6 +11308,10 @@ struct QuantumChemistry : viamd::EventHandler {
                                           flow.nto_dropped  > 1.0e-3f ? "\n\nNTO pairs below round off are left out." : "",
                                           flow.link_dropped > 1.0e-3f ? "\n\nAtom pairs below 1e-6 of the total are not drawn." : "");
                 }
+            }
+
+            if (flow.show_strip) {
+                draw_flow_strip(state);
             }
 
             const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
