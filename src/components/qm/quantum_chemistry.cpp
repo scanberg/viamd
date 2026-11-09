@@ -817,8 +817,9 @@ static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
 
 // The orbitals in the Lowdin basis (md_qm_lowdin_orbitals), which the charge transfer numbers are
 // computed in. One O(M^3) computation per system, so a job rather than a stall: for a system near
-// the top of what VIAMD is meant for (~10k AOs) it takes minutes, and its eigendecomposition is
-// serial. Every excited state then reuses the result, and the overlap and the AO to atom map it
+// the top of what VIAMD is meant for (~10k AOs) it is a matter of minutes on one core, spread over
+// the task system's threads (products and eigendecomposition alike). Every excited state then
+// reuses the result, and the overlap and the AO to atom map it
 // keeps with it, so a state's own job (CtStateJob) needs nothing from the attribute table.
 struct LowdinJob {
     double*   C        = nullptr;   // {M,A} input, owned
