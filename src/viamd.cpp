@@ -8029,6 +8029,48 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     state->script.vis_running = job;
 }
 
+bool energy_term_groups(md_edr_term_groups_t* out, const ApplicationState* state, const md_attribute_t* attr) {
+    MD_ASSERT(out);
+    MD_ASSERT(state);
+    if (!attr || state->mold.sys.group.count == 0) return false;
+    // The label is the name as the file has it; an unlabelled series has its leaf as its name
+    const md_str_t name = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
+    return md_edr_term_groups(out, &state->mold.sys, name);
+}
+
+size_t energy_term_groups_text(char* buf, size_t cap, const ApplicationState* state, const md_edr_term_groups_t& tg) {
+    MD_ASSERT(state);
+    const md_group_data_t& g = state->mold.sys.group;
+    if (!cap) return 0;
+    buf[0] = '\0';
+    if (tg.group[0] >= g.count || tg.group[1] >= g.count) return 0;
+    const md_str_t a = g.name[tg.group[0]], b = g.name[tg.group[1]];
+    int n = (tg.count == 2 && tg.group[0] != tg.group[1]) ? snprintf(buf, cap, MD_STR_FMT " and " MD_STR_FMT, MD_STR_ARG(a), MD_STR_ARG(b))
+          : tg.count == 2 ? snprintf(buf, cap, MD_STR_FMT " with itself", MD_STR_ARG(a))
+          : snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(a));
+    return n > 0 ? MD_MIN((size_t)n, cap - 1) : 0;
+}
+
+bool highlight_energy_term_groups(ApplicationState* state, const md_attribute_t* attr) {
+    MD_ASSERT(state);
+    md_edr_term_groups_t tg;
+    if (!energy_term_groups(&tg, state, attr)) return false;
+    const md_group_data_t& g = state->mold.sys.group;
+    const uint32_t count = (tg.count == 2 && tg.group[0] != tg.group[1]) ? 2 : 1;
+    // Group 0 in the highlight's own colour, group 1 in the first colour of the groups after it
+    md_bitset_t* sets = (md_bitset_t*)md_alloc(state->allocator.frame, 2 * sizeof(md_bitset_t));
+    sets[0] = g.atoms[tg.group[0]];
+    sets[1] = g.atoms[tg.group[1]];
+    md_bitmask_assign(&state->selection.highlight_mask, sets[0]);
+    if (count == 2) md_bitmask_or(&state->selection.highlight_mask, sets[1]);
+    if (count == 2) {
+        uint64_t key = md_hash64(tg.group, sizeof(tg.group), state->mold.sys.topology_version);
+        state->selection.highlight_groups = {sets, count, key ? key : 1};
+    }
+    state->selection.term_groups_highlighted = true;
+    return true;
+}
+
 void script_vis_begin_frame(ApplicationState* state) {
     MD_ASSERT(state);
     state->script.vis_target = {};
@@ -8039,6 +8081,14 @@ void script_vis_begin_frame(ApplicationState* state) {
 void script_vis_update(ApplicationState* state) {
     MD_ASSERT(state);
     auto& sc = state->script;
+
+    // The groups of an energy term are hovered no more
+    auto& sel = state->selection;
+    if (sel.term_groups_highlighted_prev && !sel.term_groups_highlighted) {
+        md_bitmask_clear(&sel.highlight_mask);
+    }
+    sel.term_groups_highlighted_prev = sel.term_groups_highlighted;
+    sel.term_groups_highlighted = false;
 
     // A finished computation becomes the result
     if (sc.vis_running && !sc.vis_task.running()) {

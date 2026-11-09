@@ -4737,6 +4737,9 @@ static void draw_timeline_window(ApplicationState* data) {
                             if (v.script_ident[0] != '\0') {
                                 script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
+                            } else if (s.key.source == SeriesSource_System) {
+                                // An energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to plot at '%s' right now", s.key.path);
@@ -5475,6 +5478,9 @@ static void draw_distribution_window(ApplicationState* data) {
                             if (v.script_ident[0] != '\0') {
                                 script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
+                            } else if (s.key.source == SeriesSource_System) {
+                                // An energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to show for '%s' right now", s.key.path);

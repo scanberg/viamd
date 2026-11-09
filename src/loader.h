@@ -47,6 +47,7 @@ enum LoaderType_ {
 #endif
     LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
     LoaderType_TPR,     // GROMACS run input, topology and coordinates
+    LoaderType_NDX,     // GROMACS index groups (.ndx), supplements a loaded system with its groups
     LoaderType_EDR,     // GROMACS energy file, supplements a loaded trajectory
     LoaderType_XVG,     // xmgrace columns (GROMACS analysis output), a series along the loaded trajectory
     LoaderType_CSV,     // comma separated columns, a series along the loaded trajectory

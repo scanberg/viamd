@@ -15,6 +15,7 @@
 #include <md_gl.h>
 #include <md_util.h>
 #include <md_chem.h>
+#include <md_edr.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -1628,6 +1629,12 @@ struct ApplicationState {
             size_t count = 0;
             uint64_t key = 0;
         } highlight_groups;
+
+        // The highlight of the groups of an energy term (highlight_energy_term_groups) is set every frame its term is
+        // hovered, wherever that is; the first frame it is not, script_vis_update clears it, so that it never outlives
+        // the hover in a window which does not clear the highlight itself
+        bool term_groups_highlighted = false;       // this frame
+        bool term_groups_highlighted_prev = false;  // the frame before
 
         struct {
             AtomFilter filter;
@@ -3298,4 +3305,14 @@ uint64_t script_vis_shown_key(const ApplicationState* state);
 static inline void render_invalidate(ApplicationState* state) { state->render.version += 1; }
 // Drops every result, waiting for a running computation. Before the system goes.
 void script_vis_reset(ApplicationState* state);
+
+// GROUPS OF AN ENERGY TERM. The groups of the system a term of an energy file is of (md_edr_term_groups): the two energy
+// groups of Coul-SR:Protein-SOL, the T-coupling group of T-Protein. attr is a series of the system, whose label keeps the
+// term's name. False, and out untouched, for any other series. Its text: "Protein and SOL", "Protein".
+bool   energy_term_groups(md_edr_term_groups_t* out, const ApplicationState* state, const md_attribute_t* attr);
+size_t energy_term_groups_text(char* buf, size_t cap, const ApplicationState* state, const md_edr_term_groups_t& tg);
+// Highlights the groups of an energy term, each in a colour of its own (selection.highlight_groups): hovering
+// Coul-SR:Protein-SOL marks Protein and SOL apart. Every frame it is hovered, as any highlight. False when the series is
+// of no groups.
+bool   highlight_energy_term_groups(ApplicationState* state, const md_attribute_t* attr);
 void script_set_hovered_property(ApplicationState* state, md_str_t label, int population_idx = -1);

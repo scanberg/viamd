@@ -1047,7 +1047,8 @@ struct Dataset : viamd::EventHandler {
         switch (role) {
         case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
         case FileRole_Trajectory: return "Trajectory";
-        case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" : "Supplement";
+        case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" :
+                                         e.type == LoaderType_NDX ? "Groups" : "Supplement";
         case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
         default:                  return "";
         }
@@ -1183,6 +1184,20 @@ struct Dataset : viamd::EventHandler {
     int  expanded_row = -1;
     int  expanded_molecule = -1;    // The molecule of the expanded row whose sequences are shown, by its position in the row
     bool use_short_labels = true;
+
+    // What each group of the system (md_group_data_t) holds: the molecules of each type it holds whole, and those it
+    // holds a part of. Groups are no level of the structure, so this is what tells a reader what one is.
+    struct GroupEntry {
+        int32_t  mol_type;      // -1: atoms of no molecule
+        uint32_t whole;         // Molecules of the type the group holds all atoms of (for -1: the atoms)
+        uint32_t partial;       // Molecules it holds some atoms of
+    };
+    struct {
+        uint64_t key = 0;
+        md_array(uint32_t)   entry_offset = 0;   // [groups + 1] The entries of group g: entries[entry_offset[g] .. entry_offset[g + 1]]
+        md_array(GroupEntry) entries = 0;
+    } group_comp;
+    int expanded_group = -1;
 
     // What a part is: its kind, and for a small molecule what its residues are
     static const char* part_kind_label(const md_system_t& sys, size_t part_idx) {
@@ -1670,6 +1685,195 @@ struct Dataset : viamd::EventHandler {
         ImGui::Spacing();
     }
 
+    void compute_group_composition(ApplicationState& data) {
+        const md_system_t& sys = data.mold.sys;
+        md_allocator_i* alloc = data.allocator.persistent;
+        md_array_shrink(group_comp.entry_offset, 0);
+        md_array_shrink(group_comp.entries, 0);
+        group_comp.key = sys.topology_version;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        const size_t N = sys.atom.count;
+        const size_t M = sys.molecule.count;
+        const size_t T = md_system_molecule_type_count(&sys);
+        // The molecule of each atom, -1 for none
+        int32_t* atom_mol = md_temp_alloc_array(temp, int32_t, N + 1);
+        for (size_t a = 0; a < N; ++a) atom_mol[a] = -1;
+        for (size_t m = 0; m < M; ++m) {
+            const md_molecule_t mol = md_system_molecule(&sys, m);
+            for (size_t i = 0; i < mol.count; ++i) atom_mol[mol.atom_idx[i]] = (int32_t)m;
+        }
+        // Per group: the atoms it holds of each molecule, and of those molecules how many of each type whole or in part
+        uint32_t* in_mol = md_temp_alloc_zero_array(temp, uint32_t, M + 1);
+        uint32_t* touched = md_temp_alloc_array(temp, uint32_t, M + 1);
+        uint32_t* whole = md_temp_alloc_zero_array(temp, uint32_t, T + 1);
+        uint32_t* partial = md_temp_alloc_zero_array(temp, uint32_t, T + 1);
+
+        md_array_push(group_comp.entry_offset, 0, alloc);
+        for (size_t g = 0; g < sys.group.count; ++g) {
+            uint32_t num_touched = 0, loose = 0;
+            md_bitset_iter_t it = md_bitset_iter_range(sys.group.atoms[g], 0, (uint32_t)N);
+            while (md_bitset_iter_next(&it)) {
+                const int32_t m = atom_mol[it.idx];
+                if (m < 0) { ++loose; continue; }
+                if (in_mol[m]++ == 0) touched[num_touched++] = (uint32_t)m;
+            }
+            for (uint32_t k = 0; k < num_touched; ++k) {
+                const uint32_t m = touched[k];
+                const md_molecule_type_idx_t t = md_system_molecule_type_idx(&sys, m);
+                const uint32_t size = sys.molecule.offset[m + 1] - sys.molecule.offset[m];
+                if (t >= 0 && (size_t)t < T) {
+                    if (in_mol[m] == size) whole[t] += 1; else partial[t] += 1;
+                }
+                in_mol[m] = 0;
+            }
+            for (size_t t = 0; t < T; ++t) {
+                if (!whole[t] && !partial[t]) continue;
+                md_array_push(group_comp.entries, (GroupEntry{(int32_t)t, whole[t], partial[t]}), alloc);
+                whole[t] = partial[t] = 0;
+            }
+            if (loose) md_array_push(group_comp.entries, (GroupEntry{-1, loose, 0}), alloc);
+            md_array_push(group_comp.entry_offset, (uint32_t)md_array_size(group_comp.entries), alloc);
+        }
+    }
+
+    // The roles of a group as the mdp options which named it: "energygrps, tc-grps"
+    static void group_roles_text(char* buf, size_t cap, uint32_t roles, bool mdp) {
+        int n = 0;
+        buf[0] = '\0';
+        for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+            if (!(roles & (1u << r))) continue;
+            const char* name = mdp ? md_group_role_mdp_option((md_group_role_t)r) : md_group_role_name((md_group_role_t)r);
+            if (n >= 0 && (size_t)n < cap) n += snprintf(buf + n, cap - n, "%s%s", n ? ", " : "", name);
+        }
+    }
+
+    // What a group holds, in a few words: "509 SOL, part of 1 Protein"
+    void group_composition_text(char* buf, size_t cap, const md_system_t& sys, size_t g, size_t max_entries) const {
+        int n = 0;
+        buf[0] = '\0';
+        const uint32_t beg = group_comp.entry_offset[g], end = group_comp.entry_offset[g + 1];
+        for (uint32_t e = beg; e < end && (size_t)n < cap; ++e) {
+            if (e - beg == max_entries) { n += snprintf(buf + n, cap - n, ", +%u more", end - e); break; }
+            const GroupEntry& ge = group_comp.entries[e];
+            const char* sep = n ? ", " : "";
+            if (ge.mol_type < 0) { n += snprintf(buf + n, cap - n, "%s%u atoms of no molecule", sep, ge.whole); continue; }
+            const md_str_t name = md_system_molecule_type_name(&sys, (size_t)ge.mol_type);
+            if (ge.whole)   n += snprintf(buf + n, cap - n, "%s%u " MD_STR_FMT, sep, ge.whole, MD_STR_ARG(name));
+            if (ge.partial && (size_t)n < cap) n += snprintf(buf + n, cap - n, "%spart of %u " MD_STR_FMT, ge.whole || *sep ? ", " : "", ge.partial, MD_STR_ARG(name));
+        }
+        if (beg == end) snprintf(buf, cap, "nothing");
+    }
+
+    void draw_groups(ApplicationState& data) {
+        const md_system_t& sys = data.mold.sys;
+        const md_group_data_t& groups = sys.group;
+        if (groups.count == 0) return;
+        if (!ImGui::CollapsingHeader("Groups", ImGuiTreeNodeFlags_DefaultOpen)) return;
+        if (group_comp.key != sys.topology_version || md_array_size(group_comp.entry_offset) != groups.count + 1) {
+            compute_group_composition(data);
+            expanded_group = -1;
+        }
+
+        ImGui::TextDisabled("Named sets of atoms of the run (index groups): hover to highlight, shift click to select, click to list what it holds.");
+
+        const bool vial = data.script.language == script::Language::V2;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##groups", 4, flags)) {
+            ImGui::TableSetupColumn("Group",    ImGuiTableColumnFlags_WidthStretch, 1.4f);
+            ImGui::TableSetupColumn("Used for", ImGuiTableColumnFlags_WidthStretch, 1.4f);
+            ImGui::TableSetupColumn("Atoms",    ImGuiTableColumnFlags_WidthStretch, 0.8f);
+            ImGui::TableSetupColumn("Holds",    ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+            const char* header_tips[4] = { "The group's name, as the index file or the tpr gives it",
+                                           "What the simulation used it for, by the mdp option which named it. A group of an index file alone has no use given",
+                                           nullptr, "The molecules it holds, of each type, whole or a part of them" };
+            for (int col = 0; col < 4; ++col) {
+                if (!ImGui::TableSetColumnIndex(col)) continue;
+                ImGui::TableHeader(ImGui::TableGetColumnName(col));
+                if (header_tips[col] && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", header_tips[col]);
+            }
+
+            for (size_t g = 0; g < groups.count; ++g) {
+                ImGui::TableNextRow();
+                ImGui::PushID((int)g);
+                ImGui::TableSetColumnIndex(0);
+                char name[128];
+                snprintf(name, sizeof(name), MD_STR_FMT, MD_STR_ARG(groups.name[g]));
+                if (ImGui::Selectable(name, expanded_group == (int)g, ImGuiSelectableFlags_SpanAllColumns)) {
+                    if (!ImGui::IsKeyDown(ImGuiMod_Shift)) expanded_group = expanded_group == (int)g ? -1 : (int)g;
+                }
+                if (ImGui::IsItemHovered()) {
+                    md_bitmask_assign(&data.selection.highlight_mask, groups.atoms[g]);
+                    handle_item_click(data);
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(name);
+                    char roles[160];
+                    group_roles_text(roles, sizeof(roles), groups.roles[g], true);
+                    if (roles[0]) ImGui::TextDisabled("Named by %s", roles);
+                    if (vial) {
+                        // How a script selects it: by its name, and its role where another group has the name
+                        bool shared = false;
+                        for (size_t h = 0; h < groups.count && !shared; ++h) shared = h != g && md_str_eq(groups.name[h], groups.name[g]);
+                        int r0 = -1;
+                        for (int r = 0; r < MD_GROUP_ROLE_COUNT && r0 < 0; ++r) if (groups.roles[g] & (1u << r)) r0 = r;
+                        if (shared && r0 >= 0) ImGui::TextDisabled("In the script: group('%s', role='%s')", name, md_group_role_name((md_group_role_t)r0));
+                        else                   ImGui::TextDisabled("In the script: group('%s')", name);
+                    }
+                    ImGui::EndTooltip();
+                }
+                ImGui::TableSetColumnIndex(1);
+                char roles[160];
+                group_roles_text(roles, sizeof(roles), groups.roles[g], false);
+                if (roles[0]) ImGui::TextUnformatted(roles); else ImGui::TextDisabled("-");
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%llu", (unsigned long long)md_bitset_count(groups.atoms[g]));
+                ImGui::TableSetColumnIndex(3);
+                char holds[256];
+                group_composition_text(holds, sizeof(holds), sys, g, 3);
+                ImGui::TextUnformatted(holds);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+
+        // What the expanded group holds, every type
+        if (expanded_group >= 0 && (size_t)expanded_group < groups.count) {
+            const size_t g = (size_t)expanded_group;
+            ImGui::Indent();
+            ImGui::Text(MD_STR_FMT ": %llu atoms", MD_STR_ARG(groups.name[g]), (unsigned long long)md_bitset_count(groups.atoms[g]));
+            if (ImGui::BeginTable("##group_holds", 3, flags)) {
+                ImGui::TableSetupColumn("Molecule type", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+                ImGui::TableSetupColumn("Whole",         ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                ImGui::TableSetupColumn("In part",       ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                ImGui::TableHeadersRow();
+                for (uint32_t e = group_comp.entry_offset[g]; e < group_comp.entry_offset[g + 1]; ++e) {
+                    const GroupEntry& ge = group_comp.entries[e];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ge.mol_type < 0) {
+                        ImGui::TextDisabled("Atoms of no molecule");
+                        ImGui::TableSetColumnIndex(1); ImGui::Text("%u atoms", ge.whole);
+                        ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("-");
+                        continue;
+                    }
+                    const md_str_t tname = md_system_molecule_type_name(&sys, (size_t)ge.mol_type);
+                    ImGui::Text(MD_STR_FMT, MD_STR_ARG(tname));
+                    ImGui::TableSetColumnIndex(1);
+                    if (ge.whole) ImGui::Text("%u", ge.whole); else ImGui::TextDisabled("-");
+                    ImGui::TableSetColumnIndex(2);
+                    if (ge.partial) ImGui::Text("%u", ge.partial); else ImGui::TextDisabled("-");
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Unindent();
+        }
+        ImGui::Spacing();
+    }
+
     void draw_totals(ApplicationState& data) {
         const Composition& c = composition;
         ImGui::Spacing();
@@ -2094,11 +2298,22 @@ struct Dataset : viamd::EventHandler {
                         }
                     }
                 }
+                // A term of groups (Coul-SR:Protein-SOL) shows them while it is hovered, each in a colour of its own
+                md_edr_term_groups_t term_groups;
+                const bool has_groups = energy_term_groups(&term_groups, &data, attr);
+                if (has_groups && ImGui::IsItemHovered()) {
+                    highlight_energy_term_groups(&data, attr);
+                }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(name);
                     if (!md_str_empty(attr->description)) {
                         ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr->description));
+                    }
+                    if (has_groups) {
+                        char text[160];
+                        energy_term_groups_text(text, sizeof(text), &data, term_groups);
+                        ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
                     }
                     ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr->path));
                     if (expr[0]) ImGui::TextDisabled("In the script: %s", expr);
@@ -3456,6 +3671,7 @@ struct Dataset : viamd::EventHandler {
                 if (ImGui::BeginTabItem("Overview")) {
                     draw_files(data);
                     draw_composition(data);
+                    draw_groups(data);
                     draw_trajectory(data);
                     draw_series(data);
                     ImGui::EndTabItem();

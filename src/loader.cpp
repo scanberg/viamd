@@ -18,6 +18,7 @@
 
 #include <md_molden.h>
 #include <md_itp.h>
+#include <md_ndx.h>
 #include <md_edr.h>
 #include <md_xvg.h>
 #include <md_csv.h>
@@ -61,6 +62,7 @@ static const md_str_t loader_name[LoaderType_COUNT] = {
 #endif
         MD_STR_LIT("Gromacs Topology (itp/top)"),
         MD_STR_INIT("Gromacs Run Input (tpr)"),
+        MD_STR_INIT("Gromacs Index Groups (ndx)"),
         MD_STR_INIT("Gromacs Energy (edr)"),
         MD_STR_INIT("xmgrace columns (xvg)"),
         MD_STR_INIT("Comma separated values (csv)"),
@@ -96,6 +98,7 @@ static const md_str_t loader_ext[LoaderType_COUNT] = {
 #endif
         MD_STR_LIT("itp"),
         MD_STR_INIT("tpr"),
+        MD_STR_INIT("ndx"),
         MD_STR_INIT("edr"),
         MD_STR_INIT("xvg"),
         MD_STR_INIT("csv"),
@@ -134,6 +137,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #endif
         LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
         LoaderFlag_System | LoaderFlag_MM | LoaderFlag_Topology,    // GROMACS run input
+        LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS index groups
         LoaderFlag_Supplemental | LoaderFlag_Temporal | LoaderFlag_MM, // GROMACS energy
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // XVG
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // CSV
@@ -327,6 +331,8 @@ bool load_supplemental(md_system_t* out_sys, md_str_t filepath, const LoaderStat
 #endif
         case LoaderType_ITP:
             return md_itp_system_supplement_from_file(out_sys, filepath);
+        case LoaderType_NDX:
+            return md_ndx_system_supplement_from_file(out_sys, filepath);
         case LoaderType_EDR:
             return md_edr_system_supplement_from_file(out_sys, filepath, run);
         case LoaderType_XVG:

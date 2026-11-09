@@ -597,7 +597,7 @@ static void update_group(ApplicationState* state, size_t idx, size_t depth) {
             g->filter.result = {};
             // A context that follows the frame can come back valid in another frame, and this with it
             g->filter.result.is_dynamic = ctx.dynamic;
-            snprintf(g->filter.result.error, sizeof(g->filter.result.error), "The filter of the group '%s' it is in is not valid", ctx.group ? ctx.group->name : "");
+            snprintf(g->filter.result.error, sizeof(g->filter.result.error), "The filter of the representation group '%s' it is in is not valid", ctx.group ? ctx.group->name : "");
         } else {
             filter_evaluate(&g->filter, &g->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
             g->filter.result.is_dynamic |= ctx.dynamic;
@@ -886,7 +886,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 md_array_shrink(rep->bond_pairs, 0);
                 rep->filter.result = {};
                 rep->filter.result.is_dynamic = ctx.dynamic;     // it may come back valid in another frame
-                snprintf(rep->filter.result.error, sizeof(rep->filter.result.error), "The filter of the group '%s', the context of this one, is not valid", ctx.group ? ctx.group->name : "");
+                snprintf(rep->filter.result.error, sizeof(rep->filter.result.error), "The filter of the representation group '%s', the context of this one, is not valid", ctx.group ? ctx.group->name : "");
             }
             rep->filt_is_dirty = false;
             state->representation.atom_visibility_mask_dirty = true;
@@ -3381,7 +3381,7 @@ static void draw_tree_menu(NodeRef node, WindowActions* act) {
             act->add_representation = true;
             act->add_into = group ? node.id : 0;
         }
-        if (ImGui::MenuItem(ICON_FA_FOLDER_PLUS " Add group")) {
+        if (ImGui::MenuItem(ICON_FA_FOLDER_PLUS " Add representation group")) {
             act->add_group = true;
             act->add_into = group ? node.id : 0;
         }
@@ -3392,12 +3392,12 @@ static void draw_tree_menu(NodeRef node, WindowActions* act) {
     if (ImGui::MenuItem(ICON_FA_OBJECT_GROUP " Group")) {
         act->wrap = node;
     }
-    ImGui::SetItemTooltip("Put it in a new group, in its place");
+    ImGui::SetItemTooltip("Put it in a new representation group, in its place");
     if (group) {
         if (ImGui::MenuItem(ICON_FA_OBJECT_UNGROUP " Ungroup")) {
             act->ungroup = node.id;
         }
-        ImGui::SetItemTooltip("Remove the group and keep what is in it, in its place");
+        ImGui::SetItemTooltip("Remove the representation group and keep what is in it, in its place");
     }
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_COPY " Duplicate")) {
@@ -3408,7 +3408,7 @@ static void draw_tree_menu(NodeRef node, WindowActions* act) {
     }
 }
 
-#define DRAG_HANDLE_HINT "Drag to move it: between others, or onto a group to put it in"
+#define DRAG_HANDLE_HINT "Drag to move it: between others, or onto a representation group to put it in"
 
 // The handle a row is dragged by, the first thing on it. Its icon is the row's to draw (draw_handle_icon): a
 // group's says whether it is open, which is known only once its tree node is drawn.
@@ -3530,17 +3530,17 @@ static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_
             refresh_shown_again(state, node);
         }
     }
-    ImGui::SetItemTooltip(node.group ? "Show/Hide the group and everything in it" : "Show/Hide");
+    ImGui::SetItemTooltip(node.group ? "Show/Hide the representation group and everything in it" : "Show/Hide");
     ImGui::SameLine(0, tree.button_spacing);
     if (ImGui::Button(ICON_FA_COPY, btn_size)) {
         act->clone = node;
     }
-    ImGui::SetItemTooltip(node.group ? "Duplicate the group and everything in it" : "Duplicate");
+    ImGui::SetItemTooltip(node.group ? "Duplicate the representation group and everything in it" : "Duplicate");
     ImGui::SameLine(0, tree.button_spacing);
     if (ImGui::DeleteButton(ICON_FA_XMARK, btn_size)) {
         act->remove = node;
     }
-    ImGui::SetItemTooltip(node.group ? "Remove the group and everything in it" : "Remove");
+    ImGui::SetItemTooltip(node.group ? "Remove the representation group and everything in it" : "Remove");
 }
 
 static void draw_tree_level(ApplicationState* state, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act);
@@ -3836,7 +3836,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         }
         if (rep.filter.result.success && ImGui::IsItemHovered() && !filter_completions_open()) {
             if (ctx.group) {
-                ImGui::SetTooltip("Within the context of the group '%s': %s", ctx.group->name, ctx.group->filter.text);
+                ImGui::SetTooltip("Within the context of the representation group '%s': %s", ctx.group->name, ctx.group->filter.text);
             } else if (bonds) {
                 ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bond(bond_delta()).\n"
                                   "A set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
@@ -4069,14 +4069,14 @@ static void draw_group_filter(ApplicationState* state, RepresentationGroup& grou
     const bool has_filter = group_has_filter(group);
     if (ImGui::IsItemHovered() && !filter_completions_open() && (!has_filter || group.filter.result.success)) {
         char within[96] = "";
-        if (outer.group) snprintf(within, sizeof(within), ", itself within the group '%s'", outer.group->name);
+        if (outer.group) snprintf(within, sizeof(within), ", itself within the representation group '%s'", outer.group->name);
         if (has_filter && !group.filt_is_dirty) {
-            ImGui::SetTooltip("The filters within this group are evaluated within the %llu atoms this picks%s:\n"
+            ImGui::SetTooltip("The filters within this representation group are evaluated within the %llu atoms this picks%s:\n"
                               "residue(1) is its first residue, all is all of it - as the left of 'in' in a script.",
                               (unsigned long long)md_bitset_count(group.atom_mask), within);
         } else if (!has_filter) {
-            ImGui::SetTooltip("A filter here is the context of the filters within the group: they are evaluated within the atoms it\n"
-                              "picks, as the left of 'in' in a script. Without one, the group only groups%s.", within);
+            ImGui::SetTooltip("A filter here is the context of the filters within the representation group: they are evaluated within the atoms it\n"
+                              "picks, as the left of 'in' in a script. Without one, it only groups%s.", within);
         }
     }
     prop::end();
@@ -4115,7 +4115,7 @@ static void draw_group_row(ApplicationState* state, const WindowTree& tree, Repr
     if (handle.tooltip) {
         if (invalid)         ImGui::SetTooltip("Context: %s\n%s\n\n" DRAG_HANDLE_HINT, group.filter.text, group.filter.result.error);
         else if (has_filter) ImGui::SetTooltip("Context: %s\n\n" DRAG_HANDLE_HINT, group.filter.text);
-        else                 ImGui::SetTooltip("A group without a context of its own\n\n" DRAG_HANDLE_HINT);
+        else                 ImGui::SetTooltip("A representation group without a context of its own\n\n" DRAG_HANDLE_HINT);
     }
 
     ImGui::SameLine();
@@ -4182,7 +4182,7 @@ void draw_representations_window(ApplicationState* state) {
     if (ImGui::Button(ICON_FA_FOLDER_PLUS)) {
         act.add_group = true;
     }
-    ImGui::SetItemTooltip("Add a group. What is in it is shown and hidden with it, and its filter is the\n"
+    ImGui::SetItemTooltip("Add a representation group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_PLUS)) {
@@ -4199,9 +4199,9 @@ void draw_representations_window(ApplicationState* state) {
         ImGui::OpenPopup("##remove_all");
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Remove every representation and group");
+    ImGui::SetItemTooltip("Remove every representation and representation group");
     if (ImGui::BeginPopup("##remove_all")) {
-        ImGui::TextUnformatted("Remove every representation and group?");
+        ImGui::TextUnformatted("Remove every representation and representation group?");
         if (ImGui::DeleteButton("remove all")) {
             act.remove_all = true;
             ImGui::CloseCurrentPopup();
